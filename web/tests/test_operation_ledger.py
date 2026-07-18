@@ -40,6 +40,7 @@ def _operation_row(**overrides):
         "rollback_kind": "",
         "rollback_ref": "",
         "request_hash": "abc123",
+        "request_key": "".rjust(64, "a"),
         "detail": "",
         "created_by": "admin",
         "created_ts": 123,
@@ -75,6 +76,7 @@ class _Connection:
                 "rollback_kind": "",
                 "rollback_ref": "",
                 "request_hash": "",
+                "request_key": "".rjust(64, "b"),
                 "detail": "",
                 "created_by": "",
                 "started_ts": 2,
@@ -115,28 +117,36 @@ def test_init_db_backfills_active_request_keys_before_unique_index(monkeypatch) 
         for i, query in enumerate(sql)
         if query.startswith("ALTER TABLE proxy_operations ADD UNIQUE KEY")
     )
-    clear_pos = next(
+    terminal_clear_pos = next(
         i
         for i, query in enumerate(sql)
         if query.startswith("UPDATE proxy_operations SET request_key=NULL")
+        and "status NOT IN ('pending','applying')" in query
     )
     supersede_pos = next(
         i
         for i, query in enumerate(sql)
-        if query.startswith("UPDATE proxy_operations pending JOIN")
+        if query.startswith("UPDATE proxy_operations active JOIN")
+    )
+    mismatch_clear_pos = next(
+        i
+        for i, query in enumerate(sql)
+        if query.startswith("UPDATE proxy_operations SET request_key=NULL")
+        and "status IN ('pending','applying')" in query
     )
     backfill_pos = next(
         i
         for i, query in enumerate(sql)
         if query.startswith("UPDATE proxy_operations SET request_key=SHA2")
     )
-    assert clear_pos < supersede_pos < backfill_pos < create_index_pos
+    assert terminal_clear_pos < supersede_pos < mismatch_clear_pos < backfill_pos < create_index_pos
     supersede_sql, supersede_params = conn.queries[supersede_pos]
     assert "ROW_NUMBER() OVER ( PARTITION BY proxy_id, SHA2(CONCAT(" in supersede_sql
-    assert "WHERE status='pending'" in supersede_sql
-    assert "pending.status='superseded'" in supersede_sql
+    assert "CASE WHEN status='applying' THEN 0 ELSE 1 END" in supersede_sql
+    assert "WHERE status IN ('pending','applying')" in supersede_sql
+    assert "active.status='superseded'" in supersede_sql
     assert supersede_params == (123, 123)
-    assert "WHERE status='pending'" in sql[backfill_pos]
+    assert "WHERE status IN ('pending','applying')" in sql[backfill_pos]
     assert conn.committed is True
 
 
@@ -159,7 +169,7 @@ def test_claim_pending_locks_and_updates_claimed_rows_in_one_transaction(
     assert select_params == ("edge-a", 2)
     update_sql, update_params = conn.queries[1]
     assert update_sql.startswith("UPDATE proxy_operations SET status='applying'")
-    assert "request_key=NULL" in update_sql
+    assert "request_key=NULL" not in update_sql
     assert update_params == (123, 123, "edge-a", 7, 8)
     assert conn.committed is True
 
@@ -196,7 +206,7 @@ def test_claim_pending_preserves_force_flag(monkeypatch) -> None:
     assert [op.force for op in claimed] == [False, False]
 
 
-def test_requeue_stale_applying_restores_active_request_key(monkeypatch) -> None:
+def test_requeue_stale_applying_recovers_without_active_key_collisions(monkeypatch) -> None:
     _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
@@ -235,22 +245,16 @@ def test_requeue_stale_applying_restores_active_request_key(monkeypatch) -> None
 
     assert requeued == 3
     supersede_sql, supersede_params = conn.queries[0]
-    assert supersede_sql.startswith("UPDATE proxy_operations stale JOIN")
-    assert "pending.request_key=SHA2(CONCAT(" in supersede_sql
-    assert "stale.request_key=NULL" in supersede_sql
-    assert supersede_params == (1000, 1000, "edge-a", 700)
-    duplicate_sql, duplicate_params = conn.queries[1]
-    assert duplicate_sql.startswith("UPDATE proxy_operations stale JOIN")
-    assert "JOIN proxy_operations dup" in duplicate_sql
-    assert "dup.id>stale.id" in duplicate_sql
-    assert "dup.status='applying'" in duplicate_sql
-    assert "dup.request_hash" in duplicate_sql
-    assert "stale.request_key=NULL" in duplicate_sql
-    assert duplicate_params == (700, 1000, 1000, "edge-a", 700)
-    requeue_sql, requeue_params = conn.queries[2]
+    assert supersede_sql.startswith("UPDATE proxy_operations active JOIN")
+    assert "status IN ('pending','applying')" in supersede_sql
+    assert "CASE WHEN status='applying' AND started_ts>=%s THEN 0" in supersede_sql
+    assert "active.status='superseded'" in supersede_sql
+    assert "active.request_key=NULL" in supersede_sql
+    assert supersede_params == (700, "edge-a", 700, 1000, 1000)
+    requeue_sql, requeue_params = conn.queries[1]
     assert requeue_sql.startswith("UPDATE proxy_operations stale LEFT JOIN")
-    assert "pending.request_key=SHA2(CONCAT(" in requeue_sql
-    assert "pending.id IS NULL" in requeue_sql
+    assert "active.status IN ('pending','applying')" in requeue_sql
+    assert "active.id IS NULL" in requeue_sql
     assert "SET stale.status='pending'" in requeue_sql
     assert "request_key=SHA2(CONCAT(" in requeue_sql
     assert "COALESCE(NULLIF(stale.operation_type,''),'sync')" in requeue_sql
@@ -637,6 +641,343 @@ def test_duplicate_request_dedupes_existing_operation_types_without_regressing_u
     assert op.detail == "new detail"
     assert op.created_by == "operator-b"
     assert op.force is True
+
+
+def test_duplicate_while_applying_returns_same_id_preserves_rollback_and_no_pending(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _ApplyingConnection:
+        def __init__(self) -> None:
+            self.rows: dict[int, dict[str, object]] = {}
+            self.active_by_key: dict[tuple[str, str], int] = {}
+            self.next_id = 1
+            self.queries = []
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("INSERT INTO proxy_operations"):
+                (
+                    proxy_id,
+                    operation_type,
+                    subject,
+                    summary,
+                    target_kind,
+                    target_ref,
+                    rollback_kind,
+                    rollback_ref,
+                    request_hash,
+                    request_key,
+                    detail,
+                    created_by,
+                    created_ts,
+                    updated_ts,
+                    force_sync,
+                ) = params
+                key = (str(proxy_id), str(request_key))
+                row_id = self.active_by_key.get(key)
+                if row_id is None:
+                    row_id = self.next_id
+                    self.next_id += 1
+                    self.active_by_key[key] = row_id
+                    self.rows[row_id] = _operation_row(
+                        id=row_id,
+                        proxy_id=proxy_id,
+                        status="pending",
+                        operation_type=operation_type,
+                        subject=subject,
+                        summary=summary,
+                        target_kind=target_kind,
+                        target_ref=target_ref,
+                        rollback_kind=rollback_kind,
+                        rollback_ref=rollback_ref,
+                        request_hash=request_hash,
+                        request_key=request_key,
+                        detail=detail,
+                        created_by=created_by,
+                        created_ts=created_ts,
+                        updated_ts=updated_ts,
+                        force_sync=force_sync,
+                    )
+                else:
+                    row = self.rows[row_id]
+                    row["summary"] = summary
+                    row["detail"] = detail
+                    row["created_by"] = created_by
+                    row["updated_ts"] = updated_ts
+                    row["force_sync"] = max(int(row["force_sync"]), int(force_sync))
+                result = _Result()
+                result.lastrowid = row_id
+                return result
+            if compact.startswith("SELECT id FROM proxy_operations"):
+                pending = [
+                    {"id": row_id}
+                    for row_id, row in sorted(self.rows.items())
+                    if row.get("proxy_id") == params[0] and row.get("status") == "pending"
+                ]
+                return _Result(pending[: int(params[-1])])
+            if compact.startswith("UPDATE proxy_operations SET status='applying'"):
+                for row_id in params[3:]:
+                    row = self.rows[int(row_id)]
+                    row["status"] = "applying"
+                    row["started_ts"] = params[0]
+                    row["updated_ts"] = params[1]
+                    if "request_key=NULL" in compact:
+                        row["request_key"] = None
+                        self.active_by_key.pop((str(row["proxy_id"]), str(row["request_key"])), None)
+                return _Result()
+            if compact.startswith("SELECT * FROM proxy_operations"):
+                ids = {int(value) for value in params[1:]}
+                return _Result(
+                    [
+                        row
+                        for row_id, row in sorted(self.rows.items())
+                        if row.get("proxy_id") == params[0]
+                        and row.get("status") == "applying"
+                        and row_id in ids
+                    ]
+                )
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.rows[int(params[0])]])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _ApplyingConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    now = iter([100, 101, 102])
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: next(now))
+
+    first = ledger.create_operation(
+        "edge-a",
+        operation_type="config_apply",
+        subject="Squid config",
+        summary="Apply revision 17",
+        target_kind="config_revision",
+        target_ref=17,
+        rollback_kind="config_revision",
+        rollback_ref=3,
+        request_hash="abc123",
+        detail="first",
+        created_by="operator-a",
+    )
+    claimed = ledger.claim_pending("edge-a", limit=10)
+    duplicate = ledger.create_operation(
+        "edge-a",
+        operation_type="config_apply",
+        subject="Squid config",
+        summary="Duplicate apply revision 17",
+        target_kind="config_revision",
+        target_ref=17,
+        rollback_kind="config_revision",
+        rollback_ref=17,
+        request_hash="abc123",
+        detail="duplicate",
+        created_by="operator-b",
+        force=True,
+    )
+
+    assert [op.operation_id for op in claimed] == [first.operation_id]
+    assert duplicate.operation_id == first.operation_id
+    assert duplicate.status == "applying"
+    assert duplicate.rollback_ref == "3"
+    assert duplicate.force is True
+    assert [row["status"] for row in conn.rows.values()].count("pending") == 0
+    assert len(conn.rows) == 1
+
+
+def test_terminal_release_allows_genuine_retry_new_operation(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _RetryConnection:
+        def __init__(self) -> None:
+            self.rows: dict[int, dict[str, object]] = {}
+            self.active_by_key: dict[tuple[str, str], int] = {}
+            self.next_id = 1
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            if compact.startswith("INSERT INTO proxy_operations"):
+                (
+                    proxy_id,
+                    operation_type,
+                    subject,
+                    summary,
+                    target_kind,
+                    target_ref,
+                    rollback_kind,
+                    rollback_ref,
+                    request_hash,
+                    request_key,
+                    detail,
+                    created_by,
+                    created_ts,
+                    updated_ts,
+                    force_sync,
+                ) = params
+                key = (str(proxy_id), str(request_key))
+                row_id = self.active_by_key.get(key)
+                if row_id is None:
+                    row_id = self.next_id
+                    self.next_id += 1
+                    self.active_by_key[key] = row_id
+                    self.rows[row_id] = _operation_row(
+                        id=row_id,
+                        proxy_id=proxy_id,
+                        operation_type=operation_type,
+                        subject=subject,
+                        summary=summary,
+                        target_kind=target_kind,
+                        target_ref=target_ref,
+                        rollback_kind=rollback_kind,
+                        rollback_ref=rollback_ref,
+                        request_hash=request_hash,
+                        request_key=request_key,
+                        detail=detail,
+                        created_by=created_by,
+                        created_ts=created_ts,
+                        updated_ts=updated_ts,
+                        force_sync=force_sync,
+                    )
+                result = _Result()
+                result.lastrowid = row_id
+                return result
+            if compact.startswith("UPDATE proxy_operations SET status=%s"):
+                status, detail, completed_ts, updated_ts, release, row_id = params
+                row = self.rows[int(row_id)]
+                if release:
+                    self.active_by_key.pop((str(row["proxy_id"]), str(row["request_key"])), None)
+                    row["request_key"] = None
+                row["status"] = status
+                row["detail"] = detail
+                row["completed_ts"] = completed_ts
+                row["updated_ts"] = updated_ts
+                return _Result()
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.rows[int(params[0])]])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _RetryConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    now = iter([100, 101, 102])
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: next(now))
+
+    first = ledger.create_operation(
+        "edge-a",
+        operation_type="cache_clear",
+        subject="Proxy cache clear",
+        summary="clear",
+        request_hash="",
+    )
+    completed = ledger.mark_status(first.operation_id, status="applied", detail="done")
+    retry = ledger.create_operation(
+        "edge-a",
+        operation_type="cache_clear",
+        subject="Proxy cache clear",
+        summary="clear again",
+        request_hash="",
+    )
+
+    assert completed is not None
+    assert completed.status == "applied"
+    assert retry.operation_id != first.operation_id
+    assert retry.status == "pending"
+    assert len(conn.rows) == 2
+
+
+def test_multi_proxy_same_request_key_is_isolated(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _MultiProxyConnection:
+        def __init__(self) -> None:
+            self.rows: dict[int, dict[str, object]] = {}
+            self.active_by_key: dict[tuple[str, str], int] = {}
+            self.next_id = 1
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            if compact.startswith("INSERT INTO proxy_operations"):
+                proxy_id = str(params[0])
+                request_key = str(params[9])
+                row_id = self.active_by_key.get((proxy_id, request_key))
+                if row_id is None:
+                    row_id = self.next_id
+                    self.next_id += 1
+                    self.active_by_key[proxy_id, request_key] = row_id
+                    self.rows[row_id] = _operation_row(
+                        id=row_id,
+                        proxy_id=proxy_id,
+                        operation_type=params[1],
+                        subject=params[2],
+                        summary=params[3],
+                        target_kind=params[4],
+                        target_ref=params[5],
+                        rollback_kind=params[6],
+                        rollback_ref=params[7],
+                        request_hash=params[8],
+                        request_key=request_key,
+                        detail=params[10],
+                        created_by=params[11],
+                        created_ts=params[12],
+                        updated_ts=params[13],
+                        force_sync=params[14],
+                    )
+                result = _Result()
+                result.lastrowid = row_id
+                return result
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.rows[int(params[0])]])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _MultiProxyConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+
+    kwargs = {
+        "operation_type": "policy_sync",
+        "subject": "Policy reconciliation",
+        "summary": "policy",
+        "target_kind": "policy_state",
+        "target_ref": "same-sha",
+        "request_hash": "same-sha",
+    }
+    edge_a = ledger.create_operation("edge-a", **kwargs)
+    edge_b = ledger.create_operation("edge-b", **kwargs)
+    edge_a_duplicate = ledger.create_operation("edge-a", **kwargs)
+
+    assert edge_a.operation_id != edge_b.operation_id
+    assert edge_a_duplicate.operation_id == edge_a.operation_id
+    assert len(conn.rows) == 2
 
 
 def test_terminal_status_releases_active_request_key(monkeypatch) -> None:

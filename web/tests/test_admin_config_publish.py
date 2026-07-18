@@ -394,6 +394,64 @@ def test_revert_duplicate_config_apply_targets_original_rollback_revision(
     ]
 
 
+def test_failed_duplicate_config_apply_cannot_create_self_rollback_revert(
+    monkeypatch, tmp_path
+) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+    queued: list[dict[str, object]] = []
+
+    class Op:
+        operation_id = 42
+        proxy_id = "edge-a"
+        status = "failed"
+        can_revert = True
+        rollback_kind = "config_revision"
+        rollback_ref = "3"
+        operation_type = "config_apply"
+        target_ref = "17"
+
+    class Ledger:
+        def get_operation(self, operation_id):
+            assert operation_id == 42
+            return Op()
+
+    class Revisions:
+        def get_revision(self, revision_id, *, proxy_id=None):
+            assert revision_id == "3"
+            assert proxy_id == "edge-a"
+            return SimpleNamespace(revision_id=3, config_text="workers 1\n")
+
+        def create_revision(
+            self, proxy_id, config_text, *, created_by, source_kind, activate
+        ):
+            assert proxy_id == "edge-a"
+            assert config_text == "workers 1\n"
+            assert created_by == "operator"
+            assert source_kind == "revert-config_apply"
+            assert activate is True
+            return SimpleNamespace(revision_id=18, config_sha256="restored-sha")
+
+    def fake_request_proxy_reconcile(proxy_id, **kwargs):
+        queued.append({"proxy_id": proxy_id, **kwargs})
+        return SimpleNamespace(operation_id=43)
+
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(admin_app, "get_operation_ledger", Ledger)
+    monkeypatch.setattr(admin_app, "get_config_revisions", Revisions)
+    monkeypatch.setattr(
+        admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile
+    )
+
+    with admin_app.app.test_request_context("/operations/42/revert", method="POST"):
+        admin_app.session["user"] = "operator"
+        response = admin_app.revert_operation(42)
+
+    assert response.status_code == 302
+    assert queued[0]["target_ref"] == 18
+    assert queued[0]["rollback_ref"] == "17"
+    assert queued[0]["target_ref"] != queued[0]["rollback_ref"]
+
+
 def test_publish_config_restores_previous_revision_when_reconcile_not_queued(
     monkeypatch,
     tmp_path,

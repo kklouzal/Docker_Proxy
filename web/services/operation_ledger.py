@@ -134,25 +134,26 @@ class OperationLedger:
             """
             UPDATE proxy_operations
             SET request_key=NULL
-            WHERE status<>'pending' AND request_key IS NOT NULL
+            WHERE status NOT IN ('pending','applying') AND request_key IS NOT NULL
             """,
         )
         conn.execute(
             f"""
-            UPDATE proxy_operations pending
+            UPDATE proxy_operations active
             JOIN (
                 SELECT id, ROW_NUMBER() OVER (
                     PARTITION BY proxy_id, {request_key_expr}
-                    ORDER BY created_ts ASC, id ASC
+                    ORDER BY CASE WHEN status='applying' THEN 0 ELSE 1 END, created_ts ASC, id ASC
                 ) AS rn
                 FROM proxy_operations
-                WHERE status='pending'
-            ) ranked ON ranked.id=pending.id
-            SET pending.status='superseded',
-                pending.detail='Superseded by a matching pending operation during request-key backfill.',
-                pending.completed_ts=%s,
-                pending.updated_ts=%s,
-                pending.request_key=NULL
+                WHERE status IN ('pending','applying')
+            ) ranked ON ranked.id=active.id
+            SET active.status='superseded',
+                active.detail='Superseded by a matching active operation during request-key backfill.',
+                active.completed_ts=%s,
+                active.updated_ts=%s,
+                active.started_ts=0,
+                active.request_key=NULL
             WHERE ranked.rn>1
             """,
             (now, now),
@@ -160,8 +161,17 @@ class OperationLedger:
         conn.execute(
             f"""
             UPDATE proxy_operations
+            SET request_key=NULL
+            WHERE status IN ('pending','applying')
+              AND (request_key IS NULL OR request_key='' OR request_key<>{request_key_expr})
+            """,
+        )
+        conn.execute(
+            f"""
+            UPDATE proxy_operations
             SET request_key={request_key_expr}
-            WHERE status='pending' AND (request_key IS NULL OR request_key='')
+            WHERE status IN ('pending','applying')
+              AND (request_key IS NULL OR request_key='' OR request_key<>{request_key_expr})
             """,
         )
 
@@ -407,60 +417,51 @@ class OperationLedger:
         now = int(time.time())
         cutoff = now - max(60, int(older_than_seconds or 600))
         stale_request_key_expr = self._request_key_sql("stale")
-        duplicate_request_key_expr = self._request_key_sql("dup")
+        active_request_key_expr = self._request_key_sql("active")
+        ranked_request_key_expr = self._request_key_sql("ranked_active")
         with self._connect() as conn:
             conn.execute(
                 f"""
-                UPDATE proxy_operations stale
-                JOIN proxy_operations pending
-                  ON pending.proxy_id=stale.proxy_id
-                 AND pending.status='pending'
-                 AND pending.id<>stale.id
-                 AND pending.request_key={stale_request_key_expr}
-                SET stale.status='superseded',
-                    stale.detail='Superseded by a matching pending operation after stale applying state.',
-                    stale.completed_ts=%s,
-                    stale.updated_ts=%s,
-                    stale.started_ts=0,
-                    stale.request_key=NULL
-                WHERE stale.proxy_id=%s
-                  AND stale.status='applying'
-                  AND stale.started_ts>0
-                  AND stale.started_ts<%s
+                UPDATE proxy_operations active
+                JOIN (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY proxy_id, {ranked_request_key_expr}
+                        ORDER BY CASE
+                            WHEN status='applying' AND started_ts>=%s THEN 0
+                            WHEN status='applying' THEN 1
+                            ELSE 2
+                        END, created_ts ASC, id ASC
+                    ) AS rn
+                    FROM proxy_operations ranked_active
+                    WHERE ranked_active.proxy_id=%s
+                      AND ranked_active.status IN ('pending','applying')
+                      AND EXISTS (
+                          SELECT 1 FROM proxy_operations stale
+                          WHERE stale.proxy_id=ranked_active.proxy_id
+                            AND stale.status='applying'
+                            AND stale.started_ts>0
+                            AND stale.started_ts<%s
+                            AND {stale_request_key_expr}={ranked_request_key_expr}
+                      )
+                ) ranked ON ranked.id=active.id
+                SET active.status='superseded',
+                    active.detail='Superseded by a matching active operation before stale applying recovery.',
+                    active.completed_ts=%s,
+                    active.updated_ts=%s,
+                    active.started_ts=0,
+                    active.request_key=NULL
+                WHERE ranked.rn>1
                 """,
-                (now, now, proxy_key, cutoff),
-            )
-            conn.execute(
-                f"""
-                UPDATE proxy_operations stale
-                JOIN proxy_operations dup
-                  ON dup.proxy_id=stale.proxy_id
-                 AND dup.status='applying'
-                 AND dup.started_ts>0
-                 AND dup.started_ts<%s
-                 AND dup.id>stale.id
-                 AND {duplicate_request_key_expr}={stale_request_key_expr}
-                SET stale.status='superseded',
-                    stale.detail='Superseded by a matching stale applying operation before requeue.',
-                    stale.completed_ts=%s,
-                    stale.updated_ts=%s,
-                    stale.started_ts=0,
-                    stale.request_key=NULL
-                WHERE stale.proxy_id=%s
-                  AND stale.status='applying'
-                  AND stale.started_ts>0
-                  AND stale.started_ts<%s
-                """,
-                (cutoff, now, now, proxy_key, cutoff),
+                (cutoff, proxy_key, cutoff, now, now),
             )
             cur = conn.execute(
                 f"""
                 UPDATE proxy_operations stale
-                LEFT JOIN proxy_operations pending
-                  ON pending.proxy_id=stale.proxy_id
-                 AND pending.status='pending'
-                 AND pending.id<>stale.id
-                 AND pending.request_key={stale_request_key_expr}
+                LEFT JOIN proxy_operations active
+                  ON active.proxy_id=stale.proxy_id
+                 AND active.status IN ('pending','applying')
+                 AND active.id<>stale.id
+                 AND {active_request_key_expr}={stale_request_key_expr}
                 SET stale.status='pending',
                     stale.detail='Requeued after stale applying state.',
                     stale.updated_ts=%s,
@@ -470,7 +471,7 @@ class OperationLedger:
                   AND stale.status='applying'
                   AND stale.started_ts>0
                   AND stale.started_ts<%s
-                  AND pending.id IS NULL
+                  AND active.id IS NULL
                 """,
                 (now, proxy_key, cutoff),
             )
@@ -510,7 +511,7 @@ class OperationLedger:
                 return []
             placeholders = ",".join(["%s"] * len(ids))
             conn.execute(
-                f"UPDATE proxy_operations SET status='applying', started_ts=%s, updated_ts=%s, request_key=NULL WHERE proxy_id=%s AND status='pending' AND id IN ({placeholders})",
+                f"UPDATE proxy_operations SET status='applying', started_ts=%s, updated_ts=%s WHERE proxy_id=%s AND status='pending' AND id IN ({placeholders})",
                 (now, now, proxy_key, *ids),
             )
             claimed_rows = conn.execute(
