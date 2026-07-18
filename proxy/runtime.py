@@ -3859,6 +3859,8 @@ class ProxyRuntime:
             "detail": detail,
             **cert_evidence,
             **policy_evidence,
+            **adblock_evidence,
+            **pac_evidence,
             **operation_evidence,
         }
 
