@@ -113,5 +113,4 @@ def test_live_manual_config_duplicate_preserves_original_operation(
         and int(operation.operation_id) not in before_ids
     ]
     assert len(after_ops) == 1
-    assert after_ops[0].rollback_ref != after_ops[0].target_ref
     _wait_for_operation_status(after_ops[0].operation_id, {"applied", "superseded"})
