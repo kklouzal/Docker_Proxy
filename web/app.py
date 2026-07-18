@@ -692,7 +692,7 @@ def _operation_view(operation: Any | None) -> dict[str, Any]:
 def _state_badge_class(state: str) -> str:
     if state == "reconciled":
         return "ok"
-    if state in {"failed", "superseded", "drift"}:
+    if state in {"failed", "superseded", "drift", "unavailable"}:
         return "danger"
     if state in {"unknown", "untracked"}:
         return ""
@@ -991,6 +991,289 @@ def _policy_runtime_state(
         "runtime_health_status": str((runtime_health or {}).get("status") or ""),
         "runtime_health_ts": _safe_revision_id((runtime_health or {}).get("timestamp")),
         "runtime_state_errors": state_errors,
+    }
+
+
+def _runtime_health_for_proxy(proxy_id: str) -> dict[str, Any]:
+    try:
+        return _cached_proxy_health(
+            proxy_id,
+            timeout_seconds=_proxy_health_timeout_seconds(),
+            full=True,
+        )
+    except Exception:
+        return {}
+
+
+def _runtime_unavailable(runtime_health: dict[str, Any]) -> bool:
+    status = str((runtime_health or {}).get("status") or "").lower()
+    proxy_status = str((runtime_health or {}).get("proxy_status") or "").lower()
+    return bool(
+        (runtime_health or {}).get("_unavailable_cached")
+        or status in {"offline", "unavailable"}
+        or proxy_status in {"offline", "unavailable"}
+    )
+
+
+def _runtime_evidence_base(proxy_id: str, runtime_health: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "proxy_id": proxy_id,
+        "runtime_health_status": str((runtime_health or {}).get("status") or "unknown"),
+        "runtime_proxy_status": str((runtime_health or {}).get("proxy_status") or ""),
+        "runtime_health_ts": _safe_revision_id((runtime_health or {}).get("timestamp")),
+        "runtime_state_errors": normalize_runtime_health_state_errors(
+            (runtime_health or {}).get("state_errors"),
+        ),
+    }
+
+
+def _latest_pac_operation(proxy_id: str, desired_pac_sha: str = ""):
+    if desired_pac_sha:
+        exact = _latest_operation(
+            proxy_id,
+            target_kind="pac_state",
+            target_ref=desired_pac_sha,
+            operation_types={"pac_refresh"},
+        )
+        if exact is not None:
+            return exact
+    return _latest_operation(
+        proxy_id,
+        target_kind="pac_state",
+        operation_types={"pac_refresh"},
+    )
+
+
+def _pac_runtime_state(
+    proxy_id: str,
+    *,
+    runtime_health: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    runtime_health = runtime_health if runtime_health is not None else _runtime_health_for_proxy(proxy_id)
+    desired_pac_sha, desired_error = _desired_pac_state_sha_for_proxy(proxy_id)
+    current_pac_sha = str((runtime_health or {}).get("current_pac_sha") or "")
+    runtime_desired_pac_sha = str((runtime_health or {}).get("desired_pac_sha") or "")
+    latest_operation = _latest_pac_operation(proxy_id, desired_pac_sha)
+    operation_status = str(getattr(latest_operation, "status", "") or "")
+    operation_id = _safe_revision_id(getattr(latest_operation, "operation_id", 0))
+    operation_target_ref = str(getattr(latest_operation, "target_ref", "") or "")
+    operation_matches_desired = bool(
+        latest_operation is not None
+        and desired_pac_sha
+        and operation_target_ref == desired_pac_sha
+    )
+    operation_matches_current_desired = bool(
+        operation_matches_desired or (latest_operation is not None and not operation_target_ref)
+    )
+
+    if not desired_pac_sha and not desired_error:
+        state = "no_desired_state"
+        label = "No desired PAC state"
+        detail = "No saved PAC desired-state fingerprint is available for the selected proxy."
+        recovery_action = "Save PAC routing settings to queue selected-proxy materialization."
+    elif operation_status in {"pending", "applying"} and operation_matches_current_desired:
+        state = operation_status
+        label = "PAC materialization pending" if operation_status == "pending" else "PAC materialization running"
+        detail = (
+            f"Selected-proxy PAC operation #{operation_id} is {operation_status}; "
+            "saved PAC profiles are not proven materialized yet."
+        )
+        recovery_action = "Wait for the selected proxy to reconcile, then refresh this page."
+    elif operation_status in {"failed", "superseded"} and operation_matches_current_desired:
+        state = operation_status
+        label = "PAC materialization failed" if operation_status == "failed" else "PAC materialization superseded"
+        detail = (
+            f"Selected-proxy PAC operation #{operation_id} ended {operation_status}; "
+            "do not treat saved PAC profiles as selected-proxy runtime until a later refresh succeeds."
+        )
+        recovery_action = "Save the PAC settings again to queue a fresh selected-proxy refresh."
+    elif desired_pac_sha and current_pac_sha and desired_pac_sha == current_pac_sha:
+        state = "reconciled"
+        label = "PAC materialized"
+        detail = "Saved PAC desired SHA matches the selected proxy runtime PAC SHA."
+        recovery_action = "No action needed."
+    elif desired_pac_sha and current_pac_sha:
+        state = "drift"
+        label = "Saved/runtime PAC mismatch"
+        detail = (
+            f"Saved PAC {_short_sha(desired_pac_sha) or 'unknown sha'} does not match "
+            f"selected-proxy runtime PAC {_short_sha(current_pac_sha) or 'unknown sha'}."
+        )
+        recovery_action = "Save PAC routing settings to queue selected-proxy materialization."
+    elif _runtime_unavailable(runtime_health):
+        state = "unavailable"
+        label = "PAC runtime unavailable"
+        detail = "The selected proxy runtime is unavailable, so saved PAC profiles cannot be verified as materialized."
+        recovery_action = "Restore selected-proxy health, then save PAC settings or run the existing proxy sync."
+    elif desired_error:
+        state = "unknown"
+        label = "PAC evidence limited"
+        detail = f"Desired PAC state could not be fingerprinted. {desired_error}"
+        recovery_action = "Fix the PAC desired-state error, then save PAC settings again."
+    else:
+        state = "unknown"
+        label = "PAC runtime unknown"
+        detail = "The selected proxy did not report enough PAC SHA evidence to verify materialization."
+        recovery_action = "Refresh selected-proxy health or use the existing PAC save controls to queue reconciliation."
+
+    if latest_operation is not None and not operation_matches_current_desired:
+        detail = (
+            f"{detail} Latest selected-proxy PAC operation #{operation_id} targets a different "
+            "PAC fingerprint, so stale success/failure is context only."
+        )
+
+    return {
+        **_operation_view(latest_operation),
+        **_runtime_evidence_base(proxy_id, runtime_health),
+        "state": state,
+        "label": label,
+        "detail": detail,
+        "recovery_action": recovery_action,
+        "badge_class": _state_badge_class(state),
+        "desired_pac_sha": desired_pac_sha,
+        "desired_pac_short_sha": _short_sha(desired_pac_sha),
+        "runtime_desired_pac_sha": runtime_desired_pac_sha,
+        "runtime_desired_pac_short_sha": _short_sha(runtime_desired_pac_sha),
+        "current_pac_sha": current_pac_sha,
+        "current_pac_short_sha": _short_sha(current_pac_sha),
+        "operation_status_label": _operation_status_label(operation_status),
+        "operation_target_ref": operation_target_ref,
+        "operation_target_short_ref": _short_sha(operation_target_ref),
+        "operation_matches_desired": operation_matches_desired,
+    }
+
+
+def _latest_adblock_operation(proxy_id: str, revision_id: int = 0, artifact_sha: str = ""):
+    if revision_id > 0:
+        exact = _latest_operation(
+            proxy_id,
+            target_kind="adblock_artifact",
+            target_ref=str(revision_id),
+            operation_types={"adblock_refresh"},
+        )
+        if exact is not None:
+            return exact
+    return _latest_operation(
+        proxy_id,
+        target_kind="adblock_artifact",
+        operation_types={"adblock_refresh"},
+    )
+
+
+def _latest_adblock_apply(proxy_id: str, revision_id: int):
+    if revision_id <= 0:
+        return None
+    try:
+        return get_adblock_artifacts().latest_apply(proxy_id, revision_id=revision_id)
+    except Exception:
+        return None
+
+
+def _adblock_runtime_state(
+    proxy_id: str,
+    *,
+    active_artifact: dict[str, Any],
+    runtime_health: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    runtime_health = runtime_health if runtime_health is not None else _runtime_health_for_proxy(proxy_id)
+    revision_id = _safe_int((active_artifact or {}).get("revision_id"))
+    artifact_sha = str((active_artifact or {}).get("artifact_sha256") or "")
+    current_sha = str((runtime_health or {}).get("current_adblock_sha") or "")
+    runtime_active_sha = str((runtime_health or {}).get("active_adblock_sha") or "")
+    latest_apply = _latest_adblock_apply(proxy_id, revision_id)
+    latest_operation = _latest_adblock_operation(proxy_id, revision_id, artifact_sha)
+    operation_status = str(getattr(latest_operation, "status", "") or "")
+    operation_id = _safe_revision_id(getattr(latest_operation, "operation_id", 0))
+    operation_target_ref = str(getattr(latest_operation, "target_ref", "") or "")
+    operation_request_hash = str(getattr(latest_operation, "request_hash", "") or "")
+    operation_matches_active = bool(
+        latest_operation is not None
+        and revision_id > 0
+        and operation_target_ref == str(revision_id)
+        and (not artifact_sha or not operation_request_hash or operation_request_hash == artifact_sha)
+    )
+    apply_ok = bool(getattr(latest_apply, "ok", False)) if latest_apply is not None else False
+    apply_sha = str(getattr(latest_apply, "artifact_sha256", "") or "") if latest_apply is not None else ""
+    apply_matches_active = bool(apply_ok and (not artifact_sha or apply_sha == artifact_sha))
+
+    if not (active_artifact or {}).get("available"):
+        state = "no_active_artifact"
+        label = "No active adblock artifact"
+        detail = "No shared compiled adblock artifact is active; there is no selected-proxy artifact to verify."
+        recovery_action = "Use the existing Update now or Save lists controls to build an active artifact."
+    elif operation_status in {"pending", "applying"} and operation_matches_active:
+        state = operation_status
+        label = "Adblock apply pending" if operation_status == "pending" else "Adblock apply running"
+        detail = (
+            f"Selected-proxy adblock operation #{operation_id} is {operation_status}; "
+            "the shared artifact is not proven applied to runtime yet."
+        )
+        recovery_action = "Wait for selected-proxy reconciliation, then refresh this page."
+    elif operation_status in {"failed", "superseded"} and operation_matches_active:
+        state = operation_status
+        label = "Adblock apply failed" if operation_status == "failed" else "Adblock apply superseded"
+        detail = (
+            f"Selected-proxy adblock operation #{operation_id} ended {operation_status}; "
+            "do not treat the shared built artifact as applied runtime."
+        )
+        recovery_action = "Use the existing adblock refresh controls to queue a fresh selected-proxy apply."
+    elif artifact_sha and current_sha and artifact_sha == current_sha and apply_matches_active:
+        state = "reconciled"
+        label = "Adblock artifact applied"
+        detail = "Active shared artifact hash matches the selected proxy runtime hash and revision-scoped apply evidence."
+        recovery_action = "No action needed."
+    elif artifact_sha and current_sha and artifact_sha != current_sha:
+        state = "drift"
+        label = "Built/runtime adblock mismatch"
+        detail = (
+            f"Active artifact {_short_sha(artifact_sha) or 'unknown sha'} does not match "
+            f"selected-proxy runtime {_short_sha(current_sha) or 'unknown sha'}."
+        )
+        recovery_action = "Use the existing adblock refresh controls to queue selected-proxy materialization."
+    elif _runtime_unavailable(runtime_health):
+        state = "unavailable"
+        label = "Adblock runtime unavailable"
+        detail = "The selected proxy runtime is unavailable, so the shared built artifact cannot be verified as applied."
+        recovery_action = "Restore selected-proxy health, then use the existing adblock refresh controls or proxy sync."
+    else:
+        state = "built_unverified"
+        label = "Built, not runtime-verified"
+        detail = "A shared artifact exists, but selected-proxy runtime/apply evidence is missing for this revision."
+        recovery_action = "Use the existing adblock refresh controls to queue selected-proxy materialization."
+
+    if latest_operation is not None and not operation_matches_active:
+        detail = (
+            f"{detail} Latest selected-proxy adblock operation #{operation_id} targets a different "
+            "artifact revision/hash, so stale success/failure is context only."
+        )
+
+    return {
+        **_operation_view(latest_operation),
+        **_runtime_evidence_base(proxy_id, runtime_health),
+        "state": state,
+        "label": label,
+        "detail": detail,
+        "recovery_action": recovery_action,
+        "badge_class": _state_badge_class(state),
+        "active_revision_id": revision_id,
+        "active_adblock_sha": artifact_sha,
+        "active_adblock_short_sha": _short_sha(artifact_sha),
+        "runtime_active_adblock_sha": runtime_active_sha,
+        "runtime_active_adblock_short_sha": _short_sha(runtime_active_sha),
+        "current_adblock_sha": current_sha,
+        "current_adblock_short_sha": _short_sha(current_sha),
+        "latest_apply_id": _safe_revision_id(getattr(latest_apply, "application_id", 0)),
+        "latest_apply_ok": bool(getattr(latest_apply, "ok", False)) if latest_apply is not None else None,
+        "latest_apply_ts": _safe_revision_id(getattr(latest_apply, "applied_ts", 0)),
+        "latest_apply_detail": str(getattr(latest_apply, "detail", "") or ""),
+        "latest_apply_sha": apply_sha,
+        "latest_apply_short_sha": _short_sha(apply_sha),
+        "operation_status_label": _operation_status_label(operation_status),
+        "operation_target_ref": operation_target_ref,
+        "operation_target_short_ref": str(operation_target_ref or "")[:12],
+        "operation_request_hash": operation_request_hash,
+        "operation_request_short_hash": _short_sha(operation_request_hash),
+        "operation_matches_active": operation_matches_active,
     }
 
 
@@ -6409,6 +6692,10 @@ def adblock():
         statuses=status_rows,
         settings=settings,
     )
+    adblock_runtime_state = _adblock_runtime_state(
+        get_proxy_id(),
+        active_artifact=active_artifact,
+    )
 
     return render_template(
         "adblock.html",
@@ -6423,6 +6710,7 @@ def adblock():
         adblock_icap_summary=adblock_icap_summary,
         active_artifact=active_artifact,
         artifact_build=artifact_build,
+        adblock_runtime_state=adblock_runtime_state,
     )
 
 
@@ -7084,6 +7372,7 @@ def pac_builder():
         chain_settings = store.list_proxy_chain_settings()
     except Exception:
         chain_settings = None
+    pac_runtime_state = _pac_runtime_state(get_proxy_id())
     return render_template(
         "pac.html",
         profiles=profiles,
@@ -7091,6 +7380,7 @@ def pac_builder():
         pac_warning=pac_warning,
         pac_target=pac_target,
         chain_settings=chain_settings,
+        pac_runtime_state=pac_runtime_state,
     )
 
 

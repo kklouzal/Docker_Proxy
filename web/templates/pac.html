@@ -1,5 +1,6 @@
 {% extends "layout.html" %}
 {% from "_scope_macros.html" import scope_notice %}
+{% from "_policy_runtime_state.html" import pac_runtime_card with context %}
 
 {% block title %}PAC Builder · Docker Proxy{% endblock %}
 
@@ -31,6 +32,8 @@
 {% if pac_warning %}
   <div class="banner warn"><span class="badge warn">Configuration needed</span><div class="banner-copy"><span class="small">{{ pac_warning }}</span></div></div>
 {% endif %}
+
+{{ pac_runtime_card(pac_runtime_state, active_proxy) }}
 
 <section class="card">
   <div class="card-header">

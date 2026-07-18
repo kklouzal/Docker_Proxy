@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from .admin_route_test_utils import (
+    FakeAdblockArtifacts,
     FakeRegistry,
     FakeSslfilterStore,
     FakeWebfilterStore,
@@ -2946,6 +2947,31 @@ class PolicyEvidenceProxyClient(RecordingProxyClient):
         return payload
 
 
+class RuntimeEvidenceProxyClient(RecordingProxyClient):
+    def __init__(self, by_proxy: dict[str, dict[str, object]] | None = None) -> None:
+        super().__init__()
+        self.by_proxy = by_proxy or {}
+
+    def get_health(self, proxy_id: object, *args, **kwargs) -> dict[str, object]:
+        payload = super().get_health(proxy_id, *args, **kwargs)
+        payload.update(self.by_proxy.get(str(proxy_id), {}))
+        return payload
+
+
+def _artifact_summary(revision_id: int, sha: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        revision_id=revision_id,
+        artifact_sha256=sha,
+        report={},
+        settings_version=1,
+        source_kind="test",
+        enabled_lists=["default"],
+        created_by="tests",
+        created_ts=1234,
+        is_active=True,
+    )
+
+
 @pytest.mark.parametrize(
     ("operation_status", "current_sha", "expected_state", "expected_label"),
     [
@@ -3040,6 +3066,309 @@ def test_policy_runtime_state_isolated_to_selected_proxy(monkeypatch, tmp_path) 
     assert f"#{edge_b_operation.operation_id} pending" in text
     assert f"#{edge_a_operation.operation_id} failed" not in text
     assert "Edge-B" in text
+
+
+@pytest.mark.parametrize(
+    ("operation_status", "current_sha", "expected_state", "expected_label"),
+    [
+        ("pending", "old-pac", "pending", "PAC materialization pending"),
+        ("applying", "old-pac", "applying", "PAC materialization running"),
+        ("failed", "old-pac", "failed", "PAC materialization failed"),
+        ("superseded", "old-pac", "superseded", "PAC materialization superseded"),
+        ("applied", "desired-pac", "reconciled", "PAC materialized"),
+        ("applied", "old-pac", "drift", "Saved/runtime PAC mismatch"),
+    ],
+)
+def test_pac_runtime_state_classifies_selected_proxy_materialization(
+    monkeypatch,
+    tmp_path,
+    operation_status: str,
+    current_sha: str,
+    expected_state: str,
+    expected_label: str,
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=RuntimeEvidenceProxyClient(
+            {"default": {"desired_pac_sha": "desired-pac", "current_pac_sha": current_sha}}
+        ),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_pac_state_sha_for_proxy",
+        lambda _proxy_id: ("desired-pac", ""),
+    )
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="pac_refresh",
+        subject="PAC refresh",
+        summary="PAC queued.",
+        target_kind="pac_state",
+        target_ref="desired-pac",
+    )
+    operation.status = operation_status
+
+    state = loaded.module._pac_runtime_state("default")
+
+    assert state["state"] == expected_state
+    assert state["label"] == expected_label
+    assert state["operation_id"] == operation.operation_id
+    assert state["desired_pac_sha"] == "desired-pac"
+    assert state["current_pac_sha"] == current_sha
+
+
+def test_pac_runtime_state_no_desired_unavailable_and_stale_operation(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=RuntimeEvidenceProxyClient(
+            {"default": {"status": "offline", "proxy_status": "offline"}}
+        ),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_pac_state_sha_for_proxy",
+        lambda _proxy_id: ("", ""),
+    )
+    assert loaded.module._pac_runtime_state("default")["state"] == "no_desired_state"
+
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_pac_state_sha_for_proxy",
+        lambda _proxy_id: ("new-pac", ""),
+    )
+    stale = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="pac_refresh",
+        subject="PAC refresh",
+        summary="old PAC queued.",
+        target_kind="pac_state",
+        target_ref="old-pac",
+    )
+    stale.status = "applied"
+
+    state = loaded.module._pac_runtime_state("default")
+
+    assert state["state"] == "unavailable"
+    assert "different PAC fingerprint" in state["detail"]
+    assert state["operation_id"] == stale.operation_id
+
+
+def test_pac_runtime_card_isolates_selected_proxy_partial_convergence(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        registry=FakeRegistry(["edge-a", "edge-b"]),
+        proxy_client=RuntimeEvidenceProxyClient(
+            {
+                "edge-a": {"desired_pac_sha": "pac-a", "current_pac_sha": "pac-a"},
+                "edge-b": {"desired_pac_sha": "pac-b", "current_pac_sha": "old-b"},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_pac_state_sha_for_proxy",
+        lambda proxy_id: ("pac-a" if proxy_id == "edge-a" else "pac-b", ""),
+    )
+    edge_a_operation = loaded.operation_ledger.create_operation(
+        "edge-a",
+        operation_type="pac_refresh",
+        subject="PAC refresh",
+        summary="PAC A queued.",
+        target_kind="pac_state",
+        target_ref="pac-a",
+    )
+    edge_a_operation.status = "applied"
+    edge_b_operation = loaded.operation_ledger.create_operation(
+        "edge-b",
+        operation_type="pac_refresh",
+        subject="PAC refresh",
+        summary="PAC B queued.",
+        target_kind="pac_state",
+        target_ref="pac-b",
+    )
+    edge_b_operation.status = "pending"
+
+    client = loaded.module.app.test_client()
+    login_client(client)
+    response = client.get("/pac?proxy_id=edge-b")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Selected proxy PAC runtime evidence" in text
+    assert "PAC materialization pending" in text
+    assert f"#{edge_b_operation.operation_id} pending" in text
+    assert f"#{edge_a_operation.operation_id} succeeded" not in text
+    assert "Saved PAC profiles/URL are desired state" in text
+
+
+@pytest.mark.parametrize(
+    ("operation_status", "current_sha", "apply_ok", "expected_state", "expected_label"),
+    [
+        ("pending", "old-artifact", False, "pending", "Adblock apply pending"),
+        ("applying", "old-artifact", False, "applying", "Adblock apply running"),
+        ("failed", "old-artifact", False, "failed", "Adblock apply failed"),
+        ("superseded", "old-artifact", False, "superseded", "Adblock apply superseded"),
+        ("applied", "artifact-sha", True, "reconciled", "Adblock artifact applied"),
+        ("applied", "old-artifact", False, "drift", "Built/runtime adblock mismatch"),
+    ],
+)
+def test_adblock_runtime_state_classifies_revision_scoped_apply(
+    monkeypatch,
+    tmp_path,
+    operation_status: str,
+    current_sha: str,
+    apply_ok: bool,
+    expected_state: str,
+    expected_label: str,
+) -> None:
+    artifacts = FakeAdblockArtifacts(_artifact_summary(7, "artifact-sha"))
+    if apply_ok:
+        artifacts.record_apply_result(
+            "default",
+            7,
+            ok=True,
+            detail="applied rev 7",
+            artifact_sha256="artifact-sha",
+        )
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        adblock_artifacts=artifacts,
+        proxy_client=RuntimeEvidenceProxyClient(
+            {"default": {"active_adblock_sha": "artifact-sha", "current_adblock_sha": current_sha}}
+        ),
+    )
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="adblock_refresh",
+        subject="Adblock refresh",
+        summary="Adblock queued.",
+        target_kind="adblock_artifact",
+        target_ref="7",
+        request_hash="artifact-sha",
+    )
+    operation.status = operation_status
+
+    state = loaded.module._adblock_runtime_state(
+        "default",
+        active_artifact=loaded.module._present_adblock_artifact_summary(artifacts.summary),
+    )
+
+    assert state["state"] == expected_state
+    assert state["label"] == expected_label
+    assert state["active_revision_id"] == 7
+    assert state["current_adblock_sha"] == current_sha
+
+
+def test_adblock_runtime_state_no_active_built_unverified_unavailable_and_stale_revision(
+    monkeypatch, tmp_path
+) -> None:
+    loaded_no_artifact = load_admin_app(monkeypatch, tmp_path)
+    no_active = loaded_no_artifact.module._adblock_runtime_state(
+        "default",
+        active_artifact=loaded_no_artifact.module._present_adblock_artifact_summary(None),
+    )
+    assert no_active["state"] == "no_active_artifact"
+
+    artifacts = FakeAdblockArtifacts(_artifact_summary(2, "new-artifact"))
+    artifacts.record_apply_result(
+        "default",
+        1,
+        ok=True,
+        detail="stale rev 1 success",
+        artifact_sha256="old-artifact",
+    )
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        adblock_artifacts=artifacts,
+        proxy_client=RuntimeEvidenceProxyClient({"default": {"current_adblock_sha": ""}}),
+    )
+    stale = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="adblock_refresh",
+        subject="Adblock refresh",
+        summary="old rev queued.",
+        target_kind="adblock_artifact",
+        target_ref="1",
+        request_hash="old-artifact",
+    )
+    stale.status = "applied"
+
+    state = loaded.module._adblock_runtime_state(
+        "default",
+        active_artifact=loaded.module._present_adblock_artifact_summary(artifacts.summary),
+    )
+    assert state["state"] == "built_unverified"
+    assert "different artifact revision/hash" in state["detail"]
+
+    loaded_offline = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        adblock_artifacts=artifacts,
+        proxy_client=RuntimeEvidenceProxyClient(
+            {"default": {"status": "offline", "proxy_status": "offline"}}
+        ),
+    )
+    unavailable = loaded_offline.module._adblock_runtime_state(
+        "default",
+        active_artifact=loaded_offline.module._present_adblock_artifact_summary(artifacts.summary),
+    )
+    assert unavailable["state"] == "unavailable"
+
+
+def test_adblock_runtime_card_isolates_selected_proxy_partial_convergence(
+    monkeypatch, tmp_path
+) -> None:
+    artifacts = FakeAdblockArtifacts(_artifact_summary(9, "fleet-artifact"))
+    artifacts.record_apply_result(
+        "edge-a",
+        9,
+        ok=True,
+        detail="edge a applied",
+        artifact_sha256="fleet-artifact",
+    )
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        registry=FakeRegistry(["edge-a", "edge-b"]),
+        adblock_artifacts=artifacts,
+        proxy_client=RuntimeEvidenceProxyClient(
+            {
+                "edge-a": {"active_adblock_sha": "fleet-artifact", "current_adblock_sha": "fleet-artifact"},
+                "edge-b": {"active_adblock_sha": "fleet-artifact", "current_adblock_sha": "old-b"},
+            }
+        ),
+    )
+    edge_b_operation = loaded.operation_ledger.create_operation(
+        "edge-b",
+        operation_type="adblock_refresh",
+        subject="Adblock refresh",
+        summary="Adblock B queued.",
+        target_kind="adblock_artifact",
+        target_ref="9",
+        request_hash="fleet-artifact",
+    )
+    edge_b_operation.status = "applying"
+
+    client = loaded.module.app.test_client()
+    login_client(client)
+    response = client.get("/adblock?proxy_id=edge-b")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Selected proxy adblock runtime evidence" in text
+    assert "Adblock apply running" in text
+    assert f"#{edge_b_operation.operation_id} running" in text
+    assert "Shared compiled artifacts are built state" in text
+    assert "edge a applied" not in text
 
 
 def test_sslfilter_policy_change_queues_fingerprinted_policy_operation(

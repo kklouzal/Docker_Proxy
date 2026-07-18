@@ -1,5 +1,6 @@
 {% extends "layout.html" %}
 {% from "_scope_macros.html" import scope_notice, scope_chip %}
+{% from "_policy_runtime_state.html" import adblock_runtime_card with context %}
 
 {% block title %}Ad Blocking · Docker Proxy{% endblock %}
 
@@ -160,6 +161,8 @@
       </form>
     </div>
   </section>
+
+  {{ adblock_runtime_card(adblock_runtime_state, active_proxy) }}
 
 
   <section class="card split-right">

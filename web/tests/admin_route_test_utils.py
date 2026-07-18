@@ -683,12 +683,48 @@ class FakeObservabilityQueries:
 class FakeAdblockArtifacts:
     def __init__(self, summary: Any | None = None) -> None:
         self.summary = summary
+        self.applications: list[Any] = []
+        self.next_application_id = 1
 
     def get_active_artifact_summary(self) -> Any | None:
         return self.summary
 
     def get_active_artifact_metadata(self) -> Any | None:
         return self.summary
+
+    def record_apply_result(
+        self,
+        proxy_id: object,
+        revision_id: int,
+        *,
+        ok: bool,
+        detail: str = "",
+        applied_by: str = "proxy",
+        artifact_sha256: str = "",
+    ) -> Any:
+        import time
+
+        application = SimpleNamespace(
+            application_id=self.next_application_id,
+            proxy_id=str(proxy_id),
+            revision_id=int(revision_id),
+            ok=bool(ok),
+            detail=str(detail or ""),
+            applied_by=str(applied_by or "proxy"),
+            applied_ts=int(time.time()),
+            artifact_sha256=str(artifact_sha256 or ""),
+        )
+        self.next_application_id += 1
+        self.applications.append(application)
+        return application
+
+    def latest_apply(self, proxy_id: object, *, revision_id: int | None = None) -> Any | None:
+        rows = [row for row in self.applications if row.proxy_id == str(proxy_id)]
+        if revision_id is not None:
+            rows = [row for row in rows if row.revision_id == int(revision_id)]
+        if not rows:
+            return None
+        return max(rows, key=lambda row: (row.applied_ts, row.application_id))
 
 
 class FakeAdblockStore:

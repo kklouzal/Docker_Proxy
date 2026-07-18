@@ -38,3 +38,62 @@
 </section>
 {% endif %}
 {%- endmacro %}
+
+{% macro pac_runtime_card(pac_runtime_state, active_proxy) -%}
+{% if pac_runtime_state %}
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Selected proxy PAC runtime evidence</h2>
+      <div class="small">Saved PAC profiles/URL are desired state; {{ active_proxy.display_name }} must materialize them before they are runtime truth.</div>
+    </div>
+    <span class="badge {{ pac_runtime_state.badge_class }}">{{ pac_runtime_state.label }}</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div class="stat compact-stat"><div class="stat-k">Saved desired PAC SHA</div><div class="stat-v"><code class="mono">{{ pac_runtime_state.desired_pac_short_sha or 'n/a' }}</code></div></div>
+      <div class="stat compact-stat"><div class="stat-k">Selected-proxy runtime PAC SHA</div><div class="stat-v"><code class="mono">{{ pac_runtime_state.current_pac_short_sha or 'n/a' }}</code></div></div>
+      <div class="stat compact-stat"><div class="stat-k">Latest PAC operation</div><div class="stat-v">{% if pac_runtime_state.operation_id %}#{{ pac_runtime_state.operation_id }} {{ pac_runtime_state.operation_status_label }}{% else %}n/a{% endif %}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Runtime report</div><div class="stat-v">{{ pac_runtime_state.runtime_health_status or 'unknown' }}</div></div>
+    </div>
+    <div class="surface-note small">{{ pac_runtime_state.detail }}</div>
+    <div class="surface-note small"><strong>Recovery:</strong> {{ pac_runtime_state.recovery_action }}</div>
+    {% if pac_runtime_state.operation_id %}
+      <div class="surface-note small">Operation target: <code class="mono">{{ pac_runtime_state.operation_target_short_ref or 'unfingerprinted' }}</code>{% if pac_runtime_state.operation_updated_ts %} · updated {{ fmt_ts(pac_runtime_state.operation_updated_ts) }}{% endif %}</div>
+      {% if pac_runtime_state.operation_detail %}<div class="surface-note small text-break">Operation detail: {{ pac_runtime_state.operation_detail }}</div>{% endif %}
+    {% endif %}
+    {% if pac_runtime_state.runtime_state_errors %}<div class="surface-note small">Runtime state notes: {{ pac_runtime_state.runtime_state_errors|join('; ') }}</div>{% endif %}
+  </div>
+</section>
+{% endif %}
+{%- endmacro %}
+
+{% macro adblock_runtime_card(adblock_runtime_state, active_proxy) -%}
+{% if adblock_runtime_state %}
+<section class="card split-right">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">Selected proxy adblock runtime evidence</h2>
+      <div class="small">Shared compiled artifacts are built state; {{ active_proxy.display_name }} must apply the revision before it is runtime truth.</div>
+    </div>
+    <span class="badge {{ adblock_runtime_state.badge_class }}">{{ adblock_runtime_state.label }}</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-grid">
+      <div class="stat compact-stat"><div class="stat-k">Active artifact rev/hash</div><div class="stat-v">{% if adblock_runtime_state.active_revision_id %}rev {{ adblock_runtime_state.active_revision_id }} <code class="mono">{{ adblock_runtime_state.active_adblock_short_sha or 'n/a' }}</code>{% else %}n/a{% endif %}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Selected-proxy runtime hash</div><div class="stat-v"><code class="mono">{{ adblock_runtime_state.current_adblock_short_sha or 'n/a' }}</code></div></div>
+      <div class="stat compact-stat"><div class="stat-k">Revision apply row</div><div class="stat-v">{% if adblock_runtime_state.latest_apply_id %}#{{ adblock_runtime_state.latest_apply_id }} {{ 'ok' if adblock_runtime_state.latest_apply_ok else 'failed' }}{% else %}n/a{% endif %}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Latest adblock operation</div><div class="stat-v">{% if adblock_runtime_state.operation_id %}#{{ adblock_runtime_state.operation_id }} {{ adblock_runtime_state.operation_status_label }}{% else %}n/a{% endif %}</div></div>
+    </div>
+    <div class="surface-note small">{{ adblock_runtime_state.detail }}</div>
+    <div class="surface-note small"><strong>Recovery:</strong> {{ adblock_runtime_state.recovery_action }}</div>
+    {% if adblock_runtime_state.operation_id %}
+      <div class="surface-note small">Operation target: rev <code class="mono">{{ adblock_runtime_state.operation_target_ref or 'unfingerprinted' }}</code>{% if adblock_runtime_state.operation_request_short_hash %} hash <code class="mono">{{ adblock_runtime_state.operation_request_short_hash }}</code>{% endif %}{% if adblock_runtime_state.operation_updated_ts %} · updated {{ fmt_ts(adblock_runtime_state.operation_updated_ts) }}{% endif %}</div>
+      {% if adblock_runtime_state.operation_detail %}<div class="surface-note small text-break">Operation detail: {{ adblock_runtime_state.operation_detail }}</div>{% endif %}
+    {% endif %}
+    {% if adblock_runtime_state.latest_apply_detail %}<div class="surface-note small text-break">Latest revision apply detail: {{ adblock_runtime_state.latest_apply_detail }}</div>{% endif %}
+    {% if adblock_runtime_state.runtime_state_errors %}<div class="surface-note small">Runtime state notes: {{ adblock_runtime_state.runtime_state_errors|join('; ') }}</div>{% endif %}
+  </div>
+</section>
+{% endif %}
+{%- endmacro %}

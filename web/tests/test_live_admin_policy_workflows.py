@@ -436,6 +436,14 @@ def test_live_pac_a_then_b_operation_truth_marks_a_superseded(
         if op.operation_type == "pac_refresh" and op.target_ref == target_b
     )
 
+    pre_sync_page = admin_client.admin_request("/pac")
+    assert "Selected proxy PAC runtime evidence" in pre_sync_page.text
+    assert (
+        "PAC materialization pending" in pre_sync_page.text
+        or "Saved/runtime PAC mismatch" in pre_sync_page.text
+        or "PAC materialization running" in pre_sync_page.text
+    )
+
     try:
         _sync_primary_proxy(admin_client)
         applied_a = ledger.get_operation(operation_a.operation_id)
@@ -447,6 +455,8 @@ def test_live_pac_a_then_b_operation_truth_marks_a_superseded(
         assert pac_response.status == 200
         assert domain_b in pac_response.text
         assert domain_a not in pac_response.text
+        post_sync_page = admin_client.admin_request("/pac")
+        assert "PAC materialized" in post_sync_page.text
     finally:
         admin_client.admin_post_form(
             "/pac",
@@ -781,6 +791,14 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
     )
     store = _adblock_store()
     _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.request_cache_flush)
+    pre_sync_page = admin_client.admin_request("/adblock")
+    assert "Selected proxy adblock runtime evidence" in pre_sync_page.text
+    assert (
+        "Built/runtime adblock mismatch" in pre_sync_page.text
+        or "Built, not runtime-verified" in pre_sync_page.text
+        or "Adblock apply pending" in pre_sync_page.text
+        or "Adblock apply running" in pre_sync_page.text
+    )
 
     sync_response = admin_client.proxy_management_post_json(
         "/api/manage/sync", {"force": False}, timeout_seconds=90.0
@@ -808,6 +826,8 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
     assert latest_apply.revision_id == revision.revision_id
     assert latest_apply.ok is True
     assert latest_apply.artifact_sha256 == revision.artifact_sha256
+    post_sync_page = admin_client.admin_request("/adblock")
+    assert "Adblock artifact applied" in post_sync_page.text
     assert (
         _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.get_cache_flush_requested)
         == 0
