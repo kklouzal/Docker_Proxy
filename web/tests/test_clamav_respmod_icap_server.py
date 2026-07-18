@@ -27,7 +27,7 @@ def _load_server():
 
 
 class FakeSocket:
-    def __init__(self, response: bytes = b"stream: OK\n") -> None:
+    def __init__(self, response: bytes = b"stream: OK\0") -> None:
         self.sent = bytearray()
         self.response = response
         self.timeout = None
@@ -69,7 +69,7 @@ def test_clamd_instream_scan_sends_body_chunks(monkeypatch) -> None:
 
     assert result.clean is True
     assert fake.sent == (
-        b"INSTREAM\n"
+        server.CLAMD_INSTREAM_COMMAND
         + struct.pack("!I", 4)
         + b"abcd"
         + struct.pack("!I", 2)
@@ -98,7 +98,7 @@ def test_icap_chunks_stream_to_clamd_incrementally(monkeypatch) -> None:
             buffer_body=False,
         )
         assert fake.sent == (
-            b"INSTREAM\n"
+            server.CLAMD_INSTREAM_COMMAND
             + struct.pack("!I", 3)
             + b"abc"
             + struct.pack("!I", 3)
@@ -110,7 +110,7 @@ def test_icap_chunks_stream_to_clamd_incrementally(monkeypatch) -> None:
     assert body == b""
     assert remainder == b""
     assert fake.sent == (
-        b"INSTREAM\n"
+        server.CLAMD_INSTREAM_COMMAND
         + struct.pack("!I", 3)
         + b"abc"
         + struct.pack("!I", 3)
@@ -132,6 +132,61 @@ def test_clamd_instream_scan_reports_found(monkeypatch) -> None:
     assert result.clean is False
     assert result.infected is True
     assert result.signature == "Eicar-Test-Signature"
+
+
+class ProtocolCheckingSocket(FakeSocket):
+    def __init__(self) -> None:
+        super().__init__()
+        self._saw_command = False
+        self._rejecting_old_command = False
+
+    def sendall(self, data: bytes) -> None:
+        if not self._saw_command:
+            self._saw_command = True
+            if data == b"INSTREAM\n":
+                self.sent.extend(data)
+                self.response = b"UNKNOWN COMMAND\0"
+                self._rejecting_old_command = True
+                return
+            if data != b"zINSTREAM\0":
+                message = f"unexpected clamd command frame: {data!r}"
+                raise AssertionError(message)
+        elif self._rejecting_old_command:
+            message = "clamd closed after UNKNOWN COMMAND"
+            raise BrokenPipeError(message)
+        self.sent.extend(data)
+
+
+def test_clamd_instream_uses_explicit_z_framing_not_legacy_command(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+
+    old = ProtocolCheckingSocket()
+    old.sendall(b"INSTREAM\n")
+    try:
+        old.sendall(struct.pack("!I", 1) + b"x")
+    except BrokenPipeError:
+        pass
+    else:  # pragma: no cover - regression guard should always reject this path
+        message = "old bare INSTREAM command was not rejected"
+        raise AssertionError(message)
+    assert old.recv(4096) == b"UNKNOWN COMMAND\0"
+
+    accepted = ProtocolCheckingSocket()
+    monkeypatch.setattr(
+        server.socket, "create_connection", lambda address, timeout: accepted
+    )
+
+    result = server.scan_stream_with_clamd(b"x", host="192.168.1.10", port=3310)
+
+    assert result.clean is True
+    assert accepted.sent == (
+        server.CLAMD_INSTREAM_COMMAND
+        + struct.pack("!I", 1)
+        + b"x"
+        + struct.pack("!I", 0)
+    )
 
 
 def test_icap_chunked_body_handles_preview_continue() -> None:
@@ -199,6 +254,22 @@ def _recv_icap_response(port: int, request: bytes, *, timeout: float = 1.0) -> b
         return sock.recv(4096)
 
 
+def _recv_icap_exchange(port: int, request: bytes, *, timeout: float = 1.0) -> bytes:
+    response = bytearray()
+    with CLIENT_CREATE_CONNECTION(("127.0.0.1", port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall(request)
+        while True:
+            try:
+                chunk = sock.recv(4096)
+            except TimeoutError:
+                break
+            if not chunk:
+                break
+            response.extend(chunk)
+    return bytes(response)
+
+
 def _options_request(port: int) -> bytes:
     return (
         f"OPTIONS icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
@@ -223,6 +294,26 @@ def _sample_respmod_request(port: int) -> bytes:
     )
 
 
+def _sample_respmod_request_without_allow_204(port: int) -> bytes:
+    return _sample_respmod_request(port).replace(b"Allow: 204\r\n", b"")
+
+
+def _sample_preview_respmod_request(port: int) -> bytes:
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n"
+    preview_body = b"2\r\nhe\r\n0\r\n\r\n3\r\nllo\r\n0\r\n\r\n"
+    return (
+        (
+            f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Allow: 204\r\n"
+            "Preview: 2\r\n"
+            f"Encapsulated: res-hdr=0, res-body={len(http_header)}\r\n\r\n"
+        ).encode("ascii")
+        + http_header
+        + preview_body
+    )
+
+
 class CleanScanner:
     def __enter__(self):
         return self
@@ -242,6 +333,17 @@ class SlowScanner(CleanScanner):
     def finish(self):
         message = "clamd INSTREAM scan timed out"
         raise TimeoutError(message)
+
+
+class FailingSendAfterPreviewScanner(CleanScanner):
+    def __init__(self) -> None:
+        self.chunks = 0
+
+    def send_chunk(self, _data: bytes) -> None:
+        self.chunks += 1
+        if self.chunks > 1:
+            message = "clamd closed after UNKNOWN COMMAND"
+            raise BrokenPipeError(message)
 
 
 class BlockingFakeSocket(FakeSocket):
@@ -373,6 +475,65 @@ def test_slow_clamd_scan_fails_open_with_bounded_204() -> None:
         thread.join(timeout=1)
 
     assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
+
+
+def test_scan_finish_failure_without_allow_204_replays_clean_response() -> None:
+    server = _load_server()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return SlowScanner()
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(
+            port, _sample_respmod_request_without_allow_204(port), timeout=0.5
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" in response
+
+
+def test_post_preview_scan_write_failure_fails_open_after_100_continue() -> None:
+    server = _load_server()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return FailingSendAfterPreviewScanner()
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_exchange(
+            port, _sample_preview_respmod_request(port), timeout=0.5
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
+    assert b"ICAP/1.0 204 No Content\r\n" in response
 
 
 def test_scan_capacity_exhaustion_fails_open_without_wedging_options(
