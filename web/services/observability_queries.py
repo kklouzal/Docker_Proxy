@@ -1723,6 +1723,20 @@ class ObservabilityQueries:
                 continue
             service_detail = str(service.get("detail") or service_name)
             lowered = f"{service_name} {service_detail}".lower()
+            if any(
+                token in lowered
+                for token in ("forwarding", "request path", "squid explicit")
+            ):
+                add(
+                    kind="runtime_forwarding_degraded",
+                    component="Proxy forwarding path",
+                    severity="high",
+                    title="Selected proxy forwarding readiness is degraded",
+                    count=1,
+                    confidence="high",
+                    recommended_action="Check Squid listener readiness, public PAC listener reachability, ICAP/ClamAV adaptation health, and recent restart/certificate apply results before trusting proxy availability.",
+                    evidence=f"{service_name}: {service_detail}",
+                )
             if any(token in lowered for token in ("icap", "clamd", "clamav", "c-icap")):
                 add(
                     kind="runtime_icap_degraded",

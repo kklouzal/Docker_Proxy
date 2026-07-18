@@ -428,3 +428,23 @@ def test_proxy_management_health_defaults_to_navigation_scope_and_full_is_opt_in
     assert navigation.get_json()["health_scope"] == "navigation"
     assert full.status_code == 200
     assert full.get_json()["health_scope"] == "full"
+
+
+def test_public_health_declares_lightweight_non_forwarding_scope(monkeypatch) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    proxy_app.runtime = _Runtime()
+    client = proxy_app.app.test_client()
+
+    public = _public_get(client, "/health")
+    management = _management_get(client, "/health")
+
+    assert public.status_code == 200
+    payload = public.get_json()
+    assert payload["ok"] is True
+    assert payload["health_scope"] == "public-listener"
+    assert payload["forwarding_checked"] is False
+    assert payload["components"]["forwarding"] == "not_checked"
+
+    assert management.status_code == 200
+    assert management.get_json()["health_scope"] == "management-listener"

@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _add_web_to_path() -> None:
     web_dir = Path(__file__).resolve().parents[1]
@@ -200,6 +202,51 @@ def test_check_icap_service_and_clamd_protocol_helpers(monkeypatch) -> None:
     assert combined["components"]["clamd"]["detail"] == "clamd ok"
 
 
+def test_check_http_proxy_forwarding_uses_absolute_form_local_probe(
+    monkeypatch,
+) -> None:
+    health_checks = _health_checks_module()
+
+    sock = _FakeSocket([b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"])
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: sock,
+    )
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url="http://127.0.0.1:80/health",
+        timeout=0.4,
+    )
+
+    assert result == {"ok": True, "detail": "HTTP/1.1 200 OK"}
+    assert sock.timeout == pytest.approx(0.4)
+    assert b"GET http://127.0.0.1:80/health HTTP/1.1" in sock.sent[0]
+    assert b"User-Agent: squid-flask-proxy-forwarding-health" in sock.sent[0]
+
+
+def test_check_http_proxy_forwarding_reports_blocked_or_timed_out_path(
+    monkeypatch,
+) -> None:
+    health_checks = _health_checks_module()
+
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("wedged")),
+    )
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url="http://127.0.0.1:80/health",
+        timeout=0.1,
+        error_formatter=lambda exc: f"formatted {exc}",
+    )
+
+    assert result == {"ok": False, "detail": "formatted wedged"}
+
+
 def test_proxy_health_icap_uses_protocol_probe_for_local_targets(monkeypatch) -> None:
     proxy_health = _proxy_health_module()
 
@@ -352,6 +399,11 @@ def test_local_runtime_services_uses_tcp_timeout_for_clamd(monkeypatch) -> None:
     monkeypatch.setattr(proxy_health, "check_adblock_icap_health", fake_check_adblock)
     monkeypatch.setattr(proxy_health, "check_av_icap_health", fake_check_av)
     monkeypatch.setattr(proxy_health, "check_clamd_health", fake_check_clamd)
+    monkeypatch.setattr(
+        proxy_health,
+        "check_forwarding_path_health",
+        lambda **_kwargs: {"ok": True, "detail": "forwarding ok"},
+    )
 
     result = proxy_health.build_local_runtime_services(
         icap_timeout=0.9,
@@ -361,6 +413,40 @@ def test_local_runtime_services_uses_tcp_timeout_for_clamd(monkeypatch) -> None:
     assert calls == {"adblock": 0.9, "av_icap": 0.9, "clamd": 0.2}
     assert result["clamd"] == {"ok": True, "detail": "clamd ok"}
     assert result["clamav"]["ok"] is True
+
+
+def test_forwarding_path_health_is_local_bounded_and_attributed(monkeypatch) -> None:
+    proxy_health = _proxy_health_module()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setenv("SQUID_HTTP_PORT", "3128")
+    monkeypatch.setenv("PAC_HTTP_HOST", "0.0.0.0")  # noqa: S104 - wildcard bind env is normalized to loopback.
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    monkeypatch.delenv("CLAMAV_REQUIRED", raising=False)
+
+    def fake_probe(**kwargs):
+        captured.update(kwargs)
+        return {"ok": False, "detail": "HTTP/1.1 503 Service Unavailable"}
+
+    monkeypatch.setattr(proxy_health, "check_http_proxy_forwarding", fake_probe)
+
+    result = proxy_health.check_forwarding_path_health(
+        timeout=0.3,
+        av_icap_health={"ok": False, "detail": "RESPMOD timeout"},
+    )
+
+    assert captured == {
+        "proxy_host": "127.0.0.1",
+        "proxy_port": 3128,
+        "target_url": "http://127.0.0.1:80/health",
+        "timeout": 0.3,
+        "error_formatter": None,
+    }
+    assert result["ok"] is False
+    assert result["target"] == "127.0.0.1:3128"
+    assert result["traffic_scope"] == "local-only"
+    assert result["fail_mode"] == "open"
+    assert "forwarding path is degraded" in result["detail"]
 
 
 def test_clamav_diagnostic_actions_include_resolved_targets(monkeypatch) -> None:

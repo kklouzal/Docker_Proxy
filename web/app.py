@@ -637,6 +637,12 @@ def _cached_proxy_health(
         )
         if cached_payload is not None:
             stale_payload = dict(cached_payload)
+            stale_payload["previous_ok"] = bool(stale_payload.get("ok"))
+            stale_payload["previous_status"] = str(
+                stale_payload.get("status") or "unknown",
+            )
+            stale_payload["ok"] = False
+            stale_payload["status"] = "degraded"
             stale_payload["health_cache_detail"] = str(
                 exc or "using recent cached health after refresh failure",
             )
@@ -4761,6 +4767,7 @@ def index():
     services = health.get("services") or {}
     icap_health = services.get("icap") or {"ok": False, "detail": "n/a"}
     clamav_health = services.get("clamav") or {"ok": False, "detail": "n/a"}
+    forwarding_health = services.get("forwarding") or {"ok": False, "detail": "n/a"}
 
     last_config = None
     revisions = get_config_revisions()
@@ -4808,6 +4815,7 @@ def index():
         trends=trends,
         icap_health=icap_health,
         clamav_health=clamav_health,
+        forwarding_health=forwarding_health,
         last_config=last_config,
         config_runtime_state=config_runtime_state,
         observability=observability,
@@ -7213,6 +7221,12 @@ def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
         )
         if cached_payload is not None:
             stale_payload = dict(cached_payload)
+            stale_payload["previous_ok"] = bool(stale_payload.get("ok"))
+            stale_payload["previous_status"] = str(
+                stale_payload.get("status") or "unknown",
+            )
+            stale_payload["ok"] = False
+            stale_payload["status"] = "degraded"
             stale_payload["health_cache_detail"] = str(
                 exc or "using recent cached ClamAV health after refresh failure",
             )

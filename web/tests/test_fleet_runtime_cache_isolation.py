@@ -96,6 +96,10 @@ def test_runtime_health_ui_cache_is_per_proxy_and_returns_defensive_copies(
     )
     assert stale["proxy_id"] == "edge-a"
     assert stale["_stale"] is True
+    assert stale["ok"] is False
+    assert stale["status"] == "degraded"
+    assert stale["previous_ok"] is True
+    assert stale["previous_status"] == "healthy"
     assert "edge-a unavailable" in stale["health_cache_detail"]
 
     client.fail.add("edge-c")

@@ -51,6 +51,7 @@ from services.proxy_context import get_proxy_id
 from services.proxy_health import check_adblock_icap_health as _check_icap_adblock
 from services.proxy_health import check_av_icap_health as _check_icap_av
 from services.proxy_health import check_clamd_health as _check_clamd
+from services.proxy_health import check_forwarding_path_health as _check_forwarding
 from services.proxy_health import send_sample_av_icap as _shared_send_sample_av_icap
 from services.proxy_health import test_eicar as _shared_test_eicar
 from services.proxy_registry import (
@@ -723,12 +724,25 @@ def build_local_runtime_services(
         "ok": False,
         "detail": "c-icap av health unavailable",
     }
+    forwarding_timeout = min(max(float(tcp_timeout), 0.2), 2.0)
+    try:
+        forwarding = _check_forwarding(
+            timeout=forwarding_timeout,
+            av_icap_health=av_icap,
+            error_formatter=error_formatter,
+        )
+    except Exception as exc:
+        forwarding = {
+            "ok": False,
+            "detail": error_formatter(exc) if error_formatter else str(exc),
+        }
     return {
         "icap": results.get("icap")
         or {"ok": False, "detail": "adblock ICAP health unavailable"},
         "av_icap": av_icap,
         "clamd": clamd,
         "clamav": build_clamav_health(clamd, av_icap),
+        "forwarding": forwarding,
     }
 
 
@@ -3104,8 +3118,14 @@ class ProxyRuntime:
             # Another request is already doing the expensive health probe. Return
             # the last known result rather than letting Gunicorn threads pile up
             # behind slow ICAP/supervisor/filesystem checks and causing Admin UI
-            # management requests to time out.
+            # management requests to time out. A stale result is explicitly
+            # degraded so cached green health is not presented as current
+            # forwarding/readiness truth while the refresh is blocked.
             stale = dict(cached or {})
+            stale["previous_ok"] = bool(stale.get("ok"))
+            stale["previous_status"] = str(stale.get("status") or "unknown")
+            stale["ok"] = False
+            stale["status"] = "degraded"
             stale["health_cache_stale"] = True
             stale["health_cache_detail"] = (
                 "Returned stale health while a refresh was already in progress."

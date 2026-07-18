@@ -102,6 +102,9 @@
                             <span class="badge warn">{{ health.status if health and health.status else proxy.status }}</span>
                             {% endif %}
                             <div class="small">{{ health.proxy_status if health and health.proxy_status else (health.detail if health and health.detail else proxy.detail) }}</div>
+                            {% if health and (health.get('_stale') or health.get('health_cache_stale')) %}
+                                <div class="small warn-text">Cached health is stale: {{ health.health_cache_detail or 'refresh pending' }}</div>
+                            {% endif %}
                         </td>
                         <td>
                             <div class="stack-sm small">
@@ -112,6 +115,7 @@
                                         {% endfor %}
                                     </div>
                                     {% if health.services and health.services.squid_listeners %}<div>{{ health.services.squid_listeners.detail }}</div>{% endif %}
+                                    {% if health.services and health.services.forwarding %}<div>Forwarding: {{ health.services.forwarding.detail }}</div>{% endif %}
                                 {% else %}
                                     <div><span class="badge">explicit {{ proxy.public_http_proxy_port }}</span></div>
                                     <div>Latest heartbeat did not include listener details.</div>

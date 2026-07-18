@@ -131,6 +131,115 @@ if missing:
 PY
 }
 
+check_squid_forwarding_path() {
+    SQUID_CONFIG_PATH="${SQUID_CONFIG_PATH:-/etc/squid/squid.conf}" python3 - <<'PY'
+import os
+import socket
+
+
+def logical_lines(text: str):
+    pending = []
+    for raw in text.splitlines():
+        pending.append(raw)
+        if raw.rstrip().endswith('\\'):
+            continue
+        yield ' '.join(line.rstrip().rstrip('\\').strip() for line in pending).strip()
+        pending = []
+    if pending:
+        yield ' '.join(line.rstrip().rstrip('\\').strip() for line in pending).strip()
+
+
+def parse_port(token: str):
+    token = (token or '').strip()
+    if token.isdigit():
+        return int(token)
+    if token.startswith('[') and ']:' in token:
+        candidate = token.rsplit(':', 1)[1]
+    elif ':' in token:
+        candidate = token.rsplit(':', 1)[1]
+    else:
+        return None
+    return int(candidate) if candidate.isdigit() else None
+
+
+def response_ports(config_path: str):
+    try:
+        with open(config_path, 'r', encoding='utf-8', errors='replace') as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        text = ''
+    ports = []
+    for logical in logical_lines(text):
+        stripped = logical.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        lower = stripped.lower()
+        if not lower.startswith('http_port '):
+            continue
+        parts = stripped.split()
+        if len(parts) < 2:
+            continue
+        modes = {part.strip().lower() for part in parts[2:]}
+        if {'intercept', 'tproxy'} & modes:
+            continue
+        port = parse_port(parts[1])
+        if port and 1 <= port <= 65535 and port not in ports:
+            ports.append(port)
+    try:
+        fallback = int((os.environ.get('SQUID_HTTP_PORT') or '3128').strip() or '3128')
+    except Exception:
+        fallback = 3128
+    if fallback < 1 or fallback > 65535:
+        fallback = 3128
+    return ports or [fallback]
+
+
+def public_health_url() -> str:
+    host = (os.environ.get('PAC_HTTP_HOST') or '127.0.0.1').strip() or '127.0.0.1'
+    if host in {'0.0.0.0', '::', '[::]'}:
+        host = '127.0.0.1'
+    display_host = f'[{host}]' if ':' in host and not host.startswith('[') else host
+    try:
+        port = int((os.environ.get('PAC_HTTP_PORT') or '80').strip() or '80')
+    except Exception:
+        port = 80
+    if port < 1 or port > 65535:
+        port = 80
+    return f'http://{display_host}:{port}/health'
+
+
+target_url = public_health_url()
+last_error = ''
+for port in response_ports(os.environ.get('SQUID_CONFIG_PATH') or '/etc/squid/squid.conf'):
+    try:
+        with socket.create_connection(('127.0.0.1', int(port)), timeout=2.0) as sock:
+            sock.settimeout(2.0)
+            sock.sendall(
+                (
+                    f'GET {target_url} HTTP/1.1\r\n'
+                    'Host: 127.0.0.1\r\n'
+                    'User-Agent: squid-flask-proxy-forwarding-health\r\n'
+                    'Connection: close\r\n\r\n'
+                ).encode('ascii', errors='replace')
+            )
+            data = b''
+            while b'\n' not in data and len(data) < 512:
+                chunk = sock.recv(512 - len(data))
+                if not chunk:
+                    break
+                data += chunk
+        status = data.split(b'\r\n', 1)[0].split(b'\n', 1)[0].decode('ascii', errors='replace')
+        parts = status.split()
+        code = int(parts[1]) if len(parts) > 1 else 0
+        if status.startswith('HTTP/') and 200 <= code < 400:
+            raise SystemExit(0)
+        last_error = f'port {port}: {status or "no HTTP status"}'
+    except Exception as exc:
+        last_error = f'port {port}: {exc}'
+raise SystemExit(f'Squid explicit forwarding path failed for local health target {target_url}: {last_error}')
+PY
+}
+
 supervisor_program_running() {
     program="$1"
     supervisorctl -c /etc/supervisord.conf status "$program" 2>/dev/null | grep -q "RUNNING"
@@ -258,6 +367,13 @@ fi
 if ! python3 -c "import os, urllib.request; host=(os.environ.get('PAC_HTTP_HOST') or '127.0.0.1').strip() or '127.0.0.1'; host='127.0.0.1' if host in {'0.0.0.0','::','[::]'} else host; host=f'[{host}]' if ':' in host and not host.startswith('[') else host; port=(os.environ.get('PAC_HTTP_PORT') or '80').strip() or '80'; urllib.request.urlopen(f'http://{host}:{port}/health', timeout=2).read()" >/dev/null 2>&1; then
     echo "Flask public proxy health endpoint failed"
     exit 1
+fi
+
+if clamav_required || env_enabled "${PROXY_HEALTHCHECK_FORWARDING_REQUIRED:-}"; then
+    if ! forwarding_detail="$(check_squid_forwarding_path 2>&1)"; then
+        echo "${forwarding_detail:-Squid explicit forwarding path failed}"
+        exit 1
+    fi
 fi
 
 # Check ICAP liveness without generating synthetic OPTIONS traffic. Squid renders

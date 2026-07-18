@@ -151,13 +151,26 @@ def health() -> Any:
             {
                 "ok": True,
                 "service": "proxy",
+                "status": "serving_public_pac",
+                "health_scope": "public-listener",
+                "forwarding_checked": False,
+                "detail": "Public PAC/WPAD listener is serving. This lightweight endpoint does not assert Squid forwarding readiness; use authenticated /api/manage/health?full=1 for deep proxy health.",
                 "components": {
                     "proxy_api": "ok",
                     "pac": "ok",
+                    "forwarding": "not_checked",
                 },
             },
         ), 200
-    return jsonify({"ok": True, "service": "proxy-management"}), 200
+    return jsonify(
+        {
+            "ok": True,
+            "service": "proxy-management",
+            "status": "serving_management_api",
+            "health_scope": "management-listener",
+            "forwarding_checked": False,
+        },
+    ), 200
 
 
 @app.route("/", methods=["GET"])

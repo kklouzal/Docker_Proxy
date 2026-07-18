@@ -545,7 +545,10 @@ def test_cached_proxy_health_serves_recent_stale_payload_after_refresh_failure(
 
     assert stale["_stale"] is True
     assert stale.get("_unavailable_cached") is None
-    assert stale["ok"] is True
+    assert stale["ok"] is False
+    assert stale["status"] == "degraded"
+    assert stale["previous_ok"] is True
+    assert stale["previous_status"] == "healthy"
     assert stale["proxy_status"] == "Squid check ok."
     assert stale["health_cache_detail"] == "management request timed out"
     cache_key = ("default", 1.5, False)

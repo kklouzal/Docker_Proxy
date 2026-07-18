@@ -13,6 +13,7 @@
         </p>
         <div class="hero-badges">
             <span class="badge {{ 'ok' if proxy_ok else 'warn' }}">Proxy {{ 'ready' if proxy_ok else 'check' }}</span>
+            <span class="badge {{ 'ok' if forwarding_health and forwarding_health.ok else 'warn' }}">Forwarding</span>
             <span class="badge {{ 'ok' if icap_health and icap_health.ok else 'warn' }}">ICAP</span>
             <span class="badge {{ 'ok' if clamav_health and clamav_health.ok else 'warn' }}">ClamAV</span>
         </div>
@@ -238,6 +239,16 @@
                         <span class="badge warn">Check</span>
                     {% endif %}
                     <span class="small">{{ icap_health.detail if icap_health else 'n/a' }}</span>
+                </div>
+
+                <div class="k">Forwarding</div>
+                <div class="v">
+                    {% if forwarding_health and forwarding_health.ok %}
+                        <span class="badge ok">OK</span>
+                    {% else %}
+                        <span class="badge warn">Check</span>
+                    {% endif %}
+                    <span class="small">{{ forwarding_health.detail if forwarding_health else 'n/a' }}</span>
                 </div>
 
                 <div class="k">ClamAV</div>

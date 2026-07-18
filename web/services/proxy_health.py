@@ -8,6 +8,7 @@ from services.health_checks import (
     annotate_service_target,
     build_clamav_health,
     check_clamd,
+    check_http_proxy_forwarding,
     check_icap_service,
     resolve_host_port,
     send_sample_respmod_to,
@@ -50,6 +51,34 @@ def _resolve_host_port_override(
     return resolved_host, resolved_port
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = (os.environ.get(name) or "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on", "enabled", "required", "strict"}
+
+
+def _proxy_http_port() -> int:
+    try:
+        port = int((os.environ.get("SQUID_HTTP_PORT") or "3128").strip())
+    except Exception:
+        port = 3128
+    return port if 1 <= port <= 65535 else 3128
+
+
+def _public_health_target_url() -> str:
+    host = (os.environ.get("PAC_HTTP_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    if host in {"0.0.0.0", "::", "[::]"}:  # noqa: S104 - normalize wildcard bind hosts to loopback probe targets.
+        host = "127.0.0.1"
+    display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    try:
+        port = int((os.environ.get("PAC_HTTP_PORT") or "80").strip())
+    except Exception:
+        port = 80
+    port = port if 1 <= port <= 65535 else 80
+    return f"http://{display_host}:{port}/health"
+
+
 def unavailable_service(
     detail: str,
     *,
@@ -65,6 +94,62 @@ def unavailable_service(
     }
     if service:
         status["service"] = service
+    return status
+
+
+def forwarding_mode_detail(*, clamav_required: bool, av_icap_ok: bool) -> str:
+    if av_icap_ok:
+        return "Squid explicit forwarding path returned a local health response."
+    if clamav_required:
+        return (
+            "Squid explicit forwarding path is degraded while ClamAV is fail-closed; "
+            "AV ICAP/clamd must be healthy before forwarding can be trusted."
+        )
+    return (
+        "Squid explicit forwarding path is degraded. ClamAV/adblock ICAP are "
+        "configured fail-open unless required, but forwarding still must return a "
+        "local health response before operator health is green."
+    )
+
+
+def check_forwarding_path_health(
+    *,
+    proxy_host: str = "127.0.0.1",
+    proxy_port: int | None = None,
+    target_url: str | None = None,
+    timeout: float = 1.0,
+    av_icap_health: dict[str, Any] | None = None,
+    error_formatter: ErrorFormatter | None = None,
+) -> dict[str, Any]:
+    resolved_proxy_port = int(proxy_port if proxy_port is not None else _proxy_http_port())
+    resolved_target_url = target_url or _public_health_target_url()
+    result = check_http_proxy_forwarding(
+        proxy_host=proxy_host,
+        proxy_port=resolved_proxy_port,
+        target_url=resolved_target_url,
+        timeout=timeout,
+        error_formatter=error_formatter,
+    )
+    clamav_required = _env_bool("CLAMAV_REQUIRED") or _env_bool(
+        "FILE_SECURITY_AV_REQUIRED",
+    )
+    av_icap_ok = bool((av_icap_health or {}).get("ok"))
+    status = annotate_service_target(
+        result,
+        host=proxy_host,
+        port=resolved_proxy_port,
+        service="explicit-forwarding",
+    )
+    status["probe_url"] = resolved_target_url
+    status["traffic_scope"] = "local-only"
+    status["clamav_required"] = clamav_required
+    status["fail_mode"] = "closed" if clamav_required else "open"
+    status["contract"] = forwarding_mode_detail(
+        clamav_required=clamav_required,
+        av_icap_ok=av_icap_ok,
+    )
+    if not status["ok"]:
+        status["detail"] = f"{status['detail']} | {status['contract']}"
     return status
 
 
@@ -466,6 +551,11 @@ def build_local_runtime_services(
         icap_timeout=icap_timeout,
         clamd_timeout=tcp_timeout,
     )
+    forwarding = check_forwarding_path_health(
+        timeout=tcp_timeout,
+        av_icap_health=clamav_view["av_icap_health"],
+        error_formatter=error_formatter,
+    )
     return {
         "icap": check_adblock_icap_health(
             timeout=icap_timeout,
@@ -474,4 +564,5 @@ def build_local_runtime_services(
         "av_icap": clamav_view["av_icap_health"],
         "clamd": clamav_view["clamd_health"],
         "clamav": clamav_view["health"],
+        "forwarding": forwarding,
     }

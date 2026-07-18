@@ -2913,7 +2913,10 @@ def test_collect_health_returns_stale_cache_during_inflight_refresh() -> None:
     finally:
         runtime._health_refresh_lock.release()
 
-    assert result["ok"] is True
+    assert result["ok"] is False
+    assert result["status"] == "degraded"
+    assert result["previous_ok"] is True
+    assert result["previous_status"] == "healthy"
     assert result["health_cache_stale"] is True
     assert "refresh was already in progress" in result["health_cache_detail"]
 
@@ -3363,6 +3366,11 @@ def test_local_runtime_service_health_checks_run_in_parallel(monkeypatch) -> Non
     monkeypatch.setattr(runtime_module, "_check_icap_adblock", slow_ok("icap"))
     monkeypatch.setattr(runtime_module, "_check_icap_av", slow_ok("av_icap"))
     monkeypatch.setattr(runtime_module, "_check_clamd", slow_ok("clamd"))
+    monkeypatch.setattr(
+        runtime_module,
+        "_check_forwarding",
+        lambda **_kwargs: {"ok": True, "detail": "forwarding ok"},
+    )
     started = runtime_module.time.monotonic()
 
     result = runtime_module.build_local_runtime_services(icap_timeout=0.8)
@@ -3388,6 +3396,11 @@ def test_local_runtime_service_health_uses_tcp_timeout_for_clamd(monkeypatch) ->
     monkeypatch.setattr(runtime_module, "_check_icap_adblock", ok_probe)
     monkeypatch.setattr(runtime_module, "_check_icap_av", ok_probe)
     monkeypatch.setattr(runtime_module, "_check_clamd", clamd_probe)
+    monkeypatch.setattr(
+        runtime_module,
+        "_check_forwarding",
+        lambda **_kwargs: {"ok": True, "detail": "forwarding ok"},
+    )
 
     result = runtime_module.build_local_runtime_services(
         icap_timeout=0.8,
@@ -3414,6 +3427,11 @@ def test_local_runtime_service_health_does_not_wait_for_stuck_probe(
     monkeypatch.setattr(runtime_module, "_check_icap_adblock", stuck_probe)
     monkeypatch.setattr(runtime_module, "_check_icap_av", ok_probe)
     monkeypatch.setattr(runtime_module, "_check_clamd", ok_probe)
+    monkeypatch.setattr(
+        runtime_module,
+        "_check_forwarding",
+        lambda **_kwargs: {"ok": True, "detail": "forwarding ok"},
+    )
     started = runtime_module.time.monotonic()
 
     result = runtime_module.build_local_runtime_services(
@@ -3483,6 +3501,10 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
     assert "icap_av_resp_base_port" in healthcheck
     assert "clamd_host_is_remote" in healthcheck
     assert "Squid adblock ICAP is fail-open" in healthcheck
+    assert "check_squid_forwarding_path" in healthcheck
+    assert "PROXY_HEALTHCHECK_FORWARDING_REQUIRED" in healthcheck
+    assert "squid-flask-proxy-forwarding-health" in healthcheck
+    assert "local health target" in healthcheck
     assert (
         "ADBLOCK_ICAP_REQUIRED is set but supervisor reports ${adblock_program} is not RUNNING"
         in healthcheck

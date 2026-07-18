@@ -130,6 +130,62 @@ def check_icap_service(
         }
 
 
+def check_http_proxy_forwarding(
+    *,
+    proxy_host: str = "127.0.0.1",
+    proxy_port: int,
+    target_url: str,
+    timeout: float = 1.0,
+    user_agent: str = "squid-flask-proxy-forwarding-health",
+    error_formatter: ErrorFormatter | None = None,
+) -> dict[str, Any]:
+    """Probe the explicit Squid request path without external traffic.
+
+    The probe sends a tiny absolute-form HTTP request through Squid to a local
+    target, usually the public PAC listener's ``/health`` endpoint. A TCP-only
+    listener check can pass while Squid's forwarding/adaptation path is wedged;
+    this bounded request exercises forwarding, local PAC reachability, and any
+    response ICAP path configured for ordinary GET traffic.
+    """
+    try:
+        with socket.create_connection(
+            (proxy_host, int(proxy_port)),
+            timeout=timeout,
+        ) as sock:
+            sock.settimeout(timeout)
+            request = (
+                f"GET {target_url} HTTP/1.1\r\n"
+                "Host: 127.0.0.1\r\n"
+                f"User-Agent: {user_agent}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii", errors="replace")
+            sock.sendall(request)
+            status_line = _recv_status_line(sock)
+        first = _decode_status_line(status_line)
+        parts = first.split()
+        try:
+            code = int(parts[1]) if len(parts) > 1 else 0
+        except Exception:
+            code = 0
+        ok = first.startswith("HTTP/") and 200 <= code < 400
+        return {
+            "ok": ok,
+            "detail": first or "no HTTP status from proxy forwarding path",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "detail": _format_error(
+                exc,
+                error_formatter=error_formatter,
+                default=(
+                    f"Failed to forward local health request through Squid at "
+                    f"{proxy_host}:{proxy_port}."
+                ),
+            ),
+        }
+
+
 def annotate_service_target(
     result: dict[str, Any],
     *,
