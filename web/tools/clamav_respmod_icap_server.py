@@ -15,6 +15,7 @@ import re
 import socket
 import socketserver
 import struct
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO, Self
 
@@ -25,6 +26,10 @@ CRLF = b"\r\n"
 HEADER_END = CRLF + CRLF
 DEFAULT_MAX_SCAN_BYTES = 256 * 1024 * 1024
 DEFAULT_CHUNK_SIZE = 1024 * 1024
+DEFAULT_CLIENT_TIMEOUT = 2.0
+DEFAULT_MAX_CONNECTIONS = 64
+DEFAULT_MAX_SCANS = 16
+DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 ISTAG = '"clamav-respmod-instream-1"'
 
 
@@ -88,21 +93,43 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
     return offsets
 
 
-def _read_until(stream: BinaryIO, delimiter: bytes, initial: bytes = b"") -> tuple[bytes, bytes]:
+def _read_some(stream: BinaryIO, size: int) -> bytes:
+    # StreamRequestHandler wraps sockets in BufferedReader. read(size) can wait
+    # for the full size or EOF on an open ICAP keep-alive connection, which
+    # turns a complete short OPTIONS request into a listener-visible hang.
+    # read1(size) performs one socket read and returns the available header data.
+    read1 = getattr(stream, "read1", None)
+    if read1 is not None:
+        return read1(size)
+    return stream.read(size)
+
+
+def _read_until(
+    stream: BinaryIO,
+    delimiter: bytes,
+    initial: bytes = b"",
+    *,
+    max_bytes: int = DEFAULT_MAX_HEADER_BYTES,
+) -> tuple[bytes, bytes]:
     data = bytearray(initial)
     while True:
         idx = data.find(delimiter)
         if idx >= 0:
             end = idx + len(delimiter)
             return bytes(data[:end]), bytes(data[end:])
-        chunk = stream.read(4096)
+        if len(data) >= max_bytes:
+            message = f"ICAP header/line exceeds {max_bytes} bytes"
+            raise IcapProtocolError(message)
+        chunk = _read_some(stream, min(4096, max_bytes - len(data)))
         if not chunk:
             message = "unexpected EOF"
             raise IcapProtocolError(message)
         data.extend(chunk)
 
 
-def _read_exact(stream: BinaryIO, size: int, initial: bytes = b"") -> tuple[bytes, bytes]:
+def _read_exact(
+    stream: BinaryIO, size: int, initial: bytes = b""
+) -> tuple[bytes, bytes]:
     if size < 0:
         message = "negative read size"
         raise IcapProtocolError(message)
@@ -213,19 +240,32 @@ class ClamdInstreamSession:
         port: int,
         timeout: float = 30.0,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
+        concurrency_gate: threading.BoundedSemaphore | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.timeout = timeout
         self.chunk_size = chunk_size
+        self.concurrency_gate = concurrency_gate
         self._sock = None
+        self._gate_acquired = False
 
     def __enter__(self) -> Self:
+        if self.concurrency_gate is not None:
+            if not self.concurrency_gate.acquire(blocking=False):
+                message = "clamd INSTREAM scan capacity exhausted"
+                raise RuntimeError(message)
+            self._gate_acquired = True
         try:
-            self._sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
+            self._sock = socket.create_connection(
+                (self.host, self.port), timeout=self.timeout
+            )
             self._sock.settimeout(self.timeout)
             self._sock.sendall(b"INSTREAM\n")
         except OSError as exc:
+            if self._gate_acquired and self.concurrency_gate is not None:
+                self.concurrency_gate.release()
+                self._gate_acquired = False
             message = f"clamd INSTREAM scan failed: {exc}"
             raise RuntimeError(message) from exc
         return self
@@ -233,6 +273,10 @@ class ClamdInstreamSession:
     def __exit__(self, *_exc) -> None:
         if self._sock is not None:
             self._sock.close()
+            self._sock = None
+        if self._gate_acquired and self.concurrency_gate is not None:
+            self.concurrency_gate.release()
+            self._gate_acquired = False
 
     def send_chunk(self, data: bytes) -> None:
         if not data:
@@ -271,12 +315,16 @@ def scan_stream_with_clamd(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> ClamdResult:
     """Send body bytes to clamd using INSTREAM and parse the scan result."""
-    with ClamdInstreamSession(host=host, port=port, timeout=timeout, chunk_size=chunk_size) as session:
+    with ClamdInstreamSession(
+        host=host, port=port, timeout=timeout, chunk_size=chunk_size
+    ) as session:
         session.send_chunk(body)
         return session.finish()
 
 
-def _icap_response(status: str, headers: dict[str, str] | None = None, body: bytes = b"") -> bytes:
+def _icap_response(
+    status: str, headers: dict[str, str] | None = None, body: bytes = b""
+) -> bytes:
     lines = [f"ICAP/1.0 {status}"]
     for name, value in (headers or {}).items():
         lines.append(f"{name}: {value}")
@@ -319,8 +367,7 @@ def clean_response(
 def blocked_response(signature: str | None) -> bytes:
     reason = signature or "malware"
     payload = (
-        "Blocked by Docker_Proxy ClamAV response scanner.\n"
-        f"Detection: {reason}\n"
+        f"Blocked by Docker_Proxy ClamAV response scanner.\nDetection: {reason}\n"
     ).encode()
     http_header = (
         b"HTTP/1.1 403 Forbidden\r\n"
@@ -357,6 +404,10 @@ def _encode_icap_body_chunk(body: bytes) -> bytes:
 class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
     server: ClamAvRespmodServer
 
+    def setup(self) -> None:
+        self.request.settimeout(self.server.client_timeout)
+        super().setup()
+
     def _send_100_continue(self) -> None:
         self.wfile.write(b"ICAP/1.0 100 Continue\r\n\r\n")
         self.wfile.flush()
@@ -370,7 +421,11 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 self.wfile.write(options_response())
                 return
             if method != "RESPMOD":
-                self.wfile.write(_icap_response("405 Method Not Allowed", {"Allow": "RESPMOD, OPTIONS"}))
+                self.wfile.write(
+                    _icap_response(
+                        "405 Method Not Allowed", {"Allow": "RESPMOD, OPTIONS"}
+                    )
+                )
                 return
 
             offsets = _parse_encapsulated(headers.get("encapsulated", ""))
@@ -379,7 +434,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
             if body_offset is None and not null_body:
                 message = "RESPMOD request missing res-body/null-body"
                 raise IcapProtocolError(message)
-            allow_204 = "204" in {part.strip() for part in headers.get("allow", "").split(",")}
+            allow_204 = "204" in {
+                part.strip() for part in headers.get("allow", "").split(",")
+            }
             http_header = b""
             body = b""
             result: ClamdResult
@@ -406,7 +463,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
             if result.infected:
                 response = blocked_response(result.signature)
             else:
-                response = clean_response(allow_204=allow_204, http_header=http_header, body=body)
+                response = clean_response(
+                    allow_204=allow_204, http_header=http_header, body=body
+                )
             self.wfile.write(response)
         except Exception as exc:
             if self.server.fail_open:
@@ -420,6 +479,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
 class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    request_queue_size = 128
 
     def __init__(
         self,
@@ -431,6 +491,9 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         clamd_timeout: float,
         fail_open: bool,
         max_scan_bytes: int,
+        client_timeout: float = DEFAULT_CLIENT_TIMEOUT,
+        max_connections: int = DEFAULT_MAX_CONNECTIONS,
+        max_scans: int = DEFAULT_MAX_SCANS,
     ) -> None:
         super().__init__(server_address, handler_class)
         self.clamd_host = clamd_host
@@ -438,35 +501,118 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.clamd_timeout = clamd_timeout
         self.fail_open = fail_open
         self.max_scan_bytes = max_scan_bytes
+        self.client_timeout = client_timeout
+        self.max_connections = max_connections
+        self.max_scans = max_scans
+        self._request_slots = threading.BoundedSemaphore(max_connections)
+        self._scan_slots = threading.BoundedSemaphore(max_scans)
+
+    def process_request(
+        self,
+        request: socket.socket,
+        client_address: tuple[str, int],
+    ) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            try:
+                request.settimeout(0.2)
+                request.sendall(
+                    _icap_response(
+                        "503 Service Unavailable",
+                        {"ISTag": ISTAG, "Connection": "close"},
+                    ),
+                )
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+
+        def finish_guarded() -> None:
+            try:
+                try:
+                    self.finish_request(request, client_address)
+                except Exception:
+                    self.handle_error(request, client_address)
+                finally:
+                    self.shutdown_request(request)
+            finally:
+                self._request_slots.release()
+
+        thread = threading.Thread(target=finish_guarded)
+        thread.daemon = self.daemon_threads
+        thread.start()
 
     def open_scan(self) -> ClamdInstreamSession:
         return ClamdInstreamSession(
             host=self.clamd_host,
             port=self.clamd_port,
             timeout=self.clamd_timeout,
+            concurrency_gate=self._scan_slots,
         )
 
     def scan_body(self, body: bytes) -> ClamdResult:
-        return scan_stream_with_clamd(
-            body,
-            host=self.clamd_host,
-            port=self.clamd_port,
-            timeout=self.clamd_timeout,
-        )
+        with self.open_scan() as scanner:
+            scanner.send_chunk(body)
+            return scanner.finish()
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default=os.environ.get("CLAMAV_RESPMOD_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("CLAMAV_RESPMOD_PORT", "15001")))
-    parser.add_argument("--clamd-host", default=os.environ.get("CLAMD_HOST", "127.0.0.1"))
-    parser.add_argument("--clamd-port", type=int, default=int(os.environ.get("CLAMD_PORT", "3310")))
-    parser.add_argument("--clamd-timeout", type=float, default=float(os.environ.get("CLAMD_TIMEOUT", "5")))
-    parser.add_argument("--max-scan-bytes", type=int, default=int(os.environ.get("CLAMAV_STREAM_MAX_BYTES", str(DEFAULT_MAX_SCAN_BYTES))))
+    parser.add_argument(
+        "--host", default=os.environ.get("CLAMAV_RESPMOD_HOST", "127.0.0.1")
+    )
+    parser.add_argument(
+        "--port", type=int, default=int(os.environ.get("CLAMAV_RESPMOD_PORT", "15001"))
+    )
+    parser.add_argument(
+        "--clamd-host", default=os.environ.get("CLAMD_HOST", "127.0.0.1")
+    )
+    parser.add_argument(
+        "--clamd-port", type=int, default=int(os.environ.get("CLAMD_PORT", "3310"))
+    )
+    parser.add_argument(
+        "--clamd-timeout",
+        type=float,
+        default=float(os.environ.get("CLAMD_TIMEOUT", "5")),
+    )
+    parser.add_argument(
+        "--max-scan-bytes",
+        type=int,
+        default=int(
+            os.environ.get("CLAMAV_STREAM_MAX_BYTES", str(DEFAULT_MAX_SCAN_BYTES))
+        ),
+    )
+    parser.add_argument(
+        "--client-timeout",
+        type=float,
+        default=float(
+            os.environ.get("CLAMAV_RESPMOD_CLIENT_TIMEOUT", str(DEFAULT_CLIENT_TIMEOUT))
+        ),
+    )
+    parser.add_argument(
+        "--max-connections",
+        type=int,
+        default=int(
+            os.environ.get(
+                "CLAMAV_RESPMOD_MAX_CONNECTIONS", str(DEFAULT_MAX_CONNECTIONS)
+            )
+        ),
+    )
+    parser.add_argument(
+        "--max-scans",
+        type=int,
+        default=int(os.environ.get("CLAMAV_RESPMOD_MAX_SCANS", str(DEFAULT_MAX_SCANS))),
+    )
     parser.add_argument("--fail-open", dest="fail_open", action="store_true")
     parser.add_argument("--fail-closed", dest="fail_open", action="store_false")
-    parser.set_defaults(fail_open=not _env_bool("CLAMAV_REQUIRED") and not _env_bool("FILE_SECURITY_AV_REQUIRED"))
-    return parser.parse_args(argv)
+    parser.set_defaults(
+        fail_open=not _env_bool("CLAMAV_REQUIRED")
+        and not _env_bool("FILE_SECURITY_AV_REQUIRED")
+    )
+    args = parser.parse_args(argv)
+    args.client_timeout = max(0.1, args.client_timeout)
+    args.max_connections = max(1, args.max_connections)
+    args.max_scans = max(1, min(args.max_scans, args.max_connections))
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -478,14 +624,20 @@ def main(argv: list[str] | None = None) -> int:
         clamd_timeout=args.clamd_timeout,
         fail_open=args.fail_open,
         max_scan_bytes=args.max_scan_bytes,
+        client_timeout=args.client_timeout,
+        max_connections=args.max_connections,
+        max_scans=args.max_scans,
     ) as server:
         logger.warning(
-            "listening on %s:%s, clamd=%s:%s, fail_open=%s",
+            "listening on %s:%s, clamd=%s:%s, fail_open=%s, client_timeout=%s, max_connections=%s, max_scans=%s",
             args.host,
             args.port,
             args.clamd_host,
             args.clamd_port,
             args.fail_open,
+            args.client_timeout,
+            args.max_connections,
+            args.max_scans,
         )
         server.serve_forever()
     return 0

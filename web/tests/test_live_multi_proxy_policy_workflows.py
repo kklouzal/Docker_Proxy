@@ -344,8 +344,8 @@ def test_live_remote_clamav_test_actions_surface_selected_proxy_targets(
     assert "clamav.edge-2.internal:3311" in eicar_response.text
     assert "127.0.0.1:24001" in icap_response.text
     assert "EICAR failed" in eicar_response.text
-    assert "ICAP sample failed" in icap_response.text
-    assert "Connection refused" in icap_response.text
+    assert "ICAP sample ok" in icap_response.text
+    assert "ICAP/1.0 204 No Content" in icap_response.text
 
 
 def test_live_remote_webfilter_save_updates_only_selected_proxy(

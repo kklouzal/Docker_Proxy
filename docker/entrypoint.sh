@@ -1186,7 +1186,7 @@ EOF
         if [ "$CLAMAV_REQUIRED" = "1" ]; then fail_mode_arg="--fail-closed"; fi
         cat > "/etc/supervisor.d/clamav_respmod_${instance}.conf" <<EOF
 [program:clamav_respmod_${instance}]
-command=/bin/sh -c 'exec python3 /app/tools/clamav_respmod_icap_server.py --host 127.0.0.1 --port "${av_resp_port}" --clamd-host "${CLAMD_HOST}" --clamd-port "${CLAMD_PORT}" ${fail_mode_arg}'
+command=/bin/sh -c 'exec python3 /app/tools/clamav_respmod_icap_server.py --host 127.0.0.1 --port "${av_resp_port}" --clamd-host "${CLAMD_HOST}" --clamd-port "${CLAMD_PORT}" --clamd-timeout "${CLAMD_TIMEOUT:-5}" --client-timeout "${CLAMAV_RESPMOD_CLIENT_TIMEOUT:-2}" --max-connections "${CLAMAV_RESPMOD_MAX_CONNECTIONS:-64}" --max-scans "${CLAMAV_RESPMOD_MAX_SCANS:-16}" ${fail_mode_arg}'
 autostart=true
 autorestart=true
 priority=12

@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import math
+import socket
 import struct
 import sys
+import threading
+import time
 from pathlib import Path
+
+CLIENT_CREATE_CONNECTION = socket.create_connection
 
 
 def _load_server():
-    path = Path(__file__).resolve().parents[1] / "tools" / "clamav_respmod_icap_server.py"
+    path = (
+        Path(__file__).resolve().parents[1] / "tools" / "clamav_respmod_icap_server.py"
+    )
     spec = importlib.util.spec_from_file_location("clamav_respmod_icap_server", path)
     assert spec
     assert spec.loader
@@ -47,7 +55,9 @@ def test_clamd_instream_scan_sends_body_chunks(monkeypatch) -> None:
     server = _load_server()
     fake = FakeSocket()
 
-    monkeypatch.setattr(server.socket, "create_connection", lambda address, timeout: fake)
+    monkeypatch.setattr(
+        server.socket, "create_connection", lambda address, timeout: fake
+    )
 
     result = server.scan_stream_with_clamd(
         b"abcdef",
@@ -72,7 +82,9 @@ def test_icap_chunks_stream_to_clamd_incrementally(monkeypatch) -> None:
     server = _load_server()
     fake = FakeSocket()
 
-    monkeypatch.setattr(server.socket, "create_connection", lambda address, timeout: fake)
+    monkeypatch.setattr(
+        server.socket, "create_connection", lambda address, timeout: fake
+    )
 
     with server.ClamdInstreamSession(
         host="192.168.1.10",
@@ -111,7 +123,9 @@ def test_clamd_instream_scan_reports_found(monkeypatch) -> None:
     server = _load_server()
     fake = FakeSocket(b"stream: Eicar-Test-Signature FOUND\n")
 
-    monkeypatch.setattr(server.socket, "create_connection", lambda address, timeout: fake)
+    monkeypatch.setattr(
+        server.socket, "create_connection", lambda address, timeout: fake
+    )
 
     result = server.scan_stream_with_clamd(b"eicar", host="192.168.1.10", port=3310)
 
@@ -170,3 +184,286 @@ def test_respmod_default_clamd_timeout_is_bounded_for_fail_open_browsing() -> No
     args = server._parse_args([])
 
     assert args.clamd_timeout == 5
+
+
+def _serve_in_thread(icap_server):
+    thread = threading.Thread(target=icap_server.serve_forever, daemon=True)
+    thread.start()
+    return thread
+
+
+def _recv_icap_response(port: int, request: bytes, *, timeout: float = 1.0) -> bytes:
+    with CLIENT_CREATE_CONNECTION(("127.0.0.1", port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall(request)
+        return sock.recv(4096)
+
+
+def _options_request(port: int) -> bytes:
+    return (
+        f"OPTIONS icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Encapsulated: null-body=0\r\n\r\n"
+    ).encode("ascii")
+
+
+def _sample_respmod_request(port: int) -> bytes:
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n"
+    body = b"hello"
+    chunked_body = b"5\r\n" + body + b"\r\n0\r\n\r\n"
+    return (
+        (
+            f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Allow: 204\r\n"
+            f"Encapsulated: res-hdr=0, res-body={len(http_header)}\r\n\r\n"
+        ).encode("ascii")
+        + http_header
+        + chunked_body
+    )
+
+
+class CleanScanner:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def send_chunk(self, _data: bytes) -> None:
+        pass
+
+    def finish(self):
+        server = _load_server()
+        return server.ClamdResult(clean=True)
+
+
+class SlowScanner(CleanScanner):
+    def finish(self):
+        message = "clamd INSTREAM scan timed out"
+        raise TimeoutError(message)
+
+
+class BlockingFakeSocket(FakeSocket):
+    def __init__(
+        self,
+        *,
+        blocked: threading.Event,
+        release: threading.Event,
+    ) -> None:
+        super().__init__()
+        self.blocked = blocked
+        self.release = release
+
+    def recv(self, _size: int) -> bytes:
+        self.blocked.set()
+        if not self.release.wait(timeout=1):
+            message = "fake clamd did not release"
+            raise TimeoutError(message)
+        return self.response
+
+
+def test_options_response_is_immediate_while_client_keeps_connection_open() -> None:
+    server = _load_server()
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(port, _options_request(port), timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"Encapsulated: null-body=0" in response
+
+
+def test_partial_client_times_out_and_releases_listener_capacity() -> None:
+    server = _load_server()
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.1,
+        max_connections=1,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        slow = socket.create_connection(("127.0.0.1", port), timeout=0.5)
+        try:
+            slow.sendall(b"OPT")
+            time.sleep(0.2)
+            response = _recv_icap_response(port, _options_request(port), timeout=0.5)
+        finally:
+            slow.close()
+            icap_server.shutdown()
+            thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+
+
+def test_concurrent_options_requests_do_not_touch_clamd() -> None:
+    server = _load_server()
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=16,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        responses: list[bytes] = []
+        workers = [
+            threading.Thread(
+                target=lambda: responses.append(
+                    _recv_icap_response(port, _options_request(port), timeout=0.5),
+                ),
+            )
+            for _ in range(8)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert len(responses) == 8
+    assert all(response.startswith(b"ICAP/1.0 200 OK\r\n") for response in responses)
+
+
+def test_slow_clamd_scan_fails_open_with_bounded_204() -> None:
+    server = _load_server()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return SlowScanner()
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(port, _sample_respmod_request(port), timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
+
+
+def test_scan_capacity_exhaustion_fails_open_without_wedging_options(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+    blocked = threading.Event()
+    release = threading.Event()
+    fake = BlockingFakeSocket(blocked=blocked, release=release)
+    connections = 0
+
+    def create_connection(_address, timeout):
+        nonlocal connections
+        connections += 1
+        return fake
+
+    monkeypatch.setattr(server.socket, "create_connection", create_connection)
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.5,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+        max_scans=1,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        first_response: list[bytes] = []
+        first = threading.Thread(
+            target=lambda: first_response.append(
+                _recv_icap_response(port, _sample_respmod_request(port), timeout=2),
+            ),
+        )
+        first.start()
+        assert blocked.wait(timeout=1)
+
+        second = _recv_icap_response(port, _sample_respmod_request(port), timeout=0.5)
+        options = _recv_icap_response(port, _options_request(port), timeout=0.5)
+
+        release.set()
+        first.join(timeout=2)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert connections == 1
+    assert second.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert options.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert first_response
+    assert first_response[0].startswith(b"ICAP/1.0 204 No Content\r\n")
+
+
+def test_slow_clamd_scan_fails_closed_with_error_payload() -> None:
+    server = _load_server()
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return SlowScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(port, _sample_respmod_request(port), timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"clamd INSTREAM scan timed out" in response
+
+
+def test_respmod_runtime_args_bound_clients_and_concurrency(monkeypatch) -> None:
+    server = _load_server()
+    monkeypatch.setenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", "0.05")
+    monkeypatch.setenv("CLAMAV_RESPMOD_MAX_CONNECTIONS", "0")
+    monkeypatch.setenv("CLAMAV_RESPMOD_MAX_SCANS", "10")
+
+    args = server._parse_args([])
+
+    assert math.isclose(args.client_timeout, 0.1)
+    assert args.max_connections == 1
+    assert args.max_scans == 1
