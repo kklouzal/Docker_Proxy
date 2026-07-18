@@ -485,19 +485,40 @@ class FakeOperationLedger:
     def create_operation(self, proxy_id: object, **kwargs: Any) -> Any:
         import time
 
+        proxy_key = str(proxy_id)
+        operation_type = str(kwargs.get("operation_type") or "sync")
+        subject = str(kwargs.get("subject") or "")
+        target_kind = str(kwargs.get("target_kind") or "")
+        target_ref = str(kwargs.get("target_ref") or "")
+        request_hash = str(kwargs.get("request_hash") or "")
+        for existing in self.operations:
+            if (
+                existing.proxy_id == proxy_key
+                and existing.status in {"pending", "applying"}
+                and existing.operation_type == operation_type
+                and existing.subject == subject
+                and existing.target_kind == target_kind
+                and existing.target_ref == target_ref
+                and existing.request_hash == request_hash
+            ):
+                existing.summary = str(kwargs.get("summary") or existing.summary)
+                existing.detail = str(kwargs.get("detail") or existing.detail)
+                existing.force = bool(existing.force or kwargs.get("force"))
+                return existing
+
         now = int(time.time())
         op = SimpleNamespace(
             operation_id=self.next_id,
-            proxy_id=str(proxy_id),
+            proxy_id=proxy_key,
             status="pending",
-            operation_type=str(kwargs.get("operation_type") or "sync"),
-            subject=str(kwargs.get("subject") or ""),
+            operation_type=operation_type,
+            subject=subject,
             summary=str(kwargs.get("summary") or ""),
-            target_kind=str(kwargs.get("target_kind") or ""),
-            target_ref=str(kwargs.get("target_ref") or ""),
+            target_kind=target_kind,
+            target_ref=target_ref,
             rollback_kind=str(kwargs.get("rollback_kind") or ""),
             rollback_ref=str(kwargs.get("rollback_ref") or ""),
-            request_hash=str(kwargs.get("request_hash") or ""),
+            request_hash=request_hash,
             detail=str(kwargs.get("detail") or ""),
             created_by=str(kwargs.get("created_by") or ""),
             created_ts=now,
@@ -718,7 +739,9 @@ class FakeAdblockArtifacts:
         self.applications.append(application)
         return application
 
-    def latest_apply(self, proxy_id: object, *, revision_id: int | None = None) -> Any | None:
+    def latest_apply(
+        self, proxy_id: object, *, revision_id: int | None = None
+    ) -> Any | None:
         rows = [row for row in self.applications if row.proxy_id == str(proxy_id)]
         if revision_id is not None:
             rows = [row for row in rows if row.revision_id == int(revision_id)]

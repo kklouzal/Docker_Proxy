@@ -857,6 +857,32 @@ def _certificate_runtime_state(
         label = "Pending evidence"
         detail = "No selected-proxy apply or runtime SHA evidence is available for the active bundle."
 
+    can_force_reconcile = bool(
+        revision_id
+        and state
+        in {
+            "applied_unverified",
+            "failed",
+            "superseded",
+            "stale",
+            "drift",
+            "unknown",
+        }
+    )
+    action_help = ""
+    if can_force_reconcile:
+        action_help = (
+            f"Queue a selected-proxy retry for desired certificate revision {revision_id} "
+            f"({_short_sha(desired_sha) or 'unknown hash'})."
+        )
+    elif state in {"pending", "applying"}:
+        action_help = (
+            f"Operation #{operation_id} is already {operation_status}; wait for it to finish "
+            "or use Operations if it later fails."
+        )
+    elif not revision_id:
+        action_help = "Generate or upload a CA bundle before retrying proxy certificate apply."
+
     return {
         "proxy_id": proxy_id,
         "state": state,
@@ -873,6 +899,8 @@ def _certificate_runtime_state(
         "running_bundle_sha256": running_sha,
         "running_desired_bundle_sha256": running_desired_sha,
         "applied_ts": applied_ts,
+        "can_force_reconcile": can_force_reconcile,
+        "force_reconcile_help": action_help,
         **_operation_view(latest_operation),
     }
 
@@ -7729,6 +7757,81 @@ def _render_certs_page(
         message_ok=message_ok,
         admin_ui_https_next=admin_ui_https_next,
     )
+
+
+def _certificate_recovery_redirect(error: str = ""):
+    params: dict[str, str] = {}
+    if error:
+        params["cert_recovery_error"] = error
+    else:
+        params["cert_recovery"] = "1"
+    return _redirect_to("certs", **params)
+
+
+def _selected_proxy_certificate_operation_conflicts(
+    proxy_id: str,
+    revision_id: int,
+) -> tuple[bool, str]:
+    operation = _latest_operation(
+        proxy_id,
+        target_kind="certificate_revision",
+        target_ref=revision_id,
+        operation_types={"certificate_apply", "certificate_revert"},
+    )
+    status = str(getattr(operation, "status", "") or "")
+    if status in {"pending", "applying"}:
+        return True, status
+    return False, ""
+
+
+@app.route("/certs/proxies/<path:proxy_id>/force-reconcile", methods=["POST"])
+def force_reconcile_certificate_proxy(proxy_id: str):
+    selected_proxy_id = get_proxy_id()
+    proxy_key = normalize_proxy_id(proxy_id)
+    if proxy_key != selected_proxy_id:
+        return _certificate_recovery_redirect("proxy_scope")
+    if get_proxy_registry().get_proxy(proxy_key) is None:
+        return _certificate_recovery_redirect("proxy_scope")
+
+    bundle_store = get_certificate_bundles()
+    try:
+        active_revision = bundle_store.get_active_bundle()
+    except Exception:
+        active_revision = None
+    revision_id = _safe_revision_id(getattr(active_revision, "revision_id", 0))
+    desired_sha = str(getattr(active_revision, "bundle_sha256", "") or "").strip()
+    if not revision_id or not desired_sha:
+        return _certificate_recovery_redirect("no_bundle")
+
+    conflicted, _status = _selected_proxy_certificate_operation_conflicts(
+        proxy_key,
+        revision_id,
+    )
+    if conflicted:
+        return _certificate_recovery_redirect("duplicate")
+
+    operation = request_proxy_reconcile(
+        proxy_key,
+        operation_type="certificate_apply",
+        subject="Certificate bundle retry",
+        summary=f"Retry certificate revision {revision_id} for selected proxy {proxy_key}.",
+        target_kind="certificate_revision",
+        target_ref=revision_id,
+        request_hash=desired_sha,
+        detail=(
+            f"Operator requested selected-proxy certificate retry for revision {revision_id} "
+            f"with desired bundle {_short_sha(desired_sha)}. Runtime must report matching "
+            "applied/running bundle SHA before this proxy is trusted."
+        ),
+        created_by=str(session.get("user") or ""),
+        force=True,
+    )
+    if (
+        not getattr(operation, "operation_id", 0)
+        and getattr(operation, "status", "") == "failed"
+    ):
+        return _certificate_recovery_redirect("queue_failed")
+    return _certificate_recovery_redirect()
 
 
 @app.route("/certs/generate", methods=["POST"])

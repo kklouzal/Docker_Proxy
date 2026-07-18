@@ -504,7 +504,7 @@ def test_certificates_page_empty_admin_ui_sans_are_examples_not_defaults(
     assert "proxyadmin.ad.kklouzal.com" not in html
     assert "192.168.1.10" not in html
     assert 'placeholder="proxyadmin.example.com&#10;192.0.2.10"' in html
-    assert "Configured SANs:</strong> <code class=\"mono\">none</code>" in html
+    assert 'Configured SANs:</strong> <code class="mono">none</code>' in html
     assert "admin-public.example.test" in html
     assert "localhost" in html
     assert "127.0.0.1" in html
@@ -594,9 +594,7 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
     assert "admin-ui" in sans.get_values_for_type(x509.DNSName)
     assert "admin-public.example.test" in sans.get_values_for_type(x509.DNSName)
     assert "admin-request.example.test" in sans.get_values_for_type(x509.DNSName)
-    assert "127.0.0.1" in [
-        str(ip) for ip in sans.get_values_for_type(x509.IPAddress)
-    ]
+    assert "127.0.0.1" in [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
 
 
 def test_admin_ui_https_preference_persists_configured_sans_in_leaf(
@@ -631,9 +629,7 @@ def test_admin_ui_https_preference_persists_configured_sans_in_leaf(
     leaf = x509.load_pem_x509_certificate(Path(certfile).read_bytes())
     sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     assert "proxyadmin.example.com" in sans.get_values_for_type(x509.DNSName)
-    assert "192.0.2.10" in [
-        str(ip) for ip in sans.get_values_for_type(x509.IPAddress)
-    ]
+    assert "192.0.2.10" in [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
 
 
 def test_admin_ui_https_preference_rejects_invalid_configured_san(
@@ -703,9 +699,7 @@ def test_regenerate_admin_ui_https_certificate_preserves_ca_and_uses_saved_sans(
     leaf = x509.load_pem_x509_certificate(Path(certfile).read_bytes())
     sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     assert "proxyadmin.example.com" in sans.get_values_for_type(x509.DNSName)
-    assert "192.0.2.10" in [
-        str(ip) for ip in sans.get_values_for_type(x509.IPAddress)
-    ]
+    assert "192.0.2.10" in [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
 
 
 def test_admin_ui_https_preference_accepts_hidden_fallback_before_checkbox(
@@ -1548,3 +1542,170 @@ def test_certificate_generation_exception_is_sanitized_and_audited(
     assert "secret" not in _location_params(response)["msg"][0]
     assert loaded.audit_store.records[-1]["kind"] == "ca_ensure"
     assert loaded.audit_store.records[-1]["ok"] is False
+
+
+def test_certs_page_shows_selected_proxy_retry_for_failed_stale_superseded_and_unknown_states(
+    monkeypatch, tmp_path
+) -> None:
+    bundle = SimpleNamespace(
+        revision_id=10,
+        bundle_sha256="active-sha",
+        source_kind="manual",
+        cert_sha256="cert-sha",
+        created_ts=10,
+    )
+    bundles = FakeCertificateBundles(bundle=bundle)
+    bundles.record_apply_result(
+        "stale",
+        10,
+        ok=True,
+        detail="claimed stale",
+        bundle_sha256="old-sha",
+    )
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry(
+            ["failed", "stale", "superseded", "unknown", "pending", "applying"]
+        ),
+    )
+    for proxy_id, status in (
+        ("failed", "failed"),
+        ("superseded", "superseded"),
+        ("pending", "pending"),
+        ("applying", "applying"),
+    ):
+        op = loaded.operation_ledger.create_operation(
+            proxy_id,
+            operation_type="certificate_apply",
+            subject="Certificate bundle",
+            target_kind="certificate_revision",
+            target_ref=10,
+            request_hash="active-sha",
+        )
+        op.status = status
+
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/certs")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert html.count("Retry selected proxy") == 4
+    assert "Queue a selected-proxy retry for desired certificate revision 10" in html
+    assert "is already pending" in html
+    assert "is already applying" in html
+
+
+def test_force_reconcile_certificate_proxy_queues_selected_proxy_only_and_dedupes(
+    monkeypatch, tmp_path
+) -> None:
+    bundle = SimpleNamespace(
+        revision_id=10,
+        bundle_sha256="active-sha",
+        source_kind="manual",
+        cert_sha256="cert-sha",
+        created_ts=10,
+    )
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=FakeCertificateBundles(bundle=bundle),
+        registry=FakeRegistry(["edge-a", "edge-b"]),
+    )
+    monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "edge-a")
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    first = client.post(
+        "/certs/proxies/edge-a/force-reconcile",
+        data={"csrf_token": token},
+        follow_redirects=False,
+    )
+    token = csrf_token(client, "/certs")
+    duplicate = client.post(
+        "/certs/proxies/edge-a/force-reconcile",
+        data={"csrf_token": token},
+        follow_redirects=False,
+    )
+
+    assert first.status_code in {301, 302, 303}
+    assert "cert_recovery=1" in first.location
+    assert duplicate.status_code in {301, 302, 303}
+    assert "cert_recovery_error=duplicate" in duplicate.location
+    assert [
+        (
+            op.proxy_id,
+            op.operation_type,
+            op.target_kind,
+            op.target_ref,
+            op.request_hash,
+            op.force,
+        )
+        for op in loaded.operation_ledger.operations
+    ] == [
+        (
+            "edge-a",
+            "certificate_apply",
+            "certificate_revision",
+            "10",
+            "active-sha",
+            True,
+        )
+    ]
+
+
+def test_force_reconcile_certificate_proxy_rejects_cross_proxy_and_no_bundle(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=FakeCertificateBundles(bundle=None),
+        registry=FakeRegistry(["edge-a", "edge-b"]),
+    )
+    monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "edge-a")
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    token = csrf_token(client, "/certs")
+    cross_proxy = client.post(
+        "/certs/proxies/edge-b/force-reconcile",
+        data={"csrf_token": token},
+        follow_redirects=False,
+    )
+    token = csrf_token(client, "/certs")
+    no_bundle = client.post(
+        "/certs/proxies/edge-a/force-reconcile",
+        data={"csrf_token": token},
+        follow_redirects=False,
+    )
+
+    assert "cert_recovery_error=proxy_scope" in cross_proxy.location
+    assert "cert_recovery_error=no_bundle" in no_bundle.location
+    assert loaded.operation_ledger.operations == []
+
+
+def test_force_reconcile_certificate_proxy_requires_csrf(monkeypatch, tmp_path) -> None:
+    bundle = SimpleNamespace(
+        revision_id=10,
+        bundle_sha256="active-sha",
+        source_kind="manual",
+        cert_sha256="cert-sha",
+        created_ts=10,
+    )
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=FakeCertificateBundles(bundle=bundle),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    rejected = client.post("/certs/proxies/default/force-reconcile")
+
+    assert rejected.status_code == 403
+    assert loaded.operation_ledger.operations == []

@@ -37,6 +37,37 @@
 </div>
 {% endif %}
 
+{% if request.args.get('cert_recovery') == '1' %}
+<div class="banner success">
+    <span class="badge ok">Retry queued</span>
+    <div class="banner-copy">
+        <strong>Selected-proxy certificate retry requested</strong>
+        <span class="small">Watch this row for desired, applied, and running bundle SHA convergence.</span>
+    </div>
+</div>
+{% elif request.args.get('cert_recovery_error') %}
+{% set cert_recovery_error = request.args.get('cert_recovery_error') %}
+<div class="banner error">
+    <span class="badge danger">Retry not queued</span>
+    <div class="banner-copy">
+        <strong>Unable to queue certificate retry</strong>
+        <span class="small">
+            {% if cert_recovery_error == 'proxy_scope' %}
+                The request did not match the selected registered proxy.
+            {% elif cert_recovery_error == 'no_bundle' %}
+                Generate or upload an active CA bundle before retrying a proxy.
+            {% elif cert_recovery_error == 'duplicate' %}
+                A certificate operation for this selected proxy and desired bundle is already pending or applying.
+            {% elif cert_recovery_error == 'queue_failed' %}
+                The operation ledger did not accept the selected-proxy retry.
+            {% else %}
+                The certificate retry request failed.
+            {% endif %}
+        </span>
+    </div>
+</div>
+{% endif %}
+
 {% if admin_ui_https_next %}
 <script>
 window.setTimeout(function () {
@@ -224,6 +255,17 @@ window.setTimeout(function () {
                                 {% if row.operation_id %}
                                     <div class="small">Operation #{{ row.operation_id }}: {{ row.operation_status }}</div>
                                 {% endif %}
+                                <div class="operation-actions certificate-row-actions">
+                                    {% if row.can_force_reconcile %}
+                                        <form method="post" action="{{ url_for('force_reconcile_certificate_proxy', proxy_id=row.proxy_id) }}">
+                                            {{ csrf_field() }}
+                                            <button class="btn" type="submit">Retry selected proxy</button>
+                                        </form>
+                                        <div class="small muted">{{ row.force_reconcile_help }}</div>
+                                    {% elif row.force_reconcile_help %}
+                                        <div class="small muted">{{ row.force_reconcile_help }}</div>
+                                    {% endif %}
+                                </div>
                             </div>
                         {% endfor %}
                     </div>
