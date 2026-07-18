@@ -234,6 +234,26 @@ _PROXY_OBSERVABILITY_TTL_SECONDS = _env_float(
     minimum=0.0,
     maximum=300.0,
 )
+_PROXY_HEALTH_STALE_IF_ERROR_SECONDS = _env_float(
+    "PROXY_HEALTH_UI_STALE_IF_ERROR_SECONDS",
+    60.0,
+    minimum=0.0,
+    maximum=600.0,
+)
+
+
+def _cached_health_payload_within(
+    cached: tuple[float, dict[str, Any]] | None,
+    *,
+    now: float,
+    max_age_seconds: float,
+) -> dict[str, Any] | None:
+    if cached is None:
+        return None
+    cached_at, payload = cached
+    if now - cached_at <= max(0.0, float(max_age_seconds)):
+        return dict(payload)
+    return None
 
 
 def _fresh_cached_health_payload(
@@ -242,12 +262,27 @@ def _fresh_cached_health_payload(
     now: float,
     ttl_seconds: float,
 ) -> dict[str, Any] | None:
-    if cached is None:
-        return None
-    cached_at, payload = cached
-    if now - cached_at <= max(0.0, float(ttl_seconds)):
-        return dict(payload)
-    return None
+    return _cached_health_payload_within(
+        cached,
+        now=now,
+        max_age_seconds=ttl_seconds,
+    )
+
+
+def _stale_cached_health_payload(
+    cached: tuple[float, dict[str, Any]] | None,
+    *,
+    now: float,
+    ttl_seconds: float,
+) -> dict[str, Any] | None:
+    return _cached_health_payload_within(
+        cached,
+        now=now,
+        max_age_seconds=max(
+            float(ttl_seconds),
+            float(_PROXY_HEALTH_STALE_IF_ERROR_SECONDS),
+        ),
+    )
 
 
 _OBSERVABILITY_SUMMARY_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, int]]] = {}
@@ -595,7 +630,7 @@ def _cached_proxy_health(
             full=full,
         )
     except ProxyClientError as exc:
-        cached_payload = _fresh_cached_health_payload(
+        cached_payload = _stale_cached_health_payload(
             cached,
             now=time.monotonic(),
             ttl_seconds=ttl_seconds,

@@ -519,7 +519,7 @@ def test_cached_proxy_health_returns_fresh_cache_before_refresh(
     assert proxy_client.health_calls == [("default", 1.5)]
 
 
-def test_cached_proxy_health_does_not_reuse_expired_refresh_failure(
+def test_cached_proxy_health_serves_recent_stale_payload_after_refresh_failure(
     monkeypatch, tmp_path
 ) -> None:
     proxy_client = FailAfterCachedHealthProxyClient()
@@ -537,19 +537,20 @@ def test_cached_proxy_health_does_not_reuse_expired_refresh_failure(
 
     proxy_client.fail_health = True
     current_time = 111.0
-    unavailable = loaded.module._cached_proxy_health(
+    stale = loaded.module._cached_proxy_health(
         "default",
         timeout_seconds=1.5,
         ttl_seconds=10.0,
     )
 
-    assert unavailable["_unavailable_cached"] is True
-    assert unavailable.get("_stale") is None
-    assert unavailable["ok"] is False
-    assert unavailable["proxy_status"] == "management request timed out"
+    assert stale["_stale"] is True
+    assert stale.get("_unavailable_cached") is None
+    assert stale["ok"] is True
+    assert stale["proxy_status"] == "Squid check ok."
+    assert stale["health_cache_detail"] == "management request timed out"
     cache_key = ("default", 1.5, False)
-    assert loaded.module._PROXY_HEALTH_CACHE[cache_key][0] == pytest.approx(111.0)
-    assert loaded.module._PROXY_HEALTH_CACHE[cache_key][1]["_unavailable_cached"] is True
+    assert loaded.module._PROXY_HEALTH_CACHE[cache_key][0] == pytest.approx(100.0)
+    assert "_unavailable_cached" not in loaded.module._PROXY_HEALTH_CACHE[cache_key][1]
 
 
 def test_fleet_checks_only_active_proxy_live_health(monkeypatch, tmp_path) -> None:
