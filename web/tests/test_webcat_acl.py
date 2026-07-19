@@ -366,3 +366,51 @@ def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
     assert rolled_back == [True]
     assert closed == [True]
     assert batch == [(123, "default", "192.0.2.10", "http://blocked.example/", "adult")]
+
+
+def test_blocked_log_prune_uses_bounded_ordered_delete(monkeypatch) -> None:
+    webcat_acl = _webcat_acl_module()
+
+    class Result:
+        def __init__(self, rows=(), rowcount=0) -> None:
+            self._rows = list(rows)
+            self.rowcount = rowcount
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.executed = []
+            self.commits = 0
+
+        def execute(self, sql, params=None):
+            normalized = " ".join(str(sql).split())
+            self.executed.append((normalized, tuple(params or ())))
+            if normalized.startswith("SELECT ts, id"):
+                return Result(rows=[(300, 3), (200, 2), (100, 1)])
+            if normalized.startswith("DELETE FROM"):
+                return Result(rowcount=1)
+            return Result()
+
+        def executemany(self, sql, params):
+            self.executed.append((" ".join(str(sql).split()), tuple(params)))
+            return Result(rowcount=len(params))
+
+        def commit(self):
+            self.commits += 1
+
+    monkeypatch.setenv("WEBFILTER_LOG_PRUNE_CHUNK_SIZE", "2")
+    monkeypatch.setenv("WEBFILTER_LOG_PRUNE_MAX_ROWS", "2")
+    db = webcat_acl._BlockedLogDb(max_rows=3)
+    conn = FakeConn()
+
+    db._prune_old_rows(conn, "webfilter_blocked_log")
+
+    delete_sql, delete_params = next(
+        (sql, params) for sql, params in conn.executed if sql.startswith("DELETE FROM")
+    )
+    assert "ORDER BY ts ASC, id ASC LIMIT" in delete_sql
+    assert "NOT IN" not in delete_sql
+    assert delete_params == (100, 100, 1, 2)
+    assert conn.commits == 1

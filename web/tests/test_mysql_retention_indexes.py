@@ -81,6 +81,8 @@ def test_safe_browsing_cache_expiry_indexes_bootstrap():
     sql = _joined(conn)
     assert "KEY idx_safe_browsing_cache_expiry(expires_ts)" in sql
     assert "KEY idx_safe_browsing_negative_expiry(expires_ts)" in sql
+    assert "ALTER TABLE safe_browsing_hash_prefixes ADD COLUMN generation BIGINT NOT NULL DEFAULT 0" in sql
+    assert "idx_safe_browsing_list_generation (list_name, generation)" in sql
     assert "ALTER TABLE safe_browsing_full_hash_cache ADD INDEX idx_safe_browsing_cache_expiry (expires_ts)" in sql
     assert "ALTER TABLE safe_browsing_negative_cache ADD INDEX idx_safe_browsing_negative_expiry (expires_ts)" in sql
 

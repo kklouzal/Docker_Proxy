@@ -140,3 +140,44 @@ def test_daily_rollup_late_hour_updates_existing_day_weighted_average(tmp_path) 
         count, cpu = conn.execute("SELECT count, cpu FROM ts_1d WHERE ts=%s", (day0,)).fetchone()
     assert int(count) == 4
     assert float(cpu) == pytest.approx(20.0)
+
+
+def test_rollup_averages_ignore_null_metric_samples(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path)
+    store = TimeSeriesStore()
+    store.init_db()
+    minute_start = (1_777_000_123 // 60) * 60
+
+    with store._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ts_1s(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            ("default", minute_start + 1, 1, None, 0.0, 0.0, 0.0, 0.0),
+        )
+        conn.execute(
+            """
+            INSERT INTO ts_1s(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            ("default", minute_start + 2, 1, 20.0, 0.0, 0.0, 0.0, 0.0),
+        )
+
+    store._rollup(
+        "ts_1s",
+        "ts_1m",
+        60,
+        minute_start + 120,
+        "default",
+        max_dst_buckets=1,
+    )
+
+    with store._connect() as conn:
+        count, cpu = conn.execute(
+            "SELECT count, cpu FROM ts_1m WHERE proxy_id=%s AND ts=%s",
+            ("default", minute_start),
+        ).fetchone()
+
+    assert int(count) == 2
+    assert float(cpu) == pytest.approx(20.0)

@@ -625,6 +625,43 @@ class _BlockedLogDb:
         except Exception:
             return
 
+    def _prune_old_rows(self, conn, blocked_log_table: str) -> None:
+        if self.max_rows <= 0:
+            return
+        rows = conn.execute(
+            f"SELECT ts, id FROM {blocked_log_table} ORDER BY ts DESC, id DESC LIMIT %s",
+            (int(self.max_rows),),
+        ).fetchall()
+        if len(rows) < int(self.max_rows):
+            return
+        boundary = rows[-1]
+        boundary_ts = int(boundary[0] or 0)
+        boundary_id = int(boundary[1] or 0)
+        chunk_size = _env_int(
+            "WEBFILTER_LOG_PRUNE_CHUNK_SIZE",
+            500,
+            minimum=1,
+            maximum=10000,
+        )
+        max_delete = _env_int(
+            "WEBFILTER_LOG_PRUNE_MAX_ROWS",
+            5000,
+            minimum=1,
+            maximum=100000,
+        )
+        deleted_total = 0
+        while deleted_total < max_delete:
+            limit = min(chunk_size, max_delete - deleted_total)
+            result = conn.execute(
+                f"DELETE FROM {blocked_log_table} WHERE (ts < %s OR (ts = %s AND id < %s)) ORDER BY ts ASC, id ASC LIMIT %s",
+                (boundary_ts, boundary_ts, boundary_id, limit),
+            )
+            conn.commit()
+            deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
+            deleted_total += deleted
+            if deleted < limit:
+                break
+
     def _flush(self, conn, batch: list[tuple[int, str, str, str, str]]) -> None:
         blocked_log_table = self._table(conn)
         conn.executemany(
@@ -635,11 +672,7 @@ class _BlockedLogDb:
         self._inserts += len(batch)
         if self.max_rows > 0 and self._inserts >= 1000:
             self._inserts = 0
-            conn.execute(
-                f"DELETE FROM {blocked_log_table} WHERE id NOT IN (SELECT id FROM (SELECT id FROM {blocked_log_table} ORDER BY ts DESC, id DESC LIMIT %s) AS keepers)",
-                (int(self.max_rows),),
-            )
-            conn.commit()
+            self._prune_old_rows(conn, blocked_log_table)
 
     def _flush_batch_if_possible(
         self,

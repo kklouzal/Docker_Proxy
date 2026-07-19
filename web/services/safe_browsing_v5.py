@@ -501,6 +501,18 @@ class SafeBrowsingStore:
             "idx_safe_browsing_negative_expiry",
             "ALTER TABLE safe_browsing_negative_cache ADD INDEX idx_safe_browsing_negative_expiry (expires_ts)",
         )
+        SafeBrowsingStore._ensure_column(
+            conn,
+            "safe_browsing_hash_prefixes",
+            "generation",
+            "ALTER TABLE safe_browsing_hash_prefixes ADD COLUMN generation BIGINT NOT NULL DEFAULT 0",
+        )
+        SafeBrowsingStore._ensure_index(
+            conn,
+            "safe_browsing_hash_prefixes",
+            "idx_safe_browsing_list_generation",
+            "ALTER TABLE safe_browsing_hash_prefixes ADD INDEX idx_safe_browsing_list_generation (list_name, generation)",
+        )
 
     @staticmethod
     def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
@@ -521,6 +533,27 @@ class SafeBrowsingStore:
             conn.execute(ddl)
         except DATABASE_ERRORS as exc:
             if mysql_error_code(exc) != 1061:
+                raise
+
+    @staticmethod
+    def _ensure_column(conn, table_name: str, column_name: str, ddl: str) -> None:
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = %s
+              AND column_name = %s
+            LIMIT 1
+            """,
+            (table_name, column_name),
+        ).fetchone()
+        if exists:
+            return
+        try:
+            conn.execute(ddl)
+        except DATABASE_ERRORS as exc:
+            if mysql_error_code(exc) != 1060:
                 raise
 
     @staticmethod
@@ -732,8 +765,10 @@ class SafeBrowsingStore:
             ),
             reverse=True,
         )
+        removed_prefixes: list[bytes] = []
         for index in removals:
             if 0 <= index < len(current):
+                removed_prefixes.append(current[index])
                 del current[index]
         additions_payload = item.get("additionsFourBytes")
         additions = _ints_to_prefixes(
@@ -742,29 +777,62 @@ class SafeBrowsingStore:
             ),
         )
         merged = sorted(set(current).union(additions))
+        batch_size = _env_int(
+            "SAFE_BROWSING_PREFIX_WRITE_BATCH_SIZE",
+            5000,
+            minimum=100,
+            maximum=50000,
+        )
         checksum = _decode_b64(item.get("sha256Checksum"))
         if checksum and _checksum_for_prefixes(merged) != checksum:
             # The v5 local database spec requires a full refresh whenever the
             # post-update checksum disagrees. Drop local state/version for this
             # list so the next scheduler pass requests a complete replacement.
-            conn.execute(
-                "DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s",
-                (name,),
-            )
+            while True:
+                result = conn.execute(
+                    "DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s ORDER BY prefix ASC LIMIT %s",
+                    (name, batch_size),
+                )
+                if int(getattr(result, "rowcount", 0) or 0) < batch_size:
+                    break
             conn.execute("DELETE FROM safe_browsing_hash_lists WHERE name=%s", (name,))
+            with contextlib.suppress(Exception):
+                conn.commit()
             msg = f"Google Safe Browsing checksum mismatch for {name}; full refresh required"
             raise ValueError(msg)
-        conn.execute(
-            "DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s",
-            (name,),
-        )
-        if merged:
-            conn.executemany(
-                "INSERT IGNORE INTO safe_browsing_hash_prefixes(list_name, prefix) VALUES(%s,%s)",
-                [(name, p) for p in merged],
-            )
         version = _decode_b64(item.get("version"))
         now = _now()
+        generation = int(time.time_ns())
+
+        def upsert_prefixes(prefixes: Sequence[bytes]) -> None:
+            if not prefixes:
+                return
+            rows = [(name, prefix, generation) for prefix in prefixes]
+            for index in range(0, len(rows), batch_size):
+                conn.executemany(
+                    "INSERT INTO safe_browsing_hash_prefixes(list_name, prefix, generation) VALUES(%s,%s,%s) AS incoming "
+                    "ON DUPLICATE KEY UPDATE generation=incoming.generation",
+                    rows[index : index + batch_size],
+                )
+
+        if partial:
+            for index in range(0, len(removed_prefixes), batch_size):
+                batch = removed_prefixes[index : index + batch_size]
+                placeholders = ",".join(["%s"] * len(batch))
+                conn.execute(
+                    f"DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s AND prefix IN ({placeholders})",
+                    (name, *batch),
+                )
+            upsert_prefixes(sorted(set(additions)))
+        else:
+            upsert_prefixes(merged)
+            while True:
+                result = conn.execute(
+                    "DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s AND generation <> %s ORDER BY prefix ASC LIMIT %s",
+                    (name, generation, batch_size),
+                )
+                if int(getattr(result, "rowcount", 0) or 0) < batch_size:
+                    break
         conn.execute(
             "INSERT INTO safe_browsing_hash_lists(name, version, threat_type, last_success, last_attempt, last_error, next_run_ts, prefix_count) "
             "VALUES(%s,%s,%s,%s,%s,%s,%s,%s) AS incoming ON DUPLICATE KEY UPDATE version=incoming.version, threat_type=incoming.threat_type, "

@@ -174,24 +174,30 @@ class TimeSeriesStore:
                                 proxy_id,
                                 FLOOR(ts / %s) * %s AS bucket_start,
                                 SUM(count) AS count,
-                                CASE WHEN SUM(count) > 0 THEN SUM(cpu * count) / SUM(count) ELSE NULL END AS cpu,
-                                CASE WHEN SUM(count) > 0 THEN SUM(mem * count) / SUM(count) ELSE NULL END AS mem,
-                                CASE WHEN SUM(count) > 0 THEN SUM(disk_used * count) / SUM(count) ELSE NULL END AS disk_used,
-                                CASE WHEN SUM(count) > 0 THEN SUM(cache_dir_size * count) / SUM(count) ELSE NULL END AS cache_dir_size,
-                                CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count) / SUM(count) ELSE NULL END AS hit_rate
+                                CASE WHEN SUM(CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN cpu IS NOT NULL THEN cpu * count ELSE 0 END) / SUM(CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS cpu,
+                                CASE WHEN SUM(CASE WHEN mem IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN mem IS NOT NULL THEN mem * count ELSE 0 END) / SUM(CASE WHEN mem IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS mem,
+                                CASE WHEN SUM(CASE WHEN disk_used IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN disk_used IS NOT NULL THEN disk_used * count ELSE 0 END) / SUM(CASE WHEN disk_used IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS disk_used,
+                                CASE WHEN SUM(CASE WHEN cache_dir_size IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN cache_dir_size IS NOT NULL THEN cache_dir_size * count ELSE 0 END) / SUM(CASE WHEN cache_dir_size IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS cache_dir_size,
+                                CASE WHEN SUM(CASE WHEN hit_rate IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN hit_rate IS NOT NULL THEN hit_rate * count ELSE 0 END) / SUM(CASE WHEN hit_rate IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS hit_rate
                             FROM {src_table}
                             WHERE proxy_id = %s AND ts >= %s AND ts < %s
                             GROUP BY proxy_id, bucket_start
                         ) AS incoming
                         ON DUPLICATE KEY UPDATE
-                            cpu = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.cpu IS NULL AND incoming.cpu IS NULL) THEN (COALESCE({dst_table}.cpu, 0) * {dst_table}.count + COALESCE(incoming.cpu, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                            mem = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.mem IS NULL AND incoming.mem IS NULL) THEN (COALESCE({dst_table}.mem, 0) * {dst_table}.count + COALESCE(incoming.mem, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                            disk_used = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.disk_used IS NULL AND incoming.disk_used IS NULL) THEN (COALESCE({dst_table}.disk_used, 0) * {dst_table}.count + COALESCE(incoming.disk_used, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                            cache_dir_size = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.cache_dir_size IS NULL AND incoming.cache_dir_size IS NULL) THEN (COALESCE({dst_table}.cache_dir_size, 0) * {dst_table}.count + COALESCE(incoming.cache_dir_size, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                            hit_rate = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.hit_rate IS NULL AND incoming.hit_rate IS NULL) THEN (COALESCE({dst_table}.hit_rate, 0) * {dst_table}.count + COALESCE(incoming.hit_rate, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                            cpu = CASE WHEN {dst_table}.cpu IS NULL THEN incoming.cpu WHEN incoming.cpu IS NULL THEN {dst_table}.cpu WHEN {dst_table}.count + incoming.count > 0 THEN ({dst_table}.cpu * {dst_table}.count + incoming.cpu * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                            mem = CASE WHEN {dst_table}.mem IS NULL THEN incoming.mem WHEN incoming.mem IS NULL THEN {dst_table}.mem WHEN {dst_table}.count + incoming.count > 0 THEN ({dst_table}.mem * {dst_table}.count + incoming.mem * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                            disk_used = CASE WHEN {dst_table}.disk_used IS NULL THEN incoming.disk_used WHEN incoming.disk_used IS NULL THEN {dst_table}.disk_used WHEN {dst_table}.count + incoming.count > 0 THEN ({dst_table}.disk_used * {dst_table}.count + incoming.disk_used * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                            cache_dir_size = CASE WHEN {dst_table}.cache_dir_size IS NULL THEN incoming.cache_dir_size WHEN incoming.cache_dir_size IS NULL THEN {dst_table}.cache_dir_size WHEN {dst_table}.count + incoming.count > 0 THEN ({dst_table}.cache_dir_size * {dst_table}.count + incoming.cache_dir_size * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                            hit_rate = CASE WHEN {dst_table}.hit_rate IS NULL THEN incoming.hit_rate WHEN incoming.hit_rate IS NULL THEN {dst_table}.hit_rate WHEN {dst_table}.count + incoming.count > 0 THEN ({dst_table}.hit_rate * {dst_table}.count + incoming.hit_rate * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
                             count = {dst_table}.count + incoming.count
                         """,
-                        (dst_seconds, dst_seconds, canonical_proxy_id, range_start, range_end),
+                        (
+                            dst_seconds,
+                            dst_seconds,
+                            canonical_proxy_id,
+                            range_start,
+                            range_end,
+                        ),
                     )
 
                     conn.execute(
@@ -243,8 +249,8 @@ class TimeSeriesStore:
         with self._connect() as conn:
             with guarded_proxy_write(conn, proxy_id) as guard:
                 conn.execute(
-                    "DELETE FROM ts_1y WHERE proxy_id = %s AND ts < %s",
-                    (guard.proxy_id, aligned_y),
+                    "DELETE FROM ts_1y WHERE proxy_id = %s AND ts < %s ORDER BY ts ASC LIMIT %s",
+                    (guard.proxy_id, aligned_y, 120),
                 )
 
     def summary(self) -> dict[str, Any]:

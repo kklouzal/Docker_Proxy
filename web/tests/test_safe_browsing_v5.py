@@ -763,6 +763,8 @@ def test_safe_browsing_status_counts_prefixes_and_cache(monkeypatch) -> None:
                 return Result(0)
             if "information_schema.statistics" in sql:
                 return Result(1)
+            if "information_schema.columns" in sql:
+                return Result(1)
             if "safe_browsing_hash_lists" in sql:
                 assert params == ("mw-4b", "se-4b")
                 return Result(2)
@@ -889,7 +891,9 @@ def test_safe_browsing_apply_hash_list_accepts_matching_checksum() -> None:
             "sha256Checksum": checksum,
         },
     )
-    assert conn.inserted == [("mw-4b", prefix)]
+    assert len(conn.inserted) == 1
+    assert conn.inserted[0][:2] == ("mw-4b", prefix)
+    assert isinstance(conn.inserted[0][2], int)
 
 
 def test_safe_browsing_ignores_canary_full_hash_detail(monkeypatch) -> None:
@@ -1058,3 +1062,62 @@ def test_safe_browsing_cache_lookup_does_not_delete_expired_rows(monkeypatch) ->
     )
     assert queries
     assert all(not query.upper().startswith('DELETE ') for query in queries)
+
+
+def test_safe_browsing_hash_list_replacement_marks_generation_before_prune(
+    monkeypatch,
+) -> None:
+    from services import safe_browsing_v5
+
+    class Result:
+        def __init__(self, rows=(), rowcount=0) -> None:
+            self._rows = list(rows)
+            self.rowcount = rowcount
+
+        def fetchall(self):
+            return self._rows
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.executed = []
+            self.executemany_calls = []
+
+        def execute(self, sql, params=None):
+            normalized = " ".join(str(sql).split())
+            self.executed.append((normalized, tuple(params or ())))
+            if "FROM safe_browsing_hash_prefixes WHERE list_name=%s ORDER BY prefix" in normalized:
+                return Result(rows=[(b"zzzz",)])
+            if normalized.startswith("DELETE FROM safe_browsing_hash_prefixes"):
+                return Result(rowcount=1)
+            return Result()
+
+        def executemany(self, sql, params):
+            normalized = " ".join(str(sql).split())
+            rows = list(params or [])
+            self.executemany_calls.append((normalized, rows))
+            return Result(rowcount=len(rows))
+
+    monkeypatch.setattr(safe_browsing_v5.time, "time_ns", lambda: 123456789)
+    conn = FakeConn()
+    item = {
+        "name": "mw-4b",
+        "additionsFourBytes": {"firstValue": 0x01020304, "entriesCount": 0},
+        "version": "AQID",
+    }
+
+    SafeBrowsingStore()._apply_hash_list(conn, item)
+
+    insert_sql, rows = conn.executemany_calls[-1]
+    assert "generation" in insert_sql
+    assert rows == [("mw-4b", b"\x01\x02\x03\x04", 123456789)]
+    delete_sql, delete_params = next(
+        (sql, params)
+        for sql, params in conn.executed
+        if sql.startswith("DELETE FROM safe_browsing_hash_prefixes")
+        and "generation <>" in sql
+    )
+    assert "ORDER BY prefix ASC LIMIT" in delete_sql
+    assert delete_params == ("mw-4b", 123456789, 5000)

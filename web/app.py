@@ -5674,7 +5674,14 @@ def observability_clear_logs():
             for table in result.get("tables") or []
             if table.get("status") == "failed"
         ]
+        partial_tables = [
+            str(table.get("table") or "")
+            for table in result.get("tables") or []
+            if table.get("status") == "partial"
+        ]
         detail = f"cleared stored observability log history from {cleared_tables} tables across the fleet"
+        if partial_tables:
+            detail += f"; partially cleared tables: {', '.join(partial_tables[:5])}"
         if failed_tables:
             detail += f"; failed tables: {', '.join(failed_tables[:5])}"
         _record_audit_event(
@@ -5682,7 +5689,7 @@ def observability_clear_logs():
             ok=not failed_tables and bool(result.get("ok", True)),
             detail=detail,
         )
-        if failed_tables or not bool(result.get("ok", True)):
+        if failed_tables or partial_tables or not bool(result.get("ok", True)):
             return _redirect_to("observability", pane="overview", clear_error="1")
         return _redirect_to(
             "observability",

@@ -241,3 +241,38 @@ def test_observability_advisory_lock_uses_unpooled_connection(monkeypatch) -> No
         "SELECT RELEASE_LOCK(%s)",
         "close",
     ]
+
+
+def test_clear_observability_logs_reports_partial_bounded_delete_fallback(
+    monkeypatch,
+) -> None:
+    existing = {"diagnostic_requests"}
+
+    monkeypatch.setattr(maintenance, "_table_exists", lambda table: table in existing)
+
+    def fail_truncate(_table: str) -> None:
+        msg = "metadata lock timeout"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(maintenance, "_truncate_table", fail_truncate)
+    monkeypatch.setattr(
+        maintenance,
+        "_delete_table_in_chunks",
+        lambda table: maintenance.BoundedDeleteResult(
+            table=table,
+            deleted_rows=7,
+            iterations=2,
+            truncated=True,
+        ),
+    )
+
+    result = maintenance.clear_observability_logs()
+
+    assert result["ok"] is False
+    assert result["deleted_rows"] == 7
+    assert any(
+        row["table"] == "diagnostic_requests"
+        and row["status"] == "partial"
+        and row["maintenance"] == "delete_fallback"
+        for row in result["tables"]
+    )

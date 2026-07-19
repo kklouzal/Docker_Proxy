@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from services.bounded_delete import BoundedDeleteResult, delete_where_in_chunks, env_int
 from services.db import DATABASE_ERRORS, connect, connect_unpooled, table_exists
 from services.sql_identifiers import quote_mysql_identifier
 
@@ -35,6 +36,15 @@ OBSERVABILITY_LOG_TABLES: tuple[str, ...] = (
 
 _OBSERVABILITY_MAINTENANCE_LOCK_NAME = "docker_proxy_observability_maintenance"
 _MAINTENANCE_HISTORY_LIMIT = 5
+
+
+def _clear_fallback_max_rows_per_table() -> int:
+    return env_int(
+        "MYSQL_OBSERVABILITY_CLEAR_MAX_ROWS_PER_TABLE",
+        1_000_000,
+        minimum=1,
+        maximum=10_000_000,
+    )
 
 
 @dataclass(frozen=True)
@@ -104,13 +114,16 @@ def _truncate_table(table: str) -> None:
     _retry_stale_connection(truncate)
 
 
-def _delete_table(table: str) -> int:
-    quoted = quote_mysql_identifier(table)
-
-    def delete() -> int:
-        with connect() as conn:
-            result = conn.execute(f"DELETE FROM {quoted}")
-            return max(0, int(getattr(result, "rowcount", 0) or 0))
+def _delete_table_in_chunks(table: str) -> BoundedDeleteResult:
+    def delete() -> BoundedDeleteResult:
+        return delete_where_in_chunks(
+            connect,
+            table=table,
+            where_sql="1 = 1",
+            max_rows=_clear_fallback_max_rows_per_table(),
+            log_key=f"observability.clear.{table}",
+            log_label=f"Observability clear fallback for {table}",
+        )
 
     return _retry_stale_connection(delete)
 
@@ -134,8 +147,18 @@ def _run_table_maintenance(table: str, *, analyze: bool, optimize: bool) -> str:
 
 def _best_effort_delete_fallback(table: str) -> tuple[str, int, str]:
     try:
-        deleted = _delete_table(table)
-        return "cleared", deleted, "delete_fallback"
+        result = _delete_table_in_chunks(table)
+        if result.truncated:
+            return (
+                "partial",
+                result.deleted_rows,
+                f"delete_fallback partial iterations={result.iterations}",
+            )
+        return (
+            "cleared",
+            result.deleted_rows,
+            f"delete_fallback iterations={result.iterations}",
+        )
     except DATABASE_ERRORS as exc:
         return "failed", 0, public_detail(exc)
     except Exception as exc:
@@ -487,11 +510,13 @@ def clear_observability_logs(*, optimize: bool = False) -> dict[str, Any]:
                 table=table,
                 status=status,
                 deleted_rows=deleted,
-                maintenance="delete_fallback" if status == "cleared" else "failed",
+                maintenance=(
+                    "delete_fallback" if status in {"cleared", "partial"} else "failed"
+                ),
                 detail=detail,
             )
             table_results.append(row)
-            if status == "failed":
+            if status != "cleared":
                 failed.append(row)
         except Exception:
             status, deleted, detail = _best_effort_delete_fallback(table)
@@ -500,11 +525,13 @@ def clear_observability_logs(*, optimize: bool = False) -> dict[str, Any]:
                 table=table,
                 status=status,
                 deleted_rows=deleted,
-                maintenance="delete_fallback" if status == "cleared" else "failed",
+                maintenance=(
+                    "delete_fallback" if status in {"cleared", "partial"} else "failed"
+                ),
                 detail=detail,
             )
             table_results.append(row)
-            if status == "failed":
+            if status != "cleared":
                 failed.append(row)
 
     return {
