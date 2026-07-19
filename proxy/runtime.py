@@ -1349,13 +1349,19 @@ class ProxyRuntime:
             status: max(0, int(counts.get(status) or 0))
             for status in ("pending", "applying", "applied", "superseded", "failed")
         }
+        active_count = normalized_counts["pending"] + normalized_counts["applying"]
         return {
-            "ok": True,
+            "ok": active_count == 0,
             "detail": (
                 "operation ledger reachable; "
                 f"pending={normalized_counts['pending']} "
                 f"applying={normalized_counts['applying']} "
                 f"failed={normalized_counts['failed']}"
+                + (
+                    "; proxy convergence is still in progress"
+                    if active_count
+                    else ""
+                )
             ),
             "counts": normalized_counts,
         }
@@ -3141,6 +3147,7 @@ class ProxyRuntime:
             listener_ok = proxy_ok
         services = {
             "supervisor": self._supervisor_programs_health(),
+            "operation_ledger": self._operation_ledger_health(),
             "squid_listeners": {
                 "ok": bool(listener_ok),
                 "detail": _listener_mode_summary(listener_details)

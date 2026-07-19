@@ -14,6 +14,7 @@ from .live_test_helpers import (
     LIVE_CONFIG,
     LiveStackClient,
     unique_token,
+    wait_for_primary_proxy_traffic_converged,
     wait_for_proxy_fixture_response,
     wait_for_proxy_management_payload,
 )
@@ -87,6 +88,7 @@ def test_live_proxy_dns_failure_returns_squid_error_and_keeps_proxy_healthy(
 def test_live_proxy_http_cache_miss_serial_and_parallel_bursts(
     admin_client: LiveStackClient,
 ) -> None:
+    wait_for_primary_proxy_traffic_converged(admin_client, timeout_seconds=120.0)
     token = unique_token("http_cache_miss_burst")
 
     def fetch(index: int) -> tuple[int, str]:

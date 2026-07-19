@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from .live_test_helpers import LiveStackClient, query_params, unique_domain
+from .live_test_helpers import (
+    LiveStackClient,
+    query_params,
+    unique_domain,
+    wait_for_primary_proxy_traffic_converged,
+)
 
 pytestmark = pytest.mark.live
 
@@ -54,6 +59,7 @@ def test_live_monitoring_redirects_and_admin_actions_follow_real_routes(
     )
     assert cache_clear_response.status == 200
     assert "Status" in cache_clear_response.text
+    wait_for_primary_proxy_traffic_converged(admin_client, timeout_seconds=120.0)
 
 
 def test_live_monitoring_quick_actions_persist_and_return_expected_destinations(

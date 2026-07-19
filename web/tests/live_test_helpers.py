@@ -492,6 +492,52 @@ def latest_config_apply(proxy_id: object | None) -> Any:
     return _config_revisions_store().latest_apply(proxy_id)
 
 
+def _operation_ledger_store() -> Any:
+    from services.operation_ledger import get_operation_ledger  # type: ignore
+
+    return get_operation_ledger()
+
+
+def proxy_operation_counts(proxy_id: object | None) -> dict[str, int]:
+    counts = _operation_ledger_store().counts_by_status(proxy_id)
+    return {str(key): int(value or 0) for key, value in dict(counts or {}).items()}
+
+
+def wait_for_proxy_operations_idle(
+    proxy_id: object | None = None,
+    *,
+    timeout_seconds: float | None = None,
+) -> dict[str, int]:
+    target_proxy_id = proxy_id or LIVE_CONFIG.primary_proxy_id
+
+    return _wait_for_value(
+        lambda: proxy_operation_counts(target_proxy_id),
+        accept=lambda counts: int(counts.get("pending") or 0) == 0
+        and int(counts.get("applying") or 0) == 0,
+        description=f"proxy operation queue for {target_proxy_id!r} to become idle",
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def wait_for_primary_proxy_traffic_converged(
+    client: LiveStackClient,
+    *,
+    timeout_seconds: float | None = None,
+) -> HttpResponse:
+    wait_for_proxy_operations_idle(
+        LIVE_CONFIG.primary_proxy_id,
+        timeout_seconds=timeout_seconds,
+    )
+    wait_for_proxy_management_payload(require_ok=True, force=True)
+    return wait_for_proxy_fixture_response(
+        client,
+        "/health",
+        timeout_seconds=timeout_seconds,
+        accept=lambda response: response.status == 200
+        and "ICAP_FAILURE" not in response.text,
+    )
+
+
 def wait_for_config_apply(
     proxy_id: object | None,
     *,
@@ -522,6 +568,7 @@ def wait_for_config_apply(
         description=f"config apply for proxy {proxy_id!r}",
         timeout_seconds=timeout_seconds,
     )
+    wait_for_proxy_operations_idle(proxy_id, timeout_seconds=timeout_seconds)
     wait_for_proxy_management_payload(require_ok=True, force=True)
     return application
 

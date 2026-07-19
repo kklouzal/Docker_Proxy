@@ -414,8 +414,10 @@ def clean_response(
     http_header: bytes,
     body: bytes,
 ) -> bytes:
-    if allow_204:
-        return _icap_response("204 No Content", {"ISTag": ISTAG})
+    # Be conservative for RESPMOD clean verdicts: replaying the already-drained
+    # response body avoids Squid's late-204 backup edge cases across Preview,
+    # unknown/chunked framing, and persistent ICAP connection churn.  Fail-open
+    # paths still use 204 only when the body is complete and known backup-safe.
     encoded = _encode_icap_body_chunk(body)
     http_header = _http_header_for_body_replay(http_header, len(body))
     return _icap_response(

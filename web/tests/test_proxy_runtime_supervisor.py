@@ -3148,11 +3148,12 @@ def test_operation_ledger_health_reports_counts_and_unavailable(monkeypatch) -> 
 
     result = ProxyRuntime._operation_ledger_health(runtime)
 
-    assert result["ok"] is True
+    assert result["ok"] is False
     assert result["counts"]["pending"] == 2
     assert result["counts"]["applying"] == 1
     assert result["counts"]["failed"] == 3
     assert "pending=2 applying=1 failed=3" in result["detail"]
+    assert "convergence is still in progress" in result["detail"]
 
     class BrokenLedger:
         def counts_by_status(self, _proxy_id):
@@ -3166,6 +3167,34 @@ def test_operation_ledger_health_reports_counts_and_unavailable(monkeypatch) -> 
     assert unavailable["ok"] is False
     assert unavailable["counts"] == {}
     assert unavailable["detail"] == "Proxy operation ledger is unavailable."
+
+
+def test_collect_navigation_health_degrades_while_operations_are_active() -> None:
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 0.0
+    runtime._health_cache_lock = threading.Lock()
+    runtime.controller = SimpleNamespace(
+        get_status=lambda: (b"squid ok", b""),
+        _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
+        _wait_for_http_listener=lambda *, timeout: True,
+    )
+    runtime._current_config_sha = lambda: "config-sha"
+    runtime._supervisor_programs_health = lambda: {
+        "ok": True,
+        "detail": "supervisor programs running",
+        "programs": {},
+    }
+    runtime._operation_ledger_health = lambda: {
+        "ok": False,
+        "detail": "operation ledger reachable; pending=1 applying=0 failed=0; proxy convergence is still in progress",
+        "counts": {"pending": 1, "applying": 0, "failed": 0},
+    }
+
+    result = runtime.collect_navigation_health(force=True)
+
+    assert result["ok"] is False
+    assert result["status"] == "degraded"
+    assert result["services"]["operation_ledger"]["counts"]["pending"] == 1
 
 
 def test_collect_health_degrades_when_operation_ledger_unavailable() -> None:

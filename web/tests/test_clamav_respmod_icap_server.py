@@ -236,7 +236,7 @@ def test_icap_chunked_body_handles_preview_continue() -> None:
     assert continues == 1
 
 
-def test_clean_icap_response_prefers_204_when_allowed() -> None:
+def test_clean_icap_response_replays_body_even_when_204_allowed() -> None:
     server = _load_server()
 
     response = server.clean_response(
@@ -245,8 +245,10 @@ def test_clean_icap_response_prefers_204_when_allowed() -> None:
         body=b"clean",
     )
 
-    assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
-    assert b"ISTag" in response
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"Content-Length: 5\r\n" in response
+    assert b"5\r\nclean\r\n0\r\n\r\n" in response
 
 
 def test_unknown_length_clean_respmod_replays_body_instead_of_late_204() -> None:
@@ -372,7 +374,7 @@ def test_burst_respmod_requests_close_each_exchange_and_succeed() -> None:
 
     assert len(responses) == 24
     assert all(
-        response.startswith(b"ICAP/1.0 204 No Content\r\n") for response in responses
+        response.startswith(b"ICAP/1.0 200 OK\r\n") for response in responses
     )
     assert all(b"Connection: close\r\n" in response for response in responses)
 
@@ -941,7 +943,7 @@ def test_scan_capacity_exhaustion_fails_open_without_wedging_options(
     assert second.startswith(b"ICAP/1.0 204 No Content\r\n")
     assert options.startswith(b"ICAP/1.0 200 OK\r\n")
     assert first_response
-    assert first_response[0].startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert first_response[0].startswith(b"ICAP/1.0 200 OK\r\n")
 
 
 def test_slow_clamd_scan_fails_closed_with_error_payload() -> None:
