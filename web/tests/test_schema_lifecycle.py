@@ -187,3 +187,83 @@ def test_schema_migration_failure_is_observable_and_retryable() -> None:
     )
     assert [row.status for row in result] == ["applied"]
     assert attempts == 2
+
+
+def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
+    specs = schema_lifecycle._migration_specs()
+    versions = [spec.version for spec in specs]
+    names = {spec.name for spec in specs}
+
+    assert versions == list(range(1, schema_lifecycle.latest_schema_version() + 1))
+    assert {
+        "adblock_runtime_tables",
+        "webfilter_and_safe_browsing_tables",
+        "sslfilter_policy_tables",
+        "diagnostic_request_and_icap_tables",
+        "ssl_error_aggregate_tables",
+        "live_stats_aggregate_tables",
+        "timeseries_resolution_tables",
+        "observability_control_tables",
+        "policy_request_tables",
+        "pac_profile_tables",
+        "proxy_lifecycle_indexes",
+        "control_plane_retention_indexes",
+        "schema_lifecycle_complete_runtime_assertions",
+    } <= names
+
+
+class _CurrentSchemaConn:
+    def __init__(self) -> None:
+        self.ops: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql: str, params=()):
+        text = " ".join(str(sql).split())
+        self.ops.append(text)
+        if text.startswith("SELECT version, name, checksum, status, error FROM schema_migrations"):
+            return _Result(
+                [
+                    {
+                        "version": schema_lifecycle.latest_schema_version(),
+                        "name": "schema_lifecycle_complete_runtime_assertions",
+                        "checksum": "ignored",
+                        "status": "applied",
+                        "error": "",
+                    },
+                ],
+            )
+        return _Result()
+
+
+def test_lazy_store_init_db_skips_hot_path_ddl_when_schema_current(tmp_path, monkeypatch) -> None:
+    from services.adblock_store import AdblockStore
+    from services.pac_profiles_store import PacProfilesStore
+    from services.policy_requests import PolicyRequestStore
+    from services.safe_browsing_v5 import SafeBrowsingStore
+    from services.sslfilter_store import SslFilterStore
+
+    stores = [
+        AdblockStore(lists_dir=str(tmp_path / "adblock")),
+        SslFilterStore(),
+        PacProfilesStore(),
+        PolicyRequestStore(),
+        SafeBrowsingStore(),
+    ]
+    SafeBrowsingStore._schema_ready = False
+
+    for store in stores:
+        conn = _CurrentSchemaConn()
+        monkeypatch.setattr(store, "_connect", lambda conn=conn: conn)
+        store.init_db()
+        forbidden = [
+            op
+            for op in conn.ops
+            if "information_schema" in op.lower()
+            or op.startswith(("ALTER TABLE", "CREATE TABLE"))
+        ]
+        assert forbidden == []

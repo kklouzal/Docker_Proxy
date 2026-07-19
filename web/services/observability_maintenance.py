@@ -267,8 +267,8 @@ def _ensure_observability_maintenance_runs_table() -> None:
                     duration_ms BIGINT NOT NULL DEFAULT 0,
                     status VARCHAR(16) NOT NULL,
                     retention_days INT NOT NULL,
-                    analyze TINYINT NOT NULL DEFAULT 0,
-                    optimize TINYINT NOT NULL DEFAULT 0,
+                    `analyze` TINYINT NOT NULL DEFAULT 0,
+                    `optimize` TINYINT NOT NULL DEFAULT 0,
                     pruned TINYINT NOT NULL DEFAULT 0,
                     maintained_tables INT NOT NULL DEFAULT 0,
                     detail VARCHAR(512) NOT NULL DEFAULT '',
@@ -307,7 +307,7 @@ def get_observability_maintenance_status(*, limit: int = 5) -> dict[str, Any]:
             rows = conn.execute(
                 """
                 SELECT id, run_type, started_ts, finished_ts, duration_ms, status,
-                       retention_days, analyze, optimize, pruned, maintained_tables, detail
+                       retention_days, `analyze`, `optimize`, pruned, maintained_tables, detail
                 FROM observability_maintenance_runs
                 ORDER BY id DESC
                 LIMIT %s
@@ -357,7 +357,7 @@ def record_observability_maintenance_run(
                 """
                 INSERT INTO observability_maintenance_runs(
                     run_type, started_ts, finished_ts, duration_ms, status,
-                    retention_days, analyze, optimize, pruned, maintained_tables, detail
+                    retention_days, `analyze`, `optimize`, pruned, maintained_tables, detail
                 )
                 VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,

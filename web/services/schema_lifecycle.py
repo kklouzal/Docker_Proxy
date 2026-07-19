@@ -26,13 +26,14 @@ from services.db import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 14
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _HOT_PATH_ENSURE_LOCK = threading.Lock()
 _HOT_PATH_ENSURED = False
+_MIGRATION_CONTEXT = threading.local()
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,45 @@ def _raise_privilege_error(exc: BaseException) -> None:
         )
         raise PermissionError(msg) from exc
     raise exc
+
+
+def _migration_assertion_error(table_name: str, object_name: str, object_type: str) -> RuntimeError:
+    return RuntimeError(
+        f"MySQL schema migration is incomplete: missing {object_type} "
+        f"{table_name}.{object_name}. Run startup schema migrations with a "
+        "DDL-capable account before using DML-only runtime paths."
+    )
+
+
+def assert_table(conn: Any, table_name: str) -> None:
+    if not table_exists(conn, table_name):
+        raise _migration_assertion_error(table_name, table_name, "table")
+
+
+def assert_column(conn: Any, table_name: str, column_name: str) -> None:
+    if not column_exists(conn, table_name, column_name):
+        raise _migration_assertion_error(table_name, column_name, "column")
+
+
+def assert_index(conn: Any, table_name: str, index_name: str) -> None:
+    if not index_exists(conn, table_name, index_name):
+        raise _migration_assertion_error(table_name, index_name, "index")
+
+
+def schema_migration_in_progress() -> bool:
+    return bool(getattr(_MIGRATION_CONTEXT, "active", False))
+
+
+def runtime_schema_current_applied(conn: Any) -> bool:
+    try:
+        row = _existing_migration(conn, _SCHEMA_VERSION)
+    except Exception:
+        return False
+    return row is not None and str(_row_value(row, "status", 3) or "") == "applied"
+
+
+def runtime_schema_ready_for_lazy_store(conn: Any) -> bool:
+    return (not schema_migration_in_progress()) and runtime_schema_current_applied(conn)
 
 
 def table_exists(conn: Any, table_name: str) -> bool:
@@ -449,20 +489,158 @@ def _init_audit_schema(_conn: Any) -> None:
     importlib.import_module("services.audit_store").get_audit_store().init_db()
 
 
-def _default_spec() -> SchemaMigrationSpec:
-    return SchemaMigrationSpec(
-        version=_SCHEMA_VERSION,
-        name="bootstrap_mysql_schema_lifecycle",
-        data_steps=(
-            SchemaDataStep("auth_users", _init_auth_schema),
-            SchemaDataStep("proxy_registry", _init_proxy_registry_schema),
-            SchemaDataStep("config_revisions", _init_config_revision_schema),
-            SchemaDataStep("certificate_bundles", _init_certificate_bundle_schema),
-            SchemaDataStep("adblock_artifacts", _init_adblock_artifact_schema),
-            SchemaDataStep("operation_ledger", _init_operation_ledger_schema),
-            SchemaDataStep("audit_store", _init_audit_schema),
+def _init_adblock_runtime_schema(conn: Any) -> None:
+    store_module = importlib.import_module("services.adblock_store")
+    store_module.AdblockStore(lists_dir=os.environ.get("ADBLOCK_LISTS_DIR", "."))._init_schema(conn)
+
+
+def _init_webfilter_runtime_schema(_conn: Any) -> None:
+    importlib.import_module("services.webfilter_store").get_webfilter_store().init_db()
+
+
+def _init_sslfilter_schema(_conn: Any) -> None:
+    importlib.import_module("services.sslfilter_store").get_sslfilter_store().init_db()
+
+
+def _init_safe_browsing_schema(conn: Any) -> None:
+    importlib.import_module("services.safe_browsing_v5").SafeBrowsingStore.init_schema(conn)
+
+
+def _init_diagnostic_schema(_conn: Any) -> None:
+    importlib.import_module("services.diagnostic_store").get_diagnostic_store().init_db()
+
+
+def _init_ssl_errors_schema(_conn: Any) -> None:
+    importlib.import_module("services.ssl_errors_store").get_ssl_errors_store().init_db()
+
+
+def _init_live_stats_schema(_conn: Any) -> None:
+    importlib.import_module("services.live_stats").get_store().init_db()
+
+
+def _init_timeseries_schema(_conn: Any) -> None:
+    importlib.import_module("services.timeseries_store").get_timeseries_store().init_db()
+
+
+def _init_observability_schema(_conn: Any) -> None:
+    maintenance = importlib.import_module("services.observability_maintenance")
+    queries = importlib.import_module("services.observability_queries")
+    maintenance._ensure_observability_settings_table()
+    maintenance._ensure_observability_maintenance_runs_table()
+    queries.get_observability_queries()._ensure_report_schedule_db()
+
+
+def _init_policy_schema(_conn: Any) -> None:
+    importlib.import_module("services.policy_requests").get_policy_request_store().init_db()
+
+
+def _init_pac_schema(_conn: Any) -> None:
+    importlib.import_module("services.pac_profiles_store").get_pac_profiles_store().init_db()
+
+
+def _init_proxy_lifecycle_schema(conn: Any) -> None:
+    lifecycle = importlib.import_module("services.proxy_lifecycle")
+    lifecycle.ensure_lifecycle_schema(conn)
+    for table in lifecycle.PROXY_LIFECYCLE_TABLES:
+        lifecycle.ensure_proxy_lifecycle_index(conn, table)
+
+
+def _init_control_plane_retention_indexes(_conn: Any) -> None:
+    maintenance = importlib.import_module("services.control_plane_maintenance")
+    for table in maintenance.CONTROL_PLANE_RETENTION_INDEXES:
+        if table_exists(_conn, table):
+            for index_name, ddl in maintenance.CONTROL_PLANE_RETENTION_INDEXES[table]:
+                ensure_index(_conn, table_name=table, index_name=index_name, ddl=ddl)
+
+
+def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
+    return (
+        SchemaMigrationSpec(
+            version=1,
+            name="bootstrap_mysql_schema_lifecycle",
+            data_steps=(
+                SchemaDataStep("auth_users", _init_auth_schema),
+                SchemaDataStep("proxy_registry", _init_proxy_registry_schema),
+                SchemaDataStep("config_revisions", _init_config_revision_schema),
+                SchemaDataStep("certificate_bundles", _init_certificate_bundle_schema),
+                SchemaDataStep("adblock_artifacts", _init_adblock_artifact_schema),
+                SchemaDataStep("operation_ledger", _init_operation_ledger_schema),
+                SchemaDataStep("audit_store", _init_audit_schema),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=2,
+            name="adblock_runtime_tables",
+            data_steps=(SchemaDataStep("adblock_store", _init_adblock_runtime_schema),),
+        ),
+        SchemaMigrationSpec(
+            version=3,
+            name="webfilter_and_safe_browsing_tables",
+            data_steps=(
+                SchemaDataStep("safe_browsing_v5", _init_safe_browsing_schema),
+                SchemaDataStep("webfilter_store", _init_webfilter_runtime_schema),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=4,
+            name="sslfilter_policy_tables",
+            data_steps=(SchemaDataStep("sslfilter_store", _init_sslfilter_schema),),
+        ),
+        SchemaMigrationSpec(
+            version=5,
+            name="diagnostic_request_and_icap_tables",
+            data_steps=(SchemaDataStep("diagnostic_store", _init_diagnostic_schema),),
+        ),
+        SchemaMigrationSpec(
+            version=6,
+            name="ssl_error_aggregate_tables",
+            data_steps=(SchemaDataStep("ssl_errors_store", _init_ssl_errors_schema),),
+        ),
+        SchemaMigrationSpec(
+            version=7,
+            name="live_stats_aggregate_tables",
+            data_steps=(SchemaDataStep("live_stats", _init_live_stats_schema),),
+        ),
+        SchemaMigrationSpec(
+            version=8,
+            name="timeseries_resolution_tables",
+            data_steps=(SchemaDataStep("timeseries_store", _init_timeseries_schema),),
+        ),
+        SchemaMigrationSpec(
+            version=9,
+            name="observability_control_tables",
+            data_steps=(SchemaDataStep("observability", _init_observability_schema),),
+        ),
+        SchemaMigrationSpec(
+            version=10,
+            name="policy_request_tables",
+            data_steps=(SchemaDataStep("policy_requests", _init_policy_schema),),
+        ),
+        SchemaMigrationSpec(
+            version=11,
+            name="pac_profile_tables",
+            data_steps=(SchemaDataStep("pac_profiles", _init_pac_schema),),
+        ),
+        SchemaMigrationSpec(
+            version=12,
+            name="proxy_lifecycle_indexes",
+            data_steps=(SchemaDataStep("proxy_lifecycle", _init_proxy_lifecycle_schema),),
+        ),
+        SchemaMigrationSpec(
+            version=13,
+            name="control_plane_retention_indexes",
+            data_steps=(SchemaDataStep("control_plane_retention", _init_control_plane_retention_indexes),),
+        ),
+        SchemaMigrationSpec(
+            version=14,
+            name="schema_lifecycle_complete_runtime_assertions",
+            data_steps=(SchemaDataStep("runtime_assertion_cutover", lambda _conn: None),),
         ),
     )
+
+
+def _default_spec() -> SchemaMigrationSpec:
+    return _migration_specs()[-1]
 
 
 def apply_schema_migration(
@@ -513,7 +691,12 @@ def apply_schema_migration(
                 _start_migration(conn, spec)
                 conn.commit()
                 try:
-                    _apply_spec(conn, spec)
+                    previous_context = bool(getattr(_MIGRATION_CONTEXT, "active", False))
+                    _MIGRATION_CONTEXT.active = True
+                    try:
+                        _apply_spec(conn, spec)
+                    finally:
+                        _MIGRATION_CONTEXT.active = previous_context
                     results.append(_finish_migration(conn, spec))
                     conn.commit()
                 except Exception as exc:
@@ -526,11 +709,16 @@ def apply_schema_migration(
 
 
 def migrate_schema(*, require_privileges: bool = True) -> list[SchemaMigrationResult]:
-    return apply_schema_migration(
-        _default_spec(),
-        require_privileges=require_privileges,
-        connect_factory=connect,
-    )
+    results: list[SchemaMigrationResult] = []
+    for spec in _migration_specs():
+        results.extend(
+            apply_schema_migration(
+                spec,
+                require_privileges=require_privileges,
+                connect_factory=connect,
+            ),
+        )
+    return results
 
 
 def ensure_startup_schema() -> list[SchemaMigrationResult]:
@@ -552,7 +740,27 @@ def ensure_startup_schema_if_configured() -> list[SchemaMigrationResult]:
     return ensure_startup_schema()
 
 
-def ensure_hot_path_schema_once() -> None:
+def latest_schema_version() -> int:
+    return _SCHEMA_VERSION
+
+
+def assert_schema_current(conn: Any | None = None) -> None:
+    owns_connection = conn is None
+    active_conn = connect() if owns_connection else conn
+    try:
+        row = _existing_migration(active_conn, _SCHEMA_VERSION)
+        if row is None or str(_row_value(row, "status", 3) or "") != "applied":
+            msg = (
+                f"MySQL schema migration {_SCHEMA_VERSION} is not applied. "
+                "Run startup schema migrations with a DDL-capable account before normal runtime."
+            )
+            raise RuntimeError(msg)
+    finally:
+        if owns_connection:
+            active_conn.close()
+
+
+def ensure_runtime_schema_current_once() -> None:
     global _HOT_PATH_ENSURED
     if _HOT_PATH_ENSURED:
         return
@@ -560,18 +768,14 @@ def ensure_hot_path_schema_once() -> None:
         if _HOT_PATH_ENSURED:
             return
         with connect() as conn:
-            _ensure_migration_tables(conn)
-            row = _existing_migration(conn, _SCHEMA_VERSION)
-            if row is None or str(_row_value(row, "status", 3) or "") != "applied":
-                with mysql_advisory_lock(
-                    conn,
-                    _RUNTIME_LOCK_NAME,
-                    mysql_schema_lock_timeout_seconds(10),
-                ):
-                    row = _existing_migration(conn, _SCHEMA_VERSION)
-                    if row is None or str(_row_value(row, "status", 3) or "") != "applied":
-                        migrate_schema(require_privileges=False)
+            assert_schema_current(conn)
         _HOT_PATH_ENSURED = True
+
+
+def ensure_hot_path_schema_once() -> None:
+    # Backward-compatible name for callers that used to allow runtime DDL.
+    # Hot paths now perform only a one-time migration assertion; startup owns DDL.
+    ensure_runtime_schema_current_once()
 
 
 def schema_migration_status() -> list[dict[str, Any]]:

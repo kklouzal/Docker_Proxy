@@ -86,6 +86,16 @@ class TimeSeriesStore:
             if self._db_initialized:
                 return
             with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._db_initialized = True
+                        return
+                except Exception:
+                    pass
                 for r in RESOLUTIONS:
                     conn.execute(
                         f"""

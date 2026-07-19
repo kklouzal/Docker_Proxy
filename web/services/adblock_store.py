@@ -111,6 +111,8 @@ class AdblockStore:
 
         self._blocklog_started = False
         self._blocklog_lock = threading.Lock()
+        self._db_initialized = False
+        self._db_init_lock = threading.Lock()
         self._last_events_prune_ts = 0
 
     def _connect(self):
@@ -121,13 +123,29 @@ class AdblockStore:
 
     def init_db(self) -> None:
         pathlib.Path(self.lists_dir).mkdir(exist_ok=True, parents=True)
-        with self._connect() as conn:
-            with mysql_advisory_lock(
-                conn,
-                "adblock:schema",
-                mysql_schema_lock_timeout_seconds(),
-            ):
-                self._init_schema(conn)
+        if self._db_initialized:
+            return
+        with self._db_init_lock:
+            if self._db_initialized:
+                return
+            with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._db_initialized = True
+                        return
+                except Exception:
+                    pass
+                with mysql_advisory_lock(
+                    conn,
+                    "adblock:schema",
+                    mysql_schema_lock_timeout_seconds(),
+                ):
+                    self._init_schema(conn)
+            self._db_initialized = True
 
     def _init_schema(self, conn) -> None:
         conn.execute(

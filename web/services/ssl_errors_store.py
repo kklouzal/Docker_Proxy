@@ -482,6 +482,16 @@ class SslErrorsStore:
             if self._db_initialized:
                 return
             with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._db_initialized = True
+                        return
+                except Exception:
+                    pass
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS ssl_errors (

@@ -449,6 +449,9 @@ class SafeBrowsingVerdict:
 
 
 class SafeBrowsingStore:
+    _schema_ready = False
+    _schema_lock = threading.Lock()
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._started = False
@@ -457,13 +460,29 @@ class SafeBrowsingStore:
         return connect()
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            with mysql_advisory_lock(
-                conn,
-                "safe_browsing_v5:schema",
-                mysql_schema_lock_timeout_seconds(),
-            ):
-                self.init_schema(conn)
+        if SafeBrowsingStore._schema_ready:
+            return
+        with SafeBrowsingStore._schema_lock:
+            if SafeBrowsingStore._schema_ready:
+                return
+            with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        SafeBrowsingStore._schema_ready = True
+                        return
+                except Exception:
+                    pass
+                with mysql_advisory_lock(
+                    conn,
+                    "safe_browsing_v5:schema",
+                    mysql_schema_lock_timeout_seconds(),
+                ):
+                    self.init_schema(conn)
+            SafeBrowsingStore._schema_ready = True
 
     @staticmethod
     def init_schema(conn) -> None:

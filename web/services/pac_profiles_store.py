@@ -159,64 +159,84 @@ def _normalize_proxy_host_port(
 
 
 class PacProfilesStore:
+    def __init__(self) -> None:
+        self._schema_ready = False
+        self._schema_lock = threading.Lock()
+
     def _connect(self):
         return connect()
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS pac_profiles (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    name VARCHAR(255) NOT NULL,
-                    client_cidr VARCHAR(64) NOT NULL DEFAULT '',
-                    created_ts BIGINT NOT NULL,
-                    KEY idx_pac_profiles_created (created_ts, id),
-                    KEY idx_pac_profiles_proxy (proxy_id, id)
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._schema_ready = True
+                        return
+                except Exception:
+                    pass
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pac_profiles (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        name VARCHAR(255) NOT NULL,
+                        client_cidr VARCHAR(64) NOT NULL DEFAULT '',
+                        created_ts BIGINT NOT NULL,
+                        KEY idx_pac_profiles_created (created_ts, id),
+                        KEY idx_pac_profiles_proxy (proxy_id, id)
+                    )
+                    """,
                 )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS pac_direct_domains (
-                    profile_id BIGINT NOT NULL,
-                    domain VARCHAR(255) NOT NULL,
-                    PRIMARY KEY(profile_id, domain)
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pac_direct_domains (
+                        profile_id BIGINT NOT NULL,
+                        domain VARCHAR(255) NOT NULL,
+                        PRIMARY KEY(profile_id, domain)
+                    )
+                    """,
                 )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS pac_direct_dst_nets (
-                    profile_id BIGINT NOT NULL,
-                    cidr VARCHAR(64) NOT NULL,
-                    PRIMARY KEY(profile_id, cidr)
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pac_direct_dst_nets (
+                        profile_id BIGINT NOT NULL,
+                        cidr VARCHAR(64) NOT NULL,
+                        PRIMARY KEY(profile_id, cidr)
+                    )
+                    """,
                 )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS pac_backup_proxies (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    proxy_host VARCHAR(255) NOT NULL,
-                    proxy_port INT NOT NULL DEFAULT 3128,
-                    position INT NOT NULL DEFAULT 0,
-                    created_ts BIGINT NOT NULL,
-                    KEY idx_pac_backup_proxies_proxy_position (proxy_id, position, id)
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pac_backup_proxies (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        proxy_host VARCHAR(255) NOT NULL,
+                        proxy_port INT NOT NULL DEFAULT 3128,
+                        position INT NOT NULL DEFAULT 0,
+                        created_ts BIGINT NOT NULL,
+                        KEY idx_pac_backup_proxies_proxy_position (proxy_id, position, id)
+                    )
+                    """,
                 )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS pac_proxy_chain_settings (
-                    proxy_id VARCHAR(64) PRIMARY KEY,
-                    direct_enabled TINYINT(1) NOT NULL DEFAULT 1,
-                    updated_ts BIGINT NOT NULL
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pac_proxy_chain_settings (
+                        proxy_id VARCHAR(64) PRIMARY KEY,
+                        direct_enabled TINYINT(1) NOT NULL DEFAULT 1,
+                        updated_ts BIGINT NOT NULL
+                    )
+                    """,
                 )
-                """,
-            )
+            self._schema_ready = True
 
     def list_profiles(self) -> list[PacProfile]:
         self.init_db()

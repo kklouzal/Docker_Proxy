@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -218,17 +219,37 @@ class PolicyRequestStore:
     REQUEST_TABLE = "policy_requests"
     EXCEPTION_TABLE = "policy_exceptions"
 
+    def __init__(self) -> None:
+        self._schema_ready = False
+        self._schema_lock = threading.Lock()
+
     def _connect(self):
         return connect()
 
     def init_db(self) -> None:
-        with self._connect() as c:
-            c.execute(
-                f"CREATE TABLE IF NOT EXISTS {self.REQUEST_TABLE}(id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', status VARCHAR(24) NOT NULL DEFAULT 'pending', block_type VARCHAR(32) NOT NULL DEFAULT 'webfilter', client_ip VARCHAR(64) NOT NULL, request_url TEXT NOT NULL, domain VARCHAR(255) NOT NULL, category VARCHAR(128) NOT NULL DEFAULT '', method VARCHAR(16) NOT NULL DEFAULT '', squid_error VARCHAR(64) NOT NULL DEFAULT '', user_note TEXT NOT NULL, admin_note TEXT NOT NULL, created_ts BIGINT NOT NULL, updated_ts BIGINT NOT NULL, reviewed_ts BIGINT NOT NULL DEFAULT 0, reviewer VARCHAR(128) NOT NULL DEFAULT '', exception_id BIGINT NULL, KEY idx_policy_requests_status_ts (status, created_ts, id), KEY idx_policy_requests_proxy_status_ts (proxy_id,status,created_ts,id), KEY idx_policy_requests_domain (domain), KEY idx_policy_requests_client (client_ip))",
-            )
-            c.execute(
-                f"CREATE TABLE IF NOT EXISTS {self.EXCEPTION_TABLE}(id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', status VARCHAR(24) NOT NULL DEFAULT 'active', block_type VARCHAR(32) NOT NULL DEFAULT 'webfilter', client_ip VARCHAR(64) NOT NULL, domain VARCHAR(255) NOT NULL, category VARCHAR(128) NOT NULL DEFAULT '', created_ts BIGINT NOT NULL, updated_ts BIGINT NOT NULL, created_by VARCHAR(128) NOT NULL DEFAULT '', admin_note TEXT NOT NULL, expires_ts BIGINT NOT NULL DEFAULT 0, revoked_ts BIGINT NOT NULL DEFAULT 0, revoked_by VARCHAR(128) NOT NULL DEFAULT '', source_request_id BIGINT NULL, KEY idx_policy_exceptions_active (proxy_id,status,block_type,expires_ts), KEY idx_policy_exceptions_request (source_request_id), KEY idx_policy_exceptions_domain_client (proxy_id,domain,client_ip))",
-            )
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            with self._connect() as c:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(c):
+                        self._schema_ready = True
+                        return
+                except Exception:
+                    pass
+                c.execute(
+                    f"CREATE TABLE IF NOT EXISTS {self.REQUEST_TABLE}(id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', status VARCHAR(24) NOT NULL DEFAULT 'pending', block_type VARCHAR(32) NOT NULL DEFAULT 'webfilter', client_ip VARCHAR(64) NOT NULL, request_url TEXT NOT NULL, domain VARCHAR(255) NOT NULL, category VARCHAR(128) NOT NULL DEFAULT '', method VARCHAR(16) NOT NULL DEFAULT '', squid_error VARCHAR(64) NOT NULL DEFAULT '', user_note TEXT NOT NULL, admin_note TEXT NOT NULL, created_ts BIGINT NOT NULL, updated_ts BIGINT NOT NULL, reviewed_ts BIGINT NOT NULL DEFAULT 0, reviewer VARCHAR(128) NOT NULL DEFAULT '', exception_id BIGINT NULL, KEY idx_policy_requests_status_ts (status, created_ts, id), KEY idx_policy_requests_proxy_status_ts (proxy_id,status,created_ts,id), KEY idx_policy_requests_domain (domain), KEY idx_policy_requests_client (client_ip))",
+                )
+                c.execute(
+                    f"CREATE TABLE IF NOT EXISTS {self.EXCEPTION_TABLE}(id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', status VARCHAR(24) NOT NULL DEFAULT 'active', block_type VARCHAR(32) NOT NULL DEFAULT 'webfilter', client_ip VARCHAR(64) NOT NULL, domain VARCHAR(255) NOT NULL, category VARCHAR(128) NOT NULL DEFAULT '', created_ts BIGINT NOT NULL, updated_ts BIGINT NOT NULL, created_by VARCHAR(128) NOT NULL DEFAULT '', admin_note TEXT NOT NULL, expires_ts BIGINT NOT NULL DEFAULT 0, revoked_ts BIGINT NOT NULL DEFAULT 0, revoked_by VARCHAR(128) NOT NULL DEFAULT '', source_request_id BIGINT NULL, KEY idx_policy_exceptions_active (proxy_id,status,block_type,expires_ts), KEY idx_policy_exceptions_request (source_request_id), KEY idx_policy_exceptions_domain_client (proxy_id,domain,client_ip))",
+                )
+            self._schema_ready = True
 
     def _rsql(self, w: str = "") -> str:
         return (

@@ -153,41 +153,59 @@ class SslFilterStore:
         self.squid_include_path = squid_include_path
         self.nobump_list_path = nobump_list_path
         self.nocache_src_list_path = nocache_src_list_path
+        self._schema_ready = False
+        self._schema_lock = threading.Lock()
 
     def _connect(self):
         return connect()
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            # New consolidated model. Old pre-consolidation policy tables are intentionally ignored.
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS sslfilter_domains("
-                "proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', "
-                "policy VARCHAR(16) NOT NULL, "
-                "domain VARCHAR(255) NOT NULL, "
-                "added_ts BIGINT NOT NULL, "
-                "PRIMARY KEY(proxy_id, policy, domain), "
-                "KEY idx_sslfilter_domains_proxy_policy_ts (proxy_id, policy, added_ts)"
-                ")",
-            )
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS sslfilter_src_nets("
-                "proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', "
-                "policy VARCHAR(16) NOT NULL, "
-                "cidr VARCHAR(64) NOT NULL, "
-                "added_ts BIGINT NOT NULL, "
-                "PRIMARY KEY(proxy_id, policy, cidr), "
-                "KEY idx_sslfilter_src_nets_proxy_policy_ts (proxy_id, policy, added_ts)"
-                ")",
-            )
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS sslfilter_settings("
-                "proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', "
-                "`key` VARCHAR(64) NOT NULL, "
-                "value TEXT NOT NULL, "
-                "PRIMARY KEY(proxy_id, `key`)"
-                ")",
-            )
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._schema_ready = True
+                        return
+                except Exception:
+                    pass
+                # New consolidated model. Old pre-consolidation policy tables are intentionally ignored.
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS sslfilter_domains("
+                    "proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', "
+                    "policy VARCHAR(16) NOT NULL, "
+                    "domain VARCHAR(255) NOT NULL, "
+                    "added_ts BIGINT NOT NULL, "
+                    "PRIMARY KEY(proxy_id, policy, domain), "
+                    "KEY idx_sslfilter_domains_proxy_policy_ts (proxy_id, policy, added_ts)"
+                    ")",
+                )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS sslfilter_src_nets("
+                    "proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', "
+                    "policy VARCHAR(16) NOT NULL, "
+                    "cidr VARCHAR(64) NOT NULL, "
+                    "added_ts BIGINT NOT NULL, "
+                    "PRIMARY KEY(proxy_id, policy, cidr), "
+                    "KEY idx_sslfilter_src_nets_proxy_policy_ts (proxy_id, policy, added_ts)"
+                    ")",
+                )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS sslfilter_settings("
+                    "proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', "
+                    "`key` VARCHAR(64) NOT NULL, "
+                    "value TEXT NOT NULL, "
+                    "PRIMARY KEY(proxy_id, `key`)"
+                    ")",
+                )
+            self._schema_ready = True
 
     def _set_setting(self, key: str, value: str) -> None:
         self.init_db()
