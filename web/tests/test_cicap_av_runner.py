@@ -181,3 +181,64 @@ def test_fail_open_placeholder_drains_respmod_body_before_204() -> None:
 
     assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
     assert elapsed < 1
+
+
+def _placeholder_preview_exchange(
+    runner, *, method: str
+) -> tuple[bytes, bytes, bytes]:
+    with runner._FailOpenAvServer(
+        ("127.0.0.1", 0), runner._FailOpenAvHandler
+    ) as server:
+        server.fail_open = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        http_header = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/octet-stream\r\n"
+            b"Transfer-Encoding: chunked\r\n"
+            b"\r\n"
+        )
+        encapsulated = "req-body" if method == "REQMOD" else "res-body"
+        request_prefix = (
+            (
+                f"{method} icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Allow: 204\r\n"
+                "Preview: 4\r\n"
+                f"Encapsulated: req-hdr=0, {encapsulated}={len(http_header)}\r\n\r\n"
+            ).encode("ascii")
+            + http_header
+        )
+        preview = b"4\r\ntest\r\n0\r\n\r\n"
+        remainder = b"5\r\n-rest\r\n0\r\n\r\n"
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as sock:
+            sock.settimeout(1)
+            sock.sendall(request_prefix + preview)
+            interim = sock.recv(4096)
+            sock.sendall(remainder)
+            final = sock.recv(4096)
+            extra = sock.recv(4096)
+        server.shutdown()
+        thread.join(timeout=1)
+    return interim, final, extra
+
+
+def test_fail_open_placeholder_continues_reqmod_preview_before_204() -> None:
+    runner = _load_runner()
+
+    interim, final, extra = _placeholder_preview_exchange(runner, method="REQMOD")
+
+    assert interim == b"ICAP/1.0 100 Continue\r\n\r\n"
+    assert final.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert extra == b""
+
+
+def test_fail_open_placeholder_continues_respmod_preview_before_204() -> None:
+    runner = _load_runner()
+
+    interim, final, extra = _placeholder_preview_exchange(runner, method="RESPMOD")
+
+    assert interim == b"ICAP/1.0 100 Continue\r\n\r\n"
+    assert final.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert extra == b""

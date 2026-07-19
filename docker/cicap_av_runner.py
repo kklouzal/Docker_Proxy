@@ -94,9 +94,14 @@ def _recv_until(
 
 
 def _drain_chunked_body(
-    sock: socket.socket, data: bytes, *, max_bytes: int = 1024 * 1024 * 1024
+    sock: socket.socket,
+    data: bytes,
+    *,
+    max_bytes: int = 1024 * 1024 * 1024,
+    preview: bool = False,
 ) -> bytes:
     total = 0
+    preview_pending = preview
     while True:
         data = _recv_until(sock, data, CRLF, max_bytes=8192)
         if CRLF not in data:
@@ -109,7 +114,16 @@ def _drain_chunked_body(
         if size == 0:
             data = _recv_until(sock, data, CRLF, max_bytes=8192)
             if data.startswith(CRLF):
-                return data[len(CRLF) :]
+                data = data[len(CRLF) :]
+            else:
+                return data
+            if preview_pending and b"ieof" not in line.lower():
+                try:
+                    sock.sendall(b"ICAP/1.0 100 Continue\r\n\r\n")
+                except OSError:
+                    return data
+                preview_pending = False
+                continue
             return data
         total += size
         if total > max_bytes:
@@ -134,7 +148,7 @@ def _drain_encapsulated_body(
         return
     data = _recv_more(sock, remainder, body_offset)
     body = data[body_offset:] if len(data) >= body_offset else b""
-    _drain_chunked_body(sock, body)
+    _drain_chunked_body(sock, body, preview="preview" in headers)
 
 
 def _icap_response(status: str, headers: dict[str, str] | None = None) -> bytes:
