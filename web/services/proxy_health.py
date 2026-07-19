@@ -471,6 +471,14 @@ def send_sample_av_icap(
         timeout=timeout,
         error_formatter=error_formatter,
     )
+    if str(result.get("detail") or "").startswith(
+        "ICAP/1.0 500 Service Unavailable",
+    ):
+        result = {
+            **result,
+            "detail": "Connection refused by ClamAV backend: "
+            f"{result.get('detail')}",
+        }
     return annotate_service_target(
         result,
         host=resolved_host,
