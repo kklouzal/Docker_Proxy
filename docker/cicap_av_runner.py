@@ -84,7 +84,7 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
             )
         elif method in {"REQMOD", "RESPMOD"}:
             response = _icap_response(
-                "204 No Content" if fail_open else "500 Service Unavailable",
+                "500 Service Unavailable",
                 {"ISTag": istag, "Encapsulated": "null-body=0"},
             )
         else:
