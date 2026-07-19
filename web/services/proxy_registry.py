@@ -18,13 +18,19 @@ from services.db import (
     run_mysql_operation_with_retry,
 )
 from services.proxy_context import get_default_proxy_id, normalize_proxy_id
+from services.proxy_lifecycle import (
+    ProxyLifecycleIncompleteError,
+    ProxyLifecycleRunResult,
+    ensure_lifecycle_schema,
+    remove_proxy_scoped_rows,
+    rename_proxy_scoped_rows,
+)
 from services.public_endpoint import (
     coerce_public_port as _coerce_port,
 )
 from services.public_endpoint import (
     normalize_public_scheme as _normalize_public_scheme,
 )
-from services.sql_identifiers import quote_mysql_identifier
 
 
 def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
@@ -258,6 +264,10 @@ class ProxyRemovalResult:
     proxy_id: str
     deleted_rows: int
     table_counts: dict[str, int]
+    complete: bool = True
+    iterations: int = 0
+    truncated_tables: tuple[str, ...] = ()
+    discovered_tables: tuple[str, ...] = ()
 
 
 class ProxyRegistry:
@@ -352,6 +362,7 @@ class ProxyRegistry:
                             )
                             """,
                         )
+                        ensure_lifecycle_schema(conn)
                         self._columns_cache.pop("proxy_instances", None)
                         self._columns_cache["proxy_instances"] = self._existing_columns(
                             conn,
@@ -405,6 +416,7 @@ class ProxyRegistry:
         proxy_key = normalize_proxy_id(proxy_id)
         now = int(time.time())
         with self._connect() as conn:
+            self._ensure_not_tombstoned(conn, proxy_key)
             row = conn.execute(
                 f"SELECT {self._SELECT_COLUMNS} FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
                 (proxy_key,),
@@ -575,20 +587,32 @@ class ProxyRegistry:
         instances = [self._row_to_instance(row) for row in rows]
         return [instance for instance in instances if instance is not None]
 
-    def _proxy_id_tables(self, conn) -> list[str]:
-        rows = conn.execute(
-            """
-            SELECT c.table_name AS table_name
-            FROM information_schema.columns c
-            JOIN information_schema.tables t
-              ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-            WHERE c.table_schema = DATABASE()
-              AND c.column_name = 'proxy_id'
-              AND t.table_type = 'BASE TABLE'
-            ORDER BY c.table_name ASC
-            """,
-        ).fetchall()
-        return [str(row["table_name"] or "") for row in rows if row["table_name"]]
+    def _lifecycle_lock_name(self, proxy_id: str) -> str:
+        return f"docker_proxy:proxy_lifecycle:{proxy_id}"[:64]
+
+    def _ensure_not_tombstoned(
+        self,
+        conn,
+        proxy_key: str,
+        *,
+        allowed_actions: set[str] | None = None,
+    ) -> None:
+        ensure_lifecycle_schema(conn)
+        row = conn.execute(
+            "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones WHERE proxy_id=%s LIMIT 1",
+            (proxy_key,),
+        ).fetchone()
+        if row is None:
+            return
+        action = str(row["action"] or "removed")
+        if action in (allowed_actions or set()):
+            return
+        target = str(row["target_proxy_id"] or "")
+        if action in {"renamed", "renaming"} and target:
+            msg = f"Proxy {proxy_key!r} was renamed to {target!r}."
+        else:
+            msg = f"Proxy {proxy_key!r} has been removed."
+        raise ValueError(msg)
 
     def rename_proxy(
         self,
@@ -608,21 +632,35 @@ class ProxyRegistry:
             return instance
 
         now = int(time.time())
+        lifecycle_result: ProxyLifecycleRunResult | None = None
 
         def _rename() -> None:
+            nonlocal lifecycle_result
             with self._connect() as conn:
                 with mysql_advisory_lock(
                     conn,
-                    "docker_proxy:proxy_registry:rename",
+                    self._lifecycle_lock_name(old_key),
                     mysql_schema_lock_timeout_seconds(),
                 ):
                     old_row = conn.execute(
-                        f"SELECT {self._SELECT_COLUMNS} FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
+                        f"SELECT {self._SELECT_COLUMNS} FROM proxy_instances WHERE proxy_id=%s LIMIT 1 FOR UPDATE",
                         (old_key,),
                     ).fetchone()
                     if old_row is None:
+                        alias = conn.execute(
+                            "SELECT proxy_id FROM proxy_id_aliases WHERE alias_proxy_id=%s LIMIT 1",
+                            (old_key,),
+                        ).fetchone()
+                        if alias is not None and str(alias["proxy_id"] or "") == new_key:
+                            return
                         msg = f"Proxy {old_key!r} is not registered."
                         raise ValueError(msg)
+                    self._ensure_not_tombstoned(
+                        conn,
+                        old_key,
+                        allowed_actions={"renaming"},
+                    )
+                    self._ensure_not_tombstoned(conn, new_key)
                     new_row = conn.execute(
                         "SELECT proxy_id FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
                         (new_key,),
@@ -631,25 +669,58 @@ class ProxyRegistry:
                         msg = f"Proxy {new_key!r} is already registered."
                         raise ValueError(msg)
 
-                    tables = self._proxy_id_tables(conn)
-                    for table_name in tables:
-                        if table_name == "proxy_instances":
-                            continue
-                        conn.execute(
-                            f"UPDATE {quote_mysql_identifier(table_name)} SET proxy_id=%s WHERE proxy_id=%s",
-                            (new_key, old_key),
-                        )
                     conn.execute(
                         """
                         UPDATE proxy_instances
-                        SET proxy_id=%s, display_name=%s, updated_ts=%s
+                        SET status='renaming', detail=%s, updated_ts=%s
+                        WHERE proxy_id=%s
+                        """,
+                        (f"Renaming proxy to {new_key}.", now, old_key),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO proxy_lifecycle_tombstones(proxy_id, action, target_proxy_id, detail, created_ts, updated_ts)
+                        VALUES(%s,'renaming',%s,%s,%s,%s)
+                        ON DUPLICATE KEY UPDATE action=VALUES(action), target_proxy_id=VALUES(target_proxy_id), detail=VALUES(detail), updated_ts=VALUES(updated_ts)
+                        """,
+                        (old_key, new_key, f"Rename in progress to {new_key}.", now, now),
+                    )
+                    conn.commit()
+
+                    lifecycle_result = rename_proxy_scoped_rows(
+                        conn,
+                        old_proxy_id=old_key,
+                        new_proxy_id=new_key,
+                    )
+                    if not lifecycle_result.complete:
+                        conn.execute(
+                            """
+                            UPDATE proxy_instances
+                            SET status='rename_pending', detail=%s, updated_ts=%s
+                            WHERE proxy_id=%s
+                            """,
+                            (
+                                "Proxy rename paused after bounded chunk limit; retry to resume.",
+                                int(time.time()),
+                                old_key,
+                            ),
+                        )
+                        conn.commit()
+                        msg = f"Proxy rename for {old_key!r} paused after bounded chunk limit; retry to resume."
+                        raise ProxyLifecycleIncompleteError(msg, lifecycle_result)
+
+                    conn.execute(
+                        """
+                        UPDATE proxy_instances
+                        SET proxy_id=%s, display_name=%s, updated_ts=%s, status='unknown', detail=%s
                         WHERE proxy_id=%s
                         """,
                         (
                             new_key,
                             (display_name or old_row["display_name"] or new_key).strip()
                             or new_key,
-                            now,
+                            int(time.time()),
+                            f"Renamed from {old_key}.",
                             old_key,
                         ),
                     )
@@ -659,8 +730,21 @@ class ProxyRegistry:
                         VALUES(%s,%s,%s,%s)
                         ON DUPLICATE KEY UPDATE proxy_id=VALUES(proxy_id), updated_ts=VALUES(updated_ts)
                         """,
-                        (old_key, new_key, now, now),
+                        (old_key, new_key, now, int(time.time())),
                     )
+                    conn.execute(
+                        """
+                        INSERT INTO proxy_lifecycle_tombstones(proxy_id, action, target_proxy_id, detail, created_ts, updated_ts)
+                        VALUES(%s,'renamed',%s,%s,%s,%s)
+                        ON DUPLICATE KEY UPDATE action=VALUES(action), target_proxy_id=VALUES(target_proxy_id), detail=VALUES(detail), updated_ts=VALUES(updated_ts)
+                        """,
+                        (old_key, new_key, f"Proxy renamed to {new_key}.", now, int(time.time())),
+                    )
+                    conn.execute(
+                        "DELETE FROM proxy_lifecycle_tombstones WHERE proxy_id=%s",
+                        (new_key,),
+                    )
+                    conn.commit()
 
         run_mysql_operation_with_retry(_rename)
         refreshed = self.get_proxy(new_key)
@@ -671,32 +755,75 @@ class ProxyRegistry:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         table_counts: dict[str, int] = {}
+        lifecycle_result: ProxyLifecycleRunResult | None = None
 
         def _remove() -> None:
+            nonlocal lifecycle_result, table_counts
             with self._connect() as conn:
                 with mysql_advisory_lock(
                     conn,
-                    "docker_proxy:proxy_registry:remove",
+                    self._lifecycle_lock_name(proxy_key),
                     mysql_schema_lock_timeout_seconds(),
                 ):
                     row = conn.execute(
-                        "SELECT proxy_id FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
+                        "SELECT proxy_id FROM proxy_instances WHERE proxy_id=%s LIMIT 1 FOR UPDATE",
                         (proxy_key,),
                     ).fetchone()
                     if row is None:
+                        tombstone = conn.execute(
+                            "SELECT action FROM proxy_lifecycle_tombstones WHERE proxy_id=%s LIMIT 1",
+                            (proxy_key,),
+                        ).fetchone()
+                        if tombstone is not None and str(tombstone["action"] or "") == "removed":
+                            return
                         msg = f"Proxy {proxy_key!r} is not registered."
                         raise ValueError(msg)
 
-                    for table_name in self._proxy_id_tables(conn):
-                        if table_name == "proxy_instances":
-                            continue
-                        result = conn.execute(
-                            f"DELETE FROM {quote_mysql_identifier(table_name)} WHERE proxy_id=%s",
-                            (proxy_key,),
+                    now_ts = int(time.time())
+                    conn.execute(
+                        """
+                        UPDATE proxy_instances
+                        SET status='removing', detail=%s, updated_ts=%s
+                        WHERE proxy_id=%s
+                        """,
+                        ("Proxy removal in progress; new writes are rejected.", now_ts, proxy_key),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO proxy_lifecycle_tombstones(proxy_id, action, target_proxy_id, detail, created_ts, updated_ts)
+                        VALUES(%s,'removing','',%s,%s,%s)
+                        ON DUPLICATE KEY UPDATE action=VALUES(action), detail=VALUES(detail), updated_ts=VALUES(updated_ts)
+                        """,
+                        (proxy_key, "Proxy removal in progress.", now_ts, now_ts),
+                    )
+                    conn.commit()
+
+                    lifecycle_result = remove_proxy_scoped_rows(conn, proxy_id=proxy_key)
+                    table_counts = dict(lifecycle_result.table_counts)
+                    if not lifecycle_result.complete:
+                        conn.execute(
+                            """
+                            UPDATE proxy_instances
+                            SET status='remove_pending', detail=%s, updated_ts=%s
+                            WHERE proxy_id=%s
+                            """,
+                            (
+                                "Proxy removal paused after bounded chunk limit; retry to resume.",
+                                int(time.time()),
+                                proxy_key,
+                            ),
                         )
-                        deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
-                        if deleted:
-                            table_counts[table_name] = deleted
+                        conn.commit()
+                        msg = f"Proxy removal for {proxy_key!r} paused after bounded chunk limit; retry to resume."
+                        raise ProxyLifecycleIncompleteError(msg, lifecycle_result)
+
+                    result = conn.execute(
+                        "DELETE FROM proxy_id_aliases WHERE proxy_id=%s",
+                        (proxy_key,),
+                    )
+                    deleted_alias_targets = max(0, int(getattr(result, "rowcount", 0) or 0))
+                    if deleted_alias_targets:
+                        table_counts["proxy_id_aliases"] = table_counts.get("proxy_id_aliases", 0) + deleted_alias_targets
 
                     result = conn.execute(
                         "DELETE FROM proxy_id_aliases WHERE alias_proxy_id=%s",
@@ -719,12 +846,29 @@ class ProxyRegistry:
                     )
                     if deleted_instance:
                         table_counts["proxy_instances"] = deleted_instance
+                    conn.execute(
+                        """
+                        UPDATE proxy_lifecycle_tombstones
+                        SET action='removed', detail=%s, updated_ts=%s
+                        WHERE proxy_id=%s
+                        """,
+                        ("Proxy removed; scoped rows deleted.", int(time.time()), proxy_key),
+                    )
+                    conn.commit()
 
         run_mysql_operation_with_retry(_remove)
+        result_complete = True if lifecycle_result is None else lifecycle_result.complete
+        truncated_tables = () if lifecycle_result is None else lifecycle_result.truncated_tables
+        discovered_tables = () if lifecycle_result is None else lifecycle_result.discovered_tables
+        iterations = 0 if lifecycle_result is None else lifecycle_result.iterations
         return ProxyRemovalResult(
             proxy_id=proxy_key,
             deleted_rows=sum(table_counts.values()),
             table_counts=dict(sorted(table_counts.items())),
+            complete=result_complete,
+            iterations=iterations,
+            truncated_tables=truncated_tables,
+            discovered_tables=discovered_tables,
         )
 
     def find_reconcile_candidate(

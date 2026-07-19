@@ -93,10 +93,12 @@ COPY web/services/adblock_artifacts.py \
 	web/services/proxy_client.py \
 	web/services/proxy_context.py \
 	web/services/proxy_health.py \
+	web/services/proxy_lifecycle.py \
 	web/services/proxy_logs.py \
 	web/services/proxy_registry.py \
 	web/services/proxy_sync.py \
 	web/services/public_endpoint.py \
+	web/services/revision_lifecycle.py \
 	web/services/runtime_helpers.py \
 	web/services/saml_auth.py \
     web/services/safe_browsing_v5.py \

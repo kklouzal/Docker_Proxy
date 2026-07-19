@@ -162,7 +162,7 @@
                                     <form action="{{ url_for('remove_proxy') }}" method="post" class="stack-sm">
                                         {{ csrf_field() }}
                                         <input type="hidden" name="proxy_id" value="{{ proxy.proxy_id }}">
-                                        <div class="surface-note small">Deletes this proxy registration and all MySQL rows scoped to <span class="mono">{{ proxy.proxy_id }}</span>. A running container with the same ID can register again on its next heartbeat.</div>
+                                        <div class="surface-note small">Deletes this proxy registration and MySQL rows scoped to <span class="mono">{{ proxy.proxy_id }}</span> in bounded chunks. The removed ID is tombstoned so stale containers cannot recreate it on heartbeat.</div>
                                         <label class="small">Type proxy ID to confirm</label>
                                         <input type="text" name="confirm_proxy_id" autocomplete="off" required>
                                         <button class="btn danger" type="submit" data-confirm-message="Remove {{ proxy.display_name }} and delete all MySQL data scoped to {{ proxy.proxy_id }}?" data-pending-label="Removing...">Remove proxy</button>

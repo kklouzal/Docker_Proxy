@@ -559,3 +559,167 @@ def test_init_db_preserves_retired_socks_storage() -> None:
         or "DROP TABLE IF EXISTS socks_events" in statement
     ]
     assert destructive_statements == []
+
+
+def test_rename_proxy_is_idempotent_and_tombstones_old_identity(tmp_path):
+    configure_test_mysql_env(tmp_path / "proxy-rename-idempotent")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-old", display_name="Edge")
+    first = registry.rename_proxy("edge-old", "edge-new", display_name="Edge New")
+    second = registry.rename_proxy("edge-old", "edge-new", display_name="Edge New")
+
+    assert first.proxy_id == "edge-new"
+    assert second.proxy_id == "edge-new"
+    assert registry.resolve_proxy_id("edge-old") == "edge-new"
+    try:
+        registry.ensure_proxy("edge-old")
+    except ValueError as exc:
+        assert "renamed to" in str(exc)
+    else:
+        msg = "renamed proxy id must not be recreated by stale writers"
+        raise AssertionError(msg)
+
+
+def test_remove_proxy_cleans_pac_profile_children_and_tombstones_identity(tmp_path):
+    configure_test_mysql_env(tmp_path / "proxy-remove-pac-children")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-remove", display_name="Edge")
+    with registry._connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE pac_profiles (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                name VARCHAR(255) NOT NULL,
+                client_cidr VARCHAR(64) NOT NULL DEFAULT '',
+                created_ts BIGINT NOT NULL,
+                KEY idx_pac_profiles_proxy (proxy_id, id)
+            )
+            """,
+        )
+        conn.execute(
+            "CREATE TABLE pac_direct_domains (profile_id BIGINT NOT NULL, domain VARCHAR(255) NOT NULL, PRIMARY KEY(profile_id, domain))",
+        )
+        conn.execute(
+            "CREATE TABLE pac_direct_dst_nets (profile_id BIGINT NOT NULL, cidr VARCHAR(64) NOT NULL, PRIMARY KEY(profile_id, cidr))",
+        )
+        result = conn.execute(
+            "INSERT INTO pac_profiles(proxy_id, name, client_cidr, created_ts) VALUES(%s,'p','',1)",
+            ("edge-remove",),
+        )
+        profile_id = int(result.lastrowid)
+        conn.execute(
+            "INSERT INTO pac_direct_domains(profile_id, domain) VALUES(%s,'example.com')",
+            (profile_id,),
+        )
+        conn.execute(
+            "INSERT INTO pac_direct_dst_nets(profile_id, cidr) VALUES(%s,'10.0.0.0/8')",
+            (profile_id,),
+        )
+
+    removed = registry.remove_proxy("edge-remove")
+
+    assert removed.complete is True
+    assert removed.table_counts["pac_profiles"] == 1
+    assert removed.table_counts["pac_direct_domains"] == 1
+    assert removed.table_counts["pac_direct_dst_nets"] == 1
+    assert registry.get_proxy("edge-remove") is None
+    try:
+        registry.ensure_proxy("edge-remove")
+    except ValueError as exc:
+        assert "removed" in str(exc)
+    else:
+        msg = "removed proxy id must not be recreated"
+        raise AssertionError(msg)
+    with registry._connect() as conn:
+        assert conn.execute("SELECT 1 FROM pac_direct_domains LIMIT 1").fetchone() is None
+        assert conn.execute("SELECT 1 FROM pac_direct_dst_nets LIMIT 1").fetchone() is None
+
+
+def test_remove_proxy_partial_failure_resumes_with_bounded_chunks(monkeypatch, tmp_path):
+    configure_test_mysql_env(tmp_path / "proxy-remove-resume")
+    proxy_registry = _proxy_registry()
+    from services.proxy_lifecycle import ProxyLifecycleIncompleteError  # type: ignore
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-big", display_name="Edge")
+    with registry._connect() as conn:
+        conn.execute(
+            "CREATE TABLE proxy_large_backlog (id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL, value VARCHAR(32) NOT NULL)",
+        )
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO proxy_large_backlog(proxy_id, value) VALUES(%s,%s)",
+                ("edge-big", f"row-{i}"),
+            )
+
+    monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_CHUNK_SIZE", "2")
+    monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_MAX_ROWS_PER_TABLE", "2")
+    try:
+        registry.remove_proxy("edge-big")
+    except ProxyLifecycleIncompleteError as exc:
+        assert exc.result.truncated_tables == ("proxy_large_backlog",)
+        assert exc.result.table_counts["proxy_large_backlog"] == 2
+    else:
+        msg = "removal should pause at bounded table limit"
+        raise AssertionError(msg)
+
+    with registry._connect() as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS c FROM proxy_large_backlog WHERE proxy_id=%s",
+            ("edge-big",),
+        ).fetchone()
+        status = conn.execute(
+            "SELECT status FROM proxy_instances WHERE proxy_id=%s",
+            ("edge-big",),
+        ).fetchone()
+    assert int(remaining["c"] or 0) == 3
+    assert status["status"] == "remove_pending"
+
+    monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_MAX_ROWS_PER_TABLE", "100")
+    removed = registry.remove_proxy("edge-big")
+
+    assert removed.complete is True
+    assert removed.table_counts["proxy_large_backlog"] == 3
+    assert "proxy_large_backlog" in removed.discovered_tables
+    assert registry.remove_proxy("edge-big").deleted_rows == 0
+
+
+def test_rename_proxy_adds_lifecycle_index_for_discovered_tables(tmp_path):
+    configure_test_mysql_env(tmp_path / "proxy-rename-index-contract")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-source", display_name="Edge")
+    with registry._connect() as conn:
+        conn.execute(
+            "CREATE TABLE proxy_unindexed_rows (id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL, value VARCHAR(32) NOT NULL)",
+        )
+        conn.execute(
+            "INSERT INTO proxy_unindexed_rows(proxy_id, value) VALUES(%s,'x')",
+            ("edge-source",),
+        )
+
+    registry.rename_proxy("edge-source", "edge-target", display_name="Edge")
+
+    with registry._connect() as conn:
+        row = conn.execute(
+            "SELECT proxy_id FROM proxy_unindexed_rows WHERE value='x'",
+        ).fetchone()
+        index_row = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = 'proxy_unindexed_rows'
+              AND column_name = 'proxy_id'
+              AND seq_in_index = 1
+            LIMIT 1
+            """,
+        ).fetchone()
+    assert row["proxy_id"] == "edge-target"
+    assert index_row is not None
