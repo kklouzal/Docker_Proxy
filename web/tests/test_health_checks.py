@@ -234,12 +234,16 @@ def test_check_icap_service_and_clamd_protocol_helpers(monkeypatch) -> None:
     assert combined["components"]["clamd"]["detail"] == "clamd ok"
 
 
-def test_sample_respmod_reports_fail_open_placeholder_as_degraded(monkeypatch) -> None:
+@pytest.mark.parametrize("icap_status", [b"204 No Content", b"200 OK"])
+def test_sample_respmod_reports_fail_open_placeholder_as_degraded(
+    monkeypatch,
+    icap_status: bytes,
+) -> None:
     health_checks = _health_checks_module()
 
     sample_sock = _FakeSocket(
         [
-            b"ICAP/1.0 204 No Content\r\n",
+            b"ICAP/1.0 " + icap_status + b"\r\n",
             b'ISTag: "clamav-fail-open-unavailable"\r\n',
             b"Encapsulated: null-body=0\r\n\r\n",
         ]
@@ -260,7 +264,7 @@ def test_sample_respmod_reports_fail_open_placeholder_as_degraded(monkeypatch) -
     assert result["fail_open"] is True
     assert result["fail_mode"] == "open"
     assert result["backend_available"] is False
-    assert result["icap_status_code"] == 204
+    assert result["icap_status_code"] in {200, 204}
     assert "fail-open placeholder" in result["detail"]
 
 

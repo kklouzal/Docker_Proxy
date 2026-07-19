@@ -634,14 +634,9 @@ def send_sample_respmod_to(
         first_line, headers = _parse_http_response_head(head)
         status_code = _parse_protocol_status_code(first_line)
         istag = _http_header_value(headers, "istag")
-        fail_open_placeholder = (
-            status_code == 204
-            and _normalize_icap_istag(istag) == "clamav-fail-open-unavailable"
-        )
-        fail_closed_placeholder = (
-            status_code == 500
-            and _normalize_icap_istag(istag) == "clamav-fail-closed-unavailable"
-        )
+        normalized_istag = _normalize_icap_istag(istag)
+        fail_open_placeholder = normalized_istag == "clamav-fail-open-unavailable"
+        fail_closed_placeholder = normalized_istag == "clamav-fail-closed-unavailable"
         backend_unavailable = fail_open_placeholder or fail_closed_placeholder
         transport_ok = first_line.startswith("ICAP/1.0 ") and status_code is not None
         icap_transaction_ok = status_code is not None and 200 <= status_code < 300
