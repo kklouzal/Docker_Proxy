@@ -511,11 +511,14 @@ def apply_schema_migration(
                 if require_privileges:
                     require_migration_privileges(conn)
                 _start_migration(conn, spec)
+                conn.commit()
                 try:
                     _apply_spec(conn, spec)
                     results.append(_finish_migration(conn, spec))
+                    conn.commit()
                 except Exception as exc:
                     _fail_migration(conn, spec, exc)
+                    conn.commit()
                     raise
                 return results
 
