@@ -188,3 +188,47 @@ def test_live_remote_proxy_http_and_https_cold_misses_survive_unavailable_clamd(
 
     msg = f"remote proxy cold miss HTTP/HTTPS failed via {proxy_url}: {last!r}"
     raise AssertionError(msg) from last_error
+
+
+def test_live_remote_proxy_respmod_stress_survives_unavailable_clamd_shapes(
+    admin_client: LiveStackClient,
+) -> None:
+    # The remote live proxy intentionally points CLAMD_HOST at an unreachable
+    # backend while the default file-security preset routes download RESPMOD.
+    # This catches fail-open ICAP protocol regressions without requiring clamd.
+    token = unique_token("remote_respmod_stress")
+    proxy_url = _remote_http_proxy_url()
+    http_base = LIVE_CONFIG.traffic_fixture_url
+    cases = [
+        (
+            f"{http_base}/traffic/{token}?cache_bust={token}",
+            lambda status, body: status == 200 and token in body,
+        ),
+        (
+            f"{http_base}/chunked/{token}?cache_bust={token}",
+            lambda status, body: status == 200 and token in body,
+        ),
+        (
+            f"{http_base}/no-body/{token}?cache_bust={token}",
+            lambda status, body: status == 204 and body == "",
+        ),
+        (
+            f"https://example.com/?docker_proxy_respmod_stress={token}",
+            lambda status, body: status == 200 and "Example Domain" in body,
+        ),
+    ]
+
+    def fetch(index: int) -> tuple[int, int | str, str]:
+        url, accept = cases[index % len(cases)]
+        status, body = _proxied_request(proxy_url, url, timeout_seconds=20.0)
+        if accept(status, body) and "ICAP_FAILURE" not in body:
+            return index, status, ""
+        return index, status, body[:500]
+
+    serial = [fetch(index) for index in range(len(cases) * 2)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        parallel = list(executor.map(fetch, range(len(cases) * 2, 80)))
+
+    failures = [result for result in [*serial, *parallel] if result[2]]
+    assert not failures
+    wait_for_proxy_management_payload()

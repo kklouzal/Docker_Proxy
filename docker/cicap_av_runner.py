@@ -100,37 +100,52 @@ def _drain_chunked_body(
     max_bytes: int = 1024 * 1024 * 1024,
     preview: bool = False,
 ) -> bytes:
+    _body, remainder = _read_chunked_body(
+        sock, data, max_bytes=max_bytes, preview=preview
+    )
+    return remainder
+
+
+def _read_chunked_body(
+    sock: socket.socket,
+    data: bytes,
+    *,
+    max_bytes: int = 1024 * 1024 * 1024,
+    preview: bool = False,
+) -> tuple[bytes, bytes]:
+    body = bytearray()
     total = 0
     preview_pending = preview
     while True:
         data = _recv_until(sock, data, CRLF, max_bytes=8192)
         if CRLF not in data:
-            return data
+            return bytes(body), data
         line, data = data.split(CRLF, 1)
         try:
             size = int(line.split(b";", 1)[0].strip(), 16)
         except ValueError:
-            return data
+            return bytes(body), data
         if size == 0:
             data = _recv_until(sock, data, CRLF, max_bytes=8192)
             if data.startswith(CRLF):
                 data = data[len(CRLF) :]
             else:
-                return data
+                return bytes(body), data
             if preview_pending and b"ieof" not in line.lower():
                 try:
                     sock.sendall(b"ICAP/1.0 100 Continue\r\n\r\n")
                 except OSError:
-                    return data
+                    return bytes(body), data
                 preview_pending = False
                 continue
-            return data
+            return bytes(body), data
         total += size
         if total > max_bytes:
-            return data
+            return bytes(body), data
         data = _recv_more(sock, data, size + 2)
         if len(data) < size + 2:
-            return data
+            return bytes(body), data
+        body.extend(data[:size])
         data = data[size + 2 :]
 
 
@@ -151,6 +166,31 @@ def _drain_encapsulated_body(
     _drain_chunked_body(sock, body, preview="preview" in headers)
 
 
+def _read_respmod_payload(
+    sock: socket.socket, header: bytes, remainder: bytes
+) -> tuple[bytes, bytes, bool]:
+    _start_line, headers = _split_headers(header)
+    offsets = _parse_encapsulated(headers.get("encapsulated", ""))
+    body_offset = offsets.get("res-body")
+    null_body_offset = offsets.get("null-body")
+    terminal_offset = body_offset if body_offset is not None else null_body_offset
+    if terminal_offset is None:
+        return b"", b"", True
+    response_header_offset = offsets.get("res-hdr", 0)
+    if response_header_offset < 0 or terminal_offset < response_header_offset:
+        return b"", b"", True
+    data = _recv_more(sock, remainder, terminal_offset)
+    if len(data) < terminal_offset:
+        return b"", b"", True
+    http_header = data[response_header_offset:terminal_offset]
+    if body_offset is None:
+        return http_header, b"", True
+    body, _unused = _read_chunked_body(
+        sock, data[body_offset:], preview="preview" in headers
+    )
+    return http_header, body, False
+
+
 def _icap_response(status: str, headers: dict[str, str] | None = None) -> bytes:
     lines = [f"ICAP/1.0 {status}"]
     response_headers = {"Connection": "close"}
@@ -161,6 +201,52 @@ def _icap_response(status: str, headers: dict[str, str] | None = None) -> bytes:
         )
         + "\r\n\r\n"
     ).encode("ascii", errors="replace")
+
+
+def _http_header_lines(http_header: bytes) -> list[bytes]:
+    header_block = http_header.split(HEADER_END, 1)[0]
+    return header_block.split(CRLF) if header_block else []
+
+
+def _http_header_for_body_replay(http_header: bytes, body_length: int) -> bytes:
+    lines = _http_header_lines(http_header)
+    if not lines or not lines[0].startswith(b"HTTP/"):
+        return http_header
+    replay_lines = [lines[0]]
+    for line in lines[1:]:
+        if b":" not in line:
+            continue
+        name = line.split(b":", 1)[0].strip().lower()
+        if name in {b"content-length", b"transfer-encoding"}:
+            continue
+        replay_lines.append(line)
+    replay_lines.append(f"Content-Length: {body_length}".encode("ascii"))
+    return CRLF.join(replay_lines) + HEADER_END
+
+
+def _encode_icap_body_chunk(body: bytes) -> bytes:
+    return f"{len(body):X}\r\n".encode("ascii") + body + CRLF + b"0\r\n\r\n"
+
+
+def _clean_respmod_response(http_header: bytes, body: bytes, istag: str) -> bytes:
+    http_header = _http_header_for_body_replay(http_header, len(body))
+    return _icap_response(
+        "200 OK",
+        {"ISTag": istag, "Encapsulated": f"res-hdr=0, res-body={len(http_header)}"},
+    ) + http_header + _encode_icap_body_chunk(body)
+
+
+def _clean_respmod_no_body_response(
+    *, allow_204: bool, http_header: bytes, istag: str
+) -> bytes:
+    if allow_204:
+        return _icap_response("204 No Content", {"ISTag": istag})
+    if http_header and not http_header.endswith(HEADER_END):
+        http_header += HEADER_END
+    return _icap_response(
+        "200 OK",
+        {"ISTag": istag, "Encapsulated": f"res-hdr=0, null-body={len(http_header)}"},
+    ) + http_header
 
 
 class _FailOpenAvHandler(socketserver.BaseRequestHandler):
@@ -201,11 +287,28 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
             )
         elif method in {"REQMOD", "RESPMOD"}:
             if fail_open:
-                _drain_encapsulated_body(self.request, header, remainder)
-                response = _icap_response(
-                    "204 No Content",
-                    {"ISTag": istag, "Encapsulated": "null-body=0"},
-                )
+                if method == "RESPMOD":
+                    _start_line, headers = _split_headers(header)
+                    allow_204 = "204" in {
+                        part.strip() for part in headers.get("allow", "").split(",")
+                    }
+                    http_header, body, null_body = _read_respmod_payload(
+                        self.request, header, remainder
+                    )
+                    if null_body:
+                        response = _clean_respmod_no_body_response(
+                            allow_204=allow_204,
+                            http_header=http_header,
+                            istag=istag,
+                        )
+                    else:
+                        response = _clean_respmod_response(http_header, body, istag)
+                else:
+                    _drain_encapsulated_body(self.request, header, remainder)
+                    response = _icap_response(
+                        "204 No Content",
+                        {"ISTag": istag, "Encapsulated": "null-body=0"},
+                    )
             else:
                 response = _icap_response(
                     "500 Service Unavailable",

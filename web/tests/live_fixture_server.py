@@ -60,6 +60,31 @@ class LiveFixtureHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/health"):
             self._send_json(b'{"ok": true}')
             return
+        if self.path.startswith("/no-body"):
+            self._parsed_request()
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        if self.path.startswith("/not-modified"):
+            self._parsed_request()
+            self.send_response(304)
+            self.send_header("ETag", '"live-fixture"')
+            self.end_headers()
+            return
+        if self.path.startswith("/chunked"):
+            payload = self._payload()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            for offset in range(0, len(payload), 7):
+                chunk = payload[offset : offset + 7]
+                self.wfile.write(f"{len(chunk):X}\r\n".encode("ascii"))
+                self.wfile.write(chunk + b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
+            return
         self._send_json(self._payload())
 
     def do_HEAD(self) -> None:

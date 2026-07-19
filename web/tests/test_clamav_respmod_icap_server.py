@@ -314,6 +314,129 @@ def test_chunked_clean_respmod_replays_with_normalized_framing() -> None:
     assert b"5\r\nhello\r\n0\r\n\r\n" in response
 
 
+def test_small_clean_respmod_with_allow_204_still_replays_complete_body() -> None:
+    server = _load_server()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return CleanScanner()
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(port, _sample_respmod_request(port), timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"Content-Length: 5\r\n" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" in response
+
+
+def test_respmod_with_req_hdr_offset_replays_only_response_header() -> None:
+    server = _load_server()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return CleanScanner()
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(
+            port, _sample_respmod_request_with_req_hdr(port), timeout=0.5
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"GET /asset.js HTTP/1.1" not in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" in response
+
+
+def test_null_body_respmod_with_req_hdr_replays_only_response_header() -> None:
+    server = _load_server()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return CleanScanner()
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(
+            port,
+            _sample_null_body_respmod_request(port, allow_204=False),
+            timeout=0.5,
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"Encapsulated: res-hdr=0, null-body=" in response
+    assert b"HTTP/1.1 204 No Content" in response
+    assert b"GET /generate_204 HTTP/1.1" not in response
+    assert not response.endswith(b"0\r\n\r\n")
+
+
+def test_null_body_respmod_with_allow_204_uses_safe_no_content_verdict() -> None:
+    server = _load_server()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return CleanScanner()
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(
+            port,
+            _sample_null_body_respmod_request(port, allow_204=True),
+            timeout=0.5,
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
+
+
 def test_clean_icap_responses_close_connections_to_prevent_reuse_races() -> None:
     server = _load_server()
 
@@ -495,6 +618,33 @@ def _sample_respmod_request_without_allow_204(port: int) -> bytes:
     return _sample_respmod_request(port).replace(b"Allow: 204\r\n", b"")
 
 
+def _sample_respmod_request_with_req_hdr(port: int) -> bytes:
+    request_header = b"GET /asset.js HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    body = b"hello"
+    http_header = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: application/javascript\r\n"
+        + f"Content-Length: {len(body)}\r\n".encode("ascii")
+        + b"\r\n"
+    )
+    response_offset = len(request_header)
+    body_offset = response_offset + len(http_header)
+    chunked_body = b"5\r\n" + body + b"\r\n0\r\n\r\n"
+    return (
+        (
+            f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Allow: 204\r\n"
+            "Encapsulated: "
+            f"req-hdr=0, res-hdr={response_offset}, res-body={body_offset}"
+            "\r\n\r\n"
+        ).encode("ascii")
+        + request_header
+        + http_header
+        + chunked_body
+    )
+
+
 def _sample_preview_respmod_request(port: int) -> bytes:
     http_header = (
         b"HTTP/1.1 200 OK\r\n"
@@ -512,6 +662,33 @@ def _sample_preview_respmod_request(port: int) -> bytes:
         ).encode("ascii")
         + http_header
         + preview_body
+    )
+
+
+def _sample_null_body_respmod_request(port: int, *, allow_204: bool = True) -> bytes:
+    request_header = (
+        b"GET /generate_204 HTTP/1.1\r\n"
+        b"Host: connectivitycheck.gstatic.com\r\n\r\n"
+    )
+    response_header = (
+        b"HTTP/1.1 204 No Content\r\n"
+        b"Date: Sun, 19 Jul 2026 16:36:00 GMT\r\n"
+        b"Cache-Control: no-store\r\n\r\n"
+    )
+    response_offset = len(request_header)
+    null_offset = response_offset + len(response_header)
+    allow = "Allow: 204\r\n" if allow_204 else ""
+    return (
+        (
+            f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            f"{allow}"
+            "Encapsulated: "
+            f"req-hdr=0, res-hdr={response_offset}, null-body={null_offset}"
+            "\r\n\r\n"
+        ).encode("ascii")
+        + request_header
+        + response_header
     )
 
 
@@ -831,6 +1008,65 @@ def test_unavailable_clamd_drains_body_and_fails_open_204(monkeypatch) -> None:
 
     assert response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
     assert b"ICAP/1.0 204 No Content\r\n" in response
+
+
+def test_unavailable_clamd_fail_open_stress_handles_mixed_respmod_shapes(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+
+    def create_connection(_address, _timeout):
+        message = "connection refused"
+        raise ConnectionRefusedError(message)
+
+    monkeypatch.setattr(server.socket, "create_connection", create_connection)
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=24,
+        max_scans=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+
+        def request_for(index: int) -> bytes:
+            builders = (
+                _sample_respmod_request,
+                _sample_unknown_length_respmod_request,
+                _sample_chunked_respmod_request,
+                _sample_preview_respmod_request,
+                _sample_null_body_respmod_request,
+                lambda p: _sample_null_body_respmod_request(p, allow_204=False),
+            )
+            return builders[index % len(builders)](port)
+
+        def fetch(index: int) -> bytes:
+            request = request_for(index)
+            if b"Preview:" in request:
+                return _recv_icap_exchange(port, request, timeout=1)
+            return _recv_icap_response(port, request, timeout=1)
+
+        responses: list[bytes] = []
+        workers = [threading.Thread(target=lambda i=i: responses.append(fetch(i))) for i in range(36)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=2)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert len(responses) == 36
+    assert all(b"ICAP/1.0 5" not in response for response in responses)
+    assert all(b"HTTP/1.1 502 Bad Gateway" not in response for response in responses)
+    assert any(response.startswith(b"ICAP/1.0 204 No Content\r\n") for response in responses)
+    assert any(b"Encapsulated: res-hdr=0, null-body=" in response for response in responses)
+    assert any(b"5\r\nhello\r\n0\r\n\r\n" in response for response in responses)
 
 
 def test_fail_open_without_allow_204_replays_after_clamd_reset(monkeypatch) -> None:

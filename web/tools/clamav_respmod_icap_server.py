@@ -427,6 +427,19 @@ def clean_response(
     )
 
 
+def clean_no_body_response(*, allow_204: bool, http_header: bytes) -> bytes:
+    """Return a clean RESPMOD verdict for responses without an HTTP body."""
+    if allow_204:
+        return _icap_response("204 No Content", {"ISTag": ISTAG})
+    if http_header and not http_header.endswith(HEADER_END):
+        http_header += HEADER_END
+    return _icap_response(
+        "200 OK",
+        {"ISTag": ISTAG, "Encapsulated": f"res-hdr=0, null-body={len(http_header)}"},
+        http_header,
+    )
+
+
 def _http_header_lines(http_header: bytes) -> list[bytes]:
     header_block = http_header.split(HEADER_END, 1)[0]
     return header_block.split(CRLF) if header_block else []
@@ -545,9 +558,15 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
         http_header: bytes,
         body: bytes,
         body_complete: bool,
+        null_body: bool = False,
     ) -> None:
         if allow_204 and body_complete:
             self._write_response(_icap_response("204 No Content", {"ISTag": ISTAG}))
+            return
+        if null_body and body_complete:
+            self._write_response(
+                clean_no_body_response(allow_204=False, http_header=http_header)
+            )
             return
         if body_complete:
             self._write_response(
@@ -618,6 +637,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
         http_header = b""
         body = b""
         body_complete = False
+        null_body = False
         try:
             raw_header, remainder = _read_until(self.rfile, HEADER_END)
             start_line, headers = _split_headers(raw_header[:-4])
@@ -635,16 +655,25 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
 
             offsets = _parse_encapsulated(headers.get("encapsulated", ""))
             body_offset = offsets.get("res-body")
-            null_body = "null-body" in offsets
-            if body_offset is None and not null_body:
+            null_body_offset = offsets.get("null-body")
+            null_body = null_body_offset is not None
+            terminal_offset = body_offset if body_offset is not None else null_body_offset
+            if terminal_offset is None:
                 message = "RESPMOD request missing res-body/null-body"
+                raise IcapProtocolError(message)
+            response_header_offset = offsets.get("res-hdr", 0)
+            if response_header_offset < 0 or terminal_offset < response_header_offset:
+                message = "invalid RESPMOD encapsulated response offsets"
                 raise IcapProtocolError(message)
             allow_204 = "204" in {
                 part.strip() for part in headers.get("allow", "").split(",")
             }
             result: ClamdResult
             if body_offset is not None:
-                http_header, remainder = _read_exact(self.rfile, body_offset, remainder)
+                encapsulated_headers, remainder = _read_exact(
+                    self.rfile, body_offset, remainder
+                )
+                http_header = encapsulated_headers[response_header_offset:body_offset]
                 can_use_204 = allow_204 and _http_response_allows_squid_204_backup(
                     http_header
                 )
@@ -658,7 +687,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     body, result = self._read_respmod_body_for_scan(
                         headers=headers,
                         initial=remainder,
-                        allow_204=can_use_204,
+                        allow_204=False,
                     )
                     body_complete = True
                 except ScanFailedAfterBodyError as exc:
@@ -666,11 +695,21 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     body_complete = True
                     raise
             else:
-                result = self.server.scan_body(body)
+                encapsulated_headers, remainder = _read_exact(
+                    self.rfile, null_body_offset or 0, remainder
+                )
+                http_header = encapsulated_headers[
+                    response_header_offset : null_body_offset or 0
+                ]
                 body_complete = True
+                result = self.server.scan_body(body)
                 can_use_204 = allow_204
             if result.infected:
                 response = blocked_response(result.signature)
+            elif null_body:
+                response = clean_no_body_response(
+                    allow_204=can_use_204, http_header=http_header
+                )
             else:
                 response = clean_response(
                     allow_204=can_use_204, http_header=http_header, body=body
@@ -687,6 +726,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                         http_header=http_header,
                         body=body,
                         body_complete=body_complete,
+                        null_body=null_body,
                     )
                 except OSError as write_exc:
                     scan_error_warning.warning(
