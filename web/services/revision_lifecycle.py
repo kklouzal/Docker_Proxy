@@ -5,7 +5,7 @@ import re
 from contextlib import contextmanager, suppress
 from typing import Any
 
-from services.db import DATABASE_ERRORS, mysql_error_code
+from services import schema_lifecycle as _schema_lifecycle
 
 _ADVISORY_LOCK_TIMEOUT_SECONDS = 10
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -19,33 +19,24 @@ def _safe_identifier(value: str) -> str:
 
 
 def column_exists(conn: Any, table_name: str, column_name: str) -> bool:
-    row = conn.execute(
-        """
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = DATABASE()
-          AND table_name = %s
-          AND column_name = %s
-        LIMIT 1
-        """,
-        (table_name, column_name),
-    ).fetchone()
-    return row is not None
+    return _schema_lifecycle.column_exists(conn, table_name, column_name)
 
 
 def index_exists(conn: Any, table_name: str, index_name: str) -> bool:
-    row = conn.execute(
-        """
-        SELECT 1
-        FROM information_schema.statistics
-        WHERE table_schema = DATABASE()
-          AND table_name = %s
-          AND index_name = %s
-        LIMIT 1
-        """,
-        (table_name, index_name),
-    ).fetchone()
-    return row is not None
+    return _schema_lifecycle.index_exists(conn, table_name, index_name)
+
+
+def repair_duplicate_active_rows(
+    conn: Any,
+    *,
+    table_name: str,
+    scope_column: str | None = None,
+) -> int:
+    return _schema_lifecycle.repair_duplicate_active_rows(
+        conn,
+        table_name=table_name,
+        scope_column=scope_column,
+    )
 
 
 def ensure_generated_column(
@@ -55,13 +46,7 @@ def ensure_generated_column(
     column_name: str,
     ddl: str,
 ) -> None:
-    if column_exists(conn, table_name, column_name):
-        return
-    try:
-        conn.execute(ddl)
-    except DATABASE_ERRORS as exc:
-        if mysql_error_code(exc) != 1060:
-            raise
+    _schema_lifecycle.ensure_column(conn, table_name=table_name, column_name=column_name, ddl=ddl)
 
 
 def ensure_index(
@@ -71,43 +56,7 @@ def ensure_index(
     index_name: str,
     ddl: str,
 ) -> None:
-    if index_exists(conn, table_name, index_name):
-        return
-    try:
-        conn.execute(ddl)
-    except DATABASE_ERRORS as exc:
-        if mysql_error_code(exc) != 1061:
-            raise
-
-
-def repair_duplicate_active_rows(
-    conn: Any,
-    *,
-    table_name: str,
-    scope_column: str | None = None,
-) -> int:
-    """Demote legacy duplicate active rows, preserving the newest active per scope.
-
-    The newest active row is chosen deterministically by (created_ts DESC, id DESC).
-    Older duplicate rows are retained as inactive history; payload columns are not
-    modified.
-    """
-    safe_table = _safe_identifier(table_name)
-    safe_scope = _safe_identifier(scope_column) if scope_column else ""
-    partition = f"PARTITION BY {safe_scope}" if safe_scope else ""
-    sql = f"""
-        UPDATE {safe_table} target
-        JOIN (
-            SELECT id,
-                   ROW_NUMBER() OVER ({partition} ORDER BY created_ts DESC, id DESC) AS active_rank
-            FROM {safe_table}
-            WHERE is_active=1
-        ) ranked ON ranked.id=target.id
-        SET target.is_active=0
-        WHERE ranked.active_rank > 1
-        """  # noqa: S608 - identifiers are validated constants; values are not interpolated.
-    result = conn.execute(sql)
-    return max(0, int(getattr(result, "rowcount", 0) or 0))
+    _schema_lifecycle.ensure_index(conn, table_name=table_name, index_name=index_name, ddl=ddl)
 
 
 def scoped_lock_name(namespace: str, scope: object | None = None) -> str:

@@ -209,12 +209,12 @@ class CertificateBundleStore:
                     "ADD UNIQUE KEY uniq_certificate_bundle_revisions_active (active_global_slot)"
                 ),
             )
-            try:
-                conn.execute(
-                    "ALTER TABLE admin_ui_https_settings ADD COLUMN san_tokens TEXT",
-                )
-            except Exception:
-                pass
+            ensure_generated_column(
+                conn,
+                table_name="admin_ui_https_settings",
+                column_name="san_tokens",
+                ddl="ALTER TABLE admin_ui_https_settings ADD COLUMN san_tokens TEXT",
+            )
             conn.execute(
                 """
                 INSERT IGNORE INTO admin_ui_https_settings(

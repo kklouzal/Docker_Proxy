@@ -6,9 +6,10 @@ import threading
 import time
 
 from services.bounded_delete import default_chunk_size, delete_where_in_chunks
-from services.db import DATABASE_ERRORS, connect, mysql_error_code
+from services.db import connect
 from services.proxy_context import get_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
+from services.revision_lifecycle import ensure_index
 
 logger = logging.getLogger(__name__)
 
@@ -39,24 +40,12 @@ class AuditStore:
                 )
                 """,
             )
-            exists = conn.execute(
-                """
-                SELECT 1
-                FROM information_schema.statistics
-                WHERE table_schema = DATABASE()
-                  AND table_name = 'audit_events'
-                  AND index_name = 'idx_audit_ts_id'
-                LIMIT 1
-                """,
-            ).fetchone()
-            if not exists:
-                try:
-                    conn.execute(
-                        "ALTER TABLE audit_events ADD INDEX idx_audit_ts_id (ts, id)",
-                    )
-                except DATABASE_ERRORS as exc:
-                    if mysql_error_code(exc) != 1061:
-                        raise
+            ensure_index(
+                conn,
+                table_name="audit_events",
+                index_name="idx_audit_ts_id",
+                ddl="ALTER TABLE audit_events ADD INDEX idx_audit_ts_id (ts, id)",
+            )
 
     def record(
         self,

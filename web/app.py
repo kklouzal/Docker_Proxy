@@ -151,6 +151,7 @@ from services.saml_auth import (
     profile_metadata_ready,
     resolve_saml_login,
 )
+from services.schema_lifecycle import ensure_startup_schema_if_configured
 from services.squid_config_forms import (
     build_template_options,
     build_template_options_from_form,
@@ -1739,6 +1740,11 @@ def _directory_secret_key():
 
 _directory_auth_store = get_directory_auth_store(_directory_secret_key)
 _saml_auth_store = get_saml_auth_store()
+try:
+    ensure_startup_schema_if_configured()
+except Exception:
+    app.logger.exception("Failed to apply MySQL schema migrations at Admin UI startup")
+    raise
 if _env_secret:
     app.secret_key = _env_secret
 else:

@@ -158,6 +158,7 @@ ignore = [
 "web/services/config_revisions.py" = ["S101", "S608"]
 "web/services/observability_maintenance.py" = ["S101", "S608"]
 "web/services/proxy_registry.py" = ["S101", "S608"]
+"web/services/schema_lifecycle.py" = ["S608"]
 
 # SHA-1 is used only for non-security fingerprints/cache keys in these files.
 "web/services/adblock_store.py" = ["S310", "S324"]

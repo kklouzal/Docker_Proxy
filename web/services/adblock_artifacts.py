@@ -252,24 +252,15 @@ class AdblockArtifactStore:
                 )
                 """,
             )
-            artifact_column = conn.execute(
-                """
-                SELECT 1
-                FROM information_schema.columns
-                WHERE table_schema = DATABASE()
-                  AND table_name = 'proxy_adblock_artifact_applications'
-                  AND column_name = 'artifact_sha256'
-                LIMIT 1
-                """,
-            ).fetchone()
-            if not artifact_column:
-                try:
-                    conn.execute(
-                        "ALTER TABLE proxy_adblock_artifact_applications ADD COLUMN artifact_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts",
-                    )
-                except DATABASE_ERRORS as exc:
-                    if mysql_error_code(exc) != 1060:
-                        raise
+            ensure_generated_column(
+                conn,
+                table_name="proxy_adblock_artifact_applications",
+                column_name="artifact_sha256",
+                ddl=(
+                    "ALTER TABLE proxy_adblock_artifact_applications "
+                    "ADD COLUMN artifact_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts"
+                ),
+            )
             repair_duplicate_active_rows(
                 conn,
                 table_name="adblock_artifact_revisions",
@@ -315,23 +306,7 @@ class AdblockArtifactStore:
                     "ALTER TABLE proxy_adblock_artifact_applications ADD INDEX idx_proxy_adblock_artifact_apply_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)",
                 ),
             ):
-                exists = conn.execute(
-                    """
-                    SELECT 1
-                    FROM information_schema.statistics
-                    WHERE table_schema = DATABASE()
-                      AND table_name = %s
-                      AND index_name = %s
-                    LIMIT 1
-                    """,
-                    (table, index_name),
-                ).fetchone()
-                if not exists:
-                    try:
-                        conn.execute(ddl)
-                    except DATABASE_ERRORS as exc:
-                        if mysql_error_code(exc) != 1061:
-                            raise
+                ensure_index(conn, table_name=table, index_name=index_name, ddl=ddl)
 
     def _row_to_revision(self, row: object | None) -> AdblockArtifactRevision | None:
         if not row:
