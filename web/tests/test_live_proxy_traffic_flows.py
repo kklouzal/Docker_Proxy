@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import http.client
 import ssl
 import time
 import urllib.error
@@ -144,10 +145,32 @@ def test_live_remote_proxy_http_and_https_cold_misses_survive_unavailable_clamd(
     https_url = f"https://example.com/?docker_proxy_cold_miss={token}"
 
     deadline = time.time() + 120
-    last: tuple[int, str, int, str] | None = None
+    transient_errors = (
+        http.client.RemoteDisconnected,
+        ConnectionResetError,
+        TimeoutError,
+        urllib.error.URLError,
+    )
+    last: tuple[int | str, str, int | str, str] | None = None
+    last_error: Exception | None = None
     while time.time() < deadline:
-        http_status, http_body = _proxied_request(proxy_url, http_url)
-        https_status, https_body = _proxied_request(proxy_url, https_url)
+        try:
+            http_status, http_body = _proxied_request(proxy_url, http_url)
+        except transient_errors as exc:
+            last_error = exc
+            last = ("http_transient_error", repr(exc), "https_not_attempted", "")
+            time.sleep(1)
+            continue
+
+        try:
+            https_status, https_body = _proxied_request(proxy_url, https_url)
+        except transient_errors as exc:
+            last_error = exc
+            last = (http_status, http_body[:500], "https_transient_error", repr(exc))
+            time.sleep(1)
+            continue
+
+        last_error = None
         last = (http_status, http_body[:500], https_status, https_body[:500])
         if (
             http_status == 200
@@ -162,4 +185,4 @@ def test_live_remote_proxy_http_and_https_cold_misses_survive_unavailable_clamd(
         time.sleep(1)
 
     msg = f"remote proxy cold miss HTTP/HTTPS failed via {proxy_url}: {last!r}"
-    raise AssertionError(msg)
+    raise AssertionError(msg) from last_error
