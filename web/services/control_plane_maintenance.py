@@ -9,6 +9,7 @@ from typing import Any
 from services.db import DATABASE_ERRORS, connect, table_exists
 from services.observability_maintenance import public_detail
 from services.sql_identifiers import quote_mysql_identifier
+from services.webcat_hygiene import cleanup_stale_webcat_build_tables
 
 DEFAULT_CONTROL_PLANE_RETENTION_DAYS = 90
 MIN_CONTROL_PLANE_RETENTION_DAYS = 1
@@ -28,6 +29,31 @@ CONTROL_PLANE_MAINTENANCE_TABLES: tuple[str, ...] = (
     "safe_browsing_negative_cache",
     "observability_maintenance_runs",
 )
+
+WEBCAT_BUILD_TABLE_CLEANUP_TABLE = "webcat_build_tables"
+
+
+def _format_webcat_cleanup_detail(cleanup) -> str:
+    if cleanup.detail:
+        return cleanup.detail
+    return (
+        f"dropped={len(cleanup.dropped_tables)} discovered={cleanup.discovered_tables}"
+    )
+
+
+def _cleanup_stale_webcat_build_tables_result(
+    *,
+    now_ts: int,
+) -> ControlPlaneMaintenanceResult:
+    with connect() as conn:
+        cleanup = cleanup_stale_webcat_build_tables(conn, now_ts=now_ts)
+    return ControlPlaneMaintenanceResult(
+        table=WEBCAT_BUILD_TABLE_CLEANUP_TABLE,
+        status="pruned" if cleanup.dropped_tables else "noop",
+        deleted_rows=len(cleanup.dropped_tables),
+        maintenance="drop_stale",
+        detail=_format_webcat_cleanup_detail(cleanup),
+    )
 
 
 @dataclass(frozen=True)
@@ -351,6 +377,27 @@ def prune_control_plane_tables(*, retention_days: object = None) -> dict[str, An
                 detail=public_detail(exc),
             )
             failed.append(result)
+        table_results.append(result)
+
+    try:
+        table_results.append(_cleanup_stale_webcat_build_tables_result(now_ts=now_ts))
+    except DATABASE_ERRORS as exc:
+        result = ControlPlaneMaintenanceResult(
+            table=WEBCAT_BUILD_TABLE_CLEANUP_TABLE,
+            status="failed",
+            maintenance="failed",
+            detail=public_detail(exc),
+        )
+        failed.append(result)
+        table_results.append(result)
+    except Exception as exc:
+        result = ControlPlaneMaintenanceResult(
+            table=WEBCAT_BUILD_TABLE_CLEANUP_TABLE,
+            status="failed",
+            maintenance="failed",
+            detail=public_detail(exc),
+        )
+        failed.append(result)
         table_results.append(result)
 
     return {

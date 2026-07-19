@@ -3,6 +3,13 @@ from __future__ import annotations
 from services import control_plane_maintenance as maintenance
 
 
+class _CleanupResult:
+    dropped_tables = ()
+    discovered_tables = 0
+    stale_tables = 0
+    detail = ""
+
+
 class _Result:
     def __init__(self, rowcount: int = 0) -> None:
         self.rowcount = rowcount
@@ -39,6 +46,11 @@ def test_control_plane_prune_expires_policy_and_cache_rows(monkeypatch) -> None:
     monkeypatch.setattr(maintenance, "_table_exists", lambda _table: True)
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
     monkeypatch.setattr(maintenance.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(
+        maintenance,
+        "cleanup_stale_webcat_build_tables",
+        lambda *_args, **_kwargs: _CleanupResult(),
+    )
 
     result = maintenance.prune_control_plane_tables(retention_days=1)
 
@@ -76,8 +88,16 @@ def test_control_plane_prune_keeps_active_blob_revisions(monkeypatch) -> None:
         ("adblock_artifact_revisions",),
     )
     monkeypatch.setattr(maintenance, "_table_exists", lambda _table: True)
-    monkeypatch.setattr(adblock_artifacts, "AdblockArtifactStore", FakeAdblockArtifactStore)
+    monkeypatch.setattr(maintenance, "connect", _Connection)
+    monkeypatch.setattr(
+        adblock_artifacts, "AdblockArtifactStore", FakeAdblockArtifactStore
+    )
     monkeypatch.setattr(maintenance.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(
+        maintenance,
+        "cleanup_stale_webcat_build_tables",
+        lambda *_args, **_kwargs: _CleanupResult(),
+    )
 
     result = maintenance.prune_control_plane_tables(retention_days=30)
 
@@ -86,6 +106,80 @@ def test_control_plane_prune_keeps_active_blob_revisions(monkeypatch) -> None:
     assert result["tables"][0]["table"] == "adblock_artifact_revisions"
     assert result["tables"][0]["status"] == "pruned"
     assert result["tables"][0]["deleted_rows"] == 3
+
+
+def test_control_plane_prune_invokes_webcat_stale_build_table_cleanup(
+    monkeypatch,
+) -> None:
+    conn = _Connection()
+    calls: list[tuple[object, int]] = []
+
+    class CleanupResult:
+        dropped_tables = ("webcat_domains_stage_111_1000",)
+        discovered_tables = 1
+        stale_tables = 1
+        detail = ""
+
+    monkeypatch.setattr(maintenance, "CONTROL_PLANE_MAINTENANCE_TABLES", ())
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance.time, "time", lambda: 5_000)
+
+    def cleanup(cleanup_conn, *, now_ts: int):
+        calls.append((cleanup_conn, now_ts))
+        return CleanupResult()
+
+    monkeypatch.setattr(maintenance, "cleanup_stale_webcat_build_tables", cleanup)
+
+    result = maintenance.prune_control_plane_tables(retention_days=30)
+
+    assert result["ok"] is True
+    assert result["pruned_tables"] == 1
+    assert result["deleted_rows"] == 1
+    assert calls == [(conn, 5_000)]
+    assert result["tables"] == [
+        {
+            "table": "webcat_build_tables",
+            "status": "pruned",
+            "deleted_rows": 1,
+            "updated_rows": 0,
+            "maintenance": "drop_stale",
+            "detail": "dropped=1 discovered=1",
+        },
+    ]
+
+
+def test_control_plane_prune_reports_webcat_cleanup_noop(monkeypatch) -> None:
+    conn = _Connection()
+
+    class CleanupResult:
+        dropped_tables = ()
+        discovered_tables = 0
+        stale_tables = 0
+        detail = "disabled"
+
+    monkeypatch.setattr(maintenance, "CONTROL_PLANE_MAINTENANCE_TABLES", ())
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(
+        maintenance,
+        "cleanup_stale_webcat_build_tables",
+        lambda *_args, **_kwargs: CleanupResult(),
+    )
+
+    result = maintenance.prune_control_plane_tables(retention_days=30)
+
+    assert result["ok"] is True
+    assert result["pruned_tables"] == 0
+    assert result["deleted_rows"] == 0
+    assert result["tables"] == [
+        {
+            "table": "webcat_build_tables",
+            "status": "noop",
+            "deleted_rows": 0,
+            "updated_rows": 0,
+            "maintenance": "drop_stale",
+            "detail": "disabled",
+        },
+    ]
 
 
 def test_control_plane_maintenance_analyzes_existing_tables(monkeypatch) -> None:

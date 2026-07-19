@@ -23,6 +23,7 @@ if str(APP_ROOT) not in sys.path:
 
 from dataclasses import replace  # noqa: E402
 
+from services import webcat_hygiene  # noqa: E402
 from services.db import connect, resolve_database_config  # noqa: E402
 from services.domain_normalization import (  # noqa: E402
     looks_like_domain as _looks_like_host,
@@ -560,65 +561,15 @@ def _upsert_meta_table(conn, table: str, k: str, v: str) -> None:
     )
 
 
-_WEBCAT_BUILD_TABLE_RE = re.compile(
-    r"^webcat_(?:domains|categories|aliases|meta|pairs)_(?:stage|old)_(\d+)_(\d+)$",
-)
-
-
-def _commit_if_supported(conn) -> None:
-    commit = getattr(conn, "commit", None)
-    if callable(commit):
-        commit()
-
-
-def _drop_tables(conn, tables: Sequence[str]) -> None:
-    for table in sorted(set(tables)):
-        conn.execute(f"DROP TABLE IF EXISTS {_quote_table_name(table)}")
-
-
 def _cleanup_stale_build_tables(conn, *, current_suffix: str) -> None:
     try:
-        ttl = int(
-            (
-                os.environ.get("WEBCAT_STALE_STAGE_TTL_SECONDS") or str(6 * 60 * 60)
-            ).strip()
-            or str(6 * 60 * 60),
+        webcat_hygiene.cleanup_stale_webcat_build_tables(
+            conn,
+            current_suffix=current_suffix,
+            now_ts=_now(),
         )
     except Exception:
-        ttl = 6 * 60 * 60
-    if ttl < 0:
         return
-    cutoff = int(_now()) - max(0, ttl)
-    try:
-        rows = conn.execute(
-            "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'webcat\\_%' ESCAPE '\\'",
-        ).fetchall()
-    except Exception:
-        return
-
-    stale: list[str] = []
-    for row in rows:
-        if isinstance(row, dict):
-            table = str(row.get("TABLE_NAME") or row.get("table_name") or "")
-        elif isinstance(row, (list, tuple)):
-            table = str(row[0] if row else "")
-        else:
-            table = str(row or "")
-        match = _WEBCAT_BUILD_TABLE_RE.match(table)
-        if not match:
-            continue
-        suffix = f"{match.group(1)}_{match.group(2)}"
-        if suffix == current_suffix:
-            continue
-        try:
-            built_ts = int(match.group(2))
-        except Exception:
-            continue
-        if built_ts <= cutoff:
-            stale.append(table)
-    if stale:
-        _drop_tables(conn, stale)
-        _commit_if_supported(conn)
 
 
 def _build_db(
@@ -686,12 +637,14 @@ def _build_db(
         try:
             _init_db(conn)
             _cleanup_stale_build_tables(conn, current_suffix=suffix)
-            _drop_tables(conn, list(stages.values()) + list(old_tables.values()))
+            webcat_hygiene.drop_tables(
+                conn, list(stages.values()) + list(old_tables.values())
+            )
             for live, stage in stages.items():
                 conn.execute(
                     f"CREATE TABLE {_quote_table_name(stage)} LIKE {_quote_table_name(live)}",
                 )
-            _commit_if_supported(conn)
+            webcat_hygiene.commit_if_supported(conn)
 
             if domain_rows:
                 for start_idx in range(0, len(domain_rows), batch_size):
@@ -699,7 +652,7 @@ def _build_db(
                         domain_insert_sql,
                         domain_rows[start_idx : start_idx + batch_size],
                     )
-                _commit_if_supported(conn)
+                webcat_hygiene.commit_if_supported(conn)
 
             if category_rows:
                 for start_idx in range(0, len(category_rows), batch_size):
@@ -707,7 +660,7 @@ def _build_db(
                         category_insert_sql,
                         category_rows[start_idx : start_idx + batch_size],
                     )
-                _commit_if_supported(conn)
+                webcat_hygiene.commit_if_supported(conn)
 
             alias_rows: list[tuple[str, str]] = []
             if aliases:
@@ -716,7 +669,7 @@ def _build_db(
                         alias_rows.append((alias, canonical))
                 if alias_rows:
                     conn.executemany(alias_insert_sql, alias_rows)
-                    _commit_if_supported(conn)
+                    webcat_hygiene.commit_if_supported(conn)
 
             _upsert_meta_table(conn, stages["webcat_meta"], "built_ts", str(_now()))
             _upsert_meta_table(conn, stages["webcat_meta"], "source", source)
@@ -754,9 +707,11 @@ def _build_db(
                     ),
                 )
             conn.execute("RENAME TABLE " + ", ".join(rename_parts))
-            _drop_tables(conn, list(old_tables.values()))
+            webcat_hygiene.drop_tables(conn, list(old_tables.values()))
         except Exception:
-            _drop_tables(conn, list(stages.values()) + list(old_tables.values()))
+            webcat_hygiene.drop_tables(
+                conn, list(stages.values()) + list(old_tables.values())
+            )
             raise
     return domains_built, unique_pairs
 
