@@ -3530,7 +3530,10 @@ def test_squid_restart_waits_for_icap_readiness_before_accepting_success() -> No
     controller._remove_stale_squid_pidfile = lambda **_kwargs: ""
     controller._accept_running_squid_restart = lambda *args, **kwargs: None
     controller._wait_for_http_listener = lambda *, timeout: True
-    controller._check_icap_readiness = lambda *, timeout: (False, "adblock OPTIONS not ready")
+    controller._check_icap_readiness = lambda *, timeout: (
+        False,
+        "adblock OPTIONS not ready",
+    )
 
     ok, detail = controller._restart_squid_locked(ready_timeout=1.0)
 
@@ -3565,10 +3568,15 @@ def test_adblock_artifact_restart_pauses_squid_until_icap_ready() -> None:
 
         def restart_squid(self, *, ready_timeout):
             calls.append(("restart_squid", ready_timeout))
-            return True, "Squid HTTP listener is responding and ICAP readiness is green."
+            return (
+                True,
+                "Squid HTTP listener is responding and ICAP readiness is green.",
+            )
 
     runtime.controller = Controller()
-    runtime._restart_adblock_service = lambda: (calls.append("adblock_restart") or (True, "adblock restarted"))
+    runtime._restart_adblock_service = lambda: (
+        calls.append("adblock_restart") or (True, "adblock restarted")
+    )
 
     ok, detail = runtime._restart_adblock_service_with_squid_paused()
 
@@ -3577,11 +3585,137 @@ def test_adblock_artifact_restart_pauses_squid_until_icap_ready() -> None:
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
         ("absent", 30.0),
         "adblock_restart",
-        ("icap", 75.0),
         ("restart_squid", 75.0),
     ]
     assert "adblock restarted" in detail
-    assert "ICAP ready" in detail
+    assert "Squid HTTP listener is responding" in detail
+
+
+def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync() -> (
+    None
+):
+    runtime = _runtime_shell()
+    calls: list[object] = []
+
+    class Controller:
+        def __init__(self) -> None:
+            self.materialized = False
+
+        def set_adblock_icap_revision_token(self, token) -> None:
+            self.token = token
+
+        def set_adblock_enabled(self, enabled) -> None:
+            self.adblock_enabled = enabled
+
+        def get_current_config(self):
+            return "workers 1\nhttp_port 3128\n"
+
+        def materialize_clamav_runtime_files(self, config_text, **_kwargs):
+            calls.append(("materialize", config_text))
+            return True, "ClamAV runtime files already current."
+
+        def normalize_config_text(self, text):
+            return text
+
+        def _supervisor_program_running(self, program):
+            calls.append(("status", program))
+            return True
+
+        def _run(self, args, **_kwargs):
+            calls.append(list(args))
+            return _cp(0, stdout="squid: stopped")
+
+        def _decode_completed(self, proc):
+            return (proc.stdout or b"").decode().strip()
+
+        def _wait_for_http_listener_absent(self, *, timeout):
+            calls.append(("absent", timeout))
+            return True
+
+        def _wait_for_icap_readiness(self, *, timeout):
+            msg = "Squid restart wrapper should own the ICAP readiness gate"
+            raise AssertionError(msg)
+
+        def restart_squid(self, *, ready_timeout):
+            calls.append(("restart_squid", ready_timeout))
+            return (
+                True,
+                "Squid HTTP listener is responding and ICAP readiness is green.",
+            )
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256="current-sha")
+
+        def latest_apply(self, _proxy_id) -> None:
+            return None
+
+        def get_active_revision(self, _proxy_id) -> NoReturn:
+            msg = "active config should not be fetched during no-op sync"
+            raise AssertionError(msg)
+
+    class Registry:
+        def mark_apply_result(self, *_args, **_kwargs) -> NoReturn:
+            msg = "successful no-op sync should not mark failed apply"
+            raise AssertionError(msg)
+
+    controller = Controller()
+    runtime.controller = controller
+    runtime.revisions = Revisions()
+    runtime.registry = Registry()
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    adblock_results = iter(
+        [
+            {"ok": True, "changed": True, "artifact_sha256": "adblock-sha"},
+            {"ok": True, "changed": False, "artifact_sha256": "adblock-sha"},
+        ],
+    )
+
+    def sync_adblock(force=False):
+        result = next(adblock_results)
+        if result["changed"]:
+            ok_restart, restart_detail = (
+                runtime._restart_adblock_service_with_squid_paused()
+            )
+            result = {**result, "ok": ok_restart, "detail": restart_detail}
+        return result
+
+    runtime._restart_adblock_service = lambda: (True, "adblock restarted")
+    runtime.sync_adblock_state = sync_adblock
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime._current_adblock_artifact_sha = lambda: "adblock-sha"
+    runtime._current_adblock_enabled = lambda: True
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
+        calls.append(("reload", wait_for_adblock_icap))
+        or (True, "Squid reconfigured for policy update.")
+    )
+
+    first = runtime.sync_from_db(force=False)
+    second = runtime.sync_from_db(force=False)
+
+    assert first["ok"] is True
+    assert first["changed"] is True
+    assert second["ok"] is True
+    assert second["changed"] is False
+    assert calls == [
+        ("status", "squid"),
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ("absent", 30.0),
+        ("restart_squid", 75.0),
+        ("materialize", "workers 1\nhttp_port 3128\n"),
+        ("reload", True),
+        ("materialize", "workers 1\nhttp_port 3128\n"),
+    ]
 
 
 def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default() -> (
