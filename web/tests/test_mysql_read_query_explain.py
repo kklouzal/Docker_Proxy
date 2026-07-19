@@ -213,7 +213,7 @@ def test_mysql_nearest_observability_readers_use_sargable_index_ranges(tmp_path:
                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
                    ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
                    response_cf_mitigated, response_alt_svc, id
-            FROM diagnostic_requests
+            FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_domain_ts_id)
             WHERE proxy_id = %s AND domain = %s AND ts BETWEEN %s AND %s
             ORDER BY ts DESC, id DESC
             LIMIT %s
@@ -228,7 +228,7 @@ def test_mysql_nearest_observability_readers_use_sargable_index_ranges(tmp_path:
                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
                    ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
                    response_cf_mitigated, response_alt_svc, id
-            FROM diagnostic_requests
+            FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_domain_ts_id)
             WHERE proxy_id = %s AND domain = %s AND ts > %s AND ts <= %s
             ORDER BY ts ASC, id DESC
             LIMIT %s
@@ -241,7 +241,7 @@ def test_mysql_nearest_observability_readers_use_sargable_index_ranges(tmp_path:
             SELECT ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
                    adapt_summary, adapt_details, host, user_agent, sni,
                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family, id
-            FROM diagnostic_icap_events
+            FROM diagnostic_icap_events FORCE INDEX (idx_diagnostic_icap_proxy_domain_service_ts_id)
             WHERE proxy_id = %s AND domain = %s AND service_family = %s AND ts BETWEEN %s AND %s
             ORDER BY ts DESC, id DESC
             LIMIT %s

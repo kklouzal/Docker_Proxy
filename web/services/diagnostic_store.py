@@ -1705,6 +1705,7 @@ class DiagnosticStore:
         center = int(around_ts or _now())
         window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
         lim = max(1, min(20, int(limit)))
+        self.init_db()
 
         select_sql = """
                 SELECT
@@ -1713,7 +1714,7 @@ class DiagnosticStore:
                     tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
                     ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
                     response_cf_mitigated, response_alt_svc, id
-                FROM diagnostic_requests
+                FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_domain_ts_id)
                 WHERE proxy_id = %s
                   AND domain = %s
                   AND {window_predicate}
@@ -1780,6 +1781,7 @@ class DiagnosticStore:
         center = int(around_ts or _now())
         window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
         lim = max(1, min(20, int(limit)))
+        self.init_db()
 
         base_where = ["proxy_id = %s"]
         base_params: list[Any] = [get_proxy_id()]
@@ -1810,7 +1812,7 @@ class DiagnosticStore:
                     tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
                     ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
                     response_cf_mitigated, response_alt_svc, id
-                FROM diagnostic_requests
+                FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_ts)
                 WHERE {base_where_sql}
                   AND {{window_predicate}}
                 ORDER BY {{order_by}}
@@ -1877,6 +1879,7 @@ class DiagnosticStore:
         window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
         lim = max(1, min(20, int(limit)))
         normalized_service = (service or "").strip().lower()
+        self.init_db()
 
         base_where = ["proxy_id = %s", "domain = %s"]
         base_params: list[Any] = [get_proxy_id(), normalized_domain]
@@ -1889,7 +1892,7 @@ class DiagnosticStore:
                     ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
                     adapt_summary, adapt_details, host, user_agent, sni,
                     exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family, id
-                FROM diagnostic_icap_events
+                FROM diagnostic_icap_events FORCE INDEX (idx_diagnostic_icap_proxy_domain_service_ts_id)
                 WHERE {base_where_sql}
                   AND {{window_predicate}}
                 ORDER BY {{order_by}}
