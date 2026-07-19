@@ -170,6 +170,7 @@ def test_proxy_dockerfile_includes_direct_service_import_dependencies() -> None:
         required_services.update(_python_module_imports_services(path))
 
     assert sorted(required_services - copied_services) == []
+    assert "bounded_delete.py" in copied_services
 
 
 def test_admin_dockerfile_includes_direct_service_import_dependencies() -> None:
@@ -190,6 +191,8 @@ def test_admin_dockerfile_includes_direct_service_import_dependencies() -> None:
         required_services.update(_python_module_imports_services(path))
 
     assert sorted(required_services - copied_services) == []
+    assert "bounded_delete.py" in copied_services
+    assert "webcat_hygiene.py" in copied_services
 
 
 def test_ghcr_publish_passes_runtime_version_build_args() -> None:

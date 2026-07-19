@@ -110,6 +110,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/adblock_lookup.py \
     web/services/adblock_patterns.py \
     web/services/adblock_store.py \
+    web/services/bounded_delete.py \
     web/services/certificate_bundles.py \
     web/services/certificate_core.py \
     web/services/clamav_config_forms.py \
