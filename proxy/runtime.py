@@ -1772,8 +1772,8 @@ class ProxyRuntime:
     def _restart_adblock_service_with_squid_paused(self) -> tuple[bool, str]:
         controller = getattr(self, "controller", None)
         controller_run = getattr(controller, "_run", None)
-        controller_restart = getattr(controller, "restart_squid", None)
-        if not callable(controller_run) or not callable(controller_restart):
+        locked_restart = getattr(controller, "_restart_squid_locked", None)
+        if not callable(controller_run) or not callable(locked_restart):
             return self._restart_adblock_service()
         with _exclusive_squid_lifecycle_lock():
             detail_parts: list[str] = []
@@ -1841,7 +1841,7 @@ class ProxyRuntime:
             # until live readiness probes time out.
             squid_restart_ok = not squid_was_running
             if squid_was_running:
-                squid_restart_ok, squid_detail = controller_restart(ready_timeout=75.0)
+                squid_restart_ok, squid_detail = locked_restart(ready_timeout=75.0)
                 if squid_detail:
                     detail_parts.append(squid_detail)
                 if not squid_restart_ok:

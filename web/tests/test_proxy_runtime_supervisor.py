@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import sqlite3
 import subprocess
@@ -3567,7 +3568,11 @@ def test_adblock_artifact_restart_pauses_squid_until_icap_ready() -> None:
             return True, "ICAP ready"
 
         def restart_squid(self, *, ready_timeout):
-            calls.append(("restart_squid", ready_timeout))
+            msg = "public restart_squid must not be called while lifecycle lock is held"
+            raise AssertionError(msg)
+
+        def _restart_squid_locked(self, *, ready_timeout):
+            calls.append(("restart_squid_locked", ready_timeout))
             return (
                 True,
                 "Squid HTTP listener is responding and ICAP readiness is green.",
@@ -3585,10 +3590,92 @@ def test_adblock_artifact_restart_pauses_squid_until_icap_ready() -> None:
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
         ("absent", 30.0),
         "adblock_restart",
-        ("restart_squid", 75.0),
+        ("restart_squid_locked", 75.0),
     ]
     assert "adblock restarted" in detail
     assert "Squid HTTP listener is responding" in detail
+
+
+def test_adblock_restart_under_lifecycle_lock_uses_locked_squid_restart_without_deadlock(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    lock_state = {"held": False}
+
+    @contextlib.contextmanager
+    def detecting_lifecycle_lock():
+        if lock_state["held"]:
+            msg = "recursive public Squid lifecycle lock acquisition would deadlock"
+            raise AssertionError(msg)
+        lock_state["held"] = True
+        try:
+            yield
+        finally:
+            lock_state["held"] = False
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_exclusive_squid_lifecycle_lock",
+        detecting_lifecycle_lock,
+    )
+
+    runtime = _runtime_shell()
+    calls: list[object] = []
+    result: dict[str, object] = {}
+
+    class Controller:
+        def _supervisor_program_running(self, program):
+            assert program == "squid"
+            return True
+
+        def _run(self, args, **_kwargs):
+            calls.append(list(args))
+            return _cp(0, stdout="squid: stopped")
+
+        def _decode_completed(self, proc):
+            return (proc.stdout or b"").decode().strip()
+
+        def _wait_for_http_listener_absent(self, *, timeout):
+            calls.append(("absent", timeout))
+            return True
+
+        def restart_squid(self, *, ready_timeout):
+            # The pre-fix path called this public API while already holding the
+            # lifecycle lock, which recursively acquired the flock and left Squid
+            # stopped.  The detecting lock raises here instead of hanging the
+            # regression test.
+            calls.append(("public_restart_squid", ready_timeout))
+            with runtime_module._exclusive_squid_lifecycle_lock():
+                return True, "unexpected public restart"
+
+        def _restart_squid_locked(self, *, ready_timeout):
+            assert lock_state["held"] is True
+            calls.append(("locked_restart_squid", ready_timeout))
+            return True, "Squid HTTP listener returned after locked restart."
+
+    runtime.controller = Controller()
+    runtime._restart_adblock_service = lambda: (
+        calls.append("adblock_restart") or (True, "adblock restarted")
+    )
+
+    def invoke_restart() -> None:
+        ok, detail = runtime._restart_adblock_service_with_squid_paused()
+        result["ok"] = ok
+        result["detail"] = detail
+
+    thread = threading.Thread(target=invoke_restart, daemon=True)
+    thread.start()
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert result == {
+        "ok": True,
+        "detail": "squid: stopped\nadblock restarted\nSquid HTTP listener returned after locked restart.",
+    }
+    assert ("public_restart_squid", 75.0) not in calls
+    assert ("locked_restart_squid", 75.0) in calls
 
 
 def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync() -> (
@@ -3637,7 +3724,11 @@ def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync(
             raise AssertionError(msg)
 
         def restart_squid(self, *, ready_timeout):
-            calls.append(("restart_squid", ready_timeout))
+            msg = "public restart_squid must not be called while lifecycle lock is held"
+            raise AssertionError(msg)
+
+        def _restart_squid_locked(self, *, ready_timeout):
+            calls.append(("restart_squid_locked", ready_timeout))
             return (
                 True,
                 "Squid HTTP listener is responding and ICAP readiness is green.",
@@ -3711,7 +3802,7 @@ def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync(
         ("status", "squid"),
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
         ("absent", 30.0),
-        ("restart_squid", 75.0),
+        ("restart_squid_locked", 75.0),
         ("materialize", "workers 1\nhttp_port 3128\n"),
         ("reload", True),
         ("materialize", "workers 1\nhttp_port 3128\n"),
