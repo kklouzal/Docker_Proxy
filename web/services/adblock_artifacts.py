@@ -42,6 +42,10 @@ _BUILDER_SOURCE_KINDS = {"background", "compile"}
 _BUILDER_RETRYABLE_MYSQL_CODES = {1205, 1213}
 _BUILDER_MYSQL_RETRY_ATTEMPTS = 4
 _BUILDER_MYSQL_RETRY_BASE_DELAY_SECONDS = 0.2
+_ARTIFACT_PRUNE_BATCH_SIZE = 5
+_ARTIFACT_PRUNE_MAX_BATCHES = 4
+_ARTIFACT_PRUNE_LOCK_NAME = "docker_proxy:adblock_artifact_prune"
+_ARTIFACT_PRUNE_LOCK_TIMEOUT_SECONDS = 0
 
 
 def _is_builder_retryable_mysql_error(exc: BaseException) -> bool:
@@ -70,6 +74,24 @@ def _run_builder_mysql_operation(operation: Callable[[], Any]) -> Any:
         raise last_exc
     msg = "MySQL builder operation failed"
     raise RuntimeError(msg)
+
+
+def _adblock_artifact_prune_batch_size() -> int:
+    return _env_int(
+        "ADBLOCK_ARTIFACT_PRUNE_BATCH_SIZE",
+        _ARTIFACT_PRUNE_BATCH_SIZE,
+        minimum=1,
+        maximum=1000,
+    )
+
+
+def _adblock_artifact_prune_max_batches() -> int:
+    return _env_int(
+        "ADBLOCK_ARTIFACT_PRUNE_MAX_BATCHES",
+        _ARTIFACT_PRUNE_MAX_BATCHES,
+        minimum=1,
+        maximum=1000,
+    )
 
 
 def _parse_enabled_lists_json(enabled_lists_json: str) -> list[str]:
@@ -200,8 +222,8 @@ class AdblockArtifactStore:
                     created_by VARCHAR(255) NOT NULL DEFAULT '',
                     created_ts BIGINT NOT NULL,
                     is_active TINYINT(1) NOT NULL DEFAULT 1,
-                    KEY idx_adblock_artifact_revisions_active (is_active, created_ts),
-                    KEY idx_adblock_artifact_revisions_sha (artifact_sha256, created_ts)
+                    KEY idx_adblock_artifact_revisions_active (is_active, created_ts, id),
+                    KEY idx_adblock_artifact_revisions_sha (artifact_sha256, created_ts, id)
                 )
                 """,
             )
@@ -242,12 +264,12 @@ class AdblockArtifactStore:
                 (
                     "adblock_artifact_revisions",
                     "idx_adblock_artifact_revisions_active",
-                    "ALTER TABLE adblock_artifact_revisions ADD INDEX idx_adblock_artifact_revisions_active (is_active, created_ts)",
+                    "ALTER TABLE adblock_artifact_revisions ADD INDEX idx_adblock_artifact_revisions_active (is_active, created_ts, id)",
                 ),
                 (
                     "adblock_artifact_revisions",
                     "idx_adblock_artifact_revisions_sha",
-                    "ALTER TABLE adblock_artifact_revisions ADD INDEX idx_adblock_artifact_revisions_sha (artifact_sha256, created_ts)",
+                    "ALTER TABLE adblock_artifact_revisions ADD INDEX idx_adblock_artifact_revisions_sha (artifact_sha256, created_ts, id)",
                 ),
                 (
                     "proxy_adblock_artifact_applications",
@@ -394,17 +416,16 @@ class AdblockArtifactStore:
         )
 
         def _create() -> object | None:
-            current = self.get_active_artifact()
+            current_metadata = self.get_active_artifact_metadata()
             if (
                 activate
-                and current is not None
-                and current.artifact_sha256 == artifact_sha256
-                and current.settings_version == int(settings_version)
-                and current.source_kind == (source_kind or "compile")[:64]
-                and current.enabled_lists_json == enabled_lists_json
+                and current_metadata is not None
+                and current_metadata.artifact_sha256 == artifact_sha256
+                and current_metadata.settings_version == int(settings_version)
+                and current_metadata.source_kind == (source_kind or "compile")[:64]
+                and current_metadata.enabled_lists_json == enabled_lists_json
             ):
-                self.prune_revisions()
-                return current
+                return self.get_active_artifact()
 
             now = _now()
             with self._connect() as conn:
@@ -432,30 +453,99 @@ class AdblockArtifactStore:
                         1 if activate else 0,
                     ),
                 )
-                row = conn.execute(
+                return conn.execute(
                     "SELECT * FROM adblock_artifact_revisions WHERE id=%s LIMIT 1",
                     (int(cur.lastrowid or 0),),
                 ).fetchone()
-                self._prune_revisions_with_conn(conn)
-            return row
 
         row = _run_builder_mysql_operation(_create)
+        self._prune_revisions_best_effort(max_batches=1)
         if isinstance(row, AdblockArtifactRevision):
             return row
         revision = self._row_to_revision(row)
         assert revision is not None
         return revision
 
-    def prune_revisions(self) -> None:
+    def prune_revisions(
+        self,
+        *,
+        max_batches: int | None = None,
+        batch_size: int | None = None,
+    ) -> int:
         self.init_db()
+        batches_remaining = (
+            _adblock_artifact_prune_max_batches()
+            if max_batches is None
+            else max(1, int(max_batches))
+        )
+        delete_batch_size = (
+            _adblock_artifact_prune_batch_size()
+            if batch_size is None
+            else max(1, int(batch_size))
+        )
+        deleted = 0
         with self._connect() as conn:
-            self._prune_revisions_with_conn(conn)
+            if not self._try_acquire_prune_lock(conn):
+                return 0
+            try:
+                while batches_remaining > 0:
+                    batch_deleted = self._prune_revisions_with_conn(
+                        conn,
+                        batch_size=delete_batch_size,
+                    )
+                    if batch_deleted <= 0:
+                        break
+                    deleted += batch_deleted
+                    batches_remaining -= 1
+                    conn.commit()
+            finally:
+                with contextlib.suppress(Exception):
+                    conn.execute("DO RELEASE_LOCK(%s)", (_ARTIFACT_PRUNE_LOCK_NAME,))
+        return deleted
 
-    def _prune_revisions_with_conn(self, conn) -> None:
+    def _try_acquire_prune_lock(self, conn) -> bool:
+        row = conn.execute(
+            "SELECT GET_LOCK(%s, %s) AS acquired",
+            (
+                _ARTIFACT_PRUNE_LOCK_NAME,
+                _ARTIFACT_PRUNE_LOCK_TIMEOUT_SECONDS,
+            ),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            return int(row["acquired"] or 0) == 1
+        except (IndexError, KeyError, TypeError, ValueError):
+            with contextlib.suppress(IndexError, TypeError, ValueError):
+                return int(row[0] or 0) == 1
+            return False
+
+    def _prune_revisions_best_effort(self, *, max_batches: int) -> None:
+        try:
+            self.prune_revisions(max_batches=max_batches)
+        except DATABASE_ERRORS:
+            log_exception_throttled(
+                logger,
+                "adblock-artifact-prune",
+                interval_seconds=300.0,
+                message="Adblock artifact retention cleanup failed.",
+            )
+
+    def _prune_revisions_with_conn(self, conn, *, batch_size: int) -> int:
         active_rows = conn.execute(
-            "SELECT id FROM adblock_artifact_revisions WHERE is_active=1 ORDER BY created_ts DESC, id DESC"
+            "SELECT id FROM adblock_artifact_revisions WHERE is_active=1 ORDER BY created_ts DESC, id DESC LIMIT %s",
+            (int(batch_size) + 1,),
         ).fetchall()
-        keep_ids = {int(active_rows[0][0])} if active_rows else set()
+        active_ids = [int(row[0]) for row in active_rows]
+        keep_ids = {active_ids[0]} if active_ids else set()
+        if len(active_ids) > 1:
+            stale_active_ids = active_ids[1 : int(batch_size) + 1]
+            placeholders = ", ".join(["%s"] * len(stale_active_ids))
+            result = conn.execute(
+                f"UPDATE adblock_artifact_revisions SET is_active=0 WHERE id IN ({placeholders})",
+                tuple(stale_active_ids),
+            )
+            return max(0, int(getattr(result, "rowcount", 0) or 0))
         if keep_ids:
             previous = conn.execute(
                 "SELECT id FROM adblock_artifact_revisions WHERE is_active=0 ORDER BY created_ts DESC, id DESC LIMIT 1"
@@ -467,19 +557,46 @@ class AdblockArtifactStore:
                 "SELECT id FROM adblock_artifact_revisions ORDER BY created_ts DESC, id DESC LIMIT 2"
             ).fetchall()
             keep_ids.update(int(row[0]) for row in newest_rows)
-        if not keep_ids:
-            return
-        ordered_keep_ids = tuple(sorted(keep_ids))
-        if len(ordered_keep_ids) == 1:
-            conn.execute(
-                "DELETE FROM adblock_artifact_revisions WHERE id <> %s",
-                ordered_keep_ids,
+        candidate_ids = self._select_prune_candidate_ids(
+            conn,
+            keep_ids=keep_ids,
+            batch_size=batch_size,
+        )
+        if not candidate_ids:
+            return 0
+        placeholders = ", ".join(["%s"] * len(candidate_ids))
+        result = conn.execute(
+            f"DELETE FROM adblock_artifact_revisions WHERE id IN ({placeholders})",
+            tuple(candidate_ids),
+        )
+        return max(0, int(getattr(result, "rowcount", 0) or 0))
+
+    def _select_prune_candidate_ids(
+        self,
+        conn,
+        *,
+        keep_ids: set[int],
+        batch_size: int,
+    ) -> list[int]:
+        if keep_ids:
+            placeholders = ", ".join(["%s"] * len(keep_ids))
+            sql = (
+                "SELECT id FROM adblock_artifact_revisions "
+                f"WHERE is_active=0 AND id NOT IN ({placeholders}) "
+                "ORDER BY created_ts ASC, id ASC LIMIT %s"
             )
-        elif len(ordered_keep_ids) == 2:
-            conn.execute(
-                "DELETE FROM adblock_artifact_revisions WHERE id NOT IN (%s, %s)",
-                ordered_keep_ids,
-            )
+            rows = conn.execute(sql, (*tuple(sorted(keep_ids)), int(batch_size))).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id FROM adblock_artifact_revisions
+                WHERE is_active=0
+                ORDER BY created_ts ASC, id ASC
+                LIMIT %s
+                """,
+                (int(batch_size),),
+            ).fetchall()
+        return [int(row[0]) for row in rows]
 
     def create_revision_from_directory(
         self,

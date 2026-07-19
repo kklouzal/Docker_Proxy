@@ -212,13 +212,29 @@ def _run_one_prune(
             status="pruned",
             deleted_rows=deleted,
         )
-    if table in {"certificate_bundle_revisions", "adblock_artifact_revisions"}:
+    if table == "certificate_bundle_revisions":
         deleted = _delete_revision_rows(
             table=table,
             timestamp_column="created_ts",
             active_column="is_active",
             cutoff_ts=cutoff_ts,
             keep_rows=keep_revisions,
+        )
+        return ControlPlaneMaintenanceResult(
+            table=table,
+            status="pruned",
+            deleted_rows=deleted,
+        )
+    if table == "adblock_artifact_revisions":
+        from services.adblock_artifacts import AdblockArtifactStore
+
+        deleted = AdblockArtifactStore().prune_revisions(
+            max_batches=_env_int(
+                "MYSQL_HOUSEKEEPING_ADBLOCK_ARTIFACT_PRUNE_MAX_BATCHES",
+                10,
+                minimum=1,
+                maximum=1000,
+            ),
         )
         return ControlPlaneMaintenanceResult(
             table=table,

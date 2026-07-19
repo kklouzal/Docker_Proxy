@@ -153,7 +153,7 @@ ignore = [
 
 
 # Post-insert invariants use asserts for narrowing after immediate fetches.
-"web/services/adblock_artifacts.py" = ["S101"]
+"web/services/adblock_artifacts.py" = ["S101", "S608"]
 "web/services/certificate_bundles.py" = ["S101"]
 "web/services/config_revisions.py" = ["S101", "S608"]
 "web/services/observability_maintenance.py" = ["S101", "S608"]

@@ -63,24 +63,29 @@ def test_control_plane_prune_expires_policy_and_cache_rows(monkeypatch) -> None:
 
 
 def test_control_plane_prune_keeps_active_blob_revisions(monkeypatch) -> None:
-    conn = _Connection()
+    from services import adblock_artifacts
+
+    class FakeAdblockArtifactStore:
+        def prune_revisions(self, *, max_batches=None):
+            assert max_batches == 10
+            return 3
+
     monkeypatch.setattr(
         maintenance,
         "CONTROL_PLANE_MAINTENANCE_TABLES",
         ("adblock_artifact_revisions",),
     )
     monkeypatch.setattr(maintenance, "_table_exists", lambda _table: True)
-    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(adblock_artifacts, "AdblockArtifactStore", FakeAdblockArtifactStore)
     monkeypatch.setattr(maintenance.time, "time", lambda: 1_000_000)
 
     result = maintenance.prune_control_plane_tables(retention_days=30)
 
     assert result["ok"] is True
-    delete_sql, delete_params = conn.queries[0]
-    assert delete_sql.startswith("DELETE FROM `adblock_artifact_revisions`")
-    assert "active_flag = 0" in delete_sql
-    assert "ROW_NUMBER() OVER (ORDER BY `created_ts` DESC, id DESC)" in delete_sql
-    assert delete_params == (1_000_000 - 30 * 24 * 60 * 60, 25)
+    assert result["deleted_rows"] == 3
+    assert result["tables"][0]["table"] == "adblock_artifact_revisions"
+    assert result["tables"][0]["status"] == "pruned"
+    assert result["tables"][0]["deleted_rows"] == 3
 
 
 def test_control_plane_maintenance_analyzes_existing_tables(monkeypatch) -> None:
