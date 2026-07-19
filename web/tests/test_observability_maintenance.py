@@ -63,6 +63,7 @@ def test_clear_observability_logs_truncates_all_known_log_tables_without_proxy_f
         row["table"] for row in result["tables"] if row["status"] == "cleared"
     } == existing
     assert any(sql == "TRUNCATE TABLE `diagnostic_requests`" for sql in conn.statements)
+    assert any(sql == "TRUNCATE TABLE `diagnostic_policy_tags`" for sql in conn.statements)
     assert not any(sql.startswith("OPTIMIZE TABLE") for sql in conn.statements)
 
 
@@ -119,7 +120,7 @@ def test_clear_observability_logs_retries_stale_connection_on_table_probe(
 def test_maintain_observability_tables_analyzes_and_optimizes_existing_tables(
     monkeypatch,
 ) -> None:
-    existing = {"diagnostic_requests", "ssl_errors"}
+    existing = {"diagnostic_requests", "diagnostic_policy_tags", "ssl_errors"}
     conn = FakeConnection(existing)
 
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
@@ -130,9 +131,11 @@ def test_maintain_observability_tables_analyzes_and_optimizes_existing_tables(
     result = maintenance.maintain_observability_tables(analyze=True, optimize=True)
 
     assert result["ok"] is True
-    assert result["maintained_tables"] == 2
+    assert result["maintained_tables"] == 3
     assert "ANALYZE TABLE `diagnostic_requests`" in conn.statements
     assert "OPTIMIZE TABLE `diagnostic_requests`" in conn.statements
+    assert "ANALYZE TABLE `diagnostic_policy_tags`" in conn.statements
+    assert "OPTIMIZE TABLE `diagnostic_policy_tags`" in conn.statements
     assert "ANALYZE TABLE `ssl_errors`" in conn.statements
     assert "OPTIMIZE TABLE `ssl_errors`" in conn.statements
     assert not any("adblock_events" in sql for sql in conn.statements)

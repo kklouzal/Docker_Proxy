@@ -18,6 +18,7 @@ MAX_OBSERVABILITY_RETENTION_DAYS = 3650
 OBSERVABILITY_LOG_TABLES: tuple[str, ...] = (
     "diagnostic_requests",
     "diagnostic_icap_events",
+    "diagnostic_policy_tags",
     "ssl_errors",
     "adblock_events",
     "adblock_counts",
