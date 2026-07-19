@@ -249,6 +249,69 @@ def test_clean_icap_response_prefers_204_when_allowed() -> None:
     assert b"ISTag" in response
 
 
+def test_unknown_length_clean_respmod_replays_body_instead_of_late_204() -> None:
+    server = _load_server()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return CleanScanner()
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(
+            port, _sample_unknown_length_respmod_request(port), timeout=0.5
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"Content-Length: 5\r\n" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" in response
+
+
+def test_chunked_clean_respmod_replays_with_normalized_framing() -> None:
+    server = _load_server()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return CleanScanner()
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(
+            port, _sample_chunked_respmod_request(port), timeout=0.5
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"Transfer-Encoding" not in response
+    assert b"Content-Length: 5\r\n" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" in response
+
+
 def test_clean_icap_responses_close_connections_to_prevent_reuse_races() -> None:
     server = _load_server()
 
@@ -370,7 +433,48 @@ def _options_request(port: int) -> bytes:
 
 
 def _sample_respmod_request(port: int) -> bytes:
+    body = b"hello"
+    http_header = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: text/plain\r\n"
+        + f"Content-Length: {len(body)}\r\n".encode("ascii")
+        + b"\r\n"
+    )
+    chunked_body = b"5\r\n" + body + b"\r\n0\r\n\r\n"
+    return (
+        (
+            f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Allow: 204\r\n"
+            f"Encapsulated: res-hdr=0, res-body={len(http_header)}\r\n\r\n"
+        ).encode("ascii")
+        + http_header
+        + chunked_body
+    )
+
+
+def _sample_unknown_length_respmod_request(port: int) -> bytes:
     http_header = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n"
+    body = b"hello"
+    chunked_body = b"5\r\n" + body + b"\r\n0\r\n\r\n"
+    return (
+        (
+            f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Allow: 204\r\n"
+            f"Encapsulated: res-hdr=0, res-body={len(http_header)}\r\n\r\n"
+        ).encode("ascii")
+        + http_header
+        + chunked_body
+    )
+
+
+def _sample_chunked_respmod_request(port: int) -> bytes:
+    http_header = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n"
+    )
     body = b"hello"
     chunked_body = b"5\r\n" + body + b"\r\n0\r\n\r\n"
     return (
@@ -390,7 +494,11 @@ def _sample_respmod_request_without_allow_204(port: int) -> bytes:
 
 
 def _sample_preview_respmod_request(port: int) -> bytes:
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n"
+    http_header = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-Length: 5\r\n\r\n"
+    )
     preview_body = b"2\r\nhe\r\n0\r\n\r\n3\r\nllo\r\n0\r\n\r\n"
     return (
         (

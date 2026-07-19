@@ -32,6 +32,7 @@ DEFAULT_CLIENT_TIMEOUT = 2.0
 DEFAULT_MAX_CONNECTIONS = 64
 DEFAULT_MAX_SCANS = 16
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
+DEFAULT_SQUID_204_BACKUP_LIMIT = 64 * 1024
 ISTAG = '"clamav-respmod-instream-1"'
 CLAMD_INSTREAM_COMMAND = b"zINSTREAM\0"
 CLAMD_REPLY_TERMINATOR = b"\0"
@@ -416,11 +417,71 @@ def clean_response(
     if allow_204:
         return _icap_response("204 No Content", {"ISTag": ISTAG})
     encoded = _encode_icap_body_chunk(body)
+    http_header = _http_header_for_body_replay(http_header, len(body))
     return _icap_response(
         "200 OK",
         {"ISTag": ISTAG, "Encapsulated": f"res-hdr=0, res-body={len(http_header)}"},
         http_header + encoded,
     )
+
+
+def _http_header_lines(http_header: bytes) -> list[bytes]:
+    header_block = http_header.split(HEADER_END, 1)[0]
+    return header_block.split(CRLF) if header_block else []
+
+
+def _http_response_allows_squid_204_backup(http_header: bytes) -> bool:
+    """Return true only when Squid can safely use an ICAP 204 response.
+
+    Squid can only honor a late RESPMOD 204 when it has backed up the original
+    response.  Unknown-length/chunked responses (and larger known-length ones)
+    can be streamed to the ICAP service without a usable backup.  Returning 204
+    for those responses makes Squid report ICAP_RESPMOD_EARLY/ERR_ICAP_FAILURE
+    even though the scanner verdict is clean.  For those cases, replay the
+    scanned response body in a normal ICAP 200 response instead.
+    """
+    lines = _http_header_lines(http_header)
+    if not lines or not lines[0].startswith(b"HTTP/"):
+        return False
+    content_lengths: list[int] = []
+    for line in lines[1:]:
+        if b":" not in line:
+            continue
+        name, value = line.split(b":", 1)
+        header_name = name.strip().lower()
+        if header_name == b"transfer-encoding":
+            if value.strip().lower() not in {b"", b"identity"}:
+                return False
+        elif header_name == b"content-length":
+            try:
+                length = int(value.strip())
+            except ValueError:
+                return False
+            if length < 0:
+                return False
+            content_lengths.append(length)
+    if not content_lengths:
+        return False
+    if len(set(content_lengths)) != 1:
+        return False
+    return content_lengths[0] <= DEFAULT_SQUID_204_BACKUP_LIMIT
+
+
+def _http_header_for_body_replay(http_header: bytes, body_length: int) -> bytes:
+    """Normalize HTTP framing when replaying a clean response body to Squid."""
+    lines = _http_header_lines(http_header)
+    if not lines or not lines[0].startswith(b"HTTP/"):
+        return http_header
+    replay_lines = [lines[0]]
+    for line in lines[1:]:
+        if b":" not in line:
+            continue
+        name = line.split(b":", 1)[0].strip().lower()
+        if name in {b"content-length", b"transfer-encoding"}:
+            continue
+        replay_lines.append(line)
+    replay_lines.append(f"Content-Length: {body_length}".encode("ascii"))
+    return CRLF.join(replay_lines) + HEADER_END
 
 
 def blocked_response(signature: str | None) -> bytes:
@@ -582,16 +643,20 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
             result: ClamdResult
             if body_offset is not None:
                 http_header, remainder = _read_exact(self.rfile, body_offset, remainder)
+                can_use_204 = allow_204 and _http_response_allows_squid_204_backup(
+                    http_header
+                )
+                allow_204 = can_use_204
                 # ICAP 204 lets Squid keep the original clean response, so the
-                # proxy does not need to retain the full body in memory. If the
-                # client did not advertise Allow: 204, we must buffer the body
-                # while streaming it to clamd so a clean 200 response can replay
-                # the original encapsulated HTTP payload.
+                # proxy does not need to retain the full body in memory when
+                # Squid can safely back it up. If Squid advertised Allow: 204
+                # for an unknown/chunked/large response, still buffer and replay
+                # the body to avoid ICAP_RESPMOD_EARLY failures.
                 try:
                     body, result = self._read_respmod_body_for_scan(
                         headers=headers,
                         initial=remainder,
-                        allow_204=allow_204,
+                        allow_204=can_use_204,
                     )
                     body_complete = True
                 except ScanFailedAfterBodyError as exc:
@@ -601,11 +666,12 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
             else:
                 result = self.server.scan_body(body)
                 body_complete = True
+                can_use_204 = allow_204
             if result.infected:
                 response = blocked_response(result.signature)
             else:
                 response = clean_response(
-                    allow_204=allow_204, http_header=http_header, body=body
+                    allow_204=can_use_204, http_header=http_header, body=body
                 )
             self._write_response(response)
         except Exception as exc:
