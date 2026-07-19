@@ -118,8 +118,14 @@ def test_diagnostic_global_retention_indexes_bootstrap(monkeypatch):
     sql = _joined(conn)
     assert "KEY idx_diagnostic_requests_ts_id (ts, id)" in sql
     assert "KEY idx_diagnostic_icap_ts_id (ts, id)" in sql
+    assert "KEY idx_diagnostic_requests_proxy_tx_ts_id (proxy_id, master_xaction, ts, id)" in sql
+    assert "KEY idx_diagnostic_requests_proxy_domain_ts_id (proxy_id, domain, ts, id)" in sql
+    assert "KEY idx_diagnostic_icap_proxy_domain_service_ts_id (proxy_id, domain, service_family, ts, id)" in sql
     assert "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_ts_id (ts, id)" in sql
     assert "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_ts_id (ts, id)" in sql
+    assert "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_tx_ts_id (proxy_id, master_xaction, ts, id)" in sql
+    assert "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_domain_ts_id (proxy_id, domain, ts, id)" in sql
+    assert "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_proxy_domain_service_ts_id (proxy_id, domain, service_family, ts, id)" in sql
     assert "KEY idx_diagnostic_policy_tags_ts_only(ts, proxy_id, request_id)" in sql
     assert "ALTER TABLE diagnostic_policy_tags ADD INDEX idx_diagnostic_policy_tags_ts_only (ts, proxy_id, request_id)" in sql
 

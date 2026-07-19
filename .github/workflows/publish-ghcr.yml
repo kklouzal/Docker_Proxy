@@ -131,6 +131,7 @@ jobs:
           web/tests/test_revision_lifecycle_invariants.py
           web/tests/test_proxy_registry.py
           web/tests/test_proxy_write_guard.py
+          web/tests/test_mysql_read_query_explain.py
 
   build-test-images:
     runs-on: ubuntu-latest

@@ -387,6 +387,46 @@ def _normalize_request_row(row: Any) -> dict[str, Any]:
     return data
 
 
+def _row_sort_id(row: Any, id_index: int) -> int:
+    try:
+        return int(row[id_index] or 0)
+    except Exception:
+        return 0
+
+
+def _strip_trailing_sort_id(row: Any) -> tuple[Any, ...]:
+    if isinstance(row, (list, tuple)):
+        return tuple(row[:-1])
+    values = getattr(row, "_values", None)
+    if values is not None:
+        return tuple(values[:-1])
+    try:
+        width = len(row.keys()) if hasattr(row, "keys") else len(row)
+        return tuple(row[i] for i in range(max(0, width - 1)))
+    except Exception:
+        return tuple(row)
+
+
+def _nearest_rows(
+    rows: list[Any],
+    *,
+    center: int,
+    limit: int,
+    id_index: int,
+) -> list[tuple[Any, ...]]:
+    return [
+        _strip_trailing_sort_id(row)
+        for row in sorted(
+            rows,
+            key=lambda row: (
+                abs(int(row[0] or 0) - int(center)),
+                -int(row[0] or 0),
+                -_row_sort_id(row, id_index),
+            ),
+        )[: max(1, int(limit))]
+    ]
+
+
 def _normalize_icap_row(row: Any) -> dict[str, Any]:
     data = {
         "ts": int(row[0] or 0),
@@ -506,7 +546,9 @@ class DiagnosticStore:
                                 KEY idx_diagnostic_requests_ts_id (ts, id),
                                 KEY idx_diagnostic_requests_proxy_ts (proxy_id, ts, id),
                                 KEY idx_diagnostic_requests_proxy_tx (proxy_id, master_xaction, ts),
+                                KEY idx_diagnostic_requests_proxy_tx_ts_id (proxy_id, master_xaction, ts, id),
                                 KEY idx_diagnostic_requests_proxy_domain (proxy_id, domain, ts),
+                                KEY idx_diagnostic_requests_proxy_domain_ts_id (proxy_id, domain, ts, id),
                                 KEY idx_diagnostic_requests_proxy_client (proxy_id, client_ip, ts),
                                 KEY idx_diagnostic_requests_proxy_client_bytes (proxy_id, client_ip, ts, bytes),
                                 KEY idx_diagnostic_requests_proxy_bump_domain (proxy_id, bump_mode, domain, ts),
@@ -560,6 +602,7 @@ class DiagnosticStore:
                                 KEY idx_diagnostic_icap_proxy_ts (proxy_id, ts, id),
                                 KEY idx_diagnostic_icap_proxy_tx (proxy_id, master_xaction, ts),
                                 KEY idx_diagnostic_icap_proxy_domain (proxy_id, domain, ts),
+                                KEY idx_diagnostic_icap_proxy_domain_service_ts_id (proxy_id, domain, service_family, ts, id),
                                 KEY idx_diagnostic_icap_proxy_service (proxy_id, service_family, ts),
                                 KEY idx_diagnostic_icap_proxy_client_service (proxy_id, client_ip, service_family, ts)
                             )
@@ -613,6 +656,16 @@ class DiagnosticStore:
                             ),
                             (
                                 "diagnostic_requests",
+                                "idx_diagnostic_requests_proxy_tx_ts_id",
+                                "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_tx_ts_id (proxy_id, master_xaction, ts, id)",
+                            ),
+                            (
+                                "diagnostic_requests",
+                                "idx_diagnostic_requests_proxy_domain_ts_id",
+                                "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_domain_ts_id (proxy_id, domain, ts, id)",
+                            ),
+                            (
+                                "diagnostic_requests",
                                 "idx_diagnostic_requests_proxy_client_bytes",
                                 "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_client_bytes (proxy_id, client_ip, ts, bytes)",
                             ),
@@ -630,6 +683,11 @@ class DiagnosticStore:
                                 "diagnostic_requests",
                                 "idx_diagnostic_requests_proxy_cf_ts",
                                 "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_cf_ts (proxy_id, response_cf_mitigated, ts)",
+                            ),
+                            (
+                                "diagnostic_icap_events",
+                                "idx_diagnostic_icap_proxy_domain_service_ts_id",
+                                "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_proxy_domain_service_ts_id (proxy_id, domain, service_family, ts, id)",
                             ),
                             (
                                 "diagnostic_icap_events",
@@ -1648,33 +1706,46 @@ class DiagnosticStore:
         window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
         lim = max(1, min(20, int(limit)))
 
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
+        select_sql = """
                 SELECT
                     ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
                     master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                     tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
                     ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
-                    response_cf_mitigated, response_alt_svc
+                    response_cf_mitigated, response_alt_svc, id
                 FROM diagnostic_requests
                 WHERE proxy_id = %s
                   AND domain = %s
-                  AND ts BETWEEN %s AND %s
-                ORDER BY ABS(ts - %s) ASC, ts DESC, id DESC
+                  AND {window_predicate}
+                ORDER BY {order_by}
                 LIMIT %s
-                """,
-                (
-                    get_proxy_id(),
-                    normalized_domain,
-                    center - window_i,
-                    center + window_i,
-                    center,
-                    lim,
+                """
+        proxy_id = get_proxy_id()
+        with self._connect() as conn:
+            before_rows = conn.execute(
+                select_sql.format(
+                    window_predicate="ts BETWEEN %s AND %s",
+                    order_by="ts DESC, id DESC",
                 ),
+                (proxy_id, normalized_domain, center - window_i, center, lim),
+            ).fetchall()
+            after_rows = conn.execute(
+                select_sql.format(
+                    window_predicate="ts > %s AND ts <= %s",
+                    order_by="ts ASC, id DESC",
+                ),
+                (proxy_id, normalized_domain, center, center + window_i, lim),
             ).fetchall()
 
-        normalized_rows = [_normalize_request_row(row) for row in rows]
+        normalized_rows = [
+            _normalize_request_row(row)
+            for row in _nearest_rows(
+                list(before_rows) + list(after_rows),
+                center=center,
+                limit=lim,
+                id_index=28,
+            )
+        ]
         icap_map = self._batch_list_icap_by_master_xactions(
             [str(row.get("master_xaction") or "") for row in normalized_rows],
             service=service,
@@ -1710,45 +1781,67 @@ class DiagnosticStore:
         window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
         lim = max(1, min(20, int(limit)))
 
-        where = ["proxy_id = %s", "ts BETWEEN %s AND %s"]
-        params: list[Any] = [get_proxy_id(), center - window_i, center + window_i]
+        base_where = ["proxy_id = %s"]
+        base_params: list[Any] = [get_proxy_id()]
         if client_ip:
-            where.append("client_ip = %s")
-            params.append(client_ip.strip())
+            base_where.append("client_ip = %s")
+            base_params.append(client_ip.strip())
         like_parts: list[str] = []
+        like_params: list[Any] = []
         if normalized_domain:
             like_parts.append("domain = %s")
-            params.append(normalized_domain)
+            like_params.append(normalized_domain)
         raw_url = (url or "").strip()
         if raw_url:
             like_parts.append("url LIKE %s ESCAPE '\\\\'")
-            params.append(f"%{_escape_like(raw_url)}%")
+            like_params.append(f"%{_escape_like(raw_url)}%")
         elif normalized_domain:
             like_parts.append("url LIKE %s ESCAPE '\\\\'")
-            params.append(f"%{_escape_like(normalized_domain)}%")
+            like_params.append(f"%{_escape_like(normalized_domain)}%")
         if like_parts:
-            where.append("(" + " OR ".join(like_parts) + ")")
+            base_where.append("(" + " OR ".join(like_parts) + ")")
+            base_params.extend(like_params)
 
-        where_sql = "WHERE " + " AND ".join(where)
-
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
+        base_where_sql = " AND ".join(base_where)
+        select_sql = f"""
                 SELECT
                     ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
                     master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                     tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
                     ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
-                    response_cf_mitigated, response_alt_svc
+                    response_cf_mitigated, response_alt_svc, id
                 FROM diagnostic_requests
-                {where_sql}
-                ORDER BY ABS(ts - %s) ASC, ts DESC, id DESC
+                WHERE {base_where_sql}
+                  AND {{window_predicate}}
+                ORDER BY {{order_by}}
                 LIMIT %s
-                """,
-                (*params, center, lim),
+                """
+
+        with self._connect() as conn:
+            before_rows = conn.execute(
+                select_sql.format(
+                    window_predicate="ts BETWEEN %s AND %s",
+                    order_by="ts DESC, id DESC",
+                ),
+                (*base_params, center - window_i, center, lim),
+            ).fetchall()
+            after_rows = conn.execute(
+                select_sql.format(
+                    window_predicate="ts > %s AND ts <= %s",
+                    order_by="ts ASC, id DESC",
+                ),
+                (*base_params, center, center + window_i, lim),
             ).fetchall()
 
-        normalized_rows = [_normalize_request_row(row) for row in rows]
+        normalized_rows = [
+            _normalize_request_row(row)
+            for row in _nearest_rows(
+                list(before_rows) + list(after_rows),
+                center=center,
+                limit=lim,
+                id_index=28,
+            )
+        ]
         icap_map = self._batch_list_icap_by_master_xactions(
             [str(row.get("master_xaction") or "") for row in normalized_rows],
             service=service,
@@ -1785,35 +1878,47 @@ class DiagnosticStore:
         lim = max(1, min(20, int(limit)))
         normalized_service = (service or "").strip().lower()
 
-        where = ["proxy_id = %s", "domain = %s", "ts BETWEEN %s AND %s"]
-        params: list[Any] = [
-            get_proxy_id(),
-            normalized_domain,
-            center - window_i,
-            center + window_i,
-        ]
+        base_where = ["proxy_id = %s", "domain = %s"]
+        base_params: list[Any] = [get_proxy_id(), normalized_domain]
         if normalized_service:
-            where.append("service_family = %s")
-            params.append(normalized_service)
-        where_sql = " AND ".join(where)
-
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
+            base_where.append("service_family = %s")
+            base_params.append(normalized_service)
+        base_where_sql = " AND ".join(base_where)
+        select_sql = f"""
                 SELECT
                     ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
                     adapt_summary, adapt_details, host, user_agent, sni,
-                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family
+                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family, id
                 FROM diagnostic_icap_events
-                WHERE {where_sql}
-                ORDER BY ABS(ts - %s) ASC, ts DESC, id DESC
+                WHERE {base_where_sql}
+                  AND {{window_predicate}}
+                ORDER BY {{order_by}}
                 LIMIT %s
-                """,
-                (*params, center, lim),
+                """
+
+        with self._connect() as conn:
+            before_rows = conn.execute(
+                select_sql.format(
+                    window_predicate="ts BETWEEN %s AND %s",
+                    order_by="ts DESC, id DESC",
+                ),
+                (*base_params, center - window_i, center, lim),
+            ).fetchall()
+            after_rows = conn.execute(
+                select_sql.format(
+                    window_predicate="ts > %s AND ts <= %s",
+                    order_by="ts ASC, id DESC",
+                ),
+                (*base_params, center, center + window_i, lim),
             ).fetchall()
 
         out: list[dict[str, Any]] = []
-        for row in rows:
+        for row in _nearest_rows(
+            list(before_rows) + list(after_rows),
+            center=center,
+            limit=lim,
+            id_index=17,
+        ):
             normalized = _normalize_icap_row(row)
             normalized["time_delta_seconds"] = abs(
                 int(normalized.get("ts") or 0) - center,

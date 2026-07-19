@@ -288,24 +288,41 @@ class SslErrorsStore:
         proxy_id = get_proxy_id()
         try:
             row = None
-            for window in self._context_lookup_windows_seconds():
-                row = conn.execute(
-                    """
-                    SELECT domain, sni, host, url
-                    FROM (
-                        SELECT id, ts, domain, sni, host, url
-                        FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_tx)
-                        WHERE proxy_id = %s
-                          AND master_xaction = %s
-                          AND ts BETWEEN %s AND %s
-                          AND COALESCE(NULLIF(TRIM(domain), ''), NULLIF(TRIM(sni), ''), NULLIF(TRIM(host), ''), NULLIF(TRIM(url), '')) IS NOT NULL
-                    ) AS candidates
-                    ORDER BY ABS(candidates.ts - %s) ASC, candidates.id DESC
+            select_sql = """
+                    SELECT domain, sni, host, url, ts, id
+                    FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_tx)
+                    WHERE proxy_id = %s
+                      AND master_xaction = %s
+                      AND {window_predicate}
+                      AND COALESCE(NULLIF(TRIM(domain), ''), NULLIF(TRIM(sni), ''), NULLIF(TRIM(host), ''), NULLIF(TRIM(url), '')) IS NOT NULL
+                    ORDER BY {order_by}
                     LIMIT 1
-                    """,
-                    (proxy_id, tx, int(ts) - window, int(ts) + window, int(ts)),
-                ).fetchone()
-                if row:
+                    """
+            for window in self._context_lookup_windows_seconds():
+                before_rows = conn.execute(
+                    select_sql.format(
+                        window_predicate="ts BETWEEN %s AND %s",
+                        order_by="ts DESC, id DESC",
+                    ),
+                    (proxy_id, tx, int(ts) - window, int(ts)),
+                ).fetchall()
+                after_rows = conn.execute(
+                    select_sql.format(
+                        window_predicate="ts > %s AND ts <= %s",
+                        order_by="ts ASC, id DESC",
+                    ),
+                    (proxy_id, tx, int(ts), int(ts) + window),
+                ).fetchall()
+                candidates = list(before_rows) + list(after_rows)
+                if candidates:
+                    row = min(
+                        candidates,
+                        key=lambda item: (
+                            abs(int(item[4] or 0) - int(ts)),
+                            -int(item[4] or 0),
+                            -int(item[5] or 0),
+                        ),
+                    )
                     break
         except DATABASE_ERRORS:
             return ""
@@ -317,8 +334,8 @@ class SslErrorsStore:
             return ""
         if not row:
             return ""
-        values = row.values() if hasattr(row, "values") else row
-        for value in values:
+        values = list(row.values()) if hasattr(row, "values") else list(row)
+        for value in values[:4]:
             normalized = _normalize_hostish(str(value or ""))
             if normalized and normalized != "-":
                 return normalized
