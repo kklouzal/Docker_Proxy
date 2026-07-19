@@ -8,13 +8,13 @@ import re
 import socket
 import socketserver
 import sys
-import time
 from pathlib import Path
 
 TRUE_VALUES = {"1", "true", "yes", "on", "required", "strict"}
 CRLF = b"\r\n"
 HEADER_END = CRLF + CRLF
-FALLBACK_ISTAG = '"clamav-fail-open-unavailable"'
+FALLBACK_OPEN_ISTAG = '"clamav-fail-open-unavailable"'
+FALLBACK_CLOSED_ISTAG = '"clamav-fail-closed-unavailable"'
 
 
 def env_enabled(value: str | None) -> bool:
@@ -65,21 +65,28 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
             data += chunk
         first = data.split(CRLF, 1)[0].split(b"\n", 1)[0].decode("ascii", errors="replace")
         method = first.split(" ", 1)[0].upper() if first else ""
+        fail_open = bool(getattr(self.server, "fail_open", True))
+        istag = FALLBACK_OPEN_ISTAG if fail_open else FALLBACK_CLOSED_ISTAG
         if method == "OPTIONS":
+            headers = {
+                "Methods": "REQMOD, RESPMOD",
+                "Service": "ClamAV placeholder; backend unavailable",
+                "ISTag": istag,
+                "Preview": "0",
+                "Options-TTL": "30",
+                "Encapsulated": "null-body=0",
+            }
+            if fail_open:
+                headers["Allow"] = "204"
             response = _icap_response(
                 "200 OK",
-                {
-                    "Methods": "REQMOD, RESPMOD",
-                    "Service": "ClamAV fail-open placeholder; backend unavailable",
-                    "ISTag": FALLBACK_ISTAG,
-                    "Allow": "204",
-                    "Preview": "0",
-                    "Options-TTL": "30",
-                    "Encapsulated": "null-body=0",
-                },
+                headers,
             )
         elif method in {"REQMOD", "RESPMOD"}:
-            response = _icap_response("204 No Content", {"ISTag": FALLBACK_ISTAG})
+            response = _icap_response(
+                "204 No Content" if fail_open else "500 Service Unavailable",
+                {"ISTag": istag, "Encapsulated": "null-body=0"},
+            )
         else:
             response = _icap_response(
                 "405 Method Not Allowed",
@@ -91,16 +98,29 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
 class _FailOpenAvServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    fail_open = True
+
+
+def run_unavailable_placeholder(
+    conf_path: str,
+    *,
+    host: str,
+    port: int,
+    fail_open: bool,
+) -> None:
+    listen_host, listen_port = _conf_listen_address(conf_path)
+    sys.stderr.write(
+        f"ClamAV backend {host}:{port} is unavailable; "
+        f"serving {'fail-open' if fail_open else 'fail-closed'} ICAP placeholder "
+        f"on {listen_host}:{listen_port}\n"
+    )
+    with _FailOpenAvServer((listen_host, listen_port), _FailOpenAvHandler) as server:
+        server.fail_open = fail_open
+        server.serve_forever()
 
 
 def run_fail_open_placeholder(conf_path: str, *, host: str, port: int) -> None:
-    listen_host, listen_port = _conf_listen_address(conf_path)
-    sys.stderr.write(
-        f"optional ClamAV backend {host}:{port} is unavailable; "
-        f"serving fail-open ICAP placeholder on {listen_host}:{listen_port}\n"
-    )
-    with _FailOpenAvServer((listen_host, listen_port), _FailOpenAvHandler) as server:
-        server.serve_forever()
+    run_unavailable_placeholder(conf_path, host=host, port=port, fail_open=True)
 
 
 def main(argv: list[str]) -> int:
@@ -118,24 +138,18 @@ def main(argv: list[str]) -> int:
         os.environ.get("FILE_SECURITY_AV_REQUIRED")
     )
 
-    if required:
-        for _ in range(120):
-            if clamd_ready(host, port):
-                os.execv(  # noqa: S606 - replace runner with c-icap in the container.
-                    "/usr/bin/c-icap",
-                    ["/usr/bin/c-icap", "-N", "-f", conf_path],
-                )
-            time.sleep(1)
-        sys.stderr.write(f"required ClamAV backend {host}:{port} is not responding\n")
-        return 1
-
     if clamd_ready(host, port):
         os.execv(  # noqa: S606 - replace runner with c-icap in the container.
             "/usr/bin/c-icap",
             ["/usr/bin/c-icap", "-N", "-f", conf_path],
         )
 
-    run_fail_open_placeholder(conf_path, host=host, port=port)
+    run_unavailable_placeholder(
+        conf_path,
+        host=host,
+        port=port,
+        fail_open=not required,
+    )
     return 0
 
 

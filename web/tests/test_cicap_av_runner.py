@@ -16,39 +16,40 @@ def _load_runner():
 
 def test_optional_unavailable_clamd_serves_fail_open_placeholder(monkeypatch) -> None:
     runner = _load_runner()
-    calls: list[tuple[str, str, int]] = []
+    calls: list[tuple[str, str, int, bool]] = []
 
     monkeypatch.delenv("CLAMAV_REQUIRED", raising=False)
     monkeypatch.delenv("FILE_SECURITY_AV_REQUIRED", raising=False)
     monkeypatch.setattr(runner, "clamd_ready", lambda _host, _port: False)
     monkeypatch.setattr(
         runner,
-        "run_fail_open_placeholder",
-        lambda conf_path, *, host, port: calls.append((conf_path, host, port)),
+        "run_unavailable_placeholder",
+        lambda conf_path, *, host, port, fail_open: calls.append(
+            (conf_path, host, port, fail_open),
+        ),
     )
 
     assert runner.main(["cicap_av_runner.py", "/etc/c-icap/av.conf"]) == 0
 
-    assert calls == [("/etc/c-icap/av.conf", "127.0.0.1", 3310)]
+    assert calls == [("/etc/c-icap/av.conf", "127.0.0.1", 3310, True)]
 
 
-def test_required_unavailable_clamd_returns_failure_after_bounded_wait(monkeypatch, capsys) -> None:
+def test_required_unavailable_clamd_serves_fail_closed_placeholder(monkeypatch) -> None:
     runner = _load_runner()
-    attempts = 0
+    calls: list[tuple[str, str, int, bool]] = []
 
     monkeypatch.setenv("CLAMAV_REQUIRED", "1")
+    monkeypatch.setattr(runner, "clamd_ready", lambda _host, _port: False)
+    monkeypatch.setattr(
+        runner,
+        "run_unavailable_placeholder",
+        lambda conf_path, *, host, port, fail_open: calls.append(
+            (conf_path, host, port, fail_open),
+        ),
+    )
 
-    def not_ready(_host, _port):
-        nonlocal attempts
-        attempts += 1
-        return False
-
-    monkeypatch.setattr(runner, "clamd_ready", not_ready)
-    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
-
-    assert runner.main(["cicap_av_runner.py", "/etc/c-icap/av.conf"]) == 1
-    assert attempts == 120
-    assert "required ClamAV backend" in capsys.readouterr().err
+    assert runner.main(["cicap_av_runner.py", "/etc/c-icap/av.conf"]) == 0
+    assert calls == [("/etc/c-icap/av.conf", "127.0.0.1", 3310, False)]
 
 
 def test_ready_clamd_execs_c_icap(monkeypatch) -> None:
