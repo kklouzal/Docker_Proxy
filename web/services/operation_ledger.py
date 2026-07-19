@@ -493,6 +493,21 @@ class OperationLedger:
             conn.execute(
                 f"""
                 UPDATE proxy_operations active
+                JOIN (
+                    SELECT proxy_id, request_key
+                    FROM (
+                        SELECT stale_source.proxy_id,
+                               {stale_request_key_expr.replace("stale.", "stale_source.")} AS request_key
+                        FROM proxy_operations stale_source
+                        WHERE stale_source.proxy_id=%s
+                          AND stale_source.status='applying'
+                          AND stale_source.started_ts>0
+                          AND stale_source.started_ts<%s
+                    ) stale_source_keys
+                    GROUP BY proxy_id, request_key
+                ) stale_keys
+                  ON stale_keys.proxy_id=active.proxy_id
+                 AND stale_keys.request_key={active_request_key_expr}
                 JOIN proxy_operations keeper
                   ON keeper.proxy_id=active.proxy_id
                  AND keeper.status IN ('pending','applying')
@@ -534,16 +549,8 @@ class OperationLedger:
                     active.claim_token=NULL
                 WHERE active.proxy_id=%s
                   AND active.status IN ('pending','applying')
-                  AND EXISTS (
-                      SELECT 1 FROM proxy_operations stale
-                      WHERE stale.proxy_id=active.proxy_id
-                        AND stale.status='applying'
-                        AND stale.started_ts>0
-                        AND stale.started_ts<%s
-                        AND {stale_request_key_expr}={active_request_key_expr}
-                  )
                 """,
-                (cutoff, cutoff, cutoff, cutoff, now, now, proxy_key, cutoff),
+                (proxy_key, cutoff, cutoff, cutoff, cutoff, cutoff, now, now, proxy_key),
             )
             cur = conn.execute(
                 f"""

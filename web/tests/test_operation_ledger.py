@@ -272,12 +272,14 @@ def test_requeue_stale_applying_recovers_without_active_key_collisions(
     assert supersede_sql.startswith("UPDATE proxy_operations active JOIN")
     assert "status IN ('pending','applying')" in supersede_sql
     assert "ROW_NUMBER" not in supersede_sql.upper()
+    assert "JOIN ( SELECT proxy_id, request_key FROM" in supersede_sql
+    assert "FROM proxy_operations stale_source" in supersede_sql
     assert "JOIN proxy_operations keeper" in supersede_sql
     assert "CASE WHEN keeper.status='applying' AND keeper.started_ts>=%s THEN 0" in supersede_sql
     assert "active.status='superseded'" in supersede_sql
     assert "active.request_key=NULL" in supersede_sql
     assert "active.claim_token=NULL" in supersede_sql
-    assert supersede_params == (700, 700, 700, 700, 1000, 1000, "edge-a", 700)
+    assert supersede_params == ("edge-a", 700, 700, 700, 700, 700, 1000, 1000, "edge-a")
     requeue_sql, requeue_params = conn.queries[1]
     assert requeue_sql.startswith("UPDATE proxy_operations stale LEFT JOIN")
     assert "active.status IN ('pending','applying')" in requeue_sql
