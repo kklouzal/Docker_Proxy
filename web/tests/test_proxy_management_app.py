@@ -217,6 +217,46 @@ def test_proxy_management_api_status_codes_and_payload_mapping(monkeypatch) -> N
     assert icap.status_code == 503
 
 
+def test_proxy_runtime_clamav_icap_preserves_degraded_transport_detail(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as proxy_runtime  # type: ignore
+
+    runtime = proxy_runtime.ProxyRuntime.__new__(proxy_runtime.ProxyRuntime)
+
+    monkeypatch.setattr(
+        proxy_runtime,
+        "_shared_send_sample_av_icap",
+        lambda **_kwargs: {
+            "ok": False,
+            "status": "degraded",
+            "detail": "ICAP/1.0 204 No Content; fail-open placeholder",
+            "transport_ok": True,
+            "icap_transaction_ok": True,
+            "protection_ready": False,
+            "fail_open": True,
+            "fail_mode": "open",
+            "backend_available": False,
+            "icap_status_code": 204,
+            "icap_status_reason": "No Content",
+            "icap_istag": '"clamav-fail-open-unavailable"',
+        },
+    )
+    monkeypatch.setattr(proxy_runtime, "get_proxy_id", lambda: "edge-a")
+
+    result = runtime.test_clamav_icap()
+
+    assert result["ok"] is False
+    assert result["proxy_id"] == "edge-a"
+    assert result["status"] == "degraded"
+    assert result["transport_ok"] is True
+    assert result["protection_ready"] is False
+    assert result["fail_open"] is True
+    assert result["backend_available"] is False
+    assert result["icap_status_code"] == 204
+
+
 def test_proxy_management_sync_rejects_invalid_operation_id(monkeypatch) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")

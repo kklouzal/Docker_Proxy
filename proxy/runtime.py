@@ -4228,11 +4228,30 @@ class ProxyRuntime:
 
     def test_clamav_icap(self) -> dict[str, Any]:
         result = _shared_send_sample_av_icap(error_formatter=str)
-        return {
+        response = {
             "ok": bool(result.get("ok")),
             "proxy_id": self.proxy_id,
             "detail": str(result.get("detail") or ""),
         }
+        for key in (
+            "status",
+            "host",
+            "port",
+            "target",
+            "service",
+            "transport_ok",
+            "icap_transaction_ok",
+            "protection_ready",
+            "fail_open",
+            "fail_mode",
+            "backend_available",
+            "icap_status_code",
+            "icap_status_reason",
+            "icap_istag",
+        ):
+            if key in result:
+                response[key] = result[key]
+        return response
 
 
 _runtime: ProxyRuntime | None = None

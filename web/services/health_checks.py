@@ -95,6 +95,22 @@ def _recv_status_line(sock: socket.socket, *, max_bytes: int = 512) -> bytes:
     return buf.split(b"\r\n", 1)[0].split(b"\n", 1)[0].strip()
 
 
+def _recv_response_head(sock: socket.socket, *, max_bytes: int = 8192) -> bytes:
+    buf = b""
+    while len(buf) < max_bytes:
+        chunk = sock.recv(min(512, max_bytes - len(buf)))
+        if not chunk:
+            break
+        buf += chunk
+        if b"\r\n\r\n" in buf or b"\n\n" in buf:
+            break
+    if b"\r\n\r\n" in buf:
+        return buf.split(b"\r\n\r\n", 1)[0]
+    if b"\n\n" in buf:
+        return buf.split(b"\n\n", 1)[0]
+    return buf
+
+
 def _decode_status_line(data: bytes) -> str:
     return data.decode("ascii", errors="replace") if data else "no data"
 
@@ -118,6 +134,25 @@ def _parse_http_response_head(data: bytes) -> tuple[str, dict[str, list[str]]]:
         if normalized:
             headers.setdefault(normalized, []).append(value.strip())
     return status, headers
+
+
+def _parse_protocol_status_code(status_line: str) -> int | None:
+    parts = str(status_line or "").split(None, 2)
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[1])
+    except Exception:
+        return None
+
+
+def _icap_status_reason(status_line: str) -> str:
+    parts = str(status_line or "").split(None, 2)
+    return parts[2] if len(parts) >= 3 else ""
+
+
+def _normalize_icap_istag(value: str) -> str:
+    return str(value or "").strip().strip('"').lower()
 
 
 def _read_http_response(
@@ -595,20 +630,77 @@ def send_sample_respmod_to(
         with socket.create_connection((host, int(port)), timeout=timeout) as sock:
             sock.settimeout(timeout)
             sock.sendall(icap_req)
-            status_line = _recv_status_line(sock)
-        first_line = _decode_status_line(status_line)
+            head = _recv_response_head(sock)
+        first_line, headers = _parse_http_response_head(head)
+        status_code = _parse_protocol_status_code(first_line)
+        istag = _http_header_value(headers, "istag")
+        fail_open_placeholder = (
+            status_code == 204
+            and _normalize_icap_istag(istag) == "clamav-fail-open-unavailable"
+        )
+        fail_closed_placeholder = (
+            status_code == 500
+            and _normalize_icap_istag(istag) == "clamav-fail-closed-unavailable"
+        )
+        backend_unavailable = fail_open_placeholder or fail_closed_placeholder
+        transport_ok = first_line.startswith("ICAP/1.0 ") and status_code is not None
+        icap_transaction_ok = status_code is not None and 200 <= status_code < 300
+        protection_ready = transport_ok and icap_transaction_ok and not backend_unavailable
+        detail = first_line
+        if fail_open_placeholder:
+            detail = (
+                f"{first_line}; ClamAV backend unavailable; fail-open placeholder "
+                "transport is responsive but malware scanning is degraded."
+            )
+        elif fail_closed_placeholder:
+            detail = (
+                f"{first_line}; ClamAV backend unavailable; fail-closed placeholder "
+                "transport is responsive but malware scanning is unavailable."
+            )
+        status = (
+            "healthy"
+            if protection_ready
+            else "degraded"
+            if transport_ok
+            else "unavailable"
+        )
+        fail_mode = "unknown"
+        if fail_open_placeholder:
+            fail_mode = "open"
+        elif fail_closed_placeholder:
+            fail_mode = "closed"
         return {
-            "ok": first_line.startswith("ICAP/1.0 20"),
-            "detail": first_line,
+            "ok": protection_ready,
+            "status": status,
+            "detail": detail,
+            "transport_ok": transport_ok,
+            "icap_transaction_ok": icap_transaction_ok,
+            "protection_ready": protection_ready,
+            "fail_open": fail_open_placeholder,
+            "fail_mode": fail_mode,
+            "backend_available": not backend_unavailable if transport_ok else False,
+            "icap_status_code": status_code,
+            "icap_status_reason": _icap_status_reason(first_line),
+            "icap_istag": istag,
         }
     except Exception as exc:
         return {
             "ok": False,
+            "status": "unavailable",
             "detail": _format_error(
                 exc,
                 error_formatter=error_formatter,
                 default=f"Failed to contact ICAP service at {host}:{port}.",
             ),
+            "transport_ok": False,
+            "icap_transaction_ok": False,
+            "protection_ready": False,
+            "fail_open": False,
+            "fail_mode": "unknown",
+            "backend_available": False,
+            "icap_status_code": None,
+            "icap_status_reason": "",
+            "icap_istag": "",
         }
 
 

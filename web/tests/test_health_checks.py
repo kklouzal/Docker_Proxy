@@ -208,21 +208,81 @@ def test_check_icap_service_and_clamd_protocol_helpers(monkeypatch) -> None:
     assert "PONG" in clamd["detail"]
     assert clamd_sock.sent == [b"PING\n"]
 
-    sample_sock = _FakeSocket([b"ICAP/1.0 2", b"04 No Content\r\n"])
+    sample_sock = _FakeSocket(
+        [
+            b"ICAP/1.0 204 No Content\r\n",
+            b'ISTag: "clamav-respmod-instream-1"\r\n\r\n',
+        ]
+    )
     monkeypatch.setattr(
         health_checks.socket,
         "create_connection",
         lambda *_args, **_kwargs: sample_sock,
     )
-    assert health_checks.send_sample_respmod_to("127.0.0.1", 14001) == {
-        "ok": True,
-        "detail": "ICAP/1.0 204 No Content",
-    }
+    sample = health_checks.send_sample_respmod_to("127.0.0.1", 14001)
+    assert sample["ok"] is True
+    assert sample["status"] == "healthy"
+    assert sample["transport_ok"] is True
+    assert sample["protection_ready"] is True
+    assert sample["backend_available"] is True
+    assert sample["icap_status_code"] == 204
+    assert sample["icap_istag"] == '"clamav-respmod-instream-1"'
     combined = health_checks.build_clamav_health(
         {"ok": True, "detail": "clamd ok"}, {"ok": False, "detail": "icap down"}
     )
     assert combined["ok"] is False
     assert combined["components"]["clamd"]["detail"] == "clamd ok"
+
+
+def test_sample_respmod_reports_fail_open_placeholder_as_degraded(monkeypatch) -> None:
+    health_checks = _health_checks_module()
+
+    sample_sock = _FakeSocket(
+        [
+            b"ICAP/1.0 204 No Content\r\n",
+            b'ISTag: "clamav-fail-open-unavailable"\r\n',
+            b"Encapsulated: null-body=0\r\n\r\n",
+        ]
+    )
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: sample_sock,
+    )
+
+    result = health_checks.send_sample_respmod_to("127.0.0.1", 14001)
+
+    assert result["ok"] is False
+    assert result["status"] == "degraded"
+    assert result["transport_ok"] is True
+    assert result["icap_transaction_ok"] is True
+    assert result["protection_ready"] is False
+    assert result["fail_open"] is True
+    assert result["fail_mode"] == "open"
+    assert result["backend_available"] is False
+    assert result["icap_status_code"] == 204
+    assert "fail-open placeholder" in result["detail"]
+
+
+def test_sample_respmod_reports_transport_failure_separately(monkeypatch) -> None:
+    health_checks = _health_checks_module()
+
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("refused")),
+    )
+
+    result = health_checks.send_sample_respmod_to("127.0.0.1", 14001)
+
+    assert result["ok"] is False
+    assert result["status"] == "unavailable"
+    assert result["transport_ok"] is False
+    assert result["icap_transaction_ok"] is False
+    assert result["protection_ready"] is False
+    assert result["fail_open"] is False
+    assert result["backend_available"] is False
+    assert result["icap_status_code"] is None
 
 
 def test_check_http_proxy_forwarding_uses_absolute_form_local_probe(
