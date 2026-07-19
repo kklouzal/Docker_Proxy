@@ -1705,6 +1705,7 @@ class DiagnosticStore:
         center = int(around_ts or _now())
         window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
         lim = max(1, min(20, int(limit)))
+        branch_lim = min(200, max(lim * 4, lim))
         self.init_db()
 
         select_sql = """
@@ -1726,16 +1727,16 @@ class DiagnosticStore:
             before_rows = conn.execute(
                 select_sql.format(
                     window_predicate="ts BETWEEN %s AND %s",
-                    order_by="ts DESC, id DESC",
+                    order_by="ts DESC",
                 ),
-                (proxy_id, normalized_domain, center - window_i, center, lim),
+                (proxy_id, normalized_domain, center - window_i, center, branch_lim),
             ).fetchall()
             after_rows = conn.execute(
                 select_sql.format(
                     window_predicate="ts > %s AND ts <= %s",
-                    order_by="ts ASC, id DESC",
+                    order_by="ts ASC",
                 ),
-                (proxy_id, normalized_domain, center, center + window_i, lim),
+                (proxy_id, normalized_domain, center, center + window_i, branch_lim),
             ).fetchall()
 
         normalized_rows = [
@@ -1781,6 +1782,7 @@ class DiagnosticStore:
         center = int(around_ts or _now())
         window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
         lim = max(1, min(20, int(limit)))
+        branch_lim = min(200, max(lim * 4, lim))
         self.init_db()
 
         base_where = ["proxy_id = %s"]
@@ -1823,16 +1825,16 @@ class DiagnosticStore:
             before_rows = conn.execute(
                 select_sql.format(
                     window_predicate="ts BETWEEN %s AND %s",
-                    order_by="ts DESC, id DESC",
+                    order_by="ts DESC",
                 ),
-                (*base_params, center - window_i, center, lim),
+                (*base_params, center - window_i, center, branch_lim),
             ).fetchall()
             after_rows = conn.execute(
                 select_sql.format(
                     window_predicate="ts > %s AND ts <= %s",
-                    order_by="ts ASC, id DESC",
+                    order_by="ts ASC",
                 ),
-                (*base_params, center, center + window_i, lim),
+                (*base_params, center, center + window_i, branch_lim),
             ).fetchall()
 
         normalized_rows = [
@@ -1878,6 +1880,7 @@ class DiagnosticStore:
         center = int(around_ts or _now())
         window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
         lim = max(1, min(20, int(limit)))
+        branch_lim = min(200, max(lim * 4, lim))
         normalized_service = (service or "").strip().lower()
         self.init_db()
 
@@ -1903,16 +1906,16 @@ class DiagnosticStore:
             before_rows = conn.execute(
                 select_sql.format(
                     window_predicate="ts BETWEEN %s AND %s",
-                    order_by="ts DESC, id DESC",
+                    order_by="ts DESC",
                 ),
-                (*base_params, center - window_i, center, lim),
+                (*base_params, center - window_i, center, branch_lim),
             ).fetchall()
             after_rows = conn.execute(
                 select_sql.format(
                     window_predicate="ts > %s AND ts <= %s",
-                    order_by="ts ASC, id DESC",
+                    order_by="ts ASC",
                 ),
-                (*base_params, center, center + window_i, lim),
+                (*base_params, center, center + window_i, branch_lim),
             ).fetchall()
 
         out: list[dict[str, Any]] = []

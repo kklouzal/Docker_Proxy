@@ -49,7 +49,7 @@ def test_ssl_context_lookup_uses_indexed_bounded_ranges(monkeypatch):
     sql, params = conn.calls[0]
     assert "FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_tx)" in sql
     assert "ts BETWEEN %s AND %s" in sql
-    assert "ORDER BY ts DESC, id DESC" in sql
+    assert "ORDER BY ts DESC" in sql
     assert params == ("proxy-a", "tx-1", 995, 1000)
     assert conn.calls[1][1] == ("proxy-a", "tx-1", 1000, 1005)
 

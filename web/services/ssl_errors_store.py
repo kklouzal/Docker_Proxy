@@ -296,20 +296,20 @@ class SslErrorsStore:
                       AND {window_predicate}
                       AND COALESCE(NULLIF(TRIM(domain), ''), NULLIF(TRIM(sni), ''), NULLIF(TRIM(host), ''), NULLIF(TRIM(url), '')) IS NOT NULL
                     ORDER BY {order_by}
-                    LIMIT 1
+                    LIMIT 10
                     """
             for window in self._context_lookup_windows_seconds():
                 before_rows = conn.execute(
                     select_sql.format(
                         window_predicate="ts BETWEEN %s AND %s",
-                        order_by="ts DESC, id DESC",
+                        order_by="ts DESC",
                     ),
                     (proxy_id, tx, int(ts) - window, int(ts)),
                 ).fetchall()
                 after_rows = conn.execute(
                     select_sql.format(
                         window_predicate="ts > %s AND ts <= %s",
-                        order_by="ts ASC, id DESC",
+                        order_by="ts ASC",
                     ),
                     (proxy_id, tx, int(ts), int(ts) + window),
                 ).fetchall()

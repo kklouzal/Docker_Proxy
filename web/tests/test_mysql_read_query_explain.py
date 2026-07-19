@@ -215,7 +215,7 @@ def test_mysql_nearest_observability_readers_use_sargable_index_ranges(tmp_path:
                    response_cf_mitigated, response_alt_svc, id
             FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_domain_ts_id)
             WHERE proxy_id = %s AND domain = %s AND ts BETWEEN %s AND %s
-            ORDER BY ts DESC, id DESC
+            ORDER BY ts DESC
             LIMIT %s
             """,
             ("edge-a", "hot.example.test", center - 300, center, 5),
@@ -230,7 +230,7 @@ def test_mysql_nearest_observability_readers_use_sargable_index_ranges(tmp_path:
                    response_cf_mitigated, response_alt_svc, id
             FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_domain_ts_id)
             WHERE proxy_id = %s AND domain = %s AND ts > %s AND ts <= %s
-            ORDER BY ts ASC, id DESC
+            ORDER BY ts ASC
             LIMIT %s
             """,
             ("edge-a", "hot.example.test", center, center + 300, 5),
@@ -243,7 +243,7 @@ def test_mysql_nearest_observability_readers_use_sargable_index_ranges(tmp_path:
                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family, id
             FROM diagnostic_icap_events FORCE INDEX (idx_diagnostic_icap_proxy_domain_service_ts_id)
             WHERE proxy_id = %s AND domain = %s AND service_family = %s AND ts BETWEEN %s AND %s
-            ORDER BY ts DESC, id DESC
+            ORDER BY ts DESC
             LIMIT %s
             """,
             ("edge-a", "hot.example.test", "av", center - 600, center, 5),
