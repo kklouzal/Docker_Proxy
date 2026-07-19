@@ -595,6 +595,7 @@ def wait_for_proxy_fixture_response(
     timeout_seconds: float | None = None,
     request_timeout_seconds: float | None = None,
     needle: str | None = None,
+    accept: Callable[[HttpResponse], bool] | None = None,
 ) -> HttpResponse:
     resolved_url = resolve_url(LIVE_CONFIG.traffic_fixture_url, path_or_url)
     total_timeout = (
@@ -607,6 +608,12 @@ def wait_for_proxy_fixture_response(
         if request_timeout_seconds is not None
         else LIVE_CONFIG.request_timeout_seconds
     )
+
+    def _accept(response: HttpResponse) -> bool:
+        if accept is not None:
+            return accept(response)
+        return response.status == 200 and (needle is None or needle in response.text)
+
     return _wait_for_response(
         lambda: client.proxy_fixture_request(
             resolved_url,
@@ -615,9 +622,7 @@ def wait_for_proxy_fixture_response(
             headers=headers,
             timeout_seconds=per_request_timeout,
         ),
-        accept=lambda response: (
-            response.status == 200 and (needle is None or needle in response.text)
-        ),
+        accept=_accept,
         description=f"proxy fixture request {resolved_url!r}",
         timeout_seconds=total_timeout,
     )

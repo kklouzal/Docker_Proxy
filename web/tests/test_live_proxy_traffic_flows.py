@@ -60,9 +60,16 @@ def test_live_proxy_dns_failure_returns_squid_error_and_keeps_proxy_healthy(
     admin_client: LiveStackClient,
 ) -> None:
     missing_host = f"{unique_token('missing-dns')}.invalid"
-    response = admin_client.proxy_fixture_request(
+    # This test follows live-stack cases that legitimately restart Squid while
+    # applying runtime/cache transitions.  Wait for the product contract (Squid
+    # returns an HTTP DNS/upstream error) instead of sampling the listener during
+    # a short restart window.
+    response = wait_for_proxy_fixture_response(
+        admin_client,
         f"http://{missing_host}/resource",
-        timeout_seconds=30.0,
+        timeout_seconds=60.0,
+        request_timeout_seconds=30.0,
+        accept=lambda candidate: candidate.status in {502, 503, 504},
     )
 
     assert response.status in {502, 503, 504}
