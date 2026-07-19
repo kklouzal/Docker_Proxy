@@ -133,6 +133,7 @@ jobs:
           web/tests/test_proxy_write_guard.py
           web/tests/test_mysql_read_query_explain.py
           web/tests/test_mysql_schema_lifecycle.py
+          web/tests/test_mysql_fault_injection.py
 
   build-test-images:
     runs-on: ubuntu-latest

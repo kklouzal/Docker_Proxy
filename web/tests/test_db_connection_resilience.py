@@ -748,3 +748,81 @@ def test_connect_unpooled_does_not_register_pool_slot(monkeypatch) -> None:
     assert db._pooled_connections == {}
     conn.close()
     db.reset_mysql_ready_for_tests()
+
+
+def test_transaction_retry_does_not_replay_lost_connection_commit_ambiguity(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    from services import db  # type: ignore
+
+    attempts = {"count": 0}
+
+    def operation() -> None:
+        attempts["count"] += 1
+        raise pymysql.err.OperationalError(
+            2013,
+            "Lost connection to MySQL server during query",
+        )
+
+    monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "3")
+    monkeypatch.setenv("MYSQL_CONNECT_RETRY_DELAY_SECONDS", "0")
+
+    with pytest.raises(pymysql.err.OperationalError):
+        db.run_mysql_operation_with_retry(operation)
+
+    assert attempts["count"] == 1
+
+
+def test_transaction_retry_replays_deadlock_with_bounded_jitter(monkeypatch) -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    from services import db  # type: ignore
+
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    def operation() -> str:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise pymysql.err.OperationalError(
+                1213,
+                "Deadlock found when trying to get lock; try restarting transaction",
+            )
+        return "ok"
+
+    monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "2")
+    monkeypatch.setenv("MYSQL_CONNECT_RETRY_DELAY_SECONDS", "0.1")
+    monkeypatch.setenv("MYSQL_RETRY_JITTER_SECONDS", "0.05")
+    monkeypatch.setattr(db.time, "sleep", sleeps.append)
+    monkeypatch.setattr(db.random, "uniform", lambda _low, high: high)
+
+    assert db.run_mysql_operation_with_retry(operation) == "ok"
+    assert attempts["count"] == 2
+    assert sleeps == [0.15000000000000002]
+
+
+def test_mysql_error_classification_names_operator_relevant_failures() -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    from services import db  # type: ignore
+
+    assert (
+        db.mysql_error_classification(
+            pymysql.err.OperationalError(1205, "Lock wait timeout exceeded"),
+        )
+        == "lock_wait_timeout"
+    )
+    assert (
+        db.mysql_error_classification(
+            pymysql.err.OperationalError(1213, "Deadlock found"),
+        )
+        == "deadlock"
+    )
+    assert (
+        db.mysql_error_classification(
+            pymysql.err.OperationalError(2013, "Lost connection"),
+        )
+        == "connection_lost"
+    )

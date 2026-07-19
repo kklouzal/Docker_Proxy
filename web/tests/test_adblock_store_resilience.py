@@ -55,6 +55,7 @@ def test_adblock_set_enabled_retries_transient_deadlock(monkeypatch) -> None:
     sleeps: list[float] = []
 
     monkeypatch.setattr(store, "_connect", lambda: next(connections))
+    monkeypatch.setenv("MYSQL_RETRY_JITTER_SECONDS", "0")
     monkeypatch.setattr("services.db.time.sleep", sleeps.append)
 
     store.set_enabled({"easylist": True, "easyprivacy": False})

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
+import random
 import threading
 import time
 from collections import UserDict
@@ -17,6 +19,11 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
 MYSQL_DEFAULT_DB = "squid_proxy"
+logger = logging.getLogger(__name__)
+
+_MYSQL_CONNECT_RETRY_CODES = {1040, 2002, 2003, 2006, 2013}
+_MYSQL_TRANSACTION_RETRY_CODES = {1040, 1205, 1213, 2002, 2003}
+_MYSQL_DISCONNECT_CODES = {2006, 2013}
 
 
 @dataclass(frozen=True)
@@ -197,12 +204,51 @@ _pooled_connections: dict[
 ] = {}
 
 
-def _is_retryable_mysql_error(exc: BaseException) -> bool:
+def mysql_error_classification(exc: BaseException) -> str:
+    code = mysql_error_code(exc)
+    if isinstance(exc, pymysql.IntegrityError):
+        return "integrity"
+    if code == 1205:
+        return "lock_wait_timeout"
+    if code == 1213:
+        return "deadlock"
+    if isinstance(exc, pymysql.InterfaceError) and code in {None, 0}:
+        return "connection_lost"
+    if code in _MYSQL_DISCONNECT_CODES:
+        return "connection_lost"
+    if code in {2002, 2003}:
+        return "connectivity"
+    if code == 1040:
+        return "pool_or_server_exhausted"
+    if isinstance(exc, pymysql.MySQLError):
+        return "mysql_error"
+    return "non_mysql_error"
+
+
+def _is_retryable_mysql_connect_error(exc: BaseException) -> bool:
     if not isinstance(exc, pymysql.MySQLError):
         return False
     if isinstance(exc, pymysql.InterfaceError) and mysql_error_code(exc) in {None, 0}:
         return True
-    return mysql_error_code(exc) in {1040, 2002, 2003, 2006, 2013, 1205, 1213}
+    return mysql_error_code(exc) in _MYSQL_CONNECT_RETRY_CODES
+
+
+def _is_retryable_mysql_transaction_error(exc: BaseException) -> bool:
+    if not isinstance(exc, pymysql.MySQLError):
+        return False
+    code = mysql_error_code(exc)
+    return code in _MYSQL_TRANSACTION_RETRY_CODES
+
+
+def _is_retryable_mysql_error(exc: BaseException) -> bool:
+    """Backward-compatible predicate for tests and old importers.
+
+    Connection establishment may retry disconnect/connectivity errors. Whole
+    transaction helpers retry only acquisition, deadlock, and lock-wait failures so
+    they do not replay an operation after an ambiguous lost connection during
+    COMMIT.
+    """
+    return _is_retryable_mysql_connect_error(exc) or _is_retryable_mysql_transaction_error(exc)
 
 
 def _should_discard_native_connection(exc: BaseException) -> bool:
@@ -245,6 +291,19 @@ def _mysql_connect_retry_delay_seconds() -> float:
         return 0.2
 
 
+def _mysql_retry_jitter_seconds() -> float:
+    try:
+        return max(
+            0.0,
+            min(
+                1.0,
+                float((os.environ.get("MYSQL_RETRY_JITTER_SECONDS") or "0.05").strip() or "0.05"),
+            ),
+        )
+    except Exception:
+        return 0.05
+
+
 def _pool_acquire_timeout_seconds() -> float:
     try:
         return max(
@@ -261,7 +320,20 @@ def _pool_acquire_timeout_seconds() -> float:
         return 30.0
 
 
-def _retry_mysql_operation(operation):
+def _retry_delay_seconds(attempt: int, base_delay: float) -> float:
+    delay = min(5.0, float(base_delay) * (2 ** int(attempt)))
+    jitter = _mysql_retry_jitter_seconds()
+    if jitter > 0:
+        delay = min(5.0, delay + random.uniform(0.0, jitter))  # noqa: S311
+    return delay
+
+
+def _retry_mysql_operation(
+    operation,
+    *,
+    retry_predicate=_is_retryable_mysql_connect_error,
+    operation_name: str = "mysql operation",
+):
     attempts = _mysql_connect_retries()
     base_delay = _mysql_connect_retry_delay_seconds()
     last_exc: BaseException | None = None
@@ -270,17 +342,41 @@ def _retry_mysql_operation(operation):
             return operation()
         except Exception as exc:
             last_exc = exc
-            if not _is_retryable_mysql_error(exc) or attempt >= attempts - 1:
+            if not retry_predicate(exc) or attempt >= attempts - 1:
                 raise
-            time.sleep(min(5.0, base_delay * (2**attempt)))
+            delay = _retry_delay_seconds(attempt, base_delay)
+            with contextlib.suppress(Exception):
+                logger.warning(
+                    "Retrying %s after transient MySQL %s (attempt %s/%s, delay %.3fs): %s",
+                    operation_name,
+                    mysql_error_classification(exc),
+                    attempt + 1,
+                    attempts,
+                    delay,
+                    exc,
+                )
+            time.sleep(delay)
     if last_exc is not None:
         raise last_exc
     msg = "MySQL operation failed"
     raise RuntimeError(msg)
 
 
-def run_mysql_operation_with_retry(operation):
-    return _retry_mysql_operation(operation)
+def run_mysql_operation_with_retry(operation, *, operation_name: str = "mysql operation"):
+    """Retry a whole MySQL transaction only for unambiguous contention errors.
+
+    This helper is for operations that open a fresh connection/transaction and
+    are safe to replay after MySQL reports connection acquisition failures,
+    ER_LOCK_WAIT_TIMEOUT (1205), or ER_LOCK_DEADLOCK (1213). It intentionally
+    does not retry lost connections
+    (2006/2013/InterfaceError) because a failure during COMMIT is ambiguous: the
+    server may or may not have made the transaction durable.
+    """
+    return _retry_mysql_operation(
+        operation,
+        retry_predicate=_is_retryable_mysql_transaction_error,
+        operation_name=operation_name,
+    )
 
 
 def mysql_schema_lock_timeout_seconds(default: int = 30) -> int:
