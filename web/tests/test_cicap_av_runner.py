@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import socket
+import threading
 from pathlib import Path
 
 
@@ -74,3 +76,47 @@ def test_ready_clamd_execs_c_icap(monkeypatch) -> None:
     assert exec_calls == [
         ("/usr/bin/c-icap", ["/usr/bin/c-icap", "-N", "-f", "/etc/c-icap/av.conf"]),
     ]
+
+
+def _placeholder_exchange(runner, *, fail_open: bool, method: str) -> bytes:
+    with runner._FailOpenAvServer(
+        ("127.0.0.1", 0), runner._FailOpenAvHandler
+    ) as server:
+        server.fail_open = fail_open
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        request = (
+            f"{method} icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Allow: 204\r\n"
+            "Encapsulated: null-body=0\r\n\r\n"
+        ).encode("ascii")
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as sock:
+            sock.settimeout(1)
+            sock.sendall(request)
+            response = sock.recv(4096)
+        server.shutdown()
+        thread.join(timeout=1)
+    return response
+
+
+def test_fail_open_placeholder_returns_204_for_transactions() -> None:
+    runner = _load_runner()
+
+    reqmod = _placeholder_exchange(runner, fail_open=True, method="REQMOD")
+    respmod = _placeholder_exchange(runner, fail_open=True, method="RESPMOD")
+
+    assert reqmod.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert respmod.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert b"clamav-fail-open-unavailable" in reqmod
+    assert b"clamav-fail-open-unavailable" in respmod
+
+
+def test_fail_closed_placeholder_keeps_service_unavailable_transactions() -> None:
+    runner = _load_runner()
+
+    response = _placeholder_exchange(runner, fail_open=False, method="RESPMOD")
+
+    assert response.startswith(b"ICAP/1.0 500 Service Unavailable\r\n")
+    assert b"clamav-fail-closed-unavailable" in response

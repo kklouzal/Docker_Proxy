@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import concurrent.futures
+import ssl
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import pytest
 
 from .live_test_helpers import (
+    LIVE_CONFIG,
     LiveStackClient,
     unique_token,
     wait_for_proxy_fixture_response,
@@ -97,3 +103,56 @@ def test_live_proxy_http_cache_miss_serial_and_parallel_bursts(
     ]
     assert not failures
     wait_for_proxy_management_payload()
+
+
+def _remote_http_proxy_url() -> str:
+    parsed = urllib.parse.urlsplit(LIVE_CONFIG.remote_proxy_management_url)
+    host = parsed.hostname or "proxy-edge-2"
+    return f"http://{host}:3128"
+
+
+def _proxied_request(proxy_url: str, url: str, *, timeout_seconds: float = 15.0):
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}),
+        # Live proxy HTTPS traffic is intentionally ssl-bumped by Squid's test CA.
+        urllib.request.HTTPSHandler(context=ssl._create_unverified_context()),  # noqa: S323
+    )
+    request = urllib.request.Request(
+        url,
+        headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+    )
+    try:
+        with opener.open(request, timeout=timeout_seconds) as response:
+            return int(response.status), response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return int(exc.code), exc.read().decode("utf-8", errors="replace")
+
+
+def test_live_remote_proxy_http_and_https_cold_misses_survive_unavailable_clamd(
+    admin_client: LiveStackClient,
+) -> None:
+    token = unique_token("remote_cold_miss")
+    proxy_url = _remote_http_proxy_url()
+    http_url = f"{LIVE_CONFIG.traffic_fixture_url}/traffic/{token}?cache_bust={token}"
+    https_url = f"https://example.com/?docker_proxy_cold_miss={token}"
+
+    deadline = time.time() + 120
+    last: tuple[int, str, int, str] | None = None
+    while time.time() < deadline:
+        http_status, http_body = _proxied_request(proxy_url, http_url)
+        https_status, https_body = _proxied_request(proxy_url, https_url)
+        last = (http_status, http_body[:500], https_status, https_body[:500])
+        if (
+            http_status == 200
+            and token in http_body
+            and "ICAP_FAILURE" not in http_body
+            and https_status == 200
+            and "Example Domain" in https_body
+            and "ICAP_FAILURE" not in https_body
+        ):
+            wait_for_proxy_management_payload()
+            return
+        time.sleep(1)
+
+    msg = f"remote proxy cold miss HTTP/HTTPS failed via {proxy_url}: {last!r}"
+    raise AssertionError(msg)

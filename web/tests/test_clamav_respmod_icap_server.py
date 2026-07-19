@@ -31,6 +31,7 @@ class FakeSocket:
         self.sent = bytearray()
         self.response = response
         self.timeout = None
+        self.closed = False
 
     def __enter__(self):
         return self
@@ -48,7 +49,32 @@ class FakeSocket:
         return self.response
 
     def close(self) -> None:
-        pass
+        self.closed = True
+
+
+class ResetBeforeVerdictSocket(FakeSocket):
+    def recv(self, _size: int) -> bytes:
+        message = "connection reset by peer"
+        raise ConnectionResetError(message)
+
+
+class ResetMidStreamSocket(FakeSocket):
+    def __init__(self, *, fail_after_chunks: int = 1) -> None:
+        super().__init__()
+        self.fail_after_chunks = fail_after_chunks
+        self._body_chunks = 0
+        self._expecting_body = False
+
+    def sendall(self, data: bytes) -> None:
+        if self._expecting_body:
+            self._expecting_body = False
+            self._body_chunks += 1
+            if self._body_chunks > self.fail_after_chunks:
+                message = "connection reset by peer"
+                raise ConnectionResetError(message)
+        elif len(data) == 4 and data != struct.pack("!I", 0):
+            self._expecting_body = True
+        super().sendall(data)
 
 
 def test_clamd_instream_scan_sends_body_chunks(monkeypatch) -> None:
@@ -599,6 +625,162 @@ def test_post_preview_scan_write_failure_fails_open_after_100_continue() -> None
 
     assert response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
     assert b"ICAP/1.0 204 No Content\r\n" in response
+
+
+def test_clamd_reset_before_verdict_drains_body_then_fails_open_204(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+    fake = ResetBeforeVerdictSocket()
+
+    monkeypatch.setattr(
+        server.socket, "create_connection", lambda address, timeout: fake
+    )
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(port, _sample_respmod_request(port), timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert fake.closed is True
+    assert fake.sent.endswith(struct.pack("!I", 0))
+
+
+def test_clamd_reset_mid_stream_drains_remaining_preview_then_fails_open_204(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+    fake = ResetMidStreamSocket(fail_after_chunks=1)
+
+    monkeypatch.setattr(
+        server.socket, "create_connection", lambda address, timeout: fake
+    )
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_exchange(
+            port, _sample_preview_respmod_request(port), timeout=1
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
+    assert b"ICAP/1.0 204 No Content\r\n" in response
+    assert fake.closed is True
+    assert fake._body_chunks == 2
+
+
+def test_unavailable_clamd_drains_body_and_fails_open_204(monkeypatch) -> None:
+    server = _load_server()
+
+    def create_connection(_address, _timeout):
+        message = "connection refused"
+        raise ConnectionRefusedError(message)
+
+    monkeypatch.setattr(server.socket, "create_connection", create_connection)
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_exchange(
+            port, _sample_preview_respmod_request(port), timeout=1
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
+    assert b"ICAP/1.0 204 No Content\r\n" in response
+
+
+def test_fail_open_without_allow_204_replays_after_clamd_reset(monkeypatch) -> None:
+    server = _load_server()
+    fake = ResetBeforeVerdictSocket()
+
+    monkeypatch.setattr(
+        server.socket, "create_connection", lambda address, timeout: fake
+    )
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(
+            port, _sample_respmod_request_without_allow_204(port), timeout=1
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" in response
+
+
+def test_infected_verdict_blocks_after_complete_body(monkeypatch) -> None:
+    server = _load_server()
+    fake = FakeSocket(b"stream: Eicar-Test-Signature FOUND\0")
+
+    monkeypatch.setattr(
+        server.socket, "create_connection", lambda address, timeout: fake
+    )
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(port, _sample_respmod_request(port), timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 403 Forbidden" in response
+    assert b"Eicar-Test-Signature" in response
 
 
 def test_scan_capacity_exhaustion_fails_open_without_wedging_options(

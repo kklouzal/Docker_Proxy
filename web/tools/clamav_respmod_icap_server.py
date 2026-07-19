@@ -9,6 +9,7 @@ contract local, but sends response bytes to clamd with the INSTREAM TCP protocol
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import re
@@ -50,6 +51,12 @@ class IcapProtocolError(Exception):
 
 class BodyTooLargeError(Exception):
     pass
+
+
+class ScanFailedAfterBodyError(RuntimeError):
+    def __init__(self, message: str, *, body: bytes) -> None:
+        super().__init__(message)
+        self.body = body
 
 
 logger = logging.getLogger("clamav-respmod")
@@ -476,7 +483,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
         body: bytes,
         body_complete: bool,
     ) -> None:
-        if allow_204:
+        if allow_204 and body_complete:
             self._write_response(_icap_response("204 No Content", {"ISTag": ISTAG}))
             return
         if body_complete:
@@ -484,7 +491,64 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 clean_response(allow_204=False, http_header=http_header, body=body)
             )
             return
-        self._write_response(error_response("scan failed after partial response body"))
+        self._write_response(error_response("scan failed before complete response body"))
+
+    def _read_respmod_body_for_scan(
+        self,
+        *,
+        headers: dict[str, str],
+        initial: bytes,
+        allow_204: bool,
+    ) -> tuple[bytes, ClamdResult]:
+        """Read the full ICAP body while best-effort streaming to clamd.
+
+        Squid may still be writing the encapsulated response body when a remote
+        clamd connection fails or resets.  A fail-open 204 is only safe after the
+        helper has consumed that body (including post-preview continuation); if
+        the helper replies and closes early, Squid can record ICAP_ERR_OTHER and
+        turn an otherwise-good web response into HTTP 500/missing subresources.
+        """
+        scan_error: Exception | None = None
+        result: ClamdResult | None = None
+
+        with contextlib.ExitStack() as stack:
+            scanner: ClamdInstreamSession | None
+            try:
+                scanner = stack.enter_context(self.server.open_scan())
+            except Exception as exc:
+                scanner = None
+                scan_error = exc
+
+            def send_chunk_or_degrade(chunk: bytes) -> None:
+                nonlocal scan_error
+                if scanner is None or scan_error is not None:
+                    return
+                try:
+                    scanner.send_chunk(chunk)
+                except Exception as exc:
+                    scan_error = exc
+
+            body, _remainder = read_icap_chunked_body(
+                self.rfile,
+                initial,
+                max_bytes=self.server.max_scan_bytes,
+                preview="preview" in headers,
+                continue_callback=self._send_100_continue,
+                chunk_callback=send_chunk_or_degrade,
+                buffer_body=not allow_204,
+            )
+            if scanner is not None and scan_error is None:
+                try:
+                    result = scanner.finish()
+                except Exception as exc:
+                    scan_error = exc
+
+        if scan_error is not None:
+            raise ScanFailedAfterBodyError(str(scan_error), body=body) from scan_error
+        if result is None:
+            message = "clamd INSTREAM scan failed without a verdict"
+            raise ScanFailedAfterBodyError(message, body=body)
+        return body, result
 
     def handle(self) -> None:
         allow_204 = False
@@ -523,18 +587,17 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 # client did not advertise Allow: 204, we must buffer the body
                 # while streaming it to clamd so a clean 200 response can replay
                 # the original encapsulated HTTP payload.
-                with self.server.open_scan() as scanner:
-                    body, _remainder = read_icap_chunked_body(
-                        self.rfile,
-                        remainder,
-                        max_bytes=self.server.max_scan_bytes,
-                        preview="preview" in headers,
-                        continue_callback=self._send_100_continue,
-                        chunk_callback=scanner.send_chunk,
-                        buffer_body=not allow_204,
+                try:
+                    body, result = self._read_respmod_body_for_scan(
+                        headers=headers,
+                        initial=remainder,
+                        allow_204=allow_204,
                     )
                     body_complete = True
-                    result = scanner.finish()
+                except ScanFailedAfterBodyError as exc:
+                    body = exc.body
+                    body_complete = True
+                    raise
             else:
                 result = self.server.scan_body(body)
                 body_complete = True

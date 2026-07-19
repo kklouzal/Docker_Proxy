@@ -83,10 +83,16 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
                 headers,
             )
         elif method in {"REQMOD", "RESPMOD"}:
-            response = _icap_response(
-                "500 Service Unavailable",
-                {"ISTag": istag, "Encapsulated": "null-body=0"},
-            )
+            if fail_open:
+                response = _icap_response(
+                    "204 No Content",
+                    {"ISTag": istag, "Encapsulated": "null-body=0"},
+                )
+            else:
+                response = _icap_response(
+                    "500 Service Unavailable",
+                    {"ISTag": istag, "Encapsulated": "null-body=0"},
+                )
         else:
             response = _icap_response(
                 "405 Method Not Allowed",
