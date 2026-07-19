@@ -28,6 +28,7 @@ from services.db import (
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_sync import nudge_registered_proxies
+from services.proxy_write_guard import guarded_proxy_write
 from services.revision_lifecycle import (
     ensure_generated_column,
     ensure_index,
@@ -697,34 +698,36 @@ class AdblockArtifactStore:
         now = _now()
         target_revision_id = int(revision_id)
         with self._connect() as conn:
-            revision = conn.execute(
-                "SELECT id FROM adblock_artifact_revisions WHERE id=%s LIMIT 1 FOR SHARE",
-                (target_revision_id,),
-            ).fetchone()
-            if revision is None:
-                msg = f"Adblock artifact revision {target_revision_id} was not found."
-                raise ValueError(msg)
-            cur = conn.execute(
-                """
-                INSERT INTO proxy_adblock_artifact_applications(
-                    proxy_id, revision_id, ok, detail, applied_by, applied_ts, artifact_sha256
+            with guarded_proxy_write(conn, proxy_key) as guard:
+                proxy_key = guard.proxy_id
+                revision = conn.execute(
+                    "SELECT id FROM adblock_artifact_revisions WHERE id=%s LIMIT 1 FOR SHARE",
+                    (target_revision_id,),
+                ).fetchone()
+                if revision is None:
+                    msg = f"Adblock artifact revision {target_revision_id} was not found."
+                    raise ValueError(msg)
+                cur = conn.execute(
+                    """
+                    INSERT INTO proxy_adblock_artifact_applications(
+                        proxy_id, revision_id, ok, detail, applied_by, applied_ts, artifact_sha256
+                    )
+                    VALUES(%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        proxy_key,
+                        target_revision_id,
+                        1 if ok else 0,
+                        (detail or "")[:4000],
+                        (applied_by or "proxy")[:255],
+                        now,
+                        (artifact_sha256 or "")[:64],
+                    ),
                 )
-                VALUES(%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    proxy_key,
-                    target_revision_id,
-                    1 if ok else 0,
-                    (detail or "")[:4000],
-                    (applied_by or "proxy")[:255],
-                    now,
-                    (artifact_sha256 or "")[:64],
-                ),
-            )
-            row = conn.execute(
-                "SELECT * FROM proxy_adblock_artifact_applications WHERE id=%s LIMIT 1",
-                (int(cur.lastrowid or 0),),
-            ).fetchone()
+                row = conn.execute(
+                    "SELECT * FROM proxy_adblock_artifact_applications WHERE id=%s LIMIT 1",
+                    (int(cur.lastrowid or 0),),
+                ).fetchone()
         application = self._row_to_application(row)
         assert application is not None
         return application

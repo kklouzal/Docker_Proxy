@@ -139,6 +139,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/proxy_logs.py \
     web/services/proxy_registry.py \
     web/services/proxy_sync.py \
+    web/services/proxy_write_guard.py \
     web/services/public_endpoint.py \
     web/services/revision_lifecycle.py \
     web/services/runtime_helpers.py \

@@ -9,6 +9,7 @@ from typing import Any
 
 from services.db import DATABASE_ERRORS, connect, mysql_error_code
 from services.proxy_context import normalize_proxy_id
+from services.proxy_write_guard import guarded_proxy_write
 
 OPERATION_STATUSES = ("pending", "applying", "applied", "superseded", "failed")
 TERMINAL_STATUSES = {"applied", "superseded", "failed"}
@@ -336,14 +337,16 @@ class OperationLedger:
             request_hash=request_hash_text,
         )
         with self._connect() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO proxy_operations(proxy_id,status,operation_type,subject,summary,target_kind,target_ref,rollback_kind,rollback_ref,request_hash,request_key,detail,created_by,created_ts,updated_ts,force_sync)
-                VALUES(%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), summary=VALUES(summary), detail=VALUES(detail), created_by=VALUES(created_by), updated_ts=VALUES(updated_ts), force_sync=GREATEST(force_sync, VALUES(force_sync))
-                """,
-                (
-                    proxy_key,
+            with guarded_proxy_write(conn, proxy_key) as guard:
+                proxy_key = guard.proxy_id
+                cur = conn.execute(
+                    """
+                    INSERT INTO proxy_operations(proxy_id,status,operation_type,subject,summary,target_kind,target_ref,rollback_kind,rollback_ref,request_hash,request_key,detail,created_by,created_ts,updated_ts,force_sync)
+                    VALUES(%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), summary=VALUES(summary), detail=VALUES(detail), created_by=VALUES(created_by), updated_ts=VALUES(updated_ts), force_sync=GREATEST(force_sync, VALUES(force_sync))
+                    """,
+                    (
+                        proxy_key,
                     op_type,
                     subject_text,
                     summary_text,
@@ -357,13 +360,13 @@ class OperationLedger:
                     created_by_text,
                     now,
                     now,
-                    1 if force_requested else 0,
-                ),
-            )
-            row = conn.execute(
-                f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1",
-                (int(cur.lastrowid or 0),),
-            ).fetchone()
+                        1 if force_requested else 0,
+                    ),
+                )
+                row = conn.execute(
+                    f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1",
+                    (int(cur.lastrowid or 0),),
+                ).fetchone()
         operation = self._row_to_operation(row)
         if operation is None:
             msg = "Operation ledger insert did not return a row."

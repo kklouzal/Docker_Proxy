@@ -25,6 +25,7 @@ from services.proxy_lifecycle import (
     remove_proxy_scoped_rows,
     rename_proxy_scoped_rows,
 )
+from services.proxy_write_guard import clear_proxy_write_guard_cache
 from services.public_endpoint import (
     coerce_public_port as _coerce_port,
 )
@@ -590,6 +591,10 @@ class ProxyRegistry:
     def _lifecycle_lock_name(self, proxy_id: str) -> str:
         return f"docker_proxy:proxy_lifecycle:{proxy_id}"[:64]
 
+    def _clear_lifecycle_write_cache(self, *proxy_ids: str) -> None:
+        for proxy_id in proxy_ids:
+            clear_proxy_write_guard_cache(proxy_id)
+
     def _ensure_not_tombstoned(
         self,
         conn,
@@ -686,6 +691,7 @@ class ProxyRegistry:
                         (old_key, new_key, f"Rename in progress to {new_key}.", now, now),
                     )
                     conn.commit()
+                    self._clear_lifecycle_write_cache(old_key, new_key)
 
                     lifecycle_result = rename_proxy_scoped_rows(
                         conn,
@@ -745,6 +751,7 @@ class ProxyRegistry:
                         (new_key,),
                     )
                     conn.commit()
+                    self._clear_lifecycle_write_cache(old_key, new_key)
 
         run_mysql_operation_with_retry(_rename)
         refreshed = self.get_proxy(new_key)
@@ -797,6 +804,7 @@ class ProxyRegistry:
                         (proxy_key, "Proxy removal in progress.", now_ts, now_ts),
                     )
                     conn.commit()
+                    self._clear_lifecycle_write_cache(proxy_key)
 
                     lifecycle_result = remove_proxy_scoped_rows(conn, proxy_id=proxy_key)
                     table_counts = dict(lifecycle_result.table_counts)
@@ -855,6 +863,7 @@ class ProxyRegistry:
                         ("Proxy removed; scoped rows deleted.", int(time.time()), proxy_key),
                     )
                     conn.commit()
+                    self._clear_lifecycle_write_cache(proxy_key)
 
         run_mysql_operation_with_retry(_remove)
         result_complete = True if lifecycle_result is None else lifecycle_result.complete
@@ -916,6 +925,20 @@ class ProxyRegistry:
                 return existing.proxy_id
             self.init_db()
             with self._connect() as conn:
+                tombstone = conn.execute(
+                    "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones WHERE proxy_id=%s LIMIT 1",
+                    (proxy_key,),
+                ).fetchone()
+                if tombstone is not None:
+                    action = str(tombstone["action"] or "")
+                    target_key = normalize_proxy_id(tombstone["target_proxy_id"])
+                    if action == "renamed" and target_key:
+                        target = self.get_proxy(target_key)
+                        if target is not None:
+                            return target.proxy_id
+                    if action in {"renaming", "removing", "removed"}:
+                        msg = f"Proxy {proxy_key!r} is in lifecycle state {action!r}."
+                        raise ValueError(msg)
                 alias = conn.execute(
                     "SELECT proxy_id FROM proxy_id_aliases WHERE alias_proxy_id=%s LIMIT 1",
                     (proxy_key,),

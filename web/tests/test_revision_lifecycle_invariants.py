@@ -193,7 +193,11 @@ def test_mysql_config_revision_concurrent_activation_is_single_active_per_proxy(
         pytest.skip(str(exc))
 
     from services.db import connect  # type: ignore
+    from services.proxy_registry import ProxyRegistry  # type: ignore
 
+    registry = ProxyRegistry()
+    registry.ensure_proxy("edge-a")
+    registry.ensure_proxy("edge-b")
     store = config_module.ConfigRevisionStore()
     store.init_db()
 

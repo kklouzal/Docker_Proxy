@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from services.certificate_core import CertificateBundle
 from services.db import OPERATIONAL_ERRORS, connect
 from services.proxy_context import normalize_proxy_id
+from services.proxy_write_guard import guarded_proxy_write
 from services.revision_lifecycle import (
     ensure_generated_column,
     ensure_index,
@@ -534,34 +535,36 @@ class CertificateBundleStore:
         now = int(time.time())
         target_revision_id = int(revision_id)
         with self._connect() as conn:
-            revision = conn.execute(
-                "SELECT id FROM certificate_bundle_revisions WHERE id=%s LIMIT 1 FOR SHARE",
-                (target_revision_id,),
-            ).fetchone()
-            if revision is None:
-                msg = f"Certificate bundle revision {target_revision_id} was not found."
-                raise ValueError(msg)
-            cur = conn.execute(
-                """
-                INSERT INTO proxy_certificate_applications(
-                    proxy_id, revision_id, ok, detail, applied_by, applied_ts, bundle_sha256
+            with guarded_proxy_write(conn, proxy_key) as guard:
+                proxy_key = guard.proxy_id
+                revision = conn.execute(
+                    "SELECT id FROM certificate_bundle_revisions WHERE id=%s LIMIT 1 FOR SHARE",
+                    (target_revision_id,),
+                ).fetchone()
+                if revision is None:
+                    msg = f"Certificate bundle revision {target_revision_id} was not found."
+                    raise ValueError(msg)
+                cur = conn.execute(
+                    """
+                    INSERT INTO proxy_certificate_applications(
+                        proxy_id, revision_id, ok, detail, applied_by, applied_ts, bundle_sha256
+                    )
+                    VALUES(%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        proxy_key,
+                        target_revision_id,
+                        1 if ok else 0,
+                        (detail or "")[:4000],
+                        (applied_by or "proxy")[:255],
+                        now,
+                        (bundle_sha256 or "")[:64],
+                    ),
                 )
-                VALUES(%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    proxy_key,
-                    target_revision_id,
-                    1 if ok else 0,
-                    (detail or "")[:4000],
-                    (applied_by or "proxy")[:255],
-                    now,
-                    (bundle_sha256 or "")[:64],
-                ),
-            )
-            row = conn.execute(
-                "SELECT * FROM proxy_certificate_applications WHERE id=%s LIMIT 1",
-                (int(cur.lastrowid or 0),),
-            ).fetchone()
+                row = conn.execute(
+                    "SELECT * FROM proxy_certificate_applications WHERE id=%s LIMIT 1",
+                    (int(cur.lastrowid or 0),),
+                ).fetchone()
         application = self._row_to_application(row)
         assert application is not None
         return application
