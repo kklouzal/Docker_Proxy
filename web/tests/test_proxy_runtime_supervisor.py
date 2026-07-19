@@ -4123,6 +4123,78 @@ def test_sync_from_db_reconfigures_squid_after_runtime_icap_include_change() -> 
     assert "Squid reconfigured for policy update." in result["detail"]
 
 
+def test_sync_from_db_skips_extra_reload_after_clamav_runtime_restart() -> None:
+    runtime = _runtime_shell()
+    reloads: list[bool] = []
+
+    class Controller:
+        def set_adblock_icap_revision_token(self, token) -> None:
+            self.token = token
+
+        def materialize_clamav_runtime_files(self, config_text, **_kwargs):
+            self.config_text = config_text
+            detail = (
+                "ClamAV runtime files updated: /etc/squid/conf.d/20-icap.conf, "
+                "Squid restarted after ICAP supervisor update."
+            )
+            return True, detail
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256="current-sha")
+
+        def latest_apply(self, _proxy_id) -> None:
+            return None
+
+        def get_active_revision(
+            self, _proxy_id
+        ) -> NoReturn:  # pragma: no cover - should not be reached
+            msg = "current config should not be reapplied"
+            raise AssertionError(msg)
+
+    class Registry:
+        def mark_apply_result(self, *_args, **_kwargs) -> NoReturn:
+            msg = "successful runtime ICAP restart should not mark failed apply"
+            raise AssertionError(msg)
+
+    runtime.controller = Controller()
+    runtime.revisions = Revisions()
+    runtime.registry = Registry()
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "adblock-sha",
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime.controller.get_current_config = lambda: "workers 2\nhttp_port 3128\n"
+    runtime._reload_for_policy_update = lambda *, wait_for_adblock_icap=True: (
+        reloads.append(wait_for_adblock_icap)
+        or (
+            True,
+            "Squid reconfigured for policy update.",
+        )
+    )
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert reloads == []
+    assert runtime.controller.token == "adblock-sha"
+    assert runtime.controller.config_text == "workers 2\nhttp_port 3128\n"
+    assert "Squid restarted after ICAP supervisor update." in result["detail"]
+
+
 def test_sync_from_db_normalizes_policy_runtime_includes_before_reconfigure() -> None:
     runtime = _runtime_shell()
     reloads: list[bool] = []

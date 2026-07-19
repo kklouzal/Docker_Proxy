@@ -3904,10 +3904,22 @@ class ProxyRuntime:
             }
         if policy_config_changed:
             current_sha = self._current_config_sha()
+
+        def reload_required_after_runtime_materialization() -> bool:
+            clamav_restart_already_applied = any(
+                "Squid restarted after ICAP supervisor update." in str(part or "")
+                for part in detail_parts
+            )
+            return bool(
+                policy_reload_required
+                or adblock_changed
+                or (clamav_runtime_changed and not clamav_restart_already_applied)
+            )
+
         revision_meta = self.revisions.get_active_revision_metadata(self.proxy_id)
         if revision_meta is None:
             reload_ok = True
-            if policy_reload_required or adblock_changed or clamav_runtime_changed:
+            if reload_required_after_runtime_materialization():
                 reload_ok, reload_detail = self._reload_for_policy_update(
                     wait_for_adblock_icap=adblock_changed,
                 )
@@ -3937,7 +3949,7 @@ class ProxyRuntime:
                 **operation_evidence,
             }
             if (
-                policy_reload_required or adblock_changed or clamav_runtime_changed
+                reload_required_after_runtime_materialization()
             ) and not reload_ok:
                 self.registry.mark_apply_result(
                     self.proxy_id,
@@ -3976,7 +3988,7 @@ class ProxyRuntime:
 
         if normalized_config_current:
             reload_ok = True
-            if policy_reload_required or adblock_changed or clamav_runtime_changed:
+            if reload_required_after_runtime_materialization():
                 reload_ok, reload_detail = self._reload_for_policy_update(
                     wait_for_adblock_icap=adblock_changed,
                 )
@@ -3987,7 +3999,7 @@ class ProxyRuntime:
                 detail_parts.append(detail)
                 detail = "\n".join(detail_parts).strip()
             if (
-                policy_reload_required or adblock_changed or clamav_runtime_changed
+                reload_required_after_runtime_materialization()
             ) and not reload_ok:
                 self.registry.mark_apply_result(
                     self.proxy_id,
@@ -4067,7 +4079,7 @@ class ProxyRuntime:
             not force or not sync_changed
         ):
             reload_ok = True
-            if policy_reload_required or adblock_changed or clamav_runtime_changed:
+            if reload_required_after_runtime_materialization():
                 reload_ok, reload_detail = self._reload_for_policy_update(
                     wait_for_adblock_icap=adblock_changed,
                 )
@@ -4078,7 +4090,7 @@ class ProxyRuntime:
                 detail_parts.append(detail)
                 detail = "\n".join(detail_parts).strip()
             if (
-                policy_reload_required or adblock_changed or clamav_runtime_changed
+                reload_required_after_runtime_materialization()
             ) and not reload_ok:
                 self.registry.mark_apply_result(
                     self.proxy_id,
@@ -4147,7 +4159,7 @@ class ProxyRuntime:
         self._invalidate_health_cache()
         if config_detail.strip():
             detail_parts.append(config_detail.strip())
-        if ok and (policy_reload_required or adblock_changed or clamav_runtime_changed):
+        if ok and reload_required_after_runtime_materialization():
             policy_reload_ok, policy_reload_detail = self._reload_for_policy_update(
                 wait_for_adblock_icap=adblock_changed,
             )
