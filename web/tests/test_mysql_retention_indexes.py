@@ -164,3 +164,62 @@ def test_webcat_acl_blocked_log_writer_retention_index_bootstrap():
 
     sql = _joined(conn)
     assert "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)" in sql
+
+
+def test_control_plane_retention_index_manifest_matches_prune_queries():
+    from services.control_plane_maintenance import CONTROL_PLANE_RETENTION_INDEXES
+
+    expected = {
+        "proxy_config_revisions": "idx_proxy_config_revisions_proxy_created_id (proxy_id, created_ts, id)",
+        "certificate_bundle_revisions": "idx_certificate_bundle_revisions_created_id (created_ts, id)",
+        "proxy_config_applications": "idx_proxy_config_applications_proxy_applied_id (proxy_id, applied_ts, id)",
+        "proxy_certificate_applications": "idx_proxy_certificate_applications_proxy_applied_id (proxy_id, applied_ts, id)",
+        "proxy_adblock_artifact_applications": "idx_proxy_adblock_artifact_apply_proxy_applied_id (proxy_id, applied_ts, id)",
+        "proxy_operations": "idx_proxy_operations_proxy_updated_id (proxy_id, updated_ts, id)",
+        "policy_requests": "idx_policy_requests_proxy_updated_id (proxy_id, updated_ts, id)",
+        "policy_exceptions": "idx_policy_exceptions_proxy_updated_id (proxy_id, updated_ts, id)",
+        "observability_maintenance_runs": "idx_observability_maintenance_runs_started_id (started_ts, id)",
+    }
+
+    for table, fragment in expected.items():
+        ddl = "\n".join(
+            index_ddl
+            for _name, index_ddl in CONTROL_PLANE_RETENTION_INDEXES[table]
+        )
+        assert fragment in ddl
+    policy_exception_ddl = "\n".join(
+        index_ddl
+        for _name, index_ddl in CONTROL_PLANE_RETENTION_INDEXES["policy_exceptions"]
+    )
+    assert (
+        "idx_policy_exceptions_status_expires (status, expires_ts, id)"
+        in policy_exception_ddl
+    )
+
+
+def test_operation_ledger_schema_bootstraps_bounded_progress_indexes(monkeypatch):
+    from services.operation_ledger import OperationLedger
+
+    conn = _FakeConn()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr(ledger, "_column_exists", lambda *_args: True)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+
+    ledger.init_db()
+
+    sql = _joined(conn)
+    assert "KEY idx_proxy_operations_proxy_status (proxy_id, status, created_ts)" in sql
+    assert (
+        "ALTER TABLE proxy_operations ADD INDEX "
+        "idx_proxy_operations_proxy_status_created_id "
+        "(proxy_id, status, created_ts, id)"
+    ) in sql
+    assert (
+        "ALTER TABLE proxy_operations ADD INDEX "
+        "idx_proxy_operations_proxy_started_id (proxy_id, started_ts, id)"
+    ) in sql
+    assert (
+        "ALTER TABLE proxy_operations ADD INDEX "
+        "idx_proxy_operations_proxy_updated_id (proxy_id, updated_ts, id)"
+    ) in sql

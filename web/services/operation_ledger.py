@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from services.db import connect
+from services.db import DATABASE_ERRORS, connect, mysql_error_code
 from services.proxy_context import normalize_proxy_id
 
 OPERATION_STATUSES = ("pending", "applying", "applied", "superseded", "failed")
@@ -96,6 +96,15 @@ class OperationLedger:
         ).fetchone()
         return row is not None
 
+    def _ensure_index(self, conn, table_name: str, index_name: str, ddl: str) -> None:
+        if self._index_exists(conn, table_name, index_name):
+            return
+        try:
+            conn.execute(ddl)
+        except DATABASE_ERRORS as exc:
+            if mysql_error_code(exc) != 1061:
+                raise
+
     def _request_key(
         self,
         *,
@@ -141,17 +150,27 @@ class OperationLedger:
               AND (request_key IS NOT NULL OR claim_token IS NOT NULL)
             """,
         )
+        active_request_key_expr = self._request_key_sql("active")
+        keeper_request_key_expr = self._request_key_sql("keeper")
         conn.execute(
             f"""
             UPDATE proxy_operations active
-            JOIN (
-                SELECT id, ROW_NUMBER() OVER (
-                    PARTITION BY proxy_id, {request_key_expr}
-                    ORDER BY CASE WHEN status='applying' THEN 0 ELSE 1 END, created_ts ASC, id ASC
-                ) AS rn
-                FROM proxy_operations
-                WHERE status IN ('pending','applying')
-            ) ranked ON ranked.id=active.id
+            JOIN proxy_operations keeper
+              ON keeper.proxy_id=active.proxy_id
+             AND keeper.status IN ('pending','applying')
+             AND {keeper_request_key_expr}={active_request_key_expr}
+             AND (
+                 CASE WHEN keeper.status='applying' THEN 0 ELSE 1 END
+                 < CASE WHEN active.status='applying' THEN 0 ELSE 1 END
+                 OR (
+                     CASE WHEN keeper.status='applying' THEN 0 ELSE 1 END
+                     = CASE WHEN active.status='applying' THEN 0 ELSE 1 END
+                     AND (
+                         keeper.created_ts < active.created_ts
+                         OR (keeper.created_ts = active.created_ts AND keeper.id < active.id)
+                     )
+                 )
+             )
             SET active.status='superseded',
                 active.detail='Superseded by a matching active operation during request-key backfill.',
                 active.completed_ts=%s,
@@ -159,7 +178,7 @@ class OperationLedger:
                 active.started_ts=0,
                 active.request_key=NULL,
                 active.claim_token=NULL
-            WHERE ranked.rn>1
+            WHERE active.status IN ('pending','applying')
             """,
             (now, now),
         )
@@ -229,6 +248,21 @@ class OperationLedger:
                         "ALTER TABLE proxy_operations ADD COLUMN force_sync TINYINT(1) NOT NULL DEFAULT 0 AFTER updated_ts",
                     )
                 self._backfill_active_request_keys(conn)
+                for index_name, ddl in (
+                    (
+                        "idx_proxy_operations_proxy_status_created_id",
+                        "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_status_created_id (proxy_id, status, created_ts, id)",
+                    ),
+                    (
+                        "idx_proxy_operations_proxy_started_id",
+                        "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_started_id (proxy_id, started_ts, id)",
+                    ),
+                    (
+                        "idx_proxy_operations_proxy_updated_id",
+                        "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_updated_id (proxy_id, updated_ts, id)",
+                    ),
+                ):
+                    self._ensure_index(conn, "proxy_operations", index_name, ddl)
                 if not self._index_exists(
                     conn,
                     "proxy_operations",
@@ -429,32 +463,43 @@ class OperationLedger:
         cutoff = now - max(60, int(older_than_seconds or 600))
         stale_request_key_expr = self._request_key_sql("stale")
         active_request_key_expr = self._request_key_sql("active")
-        ranked_request_key_expr = self._request_key_sql("ranked_active")
         with self._connect() as conn:
+            keeper_request_key_expr = self._request_key_sql("keeper")
             conn.execute(
                 f"""
                 UPDATE proxy_operations active
-                JOIN (
-                    SELECT id, ROW_NUMBER() OVER (
-                        PARTITION BY proxy_id, {ranked_request_key_expr}
-                        ORDER BY CASE
-                            WHEN status='applying' AND started_ts>=%s THEN 0
-                            WHEN status='applying' THEN 1
-                            ELSE 2
-                        END, created_ts ASC, id ASC
-                    ) AS rn
-                    FROM proxy_operations ranked_active
-                    WHERE ranked_active.proxy_id=%s
-                      AND ranked_active.status IN ('pending','applying')
-                      AND EXISTS (
-                          SELECT 1 FROM proxy_operations stale
-                          WHERE stale.proxy_id=ranked_active.proxy_id
-                            AND stale.status='applying'
-                            AND stale.started_ts>0
-                            AND stale.started_ts<%s
-                            AND {stale_request_key_expr}={ranked_request_key_expr}
-                      )
-                ) ranked ON ranked.id=active.id
+                JOIN proxy_operations keeper
+                  ON keeper.proxy_id=active.proxy_id
+                 AND keeper.status IN ('pending','applying')
+                 AND {keeper_request_key_expr}={active_request_key_expr}
+                 AND (
+                     CASE
+                         WHEN keeper.status='applying' AND keeper.started_ts>=%s THEN 0
+                         WHEN keeper.status='applying' THEN 1
+                         ELSE 2
+                     END
+                     < CASE
+                         WHEN active.status='applying' AND active.started_ts>=%s THEN 0
+                         WHEN active.status='applying' THEN 1
+                         ELSE 2
+                     END
+                     OR (
+                         CASE
+                             WHEN keeper.status='applying' AND keeper.started_ts>=%s THEN 0
+                             WHEN keeper.status='applying' THEN 1
+                             ELSE 2
+                         END
+                         = CASE
+                             WHEN active.status='applying' AND active.started_ts>=%s THEN 0
+                             WHEN active.status='applying' THEN 1
+                             ELSE 2
+                         END
+                         AND (
+                             keeper.created_ts < active.created_ts
+                             OR (keeper.created_ts = active.created_ts AND keeper.id < active.id)
+                         )
+                     )
+                 )
                 SET active.status='superseded',
                     active.detail='Superseded by a matching active operation before stale applying recovery.',
                     active.completed_ts=%s,
@@ -462,9 +507,18 @@ class OperationLedger:
                     active.started_ts=0,
                     active.request_key=NULL,
                     active.claim_token=NULL
-                WHERE ranked.rn>1
+                WHERE active.proxy_id=%s
+                  AND active.status IN ('pending','applying')
+                  AND EXISTS (
+                      SELECT 1 FROM proxy_operations stale
+                      WHERE stale.proxy_id=active.proxy_id
+                        AND stale.status='applying'
+                        AND stale.started_ts>0
+                        AND stale.started_ts<%s
+                        AND {stale_request_key_expr}={active_request_key_expr}
+                  )
                 """,
-                (cutoff, proxy_key, cutoff, now, now),
+                (cutoff, cutoff, cutoff, cutoff, now, now, proxy_key, cutoff),
             )
             cur = conn.execute(
                 f"""

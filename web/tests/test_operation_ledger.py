@@ -152,9 +152,10 @@ def test_init_db_backfills_active_request_keys_before_unique_index(monkeypatch) 
         < create_index_pos
     )
     supersede_sql, supersede_params = conn.queries[supersede_pos]
-    assert "ROW_NUMBER() OVER ( PARTITION BY proxy_id, SHA2(CONCAT(" in supersede_sql
-    assert "CASE WHEN status='applying' THEN 0 ELSE 1 END" in supersede_sql
-    assert "WHERE status IN ('pending','applying')" in supersede_sql
+    assert "ROW_NUMBER" not in supersede_sql.upper()
+    assert "JOIN proxy_operations keeper" in supersede_sql
+    assert "CASE WHEN keeper.status='applying' THEN 0 ELSE 1 END" in supersede_sql
+    assert "WHERE active.status IN ('pending','applying')" in supersede_sql
     assert "active.status='superseded'" in supersede_sql
     assert supersede_params == (123, 123)
     assert "WHERE status IN ('pending','applying')" in sql[backfill_pos]
@@ -270,11 +271,13 @@ def test_requeue_stale_applying_recovers_without_active_key_collisions(
     supersede_sql, supersede_params = conn.queries[0]
     assert supersede_sql.startswith("UPDATE proxy_operations active JOIN")
     assert "status IN ('pending','applying')" in supersede_sql
-    assert "CASE WHEN status='applying' AND started_ts>=%s THEN 0" in supersede_sql
+    assert "ROW_NUMBER" not in supersede_sql.upper()
+    assert "JOIN proxy_operations keeper" in supersede_sql
+    assert "CASE WHEN keeper.status='applying' AND keeper.started_ts>=%s THEN 0" in supersede_sql
     assert "active.status='superseded'" in supersede_sql
     assert "active.request_key=NULL" in supersede_sql
     assert "active.claim_token=NULL" in supersede_sql
-    assert supersede_params == (700, "edge-a", 700, 1000, 1000)
+    assert supersede_params == (700, 700, 700, 700, 1000, 1000, "edge-a", 700)
     requeue_sql, requeue_params = conn.queries[1]
     assert requeue_sql.startswith("UPDATE proxy_operations stale LEFT JOIN")
     assert "active.status IN ('pending','applying')" in requeue_sql

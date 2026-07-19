@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from services import control_plane_maintenance as maintenance
 
 
@@ -68,8 +69,10 @@ def test_control_plane_prune_expires_policy_and_cache_rows(monkeypatch) -> None:
         for query in sql
     )
     assert any(
-        "FROM `proxy_operations` WHERE status IN ('applied','superseded','failed')"
-        in query
+        "DELETE target FROM `proxy_operations` AS target" in query
+        and "candidate.status IN ('applied','superseded','failed')" in query
+        and "COUNT(*)" in query
+        and "ROW_NUMBER" not in query.upper()
         for query in sql
     )
 
@@ -232,3 +235,201 @@ def test_control_plane_maintenance_records_table_exists_failures(monkeypatch) ->
     assert result["tables"][0]["status"] == "failed"
     assert "metadata lookup failed" in result["tables"][0]["detail"]
     assert ("ANALYZE TABLE `proxy_config_revisions`", ()) in conn.queries
+
+
+class _SequencedConnection:
+    def __init__(self, rowcounts: list[int]) -> None:
+        self.rowcounts = rowcounts
+        self.queries: list[tuple[str, tuple[object, ...]]] = []
+        self.committed = False
+        self.rolled_back = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, _exc, _tb):
+        if exc_type is None:
+            self.committed = True
+        else:
+            self.rolled_back = True
+        return False
+
+    def execute(self, sql, params=()):
+        compact = " ".join(str(sql).split())
+        self.queries.append((compact, tuple(params or ())))
+        return _Result(self.rowcounts.pop(0) if self.rowcounts else 0)
+
+
+def test_control_plane_keep_n_delete_is_bounded_and_partitioned(monkeypatch) -> None:
+    pending = [_SequencedConnection([2]), _SequencedConnection([1])]
+    used: list[_SequencedConnection] = []
+
+    def connect():
+        conn = pending.pop(0)
+        used.append(conn)
+        return conn
+
+    monkeypatch.setattr(maintenance, "connect", connect)
+    monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 2)
+    monkeypatch.setattr(maintenance, "default_max_rows", lambda: 3)
+
+    result = maintenance._delete_ranked_rows(
+        table="proxy_operations",
+        timestamp_column="updated_ts",
+        cutoff_ts=1234,
+        keep_rows=5,
+        partition_column="proxy_id",
+        candidate_scope_sql="candidate.status IN ('applied','superseded','failed')",
+        newer_scope_sql="newer.status IN ('applied','superseded','failed')",
+    )
+
+    assert result.deleted_rows == 3
+    assert result.iterations == 2
+    assert result.truncated is True
+    first_sql, first_params = used[0].queries[0]
+    assert first_sql.startswith("DELETE target FROM `proxy_operations` AS target")
+    assert "ROW_NUMBER" not in first_sql.upper()
+    assert " OFFSET " not in first_sql.upper()
+    assert "newer.`proxy_id` = candidate.`proxy_id`" in first_sql
+    assert "ORDER BY candidate.`updated_ts` ASC, candidate.`id` ASC LIMIT %s" in first_sql
+    assert first_params == (1234, 5, 2)
+    assert [conn.committed for conn in used] == [True, True]
+
+
+def test_control_plane_keep_n_low_row_noop(monkeypatch) -> None:
+    conn = _SequencedConnection([0])
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 50)
+    monkeypatch.setattr(maintenance, "default_max_rows", lambda: 500)
+
+    result = maintenance._delete_revision_rows(
+        table="proxy_config_revisions",
+        timestamp_column="created_ts",
+        active_column="is_active",
+        cutoff_ts=100,
+        keep_rows=25,
+        partition_column="proxy_id",
+    )
+
+    assert result.deleted_rows == 0
+    assert result.iterations == 1
+    assert result.truncated is False
+    sql, params = conn.queries[0]
+    assert "candidate.`is_active` = 0" in sql
+    assert "COUNT(*)" in sql
+    assert params == (100, 25, 50)
+    assert conn.committed is True
+
+
+def test_control_plane_keep_n_failure_rolls_back_current_chunk(monkeypatch) -> None:
+    class FailingConnection(_SequencedConnection):
+        def execute(self, sql, params=()):
+            self.queries.append((" ".join(str(sql).split()), tuple(params or ())))
+            msg = "delete failed"
+            raise RuntimeError(msg)
+
+    conn = FailingConnection([])
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 10)
+    monkeypatch.setattr(maintenance, "default_max_rows", lambda: 10)
+
+    with pytest.raises(RuntimeError, match="delete failed"):
+        maintenance._delete_ranked_rows(
+            table="policy_requests",
+            timestamp_column="updated_ts",
+            cutoff_ts=100,
+            keep_rows=10,
+            partition_column="proxy_id",
+            candidate_scope_sql="candidate.status IN ('rejected','closed')",
+            newer_scope_sql="newer.status IN ('rejected','closed')",
+        )
+
+    assert conn.committed is False
+    assert conn.rolled_back is True
+
+
+def test_policy_exception_expiry_update_is_bounded(monkeypatch) -> None:
+    pending = [_SequencedConnection([2]), _SequencedConnection([1])]
+    used: list[_SequencedConnection] = []
+
+    def connect():
+        conn = pending.pop(0)
+        used.append(conn)
+        return conn
+
+    monkeypatch.setattr(maintenance, "connect", connect)
+    monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 2)
+    monkeypatch.setattr(maintenance, "default_max_rows", lambda: 3)
+
+    result = maintenance._expire_policy_exceptions(now_ts=999)
+
+    assert result.deleted_rows == 3
+    assert result.iterations == 2
+    assert result.truncated is True
+    sql, params = used[0].queries[0]
+    assert sql.startswith("UPDATE policy_exceptions SET status='expired'")
+    assert "ORDER BY expires_ts ASC, id ASC LIMIT %s" in sql
+    assert params == (999, 999, 2)
+
+
+def test_control_plane_prune_reports_truncated_backlog(monkeypatch) -> None:
+    tables = ("proxy_config_applications",)
+    conns = [
+        _SequencedConnection([0]),  # index exists lookup
+        _SequencedConnection([1]),
+        _SequencedConnection([1]),
+        _SequencedConnection([0]),  # webcat cleanup
+    ]
+    used: list[_SequencedConnection] = []
+
+    def connect():
+        conn = conns.pop(0)
+        used.append(conn)
+        return conn
+
+    monkeypatch.setattr(maintenance, "CONTROL_PLANE_MAINTENANCE_TABLES", tables)
+    monkeypatch.setattr(maintenance, "_table_exists", lambda _table: True)
+    monkeypatch.setattr(maintenance, "connect", connect)
+    monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 1)
+    monkeypatch.setattr(maintenance, "default_max_rows", lambda: 2)
+    monkeypatch.setattr(maintenance.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(
+        maintenance,
+        "cleanup_stale_webcat_build_tables",
+        lambda *_args, **_kwargs: _CleanupResult(),
+    )
+
+    result = maintenance.prune_control_plane_tables(retention_days=1)
+
+    assert result["ok"] is True
+    row = result["tables"][0]
+    assert row["deleted_rows"] == 2
+    assert row["maintenance"] == "bounded_retention_delete"
+    assert row["detail"] == "iterations=2 truncated=true"
+
+
+def test_control_plane_ensures_retention_indexes_idempotently(monkeypatch) -> None:
+    conn = _Connection()
+    seen: set[tuple[str, str]] = set()
+
+    def index_exists(_conn, table, index):
+        seen.add((table, index))
+        return index.endswith("active_created_id")
+
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance, "_index_exists", index_exists)
+
+    maintenance._ensure_control_plane_retention_indexes("proxy_config_revisions")
+
+    sql = [query for query, _params in conn.queries]
+    assert (
+        "proxy_config_revisions",
+        "idx_proxy_config_revisions_proxy_created_id",
+    ) in seen
+    assert any(
+        query.startswith(
+            "ALTER TABLE proxy_config_revisions ADD INDEX idx_proxy_config_revisions_proxy_created_id"
+        )
+        for query in sql
+    )
+    assert not any("active_created_id" in query for query in sql)
