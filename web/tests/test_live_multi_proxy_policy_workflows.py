@@ -345,7 +345,11 @@ def test_live_remote_clamav_test_actions_surface_selected_proxy_targets(
     assert "127.0.0.1:24001" in icap_response.text
     assert "EICAR failed" in eicar_response.text
     assert "ICAP sample ok" in icap_response.text
-    assert "ICAP/1.0 204 No Content" in icap_response.text
+    # The live ICAP action sends an unknown-length/chunked synthetic RESPMOD
+    # response. Squid cannot safely honor a late 204 for that framing, so the
+    # scanner must replay the clean body with ICAP 200 instead.
+    assert "ICAP/1.0 200 OK" in icap_response.text
+    assert "ICAP/1.0 204 No Content" not in icap_response.text
 
 
 def test_live_remote_webfilter_save_updates_only_selected_proxy(
