@@ -2117,6 +2117,59 @@ def test_runtime_icap_materialization_matches_startup_parity_contract(
     assert "--fail-open" not in respmod_supervisor
 
 
+def test_clamav_runtime_supervisor_update_restarts_squid_with_accept_only_probe(
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    controller = SquidController.__new__(SquidController)
+    calls: list[object] = []
+
+    controller.normalize_config_text = lambda text: text
+    controller._runtime_icap_workers = lambda _text: 1
+    controller._virus_scan_config_path = lambda: tmp_path / "virus_scan.conf"
+    controller._icap_include_path = lambda: tmp_path / "20-icap.conf"
+    controller._snapshot_runtime_file = lambda _path: None
+    controller._snapshot_managed_icap_runtime_files = dict
+    controller._write_if_changed = lambda _path, _content: False
+    controller._render_icap_include = lambda *_args, **_kwargs: "include\n"
+    controller._sync_icap_supervisor_runtime_files = lambda **_kwargs: (
+        True,
+        ["/etc/supervisor.d/cicap_av_1.conf"],
+    )
+    controller._http_listener_ports = lambda *_args, **_kwargs: (3128,)
+    controller._tcp_listener_accepts = lambda _port: True
+    controller._run = lambda args, **kwargs: (
+        calls.append(("run", list(args), kwargs)) or _cp(0, stdout="squid: stopped")
+    )
+    controller._decode_completed = lambda proc: (proc.stdout or b"").decode().strip()
+    controller._wait_for_http_listener_absent = lambda *, timeout: True
+    controller._supervisor_reread_update = lambda: (True, "supervisor updated")
+    controller._wait_for_icap_readiness = lambda *, timeout: (True, "OPTIONS ready")
+
+    def restart_squid(**kwargs):
+        calls.append(("restart_squid", kwargs))
+        return (
+            True,
+            "Squid HTTP listener is accepting connections and ICAP readiness is green.",
+        )
+
+    controller.restart_squid = restart_squid
+
+    ok, detail = controller.materialize_clamav_runtime_files(
+        "workers 1\nhttp_port 3128\n",
+        adblock_enabled=True,
+    )
+
+    assert ok is True
+    assert (
+        "restart_squid",
+        {"ready_timeout": 75.0, "require_http_response": False},
+    ) in calls
+    assert "Squid restarted after ICAP supervisor update." in detail
+
+
 def test_squid_controller_validation_timeout_returns_actionable_detail(
     tmp_path,
 ) -> None:

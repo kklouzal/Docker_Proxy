@@ -940,6 +940,7 @@ stdout_logfile_maxbytes=0
                 )
             )
             if supervisor_changed:
+                squid_restarted_for_supervisor = False
                 squid_was_running = any(
                     self._tcp_listener_accepts(port)
                     for port in self._http_listener_ports(normalized)
@@ -995,8 +996,10 @@ stdout_logfile_maxbytes=0
                         )
                     finally:
                         ok_restart, restart_detail = self.restart_squid(
-                            ready_timeout=75.0
+                            ready_timeout=75.0,
+                            require_http_response=False,
                         )
+                    squid_restarted_for_supervisor = bool(ok_restart)
                     changed.extend(
                         part
                         for part in (stop_detail, icap_detail, restart_detail)
@@ -1014,6 +1017,8 @@ stdout_logfile_maxbytes=0
                             icap_detail
                             or "ICAP services were not ready after supervisor update.",
                         )
+                if squid_restarted_for_supervisor:
+                    changed.append("Squid restarted after ICAP supervisor update.")
                 changed.extend(supervisor_paths)
             if changed:
                 return True, "ClamAV runtime files updated: " + ", ".join(changed)
@@ -1309,18 +1314,32 @@ stdout_logfile_maxbytes=0
             )
 
     def _wait_for_http_listener_ready(
-        self, *, timeout: float = 20.0
+        self, *, timeout: float = 20.0, require_http_response: bool = True
     ) -> tuple[bool, str]:
-        http_ok = self._wait_for_http_listener(timeout=timeout)
+        http_ok = (
+            self._wait_for_http_listener(timeout=timeout)
+            if require_http_response
+            else self._wait_for_http_listener_accepting(timeout=timeout)
+        )
         if not http_ok:
             return (
                 False,
-                "Squid process started but the HTTP listener is not responding.",
+                "Squid process started but the HTTP listener is not responding."
+                if require_http_response
+                else "Squid process started but the HTTP listener is not accepting connections.",
             )
         icap_ok, icap_detail = self._check_icap_readiness(timeout=min(8.0, timeout))
         if not icap_ok:
             return False, icap_detail
-        return True, "Squid HTTP listener is responding and ICAP readiness is green."
+        if require_http_response:
+            return (
+                True,
+                "Squid HTTP listener is responding and ICAP readiness is green.",
+            )
+        return (
+            True,
+            "Squid HTTP listener is accepting connections and ICAP readiness is green.",
+        )
 
     def _http_listener_responds(self, port: int) -> bool:
         try:
@@ -1355,6 +1374,17 @@ stdout_logfile_maxbytes=0
             if response_pending or accept_pending:
                 time.sleep(0.5)
         return not response_pending and not accept_pending
+
+    def _wait_for_http_listener_accepting(self, *, timeout: float = 20.0) -> bool:
+        accept_pending = set(self._http_listener_ports())
+        deadline = time.time() + max(0.5, timeout)
+        while accept_pending and time.time() < deadline:
+            for port in tuple(accept_pending):
+                if self._tcp_listener_accepts(port):
+                    accept_pending.discard(port)
+            if accept_pending:
+                time.sleep(0.5)
+        return not accept_pending
 
     def _wait_for_http_listener_absent(self, *, timeout: float = 20.0) -> bool:
         ports = self._http_listener_ports()
@@ -1585,6 +1615,7 @@ stdout_logfile_maxbytes=0
         *,
         accept_live_pid: bool = False,
         timeout: float = 20.0,
+        require_http_response: bool = True,
     ) -> tuple[bool, str] | None:
         """Accept supervisor auto-restart races only after Squid is serving again."""
         supervisor_running = self._supervisor_program_running("squid")
@@ -1595,6 +1626,7 @@ stdout_logfile_maxbytes=0
         if supervisor_running or live_pid_running:
             listener_ready, listener_detail = self._wait_for_http_listener_ready(
                 timeout=timeout,
+                require_http_response=require_http_response,
             )
             if listener_detail:
                 detail_parts.append(listener_detail)
@@ -1688,11 +1720,13 @@ stdout_logfile_maxbytes=0
         *,
         ready_timeout: float = 45.0,
         accept_live_pid_restart: bool = False,
+        require_http_response: bool = True,
     ) -> tuple[bool, str]:
         with _exclusive_squid_lifecycle_lock():
             return self._restart_squid_locked(
                 ready_timeout=ready_timeout,
                 accept_live_pid_restart=accept_live_pid_restart,
+                require_http_response=require_http_response,
             )
 
     def _restart_squid_locked(
@@ -1700,6 +1734,7 @@ stdout_logfile_maxbytes=0
         *,
         ready_timeout: float = 45.0,
         accept_live_pid_restart: bool = False,
+        require_http_response: bool = True,
     ) -> tuple[bool, str]:
         ready_timeout = max(1.0, float(ready_timeout or 45.0))
         detail_parts: list[str] = []
@@ -1763,6 +1798,7 @@ stdout_logfile_maxbytes=0
             detail_parts,
             accept_live_pid=accept_live_pid_restart,
             timeout=10.0,
+            require_http_response=require_http_response,
         )
         if accepted is not None:
             return accepted
@@ -1772,6 +1808,7 @@ stdout_logfile_maxbytes=0
                 detail_parts,
                 accept_live_pid=accept_live_pid_restart,
                 timeout=10.0,
+                require_http_response=require_http_response,
             )
             if accepted is not None:
                 return accepted
@@ -1822,12 +1859,14 @@ stdout_logfile_maxbytes=0
                     detail_parts,
                     accept_live_pid=accept_live_pid_restart,
                     timeout=20.0,
+                    require_http_response=require_http_response,
                 )
                 if accepted is not None:
                     return accepted
                 if start_reported_already_running:
                     ready_ok, ready_detail = self._wait_for_http_listener_ready(
-                        timeout=15.0
+                        timeout=15.0,
+                        require_http_response=require_http_response,
                     )
                     if ready_ok:
                         detail_parts.append(
@@ -1873,6 +1912,7 @@ stdout_logfile_maxbytes=0
                         retry_ready_ok, retry_ready_detail = (
                             self._wait_for_http_listener_ready(
                                 timeout=ready_timeout,
+                                require_http_response=require_http_response,
                             )
                         )
                         if retry.returncode == 0 and retry_ready_ok:
@@ -1888,7 +1928,8 @@ stdout_logfile_maxbytes=0
                         )
                 return False, "\n".join(detail_parts).strip()
             ready_ok, ready_detail = self._wait_for_http_listener_ready(
-                timeout=ready_timeout
+                timeout=ready_timeout,
+                require_http_response=require_http_response,
             )
             if ready_ok:
                 detail_parts.append(ready_detail)
@@ -1920,7 +1961,8 @@ stdout_logfile_maxbytes=0
             direct_start_detail_lower = direct_start_detail.lower()
             if "already running" in direct_start_detail_lower:
                 ready_ok, ready_detail = self._wait_for_http_listener_ready(
-                    timeout=ready_timeout
+                    timeout=ready_timeout,
+                    require_http_response=require_http_response,
                 )
                 if ready_ok:
                     detail_parts.append(
@@ -1938,6 +1980,7 @@ stdout_logfile_maxbytes=0
                 ).strip()
             direct_ready_ok, direct_ready_detail = self._wait_for_http_listener_ready(
                 timeout=ready_timeout,
+                require_http_response=require_http_response,
             )
             if proc.returncode == 0 and direct_ready_ok:
                 if direct_ready_detail:
@@ -2332,6 +2375,9 @@ stdout_logfile_maxbytes=0
                 return False, rollback_detail or (
                     runtime_details or "Failed to materialize ClamAV runtime files."
                 )
+            runtime_restart_applied = (
+                "Squid restarted after ICAP supervisor update." in runtime_details
+            )
 
             if workers_changed:
                 ok_scale, scale_details = self.apply_icap_scaling(
@@ -2457,6 +2503,18 @@ stdout_logfile_maxbytes=0
                     restart_details
                     or "Squid restarted after cache store reinitialization."
                 ).strip()
+
+            if runtime_restart_applied:
+                try:
+                    self._persist_good_config(normalized_config)
+                except Exception:
+                    log_exception_throttled(
+                        logger,
+                        "squid_core.persist_config.icap_runtime_restart",
+                        interval_seconds=300.0,
+                        message="Failed to persist squid config after ICAP runtime restart",
+                    )
+                return True, runtime_details.strip() or "Squid restarted."
 
             reconfigure_ok, reconfigure_detail = self.reconfigure_squid(
                 timeout=15,
