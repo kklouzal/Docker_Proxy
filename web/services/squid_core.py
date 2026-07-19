@@ -1376,15 +1376,23 @@ stdout_logfile_maxbytes=0
         return not response_pending and not accept_pending
 
     def _wait_for_http_listener_accepting(self, *, timeout: float = 20.0) -> bool:
-        accept_pending = set(self._http_listener_ports())
+        # For ICAP helper/supervisor churn we deliberately avoid an HTTP GET probe:
+        # fail-closed AV policy can make the readiness request wait on the very
+        # helper stack being restarted. It is sufficient here to prove that Squid
+        # has rebound at least one direct HTTP listener; transparent/intercept
+        # listeners may not accept ordinary TCP health-check connects in the
+        # minimal live-test network.
+        accept_pending = set(self._http_listener_response_ports()) or set(
+            self._http_listener_ports()
+        )
         deadline = time.time() + max(0.5, timeout)
         while accept_pending and time.time() < deadline:
             for port in tuple(accept_pending):
                 if self._tcp_listener_accepts(port):
-                    accept_pending.discard(port)
+                    return True
             if accept_pending:
                 time.sleep(0.5)
-        return not accept_pending
+        return False
 
     def _wait_for_http_listener_absent(self, *, timeout: float = 20.0) -> bool:
         ports = self._http_listener_ports()

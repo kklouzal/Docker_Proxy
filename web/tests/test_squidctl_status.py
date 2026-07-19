@@ -336,6 +336,29 @@ def test_wait_for_http_listener_accepts_transparent_listener_without_http_probe(
     assert response_probes == []
 
 
+def test_wait_for_http_listener_accepting_uses_direct_listener_only(
+    monkeypatch,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    controller = squidctl.SquidController(cmd_run=lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        controller,
+        "_http_listener_details",
+        lambda config_text=None: (
+            {"port": 3128, "mode": "explicit"},
+            {"port": 3129, "mode": "intercept"},
+        ),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_tcp_listener_accepts",
+        lambda port: int(port) == 3128,
+    )
+
+    assert controller._wait_for_http_listener_accepting(timeout=1.0) is True
+
+
 def test_clear_disk_cache_uses_bounded_restart_wait(
     monkeypatch,
     tmp_path,
