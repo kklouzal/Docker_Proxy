@@ -5,7 +5,8 @@ import logging
 import threading
 import time
 
-from services.db import connect
+from services.bounded_delete import default_chunk_size, delete_where_in_chunks
+from services.db import DATABASE_ERRORS, connect, mysql_error_code
 from services.proxy_context import get_proxy_id
 
 logger = logging.getLogger(__name__)
@@ -31,11 +32,30 @@ class AuditStore:
                     config_sha256 CHAR(64),
                     config_text LONGTEXT,
                     KEY idx_audit_ts (ts),
+                    KEY idx_audit_ts_id (ts, id),
                     KEY idx_audit_kind (kind),
                     KEY idx_audit_proxy_ts (proxy_id, ts)
                 )
                 """,
             )
+            exists = conn.execute(
+                """
+                SELECT 1
+                FROM information_schema.statistics
+                WHERE table_schema = DATABASE()
+                  AND table_name = 'audit_events'
+                  AND index_name = 'idx_audit_ts_id'
+                LIMIT 1
+                """,
+            ).fetchone()
+            if not exists:
+                try:
+                    conn.execute(
+                        "ALTER TABLE audit_events ADD INDEX idx_audit_ts_id (ts, id)",
+                    )
+                except DATABASE_ERRORS as exc:
+                    if mysql_error_code(exc) != 1061:
+                        raise
 
     def record(
         self,
@@ -93,10 +113,37 @@ class AuditStore:
                 ),
             )
 
-            # Keep storage bounded (last 200 events).
-            conn.execute(
-                "DELETE FROM audit_events WHERE id NOT IN (SELECT id FROM (SELECT id FROM audit_events ORDER BY ts DESC, id DESC LIMIT 200) AS keepers)",
-            )
+        # Keep storage bounded (last 200 events) without an unbounded delete in
+        # the request transaction that records the event.
+        self._prune_to_last_events(max_events=200, max_rows=default_chunk_size())
+
+    def _prune_to_last_events(
+        self,
+        *,
+        max_events: int = 200,
+        max_rows: int | None = None,
+    ) -> int:
+        keep = max(1, int(max_events or 200))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT ts, id FROM audit_events ORDER BY ts DESC, id DESC LIMIT %s",
+                (keep,),
+            ).fetchall()
+        if len(rows) < keep:
+            return 0
+        boundary_ts = int(rows[-1][0] or 0)
+        boundary_id = int(rows[-1][1] or 0)
+        result = delete_where_in_chunks(
+            self._connect,
+            table="audit_events",
+            where_sql="(ts < %s OR (ts = %s AND id < %s))",
+            params=(boundary_ts, boundary_ts, boundary_id),
+            order_by_columns=("ts", "id"),
+            max_rows=max_rows,
+            log_key="audit_store.prune.last_n",
+            log_label="Audit last-N prune",
+        )
+        return result.deleted_rows
 
     def latest_config_apply(self) -> object | None:
         # Returns the most recent config_apply* event (if any).
@@ -123,8 +170,16 @@ class AuditStore:
         self.init_db()
         days = max(1, int(retention_days or 30))
         cutoff = int(time.time()) - (days * 24 * 60 * 60)
-        with self._connect() as conn:
-            conn.execute("DELETE FROM audit_events WHERE ts < %s", (int(cutoff),))
+        delete_where_in_chunks(
+            self._connect,
+            table="audit_events",
+            where_sql="ts < %s",
+            params=(int(cutoff),),
+            order_by_columns=("ts", "id"),
+            log_key="audit_store.prune.retention",
+            log_label="Audit retention prune",
+        )
+        self._prune_to_last_events(max_events=200)
 
 
 _store: AuditStore | None = None

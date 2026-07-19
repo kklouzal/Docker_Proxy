@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from services.bounded_delete import delete_older_than_in_chunks
 from services.db import (
     DATABASE_ERRORS,
     connect,
@@ -552,22 +553,25 @@ class LiveStatsStore:
         self.init_db()
         days = max(1, int(retention_days or 30))
         cutoff = _now() - (days * 24 * 60 * 60)
+        logical_tables = (
+            ("client_domain_nocache", ("last_seen", "row_key")),
+            ("client_domains", ("last_seen", "ip", "domain")),
+            ("domains", ("last_seen", "domain")),
+            ("clients", ("last_seen", "ip")),
+        )
         with self._connect() as conn:
-            conn.execute(
-                f"DELETE FROM {self._table(conn, 'client_domain_nocache')} WHERE last_seen < %s",
-                (int(cutoff),),
+            physical_tables = tuple(
+                (self._table(conn, table), order_by) for table, order_by in logical_tables
             )
-            conn.execute(
-                f"DELETE FROM {self._table(conn, 'client_domains')} WHERE last_seen < %s",
-                (int(cutoff),),
-            )
-            conn.execute(
-                f"DELETE FROM {self._table(conn, 'domains')} WHERE last_seen < %s",
-                (int(cutoff),),
-            )
-            conn.execute(
-                f"DELETE FROM {self._table(conn, 'clients')} WHERE last_seen < %s",
-                (int(cutoff),),
+        for table, order_by in physical_tables:
+            delete_older_than_in_chunks(
+                self._connect,
+                table=table,
+                timestamp_column="last_seen",
+                cutoff_ts=int(cutoff),
+                order_by_columns=order_by,
+                log_key=f"live_stats.prune.{table}",
+                log_label=f"Live stats prune for {table}",
             )
 
     def _upsert_agg(

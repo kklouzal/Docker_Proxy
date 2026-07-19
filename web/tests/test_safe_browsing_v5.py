@@ -1022,3 +1022,39 @@ def test_safe_browsing_enforces_android_unwanted_software(monkeypatch) -> None:
         False,
         "confirmed by hashes.search",
     )
+
+
+def test_safe_browsing_cache_lookup_does_not_delete_expired_rows(monkeypatch) -> None:
+    checker = SafeBrowsingLocalChecker(api_key="test", selected_lists=("mw-4b",))
+    prefix = b"abcd"
+    full_hash = prefix + (b"x" * 28)
+    queries: list[str] = []
+
+    class Result:
+        def fetchall(self):
+            return [(full_hash, "MALWARE", "mw-4b")]
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, params=()):
+            queries.append(" ".join(str(sql).split()))
+            return Result()
+
+    monkeypatch.setattr(checker, "_connect", Conn)
+
+    verdict = checker._cache_lookup(prefix, {full_hash}, ("mw-4b",))
+
+    assert verdict == SafeBrowsingVerdict(
+        "unsafe",
+        "MALWARE",
+        "mw-4b",
+        True,
+        "cached full-hash match",
+    )
+    assert queries
+    assert all(not query.upper().startswith('DELETE ') for query in queries)

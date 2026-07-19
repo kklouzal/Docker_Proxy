@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services import download_safety
+from services.bounded_delete import default_chunk_size, delete_older_than_in_chunks
 from services.db import (
     DATABASE_ERRORS,
     INTEGRITY_ERRORS,
@@ -677,7 +678,10 @@ class AdblockStore:
     def _prune_events(self, conn) -> None:
         days = max(1, int(self.blocklog_retention_days or 30))
         cutoff = _now() - days * 24 * 3600
-        conn.execute("DELETE FROM adblock_events WHERE ts < %s", (int(cutoff),))
+        conn.execute(
+            "DELETE FROM adblock_events WHERE ts < %s ORDER BY ts ASC, id ASC LIMIT %s",
+            (int(cutoff), default_chunk_size()),
+        )
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         """Prune old benign blocklog data to keep the DB bounded."""
@@ -685,13 +689,25 @@ class AdblockStore:
         days = max(1, int(retention_days or 30))
         cutoff = _now() - days * 24 * 3600
         cutoff_day = int(cutoff // 86400)
-        with self._connect() as conn:
-            conn.execute("DELETE FROM adblock_events WHERE ts < %s", (int(cutoff),))
-            # Daily rollup rows are small, but keep them aligned with the same retention.
-            conn.execute(
-                "DELETE FROM adblock_counts WHERE day < %s",
-                (int(cutoff_day),),
-            )
+        delete_older_than_in_chunks(
+            self._connect,
+            table="adblock_events",
+            timestamp_column="ts",
+            cutoff_ts=int(cutoff),
+            order_by_columns=("ts", "id"),
+            log_key="adblock_store.prune.events",
+            log_label="Adblock event prune",
+        )
+        # Daily rollup rows are small, but keep them aligned with the same retention.
+        delete_older_than_in_chunks(
+            self._connect,
+            table="adblock_counts",
+            timestamp_column="day",
+            cutoff_ts=int(cutoff_day),
+            order_by_columns=("day", "proxy_id", "list_key"),
+            log_key="adblock_store.prune.counts",
+            log_label="Adblock daily count prune",
+        )
 
     def list_recent_block_events(self, limit: int = 100) -> list[dict[str, Any]]:
         self.init_db()

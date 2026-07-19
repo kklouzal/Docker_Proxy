@@ -491,6 +491,12 @@ class SafeBrowsingStore:
         )
         SafeBrowsingStore._ensure_index(
             conn,
+            "safe_browsing_full_hash_cache",
+            "idx_safe_browsing_cache_expiry",
+            "ALTER TABLE safe_browsing_full_hash_cache ADD INDEX idx_safe_browsing_cache_expiry (expires_ts)",
+        )
+        SafeBrowsingStore._ensure_index(
+            conn,
             "safe_browsing_negative_cache",
             "idx_safe_browsing_negative_expiry",
             "ALTER TABLE safe_browsing_negative_cache ADD INDEX idx_safe_browsing_negative_expiry (expires_ts)",
@@ -976,14 +982,6 @@ class SafeBrowsingLocalChecker:
         now = _now()
         try:
             with self._connect() as conn:
-                conn.execute(
-                    "DELETE FROM safe_browsing_full_hash_cache WHERE expires_ts < %s",
-                    (now,),
-                )
-                conn.execute(
-                    "DELETE FROM safe_browsing_negative_cache WHERE expires_ts < %s",
-                    (now,),
-                )
                 params: tuple[object, ...] = (prefix, now)
                 list_filter = ""
                 if local_lists:

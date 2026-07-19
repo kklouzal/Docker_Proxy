@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from services.bounded_delete import BoundedDeleteResult, delete_where_in_chunks
 from services.db import DATABASE_ERRORS, connect, table_exists
 from services.observability_maintenance import public_detail
 from services.sql_identifiers import quote_mysql_identifier
@@ -161,14 +162,16 @@ def _delete_revision_rows(
         return max(0, int(getattr(result, "rowcount", 0) or 0))
 
 
-def _delete_expired_cache(table: str, *, now_ts: int) -> int:
-    quoted = quote_mysql_identifier(table)
-    with connect() as conn:
-        result = conn.execute(
-            f"DELETE FROM {quoted} WHERE expires_ts < %s",
-            (int(now_ts),),
-        )
-        return max(0, int(getattr(result, "rowcount", 0) or 0))
+def _delete_expired_cache(table: str, *, now_ts: int) -> BoundedDeleteResult:
+    return delete_where_in_chunks(
+        connect,
+        table=table,
+        where_sql="expires_ts < %s",
+        params=(int(now_ts),),
+        order_by_columns=("expires_ts",),
+        log_key=f"control_plane.prune.{table}",
+        log_label=f"Control-plane expired cache prune for {table}",
+    )
 
 
 def _expire_policy_exceptions(*, now_ts: int) -> int:
@@ -330,10 +333,16 @@ def _run_one_prune(
         )
     if table in {"safe_browsing_full_hash_cache", "safe_browsing_negative_cache"}:
         deleted = _delete_expired_cache(table, now_ts=now_ts)
+        detail = (
+            f"iterations={deleted.iterations}"
+            + (" truncated=true" if deleted.truncated else "")
+        )
         return ControlPlaneMaintenanceResult(
             table=table,
             status="pruned",
-            deleted_rows=deleted,
+            deleted_rows=deleted.deleted_rows,
+            maintenance="bounded_expiry_delete",
+            detail=detail,
         )
     if table == "observability_maintenance_runs":
         deleted = _delete_ranked_rows(

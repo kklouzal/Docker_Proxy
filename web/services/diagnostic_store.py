@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Any
 
+from services.bounded_delete import delete_older_than_in_chunks
 from services.db import (
     DATABASE_ERRORS,
     connect,
@@ -523,6 +524,7 @@ class DiagnosticStore:
                                 KEY idx_diagnostic_policy_tags_lookup(proxy_id, tag, ts),
                                 KEY idx_diagnostic_policy_tags_request(proxy_id, request_id),
                                 KEY idx_diagnostic_policy_tags_ts(proxy_id, ts),
+                                KEY idx_diagnostic_policy_tags_ts_only(ts, proxy_id, request_id),
                                 KEY idx_diagnostic_policy_tags_since(proxy_id, ts, tag)
                             )
                             """,
@@ -645,6 +647,11 @@ class DiagnosticStore:
                             ),
                             (
                                 "diagnostic_policy_tags",
+                                "idx_diagnostic_policy_tags_ts_only",
+                                "ALTER TABLE diagnostic_policy_tags ADD INDEX idx_diagnostic_policy_tags_ts_only (ts, proxy_id, request_id)",
+                            ),
+                            (
+                                "diagnostic_policy_tags",
                                 "idx_diagnostic_policy_tags_since",
                                 "ALTER TABLE diagnostic_policy_tags ADD INDEX idx_diagnostic_policy_tags_since (proxy_id, ts, tag)",
                             ),
@@ -677,18 +684,19 @@ class DiagnosticStore:
         self.init_db()
         days = max(1, int(retention_days or self.retention_days))
         cutoff = _now() - (days * 24 * 60 * 60)
-        with self._connect() as conn:
-            conn.execute(
-                "DELETE FROM diagnostic_icap_events WHERE ts < %s",
-                (int(cutoff),),
-            )
-            conn.execute(
-                "DELETE FROM diagnostic_policy_tags WHERE ts < %s",
-                (int(cutoff),),
-            )
-            conn.execute(
-                "DELETE FROM diagnostic_requests WHERE ts < %s",
-                (int(cutoff),),
+        for table, order_by in (
+            ("diagnostic_icap_events", ("ts", "id")),
+            ("diagnostic_policy_tags", ("ts", "proxy_id", "request_id", "tag")),
+            ("diagnostic_requests", ("ts", "id")),
+        ):
+            delete_older_than_in_chunks(
+                self._connect,
+                table=table,
+                timestamp_column="ts",
+                cutoff_ts=int(cutoff),
+                order_by_columns=order_by,
+                log_key=f"diagnostic_store.prune.{table}",
+                log_label=f"Diagnostic store prune for {table}",
             )
 
     def start_background(self) -> None:

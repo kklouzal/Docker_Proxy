@@ -73,13 +73,15 @@ def _joined(conn: _FakeConn) -> str:
     return "\n".join(conn.sql)
 
 
-def test_safe_browsing_negative_cache_expiry_index_bootstrap():
+def test_safe_browsing_cache_expiry_indexes_bootstrap():
     conn = _FakeConn()
 
     SafeBrowsingStore.init_schema(conn)
 
     sql = _joined(conn)
+    assert "KEY idx_safe_browsing_cache_expiry(expires_ts)" in sql
     assert "KEY idx_safe_browsing_negative_expiry(expires_ts)" in sql
+    assert "ALTER TABLE safe_browsing_full_hash_cache ADD INDEX idx_safe_browsing_cache_expiry (expires_ts)" in sql
     assert "ALTER TABLE safe_browsing_negative_cache ADD INDEX idx_safe_browsing_negative_expiry (expires_ts)" in sql
 
 
@@ -116,6 +118,8 @@ def test_diagnostic_global_retention_indexes_bootstrap(monkeypatch):
     assert "KEY idx_diagnostic_icap_ts_id (ts, id)" in sql
     assert "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_ts_id (ts, id)" in sql
     assert "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_ts_id (ts, id)" in sql
+    assert "KEY idx_diagnostic_policy_tags_ts_only(ts, proxy_id, request_id)" in sql
+    assert "ALTER TABLE diagnostic_policy_tags ADD INDEX idx_diagnostic_policy_tags_ts_only (ts, proxy_id, request_id)" in sql
 
 
 def test_live_stats_global_last_seen_indexes_bootstrap(monkeypatch):
