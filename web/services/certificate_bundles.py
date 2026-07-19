@@ -5,8 +5,14 @@ import time
 from dataclasses import dataclass
 
 from services.certificate_core import CertificateBundle
-from services.db import connect
+from services.db import OPERATIONAL_ERRORS, connect
 from services.proxy_context import normalize_proxy_id
+from services.revision_lifecycle import (
+    ensure_generated_column,
+    ensure_index,
+    mysql_advisory_lock,
+    repair_duplicate_active_rows,
+)
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,33 @@ class CertificateBundleStore:
     def _connect(self):
         return connect()
 
+    def _is_transient_db_lock(self, exc: BaseException) -> bool:
+        if not isinstance(exc, OPERATIONAL_ERRORS):
+            return False
+        text = str(exc).lower()
+        return (
+            "deadlock found" in text
+            or "lock wait timeout" in text
+            or "try restarting transaction" in text
+        )
+
+    def _with_db_lock_retry(self, fn, *, attempts: int = 4):
+        last_exc: BaseException | None = None
+        for i in range(max(1, int(attempts))):
+            try:
+                return fn()
+            except Exception as exc:
+                last_exc = exc
+                if (
+                    not self._is_transient_db_lock(exc)
+                    or i >= max(1, int(attempts)) - 1
+                ):
+                    raise
+                time.sleep(min(1.0, 0.1 * (2**i)))
+        if last_exc is not None:
+            raise last_exc
+        return fn()
+
     def init_db(self) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -106,6 +139,8 @@ class CertificateBundleStore:
                     created_by VARCHAR(255) NOT NULL DEFAULT '',
                     created_ts BIGINT NOT NULL,
                     is_active TINYINT(1) NOT NULL DEFAULT 1,
+                    active_global_slot TINYINT GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN 1 ELSE NULL END) STORED,
+                    UNIQUE KEY uniq_certificate_bundle_revisions_active (active_global_slot),
                     KEY idx_certificate_bundle_revisions_active (is_active, created_ts),
                     KEY idx_certificate_bundle_revisions_sha (bundle_sha256, created_ts)
                 )
@@ -122,7 +157,8 @@ class CertificateBundleStore:
                     applied_by VARCHAR(255) NOT NULL DEFAULT '',
                     applied_ts BIGINT NOT NULL,
                     bundle_sha256 CHAR(64) NOT NULL DEFAULT '',
-                    KEY idx_proxy_certificate_applications_proxy_ts (proxy_id, applied_ts)
+                    KEY idx_proxy_certificate_applications_proxy_ts (proxy_id, applied_ts),
+                    KEY idx_proxy_certificate_applications_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)
                 )
                 """,
             )
@@ -138,6 +174,39 @@ class CertificateBundleStore:
                     updated_ts BIGINT NOT NULL DEFAULT 0
                 )
                 """,
+            )
+            ensure_index(
+                conn,
+                table_name="proxy_certificate_applications",
+                index_name="idx_proxy_certificate_applications_proxy_revision_ts",
+                ddl=(
+                    "ALTER TABLE proxy_certificate_applications "
+                    "ADD INDEX idx_proxy_certificate_applications_proxy_revision_ts "
+                    "(proxy_id, revision_id, applied_ts, id)"
+                ),
+            )
+            repair_duplicate_active_rows(
+                conn,
+                table_name="certificate_bundle_revisions",
+            )
+            ensure_generated_column(
+                conn,
+                table_name="certificate_bundle_revisions",
+                column_name="active_global_slot",
+                ddl=(
+                    "ALTER TABLE certificate_bundle_revisions "
+                    "ADD COLUMN active_global_slot TINYINT "
+                    "GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN 1 ELSE NULL END) STORED"
+                ),
+            )
+            ensure_index(
+                conn,
+                table_name="certificate_bundle_revisions",
+                index_name="uniq_certificate_bundle_revisions_active",
+                ddl=(
+                    "ALTER TABLE certificate_bundle_revisions "
+                    "ADD UNIQUE KEY uniq_certificate_bundle_revisions_active (active_global_slot)"
+                ),
             )
             try:
                 conn.execute(
@@ -254,91 +323,201 @@ class CertificateBundleStore:
         original_filename: str = "",
         activate: bool = True,
     ) -> CertificateBundleRevision:
-        self.init_db()
-        current = self.get_active_bundle()
-        if (
-            activate
-            and current is not None
-            and current.bundle_sha256 == bundle.bundle_sha256
-            and current.cert_pem == bundle.cert_pem
-            and current.key_pem == bundle.key_pem
-            and current.chain_pem == bundle.chain_pem
-        ):
-            return current
+        return self._with_db_lock_retry(
+            lambda: self._create_revision_once(
+                bundle,
+                created_by=created_by,
+                original_filename=original_filename,
+                activate=activate,
+            ),
+        )
 
+    def _create_revision_once(
+        self,
+        bundle: CertificateBundle,
+        *,
+        created_by: str = "",
+        original_filename: str = "",
+        activate: bool = True,
+    ) -> CertificateBundleRevision:
+        self.init_db()
         now = int(time.time())
         with self._connect() as conn:
-            if activate:
-                conn.execute(
-                    "UPDATE certificate_bundle_revisions SET is_active=0 WHERE is_active=1",
+            lock_scope = "global" if activate else "inactive"
+            with mysql_advisory_lock(
+                conn,
+                namespace="certificate_bundle_revisions.active",
+                scope=lock_scope,
+            ):
+                current = None
+                if activate:
+                    current = self._row_to_revision(
+                        conn.execute(
+                            """
+                            SELECT * FROM certificate_bundle_revisions
+                            WHERE is_active=1
+                            ORDER BY created_ts DESC, id DESC
+                            LIMIT 1
+                            FOR UPDATE
+                            """,
+                        ).fetchone(),
+                    )
+                    if (
+                        current is not None
+                        and current.bundle_sha256 == bundle.bundle_sha256
+                        and current.cert_pem == bundle.cert_pem
+                        and current.key_pem == bundle.key_pem
+                        and current.chain_pem == bundle.chain_pem
+                    ):
+                        return current
+                    conn.execute(
+                        "UPDATE certificate_bundle_revisions SET is_active=0 WHERE is_active=1",
+                    )
+                cur = conn.execute(
+                    """
+                    INSERT INTO certificate_bundle_revisions(
+                        bundle_sha256, cert_sha256, cert_pem, key_pem, chain_pem,
+                        source_kind, subject_dn, not_before, not_after,
+                        original_filename, original_pfx_blob, created_by, created_ts, is_active
+                    )
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        bundle.bundle_sha256,
+                        bundle.cert_sha256,
+                        bundle.cert_pem,
+                        bundle.key_pem,
+                        bundle.chain_pem,
+                        (bundle.source_kind or "manual").strip() or "manual",
+                        (bundle.subject_dn or "")[:4000],
+                        (bundle.not_before or "")[:255],
+                        (bundle.not_after or "")[:255],
+                        (original_filename or "")[:255],
+                        bundle.original_pfx_bytes,
+                        (created_by or "").strip()[:255],
+                        now,
+                        1 if activate else 0,
+                    ),
                 )
-            cur = conn.execute(
-                """
-                INSERT INTO certificate_bundle_revisions(
-                    bundle_sha256, cert_sha256, cert_pem, key_pem, chain_pem,
-                    source_kind, subject_dn, not_before, not_after,
-                    original_filename, original_pfx_blob, created_by, created_ts, is_active
-                )
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    bundle.bundle_sha256,
-                    bundle.cert_sha256,
-                    bundle.cert_pem,
-                    bundle.key_pem,
-                    bundle.chain_pem,
-                    (bundle.source_kind or "manual").strip() or "manual",
-                    (bundle.subject_dn or "")[:4000],
-                    (bundle.not_before or "")[:255],
-                    (bundle.not_after or "")[:255],
-                    (original_filename or "")[:255],
-                    bundle.original_pfx_bytes,
-                    (created_by or "").strip()[:255],
-                    now,
-                    1 if activate else 0,
-                ),
-            )
-            row = conn.execute(
-                "SELECT * FROM certificate_bundle_revisions WHERE id=%s LIMIT 1",
-                (int(cur.lastrowid or 0),),
-            ).fetchone()
+                row = conn.execute(
+                    "SELECT * FROM certificate_bundle_revisions WHERE id=%s LIMIT 1",
+                    (int(cur.lastrowid or 0),),
+                ).fetchone()
         revision = self._row_to_revision(row)
         assert revision is not None
         return revision
 
     def activate_revision(self, revision_id: object) -> CertificateBundleRevision:
+        return self._with_db_lock_retry(lambda: self._activate_revision_once(revision_id))
+
+    def _activate_revision_once(self, revision_id: object) -> CertificateBundleRevision:
         self.init_db()
         target_id = int(revision_id or 0)
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM certificate_bundle_revisions WHERE id=%s LIMIT 1",
-                (target_id,),
-            ).fetchone()
-            if not row:
-                msg = f"Certificate bundle revision {target_id} was not found."
-                raise ValueError(msg)
-            conn.execute(
-                "UPDATE certificate_bundle_revisions SET is_active=0 WHERE is_active=1",
-            )
-            conn.execute(
-                "UPDATE certificate_bundle_revisions SET is_active=1 WHERE id=%s",
-                (target_id,),
-            )
-            row = conn.execute(
-                "SELECT * FROM certificate_bundle_revisions WHERE id=%s LIMIT 1",
-                (target_id,),
-            ).fetchone()
+            with mysql_advisory_lock(
+                conn,
+                namespace="certificate_bundle_revisions.active",
+                scope="global",
+            ):
+                row = conn.execute(
+                    "SELECT * FROM certificate_bundle_revisions WHERE id=%s LIMIT 1 FOR UPDATE",
+                    (target_id,),
+                ).fetchone()
+                if not row:
+                    msg = f"Certificate bundle revision {target_id} was not found."
+                    raise ValueError(msg)
+                conn.execute(
+                    "UPDATE certificate_bundle_revisions SET is_active=0 WHERE is_active=1 AND id<>%s",
+                    (target_id,),
+                )
+                conn.execute(
+                    "UPDATE certificate_bundle_revisions SET is_active=1 WHERE id=%s",
+                    (target_id,),
+                )
+                row = conn.execute(
+                    "SELECT * FROM certificate_bundle_revisions WHERE id=%s LIMIT 1",
+                    (target_id,),
+                ).fetchone()
         revision = self._row_to_revision(row)
         assert revision is not None
         return revision
 
     def deactivate_revision(self, revision_id: object) -> None:
+        self._with_db_lock_retry(lambda: self._deactivate_revision_once(revision_id))
+
+    def _deactivate_revision_once(self, revision_id: object) -> None:
         self.init_db()
         with self._connect() as conn:
-            conn.execute(
-                "UPDATE certificate_bundle_revisions SET is_active=0 WHERE id=%s",
-                (int(revision_id or 0),),
-            )
+            with mysql_advisory_lock(
+                conn,
+                namespace="certificate_bundle_revisions.active",
+                scope="global",
+            ):
+                conn.execute(
+                    "UPDATE certificate_bundle_revisions SET is_active=0 WHERE id=%s",
+                    (int(revision_id or 0),),
+                )
+
+    def restore_previous_if_current(
+        self,
+        failed_revision_id: object,
+        previous_revision_id: object | None,
+    ) -> bool:
+        return bool(
+            self._with_db_lock_retry(
+                lambda: self._restore_previous_if_current_once(
+                    failed_revision_id,
+                    previous_revision_id,
+                ),
+            ),
+        )
+
+    def _restore_previous_if_current_once(
+        self,
+        failed_revision_id: object,
+        previous_revision_id: object | None,
+    ) -> bool:
+        self.init_db()
+        failed_id = int(failed_revision_id or 0)
+        previous_id = int(previous_revision_id or 0) if previous_revision_id else 0
+        with self._connect() as conn:
+            with mysql_advisory_lock(
+                conn,
+                namespace="certificate_bundle_revisions.active",
+                scope="global",
+            ):
+                current = conn.execute(
+                    """
+                    SELECT id FROM certificate_bundle_revisions
+                    WHERE is_active=1
+                    ORDER BY created_ts DESC, id DESC
+                    LIMIT 1
+                    FOR UPDATE
+                    """,
+                ).fetchone()
+                if current is None or int(current["id"] or 0) != failed_id:
+                    return False
+                if previous_id > 0:
+                    previous = conn.execute(
+                        "SELECT id FROM certificate_bundle_revisions WHERE id=%s LIMIT 1 FOR UPDATE",
+                        (previous_id,),
+                    ).fetchone()
+                    if previous is None:
+                        return False
+                    conn.execute(
+                        "UPDATE certificate_bundle_revisions SET is_active=0 WHERE is_active=1 AND id<>%s",
+                        (previous_id,),
+                    )
+                    conn.execute(
+                        "UPDATE certificate_bundle_revisions SET is_active=1 WHERE id=%s",
+                        (previous_id,),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE certificate_bundle_revisions SET is_active=0 WHERE id=%s",
+                        (failed_id,),
+                    )
+                return True
 
     def record_apply_result(
         self,
@@ -353,7 +532,15 @@ class CertificateBundleStore:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         now = int(time.time())
+        target_revision_id = int(revision_id)
         with self._connect() as conn:
+            revision = conn.execute(
+                "SELECT id FROM certificate_bundle_revisions WHERE id=%s LIMIT 1 FOR SHARE",
+                (target_revision_id,),
+            ).fetchone()
+            if revision is None:
+                msg = f"Certificate bundle revision {target_revision_id} was not found."
+                raise ValueError(msg)
             cur = conn.execute(
                 """
                 INSERT INTO proxy_certificate_applications(
@@ -363,7 +550,7 @@ class CertificateBundleStore:
                 """,
                 (
                     proxy_key,
-                    int(revision_id),
+                    target_revision_id,
                     1 if ok else 0,
                     (detail or "")[:4000],
                     (applied_by or "proxy")[:255],

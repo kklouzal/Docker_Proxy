@@ -32,6 +32,10 @@ class _ConfigRevisionConn:
     def execute(self, sql, params=None):
         text = str(sql)
         self.calls.append(text)
+        if "GET_LOCK" in text:
+            return SimpleNamespace(fetchone=lambda: {"acquired": 1})
+        if "RELEASE_LOCK" in text:
+            return SimpleNamespace(fetchone=lambda: None, rowcount=0)
         if self.fail_insert_once and "INSERT INTO proxy_config_revisions" in text:
             self.fail_insert_once = False
             raise pymysql.OperationalError(
@@ -162,10 +166,11 @@ class _ActivationConn:
     def execute(self, sql, params=None):
         text = str(sql)
         self.calls.append(text)
-        if (
-            "SELECT * FROM proxy_config_revisions WHERE id=%s AND proxy_id=%s LIMIT 1"
-            in text
-        ):
+        if "GET_LOCK" in text:
+            return SimpleNamespace(fetchone=lambda: {"acquired": 1})
+        if "RELEASE_LOCK" in text:
+            return SimpleNamespace(fetchone=lambda: None, rowcount=0)
+        if "SELECT * FROM proxy_config_revisions WHERE id=%s AND proxy_id=%s LIMIT 1" in text:
             row = None
             if self.target_exists:
                 row = {

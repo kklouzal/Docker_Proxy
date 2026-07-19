@@ -28,6 +28,12 @@ from services.db import (
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_sync import nudge_registered_proxies
+from services.revision_lifecycle import (
+    ensure_generated_column,
+    ensure_index,
+    mysql_advisory_lock,
+    repair_duplicate_active_rows,
+)
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
 
@@ -222,6 +228,8 @@ class AdblockArtifactStore:
                     created_by VARCHAR(255) NOT NULL DEFAULT '',
                     created_ts BIGINT NOT NULL,
                     is_active TINYINT(1) NOT NULL DEFAULT 1,
+                    active_global_slot TINYINT GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN 1 ELSE NULL END) STORED,
+                    UNIQUE KEY uniq_adblock_artifact_revisions_active (active_global_slot),
                     KEY idx_adblock_artifact_revisions_active (is_active, created_ts, id),
                     KEY idx_adblock_artifact_revisions_sha (artifact_sha256, created_ts, id)
                 )
@@ -238,7 +246,8 @@ class AdblockArtifactStore:
                     applied_by VARCHAR(255) NOT NULL DEFAULT '',
                     applied_ts BIGINT NOT NULL,
                     artifact_sha256 CHAR(64) NOT NULL DEFAULT '',
-                    KEY idx_proxy_adblock_artifact_apply_proxy_ts (proxy_id, applied_ts)
+                    KEY idx_proxy_adblock_artifact_apply_proxy_ts (proxy_id, applied_ts),
+                    KEY idx_proxy_adblock_artifact_apply_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)
                 )
                 """,
             )
@@ -260,6 +269,29 @@ class AdblockArtifactStore:
                 except DATABASE_ERRORS as exc:
                     if mysql_error_code(exc) != 1060:
                         raise
+            repair_duplicate_active_rows(
+                conn,
+                table_name="adblock_artifact_revisions",
+            )
+            ensure_generated_column(
+                conn,
+                table_name="adblock_artifact_revisions",
+                column_name="active_global_slot",
+                ddl=(
+                    "ALTER TABLE adblock_artifact_revisions "
+                    "ADD COLUMN active_global_slot TINYINT "
+                    "GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN 1 ELSE NULL END) STORED"
+                ),
+            )
+            ensure_index(
+                conn,
+                table_name="adblock_artifact_revisions",
+                index_name="uniq_adblock_artifact_revisions_active",
+                ddl=(
+                    "ALTER TABLE adblock_artifact_revisions "
+                    "ADD UNIQUE KEY uniq_adblock_artifact_revisions_active (active_global_slot)"
+                ),
+            )
             for table, index_name, ddl in (
                 (
                     "adblock_artifact_revisions",
@@ -275,6 +307,11 @@ class AdblockArtifactStore:
                     "proxy_adblock_artifact_applications",
                     "idx_proxy_adblock_artifact_apply_proxy_ts",
                     "ALTER TABLE proxy_adblock_artifact_applications ADD INDEX idx_proxy_adblock_artifact_apply_proxy_ts (proxy_id, applied_ts)",
+                ),
+                (
+                    "proxy_adblock_artifact_applications",
+                    "idx_proxy_adblock_artifact_apply_proxy_revision_ts",
+                    "ALTER TABLE proxy_adblock_artifact_applications ADD INDEX idx_proxy_adblock_artifact_apply_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)",
                 ),
             ):
                 exists = conn.execute(
@@ -416,52 +453,68 @@ class AdblockArtifactStore:
         )
 
         def _create() -> object | None:
-            current_metadata = self.get_active_artifact_metadata()
-            if (
-                activate
-                and current_metadata is not None
-                and current_metadata.artifact_sha256 == artifact_sha256
-                and current_metadata.settings_version == int(settings_version)
-                and current_metadata.source_kind == (source_kind or "compile")[:64]
-                and current_metadata.enabled_lists_json == enabled_lists_json
-            ):
-                return self.get_active_artifact()
-
             now = _now()
             with self._connect() as conn:
-                if activate:
-                    conn.execute(
-                        "UPDATE adblock_artifact_revisions SET is_active=0 WHERE is_active=1",
+                lock_scope = "global" if activate else "inactive"
+                with mysql_advisory_lock(
+                    conn,
+                    namespace="adblock_artifact_revisions.active",
+                    scope=lock_scope,
+                ):
+                    if activate:
+                        current_metadata = self._row_to_metadata(
+                            conn.execute(
+                                """
+                                SELECT id, artifact_sha256, settings_version, source_kind, enabled_lists_json, created_by, created_ts, is_active
+                                FROM adblock_artifact_revisions
+                                WHERE is_active=1
+                                ORDER BY created_ts DESC, id DESC
+                                LIMIT 1
+                                FOR UPDATE
+                                """,
+                            ).fetchone(),
+                        )
+                        if (
+                            current_metadata is not None
+                            and current_metadata.artifact_sha256 == artifact_sha256
+                            and current_metadata.settings_version == int(settings_version)
+                            and current_metadata.source_kind == (source_kind or "compile")[:64]
+                            and current_metadata.enabled_lists_json == enabled_lists_json
+                        ):
+                            return conn.execute(
+                                "SELECT * FROM adblock_artifact_revisions WHERE id=%s LIMIT 1",
+                                (current_metadata.revision_id,),
+                            ).fetchone()
+                        conn.execute(
+                            "UPDATE adblock_artifact_revisions SET is_active=0 WHERE is_active=1",
+                        )
+                    cur = conn.execute(
+                        """
+                        INSERT INTO adblock_artifact_revisions(
+                            artifact_sha256, archive_blob, report_json, settings_version,
+                            source_kind, enabled_lists_json, created_by, created_ts, is_active
+                        )
+                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        """,
+                        (
+                            (artifact_sha256 or "")[:64],
+                            bytes(archive_blob or b""),
+                            report_json or "{}",
+                            int(settings_version),
+                            (source_kind or "compile")[:64],
+                            enabled_lists_json,
+                            (created_by or "")[:255],
+                            now,
+                            1 if activate else 0,
+                        ),
                     )
-                cur = conn.execute(
-                    """
-                    INSERT INTO adblock_artifact_revisions(
-                        artifact_sha256, archive_blob, report_json, settings_version,
-                        source_kind, enabled_lists_json, created_by, created_ts, is_active
-                    )
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    """,
-                    (
-                        (artifact_sha256 or "")[:64],
-                        bytes(archive_blob or b""),
-                        report_json or "{}",
-                        int(settings_version),
-                        (source_kind or "compile")[:64],
-                        enabled_lists_json,
-                        (created_by or "")[:255],
-                        now,
-                        1 if activate else 0,
-                    ),
-                )
-                return conn.execute(
-                    "SELECT * FROM adblock_artifact_revisions WHERE id=%s LIMIT 1",
-                    (int(cur.lastrowid or 0),),
-                ).fetchone()
+                    return conn.execute(
+                        "SELECT * FROM adblock_artifact_revisions WHERE id=%s LIMIT 1",
+                        (int(cur.lastrowid or 0),),
+                    ).fetchone()
 
         row = _run_builder_mysql_operation(_create)
         self._prune_revisions_best_effort(max_batches=1)
-        if isinstance(row, AdblockArtifactRevision):
-            return row
         revision = self._row_to_revision(row)
         assert revision is not None
         return revision
@@ -642,7 +695,15 @@ class AdblockArtifactStore:
 
         proxy_key = normalize_proxy_id(proxy_id)
         now = _now()
+        target_revision_id = int(revision_id)
         with self._connect() as conn:
+            revision = conn.execute(
+                "SELECT id FROM adblock_artifact_revisions WHERE id=%s LIMIT 1 FOR SHARE",
+                (target_revision_id,),
+            ).fetchone()
+            if revision is None:
+                msg = f"Adblock artifact revision {target_revision_id} was not found."
+                raise ValueError(msg)
             cur = conn.execute(
                 """
                 INSERT INTO proxy_adblock_artifact_applications(
@@ -652,7 +713,7 @@ class AdblockArtifactStore:
                 """,
                 (
                     proxy_key,
-                    int(revision_id),
+                    target_revision_id,
                     1 if ok else 0,
                     (detail or "")[:4000],
                     (applied_by or "proxy")[:255],

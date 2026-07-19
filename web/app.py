@@ -3144,12 +3144,27 @@ def _publish_config_for_current_mode(
     def restore_previous_active_revision() -> None:
         nonlocal restore_detail
         try:
-            if previous_revision is not None:
+            restore_if_current = getattr(revisions, "restore_previous_if_current", None)
+            if callable(restore_if_current):
+                restored = restore_if_current(
+                    proxy_id,
+                    revision.revision_id,
+                    getattr(previous_revision, "revision_id", None),
+                )
+            elif previous_revision is not None:
                 revisions.activate_revision(proxy_id, previous_revision.revision_id)
-                restore_detail = "Previous active revision was restored."
+                restored = True
             else:
                 revisions.deactivate_revision(proxy_id, revision.revision_id)
+                restored = True
+            if restored and previous_revision is not None:
+                restore_detail = "Previous active revision was restored."
+            elif restored:
                 restore_detail = "Unqueued revision was left inactive."
+            else:
+                restore_detail = (
+                    "Active revision changed concurrently; newer active revision was preserved."
+                )
         except Exception:
             log_exception_throttled(
                 app.logger,
@@ -3386,13 +3401,27 @@ def _publish_certificate_bundle_remote(
     def restore_previous_active_bundle() -> None:
         nonlocal restore_detail
         try:
-            if previous_revision is not None:
+            restore_if_current = getattr(bundle_store, "restore_previous_if_current", None)
+            if callable(restore_if_current):
+                restored = restore_if_current(
+                    revision.revision_id,
+                    getattr(previous_revision, "revision_id", None),
+                )
+            elif previous_revision is not None:
                 bundle_store.activate_revision(previous_revision.revision_id)
-                restore_detail = "Previous active certificate bundle was restored."
+                restored = True
             else:
                 bundle_store.deactivate_revision(revision.revision_id)
+                restored = True
+            if restored and previous_revision is not None:
+                restore_detail = "Previous active certificate bundle was restored."
+            elif restored:
                 restore_detail = (
                     "Unqueued certificate bundle revision was left inactive."
+                )
+            else:
+                restore_detail = (
+                    "Active certificate bundle changed concurrently; newer active bundle was preserved."
                 )
         except Exception:
             log_exception_throttled(
@@ -5150,13 +5179,22 @@ def revert_operation(operation_id: int):
                 active_revision = None
 
             def restore_active_revision_after_failure() -> None:
+                if revision is None:
+                    return
                 try:
-                    if active_revision is not None:
+                    restore_if_current = getattr(revisions, "restore_previous_if_current", None)
+                    if callable(restore_if_current):
+                        restore_if_current(
+                            op.proxy_id,
+                            revision.revision_id,
+                            getattr(active_revision, "revision_id", None),
+                        )
+                    elif active_revision is not None:
                         revisions.activate_revision(
                             op.proxy_id,
                             active_revision.revision_id,
                         )
-                    elif revision is not None:
+                    else:
                         revisions.deactivate_revision(op.proxy_id, revision.revision_id)
                 except Exception:
                     log_exception_throttled(
@@ -5302,7 +5340,13 @@ def revert_operation(operation_id: int):
 
             if proxies and queued_count == 0:
                 try:
-                    if active_revision is not None:
+                    restore_if_current = getattr(bundle_store, "restore_previous_if_current", None)
+                    if callable(restore_if_current):
+                        restore_if_current(
+                            restored_revision.revision_id,
+                            getattr(active_revision, "revision_id", None),
+                        )
+                    elif active_revision is not None:
                         bundle_store.activate_revision(active_revision.revision_id)
                     else:
                         bundle_store.deactivate_revision(restored_revision.revision_id)
@@ -5322,7 +5366,13 @@ def revert_operation(operation_id: int):
         except Exception:
             if restored_revision is not None:
                 try:
-                    if active_revision is not None:
+                    restore_if_current = getattr(bundle_store, "restore_previous_if_current", None)
+                    if callable(restore_if_current):
+                        restore_if_current(
+                            restored_revision.revision_id,
+                            getattr(active_revision, "revision_id", None),
+                        )
+                    elif active_revision is not None:
                         bundle_store.activate_revision(active_revision.revision_id)
                     else:
                         bundle_store.deactivate_revision(restored_revision.revision_id)

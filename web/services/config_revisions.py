@@ -7,6 +7,12 @@ from dataclasses import dataclass
 
 from services.db import OPERATIONAL_ERRORS, connect
 from services.proxy_context import normalize_proxy_id
+from services.revision_lifecycle import (
+    ensure_generated_column,
+    ensure_index,
+    mysql_advisory_lock,
+    repair_duplicate_active_rows,
+)
 
 
 @dataclass(frozen=True)
@@ -87,6 +93,8 @@ class ConfigRevisionStore:
                     created_by VARCHAR(255) NOT NULL DEFAULT '',
                     created_ts BIGINT NOT NULL,
                     is_active TINYINT(1) NOT NULL DEFAULT 1,
+                    active_proxy_id VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN proxy_id ELSE NULL END) STORED,
+                    UNIQUE KEY uniq_proxy_config_revisions_active_proxy (active_proxy_id),
                     KEY idx_proxy_config_revisions_proxy_active (proxy_id, is_active, created_ts),
                     KEY idx_proxy_config_revisions_proxy_sha (proxy_id, config_sha256)
                 )
@@ -105,6 +113,30 @@ class ConfigRevisionStore:
                     KEY idx_proxy_config_applications_proxy_ts (proxy_id, applied_ts)
                 )
                 """,
+            )
+            repair_duplicate_active_rows(
+                conn,
+                table_name="proxy_config_revisions",
+                scope_column="proxy_id",
+            )
+            ensure_generated_column(
+                conn,
+                table_name="proxy_config_revisions",
+                column_name="active_proxy_id",
+                ddl=(
+                    "ALTER TABLE proxy_config_revisions "
+                    "ADD COLUMN active_proxy_id VARCHAR(64) "
+                    "GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN proxy_id ELSE NULL END) STORED"
+                ),
+            )
+            ensure_index(
+                conn,
+                table_name="proxy_config_revisions",
+                index_name="uniq_proxy_config_revisions_active_proxy",
+                ddl=(
+                    "ALTER TABLE proxy_config_revisions "
+                    "ADD UNIQUE KEY uniq_proxy_config_revisions_active_proxy (active_proxy_id)"
+                ),
             )
 
     def _row_to_revision(self, row: object | None) -> ConfigRevision | None:
@@ -240,42 +272,58 @@ class ConfigRevisionStore:
         digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
         now = int(time.time())
 
-        current = self.get_active_revision(proxy_key)
-        if (
-            activate
-            and current is not None
-            and current.config_sha256 == digest
-            and current.config_text == text
-        ):
-            return current
-
         with self._connect() as conn:
-            if activate:
-                conn.execute(
-                    "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND is_active=1",
-                    (proxy_key,),
+            lock_scope = proxy_key if activate else f"inactive:{proxy_key}"
+            with mysql_advisory_lock(
+                conn,
+                namespace="proxy_config_revisions.active",
+                scope=lock_scope,
+            ):
+                current = None
+                if activate:
+                    current = self._row_to_revision(
+                        conn.execute(
+                            """
+                            SELECT * FROM proxy_config_revisions
+                            WHERE proxy_id=%s AND is_active=1
+                            ORDER BY created_ts DESC, id DESC
+                            LIMIT 1
+                            FOR UPDATE
+                            """,
+                            (proxy_key,),
+                        ).fetchone(),
+                    )
+                    if (
+                        current is not None
+                        and current.config_sha256 == digest
+                        and current.config_text == text
+                    ):
+                        return current
+                    conn.execute(
+                        "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND is_active=1",
+                        (proxy_key,),
+                    )
+                cur = conn.execute(
+                    """
+                    INSERT INTO proxy_config_revisions(
+                        proxy_id, config_sha256, config_text, source_kind, created_by, created_ts, is_active
+                    )
+                    VALUES(%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        proxy_key,
+                        digest,
+                        text,
+                        (source_kind or "manual").strip() or "manual",
+                        (created_by or "").strip(),
+                        now,
+                        1 if activate else 0,
+                    ),
                 )
-            cur = conn.execute(
-                """
-                INSERT INTO proxy_config_revisions(
-                    proxy_id, config_sha256, config_text, source_kind, created_by, created_ts, is_active
-                )
-                VALUES(%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    proxy_key,
-                    digest,
-                    text,
-                    (source_kind or "manual").strip() or "manual",
-                    (created_by or "").strip(),
-                    now,
-                    1 if activate else 0,
-                ),
-            )
-            row = conn.execute(
-                "SELECT * FROM proxy_config_revisions WHERE id=%s LIMIT 1",
-                (int(cur.lastrowid or 0),),
-            ).fetchone()
+                row = conn.execute(
+                    "SELECT * FROM proxy_config_revisions WHERE id=%s LIMIT 1",
+                    (int(cur.lastrowid or 0),),
+                ).fetchone()
         revision = self._row_to_revision(row)
         assert revision is not None
         return revision
@@ -298,27 +346,32 @@ class ConfigRevisionStore:
         proxy_key = normalize_proxy_id(proxy_id)
         target_id = int(revision_id or 0)
         with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT * FROM proxy_config_revisions WHERE id=%s AND proxy_id=%s LIMIT 1",
-                (target_id, proxy_key),
-            ).fetchone()
-            if existing is None:
-                msg = (
-                    f"Config revision {target_id} was not found for proxy {proxy_key}."
+            with mysql_advisory_lock(
+                conn,
+                namespace="proxy_config_revisions.active",
+                scope=proxy_key,
+            ):
+                existing = conn.execute(
+                    "SELECT * FROM proxy_config_revisions WHERE id=%s AND proxy_id=%s LIMIT 1 FOR UPDATE",
+                    (target_id, proxy_key),
+                ).fetchone()
+                if existing is None:
+                    msg = (
+                        f"Config revision {target_id} was not found for proxy {proxy_key}."
+                    )
+                    raise ValueError(msg)
+                conn.execute(
+                    "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND is_active=1 AND id<>%s",
+                    (proxy_key, target_id),
                 )
-                raise ValueError(msg)
-            conn.execute(
-                "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND is_active=1",
-                (proxy_key,),
-            )
-            conn.execute(
-                "UPDATE proxy_config_revisions SET is_active=1 WHERE proxy_id=%s AND id=%s",
-                (proxy_key, target_id),
-            )
-            row = conn.execute(
-                "SELECT * FROM proxy_config_revisions WHERE id=%s AND proxy_id=%s LIMIT 1",
-                (target_id, proxy_key),
-            ).fetchone()
+                conn.execute(
+                    "UPDATE proxy_config_revisions SET is_active=1 WHERE proxy_id=%s AND id=%s",
+                    (proxy_key, target_id),
+                )
+                row = conn.execute(
+                    "SELECT * FROM proxy_config_revisions WHERE id=%s AND proxy_id=%s LIMIT 1",
+                    (target_id, proxy_key),
+                ).fetchone()
         revision = self._row_to_revision(row)
         assert revision is not None
         return revision
@@ -341,10 +394,15 @@ class ConfigRevisionStore:
         proxy_key = normalize_proxy_id(proxy_id)
         target_id = int(revision_id or 0)
         with self._connect() as conn:
-            conn.execute(
-                "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND id=%s",
-                (proxy_key, target_id),
-            )
+            with mysql_advisory_lock(
+                conn,
+                namespace="proxy_config_revisions.active",
+                scope=proxy_key,
+            ):
+                conn.execute(
+                    "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND id=%s",
+                    (proxy_key, target_id),
+                )
 
     def ensure_active_revision(
         self,
@@ -371,16 +429,120 @@ class ConfigRevisionStore:
         created_by: str = "system",
         source_kind: str = "bootstrap",
     ) -> ConfigRevision:
-        current = self.get_active_revision(proxy_id)
-        if current is not None:
-            return current
-        return self._create_revision_once(
-            proxy_id,
-            config_text,
-            created_by=created_by,
-            source_kind=source_kind,
-            activate=True,
+        self.init_db()
+        proxy_key = normalize_proxy_id(proxy_id)
+        text = config_text or ""
+        digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+        now = int(time.time())
+        with self._connect() as conn:
+            with mysql_advisory_lock(
+                conn,
+                namespace="proxy_config_revisions.active",
+                scope=proxy_key,
+            ):
+                current = self._row_to_revision(
+                    conn.execute(
+                        """
+                        SELECT * FROM proxy_config_revisions
+                        WHERE proxy_id=%s AND is_active=1
+                        ORDER BY created_ts DESC, id DESC
+                        LIMIT 1
+                        FOR UPDATE
+                        """,
+                        (proxy_key,),
+                    ).fetchone(),
+                )
+                if current is not None:
+                    return current
+                cur = conn.execute(
+                    """
+                    INSERT INTO proxy_config_revisions(
+                        proxy_id, config_sha256, config_text, source_kind, created_by, created_ts, is_active
+                    )
+                    VALUES(%s,%s,%s,%s,%s,%s,1)
+                    """,
+                    (
+                        proxy_key,
+                        digest,
+                        text,
+                        (source_kind or "bootstrap").strip() or "bootstrap",
+                        (created_by or "system").strip(),
+                        now,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM proxy_config_revisions WHERE id=%s LIMIT 1",
+                    (int(cur.lastrowid or 0),),
+                ).fetchone()
+        revision = self._row_to_revision(row)
+        assert revision is not None
+        return revision
+
+    def restore_previous_if_current(
+        self,
+        proxy_id: object | None,
+        failed_revision_id: object,
+        previous_revision_id: object | None,
+    ) -> bool:
+        return bool(
+            self._with_db_lock_retry(
+                lambda: self._restore_previous_if_current_once(
+                    proxy_id,
+                    failed_revision_id,
+                    previous_revision_id,
+                ),
+            ),
         )
+
+    def _restore_previous_if_current_once(
+        self,
+        proxy_id: object | None,
+        failed_revision_id: object,
+        previous_revision_id: object | None,
+    ) -> bool:
+        self.init_db()
+        proxy_key = normalize_proxy_id(proxy_id)
+        failed_id = int(failed_revision_id or 0)
+        previous_id = int(previous_revision_id or 0) if previous_revision_id else 0
+        with self._connect() as conn:
+            with mysql_advisory_lock(
+                conn,
+                namespace="proxy_config_revisions.active",
+                scope=proxy_key,
+            ):
+                current = conn.execute(
+                    """
+                    SELECT id FROM proxy_config_revisions
+                    WHERE proxy_id=%s AND is_active=1
+                    ORDER BY created_ts DESC, id DESC
+                    LIMIT 1
+                    FOR UPDATE
+                    """,
+                    (proxy_key,),
+                ).fetchone()
+                if current is None or int(current["id"] or 0) != failed_id:
+                    return False
+                if previous_id > 0:
+                    previous = conn.execute(
+                        "SELECT id FROM proxy_config_revisions WHERE proxy_id=%s AND id=%s LIMIT 1 FOR UPDATE",
+                        (proxy_key, previous_id),
+                    ).fetchone()
+                    if previous is None:
+                        return False
+                    conn.execute(
+                        "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND is_active=1 AND id<>%s",
+                        (proxy_key, previous_id),
+                    )
+                    conn.execute(
+                        "UPDATE proxy_config_revisions SET is_active=1 WHERE proxy_id=%s AND id=%s",
+                        (proxy_key, previous_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND id=%s",
+                        (proxy_key, failed_id),
+                    )
+                return True
 
     def record_apply_result(
         self,
@@ -394,7 +556,15 @@ class ConfigRevisionStore:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         now = int(time.time())
+        target_revision_id = int(revision_id)
         with self._connect() as conn:
+            revision = conn.execute(
+                "SELECT id FROM proxy_config_revisions WHERE proxy_id=%s AND id=%s LIMIT 1 FOR SHARE",
+                (proxy_key, target_revision_id),
+            ).fetchone()
+            if revision is None:
+                msg = f"Config revision {target_revision_id} was not found for proxy {proxy_key}."
+                raise ValueError(msg)
             cur = conn.execute(
                 """
                 INSERT INTO proxy_config_applications(proxy_id, revision_id, ok, detail, applied_by, applied_ts)
@@ -402,7 +572,7 @@ class ConfigRevisionStore:
                 """,
                 (
                     proxy_key,
-                    int(revision_id),
+                    target_revision_id,
                     1 if ok else 0,
                     (detail or "")[:4000],
                     (applied_by or "proxy")[:255],

@@ -1662,6 +1662,10 @@ def test_create_revision_retries_transient_mysql_lock_wait(
             nonlocal operations
             text = " ".join(sql.split())
             operations.append(text)
+            if "GET_LOCK" in text:
+                return FakeResult({"acquired": 1})
+            if "RELEASE_LOCK" in text:
+                return FakeResult()
             if text.startswith("UPDATE") and operations.count(text) == 1:
                 raise pymysql.OperationalError(
                     1205,
