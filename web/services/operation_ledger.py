@@ -7,7 +7,14 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from services.db import DATABASE_ERRORS, connect, mysql_error_code
+from services.db import (
+    DATABASE_ERRORS,
+    connect,
+    mysql_advisory_lock,
+    mysql_error_code,
+    mysql_schema_lock_timeout_seconds,
+    run_mysql_operation_with_retry,
+)
 from services.proxy_context import normalize_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
 
@@ -200,78 +207,93 @@ class OperationLedger:
             """,
         )
 
+    def _init_db_on_connection(self, conn) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS proxy_operations (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            proxy_id VARCHAR(64) NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            operation_type VARCHAR(64) NOT NULL DEFAULT 'sync',
+            subject VARCHAR(255) NOT NULL DEFAULT '',
+            summary VARCHAR(512) NOT NULL DEFAULT '',
+            target_kind VARCHAR(64) NOT NULL DEFAULT '',
+            target_ref VARCHAR(255) NOT NULL DEFAULT '',
+            rollback_kind VARCHAR(64) NOT NULL DEFAULT '',
+            rollback_ref VARCHAR(255) NOT NULL DEFAULT '',
+            request_hash CHAR(64) NOT NULL DEFAULT '',
+            request_key CHAR(64) NULL DEFAULT NULL,
+            claim_token CHAR(32) NULL DEFAULT NULL,
+            detail TEXT,
+            created_by VARCHAR(255) NOT NULL DEFAULT '',
+            created_ts BIGINT NOT NULL,
+            started_ts BIGINT NOT NULL DEFAULT 0,
+            completed_ts BIGINT NOT NULL DEFAULT 0,
+            updated_ts BIGINT NOT NULL,
+            force_sync TINYINT(1) NOT NULL DEFAULT 0,
+            KEY idx_proxy_operations_proxy_status (proxy_id, status, created_ts),
+            KEY idx_proxy_operations_proxy_updated (proxy_id, updated_ts),
+            KEY idx_proxy_operations_status_updated (status, updated_ts)
+            )
+            """,
+        )
+        if not self._column_exists(conn, "proxy_operations", "request_key"):
+            conn.execute(
+                "ALTER TABLE proxy_operations ADD COLUMN request_key CHAR(64) NULL DEFAULT NULL AFTER request_hash",
+            )
+        if not self._column_exists(conn, "proxy_operations", "claim_token"):
+            conn.execute(
+                "ALTER TABLE proxy_operations ADD COLUMN claim_token CHAR(32) NULL DEFAULT NULL AFTER request_key",
+            )
+        if not self._column_exists(conn, "proxy_operations", "force_sync"):
+            conn.execute(
+                "ALTER TABLE proxy_operations ADD COLUMN force_sync TINYINT(1) NOT NULL DEFAULT 0 AFTER updated_ts",
+            )
+        self._backfill_active_request_keys(conn)
+        for index_name, ddl in (
+            (
+                "idx_proxy_operations_proxy_status_created_id",
+                "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_status_created_id (proxy_id, status, created_ts, id)",
+            ),
+            (
+                "idx_proxy_operations_proxy_started_id",
+                "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_started_id (proxy_id, started_ts, id)",
+            ),
+            (
+                "idx_proxy_operations_proxy_updated_id",
+                "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_updated_id (proxy_id, updated_ts, id)",
+            ),
+        ):
+            self._ensure_index(conn, "proxy_operations", index_name, ddl)
+        if not self._index_exists(
+            conn,
+            "proxy_operations",
+            "uniq_proxy_operations_active_request",
+        ):
+            conn.execute(
+                "ALTER TABLE proxy_operations ADD UNIQUE KEY uniq_proxy_operations_active_request (proxy_id, request_key)",
+            )
+
     def init_db(self) -> None:
         if self._schema_ready:
             return
         with self._schema_lock:
             if self._schema_ready:
                 return
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS proxy_operations (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL,
-                    status VARCHAR(32) NOT NULL DEFAULT 'pending',
-                    operation_type VARCHAR(64) NOT NULL DEFAULT 'sync',
-                    subject VARCHAR(255) NOT NULL DEFAULT '',
-                    summary VARCHAR(512) NOT NULL DEFAULT '',
-                    target_kind VARCHAR(64) NOT NULL DEFAULT '',
-                    target_ref VARCHAR(255) NOT NULL DEFAULT '',
-                    rollback_kind VARCHAR(64) NOT NULL DEFAULT '',
-                    rollback_ref VARCHAR(255) NOT NULL DEFAULT '',
-                    request_hash CHAR(64) NOT NULL DEFAULT '',
-                    request_key CHAR(64) NULL DEFAULT NULL,
-                    claim_token CHAR(32) NULL DEFAULT NULL,
-                    detail TEXT,
-                    created_by VARCHAR(255) NOT NULL DEFAULT '',
-                    created_ts BIGINT NOT NULL,
-                    started_ts BIGINT NOT NULL DEFAULT 0,
-                    completed_ts BIGINT NOT NULL DEFAULT 0,
-                    updated_ts BIGINT NOT NULL,
-                    force_sync TINYINT(1) NOT NULL DEFAULT 0,
-                    KEY idx_proxy_operations_proxy_status (proxy_id, status, created_ts),
-                    KEY idx_proxy_operations_proxy_updated (proxy_id, updated_ts),
-                    KEY idx_proxy_operations_status_updated (status, updated_ts)
-                    )
-                    """,
-                )
-                if not self._column_exists(conn, "proxy_operations", "request_key"):
-                    conn.execute(
-                        "ALTER TABLE proxy_operations ADD COLUMN request_key CHAR(64) NULL DEFAULT NULL AFTER request_hash",
-                    )
-                if not self._column_exists(conn, "proxy_operations", "claim_token"):
-                    conn.execute(
-                        "ALTER TABLE proxy_operations ADD COLUMN claim_token CHAR(32) NULL DEFAULT NULL AFTER request_key",
-                    )
-                if not self._column_exists(conn, "proxy_operations", "force_sync"):
-                    conn.execute(
-                        "ALTER TABLE proxy_operations ADD COLUMN force_sync TINYINT(1) NOT NULL DEFAULT 0 AFTER updated_ts",
-                    )
-                self._backfill_active_request_keys(conn)
-                for index_name, ddl in (
-                    (
-                        "idx_proxy_operations_proxy_status_created_id",
-                        "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_status_created_id (proxy_id, status, created_ts, id)",
-                    ),
-                    (
-                        "idx_proxy_operations_proxy_started_id",
-                        "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_started_id (proxy_id, started_ts, id)",
-                    ),
-                    (
-                        "idx_proxy_operations_proxy_updated_id",
-                        "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_updated_id (proxy_id, updated_ts, id)",
-                    ),
-                ):
-                    self._ensure_index(conn, "proxy_operations", index_name, ddl)
-                if not self._index_exists(
-                    conn,
-                    "proxy_operations",
-                    "uniq_proxy_operations_active_request",
-                ):
-                    conn.execute(
-                        "ALTER TABLE proxy_operations ADD UNIQUE KEY uniq_proxy_operations_active_request (proxy_id, request_key)",
-                    )
+
+            def _ensure_schema() -> None:
+                with self._connect() as conn:
+                    if not hasattr(conn, "native"):
+                        self._init_db_on_connection(conn)
+                        return
+                    with mysql_advisory_lock(
+                        conn,
+                        "docker_proxy:operation_ledger:schema",
+                        mysql_schema_lock_timeout_seconds(),
+                    ):
+                        self._init_db_on_connection(conn)
+
+            run_mysql_operation_with_retry(_ensure_schema)
             self._schema_ready = True
 
     def _row_to_operation(self, row: object | None) -> ProxyOperation | None:
