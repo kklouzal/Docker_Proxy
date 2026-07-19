@@ -136,6 +136,27 @@ def test_guarded_proxy_write_rechecks_after_lifecycle_lock(monkeypatch) -> None:
     assert any("RELEASE_LOCK" in call for call in conn.calls)
 
 
+def test_guarded_proxy_rows_materializes_batch_with_canonical_alias(monkeypatch) -> None:
+    guard = _guard_module(monkeypatch)
+    conn = _GuardConn()
+    conn.native = object()
+    conn.instances["edge-new"] = "healthy"
+    conn.tombstones["edge-old"] = {
+        "action": "renamed",
+        "target_proxy_id": "edge-new",
+    }
+
+    batch = guard.guarded_proxy_rows(
+        conn,
+        "edge-old",
+        [("edge-old", "one"), ("edge-old", "two")],
+        lambda canonical, row: (canonical, row[1]),
+    )
+
+    assert batch.proxy_id == "edge-new"
+    assert batch.rows == (("edge-new", "one"), ("edge-new", "two"))
+
+
 def _fresh_mysql_modules(tmp_path: Path):
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
     _add_web_to_path()

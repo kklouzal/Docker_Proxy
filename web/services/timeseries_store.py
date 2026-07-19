@@ -10,6 +10,7 @@ from services.db import DATABASE_ERRORS, connect
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.observability_backoff import DatabaseWriteBackoff, stagger_delay_from_env
 from services.proxy_context import get_proxy_id
+from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import now_ts as _now
 
@@ -116,20 +117,21 @@ class TimeSeriesStore:
 
         def write_snapshot() -> None:
             with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO ts_1s(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s) AS incoming
-                    ON DUPLICATE KEY UPDATE
-                        count = incoming.count,
-                        cpu = incoming.cpu,
-                        mem = incoming.mem,
-                        disk_used = incoming.disk_used,
-                        cache_dir_size = incoming.cache_dir_size,
-                        hit_rate = incoming.hit_rate
-                    """,
-                    (proxy_id, ts_i, 1, cpu, mem, disk_used, cache_dir_size, hit_rate),
-                )
+                with guarded_proxy_write(conn, proxy_id) as guard:
+                    conn.execute(
+                        """
+                        INSERT INTO ts_1s(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
+                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s) AS incoming
+                        ON DUPLICATE KEY UPDATE
+                            count = incoming.count,
+                            cpu = incoming.cpu,
+                            mem = incoming.mem,
+                            disk_used = incoming.disk_used,
+                            cache_dir_size = incoming.cache_dir_size,
+                            hit_rate = incoming.hit_rate
+                        """,
+                        (guard.proxy_id, ts_i, 1, cpu, mem, disk_used, cache_dir_size, hit_rate),
+                    )
 
         self._with_missing_table_retry(write_snapshot)
 
@@ -151,49 +153,51 @@ class TimeSeriesStore:
 
         def rollup_bucket() -> None:
             with self._connect() as conn:
-                first_row = conn.execute(
-                    f"SELECT MIN(ts) FROM {src_table} WHERE proxy_id = %s AND ts < %s",
-                    (proxy_id, aligned_end),
-                ).fetchone()
-                first_ts = int(first_row[0]) if first_row and first_row[0] is not None else None
-                if first_ts is None:
-                    return
-                range_start = (first_ts // dst_seconds) * dst_seconds
-                range_end = min(aligned_end, range_start + (dst_seconds * bucket_limit))
-                if range_end <= range_start:
-                    return
-                conn.execute(
-                    f"""
-                    INSERT INTO {dst_table}(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
-                    SELECT * FROM (
-                        SELECT
-                            proxy_id,
-                            FLOOR(ts / %s) * %s AS bucket_start,
-                            SUM(count) AS count,
-                            CASE WHEN SUM(count) > 0 THEN SUM(cpu * count) / SUM(count) ELSE NULL END AS cpu,
-                            CASE WHEN SUM(count) > 0 THEN SUM(mem * count) / SUM(count) ELSE NULL END AS mem,
-                            CASE WHEN SUM(count) > 0 THEN SUM(disk_used * count) / SUM(count) ELSE NULL END AS disk_used,
-                             CASE WHEN SUM(count) > 0 THEN SUM(cache_dir_size * count) / SUM(count) ELSE NULL END AS cache_dir_size,
-                             CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count) / SUM(count) ELSE NULL END AS hit_rate
-                        FROM {src_table}
-                        WHERE proxy_id = %s AND ts >= %s AND ts < %s
-                        GROUP BY proxy_id, bucket_start
-                    ) AS incoming
-                    ON DUPLICATE KEY UPDATE
-                        cpu = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.cpu IS NULL AND incoming.cpu IS NULL) THEN (COALESCE({dst_table}.cpu, 0) * {dst_table}.count + COALESCE(incoming.cpu, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                        mem = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.mem IS NULL AND incoming.mem IS NULL) THEN (COALESCE({dst_table}.mem, 0) * {dst_table}.count + COALESCE(incoming.mem, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                        disk_used = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.disk_used IS NULL AND incoming.disk_used IS NULL) THEN (COALESCE({dst_table}.disk_used, 0) * {dst_table}.count + COALESCE(incoming.disk_used, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                        cache_dir_size = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.cache_dir_size IS NULL AND incoming.cache_dir_size IS NULL) THEN (COALESCE({dst_table}.cache_dir_size, 0) * {dst_table}.count + COALESCE(incoming.cache_dir_size, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                        hit_rate = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.hit_rate IS NULL AND incoming.hit_rate IS NULL) THEN (COALESCE({dst_table}.hit_rate, 0) * {dst_table}.count + COALESCE(incoming.hit_rate, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                        count = {dst_table}.count + incoming.count
-                    """,
-                    (dst_seconds, dst_seconds, proxy_id, range_start, range_end),
-                )
+                with guarded_proxy_write(conn, proxy_id) as guard:
+                    canonical_proxy_id = guard.proxy_id
+                    first_row = conn.execute(
+                        f"SELECT MIN(ts) FROM {src_table} WHERE proxy_id = %s AND ts < %s",
+                        (canonical_proxy_id, aligned_end),
+                    ).fetchone()
+                    first_ts = int(first_row[0]) if first_row and first_row[0] is not None else None
+                    if first_ts is None:
+                        return
+                    range_start = (first_ts // dst_seconds) * dst_seconds
+                    range_end = min(aligned_end, range_start + (dst_seconds * bucket_limit))
+                    if range_end <= range_start:
+                        return
+                    conn.execute(
+                        f"""
+                        INSERT INTO {dst_table}(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
+                        SELECT * FROM (
+                            SELECT
+                                proxy_id,
+                                FLOOR(ts / %s) * %s AS bucket_start,
+                                SUM(count) AS count,
+                                CASE WHEN SUM(count) > 0 THEN SUM(cpu * count) / SUM(count) ELSE NULL END AS cpu,
+                                CASE WHEN SUM(count) > 0 THEN SUM(mem * count) / SUM(count) ELSE NULL END AS mem,
+                                CASE WHEN SUM(count) > 0 THEN SUM(disk_used * count) / SUM(count) ELSE NULL END AS disk_used,
+                                CASE WHEN SUM(count) > 0 THEN SUM(cache_dir_size * count) / SUM(count) ELSE NULL END AS cache_dir_size,
+                                CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count) / SUM(count) ELSE NULL END AS hit_rate
+                            FROM {src_table}
+                            WHERE proxy_id = %s AND ts >= %s AND ts < %s
+                            GROUP BY proxy_id, bucket_start
+                        ) AS incoming
+                        ON DUPLICATE KEY UPDATE
+                            cpu = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.cpu IS NULL AND incoming.cpu IS NULL) THEN (COALESCE({dst_table}.cpu, 0) * {dst_table}.count + COALESCE(incoming.cpu, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                            mem = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.mem IS NULL AND incoming.mem IS NULL) THEN (COALESCE({dst_table}.mem, 0) * {dst_table}.count + COALESCE(incoming.mem, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                            disk_used = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.disk_used IS NULL AND incoming.disk_used IS NULL) THEN (COALESCE({dst_table}.disk_used, 0) * {dst_table}.count + COALESCE(incoming.disk_used, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                            cache_dir_size = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.cache_dir_size IS NULL AND incoming.cache_dir_size IS NULL) THEN (COALESCE({dst_table}.cache_dir_size, 0) * {dst_table}.count + COALESCE(incoming.cache_dir_size, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                            hit_rate = CASE WHEN {dst_table}.count + incoming.count > 0 AND NOT ({dst_table}.hit_rate IS NULL AND incoming.hit_rate IS NULL) THEN (COALESCE({dst_table}.hit_rate, 0) * {dst_table}.count + COALESCE(incoming.hit_rate, 0) * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                            count = {dst_table}.count + incoming.count
+                        """,
+                        (dst_seconds, dst_seconds, canonical_proxy_id, range_start, range_end),
+                    )
 
-                conn.execute(
-                    f"DELETE FROM {src_table} WHERE proxy_id = %s AND ts >= %s AND ts < %s",
-                    (proxy_id, range_start, range_end),
-                )
+                    conn.execute(
+                        f"DELETE FROM {src_table} WHERE proxy_id = %s AND ts >= %s AND ts < %s",
+                        (canonical_proxy_id, range_start, range_end),
+                    )
 
         self._with_missing_table_retry(rollup_bucket)
 
@@ -237,10 +241,11 @@ class TimeSeriesStore:
 
     def _delete_old_year_points(self, *, proxy_id: str, aligned_y: int) -> None:
         with self._connect() as conn:
-            conn.execute(
-                "DELETE FROM ts_1y WHERE proxy_id = %s AND ts < %s",
-                (proxy_id, aligned_y),
-            )
+            with guarded_proxy_write(conn, proxy_id) as guard:
+                conn.execute(
+                    "DELETE FROM ts_1y WHERE proxy_id = %s AND ts < %s",
+                    (guard.proxy_id, aligned_y),
+                )
 
     def summary(self) -> dict[str, Any]:
         # Returns weighted averages for recent windows.

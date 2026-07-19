@@ -28,6 +28,7 @@ from services.db import (
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
+from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
 
@@ -320,24 +321,25 @@ class AdblockStore:
         return str(row[0]) if row and row[0] is not None else default
 
     def _set_proxy_meta(self, conn, key: str, value: str) -> None:
-        proxy_id = get_proxy_id()
-        result = conn.execute(
-            "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
-            (value, proxy_id, key),
-        )
-        if int(getattr(result, "rowcount", 0) or 0) <= 0:
-            try:
-                conn.execute(
-                    "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,%s)",
-                    (proxy_id, key, value),
-                )
-            except INTEGRITY_ERRORS as exc:
-                if not _is_duplicate_key_error(exc):
-                    raise
-                conn.execute(
-                    "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
-                    (value, proxy_id, key),
-                )
+        with guarded_proxy_write(conn, get_proxy_id()) as guard:
+            proxy_id = guard.proxy_id
+            result = conn.execute(
+                "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
+                (value, proxy_id, key),
+            )
+            if int(getattr(result, "rowcount", 0) or 0) <= 0:
+                try:
+                    conn.execute(
+                        "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,%s)",
+                        (proxy_id, key, value),
+                    )
+                except INTEGRITY_ERRORS as exc:
+                    if not _is_duplicate_key_error(exc):
+                        raise
+                    conn.execute(
+                        "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
+                        (value, proxy_id, key),
+                    )
 
     def _set_proxy_meta_values(self, conn, values: dict[str, str]) -> None:
         for key in sorted(values):
@@ -954,13 +956,14 @@ class AdblockStore:
     def record_block(self, list_key: str) -> None:
         day = int(_now() // 86400)
         with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO adblock_counts(proxy_id, day, list_key, blocked) VALUES(%s,%s,%s,1)
-                ON DUPLICATE KEY UPDATE blocked = blocked + 1
-                """,
-                (get_proxy_id(), day, list_key),
-            )
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                conn.execute(
+                    """
+                    INSERT INTO adblock_counts(proxy_id, day, list_key, blocked) VALUES(%s,%s,%s,1)
+                    ON DUPLICATE KEY UPDATE blocked = blocked + 1
+                    """,
+                    (guard.proxy_id, day, list_key),
+                )
 
     def record_blocks_bulk(self, counts: dict[str, int]) -> None:
         """Bulk increment blocked counters.
@@ -977,18 +980,19 @@ class AdblockStore:
                 continue
             if not k or n <= 0:
                 continue
-            rows.append((get_proxy_id(), day, str(k), n))
+            rows.append((day, str(k), n))
         if not rows:
             return
 
         with self._connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO adblock_counts(proxy_id, day, list_key, blocked) VALUES(%s,%s,%s,%s) AS incoming
-                ON DUPLICATE KEY UPDATE blocked = blocked + incoming.blocked
-                """,
-                rows,
-            )
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                conn.executemany(
+                    """
+                    INSERT INTO adblock_counts(proxy_id, day, list_key, blocked) VALUES(%s,%s,%s,%s) AS incoming
+                    ON DUPLICATE KEY UPDATE blocked = blocked + incoming.blocked
+                    """,
+                    [(guard.proxy_id, *row) for row in rows],
+                )
 
     def stats(self) -> dict[str, Any]:
         now = _now()
@@ -1160,25 +1164,34 @@ class AdblockStore:
         evictions: int = 0,
         size: int | None = None,
     ) -> None:
-        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            if hits:
-                conn.execute(
-                    "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'hits', %s) AS incoming ON DUPLICATE KEY UPDATE v = v + incoming.v",
-                    (proxy_id, int(hits)),
-                )
-            if misses:
-                conn.execute(
-                    "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'misses', %s) AS incoming ON DUPLICATE KEY UPDATE v = v + incoming.v",
-                    (proxy_id, int(misses)),
-                )
-            if evictions:
-                conn.execute(
-                    "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'evictions', %s) AS incoming ON DUPLICATE KEY UPDATE v = v + incoming.v",
-                    (proxy_id, int(evictions)),
-                )
-            if size is not None:
-                self._set_proxy_meta(conn, "cache_current_size", str(max(0, int(size))))
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                proxy_id = guard.proxy_id
+                if hits:
+                    conn.execute(
+                        "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'hits', %s) AS incoming ON DUPLICATE KEY UPDATE v = v + incoming.v",
+                        (proxy_id, int(hits)),
+                    )
+                if misses:
+                    conn.execute(
+                        "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'misses', %s) AS incoming ON DUPLICATE KEY UPDATE v = v + incoming.v",
+                        (proxy_id, int(misses)),
+                    )
+                if evictions:
+                    conn.execute(
+                        "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'evictions', %s) AS incoming ON DUPLICATE KEY UPDATE v = v + incoming.v",
+                        (proxy_id, int(evictions)),
+                    )
+                if size is not None:
+                    result = conn.execute(
+                        "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k='cache_current_size'",
+                        (str(max(0, int(size))), proxy_id),
+                    )
+                    if int(getattr(result, "rowcount", 0) or 0) <= 0:
+                        conn.execute(
+                            "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,'cache_current_size',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
+                            (proxy_id, str(max(0, int(size)))),
+                        )
 
     def cache_stats(self) -> dict[str, int]:
         proxy_id = get_proxy_id()

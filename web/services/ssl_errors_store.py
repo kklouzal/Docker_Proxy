@@ -17,6 +17,7 @@ from services.logutil import (
     should_log,
 )
 from services.proxy_context import get_proxy_id
+from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import escape_like as _escape_like
@@ -240,12 +241,13 @@ class SslErrorsStore:
         ts: int,
         sample: str,
     ) -> None:
-        proxy_id = get_proxy_id()
-        row_key = self._row_key(proxy_id, domain, category, reason)
-        conn.execute(
-            "UPDATE ssl_errors SET last_seen = GREATEST(last_seen, %s), sample = %s WHERE row_key = %s",
-            (int(ts), sample[:400], row_key),
-        )
+        with guarded_proxy_write(conn, get_proxy_id()) as guard:
+            proxy_id = guard.proxy_id
+            row_key = self._row_key(proxy_id, domain, category, reason)
+            conn.execute(
+                "UPDATE ssl_errors SET last_seen = GREATEST(last_seen, %s), sample = %s WHERE row_key = %s",
+                (int(ts), sample[:400], row_key),
+            )
 
     def _context_lookup_window_seconds(self) -> int:
         try:
@@ -599,21 +601,22 @@ class SslErrorsStore:
         ts: int,
         sample: str,
     ) -> None:
-        proxy_id = get_proxy_id()
-        domain = self._enrich_domain_from_context(conn, domain, ts, sample)
-        row_key = self._row_key(proxy_id, domain, category, reason)
-        conn.execute(
-            """
-            INSERT INTO ssl_errors(row_key, proxy_id, domain, category, reason, count, first_seen, last_seen, sample)
-            VALUES(%s,%s,%s,%s,%s,1,%s,%s,%s) AS incoming
-            ON DUPLICATE KEY UPDATE
-                count = count + 1,
-                first_seen = LEAST(first_seen, incoming.first_seen),
-                last_seen = GREATEST(last_seen, incoming.last_seen),
-                sample = incoming.sample;
-            """,
-            (row_key, proxy_id, domain, category, reason, ts, ts, sample[:400]),
-        )
+        with guarded_proxy_write(conn, get_proxy_id()) as guard:
+            proxy_id = guard.proxy_id
+            domain = self._enrich_domain_from_context(conn, domain, ts, sample)
+            row_key = self._row_key(proxy_id, domain, category, reason)
+            conn.execute(
+                """
+                INSERT INTO ssl_errors(row_key, proxy_id, domain, category, reason, count, first_seen, last_seen, sample)
+                VALUES(%s,%s,%s,%s,%s,1,%s,%s,%s) AS incoming
+                ON DUPLICATE KEY UPDATE
+                    count = count + 1,
+                    first_seen = LEAST(first_seen, incoming.first_seen),
+                    last_seen = GREATEST(last_seen, incoming.last_seen),
+                    sample = incoming.sample;
+                """,
+                (row_key, proxy_id, domain, category, reason, ts, ts, sample[:400]),
+            )
 
     def _latest_seen_ts(self, conn) -> int:
         proxy_id = get_proxy_id()

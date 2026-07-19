@@ -8,6 +8,7 @@ import time
 from services.bounded_delete import default_chunk_size, delete_where_in_chunks
 from services.db import DATABASE_ERRORS, connect, mysql_error_code
 from services.proxy_context import get_proxy_id
+from services.proxy_write_guard import guarded_proxy_write
 
 logger = logging.getLogger(__name__)
 
@@ -95,23 +96,24 @@ class AuditStore:
         proxy_id = get_proxy_id()
 
         with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO audit_events(proxy_id, ts, kind, ok, remote_addr, user_agent, detail, config_sha256, config_text)
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    proxy_id,
-                    int(time.time()),
-                    kind_s,
-                    1 if ok else 0,
-                    remote_s,
-                    ua_s,
-                    detail_s,
-                    sha,
-                    stored_text,
-                ),
-            )
+            with guarded_proxy_write(conn, proxy_id) as guard:
+                conn.execute(
+                    """
+                    INSERT INTO audit_events(proxy_id, ts, kind, ok, remote_addr, user_agent, detail, config_sha256, config_text)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        guard.proxy_id,
+                        int(time.time()),
+                        kind_s,
+                        1 if ok else 0,
+                        remote_s,
+                        ua_s,
+                        detail_s,
+                        sha,
+                        stored_text,
+                    ),
+                )
 
         # Keep storage bounded (last 200 events) without an unbounded delete in
         # the request transaction that records the event.

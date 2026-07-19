@@ -22,6 +22,7 @@ from services.db import (
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.observability_backoff import DatabaseWriteBackoff
 from services.proxy_context import get_proxy_id
+from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import cache_hit_sql as _cache_hit_sql
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
@@ -176,21 +177,10 @@ class LiveStatsStore:
         return mapping[logical_name]
 
     def _ingest_line_with_conn(self, conn, line: str) -> bool:
-        parsed = _parse_access_log_line(line)
-        if not parsed:
+        batch = self._new_batch()
+        if not self._accumulate_line(batch, line):
             return False
-        ts, ip, result_code, size_bytes, domain, method = parsed
-        if not domain:
-            return False
-
-        hit = _is_hit(result_code)
-        reason = _not_cached_reason(method, result_code) if not hit else ""
-
-        self._upsert_agg(conn, "domains", "domain", domain, ts, size_bytes, hit)
-        self._upsert_agg(conn, "clients", "ip", ip, ts, size_bytes, hit)
-        self._upsert_client_domain(conn, ip, domain, ts, size_bytes, hit)
-        if not hit:
-            self._upsert_client_domain_nocache(conn, ip, domain, ts, reason)
+        self._flush_batch_with_conn(conn, batch)
         return True
 
     def _new_batch(self) -> dict[str, dict[Any, Any]]:
@@ -281,135 +271,136 @@ class LiveStatsStore:
         return True
 
     def _flush_batch_with_conn(self, conn, batch: dict[str, dict[Any, Any]]) -> int:
-        proxy_id = get_proxy_id()
         flushed = 0
+        with guarded_proxy_write(conn, get_proxy_id()) as guard:
+            proxy_id = guard.proxy_id
 
-        domains = batch["domains"]
-        if domains:
-            domains_table = self._table(conn, "domains")
-            conn.executemany(
-                f"""
-                INSERT INTO {domains_table} (proxy_id, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) AS incoming
-                ON DUPLICATE KEY UPDATE
-                    requests = {domains_table}.requests + incoming.requests,
-                    hit_requests = {domains_table}.hit_requests + incoming.hit_requests,
-                    bytes = {domains_table}.bytes + incoming.bytes,
-                    hit_bytes = {domains_table}.hit_bytes + incoming.hit_bytes,
-                    first_seen = LEAST({domains_table}.first_seen, incoming.first_seen),
-                    last_seen = GREATEST({domains_table}.last_seen, incoming.last_seen);
-                """,
-                [
-                    (
-                        proxy_id,
-                        str(domain),
-                        entry.requests,
-                        entry.hit_requests,
-                        entry.bytes,
-                        entry.hit_bytes,
-                        entry.first_seen,
-                        entry.last_seen,
-                    )
-                    for domain, entry in domains.items()
-                ],
-            )
-            flushed += len(domains)
+            domains = batch["domains"]
+            if domains:
+                domains_table = self._table(conn, "domains")
+                conn.executemany(
+                    f"""
+                    INSERT INTO {domains_table} (proxy_id, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s) AS incoming
+                    ON DUPLICATE KEY UPDATE
+                        requests = {domains_table}.requests + incoming.requests,
+                        hit_requests = {domains_table}.hit_requests + incoming.hit_requests,
+                        bytes = {domains_table}.bytes + incoming.bytes,
+                        hit_bytes = {domains_table}.hit_bytes + incoming.hit_bytes,
+                        first_seen = LEAST({domains_table}.first_seen, incoming.first_seen),
+                        last_seen = GREATEST({domains_table}.last_seen, incoming.last_seen);
+                    """,
+                    [
+                        (
+                            proxy_id,
+                            str(domain),
+                            entry.requests,
+                            entry.hit_requests,
+                            entry.bytes,
+                            entry.hit_bytes,
+                            entry.first_seen,
+                            entry.last_seen,
+                        )
+                        for domain, entry in domains.items()
+                    ],
+                )
+                flushed += len(domains)
 
-        clients = batch["clients"]
-        if clients:
-            clients_table = self._table(conn, "clients")
-            conn.executemany(
-                f"""
-                INSERT INTO {clients_table} (proxy_id, ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) AS incoming
-                ON DUPLICATE KEY UPDATE
-                    requests = {clients_table}.requests + incoming.requests,
-                    hit_requests = {clients_table}.hit_requests + incoming.hit_requests,
-                    bytes = {clients_table}.bytes + incoming.bytes,
-                    hit_bytes = {clients_table}.hit_bytes + incoming.hit_bytes,
-                    first_seen = LEAST({clients_table}.first_seen, incoming.first_seen),
-                    last_seen = GREATEST({clients_table}.last_seen, incoming.last_seen);
-                """,
-                [
-                    (
-                        proxy_id,
-                        str(ip),
-                        entry.requests,
-                        entry.hit_requests,
-                        entry.bytes,
-                        entry.hit_bytes,
-                        entry.first_seen,
-                        entry.last_seen,
-                    )
-                    for ip, entry in clients.items()
-                ],
-            )
-            flushed += len(clients)
+            clients = batch["clients"]
+            if clients:
+                clients_table = self._table(conn, "clients")
+                conn.executemany(
+                    f"""
+                    INSERT INTO {clients_table} (proxy_id, ip, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s) AS incoming
+                    ON DUPLICATE KEY UPDATE
+                        requests = {clients_table}.requests + incoming.requests,
+                        hit_requests = {clients_table}.hit_requests + incoming.hit_requests,
+                        bytes = {clients_table}.bytes + incoming.bytes,
+                        hit_bytes = {clients_table}.hit_bytes + incoming.hit_bytes,
+                        first_seen = LEAST({clients_table}.first_seen, incoming.first_seen),
+                        last_seen = GREATEST({clients_table}.last_seen, incoming.last_seen);
+                    """,
+                    [
+                        (
+                            proxy_id,
+                            str(ip),
+                            entry.requests,
+                            entry.hit_requests,
+                            entry.bytes,
+                            entry.hit_bytes,
+                            entry.first_seen,
+                            entry.last_seen,
+                        )
+                        for ip, entry in clients.items()
+                    ],
+                )
+                flushed += len(clients)
 
-        client_domains = batch["client_domains"]
-        if client_domains:
-            client_domains_table = self._table(conn, "client_domains")
-            conn.executemany(
-                f"""
-                INSERT INTO {client_domains_table} (proxy_id, ip, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) AS incoming
-                ON DUPLICATE KEY UPDATE
-                    requests = {client_domains_table}.requests + incoming.requests,
-                    hit_requests = {client_domains_table}.hit_requests + incoming.hit_requests,
-                    bytes = {client_domains_table}.bytes + incoming.bytes,
-                    hit_bytes = {client_domains_table}.hit_bytes + incoming.hit_bytes,
-                    first_seen = LEAST({client_domains_table}.first_seen, incoming.first_seen),
-                    last_seen = GREATEST({client_domains_table}.last_seen, incoming.last_seen);
-                """,
-                [
-                    (
-                        proxy_id,
-                        str(ip),
-                        str(domain),
-                        entry.requests,
-                        entry.hit_requests,
-                        entry.bytes,
-                        entry.hit_bytes,
-                        entry.first_seen,
-                        entry.last_seen,
-                    )
-                    for (ip, domain), entry in client_domains.items()
-                ],
-            )
-            flushed += len(client_domains)
+            client_domains = batch["client_domains"]
+            if client_domains:
+                client_domains_table = self._table(conn, "client_domains")
+                conn.executemany(
+                    f"""
+                    INSERT INTO {client_domains_table} (proxy_id, ip, domain, requests, hit_requests, bytes, hit_bytes, first_seen, last_seen)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) AS incoming
+                    ON DUPLICATE KEY UPDATE
+                        requests = {client_domains_table}.requests + incoming.requests,
+                        hit_requests = {client_domains_table}.hit_requests + incoming.hit_requests,
+                        bytes = {client_domains_table}.bytes + incoming.bytes,
+                        hit_bytes = {client_domains_table}.hit_bytes + incoming.hit_bytes,
+                        first_seen = LEAST({client_domains_table}.first_seen, incoming.first_seen),
+                        last_seen = GREATEST({client_domains_table}.last_seen, incoming.last_seen);
+                    """,
+                    [
+                        (
+                            proxy_id,
+                            str(ip),
+                            str(domain),
+                            entry.requests,
+                            entry.hit_requests,
+                            entry.bytes,
+                            entry.hit_bytes,
+                            entry.first_seen,
+                            entry.last_seen,
+                        )
+                        for (ip, domain), entry in client_domains.items()
+                    ],
+                )
+                flushed += len(client_domains)
 
-        nocache = batch["client_domain_nocache"]
-        if nocache:
-            nocache_table = self._table(conn, "client_domain_nocache")
-            conn.executemany(
-                f"""
-                INSERT INTO {nocache_table} (row_key, proxy_id, ip, domain, reason, requests, first_seen, last_seen)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) AS incoming
-                ON DUPLICATE KEY UPDATE
-                    requests = {nocache_table}.requests + incoming.requests,
-                    first_seen = LEAST({nocache_table}.first_seen, incoming.first_seen),
-                    last_seen = GREATEST({nocache_table}.last_seen, incoming.last_seen);
-                """,
-                [
-                    (
-                        hashlib.sha1(
-                            f"{proxy_id}|{ip}|{domain}|{reason}".encode(
-                                "utf-8",
-                                errors="replace",
-                            ),
-                        ).hexdigest(),
-                        proxy_id,
-                        str(ip),
-                        str(domain),
-                        str(reason),
-                        entry.requests,
-                        entry.first_seen,
-                        entry.last_seen,
-                    )
-                    for (ip, domain, reason), entry in nocache.items()
-                ],
-            )
-            flushed += len(nocache)
+            nocache = batch["client_domain_nocache"]
+            if nocache:
+                nocache_table = self._table(conn, "client_domain_nocache")
+                conn.executemany(
+                    f"""
+                    INSERT INTO {nocache_table} (row_key, proxy_id, ip, domain, reason, requests, first_seen, last_seen)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s) AS incoming
+                    ON DUPLICATE KEY UPDATE
+                        requests = {nocache_table}.requests + incoming.requests,
+                        first_seen = LEAST({nocache_table}.first_seen, incoming.first_seen),
+                        last_seen = GREATEST({nocache_table}.last_seen, incoming.last_seen);
+                    """,
+                    [
+                        (
+                            hashlib.sha1(
+                                f"{proxy_id}|{ip}|{domain}|{reason}".encode(
+                                    "utf-8",
+                                    errors="replace",
+                                ),
+                            ).hexdigest(),
+                            proxy_id,
+                            str(ip),
+                            str(domain),
+                            str(reason),
+                            entry.requests,
+                            entry.first_seen,
+                            entry.last_seen,
+                        )
+                        for (ip, domain, reason), entry in nocache.items()
+                    ],
+                )
+                flushed += len(nocache)
 
         return flushed
 

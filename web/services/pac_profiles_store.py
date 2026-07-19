@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from services.db import connect
 from services.domain_normalization import normalize_domain as _shared_normalize_domain
 from services.proxy_context import get_proxy_id
+from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import now_ts as _now
 
 
@@ -325,21 +326,22 @@ class PacProfilesStore:
         if host is None or port is None:
             return False, err, None
 
-        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(position), 0) AS max_position FROM pac_backup_proxies WHERE proxy_id=%s",
-                (proxy_id,),
-            ).fetchone()
-            position = int(row["max_position"] or 0) + 1 if row else 1
-            cur = conn.execute(
-                """
-                INSERT INTO pac_backup_proxies(proxy_id, proxy_host, proxy_port, position, created_ts)
-                VALUES(%s,%s,%s,%s,%s)
-                """,
-                (proxy_id, host, port, position, _now()),
-            )
-            return True, "", int(cur.lastrowid)
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                proxy_id = guard.proxy_id
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(position), 0) AS max_position FROM pac_backup_proxies WHERE proxy_id=%s",
+                    (proxy_id,),
+                ).fetchone()
+                position = int(row["max_position"] or 0) + 1 if row else 1
+                cur = conn.execute(
+                    """
+                    INSERT INTO pac_backup_proxies(proxy_id, proxy_host, proxy_port, position, created_ts)
+                    VALUES(%s,%s,%s,%s,%s)
+                    """,
+                    (proxy_id, host, port, position, _now()),
+                )
+                return True, "", int(cur.lastrowid)
 
     def _resequence_backup_proxies(self, conn, proxy_id: str) -> list[int]:
         rows = conn.execute(
@@ -403,16 +405,16 @@ class PacProfilesStore:
 
     def set_direct_enabled(self, enabled: bool) -> None:
         self.init_db()
-        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO pac_proxy_chain_settings(proxy_id, direct_enabled, updated_ts)
-                VALUES(%s,%s,%s) AS incoming
-                ON DUPLICATE KEY UPDATE direct_enabled=incoming.direct_enabled, updated_ts=incoming.updated_ts
-                """,
-                (proxy_id, 1 if enabled else 0, _now()),
-            )
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                conn.execute(
+                    """
+                    INSERT INTO pac_proxy_chain_settings(proxy_id, direct_enabled, updated_ts)
+                    VALUES(%s,%s,%s) AS incoming
+                    ON DUPLICATE KEY UPDATE direct_enabled=incoming.direct_enabled, updated_ts=incoming.updated_ts
+                    """,
+                    (guard.proxy_id, 1 if enabled else 0, _now()),
+                )
 
     def upsert_profile(
         self,
@@ -455,67 +457,69 @@ class PacProfilesStore:
                 nets.append(c)
 
         with self._connect() as conn:
-            proxy_id = get_proxy_id()
-            if profile_id is None:
-                cur = conn.execute(
-                    "INSERT INTO pac_profiles(proxy_id, name, client_cidr, created_ts) VALUES(%s,%s,%s,%s)",
-                    (proxy_id, nm, cidr_norm or "", _now()),
-                )
-                pid = int(cur.lastrowid)
-            else:
-                pid = int(profile_id)
-                existing = conn.execute(
-                    "SELECT 1 FROM pac_profiles WHERE id=%s AND proxy_id=%s LIMIT 1",
-                    (pid, proxy_id),
-                ).fetchone()
-                if existing is None:
-                    return False, "Profile not found.", None
-                conn.execute(
-                    "UPDATE pac_profiles SET name=%s, client_cidr=%s WHERE id=%s AND proxy_id=%s",
-                    (nm, cidr_norm or "", pid, proxy_id),
-                )
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                proxy_id = guard.proxy_id
+                if profile_id is None:
+                    cur = conn.execute(
+                        "INSERT INTO pac_profiles(proxy_id, name, client_cidr, created_ts) VALUES(%s,%s,%s,%s)",
+                        (proxy_id, nm, cidr_norm or "", _now()),
+                    )
+                    pid = int(cur.lastrowid)
+                else:
+                    pid = int(profile_id)
+                    existing = conn.execute(
+                        "SELECT 1 FROM pac_profiles WHERE id=%s AND proxy_id=%s LIMIT 1",
+                        (pid, proxy_id),
+                    ).fetchone()
+                    if existing is None:
+                        return False, "Profile not found.", None
+                    conn.execute(
+                        "UPDATE pac_profiles SET name=%s, client_cidr=%s WHERE id=%s AND proxy_id=%s",
+                        (nm, cidr_norm or "", pid, proxy_id),
+                    )
 
-                # Clear old rules.
-                conn.execute(
-                    "DELETE FROM pac_direct_domains WHERE profile_id=%s",
-                    (pid,),
-                )
-                conn.execute(
-                    "DELETE FROM pac_direct_dst_nets WHERE profile_id=%s",
-                    (pid,),
-                )
+                    # Clear old rules.
+                    conn.execute(
+                        "DELETE FROM pac_direct_domains WHERE profile_id=%s",
+                        (pid,),
+                    )
+                    conn.execute(
+                        "DELETE FROM pac_direct_dst_nets WHERE profile_id=%s",
+                        (pid,),
+                    )
 
-            for d in domains:
-                conn.execute(
-                    "INSERT IGNORE INTO pac_direct_domains(profile_id, domain) VALUES(%s,%s)",
-                    (pid, d),
-                )
-            for c in nets:
-                conn.execute(
-                    "INSERT IGNORE INTO pac_direct_dst_nets(profile_id, cidr) VALUES(%s,%s)",
-                    (pid, c),
-                )
+                for d in domains:
+                    conn.execute(
+                        "INSERT IGNORE INTO pac_direct_domains(profile_id, domain) VALUES(%s,%s)",
+                        (pid, d),
+                    )
+                for c in nets:
+                    conn.execute(
+                        "INSERT IGNORE INTO pac_direct_dst_nets(profile_id, cidr) VALUES(%s,%s)",
+                        (pid, c),
+                    )
 
         return True, "", pid
 
     def delete_profile(self, profile_id: int) -> bool:
         self.init_db()
         pid = int(profile_id)
-        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM pac_profiles WHERE id=%s AND proxy_id=%s LIMIT 1",
-                (pid, proxy_id),
-            ).fetchone()
-            if row is None:
-                return False
-            conn.execute("DELETE FROM pac_direct_domains WHERE profile_id=%s", (pid,))
-            conn.execute("DELETE FROM pac_direct_dst_nets WHERE profile_id=%s", (pid,))
-            conn.execute(
-                "DELETE FROM pac_profiles WHERE id=%s AND proxy_id=%s",
-                (pid, proxy_id),
-            )
-            return True
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                proxy_id = guard.proxy_id
+                row = conn.execute(
+                    "SELECT 1 FROM pac_profiles WHERE id=%s AND proxy_id=%s LIMIT 1",
+                    (pid, proxy_id),
+                ).fetchone()
+                if row is None:
+                    return False
+                conn.execute("DELETE FROM pac_direct_domains WHERE profile_id=%s", (pid,))
+                conn.execute("DELETE FROM pac_direct_dst_nets WHERE profile_id=%s", (pid,))
+                conn.execute(
+                    "DELETE FROM pac_profiles WHERE id=%s AND proxy_id=%s",
+                    (pid, proxy_id),
+                )
+                return True
 
     def match_profile_for_client_ip(self, client_ip: str) -> PacProfile | None:
         """Return the effective profile for client_ip.

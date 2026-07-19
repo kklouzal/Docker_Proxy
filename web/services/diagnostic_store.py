@@ -25,6 +25,7 @@ from services.db import (
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.observability_backoff import DatabaseWriteBackoff
 from services.proxy_context import get_proxy_id
+from services.proxy_write_guard import guarded_proxy_rows
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import escape_like as _escape_like
@@ -1116,7 +1117,6 @@ class DiagnosticStore:
             return None
         proxy_id = get_proxy_id()
         event_key = _event_key(
-            proxy_id,
             row.get("ts"),
             row.get("master_xaction"),
             row.get("client_ip"),
@@ -1288,7 +1288,6 @@ class DiagnosticStore:
             return None
         proxy_id = get_proxy_id()
         event_key = _event_key(
-            proxy_id,
             row.get("ts"),
             row.get("master_xaction"),
             row.get("url"),
@@ -1323,6 +1322,15 @@ class DiagnosticStore:
     def _flush_request_rows(self, conn, rows: list[tuple[Any, ...]]) -> None:
         if not rows:
             return
+        requested_proxy_id = rows[0][0]
+        batch = guarded_proxy_rows(
+            conn,
+            requested_proxy_id,
+            rows,
+            lambda canonical_proxy_id, row: (canonical_proxy_id, *tuple(row)[1:]),
+        )
+        if not batch.rows:
+            return
         conn.executemany(
             """
             INSERT IGNORE INTO diagnostic_requests (
@@ -1333,9 +1341,9 @@ class DiagnosticStore:
                 response_alt_svc, raw, created_ts
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
-            rows,
+            batch.rows,
         )
-        self._materialize_request_policy_tags(conn, rows)
+        self._materialize_request_policy_tags(conn, list(batch.rows))
 
     def _materialize_request_policy_tags(
         self, conn, rows: list[tuple[Any, ...]]
@@ -1365,6 +1373,15 @@ class DiagnosticStore:
     def _flush_icap_rows(self, conn, rows: list[tuple[Any, ...]]) -> None:
         if not rows:
             return
+        requested_proxy_id = rows[0][0]
+        batch = guarded_proxy_rows(
+            conn,
+            requested_proxy_id,
+            rows,
+            lambda canonical_proxy_id, row: (canonical_proxy_id, *tuple(row)[1:]),
+        )
+        if not batch.rows:
+            return
         conn.executemany(
             """
             INSERT IGNORE INTO diagnostic_icap_events (
@@ -1373,7 +1390,7 @@ class DiagnosticStore:
                 webfilter_allow, cache_bypass, service_family, raw, created_ts
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
-            rows,
+            batch.rows,
         )
 
     def _ingest_request_line_with_conn(self, conn, line: str) -> bool:

@@ -10,6 +10,7 @@ from services.db import connect
 from services.domain_normalization import normalize_domain as _shared_normalize_domain
 from services.materialized_files import write_managed_text_files
 from services.proxy_context import get_proxy_id
+from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import now_ts as _now
 from services.ssl_compatibility_presets import (
     COMPATIBILITY_PRESETS,
@@ -190,13 +191,13 @@ class SslFilterStore:
 
     def _set_setting(self, key: str, value: str) -> None:
         self.init_db()
-        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO sslfilter_settings(proxy_id, `key`, value) VALUES(%s,%s,%s) AS incoming "
-                "ON DUPLICATE KEY UPDATE value=incoming.value",
-                (proxy_id, key, value),
-            )
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                conn.execute(
+                    "INSERT INTO sslfilter_settings(proxy_id, `key`, value) VALUES(%s,%s,%s) AS incoming "
+                    "ON DUPLICATE KEY UPDATE value=incoming.value",
+                    (guard.proxy_id, key, value),
+                )
 
     def _get_setting_conn(self, conn: Any, key: str) -> str | None:
         row = conn.execute(
@@ -239,12 +240,12 @@ class SslFilterStore:
         if not ok:
             return False, err, canonical
         self.init_db()
-        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            conn.execute(
-                "INSERT IGNORE INTO sslfilter_domains(proxy_id, policy, domain, added_ts) VALUES(%s,%s,%s,%s)",
-                (proxy_id, policy_key, canonical, int(_now())),
-            )
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                conn.execute(
+                    "INSERT IGNORE INTO sslfilter_domains(proxy_id, policy, domain, added_ts) VALUES(%s,%s,%s,%s)",
+                    (guard.proxy_id, policy_key, canonical, int(_now())),
+                )
         return True, "", canonical
 
     def remove_domain(self, policy: str, domain: str | None = None) -> None:
@@ -273,13 +274,13 @@ class SslFilterStore:
         if not values:
             return
         self.init_db()
-        proxy_id = get_proxy_id()
         placeholders = ",".join(["%s"] * len(values))
         with self._connect() as conn:
-            conn.execute(
-                f"DELETE FROM sslfilter_domains WHERE proxy_id=%s AND policy=%s AND domain IN ({placeholders})",
-                (proxy_id, policy_key, *values),
-            )
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                conn.execute(
+                    f"DELETE FROM sslfilter_domains WHERE proxy_id=%s AND policy=%s AND domain IN ({placeholders})",
+                    (guard.proxy_id, policy_key, *values),
+                )
 
     def add_src_net(self, policy: str, cidr: str) -> tuple[bool, str, str]:
         policy_key = _canonical_policy(policy)
@@ -289,12 +290,12 @@ class SslFilterStore:
         if not ok:
             return False, err, canonical
         self.init_db()
-        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            conn.execute(
-                "INSERT IGNORE INTO sslfilter_src_nets(proxy_id, policy, cidr, added_ts) VALUES(%s,%s,%s,%s)",
-                (proxy_id, policy_key, canonical, int(_now())),
-            )
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                conn.execute(
+                    "INSERT IGNORE INTO sslfilter_src_nets(proxy_id, policy, cidr, added_ts) VALUES(%s,%s,%s,%s)",
+                    (guard.proxy_id, policy_key, canonical, int(_now())),
+                )
         return True, "", canonical
 
     def remove_src_net(self, policy: str, cidr: str) -> None:
@@ -318,15 +319,15 @@ class SslFilterStore:
         except Exception:
             pass
         self.init_db()
-        proxy_id = get_proxy_id()
         values = [value for value in candidates if value]
         placeholders = ",".join(["%s"] * len(values))
         with self._connect() as conn:
-            conn.execute(
-                "DELETE FROM sslfilter_src_nets "
-                f"WHERE proxy_id=%s AND policy=%s AND cidr IN ({placeholders})",
-                (proxy_id, policy_key, *values),
-            )
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                conn.execute(
+                    "DELETE FROM sslfilter_src_nets "
+                    f"WHERE proxy_id=%s AND policy=%s AND cidr IN ({placeholders})",
+                    (guard.proxy_id, policy_key, *values),
+                )
 
     # Backward-compatible helpers for older tests/callers.
     def list_nobump(self, limit: int = 5000) -> list[tuple[str, int]]:

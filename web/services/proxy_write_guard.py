@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
@@ -20,6 +20,22 @@ _LIFECYCLE_LOCK_TIMEOUT_SECONDS = 10
 
 class ProxyLifecycleWriteError(ValueError):
     """Raised when a proxy-scoped write would bypass lifecycle state."""
+
+
+@dataclass(frozen=True)
+class GuardedProxyBatch:
+    """Canonical proxy id and prevalidated row materializer for a batch write."""
+
+    decision: ProxyWriteDecision
+    rows: tuple[tuple[Any, ...], ...]
+
+    @property
+    def proxy_id(self) -> str:
+        return self.decision.proxy_id
+
+    @property
+    def requested_proxy_id(self) -> str:
+        return self.decision.requested_proxy_id
 
 
 @dataclass(frozen=True)
@@ -56,7 +72,7 @@ def clear_proxy_write_guard_cache(proxy_id: object | None = None) -> None:
 
 
 def _cache_ttl_seconds() -> float:
-    raw = (os.environ.get("MYSQL_PROXY_WRITE_GUARD_CACHE_SECONDS") or "0").strip()
+    raw = (os.environ.get("MYSQL_PROXY_WRITE_GUARD_CACHE_SECONDS") or "1").strip()
     try:
         return max(0.0, min(5.0, float(raw or "0")))
     except Exception:
@@ -322,6 +338,61 @@ def guarded_proxy_write(
         if acquired:
             with suppress(Exception):
                 conn.execute("DO RELEASE_LOCK(%s)", (lock_name,))
+
+
+def resolve_proxy_write_id_cached(
+    conn: Any,
+    proxy_id: object | None,
+    *,
+    allow_alias: bool = True,
+    require_registered: bool = True,
+) -> ProxyWriteDecision:
+    """Resolve a proxy write id using the bounded positive lifecycle cache."""
+    return resolve_proxy_write_id(
+        conn,
+        proxy_id,
+        allow_alias=allow_alias,
+        require_registered=require_registered,
+        use_cache=True,
+    )
+
+
+def guarded_proxy_rows(
+    conn: Any,
+    proxy_id: object | None,
+    rows: Iterable[Any],
+    row_factory: Callable[[str, Any], Sequence[Any]],
+    *,
+    allow_alias: bool = True,
+    require_registered: bool = True,
+    timeout_seconds: int = _LIFECYCLE_LOCK_TIMEOUT_SECONDS,
+) -> GuardedProxyBatch:
+    """Validate once, then materialize a batch with one canonical proxy id.
+
+    High-volume observability writers use this at flush boundaries so lifecycle
+    validation is one bounded/cacheable metadata check plus one recheck under the
+    lifecycle lock per batch, not one registry/tombstone query per row.  If
+    metadata is unavailable or the requested id is removed/removing/renaming, the
+    call raises ProxyLifecycleWriteError before any rows are materialized.
+    """
+    original_rows = tuple(rows)
+    if not original_rows:
+        decision = resolve_proxy_write_id_cached(
+            conn,
+            proxy_id,
+            allow_alias=allow_alias,
+            require_registered=require_registered,
+        )
+        return GuardedProxyBatch(decision=decision, rows=())
+    with guarded_proxy_write(
+        conn,
+        proxy_id,
+        allow_alias=allow_alias,
+        require_registered=require_registered,
+        timeout_seconds=timeout_seconds,
+    ) as decision:
+        materialized = tuple(tuple(row_factory(decision.proxy_id, row)) for row in original_rows)
+    return GuardedProxyBatch(decision=decision, rows=materialized)
 
 
 def is_duplicate_key_error(exc: BaseException) -> bool:
