@@ -120,3 +120,64 @@ def test_fail_closed_placeholder_keeps_service_unavailable_transactions() -> Non
 
     assert response.startswith(b"ICAP/1.0 500 Service Unavailable\r\n")
     assert b"clamav-fail-closed-unavailable" in response
+
+
+def _placeholder_exchange_with_body(
+    runner, *, fail_open: bool, method: str, body: bytes
+) -> tuple[bytes, float]:
+    with runner._FailOpenAvServer(
+        ("127.0.0.1", 0), runner._FailOpenAvHandler
+    ) as server:
+        server.fail_open = fail_open
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        http_header = (
+            b"POST /upload HTTP/1.1\r\n"
+            b"Content-Type: application/octet-stream\r\n"
+            + f"Content-Length: {len(body)}\r\n".encode("ascii")
+            + b"\r\n"
+        )
+        chunked = f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n0\r\n\r\n"
+        encapsulated = "req-body" if method == "REQMOD" else "res-body"
+        request = (
+            (
+                f"{method} icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Allow: 204\r\n"
+                f"Encapsulated: req-hdr=0, {encapsulated}={len(http_header)}\r\n\r\n"
+            ).encode("ascii")
+            + http_header
+            + chunked
+        )
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as sock:
+            sock.settimeout(1)
+            started = __import__("time").monotonic()
+            sock.sendall(request)
+            response = sock.recv(4096)
+            elapsed = __import__("time").monotonic() - started
+        server.shutdown()
+        thread.join(timeout=1)
+    return response, elapsed
+
+
+def test_fail_open_placeholder_drains_large_reqmod_body_before_204() -> None:
+    runner = _load_runner()
+
+    response, elapsed = _placeholder_exchange_with_body(
+        runner, fail_open=True, method="REQMOD", body=b"x" * (1024 * 1024)
+    )
+
+    assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert elapsed < 1
+
+
+def test_fail_open_placeholder_drains_respmod_body_before_204() -> None:
+    runner = _load_runner()
+
+    response, elapsed = _placeholder_exchange_with_body(
+        runner, fail_open=True, method="RESPMOD", body=b"hello" * 1024
+    )
+
+    assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert elapsed < 1

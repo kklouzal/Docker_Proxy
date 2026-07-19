@@ -47,11 +47,106 @@ def _conf_listen_address(conf_path: str) -> tuple[str, int]:
     return "127.0.0.1", int(os.environ.get("CICAP_AV_PORT", "14001") or "14001")
 
 
+def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
+    text = header_bytes.decode("iso-8859-1", errors="replace")
+    lines = text.split("\r\n")
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if not line or ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        headers[name.strip().lower()] = value.strip()
+    return lines[0] if lines else "", headers
+
+
+def _parse_encapsulated(value: str) -> dict[str, int]:
+    offsets: dict[str, int] = {}
+    for raw_item in value.split(","):
+        item = raw_item.strip()
+        if not item or "=" not in item:
+            continue
+        name, raw_offset = item.split("=", 1)
+        try:
+            offsets[name.strip().lower()] = int(raw_offset.strip())
+        except ValueError:
+            continue
+    return offsets
+
+
+def _recv_more(sock: socket.socket, data: bytes, size: int) -> bytes:
+    while len(data) < size:
+        chunk = sock.recv(min(65536, size - len(data)))
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def _recv_until(
+    sock: socket.socket, data: bytes, delimiter: bytes, *, max_bytes: int
+) -> bytes:
+    while delimiter not in data and len(data) < max_bytes:
+        chunk = sock.recv(min(8192, max_bytes - len(data)))
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def _drain_chunked_body(
+    sock: socket.socket, data: bytes, *, max_bytes: int = 1024 * 1024 * 1024
+) -> bytes:
+    total = 0
+    while True:
+        data = _recv_until(sock, data, CRLF, max_bytes=8192)
+        if CRLF not in data:
+            return data
+        line, data = data.split(CRLF, 1)
+        try:
+            size = int(line.split(b";", 1)[0].strip(), 16)
+        except ValueError:
+            return data
+        if size == 0:
+            data = _recv_until(sock, data, CRLF, max_bytes=8192)
+            if data.startswith(CRLF):
+                return data[len(CRLF) :]
+            return data
+        total += size
+        if total > max_bytes:
+            return data
+        data = _recv_more(sock, data, size + 2)
+        if len(data) < size + 2:
+            return data
+        data = data[size + 2 :]
+
+
+def _drain_encapsulated_body(
+    sock: socket.socket, header: bytes, remainder: bytes
+) -> None:
+    _start_line, headers = _split_headers(header)
+    offsets = _parse_encapsulated(headers.get("encapsulated", ""))
+    if "null-body" in offsets:
+        return
+    body_offset = offsets.get("req-body")
+    if body_offset is None:
+        body_offset = offsets.get("res-body")
+    if body_offset is None:
+        return
+    data = _recv_more(sock, remainder, body_offset)
+    body = data[body_offset:] if len(data) >= body_offset else b""
+    _drain_chunked_body(sock, body)
+
+
 def _icap_response(status: str, headers: dict[str, str] | None = None) -> bytes:
     lines = [f"ICAP/1.0 {status}"]
     response_headers = {"Connection": "close"}
     response_headers.update(headers or {})
-    return ("\r\n".join([*lines, *[f"{key}: {value}" for key, value in response_headers.items()]]) + "\r\n\r\n").encode("ascii", errors="replace")
+    return (
+        "\r\n".join(
+            [*lines, *[f"{key}: {value}" for key, value in response_headers.items()]]
+        )
+        + "\r\n\r\n"
+    ).encode("ascii", errors="replace")
 
 
 class _FailOpenAvHandler(socketserver.BaseRequestHandler):
@@ -63,7 +158,15 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
             if not chunk:
                 break
             data += chunk
-        first = data.split(CRLF, 1)[0].split(b"\n", 1)[0].decode("ascii", errors="replace")
+        if HEADER_END in data:
+            header, remainder = data.split(HEADER_END, 1)
+        else:
+            header, remainder = data, b""
+        first = (
+            header.split(CRLF, 1)[0]
+            .split(b"\n", 1)[0]
+            .decode("ascii", errors="replace")
+        )
         method = first.split(" ", 1)[0].upper() if first else ""
         fail_open = bool(getattr(self.server, "fail_open", True))
         istag = FALLBACK_OPEN_ISTAG if fail_open else FALLBACK_CLOSED_ISTAG
@@ -84,6 +187,7 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
             )
         elif method in {"REQMOD", "RESPMOD"}:
             if fail_open:
+                _drain_encapsulated_body(self.request, header, remainder)
                 response = _icap_response(
                     "204 No Content",
                     {"ISTag": istag, "Encapsulated": "null-body=0"},
