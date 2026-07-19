@@ -8,6 +8,7 @@ from typing import Any
 from services.db import connect
 from services.domain_normalization import normalize_domain as _shared_normalize_domain
 from services.proxy_context import get_proxy_id, normalize_proxy_id
+from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import extract_domain, now_ts
 
 PENDING = "pending"
@@ -271,26 +272,28 @@ class PolicyRequestStore:
             raise ValueError(msg)
         now = now_ts()
         with self._connect() as c:
-            r = c.execute(
-                f"INSERT INTO {self.REQUEST_TABLE}(proxy_id,status,block_type,client_ip,request_url,domain,category,method,squid_error,user_note,admin_note,created_ts,updated_ts,reviewed_ts,reviewer,exception_id) VALUES(%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s,'',%s,%s,0,'',NULL)",
-                (
-                    p,
-                    normalize_block_type(block_type),
-                    ip,
-                    url,
-                    d,
-                    _text(category, 128),
-                    _text(method, 16).upper(),
-                    _text(squid_error, 64),
-                    _text(user_note, 2000, True),
-                    now,
-                    now,
-                ),
-            )
-            row = c.execute(
-                self._rsql("WHERE id=%s"),
-                (int(r.lastrowid or 0),),
-            ).fetchone()
+            with guarded_proxy_write(c, p) as guard:
+                p = guard.proxy_id
+                r = c.execute(
+                    f"INSERT INTO {self.REQUEST_TABLE}(proxy_id,status,block_type,client_ip,request_url,domain,category,method,squid_error,user_note,admin_note,created_ts,updated_ts,reviewed_ts,reviewer,exception_id) VALUES(%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s,'',%s,%s,0,'',NULL)",
+                    (
+                        p,
+                        normalize_block_type(block_type),
+                        ip,
+                        url,
+                        d,
+                        _text(category, 128),
+                        _text(method, 16).upper(),
+                        _text(squid_error, 64),
+                        _text(user_note, 2000, True),
+                        now,
+                        now,
+                    ),
+                )
+                row = c.execute(
+                    self._rsql("WHERE id=%s"),
+                    (int(r.lastrowid or 0),),
+                ).fetchone()
         return _req(row)
 
     def list_requests(
@@ -387,28 +390,30 @@ class PolicyRequestStore:
             if req.status != PENDING:
                 msg = "Only pending requests can be approved."
                 raise ValueError(msg)
-            r = c.execute(
-                f"INSERT INTO {self.EXCEPTION_TABLE}(proxy_id,status,block_type,client_ip,domain,category,created_ts,updated_ts,created_by,admin_note,expires_ts,revoked_ts,revoked_by,source_request_id) VALUES(%s,'active',%s,%s,%s,%s,%s,%s,%s,%s,%s,0,'',%s)",
-                (
-                    req.proxy_id,
-                    req.block_type,
-                    req.client_ip,
-                    req.domain,
-                    req.category,
-                    now,
-                    now,
-                    reviewer_s,
-                    note,
-                    exp,
-                    req.id,
-                ),
-            )
-            exid = int(r.lastrowid or 0)
-            c.execute(
-                f"UPDATE {self.REQUEST_TABLE} SET status='approved',admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s,exception_id=%s WHERE id=%s",
-                (note, now, now, reviewer_s, exid, req.id),
-            )
-            exrow = c.execute(self._esql("WHERE id=%s"), (exid,)).fetchone()
+            with guarded_proxy_write(c, req.proxy_id) as guard:
+                canonical_proxy_id = guard.proxy_id
+                r = c.execute(
+                    f"INSERT INTO {self.EXCEPTION_TABLE}(proxy_id,status,block_type,client_ip,domain,category,created_ts,updated_ts,created_by,admin_note,expires_ts,revoked_ts,revoked_by,source_request_id) VALUES(%s,'active',%s,%s,%s,%s,%s,%s,%s,%s,%s,0,'',%s)",
+                    (
+                        canonical_proxy_id,
+                        req.block_type,
+                        req.client_ip,
+                        req.domain,
+                        req.category,
+                        now,
+                        now,
+                        reviewer_s,
+                        note,
+                        exp,
+                        req.id,
+                    ),
+                )
+                exid = int(r.lastrowid or 0)
+                c.execute(
+                    f"UPDATE {self.REQUEST_TABLE} SET status='approved',admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s,exception_id=%s,proxy_id=%s WHERE id=%s",
+                    (note, now, now, reviewer_s, exid, canonical_proxy_id, req.id),
+                )
+                exrow = c.execute(self._esql("WHERE id=%s"), (exid,)).fetchone()
         return _exc(exrow)
 
     def close_request(

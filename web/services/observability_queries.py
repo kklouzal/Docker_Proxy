@@ -14,6 +14,7 @@ from services.db import connect
 from services.diagnostic_store import get_diagnostic_store
 from services.privacy_labels import pseudonymize
 from services.proxy_context import get_proxy_id
+from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import cache_hit_sql as _cache_hit_sql
 from services.runtime_helpers import escape_like as _escape_like
 from services.runtime_helpers import extract_domain as _extract_domain
@@ -1362,31 +1363,31 @@ class ObservabilityQueries:
         if not recipients_s:
             msg = "At least one report recipient is required."
             raise ValueError(msg)
-        proxy_id = get_proxy_id()
         with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO observability_report_schedules(
-                    proxy_id, enabled, name, cadence, recipients, pane, report_format, privacy,
-                    window_seconds, created_ts, updated_ts, next_run_ts, last_run_ts, last_status
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                conn.execute(
+                    """
+                    INSERT INTO observability_report_schedules(
+                        proxy_id, enabled, name, cadence, recipients, pane, report_format, privacy,
+                        window_seconds, created_ts, updated_ts, next_run_ts, last_run_ts, last_status
+                    )
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,'configured')
+                    """,
+                    (
+                        guard.proxy_id,
+                        1 if enabled else 0,
+                        name_s,
+                        cadence_s,
+                        recipients_s,
+                        pane_s,
+                        fmt_s,
+                        1 if privacy else 0,
+                        window_i,
+                        now,
+                        now,
+                        _next_schedule_run_ts(cadence_s, now),
+                    ),
                 )
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,'configured')
-                """,
-                (
-                    proxy_id,
-                    1 if enabled else 0,
-                    name_s,
-                    cadence_s,
-                    recipients_s,
-                    pane_s,
-                    fmt_s,
-                    1 if privacy else 0,
-                    window_i,
-                    now,
-                    now,
-                    _next_schedule_run_ts(cadence_s, now),
-                ),
-            )
         return self.report_schedules(limit=1)[0]
 
     def audit_activity(self, *, since: int, limit: int = 20) -> dict[str, Any]:

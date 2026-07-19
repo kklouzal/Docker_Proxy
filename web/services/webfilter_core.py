@@ -25,6 +25,7 @@ from services.domain_normalization import (
 from services.errors import public_error_message
 from services.materialized_files import write_managed_text_files
 from services.proxy_context import get_proxy_id
+from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
 from services.safe_browsing_v5 import DEFAULT_SAFE_BROWSING_LISTS, SafeBrowsingStore
@@ -337,10 +338,11 @@ class WebFilterStoreBase:
             return False, "Enter a domain like example.com or *.example.com", ""
         pattern = patterns[0]
         with self._connect() as conn:
-            conn.execute(
-                f"INSERT IGNORE INTO {self._table('whitelist')}(proxy_id, pattern, added_ts) VALUES(%s,%s,%s)",
-                (get_proxy_id(), pattern, int(_now())),
-            )
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                conn.execute(
+                    f"INSERT IGNORE INTO {self._table('whitelist')}(proxy_id, pattern, added_ts) VALUES(%s,%s,%s)",
+                    (guard.proxy_id, pattern, int(_now())),
+                )
         return True, "", pattern
 
     def remove_whitelist(self, pattern: str) -> None:
@@ -350,10 +352,11 @@ class WebFilterStoreBase:
             return
         candidate = candidates[0]
         with self._connect() as conn:
-            conn.execute(
-                f"DELETE FROM {self._table('whitelist')} WHERE proxy_id=%s AND pattern=%s",
-                (get_proxy_id(), candidate),
-            )
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                conn.execute(
+                    f"DELETE FROM {self._table('whitelist')} WHERE proxy_id=%s AND pattern=%s",
+                    (guard.proxy_id, candidate),
+                )
 
     def _get_whitelist_patterns(self, conn) -> list[str]:
         rows = self._list_whitelist(conn, limit=10000)
@@ -379,6 +382,9 @@ class WebFilterStoreBase:
 
     def _set(self, conn, key: str, value: str) -> None:
         scope = self._settings_scope_for_key(key)
+        if scope != _GLOBAL_SCOPE:
+            with guarded_proxy_write(conn, scope) as guard:
+                scope = guard.proxy_id
         conn.execute(
             f"INSERT INTO {self._table('settings')}(proxy_id, k, v) VALUES(%s,%s,%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
             (scope, key, value),
