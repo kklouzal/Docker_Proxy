@@ -811,6 +811,93 @@ def test_http_status_line_validation_preserves_supported_response_lines() -> Non
         server._validate_http_status_line(status_line)
 
 
+def test_body_forbidden_status_res_body_rejected_before_scan_or_replay() -> None:
+    server = _load_server()
+
+    cases = {
+        "informational": (b"HTTP/1.1 100 Continue", b"100"),
+        "no content": (b"HTTP/1.1 204 No Content", b"204"),
+        "not modified": (b"HTTP/1.1 304 Not Modified", b"304"),
+    }
+
+    for name, (status_line, status_code) in cases.items():
+        scanner = RecordingScanner()
+
+        class TestServer(server.ClamAvRespmodServer):
+            def open_scan(self):
+                return scanner
+
+        http_header = status_line + b"\r\nContent-Length: 5\r\n\r\n"
+        with TestServer(
+            ("127.0.0.1", 0),
+            clamd_host="127.0.0.1",
+            clamd_port=3310,
+            clamd_timeout=0.1,
+            fail_open=False,
+            max_scan_bytes=1024,
+            client_timeout=0.5,
+            max_connections=4,
+        ) as icap_server:
+            thread = _serve_in_thread(icap_server)
+            port = icap_server.server_address[1]
+            response = _recv_icap_exchange(
+                port,
+                _respmod_request_with_http_header(
+                    port, http_header, b"5\r\nhello\r\n0\r\n\r\n"
+                ),
+                timeout=1,
+            )
+            icap_server.shutdown()
+            thread.join(timeout=1)
+
+        assert scanner.chunks == [], name
+        assert scanner.finished is False, name
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert b"HTTP status " + status_code + b" forbids ICAP res-body" in response, name
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
+
+
+def test_http_response_body_semantics_preserves_protocol_valid_null_body_cases() -> None:
+    server = _load_server()
+
+    valid_cases = (
+        b"HTTP/1.1 100 Continue\r\n\r\n",
+        b"HTTP/1.1 204 No Content\r\nDate: Mon, 20 Jul 2026 20:08:00 GMT\r\n\r\n",
+        b"HTTP/1.1 304 Not Modified\r\nContent-Length: 123\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+    )
+    for http_header in valid_cases:
+        server._validate_http_response_body_semantics(
+            http_header, has_body_section=False
+        )
+
+    invalid_cases = {
+        "204 content length": (
+            b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+            "HTTP status 204 forbids Content-Length",
+        ),
+        "100 transfer encoding": (
+            b"HTTP/1.1 100 Continue\r\nTransfer-Encoding: identity\r\n\r\n",
+            "HTTP status 100 forbids Transfer-Encoding",
+        ),
+        "304 transfer encoding": (
+            b"HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "HTTP status 304 forbids Transfer-Encoding",
+        ),
+    }
+    for name, (http_header, expected) in invalid_cases.items():
+        try:
+            server._validate_http_response_body_semantics(
+                http_header, has_body_section=False
+            )
+        except server.HttpFramingError as exc:
+            assert str(exc) == expected, name
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"invalid no-body status framing was accepted: {name}"
+            raise AssertionError(message)
+
+
 def test_http_header_field_validation_preserves_valid_response_metadata() -> None:
     server = _load_server()
 

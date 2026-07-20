@@ -788,6 +788,49 @@ def _validate_http_content_length_matches_body(
         raise HttpFramingError(message)
 
 
+def _http_response_status_code(http_header: bytes) -> int:
+    lines = _http_header_lines(http_header)
+    if not lines:
+        message = "missing HTTP response status line"
+        raise IcapProtocolError(message)
+    match = _HTTP_STATUS_LINE_RE.fullmatch(lines[0])
+    if match is None:
+        message = "malformed HTTP response status line"
+        raise IcapProtocolError(message)
+    return int(match.group(2))
+
+
+def _http_response_status_forbids_body(status_code: int) -> bool:
+    return 100 <= status_code < 200 or status_code in {204, 304}
+
+
+def _validate_http_response_body_semantics(
+    http_header: bytes, *, has_body_section: bool
+) -> None:
+    """Reject HTTP response status/framing combinations that cannot carry a body."""
+    status_code = _http_response_status_code(http_header)
+    if not _http_response_status_forbids_body(status_code):
+        return
+
+    if has_body_section:
+        message = f"HTTP status {status_code} forbids ICAP res-body"
+        raise HttpFramingError(message)
+
+    transfer_encoding = _http_transfer_encoding_kind_from_lines(
+        _http_header_lines(http_header)
+    )
+    if transfer_encoding != "absent":
+        message = f"HTTP status {status_code} forbids Transfer-Encoding"
+        raise HttpFramingError(message)
+    if status_code != 304 and _http_declared_content_length(http_header) is not None:
+        message = f"HTTP status {status_code} forbids Content-Length"
+        raise HttpFramingError(message)
+    if status_code == 304:
+        # 304 may carry Content-Length metadata for the selected representation,
+        # but duplicate/malformed values remain ordinary HTTP framing errors.
+        _http_declared_content_length(http_header)
+
+
 def _http_header_for_body_replay(http_header: bytes, body_length: int) -> bytes:
     """Normalize HTTP framing when replaying a clean response body to Squid."""
     lines = _http_header_lines(http_header)
@@ -991,6 +1034,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 )
                 http_header = encapsulated_headers[response_header_offset:body_offset]
                 _validate_http_header_field_names(http_header)
+                _validate_http_response_body_semantics(
+                    http_header, has_body_section=True
+                )
                 _http_declared_content_length(http_header)
                 can_use_204 = allow_204 and _http_response_allows_squid_204_backup(
                     http_header
@@ -1024,6 +1070,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     response_header_offset : null_body_offset or 0
                 ]
                 _validate_http_header_field_names(http_header)
+                _validate_http_response_body_semantics(
+                    http_header, has_body_section=False
+                )
                 body_complete = True
                 result = self.server.scan_body(body)
                 can_use_204 = allow_204
