@@ -86,12 +86,24 @@ def _placeholder_exchange(runner, *, fail_open: bool, method: str) -> bytes:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         port = server.server_address[1]
-        request = (
-            f"{method} icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
-            "Host: 127.0.0.1\r\n"
-            "Allow: 204\r\n"
-            "Encapsulated: null-body=0\r\n\r\n"
-        ).encode("ascii")
+        if method == "RESPMOD":
+            http_header = b"HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n\r\n"
+            request = (
+                (
+                    f"{method} icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                    "Host: 127.0.0.1\r\n"
+                    "Allow: 204\r\n"
+                    f"Encapsulated: res-hdr=0, null-body={len(http_header)}\r\n\r\n"
+                ).encode("ascii")
+                + http_header
+            )
+        else:
+            request = (
+                f"{method} icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Allow: 204\r\n"
+                "Encapsulated: null-body=0\r\n\r\n"
+            ).encode("ascii")
         with socket.create_connection(("127.0.0.1", port), timeout=1) as sock:
             sock.settimeout(1)
             sock.sendall(request)
@@ -101,7 +113,9 @@ def _placeholder_exchange(runner, *, fail_open: bool, method: str) -> bytes:
     return response
 
 
-def _placeholder_raw_exchange(runner, request: bytes, *, fail_open: bool = True) -> bytes:
+def _placeholder_raw_exchange(
+    runner, request: bytes, *, fail_open: bool = True, shutdown_write: bool = False
+) -> bytes:
     with runner._FailOpenAvServer(
         ("127.0.0.1", 0), runner._FailOpenAvHandler
     ) as server:
@@ -113,6 +127,8 @@ def _placeholder_raw_exchange(runner, request: bytes, *, fail_open: bool = True)
         with socket.create_connection(("127.0.0.1", port), timeout=1) as sock:
             sock.settimeout(1)
             sock.sendall(request)
+            if shutdown_write:
+                sock.shutdown(socket.SHUT_WR)
             response = bytearray()
             while True:
                 chunk = sock.recv(4096)
@@ -212,13 +228,15 @@ def _placeholder_exchange_with_body(
                 + b"\r\n"
             )
         chunked = f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n0\r\n\r\n"
+        header_section = "req-hdr" if method == "REQMOD" else "res-hdr"
         encapsulated = "req-body" if method == "REQMOD" else "res-body"
         request = (
             (
                 f"{method} icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
                 "Host: 127.0.0.1\r\n"
                 "Allow: 204\r\n"
-                f"Encapsulated: req-hdr=0, {encapsulated}={len(http_header)}\r\n\r\n"
+                f"Encapsulated: {header_section}=0, "
+                f"{encapsulated}={len(http_header)}\r\n\r\n"
             ).encode("ascii")
             + http_header
             + chunked
@@ -354,6 +372,7 @@ def _placeholder_preview_exchange(
             b"Transfer-Encoding: chunked\r\n"
             b"\r\n"
         )
+        header_section = "req-hdr" if method == "REQMOD" else "res-hdr"
         encapsulated = "req-body" if method == "REQMOD" else "res-body"
         request_prefix = (
             (
@@ -361,7 +380,8 @@ def _placeholder_preview_exchange(
                 "Host: 127.0.0.1\r\n"
                 "Allow: 204\r\n"
                 "Preview: 4\r\n"
-                f"Encapsulated: req-hdr=0, {encapsulated}={len(http_header)}\r\n\r\n"
+                f"Encapsulated: {header_section}=0, "
+                f"{encapsulated}={len(http_header)}\r\n\r\n"
             ).encode("ascii")
             + http_header
         )
@@ -472,3 +492,153 @@ def test_fail_open_placeholder_rejects_duplicate_encapsulated_section() -> None:
     assert b"HTTP/1.1 502 Bad Gateway" in response
     assert b"duplicate Encapsulated section name: res-hdr" in response
     assert b"hello" not in response
+
+
+def test_fail_open_placeholder_rejects_invalid_respmod_encapsulated_matrix() -> None:
+    runner = _load_runner()
+    response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+    body = b"5\r\nhello\r\n0\r\n\r\n"
+    valid_request_header = b"GET /download HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    valid_request_offset = len(valid_request_header)
+    valid_body_offset = len(response_header)
+    cases = (
+        (
+            "negative res-hdr",
+            b"Encapsulated: res-hdr=-1, res-body="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + response_header
+            + body,
+            False,
+        ),
+        (
+            "decreasing req/res offsets",
+            b"Encapsulated: req-hdr=0, res-hdr=1, res-body="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + response_header
+            + body,
+            False,
+        ),
+        (
+            "overlapping response body",
+            b"Encapsulated: res-hdr=0, res-body=5\r\n\r\n"
+            + response_header
+            + body,
+            False,
+        ),
+        (
+            "equal response/body offsets",
+            b"Encapsulated: res-hdr=0, res-body=0\r\n\r\n"
+            + response_header
+            + body,
+            False,
+        ),
+        (
+            "body before header",
+            b"Encapsulated: res-body=0, res-hdr="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + response_header
+            + body,
+            False,
+        ),
+        (
+            "terminal offset past available bytes",
+            b"Encapsulated: res-hdr=0, null-body="
+            + str(valid_body_offset + 1).encode("ascii")
+            + b"\r\n\r\n"
+            + response_header,
+            True,
+        ),
+        (
+            "terminal offset past header bound",
+            b"Encapsulated: res-hdr=0, res-body="
+            + str(runner.DEFAULT_MAX_HEADER_BYTES + 1).encode("ascii")
+            + b"\r\n\r\n",
+            False,
+        ),
+        (
+            "unknown section",
+            b"Encapsulated: res-hdr=0, x-body=1, null-body="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + response_header,
+            False,
+        ),
+        (
+            "unsupported req-body",
+            b"Encapsulated: res-hdr=0, req-body="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + response_header
+            + body,
+            False,
+        ),
+        (
+            "res-body with null-body",
+            b"Encapsulated: res-hdr=0, res-body="
+            + str(valid_body_offset).encode("ascii")
+            + b", null-body="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + response_header
+            + body,
+            False,
+        ),
+        (
+            "null-body before res-hdr",
+            b"Encapsulated: req-hdr=0, res-hdr="
+            + str(valid_request_offset).encode("ascii")
+            + b", null-body=1\r\n\r\n"
+            + valid_request_header
+            + response_header,
+            False,
+        ),
+    )
+
+    for name, encapsulated_payload, shutdown_write in cases:
+        request = (
+            b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Allow: 204\r\n"
+            + encapsulated_payload
+        )
+
+        response = _placeholder_raw_exchange(
+            runner, request, shutdown_write=shutdown_write
+        )
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert b"hello" not in response, name
+
+
+def test_fail_open_placeholder_preserves_valid_respmod_offset_layouts() -> None:
+    runner = _load_runner()
+    request_header = b"GET /download HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+    body = b"5\r\nhello\r\n0\r\n\r\n"
+    response_offset = len(request_header)
+    body_offset = response_offset + len(response_header)
+    request = (
+        b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: req-hdr=0, res-hdr="
+        + str(response_offset).encode("ascii")
+        + b", res-body="
+        + str(body_offset).encode("ascii")
+        + b"\r\n\r\n"
+        + request_header
+        + response_header
+        + body
+    )
+
+    response = _placeholder_raw_exchange(runner, request)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" not in response
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"GET /download HTTP/1.1" not in response
+    assert b"Content-Length: 5\r\n" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" in response

@@ -13,6 +13,7 @@ from pathlib import Path
 TRUE_VALUES = {"1", "true", "yes", "on", "required", "strict"}
 CRLF = b"\r\n"
 HEADER_END = CRLF + CRLF
+DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 FALLBACK_OPEN_ISTAG = '"clamav-fail-open-unavailable"'
 FALLBACK_CLOSED_ISTAG = '"clamav-fail-closed-unavailable"'
 _SINGLETON_ICAP_HEADERS = {
@@ -74,6 +75,7 @@ def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
 
 
 def _parse_encapsulated(value: str) -> dict[str, int]:
+    supported_names = {"req-hdr", "req-body", "res-hdr", "res-body", "null-body"}
     offsets: dict[str, int] = {}
     for raw_item in value.split(","):
         item = raw_item.strip()
@@ -81,14 +83,86 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
             continue
         name, raw_offset = item.split("=", 1)
         name = name.strip().lower()
+        if name not in supported_names:
+            message = f"unknown Encapsulated section token: {name}"
+            raise IcapProtocolError(message)
         if name in offsets:
             message = f"duplicate Encapsulated section name: {name}"
             raise IcapProtocolError(message)
         try:
-            offsets[name] = int(raw_offset.strip())
+            offset = int(raw_offset.strip())
         except ValueError:
             continue
+        if offset < 0:
+            message = f"invalid Encapsulated offset: {item}"
+            raise IcapProtocolError(message)
+        offsets[name] = offset
     return offsets
+
+
+def _validate_respmod_encapsulated_offsets(
+    offsets: dict[str, int],
+    *,
+    max_header_bytes: int = DEFAULT_MAX_HEADER_BYTES,
+) -> None:
+    request_header_offset = offsets.get("req-hdr")
+    response_header_offset = offsets.get("res-hdr")
+    body_offset = offsets.get("res-body")
+    null_body_offset = offsets.get("null-body")
+
+    if "req-body" in offsets:
+        message = "RESPMOD request has unsupported req-body"
+        raise IcapProtocolError(message)
+    if response_header_offset is None:
+        message = "RESPMOD request missing res-hdr"
+        raise IcapProtocolError(message)
+    if body_offset is not None and null_body_offset is not None:
+        message = "RESPMOD request has both res-body and null-body"
+        raise IcapProtocolError(message)
+
+    terminal_offset = body_offset if body_offset is not None else null_body_offset
+    if terminal_offset is None:
+        message = "RESPMOD request missing res-body/null-body"
+        raise IcapProtocolError(message)
+
+    if request_header_offset is None:
+        if response_header_offset != 0:
+            message = "RESPMOD res-hdr offset must be zero without req-hdr"
+            raise IcapProtocolError(message)
+    elif request_header_offset != 0:
+        message = "RESPMOD req-hdr offset must be zero"
+        raise IcapProtocolError(message)
+    elif response_header_offset <= request_header_offset:
+        message = "invalid RESPMOD encapsulated request/response offsets"
+        raise IcapProtocolError(message)
+
+    if terminal_offset > max_header_bytes:
+        message = f"RESPMOD encapsulated headers exceed {max_header_bytes} bytes"
+        raise IcapProtocolError(message)
+    if terminal_offset <= response_header_offset:
+        message = "invalid RESPMOD encapsulated response offsets"
+        raise IcapProtocolError(message)
+
+
+def _validate_respmod_encapsulated_boundaries(
+    encapsulated_headers: bytes, offsets: dict[str, int]
+) -> None:
+    response_header_offset = offsets["res-hdr"]
+    terminal_offset = offsets.get("res-body", offsets.get("null-body"))
+    if terminal_offset is None:  # pragma: no cover - offset validation guards this
+        message = "RESPMOD request missing res-body/null-body"
+        raise IcapProtocolError(message)
+
+    if offsets.get("req-hdr") is not None:
+        request_header = encapsulated_headers[:response_header_offset]
+        if not request_header.endswith(HEADER_END):
+            message = "invalid RESPMOD encapsulated req-hdr boundary"
+            raise IcapProtocolError(message)
+
+    response_header = encapsulated_headers[response_header_offset:terminal_offset]
+    if not response_header.endswith(HEADER_END):
+        message = "invalid RESPMOD encapsulated res-hdr boundary"
+        raise IcapProtocolError(message)
 
 
 def _recv_more(sock: socket.socket, data: bytes, size: int) -> bytes:
@@ -189,17 +263,19 @@ def _read_respmod_payload(
 ) -> tuple[bytes, bytes, bool]:
     _start_line, headers = _split_headers(header)
     offsets = _parse_encapsulated(headers.get("encapsulated", ""))
+    _validate_respmod_encapsulated_offsets(offsets)
     body_offset = offsets.get("res-body")
     null_body_offset = offsets.get("null-body")
     terminal_offset = body_offset if body_offset is not None else null_body_offset
-    if terminal_offset is None:
-        return b"", b"", True
-    response_header_offset = offsets.get("res-hdr", 0)
-    if response_header_offset < 0 or terminal_offset < response_header_offset:
-        return b"", b"", True
+    if terminal_offset is None:  # pragma: no cover - offset validation guards this
+        message = "RESPMOD request missing res-body/null-body"
+        raise IcapProtocolError(message)
+    response_header_offset = offsets["res-hdr"]
     data = _recv_more(sock, remainder, terminal_offset)
     if len(data) < terminal_offset:
-        return b"", b"", True
+        message = "RESPMOD encapsulated headers ended before declared offsets"
+        raise IcapProtocolError(message)
+    _validate_respmod_encapsulated_boundaries(data[:terminal_offset], offsets)
     http_header = data[response_header_offset:terminal_offset]
     if body_offset is None:
         return http_header, b"", True
