@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 # This script lives in /app/tools; add /app to sys.path.
 here = Path(Path(__file__).parent).resolve()
@@ -80,15 +81,21 @@ def _parse_http_request(data: bytes) -> tuple[str, str, dict[str, str]]:
     method = parts[0].upper() if parts else ""
     target = parts[1] if len(parts) > 1 else ""
     headers = _parse_headers(lines[1:])
+    scheme = "https" if headers.get("x-forwarded-proto") == "https" else "http"
     if method == "CONNECT" and target and "://" not in target:
         # Squid sends CONNECT requests to REQMOD helpers in authority form
         # ("host:port") rather than absolute-form.  Normalize it to an HTTPS
         # URL so the SQLite decision engine can apply domain and URL rules to
         # tunnel setup requests instead of silently allowing every CONNECT.
         target = f"https://{target}/"
+    elif target.startswith("//"):
+        parsed = urlsplit(target)
+        if parsed.netloc:
+            target = urlunsplit(
+                (scheme, parsed.netloc, parsed.path or "/", parsed.query, ""),
+            )
     elif target.startswith("/"):
         host = headers.get("host", "")
-        scheme = "https" if headers.get("x-forwarded-proto") == "https" else "http"
         target = f"{scheme}://{host}{target}" if host else target
     return method, target, headers
 

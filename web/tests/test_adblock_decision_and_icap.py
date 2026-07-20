@@ -538,6 +538,22 @@ def test_adblock_icap_parse_http_request_normalizes_connect_authority() -> None:
     assert headers["host"] == "ads.example:443"
 
 
+def test_adblock_icap_parse_http_request_preserves_scheme_relative_authority() -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _parse_http_request
+
+    method, url, headers = _parse_http_request(
+        b"GET //ads.example/banner.js?slot=1 HTTP/1.1\r\n"
+        b"Host: safe.example\r\n"
+        b"X-Forwarded-Proto: https\r\n"
+        b"User-Agent: probe\r\n\r\n",
+    )
+
+    assert method == "GET"
+    assert url == "https://ads.example/banner.js?slot=1"
+    assert headers["host"] == "safe.example"
+
+
 def test_adblock_icap_extracts_request_headers_without_buffering_body() -> None:
     _add_web_to_path()
     from tools.adblock_icap_server import (
@@ -640,6 +656,49 @@ def test_adblock_icap_server_blocks_connect_authority_requests(tmp_path: Path) -
         assert b"HTTP/1.1 403 Forbidden" in response
         log_text = log_path.read_text(encoding="utf-8")
         assert "CONNECT https://ads.example:443/ HTTP/1.1" in log_text
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_adblock_icap_server_blocks_scheme_relative_request_targets(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+    log_path = tmp_path / "cicap-access.log"
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        http = (
+            b"GET //ads.example/banner.js HTTP/1.1\r\n"
+            b"Host: safe.example\r\n"
+            b"User-Agent: proxy-probe\r\n\r\n"
+        )
+        req = (
+            b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Encapsulated: req-hdr=0, null-body="
+            + str(len(http)).encode("ascii")
+            + b"\r\n\r\n"
+            + http
+        )
+        response = _send_icap(port, req)
+        assert response.startswith(b"ICAP/1.0 200")
+        assert b"HTTP/1.1 403 Forbidden" in response
+        log_text = log_path.read_text(encoding="utf-8")
+        assert "GET http://ads.example/banner.js HTTP/1.1" in log_text
     finally:
         server.shutdown()
         server.server_close()
