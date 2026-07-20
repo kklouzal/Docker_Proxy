@@ -488,6 +488,107 @@ def test_icap_chunked_body_rejects_non_hex_size_token_grammar() -> None:
         assert seen_chunks == []
 
 
+def test_outer_icap_header_parser_rejects_malformed_field_lines() -> None:
+    server = _load_server()
+
+    valid_header = (
+        b"RESPMOD icap://example.test/av ICAP/1.0\r\n"
+        b"Host: example.test\r\n"
+        b"Allow: 204\r\n"
+        b"Preview: 0\r\n"
+        b"Encapsulated: res-hdr=0, res-body=64\r\n"
+        b"X-Extension_123:  value with optional whitespace  \r\n"
+        b"X!#$%&'*+.^_`|~0-9A-Za-z-: token-name ok"
+    )
+    start, headers = server._split_headers(valid_header)
+    assert start == "RESPMOD icap://example.test/av ICAP/1.0"
+    assert headers["host"] == "example.test"
+    assert headers["allow"] == "204"
+    assert headers["preview"] == "0"
+    assert headers["encapsulated"] == "res-hdr=0, res-body=64"
+    assert headers["x-extension_123"] == "value with optional whitespace"
+    assert headers["x!#$%&'*+.^_`|~0-9a-za-z-"] == "token-name ok"
+
+    malformed_lines = (
+        b"Encapsulated res-hdr=0, res-body=64",
+        b" Encapsulated: res-hdr=0, res-body=64",
+        b"Encapsulated : res-hdr=0, res-body=64",
+        b"\tPreview: 0",
+        b"Preview\t: 0",
+        b": 204",
+        b"Allow",
+        b"Allow: 2\x040",
+        b"Allow: 2\x7f0",
+        b"Allow: 204\x00",
+        "Préview: 0".encode(),
+        b"Encapsulated: res-hdr=0, res-body=64\r\n res-body=0",
+        b"Encapsulated: res-hdr=0, res-body=64\r\n\tPreview: 0",
+    )
+    for line in malformed_lines:
+        try:
+            server._split_headers(
+                b"RESPMOD icap://example.test/av ICAP/1.0\r\n" + line
+            )
+        except server.IcapProtocolError as exc:
+            assert str(exc) == "malformed ICAP header line"
+        else:  # pragma: no cover - regression guard should always reject
+            message = f"malformed ICAP header line was accepted: {line!r}"
+            raise AssertionError(message)
+
+
+def test_malformed_outer_icap_control_header_lookalikes_do_not_fail_open_204(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    def create_connection(*_args, **_kwargs):
+        message = "connection refused"
+        raise ConnectionRefusedError(message)
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return super().open_scan()
+
+    monkeypatch.setattr(server.socket, "create_connection", create_connection)
+
+    malformed_replacements = (
+        (b"Allow: 204\r\n", b"Allow : 204\r\n"),
+        (
+            b"Encapsulated: res-hdr=0, res-body=64\r\n",
+            b"Encapsulated : res-hdr=0, res-body=64\r\n",
+        ),
+        (b"Allow: 204\r\n", b"Allow: 204\r\nPreview : 0\r\n"),
+    )
+    for original, replacement in malformed_replacements:
+        scan_attempts = 0
+        with FailOpenServer(
+            ("127.0.0.1", 0),
+            clamd_host="127.0.0.1",
+            clamd_port=3310,
+            clamd_timeout=0.1,
+            fail_open=True,
+            max_scan_bytes=1024,
+            client_timeout=0.5,
+            max_connections=4,
+        ) as icap_server:
+            thread = _serve_in_thread(icap_server)
+            port = icap_server.server_address[1]
+            request = _sample_respmod_request(port).replace(original, replacement)
+            response = _recv_icap_exchange(port, request, timeout=1)
+            icap_server.shutdown()
+            thread.join(timeout=1)
+
+        assert scan_attempts == 0
+        assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+        assert b"HTTP/1.1 502 Bad Gateway" in response
+        assert b"scan failed before complete response body" in response
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response
+
+
 def test_encapsulated_offsets_accept_ascii_decimals_and_comma_sections() -> None:
     server = _load_server()
 

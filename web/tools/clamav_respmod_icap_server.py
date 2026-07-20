@@ -42,6 +42,7 @@ ISTAG = '"clamav-respmod-instream-1"'
 CLAMD_INSTREAM_COMMAND = b"zINSTREAM\0"
 CLAMD_REPLY_TERMINATOR = b"\0"
 ICAP_METHOD_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\Z")
+_ICAP_HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
 _SINGLETON_ICAP_HEADERS = {
     "allow": "Allow",
     "encapsulated": "Encapsulated",
@@ -126,15 +127,24 @@ def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
         raise IcapProtocolError(message)
     headers: dict[str, str] = {}
     for line in lines[1:]:
-        if not line or ":" not in line:
+        if not line:
             continue
+        if ":" not in line:
+            message = "malformed ICAP header line"
+            raise IcapProtocolError(message)
         name, value = line.split(":", 1)
-        header_name = name.strip().lower()
+        if not _ICAP_HEADER_NAME_RE.fullmatch(name) or not all(
+            char == "\t" or (ord(char) >= 32 and ord(char) != 127)
+            for char in value
+        ):
+            message = "malformed ICAP header line"
+            raise IcapProtocolError(message)
+        header_name = name.lower()
         if header_name in _SINGLETON_ICAP_HEADERS and header_name in headers:
             display_name = _SINGLETON_ICAP_HEADERS[header_name]
             message = f"duplicate ICAP {display_name} header"
             raise IcapProtocolError(message)
-        headers[header_name] = value.strip()
+        headers[header_name] = value.strip(" \t")
     return lines[0], headers
 
 
