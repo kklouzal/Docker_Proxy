@@ -1522,15 +1522,24 @@ def test_get_null_body_zero_content_length_remains_valid() -> None:
     assert b"Content-Length: 0\r\n" in response
 
 
-def test_malformed_req_hdr_ignores_method_for_null_body_semantics() -> None:
+def test_malformed_present_req_hdr_rejected_before_null_body_scan() -> None:
     server = _load_server()
-    malformed_request_lines = (
-        b"GET /missing-version\r\nHost: example.test\r\n\r\n",
-        b"GE T /asset.js HTTP/1.1\r\nHost: example.test\r\n\r\n",
-        b"BAD/METHOD /asset.js HTTP/1.1\r\nHost: example.test\r\n\r\n",
-    )
+    malformed_cases = {
+        "missing version": b"GET /missing-version\r\nHost: example.test\r\n\r\n",
+        "space in method": b"GE T /asset.js HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        "bad method token": b"BAD/METHOD /asset.js HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        "unsupported version": b"GET /asset.js HTTP/1.2\r\nHost: example.test\r\n\r\n",
+        "extra start-line spacing": b"GET  /asset.js HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        "control byte in target": b"GET /bad\x01target HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        "response masquerade": b"HTTP/1.1 200 OK\r\nHost: example.test\r\n\r\n",
+        "missing colon field": b"GET /asset.js HTTP/1.1\r\nHost example.test\r\n\r\n",
+        "obs-fold continuation": b"GET /asset.js HTTP/1.1\r\n folded\r\nHost: example.test\r\n\r\n",
+        "bad field name": b"GET /asset.js HTTP/1.1\r\nBad Name: value\r\n\r\n",
+        "nul in field name": b"GET /asset.js HTTP/1.1\r\nBad\x00Name: value\r\n\r\n",
+        "nul in field value": b"GET /asset.js HTTP/1.1\r\nHost: ex\x00ample.test\r\n\r\n",
+    }
 
-    for request_header in malformed_request_lines:
+    for name, request_header in malformed_cases.items():
         response, scanned_bodies = _run_null_body_respmod_exchange(
             server,
             request_header=request_header,
@@ -1538,11 +1547,101 @@ def test_malformed_req_hdr_ignores_method_for_null_body_semantics() -> None:
             allow_204=False,
         )
 
+        assert scanned_bodies == [], name
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert b"malformed HTTP request" in response or b"unsupported HTTP request" in response, name
+        assert b"Content-Length: 5\r\n" not in response, name
+
+
+def test_valid_present_req_hdr_methods_preserve_null_body_semantics() -> None:
+    server = _load_server()
+    valid_cases = (
+        (
+            b"GET /empty HTTP/1.0\r\nHost: example.test\r\n\r\n",
+            b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n",
+            b"Content-Length: 0\r\n",
+        ),
+        (
+            b"HEAD /asset.js HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 12345\r\n\r\n",
+            b"Content-Length: 12345\r\n",
+        ),
+        (
+            b"POST /submit HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            b"Content-Length: 0\r\n",
+        ),
+    )
+
+    for request_header, response_header, expected in valid_cases:
+        response, scanned_bodies = _run_null_body_respmod_exchange(
+            server,
+            request_header=request_header,
+            response_header=response_header,
+            allow_204=False,
+        )
+
         assert scanned_bodies == [b""]
         assert response.startswith(b"ICAP/1.0 200 OK\r\n")
-        assert b"HTTP/1.1 200 OK" in response
-        assert b"Content-Length: 5\r\n" in response
+        assert b"HTTP/1." in response
+        assert expected in response
         assert b"HTTP/1.1 502 Bad Gateway" not in response
+
+
+def test_malformed_present_req_hdr_rejected_before_res_body_scan_finish() -> None:
+    server = _load_server()
+
+    for request_header in (
+        b"POST /submit HTTP/9.9\r\nHost: example.test\r\n\r\n",
+        b"GET /asset.js HTTP/1.1\r\nBad\x00Name: value\r\n\r\n",
+    ):
+        scanner = RecordingScanner()
+
+        class TestServer(server.ClamAvRespmodServer):
+            def open_scan(self):
+                return scanner
+
+        response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+        response_offset = len(request_header)
+        body_offset = response_offset + len(response_header)
+        chunked_body = b"5\r\nhello\r\n0\r\n\r\n"
+
+        with TestServer(
+            ("127.0.0.1", 0),
+            clamd_host="127.0.0.1",
+            clamd_port=3310,
+            clamd_timeout=0.1,
+            fail_open=False,
+            max_scan_bytes=1024,
+            client_timeout=0.5,
+            max_connections=4,
+        ) as icap_server:
+            thread = _serve_in_thread(icap_server)
+            port = icap_server.server_address[1]
+            request = (
+                (
+                    f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                    "Host: 127.0.0.1\r\n"
+                    "Allow: 204\r\n"
+                    "Encapsulated: "
+                    f"req-hdr=0, res-hdr={response_offset}, res-body={body_offset}"
+                    "\r\n\r\n"
+                ).encode("ascii")
+                + request_header
+                + response_header
+                + chunked_body
+            )
+            response = _recv_icap_exchange(port, request, timeout=1)
+            icap_server.shutdown()
+            thread.join(timeout=1)
+
+        assert scanner.chunks == []
+        assert scanner.finished is False
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+        assert b"HTTP/1.1 502 Bad Gateway" in response
+        assert b"HTTP request" in response
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response
 
 
 def test_duplicate_encapsulated_header_is_rejected_before_boundary_selection() -> None:

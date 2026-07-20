@@ -651,21 +651,37 @@ def _validate_http_header_field_names(http_header: bytes) -> None:
             raise IcapProtocolError(message)
 
 
-def _http_request_method_from_header(request_header: bytes) -> bytes | None:
-    """Return the request method only when the req-hdr start line is reliable."""
+def _validate_http_request_header(request_header: bytes) -> bytes:
+    """Validate a present encapsulated req-hdr and return its HTTP method."""
     lines = _http_header_lines(request_header)
     if not lines:
-        return None
+        message = "missing HTTP request start line"
+        raise IcapProtocolError(message)
     parts = lines[0].split(b" ")
     if len(parts) != 3 or any(not part for part in parts):
-        return None
+        message = "malformed HTTP request start line"
+        raise IcapProtocolError(message)
     method, request_target, version = parts
     if not _HTTP_TOKEN_RE.fullmatch(method):
-        return None
+        message = "malformed HTTP request method"
+        raise IcapProtocolError(message)
     if version not in {b"HTTP/1.0", b"HTTP/1.1"}:
-        return None
+        message = "unsupported HTTP request version"
+        raise IcapProtocolError(message)
     if any(char <= 32 or char == 127 for char in request_target):
-        return None
+        message = "malformed HTTP request target"
+        raise IcapProtocolError(message)
+    for line in lines[1:]:
+        if b":" not in line:
+            message = "malformed HTTP request header line"
+            raise IcapProtocolError(message)
+        name, value = line.split(b":", 1)
+        if not name or not _HTTP_TOKEN_RE.fullmatch(name):
+            message = "malformed HTTP request header field name"
+            raise IcapProtocolError(message)
+        if any((char < 32 and char != 9) or char == 127 for char in value):
+            message = "malformed HTTP request header field value"
+            raise IcapProtocolError(message)
     return method
 
 
@@ -1074,6 +1090,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 _validate_respmod_encapsulated_header_boundaries(
                     encapsulated_headers, offsets
                 )
+                if offsets.get("req-hdr") is not None:
+                    request_header = encapsulated_headers[:response_header_offset]
+                    _validate_http_request_header(request_header)
                 http_header = encapsulated_headers[response_header_offset:body_offset]
                 _validate_http_header_field_names(http_header)
                 _validate_http_response_body_semantics(
@@ -1115,7 +1134,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     request_method = None
                 else:
                     request_header = encapsulated_headers[:response_header_offset]
-                    request_method = _http_request_method_from_header(request_header)
+                    request_method = _validate_http_request_header(request_header)
                 _validate_http_header_field_names(http_header)
                 _validate_http_response_body_semantics(
                     http_header,
