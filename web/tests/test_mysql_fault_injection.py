@@ -115,13 +115,20 @@ def test_mysql_killed_session_during_commit_is_not_blindly_retried(
 def test_mysql_advisory_lock_released_when_session_is_killed(tmp_path: Path) -> None:
     db = _mysql_modules(tmp_path)
     lock_name = "docker_proxy:test:advisory_loss"
-    with db.connect_unpooled() as holder:
+    holder = db.connect_unpooled()
+    try:
         acquired = holder.execute("SELECT GET_LOCK(%s, 1) AS acquired", (lock_name,)).fetchone()
         assert int(acquired["acquired"] or 0) == 1
         connection_id = int(holder.execute("SELECT CONNECTION_ID() AS id").fetchone()["id"])
         with db.connect_unpooled() as killer:
             killer.execute(f"KILL CONNECTION {connection_id}")
+
+        with pytest.raises(db.DATABASE_ERRORS):
+            holder.execute("SELECT 1")
+
         with db.connect_unpooled() as contender:
             row = contender.execute("SELECT GET_LOCK(%s, 5) AS acquired", (lock_name,)).fetchone()
             assert int(row["acquired"] or 0) == 1
             contender.execute("DO RELEASE_LOCK(%s)", (lock_name,))
+    finally:
+        holder.close()

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from services.db import connect
-from services.schema_lifecycle import latest_schema_version
+from services.schema_lifecycle import latest_schema_checksum, latest_schema_version
 
 _REQUIRED_TABLES: tuple[str, ...] = (
     "schema_migrations",
@@ -184,9 +184,10 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
     """Validate backup/export preflight and restored MySQL state invariants.
 
     The check is read-only and intentionally conservative. It verifies that the
-    schema lifecycle reached the current code version, persistent table families
-    exist, generated active-slot columns/indexes survived dump/restore, and
-    application invariants that protect lifecycle/idempotency are still true.
+    schema lifecycle reached the current code version with a recorded checksum,
+    persistent table families exist, generated active-slot columns/indexes
+    survived dump/restore, and application invariants that protect lifecycle,
+    ownership, and idempotency are still true.
     """
     result = MysqlStateValidationResult(details={"phase": phase})
     owns_connection = conn is None
@@ -210,10 +211,21 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
             (latest,),
         ).fetchone()
         status = str(_row_value(row, "status") or "")
+        checksum = str(_row_value(row, "checksum", 1) or "")
+        error = str(_row_value(row, "error", 2) or "")
         if status != "applied":
             result.error(f"schema migration version {latest} is not applied (status={status or 'missing'})")
+        expected_checksum = latest_schema_checksum()
+        if not checksum or len(checksum) != 64:
+            result.error(f"schema migration version {latest} has missing/invalid checksum")
+        elif checksum != expected_checksum:
+            result.error(f"schema migration version {latest} checksum drift: database has {checksum}, code expects {expected_checksum}")
+        if status == "applied" and error:
+            result.warning(f"schema migration version {latest} is applied but retains error text")
         result.details["schema_version"] = latest
         result.details["schema_status"] = status
+        result.details["schema_checksum"] = checksum
+        result.details["expected_schema_checksum"] = expected_checksum
 
         columns = _column_names(active_conn)
         missing_columns = [f"{table}.{column}" for table, column in _REQUIRED_COLUMNS if (table, column) not in columns]
@@ -282,6 +294,79 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
         )
         if orphan_aliases:
             result.error(f"proxy_id_aliases has {orphan_aliases} aliases targeting missing proxy_instances rows")
+
+        tombstone_conflicts = _count_row(
+            active_conn,
+            """
+            SELECT COUNT(*) AS n
+            FROM proxy_lifecycle_tombstones tombstone
+            JOIN proxy_instances proxy ON proxy.proxy_id=tombstone.proxy_id
+            WHERE tombstone.action IN ('removed','renamed')
+            """,
+        )
+        if tombstone_conflicts:
+            result.error(f"proxy_lifecycle_tombstones has {tombstone_conflicts} terminal tombstone(s) that still have live proxy_instances rows")
+
+        alias_tombstone_conflicts = _count_row(
+            active_conn,
+            """
+            SELECT COUNT(*) AS n
+            FROM proxy_id_aliases alias
+            JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=alias.alias_proxy_id
+            WHERE tombstone.action NOT IN ('renamed')
+            """,
+        )
+        if alias_tombstone_conflicts:
+            result.error(f"proxy_id_aliases has {alias_tombstone_conflicts} aliases inconsistent with lifecycle tombstones")
+
+        orphan_config_revisions = _count_row(
+            active_conn,
+            """
+            SELECT COUNT(*) AS n
+            FROM proxy_config_revisions revision
+            LEFT JOIN proxy_instances proxy ON proxy.proxy_id=revision.proxy_id
+            LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=revision.proxy_id
+            WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
+            """,
+        )
+        if orphan_config_revisions:
+            result.error(f"proxy_config_revisions has {orphan_config_revisions} row(s) owned by missing proxies without tombstones")
+
+        orphan_operations = _count_row(
+            active_conn,
+            """
+            SELECT COUNT(*) AS n
+            FROM proxy_operations op
+            LEFT JOIN proxy_instances proxy ON proxy.proxy_id=op.proxy_id
+            LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=op.proxy_id
+            WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
+            """,
+        )
+        if orphan_operations:
+            result.error(f"proxy_operations has {orphan_operations} row(s) owned by missing proxies without tombstones")
+
+        invalid_operation_states = _count_row(
+            active_conn,
+            """
+            SELECT COUNT(*) AS n
+            FROM proxy_operations
+            WHERE status NOT IN ('pending','applying','applied','superseded','failed')
+            """,
+        )
+        if invalid_operation_states:
+            result.error(f"proxy_operations has {invalid_operation_states} row(s) with invalid status values")
+
+        stale_claim_tokens = _count_row(
+            active_conn,
+            """
+            SELECT COUNT(*) AS n
+            FROM proxy_operations
+            WHERE status NOT IN ('pending','applying')
+              AND (request_key IS NOT NULL OR claim_token IS NOT NULL)
+            """,
+        )
+        if stale_claim_tokens:
+            result.error(f"proxy_operations has {stale_claim_tokens} terminal row(s) retaining active request/claim state")
 
         active_lifecycle = _count_row(
             active_conn,

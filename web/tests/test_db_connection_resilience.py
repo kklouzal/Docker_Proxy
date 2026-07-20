@@ -775,6 +775,56 @@ def test_transaction_retry_does_not_replay_lost_connection_commit_ambiguity(
     assert attempts["count"] == 1
 
 
+def test_transaction_retry_does_not_replay_connection_acquisition_failure(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    from services import db  # type: ignore
+
+    attempts = {"count": 0}
+
+    def operation() -> None:
+        attempts["count"] += 1
+        raise pymysql.err.OperationalError(
+            2003,
+            "Can't connect to MySQL server",
+        )
+
+    monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "3")
+    monkeypatch.setenv("MYSQL_CONNECT_RETRY_DELAY_SECONDS", "0")
+
+    with pytest.raises(pymysql.err.OperationalError):
+        db.run_mysql_operation_with_retry(operation)
+
+    assert attempts["count"] == 1
+
+
+def test_transaction_retry_replays_lock_wait_timeout(monkeypatch) -> None:
+    _add_repo_paths()
+    import pymysql  # type: ignore
+    from services import db  # type: ignore
+
+    attempts = {"count": 0}
+
+    def operation() -> str:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise pymysql.err.OperationalError(
+                1205,
+                "Lock wait timeout exceeded; try restarting transaction",
+            )
+        return "ok"
+
+    monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "2")
+    monkeypatch.setenv("MYSQL_CONNECT_RETRY_DELAY_SECONDS", "0")
+    monkeypatch.setenv("MYSQL_RETRY_JITTER_SECONDS", "0")
+    monkeypatch.setattr(db.time, "sleep", lambda _seconds: None)
+
+    assert db.run_mysql_operation_with_retry(operation) == "ok"
+    assert attempts["count"] == 2
+
+
 def test_transaction_retry_replays_deadlock_with_bounded_jitter(monkeypatch) -> None:
     _add_repo_paths()
     import pymysql  # type: ignore

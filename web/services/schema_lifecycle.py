@@ -744,6 +744,10 @@ def latest_schema_version() -> int:
     return _SCHEMA_VERSION
 
 
+def latest_schema_checksum() -> str:
+    return _default_spec().checksum
+
+
 def assert_schema_current(conn: Any | None = None) -> None:
     owns_connection = conn is None
     active_conn = connect() if owns_connection else conn

@@ -22,7 +22,7 @@ MYSQL_DEFAULT_DB = "squid_proxy"
 logger = logging.getLogger(__name__)
 
 _MYSQL_CONNECT_RETRY_CODES = {1040, 2002, 2003, 2006, 2013}
-_MYSQL_TRANSACTION_RETRY_CODES = {1040, 1205, 1213, 2002, 2003}
+_MYSQL_TRANSACTION_RETRY_CODES = {1205, 1213}
 _MYSQL_DISCONNECT_CODES = {2006, 2013}
 
 
@@ -244,9 +244,8 @@ def _is_retryable_mysql_error(exc: BaseException) -> bool:
     """Backward-compatible predicate for tests and old importers.
 
     Connection establishment may retry disconnect/connectivity errors. Whole
-    transaction helpers retry only acquisition, deadlock, and lock-wait failures so
-    they do not replay an operation after an ambiguous lost connection during
-    COMMIT.
+    transaction helpers retry only deadlock and lock-wait failures so they do not
+    replay an operation whose transaction may already have begun or committed.
     """
     return _is_retryable_mysql_connect_error(exc) or _is_retryable_mysql_transaction_error(exc)
 
@@ -365,12 +364,14 @@ def _retry_mysql_operation(
 def run_mysql_operation_with_retry(operation, *, operation_name: str = "mysql operation"):
     """Retry a whole MySQL transaction only for unambiguous contention errors.
 
-    This helper is for operations that open a fresh connection/transaction and
-    are safe to replay after MySQL reports connection acquisition failures,
-    ER_LOCK_WAIT_TIMEOUT (1205), or ER_LOCK_DEADLOCK (1213). It intentionally
-    does not retry lost connections
-    (2006/2013/InterfaceError) because a failure during COMMIT is ambiguous: the
-    server may or may not have made the transaction durable.
+    This helper is only for explicitly idempotent operations that open a fresh
+    connection/transaction and are safe to replay after MySQL reports
+    ER_LOCK_WAIT_TIMEOUT (1205) or ER_LOCK_DEADLOCK (1213) before COMMIT. It
+    intentionally does not retry lost connections (2006/2013/InterfaceError) or
+    connection-acquisition failures (1040/2002/2003): callers that reached the
+    transaction body may have partially executed or committed, and callers that
+    could not obtain a connection should fail loudly instead of causing
+    operation-level replay without proof that no transaction started.
     """
     return _retry_mysql_operation(
         operation,

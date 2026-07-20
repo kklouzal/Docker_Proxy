@@ -28,7 +28,7 @@ The command is read-only. It fails closed (`exit 1`) when required persistent ta
 ## Retry and ambiguity policy
 
 - Safe automatic retry is limited to connection acquisition failures before a transaction starts, or whole-operation retries after MySQL reports deadlock (`1213`) or lock wait timeout (`1205`) and the caller opened a fresh transaction that can be replayed safely.
-- Lost connections during statements or commit (`2006`, `2013`, PyMySQL interface disconnects) invalidate the connection but are not blindly replayed by transaction helpers, because commit outcome may be ambiguous.
+- Whole-operation transaction retry does **not** replay connection-acquisition failures (`1040`, `2002`, `2003`) or lost connections during statements/commit (`2006`, `2013`, PyMySQL interface disconnects). Those failures invalidate the connection but fail loudly because the transaction boundary or commit outcome can be ambiguous to the caller.
 - Idempotency keys (`proxy_operations.request_key`, unique active revision slots, artifact/config hashes, and `INSERT IGNORE` log/event keys) are the recovery boundary for duplicate requests and background replays.
 
 ## Restore checklist

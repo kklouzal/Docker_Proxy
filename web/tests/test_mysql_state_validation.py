@@ -23,11 +23,23 @@ class _Result:
 
 
 class _ValidationConn:
-    def __init__(self, module, *, missing_tables=(), duplicate_ops: int = 0) -> None:
+    def __init__(
+        self,
+        module,
+        *,
+        missing_tables=(),
+        duplicate_ops: int = 0,
+        schema_checksum: str | None = None,
+        terminal_claims: int = 0,
+        orphan_operations: int = 0,
+    ) -> None:
         self.tables = set(module._REQUIRED_TABLES) - set(missing_tables)
         self.columns = set(module._REQUIRED_COLUMNS)
         self.indexes = set(module._REQUIRED_INDEXES)
         self.duplicate_ops = duplicate_ops
+        self.schema_checksum = schema_checksum or module.latest_schema_checksum()
+        self.terminal_claims = terminal_claims
+        self.orphan_operations = orphan_operations
 
     def execute(self, sql, params=()):
         text = " ".join(str(sql).lower().split())
@@ -48,9 +60,13 @@ class _ValidationConn:
                 ],
             )
         if "from schema_migrations" in text:
-            return _Result([{"status": "applied", "checksum": "abc", "error": ""}])
+            return _Result([{"status": "applied", "checksum": self.schema_checksum, "error": ""}])
         if "from proxy_operations" in text and "having count(*) > 1" in text:
             return _Result([{"n": self.duplicate_ops}])
+        if "from proxy_operations" in text and "request_key is not null" in text:
+            return _Result([{"n": self.terminal_claims}])
+        if "from proxy_operations op" in text and "proxy.proxy_id is null" in text:
+            return _Result([{"n": self.orphan_operations}])
         return _Result([{"n": 0}])
 
     def close(self):
@@ -95,6 +111,45 @@ def test_mysql_state_validation_fails_duplicate_active_operation_keys() -> None:
 
     assert result.ok is False
     assert any("duplicate active idempotency keys" in error for error in result.errors)
+
+
+def test_mysql_state_validation_fails_invalid_schema_checksum() -> None:
+    _add_web_to_path()
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(mysql_state_validation, schema_checksum="abc"),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert any("missing/invalid checksum" in error for error in result.errors)
+
+
+def test_mysql_state_validation_fails_terminal_operation_claim_state() -> None:
+    _add_web_to_path()
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(mysql_state_validation, terminal_claims=1),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert any("retaining active request/claim state" in error for error in result.errors)
+
+
+def test_mysql_state_validation_fails_orphan_operation_ownership() -> None:
+    _add_web_to_path()
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(mysql_state_validation, orphan_operations=1),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert any("owned by missing proxies" in error for error in result.errors)
 
 
 def test_mysql_state_validation_cli_returns_failure_for_invalid_state(monkeypatch, capsys) -> None:
