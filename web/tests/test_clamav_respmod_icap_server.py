@@ -492,6 +492,79 @@ def test_duplicate_encapsulated_header_is_rejected_before_boundary_selection() -
     assert b"duplicate ICAP Encapsulated header" in response
 
 
+def test_respmod_res_hdr_offset_inside_req_hdr_rejected_before_scanning() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_respmod_request_with_req_hdr(port).replace(
+            b"Encapsulated: req-hdr=0, res-hdr=46, res-body=122",
+            b"Encapsulated: req-hdr=0, res-hdr=5, res-body=122",
+        )
+        response = _recv_icap_response(port, request, timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"invalid RESPMOD encapsulated req-hdr boundary" in response
+    assert b"/asset.js HTTP/1.1" not in response
+
+
+def test_respmod_body_offset_inside_response_header_rejected_before_scanning() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_respmod_request(port).replace(
+            b"Encapsulated: res-hdr=0, res-body=64",
+            b"Encapsulated: res-hdr=0, res-body=20",
+        )
+        response = _recv_icap_response(port, request, timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"invalid RESPMOD encapsulated res-hdr boundary" in response
+
+
 def test_single_encapsulated_header_with_null_body_is_preserved() -> None:
     server = _load_server()
 

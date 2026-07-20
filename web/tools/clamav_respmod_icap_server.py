@@ -199,6 +199,28 @@ def _validate_respmod_encapsulated_offsets(offsets: dict[str, int]) -> None:
         raise IcapProtocolError(message)
 
 
+def _validate_respmod_encapsulated_header_boundaries(
+    encapsulated_headers: bytes, offsets: dict[str, int]
+) -> None:
+    """Reject RESPMOD offsets that split or overrun HTTP header sections."""
+    response_header_offset = offsets["res-hdr"]
+    terminal_offset = offsets.get("res-body", offsets.get("null-body"))
+    if terminal_offset is None:  # pragma: no cover - offset validation guards this
+        message = "RESPMOD request missing res-body/null-body"
+        raise IcapProtocolError(message)
+
+    if offsets.get("req-hdr") is not None:
+        request_header = encapsulated_headers[:response_header_offset]
+        if not request_header.endswith(HEADER_END):
+            message = "invalid RESPMOD encapsulated req-hdr boundary"
+            raise IcapProtocolError(message)
+
+    response_header = encapsulated_headers[response_header_offset:terminal_offset]
+    if not response_header.endswith(HEADER_END):
+        message = "invalid RESPMOD encapsulated res-hdr boundary"
+        raise IcapProtocolError(message)
+
+
 def _read_some(stream: BinaryIO, size: int) -> bytes:
     # StreamRequestHandler wraps sockets in BufferedReader. read(size) can wait
     # for the full size or EOF on an open ICAP keep-alive connection, which
@@ -745,6 +767,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 encapsulated_headers, remainder = _read_exact(
                     self.rfile, body_offset, remainder
                 )
+                _validate_respmod_encapsulated_header_boundaries(
+                    encapsulated_headers, offsets
+                )
                 http_header = encapsulated_headers[response_header_offset:body_offset]
                 can_use_204 = allow_204 and _http_response_allows_squid_204_backup(
                     http_header
@@ -769,6 +794,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
             else:
                 encapsulated_headers, remainder = _read_exact(
                     self.rfile, null_body_offset or 0, remainder
+                )
+                _validate_respmod_encapsulated_header_boundaries(
+                    encapsulated_headers, offsets
                 )
                 http_header = encapsulated_headers[
                     response_header_offset : null_body_offset or 0
