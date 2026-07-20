@@ -1339,6 +1339,24 @@ class CleanScanner:
         return server.ClamdResult(clean=True)
 
 
+class RecordingScanner(CleanScanner):
+    def __init__(self) -> None:
+        self.chunks: list[bytes] = []
+        self.closed = False
+        self.finished = False
+
+    def __exit__(self, *_exc):
+        self.closed = True
+        return False
+
+    def send_chunk(self, data: bytes) -> None:
+        self.chunks.append(data)
+
+    def finish(self):
+        self.finished = True
+        return super().finish()
+
+
 class SlowScanner(CleanScanner):
     def finish(self):
         message = "clamd INSTREAM scan timed out"
@@ -1544,6 +1562,79 @@ def test_post_preview_scan_write_failure_fails_open_after_100_continue() -> None
 
     assert response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
     assert b"ICAP/1.0 204 No Content\r\n" in response
+
+
+def test_malformed_zero_chunk_trailer_after_valid_chunk_fails_closed() -> None:
+    server = _load_server()
+    scanner = RecordingScanner()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return scanner
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_respmod_request(port).replace(
+            b"5\r\nhello\r\n0\r\n\r\n",
+            b"5\r\nhello\r\n0\r\nnot-a-trailer\r\n\r\n",
+        )
+        response = _recv_icap_exchange(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scanner.closed is True
+    assert scanner.chunks == [b"hello"]
+    assert scanner.finished is False
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"scan failed before complete response body" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" not in response
+
+
+def test_truncated_later_chunk_after_valid_chunk_fails_closed_without_partial_replay() -> None:
+    server = _load_server()
+    scanner = RecordingScanner()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return scanner
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.2,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_respmod_request_without_allow_204(port).replace(
+            b"5\r\nhello\r\n0\r\n\r\n",
+            b"2\r\nhe\r\n3\r\nll",
+        )
+        response = _recv_icap_response(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scanner.closed is True
+    assert scanner.chunks == [b"he"]
+    assert scanner.finished is False
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"he\r\n0\r\n\r\n" not in response
 
 
 def test_clamd_reset_before_verdict_drains_body_then_fails_open_204(

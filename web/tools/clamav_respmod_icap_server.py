@@ -296,6 +296,10 @@ def _drain_chunk_trailers(stream: BinaryIO, initial: bytes = b"") -> bytes:
         line, remainder = _read_until(stream, CRLF, remainder)
         if line == CRLF:
             return remainder
+        trailer = line[:-2]
+        if b":" not in trailer or not trailer.split(b":", 1)[0].strip():
+            message = "malformed ICAP chunk trailer"
+            raise IcapProtocolError(message)
 
 
 def _chunk_has_ieof_extension(line: str) -> bool:
