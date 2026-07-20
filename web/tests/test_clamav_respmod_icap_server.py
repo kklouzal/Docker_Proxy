@@ -1447,6 +1447,11 @@ def test_non_head_null_body_positive_framing_is_rejected_before_clean_scan() -> 
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
             b"HTTP null-body for GET response conflicts with Transfer-Encoding",
         ),
+        "POST Transfer-Encoding chunked": (
+            b"POST /stream HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+            b"HTTP null-body for POST response conflicts with Transfer-Encoding",
+        ),
     }
 
     for name, (request_header, response_header, expected) in cases.items():
