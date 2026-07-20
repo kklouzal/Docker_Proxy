@@ -17,6 +17,10 @@ FALLBACK_OPEN_ISTAG = '"clamav-fail-open-unavailable"'
 FALLBACK_CLOSED_ISTAG = '"clamav-fail-closed-unavailable"'
 
 
+class IcapProtocolError(Exception):
+    pass
+
+
 def env_enabled(value: str | None) -> bool:
     return (value or "").strip().lower() in TRUE_VALUES
 
@@ -66,8 +70,12 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
         if not item or "=" not in item:
             continue
         name, raw_offset = item.split("=", 1)
+        name = name.strip().lower()
+        if name in offsets:
+            message = f"duplicate Encapsulated section name: {name}"
+            raise IcapProtocolError(message)
         try:
-            offsets[name.strip().lower()] = int(raw_offset.strip())
+            offsets[name] = int(raw_offset.strip())
         except ValueError:
             continue
     return offsets
@@ -249,6 +257,22 @@ def _clean_respmod_no_body_response(
     ) + http_header
 
 
+def _error_response(message: str, istag: str) -> bytes:
+    payload = ("ClamAV fallback ICAP protocol error.\n" + message + "\n").encode(
+        "utf-8"
+    )
+    http_header = (
+        b"HTTP/1.1 502 Bad Gateway\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        + f"Content-Length: {len(payload)}\r\n".encode("ascii")
+        + b"Connection: close\r\n\r\n"
+    )
+    return _icap_response(
+        "200 OK",
+        {"ISTag": istag, "Encapsulated": f"res-hdr=0, res-body={len(http_header)}"},
+    ) + http_header + _encode_icap_body_chunk(payload)
+
+
 class _FailOpenAvHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         self.request.settimeout(2.0)
@@ -287,28 +311,32 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
             )
         elif method in {"REQMOD", "RESPMOD"}:
             if fail_open:
-                if method == "RESPMOD":
-                    _start_line, headers = _split_headers(header)
-                    allow_204 = "204" in {
-                        part.strip() for part in headers.get("allow", "").split(",")
-                    }
-                    http_header, body, null_body = _read_respmod_payload(
-                        self.request, header, remainder
-                    )
-                    if null_body:
-                        response = _clean_respmod_no_body_response(
-                            allow_204=allow_204,
-                            http_header=http_header,
-                            istag=istag,
+                try:
+                    if method == "RESPMOD":
+                        _start_line, headers = _split_headers(header)
+                        allow_204 = "204" in {
+                            part.strip()
+                            for part in headers.get("allow", "").split(",")
+                        }
+                        http_header, body, null_body = _read_respmod_payload(
+                            self.request, header, remainder
                         )
+                        if null_body:
+                            response = _clean_respmod_no_body_response(
+                                allow_204=allow_204,
+                                http_header=http_header,
+                                istag=istag,
+                            )
+                        else:
+                            response = _clean_respmod_response(http_header, body, istag)
                     else:
-                        response = _clean_respmod_response(http_header, body, istag)
-                else:
-                    _drain_encapsulated_body(self.request, header, remainder)
-                    response = _icap_response(
-                        "204 No Content",
-                        {"ISTag": istag, "Encapsulated": "null-body=0"},
-                    )
+                        _drain_encapsulated_body(self.request, header, remainder)
+                        response = _icap_response(
+                            "204 No Content",
+                            {"ISTag": istag, "Encapsulated": "null-body=0"},
+                        )
+                except IcapProtocolError as exc:
+                    response = _error_response(str(exc), istag)
             else:
                 response = _icap_response(
                     "500 Service Unavailable",

@@ -297,3 +297,39 @@ def test_fail_open_placeholder_respmod_null_body_with_req_hdr_is_valid() -> None
     assert b"Encapsulated: res-hdr=0, null-body=" in response
     assert b"HTTP/1.1 204 No Content" in response
     assert b"GET /generate_204 HTTP/1.1" not in response
+
+
+def test_fail_open_placeholder_rejects_duplicate_encapsulated_section() -> None:
+    runner = _load_runner()
+
+    with runner._FailOpenAvServer(
+        ("127.0.0.1", 0), runner._FailOpenAvHandler
+    ) as server:
+        server.fail_open = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+        request = (
+            (
+                f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Allow: 204\r\n"
+                "Encapsulated: res-hdr=999, res-hdr=0, "
+                f"res-body={len(response_header)}"
+                "\r\n\r\n"
+            ).encode("ascii")
+            + response_header
+            + b"5\r\nhello\r\n0\r\n\r\n"
+        )
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as sock:
+            sock.settimeout(1)
+            sock.sendall(request)
+            response = sock.recv(4096)
+        server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"duplicate Encapsulated section name: res-hdr" in response
+    assert b"hello" not in response
