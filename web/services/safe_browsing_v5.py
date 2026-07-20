@@ -216,7 +216,11 @@ def canonicalize_url(value: str) -> str:
     )
     # Safe Browsing expression generation discards scheme, credentials, and port;
     # the canonical URL keeps only host/path/query for stable hashing input.
-    return urllib.parse.urlunsplit((scheme, host, path, query, ""))
+    # Keep IPv6 literals bracketed in the URL form so the later urlsplit() pass
+    # sees the whole literal as the hostname instead of treating the first hextet
+    # as an IPv4-ish decimal hostname.
+    netloc = f"[{host}]" if ":" in host and _is_ip_literal(host) else host
+    return urllib.parse.urlunsplit((scheme, netloc, path, query, ""))
 
 
 def _is_ip_literal(host: str) -> bool:

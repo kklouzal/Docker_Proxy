@@ -65,6 +65,14 @@ def test_safe_browsing_canonicalization_normalizes_controls_path_ip_and_idn() ->
     assert canonicalize_url("http://☃.example/%2525") == "http://xn--n3h.example/%25"
 
 
+def test_safe_browsing_ipv6_literals_stay_bracketed_for_expression_generation() -> None:
+    assert canonicalize_url("http://[2001:db8::1]/a") == "http://[2001:db8::1]/a"
+    assert url_expressions("http://[2001:db8::1]/a") == [
+        "2001:db8::1/a",
+        "2001:db8::1/",
+    ]
+
+
 @pytest.mark.parametrize(
     "url",
     [
