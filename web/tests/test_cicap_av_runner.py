@@ -101,6 +101,71 @@ def _placeholder_exchange(runner, *, fail_open: bool, method: str) -> bytes:
     return response
 
 
+def _placeholder_raw_exchange(runner, request: bytes, *, fail_open: bool = True) -> bytes:
+    with runner._FailOpenAvServer(
+        ("127.0.0.1", 0), runner._FailOpenAvHandler
+    ) as server:
+        server.fail_open = fail_open
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        request = request.replace(b"{port}", str(port).encode("ascii"))
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as sock:
+            sock.settimeout(1)
+            sock.sendall(request)
+            response = bytearray()
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                response.extend(chunk)
+        server.shutdown()
+        thread.join(timeout=1)
+    return bytes(response)
+
+
+def test_split_headers_rejects_duplicate_consumed_singletons_case_insensitive() -> None:
+    runner = _load_runner()
+    cases = (
+        ("Encapsulated", "eNcApSuLaTeD", "duplicate ICAP Encapsulated header"),
+        ("Allow", "aLlOw", "duplicate ICAP Allow header"),
+        ("Preview", "pReViEw", "duplicate ICAP Preview header"),
+    )
+
+    for first_name, second_name, expected in cases:
+        header = (
+            "RESPMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
+            f"{first_name}: 204\r\n"
+            f"{second_name}: 204\r\n"
+            "X-Repeatable-Extension: one\r\n"
+            "x-repeatable-extension: two\r\n"
+        ).encode("ascii")
+        try:
+            runner._split_headers(header)
+        except runner.IcapProtocolError as exc:
+            assert str(exc) == expected
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"duplicate {first_name} header was accepted"
+            raise AssertionError(message)
+
+
+def test_split_headers_accepts_repeated_unknown_extension_header() -> None:
+    runner = _load_runner()
+
+    start_line, headers = runner._split_headers(
+        b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
+        b"X-Repeatable-Extension: one\r\n"
+        b"x-repeatable-extension: two\r\n"
+        b"Allow: 204\r\n"
+        b"Encapsulated: null-body=0"
+    )
+
+    assert start_line == "REQMOD icap://127.0.0.1/avrespmod ICAP/1.0"
+    assert headers["x-repeatable-extension"] == "two"
+    assert headers["allow"] == "204"
+    assert headers["encapsulated"] == "null-body=0"
+
+
 def test_fail_open_placeholder_returns_204_for_transactions() -> None:
     runner = _load_runner()
 
@@ -197,6 +262,80 @@ def test_fail_open_placeholder_replays_respmod_body_instead_of_late_204() -> Non
     assert b"Content-Length: 5120\r\n" in response
     assert b"1400\r\n" + (b"hello" * 1024) + b"\r\n0\r\n\r\n" in response
     assert elapsed < 1
+
+
+def test_fail_open_placeholder_rejects_duplicate_outer_encapsulated_header() -> None:
+    response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+    request = (
+        b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        b"Encapsulated: res-hdr=999, null-body=999\r\n"
+        + f"eNcApSuLaTeD: res-hdr=0, res-body={len(response_header)}".encode(
+            "ascii"
+        )
+        + b"\r\n\r\n"
+        + response_header
+        + b"5\r\nhello\r\n0\r\n\r\n"
+    )
+
+    response = _placeholder_raw_exchange(_load_runner(), request)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"duplicate ICAP Encapsulated header" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" not in response
+
+
+def test_fail_open_placeholder_rejects_duplicate_outer_allow_header() -> None:
+    response_header = b"HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n\r\n"
+    request = (
+        b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 206\r\n"
+        b"aLlOw: 204\r\n"
+        + f"Encapsulated: res-hdr=0, null-body={len(response_header)}".encode(
+            "ascii"
+        )
+        + b"\r\n\r\n"
+        + response_header
+    )
+
+    response = _placeholder_raw_exchange(_load_runner(), request)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"duplicate ICAP Allow header" in response
+    assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert b"HTTP/1.1 204 No Content" not in response
+
+
+def test_fail_open_placeholder_rejects_duplicate_outer_preview_header() -> None:
+    http_header = (
+        b"POST /upload HTTP/1.1\r\n"
+        b"Content-Type: application/octet-stream\r\n"
+        b"Transfer-Encoding: chunked\r\n"
+        b"\r\n"
+    )
+    request = (
+        b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        b"Preview: 0\r\n"
+        b"pReViEw: 4\r\n"
+        + f"Encapsulated: req-hdr=0, req-body={len(http_header)}".encode("ascii")
+        + b"\r\n\r\n"
+        + http_header
+        + b"4\r\ntest\r\n0\r\n\r\n"
+    )
+
+    response = _placeholder_raw_exchange(_load_runner(), request)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"duplicate ICAP Preview header" in response
+    assert not response.startswith(b"ICAP/1.0 100 Continue\r\n")
+    assert b"test" not in response
 
 
 def _placeholder_preview_exchange(

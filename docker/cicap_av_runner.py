@@ -15,6 +15,11 @@ CRLF = b"\r\n"
 HEADER_END = CRLF + CRLF
 FALLBACK_OPEN_ISTAG = '"clamav-fail-open-unavailable"'
 FALLBACK_CLOSED_ISTAG = '"clamav-fail-closed-unavailable"'
+_SINGLETON_ICAP_HEADERS = {
+    "allow": "Allow",
+    "encapsulated": "Encapsulated",
+    "preview": "Preview",
+}
 
 
 class IcapProtocolError(Exception):
@@ -59,7 +64,12 @@ def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
         if not line or ":" not in line:
             continue
         name, value = line.split(":", 1)
-        headers[name.strip().lower()] = value.strip()
+        header_name = name.strip().lower()
+        if header_name in _SINGLETON_ICAP_HEADERS and header_name in headers:
+            display_name = _SINGLETON_ICAP_HEADERS[header_name]
+            message = f"duplicate ICAP {display_name} header"
+            raise IcapProtocolError(message)
+        headers[header_name] = value.strip()
     return lines[0] if lines else "", headers
 
 
