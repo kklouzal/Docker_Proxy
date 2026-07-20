@@ -40,19 +40,24 @@ def _parse_headers(lines: list[str]) -> dict[str, str]:
     return headers
 
 
-def _parse_encapsulated_offsets(value: str) -> dict[str, int]:
+def _parse_encapsulated_offsets(value: str) -> dict[str, int] | None:
     offsets: dict[str, int] = {}
+    last_offset = -1
     for item in (value or "").split(","):
         if "=" not in item:
-            continue
+            return None
         name, raw_offset = item.split("=", 1)
         name = name.strip().lower()
-        try:
-            offset = int(raw_offset.strip())
-        except ValueError:
-            continue
-        if name and offset >= 0:
-            offsets[name] = offset
+        raw_offset = raw_offset.strip()
+        if not raw_offset.isdigit():
+            return None
+        offset = int(raw_offset)
+        if not name or name in offsets or offset < last_offset:
+            return None
+        offsets[name] = offset
+        last_offset = offset
+    if "req-body" in offsets and "null-body" in offsets:
+        return None
     return offsets
 
 
@@ -62,6 +67,8 @@ def _encapsulated_http_request(data: bytes) -> bytes:
         header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:],
     )
     offsets = _parse_encapsulated_offsets(headers.get("encapsulated", ""))
+    if offsets is None or "req-hdr" not in offsets:
+        return b""
     start = int(offsets.get("req-hdr", 0) or 0)
     end_candidates = [
         int(offsets[name])
@@ -380,6 +387,8 @@ def _read_icap_message(
         header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:],
     )
     offsets = _parse_encapsulated_offsets(headers.get("encapsulated", ""))
+    if offsets is None:
+        return bytes(data), b"", True
     if "req-hdr" not in offsets:
         header_end = len(header_blob) + len(b"\r\n\r\n")
         return bytes(data[:header_end]), bytes(data[header_end:]), False

@@ -710,6 +710,49 @@ def test_adblock_icap_parse_http_request_rejects_ambiguous_non_connect_targets(
     assert url == ""
 
 
+def test_adblock_icap_rejects_duplicate_encapsulated_offsets() -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _encapsulated_http_request
+
+    blocked = (
+        b"GET http://ads.example/banner.js HTTP/1.1\r\n"
+        b"Host: ads.example\r\n\r\n"
+    )
+    later_allowed = (
+        b"GET http://allowed.example/page HTTP/1.1\r\n"
+        b"Host: allowed.example\r\n\r\n"
+    )
+    icap = (
+        b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: req-hdr=0, null-body="
+        + str(len(blocked)).encode("ascii")
+        + b", req-hdr="
+        + str(len(blocked)).encode("ascii")
+        + b", null-body="
+        + str(len(blocked) + len(later_allowed)).encode("ascii")
+        + b"\r\n\r\n"
+        + blocked
+        + later_allowed
+    )
+
+    assert _encapsulated_http_request(icap) == b""
+
+
+def test_adblock_icap_rejects_out_of_order_encapsulated_offsets() -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _encapsulated_http_request
+
+    http = b"GET http://ads.example/banner.js HTTP/1.1\r\nHost: ads.example\r\n\r\n"
+    icap = (
+        b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: req-hdr=10, null-body=0\r\n\r\n" + http
+    )
+
+    assert _encapsulated_http_request(icap) == b""
+
+
 def test_adblock_icap_extracts_request_headers_without_buffering_body() -> None:
     _add_web_to_path()
     from tools.adblock_icap_server import (
