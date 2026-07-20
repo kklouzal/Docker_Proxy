@@ -43,6 +43,18 @@ def _parse_headers(lines: list[str]) -> dict[str, str]:
     return headers
 
 
+def _header_values(lines: list[str], name: str) -> list[str]:
+    expected = name.strip().lower()
+    values: list[str] = []
+    for line in lines:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        if key.strip().lower() == expected:
+            values.append(value.strip())
+    return values
+
+
 def _has_malformed_header_line(lines: list[str]) -> bool:
     for line in lines:
         if ":" not in line:
@@ -66,6 +78,22 @@ def _has_duplicate_header(lines: list[str], name: str) -> bool:
             return True
         seen = True
     return False
+
+
+def _has_invalid_preview_header(lines: list[str], *, max_preview_bytes: int) -> bool:
+    values = _header_values(lines, "preview")
+    if not values:
+        return False
+    parsed_values: set[int] = set()
+    max_preview_bytes = max(0, int(max_preview_bytes or 0))
+    for value in values:
+        if not value.isdigit():
+            return True
+        preview_bytes = int(value)
+        if preview_bytes > max_preview_bytes:
+            return True
+        parsed_values.add(preview_bytes)
+    return len(parsed_values) > 1
 
 
 def _parse_encapsulated_offsets(value: str) -> dict[str, int] | None:
@@ -445,6 +473,8 @@ def _read_icap_message(
     header_lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:]
     if _has_malformed_header_line(header_lines):
         return bytes(data), b"", True
+    if _has_invalid_preview_header(header_lines, max_preview_bytes=max_bytes):
+        return bytes(data), b"", True
     if _has_duplicate_header(header_lines, "encapsulated"):
         return bytes(data), b"", True
     headers = _parse_headers(header_lines)
@@ -522,15 +552,19 @@ def _read_icap_message(
 
 
 def _connection_close_requested(header_blob: bytes) -> bool:
-    headers = _parse_headers(
-        header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:],
-    )
-    tokens = {
-        item.strip().lower()
-        for item in headers.get("connection", "").split(",")
-        if item.strip()
+    header_lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()[
+        1:
+    ]
+    connection_values = _header_values(header_lines, "connection")
+    token_sets = {
+        frozenset(
+            item.strip().lower()
+            for item in value.split(",")
+            if item.strip()
+        )
+        for value in connection_values
     }
-    return "close" in tokens
+    return any("close" in tokens for tokens in token_sets) or len(token_sets) > 1
 
 
 def _send_icap_response(sock: socket.socket, response: bytes) -> bool:

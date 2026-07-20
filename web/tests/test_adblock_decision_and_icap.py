@@ -1007,6 +1007,91 @@ def test_adblock_icap_preserves_pipelined_request_after_valid_preview_zero() -> 
     assert force_close is False
 
 
+def test_adblock_icap_allows_duplicate_equal_preview_zero_before_pipeline() -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _read_icap_message
+
+    http = (
+        b"POST http://ads.example/collect HTTP/1.1\r\n"
+        b"Host: ads.example\r\n"
+        b"Content-Length: 7\r\n\r\n"
+    )
+    headers = (
+        b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Preview: 0\r\n"
+        b"Preview: 0\r\n"
+        b"Encapsulated: req-hdr=0, req-body="
+        + str(len(http)).encode("ascii")
+        + b"\r\n\r\n"
+    )
+    next_req = (
+        b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: null-body=0\r\n\r\n"
+    )
+    sock = _ChunkedSocket([headers + http + b"0\r\n\r\n" + next_req])
+
+    message, pending, force_close = _read_icap_message(
+        sock,
+        max_bytes=65536,
+        max_body_drain_bytes=65536,
+        timeout_seconds=5.0,
+    )
+
+    assert message.endswith(b"0\r\n\r\n")
+    assert pending == next_req
+    assert force_close is False
+
+
+@pytest.mark.parametrize(
+    "preview_headers",
+    [
+        [b"Preview: -1\r\n"],
+        [b"Preview: +0\r\n"],
+        [b"Preview: \r\n"],
+        [b"Preview: 999999999999999999999999\r\n"],
+        [b"Preview: 0\r\n", b"Preview: 1\r\n"],
+    ],
+)
+def test_adblock_icap_rejects_malformed_or_conflicting_preview_before_pipeline(
+    preview_headers: list[bytes],
+) -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _read_icap_message
+
+    http = (
+        b"POST http://allowed.example/collect HTTP/1.1\r\n"
+        b"Host: allowed.example\r\n"
+        b"Content-Length: 7\r\n\r\n"
+    )
+    headers = (
+        b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        + b"".join(preview_headers)
+        + b"Encapsulated: req-hdr=0, req-body="
+        + str(len(http)).encode("ascii")
+        + b"\r\n\r\n"
+    )
+    next_req = (
+        b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: null-body=0\r\n\r\n"
+    )
+    request = headers + http + b"0\r\n\r\n" + next_req
+
+    message, pending, force_close = _read_icap_message(
+        _ChunkedSocket([request]),
+        max_bytes=65536,
+        max_body_drain_bytes=65536,
+        timeout_seconds=5.0,
+    )
+
+    assert message == request
+    assert pending == b""
+    assert force_close is True
+
+
 @pytest.mark.parametrize("chunk_line", [b"\r\n", b"+0\r\n", b"-0\r\n"])
 def test_adblock_icap_rejects_empty_or_signed_preview_chunk_size(
     chunk_line: bytes,
@@ -1474,6 +1559,78 @@ def test_adblock_icap_server_honors_connection_close_token_lists(
         )
         assert response.startswith(b"ICAP/1.0 200")
         assert b"Connection: close" in response
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ([b"Connection: keep-alive\r\n"], False),
+        ([b"Connection: keep-alive, Close\t\r\n"], True),
+        ([b"Connection: keep-alive\r\n", b"Connection: keep-alive\r\n"], False),
+        ([b"Connection: close\r\n", b"Connection: close\r\n"], True),
+        ([b"Connection: close\r\n", b"Connection: keep-alive\r\n"], True),
+        ([b"Connection: keep-alive\r\n", b"Connection: upgrade\r\n"], True),
+    ],
+)
+def test_adblock_icap_connection_close_requested_handles_duplicate_lists(
+    headers: list[bytes],
+    expected: bool,
+) -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _connection_close_requested
+
+    header_blob = (
+        b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        + b"".join(headers)
+        + b"Encapsulated: null-body=0"
+    )
+
+    assert _connection_close_requested(header_blob) is expected
+
+
+def test_adblock_icap_server_closes_on_duplicate_conflicting_connection(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, [])
+    log_path = tmp_path / "cicap-access.log"
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = (
+            b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Connection: close\r\n"
+            b"Connection: keep-alive\r\n"
+            b"Encapsulated: null-body=0\r\n\r\n"
+        )
+        next_req = (
+            b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Encapsulated: null-body=0\r\n\r\n"
+        )
+        with socket.create_connection(("127.0.0.1", port), timeout=2.0) as sock:
+            sock.settimeout(2.0)
+            sock.sendall(req + next_req)
+            responses = _recv_icap_response_count(sock, 2)
+
+        assert responses.count(b"ICAP/1.0 ") == 1
+        assert responses.startswith(b"ICAP/1.0 200")
+        assert b"Connection: close" in responses
     finally:
         server.shutdown()
         server.server_close()
