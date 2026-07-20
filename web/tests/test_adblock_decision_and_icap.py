@@ -618,6 +618,98 @@ def test_adblock_icap_parse_http_request_preserves_scheme_relative_authority() -
     assert headers["host"] == "safe.example"
 
 
+@pytest.mark.parametrize(
+    ("http", "expected"),
+    [
+        (
+            (
+                b"GET /banner.js HTTP/1.1\r\n"
+                b"Host: ads.example\r\n"
+                b"User-Agent: probe\r\n\r\n"
+            ),
+            "http://ads.example/banner.js",
+        ),
+        (
+            (
+                b"GET /banner.js HTTP/1.1\r\n"
+                b"Host: ads.example:8080\r\n"
+                b"X-Forwarded-Proto: https\r\n\r\n"
+            ),
+            "https://ads.example:8080/banner.js",
+        ),
+        (
+            (
+                b"GET /banner.js HTTP/1.1\r\n"
+                b"Host: [2001:db8::20]:443\r\n\r\n"
+            ),
+            "http://[2001:db8::20]:443/banner.js",
+        ),
+        (
+            (
+                b"GET http://ads.example/banner.js HTTP/1.1\r\n"
+                b"Host: safe.example\r\n"
+                b"X-Forwarded-Proto: https\r\n\r\n"
+            ),
+            "http://ads.example/banner.js",
+        ),
+    ],
+)
+def test_adblock_icap_parse_http_request_accepts_unambiguous_non_connect_targets(
+    http: bytes,
+    expected: str,
+) -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _parse_http_request
+
+    method, url, _headers = _parse_http_request(http)
+
+    assert method == "GET"
+    assert url == expected
+    parsed = urlsplit(url)
+    assert parsed.geturl() == url
+    assert parsed.netloc
+    assert parsed.hostname
+    assert parsed.username is None
+    assert parsed.password is None
+
+
+@pytest.mark.parametrize(
+    "http",
+    [
+        b"GET /banner.js HTTP/1.1\r\nHost: \r\n\r\n",
+        b"GET /banner.js HTTP/1.1\r\nHost: :80\r\n\r\n",
+        b"GET /banner.js HTTP/1.1\r\nHost: ads.example:bad\r\n\r\n",
+        b"GET /banner.js HTTP/1.1\r\nHost: ads.example:99999\r\n\r\n",
+        b"GET /banner.js HTTP/1.1\r\nHost: safe.example@ads.example\r\n\r\n",
+        b"GET /banner.js HTTP/1.1\r\nHost: ads.example/path\r\n\r\n",
+        b"GET /banner.js HTTP/1.1\r\nHost: ads.example?slot=1\r\n\r\n",
+        b"GET /banner.js HTTP/1.1\r\nHost: ads.example#frag\r\n\r\n",
+        b"GET /banner.js HTTP/1.1\r\nHost: ads.example%2f.safe\r\n\r\n",
+        b"GET /banner.js HTTP/1.1\r\nHost: ads.example\\@safe.example\r\n\r\n",
+        b"GET /banner.js HTTP/1.1\r\nHost: [2001:db8::20\r\n\r\n",
+        b"GET /banner.js HTTP/1.1 extra\r\nHost: ads.example\r\n\r\n",
+        b"GET /banner.js#frag HTTP/1.1\r\nHost: ads.example\r\n\r\n",
+        b"GET //safe.example@ads.example/banner.js HTTP/1.1\r\nHost: safe.example\r\n\r\n",
+        b"GET //ads.example:bad/banner.js HTTP/1.1\r\nHost: safe.example\r\n\r\n",
+        b"GET //ads.example/banner.js#frag HTTP/1.1\r\nHost: safe.example\r\n\r\n",
+        b"GET //ads.example%2f.safe/banner.js HTTP/1.1\r\nHost: safe.example\r\n\r\n",
+        b"GET //ads.example\\@safe.example/banner.js HTTP/1.1\r\nHost: safe.example\r\n\r\n",
+        b"GET http://safe.example@ads.example/banner.js HTTP/1.1\r\nHost: safe.example\r\n\r\n",
+        b"GET http://ads.example:bad/banner.js HTTP/1.1\r\nHost: safe.example\r\n\r\n",
+        b"GET http://ads.example/banner.js#frag HTTP/1.1\r\nHost: safe.example\r\n\r\n",
+    ],
+)
+def test_adblock_icap_parse_http_request_rejects_ambiguous_non_connect_targets(
+    http: bytes,
+) -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _parse_http_request
+
+    _method, url, _headers = _parse_http_request(http)
+
+    assert url == ""
+
+
 def test_adblock_icap_extracts_request_headers_without_buffering_body() -> None:
     _add_web_to_path()
     from tools.adblock_icap_server import (

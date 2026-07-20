@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+_ALLOWED_URL_SCHEMES = {"http", "https"}
+
 # This script lives in /app/tools; add /app to sys.path.
 here = Path(Path(__file__).parent).resolve()
 app_root = Path(os.path.join(here, "..")).resolve()
@@ -70,32 +72,88 @@ def _encapsulated_http_request(data: bytes) -> bytes:
     return rest[start:end]
 
 
-def _connect_authority_url(authority: str) -> str:
-    if not authority:
+def _has_control_or_backslash(value: str) -> bool:
+    return any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in value) or "\\" in value
+
+
+def _has_authority_contamination(value: str) -> bool:
+    return _has_control_or_backslash(value) or "%" in value
+
+
+def _valid_absolute_or_scheme_relative_url(target: str, *, scheme: str = "") -> str:
+    if not target or _has_control_or_backslash(target):
         return ""
-    if any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in authority):
-        return ""
-    if any(ch in authority for ch in ("%", "\\")):
-        # Do not let encoded delimiters such as %2f, %3a, or %40, or
-        # backslash-vs-slash parser disagreement, alter how a malformed CONNECT
-        # target is interpreted by the URL parser/decision engine.
-        # Authority-form should be a literal host:port token here.
-        return ""
-    candidate = f"https://{authority}/"
     try:
-        parsed = urlsplit(candidate)
+        parsed = urlsplit(target)
         port = parsed.port
     except ValueError:
         return ""
-    if parsed.netloc != authority:
-        # Path, query, fragment, or parser-normalized control contamination in
-        # the authority token means this was not a clean authority-form target.
+    if not parsed.netloc or not parsed.hostname:
+        return ""
+    if _has_authority_contamination(parsed.netloc):
         return ""
     if parsed.username is not None or parsed.password is not None:
         return ""
-    if not parsed.hostname or port is None or port <= 0:
+    if port is not None and port <= 0:
+        return ""
+    expected_scheme = (parsed.scheme or scheme).lower()
+    if expected_scheme not in _ALLOWED_URL_SCHEMES:
+        return ""
+    if parsed.scheme and parsed.scheme.lower() not in _ALLOWED_URL_SCHEMES:
+        return ""
+    if parsed.fragment:
+        return ""
+    if parsed.path and not parsed.path.startswith("/"):
+        return ""
+    normalized = urlunsplit(
+        (
+            expected_scheme,
+            parsed.netloc,
+            parsed.path or "/",
+            parsed.query,
+            "",
+        ),
+    )
+    reparsed = urlsplit(normalized)
+    try:
+        normalized_port = reparsed.port
+    except ValueError:
+        return ""
+    if (
+        reparsed.scheme != expected_scheme
+        or reparsed.netloc != parsed.netloc
+        or reparsed.hostname != parsed.hostname
+        or reparsed.username is not None
+        or reparsed.password is not None
+        or normalized_port != port
+    ):
+        return ""
+    return normalized
+
+
+def _authority_url(authority: str, *, scheme: str, require_port: bool = False) -> str:
+    if _has_authority_contamination(authority) or any(
+        ch in authority for ch in ("/", "?", "#")
+    ):
+        return ""
+    candidate = _valid_absolute_or_scheme_relative_url(f"//{authority}/", scheme=scheme)
+    if not candidate:
+        return ""
+    try:
+        port = urlsplit(candidate).port
+    except ValueError:
+        return ""
+    if require_port and port is None:
         return ""
     return candidate
+
+
+def _connect_authority_url(authority: str) -> str:
+    # Do not let encoded delimiters such as %2f, %3a, or %40, or
+    # backslash-vs-slash parser disagreement, alter how a malformed CONNECT
+    # target is interpreted by the URL parser/decision engine.
+    # Authority-form should be a literal host:port token here.
+    return _authority_url(authority, scheme="https", require_port=True)
 
 
 def _parse_http_request(data: bytes) -> tuple[str, str, dict[str, str]]:
@@ -109,27 +167,30 @@ def _parse_http_request(data: bytes) -> tuple[str, str, dict[str, str]]:
     method = parts[0].upper() if parts else ""
     target = parts[1] if len(parts) > 1 else ""
     headers = _parse_headers(lines[1:])
-    connect_authority_line = (
-        method == "CONNECT"
-        and len(parts) == 3
-        and request_line == f"{parts[0]} {parts[1]} {parts[2]}"
+    valid_request_line = (
+        len(parts) == 3 and request_line == f"{parts[0]} {parts[1]} {parts[2]}"
     )
+    if not valid_request_line:
+        return method, "", headers
     scheme = "https" if headers.get("x-forwarded-proto") == "https" else "http"
     if method == "CONNECT" and target and "://" not in target:
         # Squid sends CONNECT requests to REQMOD helpers in authority form
         # ("host:port") rather than absolute-form.  Normalize only well-formed
         # authority-form targets to HTTPS URLs so malformed CONNECT targets do
         # not manufacture misleading hosts/paths for the decision engine.
-        target = _connect_authority_url(target) if connect_authority_line else ""
+        target = _connect_authority_url(target)
     elif target.startswith("//"):
-        parsed = urlsplit(target)
-        if parsed.netloc:
-            target = urlunsplit(
-                (scheme, parsed.netloc, parsed.path or "/", parsed.query, ""),
-            )
+        target = _valid_absolute_or_scheme_relative_url(target, scheme=scheme)
     elif target.startswith("/"):
         host = headers.get("host", "")
-        target = f"{scheme}://{host}{target}" if host else target
+        host_url = _authority_url(host, scheme=scheme) if host else ""
+        target = (
+            _valid_absolute_or_scheme_relative_url(host_url.rstrip("/") + target)
+            if host_url
+            else ""
+        )
+    elif "://" in target:
+        target = _valid_absolute_or_scheme_relative_url(target)
     return method, target, headers
 
 
