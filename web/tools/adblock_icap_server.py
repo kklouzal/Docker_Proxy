@@ -347,12 +347,22 @@ def _block_response(url: str, raw_rule: str, *, close: bool = False) -> bytes:
 
 
 def _parse_chunk_size_line(line: bytes) -> int | None:
-    size_token = line.split(b";", 1)[0]
+    parts = line.split(b";")
+    size_token = parts[0]
     if not size_token or not all(
         ch in b"0123456789abcdefABCDEF" for ch in size_token
     ):
         return None
-    return int(size_token, 16)
+    size = int(size_token, 16)
+    ieof_seen = False
+    for extension in parts[1:]:
+        name = extension.split(b"=", 1)[0].strip().lower()
+        if name != b"ieof":
+            continue
+        if ieof_seen or size != 0:
+            return None
+        ieof_seen = True
+    return size
 
 
 def _chunk_trailers_parse(

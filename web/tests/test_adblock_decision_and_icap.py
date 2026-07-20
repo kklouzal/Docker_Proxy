@@ -1708,6 +1708,119 @@ def test_adblock_icap_server_handles_coalesced_persistent_transactions(
         server.server_close()
 
 
+@pytest.mark.parametrize(
+    ("case", "body"),
+    [
+        ("empty-size", b"\r\npayload\r\n0\r\n\r\n"),
+        ("non-hex-size", b"G\r\npayload\r\n0\r\n\r\n"),
+        ("signed-size", b"+7\r\npayload\r\n0\r\n\r\n"),
+        ("prefixed-size", b"0x7\r\npayload\r\n0\r\n\r\n"),
+        ("short-payload", b"8\r\npayload\r\n0\r\n\r\n"),
+        ("missing-payload-crlf", b"7\r\npayload0\r\n\r\n"),
+        ("eof-before-zero", b"7\r\npayload\r\n"),
+        ("malformed-trailer", b"0\r\nBad Trailer\r\n\r\n"),
+        ("duplicate-ieof", b"0;ieof;ieof\r\n\r\n"),
+        ("illegal-ieof", b"1;ieof\r\nx\r\n0\r\n\r\n"),
+        ("max-size-overflow", b"2001\r\n" + (b"x" * 8192) + b"\r\n0\r\n\r\n"),
+    ],
+)
+def test_adblock_icap_unpreviewed_body_drain_rejects_malformed_framing(
+    case: str,
+    body: bytes,
+) -> None:
+    del case
+    _add_web_to_path()
+    from tools.adblock_icap_server import _drain_chunked_body
+
+    assert (
+        _drain_chunked_body(
+            _ChunkedSocket([]),
+            body,
+            max_drain_bytes=8192,
+        )
+        is False
+    )
+
+
+def test_adblock_icap_unpreviewed_body_drain_accepts_valid_framing() -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _drain_chunked_body
+
+    assert (
+        _drain_chunked_body(
+            _ChunkedSocket([]),
+            b"7; ext=value\r\npayload\r\n0; ieof\r\nX-Trailer: ok\r\n\r\n",
+            max_drain_bytes=8192,
+        )
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"G\r\npayload\r\n0\r\n\r\n",
+        b"8\r\npayload\r\n0\r\n\r\n",
+        b"0\r\nBad Trailer\r\n\r\n",
+        b"0;ieof;ieof\r\n\r\n",
+        b"1;ieof\r\nx\r\n0\r\n\r\n",
+        b"0\r\n\r\nJUNK",
+    ],
+)
+def test_adblock_icap_server_allows_and_closes_after_malformed_unpreviewed_body(
+    tmp_path: Path,
+    body: bytes,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, [])
+    log_path = tmp_path / "cicap-access.log"
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+        request_timeout_seconds=0.2,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        http = (
+            b"POST http://allowed.example/collect HTTP/1.1\r\n"
+            b"Host: allowed.example\r\n"
+            b"Content-Length: 7\r\n\r\n"
+        )
+        malformed_req = (
+            b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Encapsulated: req-hdr=0, req-body="
+            + str(len(http)).encode("ascii")
+            + b"\r\n\r\n"
+            + http
+            + body
+        )
+        next_req = (
+            b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Encapsulated: null-body=0\r\n\r\n"
+        )
+        with socket.create_connection(("127.0.0.1", port), timeout=2.0) as sock:
+            sock.settimeout(2.0)
+            sock.sendall(malformed_req + next_req)
+            responses = _recv_icap_response_count(sock, 2)
+
+        assert responses.count(b"ICAP/1.0 ") == 1
+        assert responses.startswith(b"ICAP/1.0 204")
+        assert b"Connection: close" in responses
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_adblock_icap_server_drains_and_closes_after_unpreviewed_request_body(
     tmp_path: Path,
 ) -> None:
