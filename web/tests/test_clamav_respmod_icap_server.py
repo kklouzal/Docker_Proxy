@@ -236,6 +236,27 @@ def test_icap_chunked_body_handles_preview_continue() -> None:
     assert continues == 1
 
 
+def test_icap_chunked_body_only_treats_ieof_extension_as_preview_eof() -> None:
+    server = _load_server()
+    continues = 0
+
+    def on_continue() -> None:
+        nonlocal continues
+        continues += 1
+
+    stream = io.BytesIO(b"2\r\nhe\r\n0; notieof\r\n\r\n3\r\nllo\r\n0\r\n\r\n")
+
+    body, remainder = server.read_icap_chunked_body(
+        stream,
+        preview=True,
+        continue_callback=on_continue,
+    )
+
+    assert body == b"hello"
+    assert remainder == b""
+    assert continues == 1
+
+
 def test_clean_icap_response_replays_body_even_when_204_allowed() -> None:
     server = _load_server()
 

@@ -196,6 +196,14 @@ def _drain_chunk_trailers(stream: BinaryIO, initial: bytes = b"") -> bytes:
             return remainder
 
 
+def _chunk_has_ieof_extension(line: str) -> bool:
+    for extension in line.split(";")[1:]:
+        name = extension.split("=", 1)[0].strip().lower()
+        if name == "ieof":
+            return True
+    return False
+
+
 def read_icap_chunked_body(
     stream: BinaryIO,
     initial: bytes = b"",
@@ -229,7 +237,11 @@ def read_icap_chunked_body(
             raise IcapProtocolError(message) from exc
         if size == 0:
             remainder = _drain_chunk_trailers(stream, remainder)
-            if preview and not preview_terminator_seen and "ieof" not in line.lower():
+            if (
+                preview
+                and not preview_terminator_seen
+                and not _chunk_has_ieof_extension(line)
+            ):
                 preview_terminator_seen = True
                 if continue_callback is not None:
                     continue_callback()
