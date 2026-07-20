@@ -1564,6 +1564,80 @@ def test_post_preview_scan_write_failure_fails_open_after_100_continue() -> None
     assert b"ICAP/1.0 204 No Content\r\n" in response
 
 
+def test_preview_terminator_without_ieof_eof_after_continue_is_not_clean_fail_open() -> None:
+    server = _load_server()
+    scanner = RecordingScanner()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return scanner
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.2,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_preview_respmod_request(port).replace(
+            b"2\r\nhe\r\n0\r\n\r\n3\r\nllo\r\n0\r\n\r\n",
+            b"2\r\nhe\r\n0\r\n\r\n",
+        )
+        response = _recv_icap_exchange(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scanner.closed is True
+    assert scanner.chunks == [b"he"]
+    assert scanner.finished is False
+    assert response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
+    assert b"ICAP/1.0 200 OK\r\n" in response
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"he\r\n0\r\n\r\n" not in response
+
+
+def test_duplicate_preview_zero_terminator_does_not_cleanly_replay_partial_body() -> None:
+    server = _load_server()
+    scanner = RecordingScanner()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return scanner
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_preview_respmod_request(port).replace(
+            b"2\r\nhe\r\n0\r\n\r\n3\r\nllo\r\n0\r\n\r\n",
+            b"2\r\nhe\r\n0\r\n\r\n0\r\n\r\n3\r\nllo\r\n0\r\n\r\n",
+        )
+        response = _recv_icap_exchange(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scanner.closed is True
+    assert scanner.chunks == [b"he"]
+    assert scanner.finished is False
+    assert response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
+    assert b"ICAP/1.0 200 OK\r\n" in response
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"2\r\nhe\r\n0\r\n\r\n" not in response
+
+
 def test_malformed_zero_chunk_trailer_after_valid_chunk_fails_closed() -> None:
     server = _load_server()
     scanner = RecordingScanner()

@@ -333,6 +333,7 @@ def read_icap_chunked_body(
     total_size = 0
     remainder = initial
     preview_terminator_seen = False
+    post_preview_chunk_seen = False
     while True:
         line, remainder = _read_chunk_header(stream, remainder)
         size_token = line.split(";", 1)[0].strip()
@@ -352,6 +353,9 @@ def read_icap_chunked_body(
                 if continue_callback is not None:
                     continue_callback()
                 continue
+            if preview and preview_terminator_seen and not post_preview_chunk_seen:
+                message = "duplicate ICAP preview terminator without continuation"
+                raise IcapProtocolError(message)
             return bytes(body), remainder
         if size > max_bytes - total_size:
             message = f"ICAP body exceeds {max_bytes} bytes"
@@ -369,6 +373,8 @@ def read_icap_chunked_body(
             chunk_callback(decoded)
         if buffer_body:
             body.extend(decoded)
+        if preview_terminator_seen:
+            post_preview_chunk_seen = True
 
 
 def _parse_clamd_response(response: str) -> ClamdResult:
