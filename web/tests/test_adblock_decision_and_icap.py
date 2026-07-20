@@ -357,6 +357,8 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
         "http://[::1",
         "http://user:pass@[::1",
         "http://example.com]",
+        "https://ads.example:bad/banner.js",
+        "https://ads.example:99999/banner.js",
     ],
 )
 def test_adblock_decision_malformed_request_urls_do_not_raise(
@@ -375,6 +377,23 @@ def test_adblock_decision_malformed_request_urls_do_not_raise(
     assert decision.blocked is False
     assert decision.reason == "no-match"
     assert decision.rule_id == ""
+
+
+def test_adblock_decision_percent_encoded_authority_delimiters_do_not_match_suffixes(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+
+    decision = engine.decide("https://safe.example%2f.ads.example/banner.js")
+
+    assert decision.blocked is False
+    assert decision.reason == "no-match"
+    assert engine.decide("https://user:pass@sub.ads.example/banner.js").blocked is True
 
 
 @pytest.mark.parametrize(

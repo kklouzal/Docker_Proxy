@@ -212,6 +212,33 @@ def test_lookup_returns_domain_anchored_wildcard_host_subdomain_candidates(
     assert "||google.*/pagead/lvz?$script" in candidates
 
 
+def test_adblock_lookup_rejects_malformed_authority_candidates(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        ["||ads.example^", "||safe.example^", "||[2001:db8::20]^"],
+    )
+
+    _add_web_to_path()
+    from services.adblock_lookup import AdblockLookupIndex
+
+    lookup = AdblockLookupIndex(db_path)
+
+    assert _raws(lookup.candidate_rules("http://[::1")) == set()
+    assert _raws(lookup.candidate_rules("https://ads.example:bad/banner.js")) == set()
+    assert _raws(lookup.candidate_rules("https://ads.example:99999/banner.js")) == set()
+    assert _raws(
+        lookup.candidate_rules("https://safe.example%2f.ads.example/banner.js")
+    ) == set()
+    assert "||ads.example^" in _raws(
+        lookup.candidate_rules("https://user:pass@sub.ads.example/banner.js")
+    )
+    assert "||[2001:db8::20]^" in _raws(
+        lookup.candidate_rules("https://[2001:db8::20]/banner.js")
+    )
+
+
 def test_lookup_hydrates_payload_from_jsonl_for_legacy_sqlite_schema(
     tmp_path: Path,
 ) -> None:

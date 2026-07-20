@@ -9,9 +9,10 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
+from services.adblock_hosts import adblock_host_matches as _host_matches
 from services.adblock_hosts import normalize_adblock_host as _normalize_host
+from services.adblock_hosts import safe_adblock_urlsplit as _safe_urlsplit
 from services.adblock_lookup import AdblockLookupIndex
 from services.adblock_patterns import abp_to_regex as _abp_to_regex
 
@@ -61,14 +62,6 @@ class AdblockDecision:
     action: str = "allow"
     reason: str = "no-match"
     list_key: str = ""
-
-
-def _host_matches(host: str, rule_host: str) -> bool:
-    host = _normalize_host(host)
-    rule_host = _normalize_host(rule_host)
-    return bool(
-        host and rule_host and (host == rule_host or host.endswith("." + rule_host))
-    )
 
 
 def _domain_matches(host: str, domain: str) -> bool:
@@ -147,15 +140,6 @@ def _request_suffix(parsed: Any) -> str:
     if parsed.fragment:
         suffix += "#" + parsed.fragment
     return suffix
-
-
-def _safe_urlsplit(url: str) -> Any | None:
-    try:
-        parsed = urlsplit(url or "")
-        _hostname = parsed.hostname
-        return parsed
-    except ValueError:
-        return None
 
 
 def infer_resource_type(
@@ -406,7 +390,7 @@ class AdblockDecisionEngine:
         parsed = _safe_urlsplit(url)
         if parsed is None:
             return False
-        request_host = _normalize_host(parsed.hostname or parsed.netloc or "")
+        request_host = _normalize_host(parsed.hostname or "")
         source_parsed = _safe_urlsplit(source_url)
         source_host = _normalize_host(
             source_parsed.hostname if source_parsed is not None else "",

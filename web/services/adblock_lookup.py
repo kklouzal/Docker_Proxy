@@ -8,9 +8,12 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
+from services.adblock_hosts import (
+    adblock_host_suffix_candidates as _host_suffix_candidates,
+)
 from services.adblock_hosts import normalize_adblock_host as _normalize_host
+from services.adblock_hosts import safe_adblock_urlsplit as _safe_urlsplit
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{2,}", re.IGNORECASE)
 _DEFAULT_SQLITE_CACHE_KIB = 32768
@@ -38,16 +41,6 @@ class _HostPatternCandidate:
         self.host_pattern = host_pattern
         self.pattern_kind = pattern_kind
         self.rule_id = rule_id
-
-
-def _host_suffix_candidates(host: str) -> list[str]:
-    normalized = _normalize_host(host)
-    if not normalized or normalized.startswith("["):
-        return [normalized] if normalized else []
-    labels = [part for part in normalized.split(".") if part]
-    if len(labels) < 2:
-        return [normalized]
-    return [".".join(labels[index:]) for index in range(len(labels) - 1)]
 
 
 def _url_literal_tokens(url: str) -> list[str]:
@@ -257,8 +250,10 @@ class AdblockLookupIndex:
         *,
         resource_type: str = "",
     ) -> set[str]:
-        parsed = urlsplit(url or "")
-        host = _normalize_host(parsed.hostname or parsed.netloc or "")
+        parsed = _safe_urlsplit(url)
+        if parsed is None:
+            return set()
+        host = _normalize_host(parsed.hostname or "")
         rule_ids: set[str] = set()
 
         rule_ids.update(
