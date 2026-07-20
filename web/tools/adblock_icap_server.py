@@ -281,32 +281,56 @@ def _block_response(url: str, raw_rule: str, *, close: bool = False) -> bytes:
     return icap_headers + http_headers + chunk
 
 
-def _preview_body_end(rest: bytes, body_offset: int) -> int | None:
-    if body_offset < 0 or len(rest) < body_offset:
+def _parse_chunk_size_line(line: bytes) -> int | None:
+    size_token = line.split(b";", 1)[0]
+    if not size_token or not all(
+        ch in b"0123456789abcdefABCDEF" for ch in size_token
+    ):
         return None
+    return int(size_token, 16)
+
+
+def _chunk_trailers_parse(
+    data: bytes | bytearray,
+    cursor: int,
+) -> tuple[int | None, bool]:
+    while True:
+        line_end = data.find(_CRLF, cursor)
+        if line_end < 0:
+            return None, False
+        if line_end == cursor:
+            return cursor + len(_CRLF), False
+        trailer_line = data[cursor:line_end]
+        field_name = trailer_line.split(b":", 1)[0]
+        if b":" not in trailer_line or not field_name or any(
+            ch <= 0x20 or ch >= 0x7F for ch in field_name
+        ):
+            return None, True
+        cursor = line_end + len(_CRLF)
+
+
+def _preview_body_parse(rest: bytes, body_offset: int) -> tuple[int | None, bool]:
+    if body_offset < 0 or len(rest) < body_offset:
+        return None, True
     cursor = body_offset
     while True:
         line_end = rest.find(_CRLF, cursor)
         if line_end < 0:
-            return None
-        size_token = rest[cursor:line_end].split(b";", 1)[0].strip()
-        try:
-            chunk_size = int(size_token or b"0", 16)
-        except ValueError:
-            return None
+            return None, False
+        chunk_size = _parse_chunk_size_line(rest[cursor:line_end])
+        if chunk_size is None:
+            return None, True
         cursor = line_end + len(_CRLF)
         if chunk_size == 0:
-            trailers_end = rest.find(_CRLF + _CRLF, cursor)
-            if trailers_end >= 0:
-                return trailers_end + len(_CRLF + _CRLF)
-            if rest[cursor : cursor + len(_CRLF)] == _CRLF:
-                return cursor + len(_CRLF)
-            return None
+            trailers_end, invalid_trailers = _chunk_trailers_parse(rest, cursor)
+            if trailers_end is not None:
+                return trailers_end, False
+            return None, invalid_trailers
         cursor += chunk_size
         if len(rest) < cursor + len(_CRLF):
-            return None
+            return None, False
         if rest[cursor : cursor + len(_CRLF)] != _CRLF:
-            return None
+            return None, True
         cursor += len(_CRLF)
 
 
@@ -337,19 +361,17 @@ def _drain_chunked_body(
             if len(data) >= max_drain_bytes or not ensure(len(data) + 1):
                 return False
             line_end = data.find(_CRLF, cursor)
-        size_token = data[cursor:line_end].split(b";", 1)[0].strip()
-        try:
-            chunk_size = int(size_token or b"0", 16)
-        except ValueError:
+        chunk_size = _parse_chunk_size_line(bytes(data[cursor:line_end]))
+        if chunk_size is None:
             return False
         cursor = line_end + len(_CRLF)
         if chunk_size == 0:
             while True:
-                trailers_end = data.find(_CRLF + _CRLF, cursor)
-                if trailers_end >= 0:
+                trailers_end, invalid_trailers = _chunk_trailers_parse(data, cursor)
+                if trailers_end is not None:
                     return True
-                if data[cursor : cursor + len(_CRLF)] == _CRLF:
-                    return True
+                if invalid_trailers:
+                    return False
                 if len(data) >= max_drain_bytes or not ensure(len(data) + 1):
                     return False
         if not ensure(cursor + chunk_size + len(_CRLF)):
@@ -424,7 +446,8 @@ def _read_icap_message(
 
     if "preview" in headers and "req-body" in offsets:
         body_offset = int(offsets.get("req-body", 0) or 0)
-        while _preview_body_end(rest, body_offset) is None and len(data) < max_bytes:
+        body_end, invalid_preview = _preview_body_parse(rest, body_offset)
+        while body_end is None and not invalid_preview and len(data) < max_bytes:
             try:
                 chunk = sock.recv(min(8192, max_bytes - len(data)))
             except (TimeoutError, OSError):
@@ -434,8 +457,8 @@ def _read_icap_message(
                 break
             data.extend(chunk)
             rest += chunk
-        body_end = _preview_body_end(rest, body_offset)
-        if body_end is None:
+            body_end, invalid_preview = _preview_body_parse(rest, body_offset)
+        if body_end is None or invalid_preview:
             return bytes(data), b"", True
         message_end = len(header_blob) + len(b"\r\n\r\n") + body_end
         return bytes(data[:message_end]), bytes(data[message_end:]), force_close
