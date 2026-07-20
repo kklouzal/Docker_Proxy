@@ -534,6 +534,60 @@ def test_split_headers_accepts_repeated_unknown_extension_header() -> None:
     assert headers["encapsulated"] == "null-body=0"
 
 
+def test_split_headers_rejects_malformed_outer_field_lines() -> None:
+    runner = _load_runner()
+    cases = (
+        ("missing colon", b"Missing-Colon", "malformed ICAP header field line"),
+        ("empty name", b": value", "invalid ICAP header field name"),
+        ("whitespace before colon", b"Allow : 204", "invalid ICAP header field name"),
+        ("tab before colon", b"Preview\t: 0", "invalid ICAP header field name"),
+        ("invalid token", b"Bad/Name: value", "invalid ICAP header field name"),
+        ("non-ASCII name", b"X-\xff: value", "invalid ICAP header field name"),
+        ("control name", b"Bad\x1f: value", "invalid ICAP header field name"),
+        ("obs-fold without colon", b" folded", "obsolete folded ICAP header line"),
+        ("obs-fold with colon", b"\tFolded: value", "obsolete folded ICAP header line"),
+        ("NUL value", b"X-Value: ok\x00bad", "invalid ICAP header field value"),
+        ("control value", b"X-Value: ok\x1fbad", "invalid ICAP header field value"),
+        ("DEL value", b"X-Value: ok\x7fbad", "invalid ICAP header field value"),
+        (
+            "Encapsulated lookalike",
+            b"Encapsulated : null-body=0",
+            "invalid ICAP header field name",
+        ),
+        ("Allow lookalike", b"Allow : 204", "invalid ICAP header field name"),
+        ("Preview lookalike", b"Preview : 0", "invalid ICAP header field name"),
+    )
+
+    for name, field_line, expected in cases:
+        header = b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n" + field_line
+        try:
+            runner._split_headers(header)
+        except runner.IcapProtocolError as exc:
+            assert expected in str(exc), name
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"{name} outer ICAP header line was accepted"
+            raise AssertionError(message)
+
+
+def test_split_headers_preserves_valid_outer_tokens_ows_and_extensions() -> None:
+    runner = _load_runner()
+
+    start_line, headers = runner._split_headers(
+        b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
+        b"X_Token-Name!#$%&'*+-.^_`|~09AZaz: \t ok \t\r\n"
+        b"X-Unknown-Extension: clean; meta=1\r\n"
+        b"x-unknown-extension: replacement\r\n"
+        b"Allow:  204 \t\r\n"
+        b"Encapsulated: null-body=0"
+    )
+
+    assert start_line == "REQMOD icap://127.0.0.1/avrespmod ICAP/1.0"
+    assert headers["x_token-name!#$%&'*+-.^_`|~09azaz"] == "ok"
+    assert headers["x-unknown-extension"] == "replacement"
+    assert headers["allow"] == "204"
+    assert headers["encapsulated"] == "null-body=0"
+
+
 def test_fail_open_placeholder_returns_204_for_transactions() -> None:
     runner = _load_runner()
 
@@ -877,6 +931,71 @@ def test_fail_open_placeholder_rejects_duplicate_outer_preview_header() -> None:
     assert b"duplicate ICAP Preview header" in response
     assert not response.startswith(b"ICAP/1.0 100 Continue\r\n")
     assert b"test" not in response
+
+
+def test_fail_open_placeholder_rejects_malformed_outer_header_metadata() -> None:
+    runner = _load_runner()
+    response_header = b"HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n\r\n"
+    response_body_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+    request_header = (
+        b"POST /upload HTTP/1.1\r\n"
+        b"Content-Type: application/octet-stream\r\n"
+        b"Transfer-Encoding: chunked\r\n"
+        b"\r\n"
+    )
+    cases = (
+        (
+            "malformed Allow lookalike cannot enable 204",
+            b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Allow : 204\r\n"
+            + f"Encapsulated: res-hdr=0, null-body={len(response_header)}".encode(
+                "ascii"
+            )
+            + b"\r\n\r\n"
+            + response_header,
+            b"invalid ICAP header field name",
+            (b"ICAP/1.0 204 No Content\r\n",),
+        ),
+        (
+            "malformed Encapsulated lookalike cannot reach clean replay",
+            b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Allow: 204\r\n"
+            + f"Encapsulated : res-hdr=0, res-body={len(response_body_header)}".encode(
+                "ascii"
+            )
+            + b"\r\n\r\n"
+            + response_body_header
+            + b"5\r\nhello\r\n0\r\n\r\n",
+            b"invalid ICAP header field name",
+            (b"5\r\nhello\r\n0\r\n\r\n",),
+        ),
+        (
+            "malformed Preview lookalike cannot trigger preview continue",
+            b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Allow: 204\r\n"
+            b"Preview : 4\r\n"
+            + f"Encapsulated: req-hdr=0, req-body={len(request_header)}".encode(
+                "ascii"
+            )
+            + b"\r\n\r\n"
+            + request_header
+            + b"4\r\ntest\r\n0\r\n\r\n",
+            b"invalid ICAP header field name",
+            (b"ICAP/1.0 100 Continue\r\n", b"ICAP/1.0 204 No Content\r\n"),
+        ),
+    )
+
+    for name, request, expected_error, forbidden in cases:
+        response = _placeholder_raw_exchange(runner, request)
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected_error in response, name
+        for forbidden_bytes in forbidden:
+            assert forbidden_bytes not in response, name
 
 
 def _placeholder_preview_exchange(

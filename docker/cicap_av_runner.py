@@ -24,6 +24,7 @@ _CHUNK_OWS = b" \t"
 _CHUNK_TCHARS = frozenset(
     b"!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 )
+_ICAP_FIELD_NAME_TCHARS = _CHUNK_TCHARS
 _FORBIDDEN_ICAP_TRAILER_FIELDS = {
     b"allow",
     b"content-length",
@@ -73,21 +74,39 @@ def _conf_listen_address(conf_path: str) -> tuple[str, int]:
     return "127.0.0.1", int(os.environ.get("CICAP_AV_PORT", "14001") or "14001")
 
 
+def _validate_icap_field_line(line: bytes) -> tuple[str, str]:
+    if line[:1] in _CHUNK_OWS:
+        message = "obsolete folded ICAP header line"
+        raise IcapProtocolError(message)
+    if b":" not in line:
+        message = "malformed ICAP header field line"
+        raise IcapProtocolError(message)
+    raw_name, raw_value = line.split(b":", 1)
+    if not raw_name or any(ch not in _ICAP_FIELD_NAME_TCHARS for ch in raw_name):
+        message = "invalid ICAP header field name"
+        raise IcapProtocolError(message)
+    if any(ch != 0x09 and (ch < 0x20 or ch == 0x7F) for ch in raw_value):
+        message = "invalid ICAP header field value"
+        raise IcapProtocolError(message)
+    header_name = raw_name.decode("ascii").lower()
+    header_value = raw_value.strip(b" \t").decode("iso-8859-1")
+    return header_name, header_value
+
+
 def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
-    text = header_bytes.decode("iso-8859-1", errors="replace")
-    lines = text.split("\r\n")
+    lines = header_bytes.split(CRLF)
     headers: dict[str, str] = {}
     for line in lines[1:]:
-        if not line or ":" not in line:
+        if not line:
             continue
-        name, value = line.split(":", 1)
-        header_name = name.strip().lower()
+        header_name, header_value = _validate_icap_field_line(line)
         if header_name in _SINGLETON_ICAP_HEADERS and header_name in headers:
             display_name = _SINGLETON_ICAP_HEADERS[header_name]
             message = f"duplicate ICAP {display_name} header"
             raise IcapProtocolError(message)
-        headers[header_name] = value.strip()
-    return lines[0] if lines else "", headers
+        headers[header_name] = header_value
+    start_line = lines[0].decode("iso-8859-1", errors="replace") if lines else ""
+    return start_line, headers
 
 
 def _parse_encapsulated(value: str) -> dict[str, int]:
