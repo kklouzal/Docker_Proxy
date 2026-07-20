@@ -35,7 +35,8 @@ DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 DEFAULT_SQUID_204_BACKUP_LIMIT = 64 * 1024
 _ICAP_CHUNK_SIZE_RE = re.compile(r"[0-9A-Fa-f]{1,16}")
 _ENCAPSULATED_OFFSET_RE = re.compile(r"[0-9]+")
-_HTTP_TRANSFER_CODING_RE = re.compile(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+_HTTP_TOKEN_RE = re.compile(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+_HTTP_TRANSFER_CODING_RE = _HTTP_TOKEN_RE
 ISTAG = '"clamav-respmod-instream-1"'
 CLAMD_INSTREAM_COMMAND = b"zINSTREAM\0"
 CLAMD_REPLY_TERMINATOR = b"\0"
@@ -627,6 +628,18 @@ def _http_header_lines(http_header: bytes) -> list[bytes]:
     return header_block.split(CRLF) if header_block else []
 
 
+def _validate_http_header_field_names(http_header: bytes) -> None:
+    lines = _http_header_lines(http_header)
+    for line in lines[1:]:
+        if b":" not in line:
+            message = "malformed HTTP response header line"
+            raise IcapProtocolError(message)
+        name = line.split(b":", 1)[0]
+        if not name or not _HTTP_TOKEN_RE.fullmatch(name):
+            message = "malformed HTTP response header field name"
+            raise IcapProtocolError(message)
+
+
 def _http_response_allows_squid_204_backup(http_header: bytes) -> bool:
     """Return true only when Squid can safely use an ICAP 204 response.
 
@@ -966,6 +979,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     encapsulated_headers, offsets
                 )
                 http_header = encapsulated_headers[response_header_offset:body_offset]
+                _validate_http_header_field_names(http_header)
                 _http_declared_content_length(http_header)
                 can_use_204 = allow_204 and _http_response_allows_squid_204_backup(
                     http_header
@@ -998,6 +1012,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 http_header = encapsulated_headers[
                     response_header_offset : null_body_offset or 0
                 ]
+                _validate_http_header_field_names(http_header)
                 body_complete = True
                 result = self.server.scan_body(body)
                 can_use_204 = allow_204
