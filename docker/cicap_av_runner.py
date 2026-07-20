@@ -9,6 +9,7 @@ import socket
 import socketserver
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 TRUE_VALUES = {"1", "true", "yes", "on", "required", "strict"}
 CRLF = b"\r\n"
@@ -39,10 +40,48 @@ _SINGLETON_ICAP_HEADERS = {
     "encapsulated": "Encapsulated",
     "preview": "Preview",
 }
+_ICAP_METHOD_TCHARS = _CHUNK_TCHARS
 
 
 class IcapProtocolError(Exception):
     pass
+
+
+def _parse_icap_start_line(header: bytes) -> tuple[str, str, str]:
+    raw_start_line = header.split(CRLF, 1)[0] if header else b""
+    if any(ch < 0x20 or ch >= 0x7F for ch in raw_start_line):
+        message = "invalid ICAP request start line"
+        raise IcapProtocolError(message)
+    try:
+        method_token, service_uri, version = raw_start_line.decode("ascii").split(" ")
+    except ValueError as exc:
+        message = "malformed ICAP request start line"
+        raise IcapProtocolError(message) from exc
+    if not method_token or any(
+        ch not in _ICAP_METHOD_TCHARS for ch in method_token.encode("ascii")
+    ):
+        message = "invalid ICAP method token"
+        raise IcapProtocolError(message)
+    if version != "ICAP/1.0":
+        message = "unsupported ICAP version"
+        raise IcapProtocolError(message)
+    try:
+        parsed_uri = urlsplit(service_uri)
+        hostname = parsed_uri.hostname
+        _port = parsed_uri.port
+    except ValueError as exc:
+        message = "invalid ICAP service URI"
+        raise IcapProtocolError(message) from exc
+    if (
+        parsed_uri.scheme.lower() != "icap"
+        or not parsed_uri.netloc
+        or not hostname
+        or parsed_uri.path in {"", "/"}
+        or parsed_uri.fragment
+    ):
+        message = "invalid ICAP service URI"
+        raise IcapProtocolError(message)
+    return method_token.upper(), service_uri, version
 
 
 def env_enabled(value: str | None) -> bool:
@@ -670,12 +709,7 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
         istag = FALLBACK_OPEN_ISTAG if fail_open else FALLBACK_CLOSED_ISTAG
         try:
             header, remainder = _read_icap_outer_header(self.request)
-            first = (
-                header.split(CRLF, 1)[0]
-                .split(b"\n", 1)[0]
-                .decode("ascii", errors="replace")
-            )
-            method = first.split(" ", 1)[0].upper() if first else ""
+            method, _service_uri, _version = _parse_icap_start_line(header)
             if method == "OPTIONS":
                 headers = {
                     "Methods": "REQMOD, RESPMOD",

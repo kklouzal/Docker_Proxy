@@ -140,6 +140,187 @@ def _placeholder_raw_exchange(
     return bytes(response)
 
 
+def test_fail_open_placeholder_accepts_valid_icap_start_line_matrix() -> None:
+    runner = _load_runner()
+    response_header = b"HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n\r\n"
+    cases = (
+        (
+            "OPTIONS",
+            (
+                b"OPTIONS icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"Encapsulated: null-body=0\r\n\r\n"
+            ),
+            b"ICAP/1.0 200 OK\r\n",
+        ),
+        (
+            "REQMOD",
+            (
+                b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"Encapsulated: null-body=0\r\n\r\n"
+            ),
+            b"ICAP/1.0 204 No Content\r\n",
+        ),
+        (
+            "RESPMOD",
+            (
+                b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"Allow: 204\r\n"
+                b"Encapsulated: res-hdr=0, null-body="
+                + str(len(response_header)).encode("ascii")
+                + b"\r\n\r\n"
+                + response_header
+            ),
+            b"ICAP/1.0 204 No Content\r\n",
+        ),
+        (
+            "mixed-case REQMOD compatibility",
+            (
+                b"rEqMoD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"Encapsulated: null-body=0\r\n\r\n"
+            ),
+            b"ICAP/1.0 204 No Content\r\n",
+        ),
+    )
+
+    for name, request, expected_prefix in cases:
+        response = _placeholder_raw_exchange(runner, request)
+
+        assert response.startswith(expected_prefix), name
+        assert b"HTTP/1.1 502 Bad Gateway" not in response, name
+
+
+def test_fail_open_placeholder_rejects_ambiguous_icap_start_line_matrix() -> None:
+    runner = _load_runner()
+    cases = (
+        (
+            "missing target token",
+            (
+                b"REQMOD ICAP/1.0\r\nHost: 127.0.0.1\r\n"
+                b"Encapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "extra token",
+            (
+                b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0 extra\r\n"
+                b"Host: 127.0.0.1\r\nEncapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "extra spacing",
+            (
+                b"REQMOD  icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\nEncapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "tab separator",
+            (
+                b"REQMOD\ticap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\nEncapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "control in target",
+            (
+                b"REQMOD icap://127.0.0.1:{port}/av\x1frespmod ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\nEncapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "non-ASCII in target",
+            (
+                b"REQMOD icap://127.0.0.1:{port}/av\xffrespmod ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\nEncapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "invalid method token",
+            (
+                b"REQ/MOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\nEncapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "unsupported ICAP version",
+            (
+                b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/2.0\r\n"
+                b"Host: 127.0.0.1\r\nEncapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "malformed ICAP version",
+            (
+                b"REQMOD icap://127.0.0.1:{port}/avrespmod HTTP/1.1\r\n"
+                b"Host: 127.0.0.1\r\nEncapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "relative target",
+            (
+                b"REQMOD /avrespmod ICAP/1.0\r\nHost: 127.0.0.1\r\n"
+                b"Encapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "empty service target",
+            (
+                b"REQMOD icap://127.0.0.1:{port} ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\nEncapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "response-line masquerade",
+            (
+                b"ICAP/1.0 200 OK\r\nHost: 127.0.0.1\r\n"
+                b"Encapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "REQMOD LF injection",
+            (
+                b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\n"
+                b"OPTIONS icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\nEncapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+        (
+            "OPTIONS LF injection",
+            (
+                b"OPTIONS icap://127.0.0.1:{port}/avrespmod ICAP/1.0\n"
+                b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\nEncapsulated: null-body=0\r\n\r\n"
+            ),
+        ),
+    )
+
+    for name, request in cases:
+        response = _placeholder_raw_exchange(runner, request)
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert b"ICAP/1.0 204 No Content\r\n" not in response, name
+        assert b"Methods: REQMOD, RESPMOD" not in response, name
+
+
+def test_fail_open_placeholder_keeps_405_for_well_formed_unsupported_method() -> None:
+    runner = _load_runner()
+    request = (
+        b"PURGE icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: null-body=0\r\n\r\n"
+    )
+
+    response = _placeholder_raw_exchange(runner, request)
+
+    assert response.startswith(b"ICAP/1.0 405 Method Not Allowed\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" not in response
+
+
 class _MemorySocket:
     def __init__(self, incoming: bytes = b"") -> None:
         self.incoming = bytearray(incoming)
