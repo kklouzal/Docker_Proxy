@@ -28,7 +28,7 @@ from services.db import (
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
-from services.proxy_write_guard import guarded_proxy_write
+from services.proxy_write_guard import guarded_proxy_rows, guarded_proxy_write
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
 
@@ -516,34 +516,19 @@ class AdblockStore:
                 checkpoint_pos = pos + last_newline + 1
 
         created_ts = _now()
-        event_rows: list[tuple[int, str, str, str, int, str, int, str, int]] = []
+        parsed_rows: list[dict[str, Any]] = []
         text = complete_data.decode("utf-8", errors="replace")
-        proxy_id = get_proxy_id()
         for ln in text.splitlines():
             row = self._parse_cicap_access_line(ln)
-            if not row:
-                continue
-            dedupe_key = _event_key(
-                int(row.get("ts") or 0),
-                str(row.get("src_ip") or "-"),
-                str(row.get("url") or ""),
-                int(row.get("http_status") or 0),
-            )
-            event_rows.append(
-                (
-                    proxy_id,
-                    dedupe_key,
-                    int(row.get("ts") or 0),
-                    str(row.get("src_ip") or "-"),
-                    str(row.get("method") or "-"),
-                    str(row.get("url") or ""),
-                    int(row.get("http_status") or 0),
-                    str(row.get("http_resp_line") or ""),
-                    int(row.get("icap_status") or 0),
-                    str(row.get("raw") or ""),
-                    created_ts,
-                ),
-            )
+            if row:
+                parsed_rows.append(row)
+
+        event_rows = guarded_proxy_rows(
+            conn,
+            get_proxy_id(),
+            parsed_rows,
+            lambda proxy_id, row: self._event_values(proxy_id, row, created_ts),
+        ).rows
 
         try:
             if event_rows:
@@ -585,7 +570,9 @@ class AdblockStore:
             if "\t" not in text and "\\t" in text:
                 text = text.replace("\\t", "\t")
             try:
-                parts = next(csv.reader(io.StringIO(text), delimiter="\t", quotechar='"'))
+                parts = next(
+                    csv.reader(io.StringIO(text), delimiter="\t", quotechar='"')
+                )
             except Exception:
                 return None
         else:
@@ -667,33 +654,42 @@ class AdblockStore:
             "raw": raw,
         }
 
-    def _insert_event(self, conn, row: dict[str, Any]) -> None:
+    def _event_values(
+        self,
+        proxy_id: str,
+        row: dict[str, Any],
+        created_ts: int,
+    ) -> tuple[object, ...]:
         dedupe_key = _event_key(
             int(row.get("ts") or 0),
             str(row.get("src_ip") or "-"),
             str(row.get("url") or ""),
             int(row.get("http_status") or 0),
         )
-        conn.execute(
-            """
-            INSERT IGNORE INTO adblock_events(
-                proxy_id, event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
-            ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                get_proxy_id(),
-                dedupe_key,
-                int(row.get("ts") or 0),
-                str(row.get("src_ip") or "-"),
-                str(row.get("method") or "-"),
-                str(row.get("url") or ""),
-                int(row.get("http_status") or 0),
-                str(row.get("http_resp_line") or ""),
-                int(row.get("icap_status") or 0),
-                str(row.get("raw") or ""),
-                _now(),
-            ),
+        return (
+            proxy_id,
+            dedupe_key,
+            int(row.get("ts") or 0),
+            str(row.get("src_ip") or "-"),
+            str(row.get("method") or "-"),
+            str(row.get("url") or ""),
+            int(row.get("http_status") or 0),
+            str(row.get("http_resp_line") or ""),
+            int(row.get("icap_status") or 0),
+            str(row.get("raw") or ""),
+            created_ts,
         )
+
+    def _insert_event(self, conn, row: dict[str, Any]) -> None:
+        with guarded_proxy_write(conn, get_proxy_id()) as guard:
+            conn.execute(
+                """
+                INSERT IGNORE INTO adblock_events(
+                    proxy_id, event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
+                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                self._event_values(guard.proxy_id, row, _now()),
+            )
 
     def _prune_events(self, conn) -> None:
         days = max(1, int(self.blocklog_retention_days or 30))

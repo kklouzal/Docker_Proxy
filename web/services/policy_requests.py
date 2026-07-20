@@ -452,21 +452,32 @@ class PolicyRequestStore:
         scoped_proxy_id = (
             normalize_proxy_id(proxy_id).lower() if proxy_id is not None else ""
         )
-        proxy_clause = " AND proxy_id=%s" if scoped_proxy_id else ""
-        params: tuple[object, ...] = (
-            status,
-            _text(admin_note, 2000, True),
-            now,
-            now,
-            _text(reviewer, 128),
-            int(request_id),
-            *((scoped_proxy_id,) if scoped_proxy_id else ()),
-        )
+        note = _text(admin_note, 2000, True)
+        reviewer_s = _text(reviewer, 128)
         with self._connect() as c:
-            result = c.execute(
-                f"UPDATE {self.REQUEST_TABLE} SET status=%s,admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s WHERE id=%s AND status='pending'{proxy_clause}",
-                params,
-            )
+            if scoped_proxy_id:
+                with guarded_proxy_write(
+                    c,
+                    scoped_proxy_id,
+                    require_registered=False,
+                ) as guard:
+                    result = c.execute(
+                        f"UPDATE {self.REQUEST_TABLE} SET status=%s,admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s WHERE id=%s AND status='pending' AND proxy_id=%s",
+                        (
+                            status,
+                            note,
+                            now,
+                            now,
+                            reviewer_s,
+                            int(request_id),
+                            guard.proxy_id,
+                        ),
+                    )
+            else:
+                result = c.execute(
+                    f"UPDATE {self.REQUEST_TABLE} SET status=%s,admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s WHERE id=%s AND status='pending'",
+                    (status, note, now, now, reviewer_s, int(request_id)),
+                )
             if (
                 scoped_proxy_id
                 and max(0, int(getattr(result, "rowcount", 0) or 0)) == 0
@@ -488,21 +499,31 @@ class PolicyRequestStore:
         scoped_proxy_id = (
             normalize_proxy_id(proxy_id).lower() if proxy_id is not None else ""
         )
-        proxy_clause = " AND proxy_id=%s" if scoped_proxy_id else ""
-        params: tuple[object, ...] = (
-            now,
-            now,
-            _text(revoked_by, 128),
-            note,
-            note,
-            int(exception_id),
-            *((scoped_proxy_id,) if scoped_proxy_id else ()),
-        )
+        revoked_by_s = _text(revoked_by, 128)
         with self._connect() as c:
-            result = c.execute(
-                f"UPDATE {self.EXCEPTION_TABLE} SET status='revoked',updated_ts=%s,revoked_ts=%s,revoked_by=%s,admin_note=CASE WHEN %s='' THEN admin_note ELSE %s END WHERE id=%s AND status='active'{proxy_clause}",
-                params,
-            )
+            if scoped_proxy_id:
+                with guarded_proxy_write(
+                    c,
+                    scoped_proxy_id,
+                    require_registered=False,
+                ) as guard:
+                    result = c.execute(
+                        f"UPDATE {self.EXCEPTION_TABLE} SET status='revoked',updated_ts=%s,revoked_ts=%s,revoked_by=%s,admin_note=CASE WHEN %s='' THEN admin_note ELSE %s END WHERE id=%s AND status='active' AND proxy_id=%s",
+                        (
+                            now,
+                            now,
+                            revoked_by_s,
+                            note,
+                            note,
+                            int(exception_id),
+                            guard.proxy_id,
+                        ),
+                    )
+            else:
+                result = c.execute(
+                    f"UPDATE {self.EXCEPTION_TABLE} SET status='revoked',updated_ts=%s,revoked_ts=%s,revoked_by=%s,admin_note=CASE WHEN %s='' THEN admin_note ELSE %s END WHERE id=%s AND status='active'",
+                    (now, now, revoked_by_s, note, note, int(exception_id)),
+                )
             if (
                 scoped_proxy_id
                 and max(0, int(getattr(result, "rowcount", 0) or 0)) == 0
