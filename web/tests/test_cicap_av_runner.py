@@ -189,7 +189,7 @@ def test_drain_chunked_body_preserves_valid_trailers_remainder_and_preview_conti
 
     remainder = runner._drain_chunked_body(
         sock,
-        b"4; ieof=not-eof\r\ntest\r\n0\r\n\r\n",
+        b"4; note=not-eof\r\ntest\r\n0\r\n\r\n",
         preview=True,
     )
 
@@ -205,6 +205,65 @@ def test_drain_chunked_body_preview_ieof_zero_does_not_continue() -> None:
 
     assert sock.sent == b""
     assert remainder == b""
+
+
+def test_parse_chunk_size_rejects_unbounded_tokens_and_bad_extensions() -> None:
+    runner = _load_runner()
+    too_long = b"F" * (runner.MAX_ICAP_CHUNK_SIZE_DIGITS + 1)
+    cases = (
+        ("extremely long hex token", too_long),
+        ("plus sign", b"+1"),
+        ("minus sign", b"-1"),
+        ("hex prefix", b"0x1"),
+        ("underscore", b"1_0"),
+        ("leading whitespace", b" 1"),
+        ("trailing whitespace", b"1 "),
+        ("empty extension", b"0;"),
+        ("blank extension", b"0; \t"),
+        ("internal extension whitespace", b"0;bad extension"),
+        ("extension without name", b"0;=value"),
+        ("extension without value", b"0;name="),
+        ("unquoted whitespace in value", b"0;name=bad value"),
+        ("control byte in extension name", b"0;bad\x01=x"),
+        ("control byte in extension value", b"0;name=bad\x01"),
+        ("unterminated quoted extension", b'0;name="bad'),
+        ("duplicate ieof", b"0;ieof;IEOF"),
+        ("valued ieof", b"0;ieof=0"),
+        ("nonzero ieof", b"1;ieof"),
+    )
+
+    for name, line in cases:
+        try:
+            runner._parse_chunk_size(line)
+        except runner.IcapProtocolError:
+            pass
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"{name} chunk-size line was accepted"
+            raise AssertionError(message)
+
+
+def test_parse_chunk_size_preserves_valid_extensions_and_ieof_case() -> None:
+    runner = _load_runner()
+
+    assert runner._parse_chunk_size(b"a; foo=bar; flag; quoted=\"a b;c\"") == 10
+    assert runner._parse_chunk_size(b"0;IEOF") == 0
+    size, extensions = runner._parse_chunk_line(b"0;IEOF")
+    assert size == 0
+    assert extensions == {b"ieof"}
+
+
+def test_drain_chunked_body_preview_requires_ieof_extension_name() -> None:
+    runner = _load_runner()
+    sock = _MemorySocket(b"5\r\n-rest\r\n0;IEOF\r\n\r\nNEXT")
+
+    remainder = runner._drain_chunked_body(
+        sock,
+        b"4; ordinary=yes\r\ntest\r\n0;not-ieof=1\r\n\r\n",
+        preview=True,
+    )
+
+    assert sock.sent == b"ICAP/1.0 100 Continue\r\n\r\n"
+    assert remainder == b"NEXT"
 
 
 def test_drain_chunked_body_duplicate_preview_terminators_send_one_continue() -> None:
@@ -464,6 +523,65 @@ def test_fail_open_placeholder_rejects_malformed_reqmod_chunked_body_before_204(
     assert b"HTTP/1.1 502 Bad Gateway" in response
     assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
     assert b"hello" not in response
+
+
+def test_fail_open_placeholder_rejects_bad_chunk_extension_before_204() -> None:
+    runner = _load_runner()
+    request_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    body = b"0;bad extension\r\n\r\n"
+    request = (
+        b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        b"Encapsulated: req-hdr=0, req-body="
+        + str(len(request_header)).encode("ascii")
+        + b"\r\n\r\n"
+        + request_header
+        + body
+    )
+
+    response = _placeholder_raw_exchange(runner, request)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"invalid ICAP chunk extension" in response
+    assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
+
+
+def test_fail_open_placeholder_preview_not_ieof_substring_continues() -> None:
+    runner = _load_runner()
+
+    with runner._FailOpenAvServer(
+        ("127.0.0.1", 0), runner._FailOpenAvHandler
+    ) as server:
+        server.fail_open = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        http_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
+        request_prefix = (
+            (
+                f"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Allow: 204\r\n"
+                "Preview: 4\r\n"
+                f"Encapsulated: req-hdr=0, req-body={len(http_header)}\r\n\r\n"
+            ).encode("ascii")
+            + http_header
+        )
+        preview = b"4\r\ntest\r\n0;not-ieof=1\r\n\r\n"
+        remainder = b"0;IEOF\r\n\r\n"
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as sock:
+            sock.settimeout(1)
+            sock.sendall(request_prefix + preview)
+            interim = sock.recv(4096)
+            sock.sendall(remainder)
+            final = sock.recv(4096)
+        server.shutdown()
+        thread.join(timeout=1)
+
+    assert interim == b"ICAP/1.0 100 Continue\r\n\r\n"
+    assert final.startswith(b"ICAP/1.0 204 No Content\r\n")
 
 
 def test_fail_open_placeholder_rejects_invalid_offset_instead_of_reinterpreting_layout() -> None:

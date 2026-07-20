@@ -15,8 +15,13 @@ CRLF = b"\r\n"
 HEADER_END = CRLF + CRLF
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 MAX_ENCAPSULATED_OFFSET_DIGITS = 20
+MAX_ICAP_CHUNK_SIZE_DIGITS = 16
 FALLBACK_OPEN_ISTAG = '"clamav-fail-open-unavailable"'
 FALLBACK_CLOSED_ISTAG = '"clamav-fail-closed-unavailable"'
+_CHUNK_OWS = b" \t"
+_CHUNK_TCHARS = frozenset(
+    b"!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
 _SINGLETON_ICAP_HEADERS = {
     "allow": "Allow",
     "encapsulated": "Encapsulated",
@@ -258,12 +263,102 @@ def _drain_chunked_body(
     return remainder
 
 
-def _parse_chunk_size(line: bytes) -> int:
-    size_token = line.split(b";", 1)[0]
-    if not size_token or any(ch not in b"0123456789abcdefABCDEF" for ch in size_token):
+def _valid_chunk_token(value: bytes) -> bool:
+    return bool(value) and all(ch in _CHUNK_TCHARS for ch in value)
+
+
+def _skip_chunk_ows(line: bytes, index: int) -> int:
+    while index < len(line) and line[index] in _CHUNK_OWS:
+        index += 1
+    return index
+
+
+def _parse_chunk_quoted_string(line: bytes, index: int) -> int | None:
+    escaped = False
+    index += 1
+    while index < len(line):
+        ch = line[index]
+        if escaped:
+            if ch not in _CHUNK_OWS and not (0x21 <= ch <= 0x7E):
+                return None
+            escaped = False
+        elif ch == 0x5C:  # backslash
+            escaped = True
+        elif ch == 0x22:
+            return index + 1
+        elif ch < 0x20 or ch >= 0x7F:
+            return None
+        index += 1
+    return None
+
+
+def _parse_chunk_line(line: bytes) -> tuple[int, set[bytes]]:
+    if any(ch < 0x20 and ch not in _CHUNK_OWS for ch in line) or any(
+        ch >= 0x7F for ch in line
+    ):
         message = "invalid ICAP chunk-size line"
         raise IcapProtocolError(message)
-    return int(size_token, 16)
+    first_extension = line.find(b";")
+    size_token = line if first_extension < 0 else line[:first_extension]
+    if (
+        not size_token
+        or len(size_token) > MAX_ICAP_CHUNK_SIZE_DIGITS
+        or any(ch not in b"0123456789abcdefABCDEF" for ch in size_token)
+    ):
+        message = "invalid ICAP chunk-size line"
+        raise IcapProtocolError(message)
+    extensions: set[bytes] = set()
+    index = first_extension
+    while index >= 0 and index < len(line):
+        if line[index] != 0x3B:  # semicolon
+            message = "invalid ICAP chunk extension"
+            raise IcapProtocolError(message)
+        index = _skip_chunk_ows(line, index + 1)
+        name_start = index
+        while index < len(line) and line[index] in _CHUNK_TCHARS:
+            index += 1
+        name = line[name_start:index]
+        if not name:
+            message = "invalid ICAP chunk extension"
+            raise IcapProtocolError(message)
+        index = _skip_chunk_ows(line, index)
+        separator = index < len(line) and line[index] == 0x3D  # equals
+        if separator:
+            index = _skip_chunk_ows(line, index + 1)
+            if index < len(line) and line[index] == 0x22:  # double quote
+                index = _parse_chunk_quoted_string(line, index) or -1
+            else:
+                value_start = index
+                while index < len(line) and line[index] in _CHUNK_TCHARS:
+                    index += 1
+                if index == value_start:
+                    message = "invalid ICAP chunk extension"
+                    raise IcapProtocolError(message)
+            if index < 0:
+                message = "invalid ICAP chunk extension"
+                raise IcapProtocolError(message)
+            index = _skip_chunk_ows(line, index)
+        if index < len(line) and line[index] != 0x3B:
+            message = "invalid ICAP chunk extension"
+            raise IcapProtocolError(message)
+        name = name.lower()
+        if name in extensions:
+            message = f"duplicate ICAP chunk extension: {name.decode('ascii')}"
+            raise IcapProtocolError(message)
+        if name == b"ieof" and separator:
+            message = "invalid ICAP preview ieof chunk extension"
+            raise IcapProtocolError(message)
+        extensions.add(name)
+    size = int(size_token, 16)
+    if size != 0 and b"ieof" in extensions:
+        message = "invalid ICAP preview ieof chunk extension"
+        raise IcapProtocolError(message)
+    return size, extensions
+
+
+def _parse_chunk_size(line: bytes) -> int:
+    size, _extensions = _parse_chunk_line(line)
+    return size
 
 
 def _read_chunk_trailers(sock: socket.socket, data: bytes) -> bytes:
@@ -299,10 +394,10 @@ def _read_chunked_body(
             message = "truncated ICAP chunk-size line"
             raise IcapProtocolError(message)
         line, data = data.split(CRLF, 1)
-        size = _parse_chunk_size(line)
+        size, extensions = _parse_chunk_line(line)
         if size == 0:
             data = _read_chunk_trailers(sock, data)
-            if preview_pending and b"ieof" not in line.lower():
+            if preview_pending and b"ieof" not in extensions:
                 try:
                     sock.sendall(b"ICAP/1.0 100 Continue\r\n\r\n")
                 except OSError as exc:
