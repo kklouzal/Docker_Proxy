@@ -14,6 +14,7 @@ TRUE_VALUES = {"1", "true", "yes", "on", "required", "strict"}
 CRLF = b"\r\n"
 HEADER_END = CRLF + CRLF
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
+MAX_ENCAPSULATED_OFFSET_DIGITS = 20
 FALLBACK_OPEN_ISTAG = '"clamav-fail-open-unavailable"'
 FALLBACK_CLOSED_ISTAG = '"clamav-fail-closed-unavailable"'
 _SINGLETON_ICAP_HEADERS = {
@@ -80,7 +81,8 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
     for raw_item in value.split(","):
         item = raw_item.strip()
         if not item or "=" not in item:
-            continue
+            message = f"malformed Encapsulated section item: {item}"
+            raise IcapProtocolError(message)
         name, raw_offset = item.split("=", 1)
         name = name.strip().lower()
         if name not in supported_names:
@@ -89,13 +91,15 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
         if name in offsets:
             message = f"duplicate Encapsulated section name: {name}"
             raise IcapProtocolError(message)
-        try:
-            offset = int(raw_offset.strip())
-        except ValueError:
-            continue
-        if offset < 0:
+        offset_text = raw_offset.strip()
+        if (
+            not offset_text
+            or len(offset_text) > MAX_ENCAPSULATED_OFFSET_DIGITS
+            or any(ch < "0" or ch > "9" for ch in offset_text)
+        ):
             message = f"invalid Encapsulated offset: {item}"
             raise IcapProtocolError(message)
+        offset = int(offset_text, 10)
         offsets[name] = offset
     return offsets
 

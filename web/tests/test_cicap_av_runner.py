@@ -221,6 +221,51 @@ def test_drain_chunked_body_duplicate_preview_terminators_send_one_continue() ->
     assert remainder == b"TAIL"
 
 
+def test_parse_encapsulated_rejects_non_ascii_decimal_offsets_and_malformed_items() -> None:
+    runner = _load_runner()
+    enormous_offset = "9" * (runner.MAX_ENCAPSULATED_OFFSET_DIGITS + 1)
+    cases = (
+        ("plus sign", "req-hdr=+0, req-body=42", "invalid Encapsulated offset"),
+        ("minus sign", "req-hdr=-0, req-body=42", "invalid Encapsulated offset"),
+        ("underscore", "req-hdr=0, req-body=4_2", "invalid Encapsulated offset"),
+        (
+            "Unicode digits",
+            "req-hdr=\N{ARABIC-INDIC DIGIT ZERO}, req-body=42",
+            "invalid Encapsulated offset",
+        ),
+        ("internal whitespace", "req-hdr=0, req-body=4 2", "invalid Encapsulated offset"),
+        ("empty offset", "req-hdr=, req-body=42", "invalid Encapsulated offset"),
+        ("scientific", "req-hdr=0, req-body=1e2", "invalid Encapsulated offset"),
+        ("hex", "req-hdr=0, req-body=0x2a", "invalid Encapsulated offset"),
+        (
+            "enormous decimal",
+            f"req-hdr=0, req-body={enormous_offset}",
+            "invalid Encapsulated offset",
+        ),
+        ("missing equals", "req-hdr=0, garbage, req-body=42", "malformed"),
+        ("empty item", "req-hdr=0,, req-body=42", "malformed"),
+    )
+
+    for name, value, expected in cases:
+        try:
+            runner._parse_encapsulated(value)
+        except runner.IcapProtocolError as exc:
+            assert expected in str(exc), name
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"{name} Encapsulated item was accepted"
+            raise AssertionError(message)
+
+
+def test_parse_encapsulated_preserves_ascii_decimals_leading_zeros_and_edge_whitespace() -> None:
+    runner = _load_runner()
+
+    offsets = runner._parse_encapsulated(
+        " req-hdr = 000 , req-body = 00042 , null-body=43 "
+    )
+
+    assert offsets == {"req-hdr": 0, "req-body": 42, "null-body": 43}
+
+
 def test_drain_encapsulated_body_rejects_truncated_reqmod_null_body_boundary() -> None:
     runner = _load_runner()
     sock = _MemorySocket()
@@ -417,6 +462,51 @@ def test_fail_open_placeholder_rejects_malformed_reqmod_chunked_body_before_204(
 
     assert response.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert b"hello" not in response
+
+
+def test_fail_open_placeholder_rejects_invalid_offset_instead_of_reinterpreting_layout() -> None:
+    runner = _load_runner()
+    request_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    request = (
+        b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        b"Encapsulated: req-hdr=0, req-body=4_2, null-body="
+        + str(len(request_header)).encode("ascii")
+        + b"\r\n\r\n"
+        + request_header
+    )
+
+    response = _placeholder_raw_exchange(runner, request)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"invalid Encapsulated offset: req-body=4_2" in response
+    assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
+
+
+def test_fail_open_placeholder_rejects_malformed_encapsulated_item_before_204() -> None:
+    runner = _load_runner()
+    request_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    body = b"5\r\nhello\r\n0\r\n\r\n"
+    request = (
+        b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        b"Encapsulated: garbage, req-hdr=0, req-body="
+        + str(len(request_header)).encode("ascii")
+        + b"\r\n\r\n"
+        + request_header
+        + body
+    )
+
+    response = _placeholder_raw_exchange(runner, request)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"malformed Encapsulated section item: garbage" in response
     assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
     assert b"hello" not in response
 
