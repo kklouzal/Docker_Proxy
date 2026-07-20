@@ -161,6 +161,123 @@ class _TimeoutSocket(_MemorySocket):
         raise TimeoutError
 
 
+class _ReadFailureSocket(_MemorySocket):
+    def __init__(self, incoming: bytes, exc: OSError) -> None:
+        super().__init__(incoming)
+        self.exc = exc
+
+    def recv(self, size: int) -> bytes:
+        if self.incoming:
+            return super().recv(size)
+        raise self.exc
+
+
+def test_read_failures_after_partial_encapsulated_headers_are_protocol_errors() -> None:
+    runner = _load_runner()
+    socket_timeout = vars(socket)["timeout"]
+    req_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    resp_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+    cases = (
+        (
+            "REQMOD",
+            runner._drain_encapsulated_body,
+            b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Encapsulated: req-hdr=0, null-body="
+            + str(len(req_header)).encode("ascii")
+            + b"\r\n\r\n",
+            req_header[:-1],
+            "REQMOD encapsulated headers ended before declared offsets",
+        ),
+        (
+            "RESPMOD",
+            runner._read_respmod_payload,
+            b"RESPMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Encapsulated: res-hdr=0, null-body="
+            + str(len(resp_header)).encode("ascii")
+            + b"\r\n\r\n",
+            resp_header[:-1],
+            "RESPMOD encapsulated headers ended before declared offsets",
+        ),
+    )
+    failures: tuple[tuple[str, OSError], ...] = (
+        ("socket.timeout", socket_timeout("timed out")),
+        ("TimeoutError", TimeoutError("timed out")),
+        ("OSError", OSError("read failed")),
+    )
+
+    for name, read_payload, header, partial, expected in cases:
+        for exc_name, exc in failures:
+            sock = _ReadFailureSocket(partial, exc)
+
+            try:
+                read_payload(sock, header.split(runner.HEADER_END, 1)[0], b"")
+            except runner.IcapProtocolError as protocol_exc:
+                assert expected in str(protocol_exc), (name, exc_name)
+            else:  # pragma: no cover - regression guard should always raise
+                message = f"{name} partial encapsulated header read failure was accepted"
+                raise AssertionError(message)
+
+
+def test_read_failures_after_partial_chunk_paths_are_protocol_errors() -> None:
+    runner = _load_runner()
+    socket_timeout = vars(socket)["timeout"]
+    cases = (
+        (
+            "chunk-size line",
+            b"",
+            b"5",
+            False,
+            b"",
+            "truncated ICAP chunk-size line",
+        ),
+        (
+            "chunk payload",
+            b"5\r\nabc",
+            b"",
+            False,
+            b"",
+            "truncated ICAP chunk payload",
+        ),
+        (
+            "trailer",
+            b"0\r\nX-Trailer: partial",
+            b"",
+            False,
+            b"",
+            "truncated ICAP chunk trailers",
+        ),
+        (
+            "preview continuation",
+            b"4\r\ntest\r\n0\r\n\r\n",
+            b"5",
+            True,
+            b"ICAP/1.0 100 Continue\r\n\r\n",
+            "truncated ICAP chunk-size line",
+        ),
+    )
+    failures: tuple[tuple[str, OSError], ...] = (
+        ("socket.timeout", socket_timeout("timed out")),
+        ("TimeoutError", TimeoutError("timed out")),
+        ("OSError", OSError("read failed")),
+    )
+
+    for name, initial, incoming, preview, expected_sent, expected_error in cases:
+        for exc_name, exc in failures:
+            sock = _ReadFailureSocket(incoming, exc)
+
+            try:
+                runner._drain_chunked_body(sock, initial, preview=preview)
+            except runner.IcapProtocolError as protocol_exc:
+                assert expected_error in str(protocol_exc), (name, exc_name)
+            else:  # pragma: no cover - regression guard should always raise
+                message = f"{name} read failure was accepted"
+                raise AssertionError(message)
+
+            assert sock.sent == expected_sent, (name, exc_name)
+
+
 def _reqmod_null_body_outer_header(runner, *, size: int | None = None) -> bytes:
     lines = [
         b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0",

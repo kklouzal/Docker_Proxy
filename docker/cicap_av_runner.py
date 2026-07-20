@@ -447,9 +447,13 @@ def _validate_chunk_trailer(line: bytes) -> None:
 def _read_chunk_trailers(sock: socket.socket, data: bytes) -> bytes:
     total = 0
     while True:
-        data = _recv_until(
-            sock, data, CRLF, max_bytes=MAX_ICAP_TRAILER_LINE_BYTES + len(CRLF)
-        )
+        try:
+            data = _recv_until(
+                sock, data, CRLF, max_bytes=MAX_ICAP_TRAILER_LINE_BYTES + len(CRLF)
+            )
+        except OSError as exc:
+            message = "truncated ICAP chunk trailers"
+            raise IcapProtocolError(message) from exc
         if CRLF not in data:
             if len(data) > MAX_ICAP_TRAILER_LINE_BYTES:
                 message = (
@@ -485,7 +489,11 @@ def _read_chunked_body(
     total = 0
     preview_pending = preview
     while True:
-        data = _recv_until(sock, data, CRLF, max_bytes=8192)
+        try:
+            data = _recv_until(sock, data, CRLF, max_bytes=8192)
+        except OSError as exc:
+            message = "truncated ICAP chunk-size line"
+            raise IcapProtocolError(message) from exc
         if CRLF not in data:
             message = "truncated ICAP chunk-size line"
             raise IcapProtocolError(message)
@@ -506,7 +514,11 @@ def _read_chunked_body(
         if total > max_bytes:
             message = f"ICAP chunked body exceeds {max_bytes} bytes"
             raise IcapProtocolError(message)
-        data = _recv_more(sock, data, size + 2)
+        try:
+            data = _recv_more(sock, data, size + 2)
+        except OSError as exc:
+            message = "truncated ICAP chunk payload"
+            raise IcapProtocolError(message) from exc
         if len(data) < size + 2:
             message = "truncated ICAP chunk payload"
             raise IcapProtocolError(message)
@@ -531,7 +543,11 @@ def _drain_encapsulated_body(
     if terminal_offset is None:  # pragma: no cover - offset validation guards this
         message = "REQMOD request missing req-body/null-body"
         raise IcapProtocolError(message)
-    data = _recv_more(sock, remainder, terminal_offset)
+    try:
+        data = _recv_more(sock, remainder, terminal_offset)
+    except OSError as exc:
+        message = "REQMOD encapsulated headers ended before declared offsets"
+        raise IcapProtocolError(message) from exc
     if len(data) < terminal_offset:
         message = "REQMOD encapsulated headers ended before declared offsets"
         raise IcapProtocolError(message)
@@ -555,7 +571,11 @@ def _read_respmod_payload(
         message = "RESPMOD request missing res-body/null-body"
         raise IcapProtocolError(message)
     response_header_offset = offsets["res-hdr"]
-    data = _recv_more(sock, remainder, terminal_offset)
+    try:
+        data = _recv_more(sock, remainder, terminal_offset)
+    except OSError as exc:
+        message = "RESPMOD encapsulated headers ended before declared offsets"
+        raise IcapProtocolError(message) from exc
     if len(data) < terminal_offset:
         message = "RESPMOD encapsulated headers ended before declared offsets"
         raise IcapProtocolError(message)
