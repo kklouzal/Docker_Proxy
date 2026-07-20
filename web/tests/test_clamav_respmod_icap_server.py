@@ -1292,8 +1292,21 @@ def test_preview_header_parser_accepts_decimal_whitespace_and_rejects_bad_values
     )
     assert server._parse_preview_size(headers, has_body=True, max_bytes=2) == 2
     assert server._parse_preview_size({"preview": "0"}, has_body=True) == 0
+    assert server._parse_preview_size(
+        {"preview": "0" * 5000}, has_body=True, max_bytes=2
+    ) == 0
+    assert server._parse_preview_size(
+        {"preview": "0" * 5000 + "2"}, has_body=True, max_bytes=2
+    ) == 2
+    assert server._parse_preview_size(
+        {"preview": "0" * 5000 + str(server.DEFAULT_MAX_SCAN_BYTES)},
+        has_body=True,
+    ) == server.DEFAULT_MAX_SCAN_BYTES
+    assert server._parse_preview_size(
+        {"preview": str(server.DEFAULT_MAX_SCAN_BYTES)}, has_body=True
+    ) == server.DEFAULT_MAX_SCAN_BYTES
 
-    for value in ("two", "-1", "2, 3"):
+    for value in ("two", "-1", "2, 3", "١٢", "+1", " 1"):
         try:
             server._parse_preview_size({"preview": value}, has_body=True)
         except server.IcapProtocolError as exc:
@@ -1302,13 +1315,19 @@ def test_preview_header_parser_accepts_decimal_whitespace_and_rejects_bad_values
             message = f"bad Preview value {value!r} was accepted"
             raise AssertionError(message)
 
-    try:
-        server._parse_preview_size({"preview": "3"}, has_body=True, max_bytes=2)
-    except server.IcapProtocolError as exc:
-        assert str(exc) == "ICAP Preview header exceeds 2 bytes"
-    else:  # pragma: no cover - regression guard should always raise
-        message = "oversize Preview value was accepted"
-        raise AssertionError(message)
+    for value in (
+        "3",
+        "0" * 5000 + "3",
+        str(server.DEFAULT_MAX_SCAN_BYTES + 1),
+        "1" * 5000,
+    ):
+        try:
+            server._parse_preview_size({"preview": value}, has_body=True, max_bytes=2)
+        except server.IcapProtocolError as exc:
+            assert str(exc) == "ICAP Preview header exceeds 2 bytes"
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"oversize Preview value {value!r} was accepted"
+            raise AssertionError(message)
 
 
 def test_respmod_nonzero_res_hdr_without_req_hdr_is_rejected() -> None:
@@ -1976,6 +1995,87 @@ def test_malformed_preview_header_rejected_before_scanning_or_continue() -> None
     assert response.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"HTTP/1.1 502 Bad Gateway" in response
     assert b"invalid ICAP Preview header" in response
+
+
+def test_very_long_preview_header_rejected_before_scanning_or_continue() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_preview_respmod_request(port).replace(
+            b"Preview: 2\r\n",
+            b"Preview: " + b"1" * 5000 + b"\r\n",
+        )
+        response = _recv_icap_exchange(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert not response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"ICAP Preview header exceeds 1024 bytes" in response
+    assert b"Exceeds the limit" not in response
+
+
+def test_very_long_zero_preview_header_remains_valid_and_opens_scanner() -> None:
+    server = _load_server()
+    scanner = RecordingScanner()
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return scanner
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+        request = (
+            (
+                f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                "Host: 127.0.0.1\r\n"
+                f"Preview: {'0' * 5000}\r\n"
+                f"Encapsulated: res-hdr=0, res-body={len(http_header)}\r\n\r\n"
+            ).encode("ascii")
+            + http_header
+            + b"0; ieof\r\n\r\n"
+        )
+        response = _recv_icap_exchange(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scanner.closed is True
+    assert scanner.chunks == []
+    assert scanner.finished is True
+    assert not response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" not in response
 
 
 def test_preview_body_larger_than_header_rejected_before_scanner_chunk() -> None:

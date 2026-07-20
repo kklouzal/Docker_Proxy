@@ -253,11 +253,14 @@ def _parse_preview_size(
     if not re.fullmatch(r"[0-9]+", value):
         message = f"invalid ICAP Preview header: {value!r}"
         raise IcapProtocolError(message)
-    preview_size = int(value)
-    if preview_size > max_bytes:
+    significant_value = value.lstrip("0") or "0"
+    max_value = str(max_bytes)
+    if len(significant_value) > len(max_value) or (
+        len(significant_value) == len(max_value) and significant_value > max_value
+    ):
         message = f"ICAP Preview header exceeds {max_bytes} bytes"
         raise IcapProtocolError(message)
-    return preview_size
+    return int(significant_value)
 
 
 def _read_some(stream: BinaryIO, size: int) -> bytes:
