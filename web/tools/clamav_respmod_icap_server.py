@@ -33,6 +33,7 @@ DEFAULT_MAX_CONNECTIONS = 64
 DEFAULT_MAX_SCANS = 16
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 DEFAULT_SQUID_204_BACKUP_LIMIT = 64 * 1024
+_ICAP_CHUNK_SIZE_RE = re.compile(r"[0-9A-Fa-f]{1,16}")
 ISTAG = '"clamav-respmod-instream-1"'
 CLAMD_INSTREAM_COMMAND = b"zINSTREAM\0"
 CLAMD_REPLY_TERMINATOR = b"\0"
@@ -313,6 +314,14 @@ def _read_chunk_header(stream: BinaryIO, initial: bytes = b"") -> tuple[str, byt
     return line[:-2].decode("ascii", errors="replace"), remainder
 
 
+def _parse_icap_chunk_size(line: str) -> int:
+    size_token = line.split(";", 1)[0]
+    if not _ICAP_CHUNK_SIZE_RE.fullmatch(size_token):
+        message = f"invalid ICAP chunk size: {line!r}"
+        raise IcapProtocolError(message)
+    return int(size_token, 16)
+
+
 def _drain_chunk_trailers(stream: BinaryIO, initial: bytes = b"") -> bytes:
     remainder = initial
     while True:
@@ -360,12 +369,7 @@ def read_icap_chunked_body(
     post_preview_chunk_seen = False
     while True:
         line, remainder = _read_chunk_header(stream, remainder)
-        size_token = line.split(";", 1)[0].strip()
-        try:
-            size = int(size_token, 16)
-        except ValueError as exc:
-            message = f"invalid ICAP chunk size: {line!r}"
-            raise IcapProtocolError(message) from exc
+        size = _parse_icap_chunk_size(line)
         has_ieof = _chunk_has_ieof_extension(line)
         if has_ieof and size != 0:
             message = "invalid ICAP ieof chunk extension on nonzero chunk"

@@ -443,6 +443,85 @@ def test_icap_chunked_body_accepts_exact_limit_chunk() -> None:
     assert seen_chunks == [b"0123456789"]
 
 
+def test_icap_chunked_body_accepts_strict_hex_size_tokens() -> None:
+    server = _load_server()
+    seen_chunks: list[bytes] = []
+
+    body, remainder = server.read_icap_chunked_body(
+        io.BytesIO(b"000a; foo=bar\r\n0123456789\r\nF\r\nabcdefghijklmno\r\n0;ieof\r\n\r\n"),
+        max_bytes=25,
+        chunk_callback=seen_chunks.append,
+    )
+
+    assert body == b"0123456789abcdefghijklmno"
+    assert remainder == b""
+    assert seen_chunks == [b"0123456789", b"abcdefghijklmno"]
+
+
+def test_icap_chunked_body_rejects_non_hex_size_token_grammar() -> None:
+    server = _load_server()
+
+    malformed = (
+        b"+1",
+        b"1_0",
+        b"0x10",
+        b" 1",
+        b"1 ",
+        b"1 0",
+        b"",
+        b"10000000000000000",
+    )
+    for token in malformed:
+        seen_chunks: list[bytes] = []
+        try:
+            server.read_icap_chunked_body(
+                io.BytesIO(token + b"\r\n0123456789abcdef\r\n0\r\n\r\n"),
+                max_bytes=1024,
+                chunk_callback=seen_chunks.append,
+            )
+        except server.IcapProtocolError as exc:
+            assert str(exc).startswith("invalid ICAP chunk size:")
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"malformed ICAP chunk size was accepted: {token!r}"
+            raise AssertionError(message)
+
+        assert seen_chunks == []
+
+
+def test_respmod_rejects_malformed_chunk_size_without_clean_replay() -> None:
+    server = _load_server()
+    scanner = RecordingScanner()
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return scanner
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_respmod_request(port).replace(b"5\r\nhello", b"+5\r\nhello")
+        response = _recv_icap_response(port, request, timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scanner.chunks == []
+    assert scanner.finished is False
+    assert scanner.closed is True
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"invalid ICAP chunk size" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" not in response
+
+
 def test_clean_icap_response_replays_body_even_when_204_allowed() -> None:
     server = _load_server()
 
