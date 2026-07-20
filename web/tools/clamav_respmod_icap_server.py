@@ -58,6 +58,10 @@ class IcapProtocolError(Exception):
     pass
 
 
+class HttpFramingError(IcapProtocolError):
+    pass
+
+
 class BodyTooLargeError(Exception):
     pass
 
@@ -665,23 +669,36 @@ def _http_response_allows_squid_204_backup(http_header: bytes) -> bool:
 
 
 def _http_declared_content_length(http_header: bytes) -> bytes | None:
-    """Return one significant Content-Length token, or None when absent/invalid."""
+    """Return the single significant Content-Length token, or None when absent."""
     lines = _http_header_lines(http_header)
     if not lines or not lines[0].startswith(b"HTTP/"):
         return None
     content_lengths: list[bytes] = []
+    has_transfer_encoding = False
     for line in lines[1:]:
         if b":" not in line:
             continue
         name, value = line.split(b":", 1)
-        if name.strip().lower() != b"content-length":
+        header_name = name.strip().lower()
+        if header_name == b"transfer-encoding":
+            if value.strip().lower() not in {b"", b"identity"}:
+                has_transfer_encoding = True
+            continue
+        if header_name != b"content-length":
             continue
         raw_length = value.strip()
         if not re.fullmatch(rb"[0-9]+", raw_length):
-            return None
+            message = "invalid HTTP Content-Length header"
+            raise HttpFramingError(message)
         content_lengths.append(raw_length.lstrip(b"0") or b"0")
-    if not content_lengths or len(set(content_lengths)) != 1:
+    if has_transfer_encoding and content_lengths:
+        message = "ambiguous HTTP response framing: Content-Length with Transfer-Encoding"
+        raise HttpFramingError(message)
+    if not content_lengths:
         return None
+    if len(set(content_lengths)) != 1:
+        message = "ambiguous HTTP Content-Length headers"
+        raise HttpFramingError(message)
     return content_lengths[0]
 
 
@@ -698,7 +715,7 @@ def _validate_http_content_length_matches_body(
             f"HTTP Content-Length {declared_display} does not match "
             f"decoded ICAP body length {body_length}"
         )
-        raise IcapProtocolError(message)
+        raise HttpFramingError(message)
 
 
 def _http_header_for_body_replay(http_header: bytes, body_length: int) -> bytes:
@@ -903,6 +920,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     encapsulated_headers, offsets
                 )
                 http_header = encapsulated_headers[response_header_offset:body_offset]
+                _http_declared_content_length(http_header)
                 can_use_204 = allow_204 and _http_response_allows_squid_204_backup(
                     http_header
                 )
@@ -954,13 +972,16 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     "fail-open after scan/protocol error: %s", exc
                 )
                 try:
-                    self._send_fail_open_response(
-                        allow_204=allow_204,
-                        http_header=http_header,
-                        body=body,
-                        body_complete=body_complete,
-                        null_body=null_body,
-                    )
+                    if isinstance(exc, HttpFramingError):
+                        self._write_response(error_response(str(exc)))
+                    else:
+                        self._send_fail_open_response(
+                            allow_204=allow_204,
+                            http_header=http_header,
+                            body=body,
+                            body_complete=body_complete,
+                            null_body=null_body,
+                        )
                 except OSError as write_exc:
                     scan_error_warning.warning(
                         "failed writing fail-open ICAP response: %s", write_exc

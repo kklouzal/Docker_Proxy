@@ -758,6 +758,33 @@ def test_clean_respmod_rejects_known_content_length_body_mismatches() -> None:
             False,
             b"HTTP Content-Length 5 does not match decoded ICAP body length 0",
         ),
+        "duplicate conflicting Content-Length is ambiguous": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+            False,
+            b"ambiguous HTTP Content-Length headers",
+        ),
+        "comma-list Content-Length is ambiguous": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5, 5\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+            False,
+            b"invalid HTTP Content-Length header",
+        ),
+        "malformed Content-Length is ambiguous": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: +5\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+            False,
+            b"invalid HTTP Content-Length header",
+        ),
+        "Content-Length plus Transfer-Encoding chunked is ambiguous": (
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            ),
+            b"5\r\nhello\r\n0\r\n\r\n",
+            False,
+            b"ambiguous HTTP response framing",
+        ),
         "duplicate identical Content-Length matches decoded body": (
             b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\n",
             b"5\r\nhello\r\n0\r\n\r\n",
@@ -875,43 +902,68 @@ def test_fail_open_content_length_mismatch_never_returns_204_or_normalized_repla
         assert b"HTTP/1.1 502 Bad Gateway" in response, name
 
 
-def test_fail_open_replays_invalid_content_length_instead_of_204_after_clamd_reset(
+def test_fail_open_ambiguous_http_framing_never_returns_204_or_normalized_replay(
     monkeypatch,
 ) -> None:
     server = _load_server()
-    fake = ResetBeforeVerdictSocket()
 
-    monkeypatch.setattr(
-        server.socket, "create_connection", lambda address, timeout: fake
-    )
+    cases = {
+        "conflicting duplicate Content-Length": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n",
+            b"ambiguous HTTP Content-Length headers",
+        ),
+        "comma-list Content-Length": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5, 5\r\n\r\n",
+            b"invalid HTTP Content-Length header",
+        ),
+        "malformed Content-Length": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: +5\r\n\r\n",
+            b"invalid HTTP Content-Length header",
+        ),
+        "Content-Length plus Transfer-Encoding chunked": (
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            ),
+            b"ambiguous HTTP response framing",
+        ),
+    }
 
-    with server.ClamAvRespmodServer(
-        ("127.0.0.1", 0),
-        clamd_host="127.0.0.1",
-        clamd_port=3310,
-        clamd_timeout=0.1,
-        fail_open=True,
-        max_scan_bytes=1024,
-        client_timeout=0.5,
-        max_connections=4,
-    ) as icap_server:
-        thread = _serve_in_thread(icap_server)
-        port = icap_server.server_address[1]
-        request = _respmod_request_with_http_header(
-            port,
-            b"HTTP/1.1 200 OK\r\n"
-            b"Content-Type: text/plain\r\n"
-            b"Content-Length: +5\r\n\r\n",
-            b"5\r\nhello\r\n0\r\n\r\n",
+    for name, (http_header, expected) in cases.items():
+        fake = ResetBeforeVerdictSocket()
+        monkeypatch.setattr(
+            server.socket, "create_connection", lambda address, timeout: fake
         )
-        response = _recv_icap_response(port, request, timeout=1)
-        icap_server.shutdown()
-        thread.join(timeout=1)
 
-    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
-    assert b"HTTP/1.1 200 OK" in response
-    assert b"Content-Length: 5\r\n" in response
-    assert b"5\r\nhello\r\n0\r\n\r\n" in response
+        with server.ClamAvRespmodServer(
+            ("127.0.0.1", 0),
+            clamd_host="127.0.0.1",
+            clamd_port=3310,
+            clamd_timeout=0.1,
+            fail_open=True,
+            max_scan_bytes=1024,
+            client_timeout=0.5,
+            max_connections=4,
+        ) as icap_server:
+            thread = _serve_in_thread(icap_server)
+            port = icap_server.server_address[1]
+            response = _recv_icap_response(
+                port,
+                _respmod_request_with_http_header(
+                    port, http_header, b"5\r\nhello\r\n0\r\n\r\n"
+                ),
+                timeout=1,
+            )
+            icap_server.shutdown()
+            thread.join(timeout=1)
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+        assert b"HTTP/1.1 200 OK" not in response, name
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected in response, name
+        assert fake.sent == b"", name
 
 
 def test_respmod_with_req_hdr_offset_replays_only_response_header() -> None:
