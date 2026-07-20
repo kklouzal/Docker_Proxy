@@ -123,10 +123,15 @@ def _normalize_proxy_host_port(
         try:
             parsed = urlsplit(host)
             host = parsed.hostname or ""
-            if not parsed_port and parsed.port:
-                parsed_port = str(parsed.port)
         except Exception:
             return None, None, "Invalid proxy host."
+        if not parsed_port:
+            try:
+                inline_port = parsed.port
+            except ValueError:
+                return None, None, "Invalid proxy port."
+            if inline_port is not None:
+                parsed_port = str(inline_port)
     elif host.startswith("[") and "]" in host:
         end = host.find("]")
         suffix = host[end + 1 :].strip()
