@@ -61,13 +61,21 @@ def _parse_encapsulated_offsets(value: str) -> dict[str, int] | None:
     return offsets
 
 
+def _has_encapsulated_http_boundary(offsets: dict[str, int]) -> bool:
+    return "req-body" in offsets or "null-body" in offsets
+
+
 def _encapsulated_http_request(data: bytes) -> bytes:
     header_blob, _, rest = data.partition(b"\r\n\r\n")
     headers = _parse_headers(
         header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:],
     )
     offsets = _parse_encapsulated_offsets(headers.get("encapsulated", ""))
-    if offsets is None or "req-hdr" not in offsets:
+    if (
+        offsets is None
+        or "req-hdr" not in offsets
+        or not _has_encapsulated_http_boundary(offsets)
+    ):
         return b""
     start = int(offsets.get("req-hdr", 0) or 0)
     end_candidates = [
@@ -416,6 +424,8 @@ def _read_icap_message(
         return bytes(data[:header_end]), bytes(data[header_end:]), False
 
     req_hdr_offset = int(offsets.get("req-hdr", 0) or 0)
+    if not _has_encapsulated_http_boundary(offsets):
+        return bytes(data), b"", True
     end_candidates = [
         int(offsets[name])
         for name in ("req-body", "null-body")
