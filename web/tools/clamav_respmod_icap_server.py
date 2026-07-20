@@ -142,6 +142,7 @@ def _parse_start_line(start_line: str) -> str:
 
 
 def _parse_encapsulated(value: str) -> dict[str, int]:
+    supported_names = {"req-hdr", "res-hdr", "res-body", "null-body"}
     offsets: dict[str, int] = {}
     for raw_item in value.split(","):
         item = raw_item.strip()
@@ -149,6 +150,12 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
             continue
         name, raw_offset = item.split("=", 1)
         name = name.strip().lower()
+        if name not in supported_names:
+            message = f"unknown Encapsulated section token: {name}"
+            raise IcapProtocolError(message)
+        if name in offsets:
+            message = f"duplicate Encapsulated section name: {name}"
+            raise IcapProtocolError(message)
         try:
             offset = int(raw_offset.strip())
         except ValueError as exc:
