@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -536,6 +537,69 @@ def test_adblock_icap_parse_http_request_normalizes_connect_authority() -> None:
     assert method == "CONNECT"
     assert url == "https://ads.example:443/"
     assert headers["host"] == "ads.example:443"
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "ads.example",
+        "",
+        ":443",
+        "ads.example:0",
+        "ads.example:bad",
+        "ads.example:99999",
+        "user:pass@ads.example:443",
+        "ads.example:443/path",
+        "ads.example:443?slot=1",
+        "ads.example:443#frag",
+        "ads.example:443\x7f",
+        "ads.example%2f.evil:443",
+        "ads.example%3a443",
+        "ads.example\\@safe.example:443",
+        "ads.example:443 safe.example:443",
+        "[2001:db8::20]",
+        "[2001:db8::20]:0",
+        "[2001:db8::20]:bad",
+        "2001:db8::20:443",
+    ],
+)
+def test_adblock_icap_parse_http_request_rejects_malformed_connect_authority(
+    target: str,
+) -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _parse_http_request
+
+    method, url, headers = _parse_http_request(
+        (
+            f"CONNECT {target} HTTP/1.1\r\n"
+            "Host: fallback.example:443\r\n"
+            "User-Agent: probe\r\n\r\n"
+        ).encode("ascii"),
+    )
+
+    assert method == "CONNECT"
+    assert url == ""
+    assert headers["host"] == "fallback.example:443"
+
+
+def test_adblock_icap_parse_http_request_allows_bracketed_ipv6_connect_authority() -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _parse_http_request
+
+    method, url, headers = _parse_http_request(
+        b"CONNECT [2001:db8::20]:443 HTTP/1.1\r\n"
+        b"Host: [2001:db8::20]:443\r\n"
+        b"User-Agent: probe\r\n\r\n",
+    )
+    parsed = urlsplit(url)
+
+    assert method == "CONNECT"
+    assert url == "https://[2001:db8::20]:443/"
+    assert parsed.netloc == "[2001:db8::20]:443"
+    assert parsed.hostname == "2001:db8::20"
+    assert parsed.port == 443
+    assert parsed.username is None
+    assert headers["host"] == "[2001:db8::20]:443"
 
 
 def test_adblock_icap_parse_http_request_preserves_scheme_relative_authority() -> None:
