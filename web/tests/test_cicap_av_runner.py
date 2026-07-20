@@ -140,6 +140,69 @@ def _placeholder_raw_exchange(
     return bytes(response)
 
 
+class _MemorySocket:
+    def __init__(self, incoming: bytes = b"") -> None:
+        self.incoming = bytearray(incoming)
+        self.sent = bytearray()
+
+    def recv(self, size: int) -> bytes:
+        chunk = bytes(self.incoming[:size])
+        del self.incoming[:size]
+        return chunk
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.extend(data)
+
+
+def test_drain_encapsulated_body_rejects_truncated_reqmod_null_body_boundary() -> None:
+    runner = _load_runner()
+    sock = _MemorySocket()
+    header = (
+        b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        b"Encapsulated: req-hdr=0, null-body=5"
+    )
+
+    try:
+        runner._drain_encapsulated_body(sock, header, b"POST ")
+    except runner.IcapProtocolError as exc:
+        assert str(exc) == "invalid REQMOD encapsulated req-hdr boundary"
+    else:  # pragma: no cover - regression guard should always raise
+        message = "truncated REQMOD null-body boundary was accepted"
+        raise AssertionError(message)
+
+
+def test_drain_encapsulated_body_preserves_valid_reqmod_req_body_and_null_body() -> None:
+    runner = _load_runner()
+    request_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    body = b"5\r\nhello\r\n0\r\n\r\n"
+    body_offset = len(request_header)
+
+    req_body_header = (
+        b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: req-hdr=0, req-body="
+        + str(body_offset).encode("ascii")
+    )
+    null_body_header = (
+        b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: req-hdr=0, null-body="
+        + str(body_offset).encode("ascii")
+    )
+
+    for header, remainder in (
+        (req_body_header, request_header + body),
+        (null_body_header, request_header),
+    ):
+        sock = _MemorySocket()
+
+        runner._drain_encapsulated_body(sock, header, remainder)
+
+        assert sock.sent == b""
+
+
 def test_split_headers_rejects_duplicate_consumed_singletons_case_insensitive() -> None:
     runner = _load_runner()
     cases = (
@@ -612,6 +675,163 @@ def test_fail_open_placeholder_rejects_invalid_respmod_encapsulated_matrix() -> 
         assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
         assert b"HTTP/1.1 502 Bad Gateway" in response, name
         assert b"hello" not in response, name
+
+
+def test_fail_open_placeholder_rejects_invalid_reqmod_encapsulated_matrix() -> None:
+    runner = _load_runner()
+    request_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    body = b"5\r\nhello\r\n0\r\n\r\n"
+    valid_body_offset = len(request_header)
+    cases = (
+        (
+            "missing encapsulated",
+            b"Allow: 204\r\n\r\n" + request_header + body,
+            False,
+        ),
+        (
+            "empty encapsulated",
+            b"Encapsulated: \r\n\r\n" + request_header + body,
+            False,
+        ),
+        (
+            "negative req-hdr",
+            b"Encapsulated: req-hdr=-1, req-body="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + request_header
+            + body,
+            False,
+        ),
+        (
+            "decreasing req-body",
+            b"Encapsulated: req-hdr=0, req-body=1\r\n\r\n"
+            + request_header
+            + body,
+            False,
+        ),
+        (
+            "equal req offsets",
+            b"Encapsulated: req-hdr=0, req-body=0\r\n\r\n"
+            + request_header
+            + body,
+            False,
+        ),
+        (
+            "oversized header offset",
+            b"Encapsulated: req-hdr=0, req-body="
+            + str(runner.DEFAULT_MAX_HEADER_BYTES + 1).encode("ascii")
+            + b"\r\n\r\n",
+            False,
+        ),
+        (
+            "truncated req-hdr null-body",
+            b"Encapsulated: req-hdr=0, null-body="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + request_header[:-1],
+            True,
+        ),
+        (
+            "unsupported res-hdr",
+            b"Encapsulated: req-hdr=0, res-hdr="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + request_header,
+            False,
+        ),
+        (
+            "unsupported res-body",
+            b"Encapsulated: req-hdr=0, res-body="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + request_header
+            + body,
+            False,
+        ),
+        (
+            "unknown section",
+            b"Encapsulated: req-hdr=0, x-body=1, req-body="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + request_header
+            + body,
+            False,
+        ),
+        (
+            "req-body with null-body",
+            b"Encapsulated: req-hdr=0, req-body="
+            + str(valid_body_offset).encode("ascii")
+            + b", null-body="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + request_header
+            + body,
+            False,
+        ),
+        (
+            "header boundary not ending crlfcrlf",
+            b"Encapsulated: req-hdr=0, req-body="
+            + str(valid_body_offset).encode("ascii")
+            + b"\r\n\r\n"
+            + request_header[:-1]
+            + b"X"
+            + body,
+            False,
+        ),
+    )
+
+    for name, encapsulated_payload, shutdown_write in cases:
+        request = (
+            b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Allow: 204\r\n"
+            + encapsulated_payload
+        )
+
+        response = _placeholder_raw_exchange(
+            runner, request, shutdown_write=shutdown_write
+        )
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert b"hello" not in response, name
+        assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+
+
+def test_fail_open_placeholder_preserves_valid_reqmod_offset_layouts() -> None:
+    runner = _load_runner()
+    request_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    body = b"5\r\nhello\r\n0\r\n\r\n"
+    body_offset = len(request_header)
+
+    req_body_request = (
+        b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        b"Encapsulated: req-hdr=0, req-body="
+        + str(body_offset).encode("ascii")
+        + b"\r\n\r\n"
+        + request_header
+        + body
+    )
+    null_body_request = (
+        b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        b"Encapsulated: req-hdr=0, null-body="
+        + str(body_offset).encode("ascii")
+        + b"\r\n\r\n"
+        + request_header
+    )
+
+    for name, request in (
+        ("req-hdr+req-body", req_body_request),
+        ("req-hdr+null-body", null_body_request),
+    ):
+        response = _placeholder_raw_exchange(runner, request)
+
+        assert response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" not in response, name
 
 
 def test_fail_open_placeholder_preserves_valid_respmod_offset_layouts() -> None:

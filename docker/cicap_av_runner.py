@@ -165,6 +165,62 @@ def _validate_respmod_encapsulated_boundaries(
         raise IcapProtocolError(message)
 
 
+def _validate_reqmod_encapsulated_offsets(
+    offsets: dict[str, int],
+    *,
+    max_header_bytes: int = DEFAULT_MAX_HEADER_BYTES,
+) -> None:
+    request_header_offset = offsets.get("req-hdr")
+    body_offset = offsets.get("req-body")
+    null_body_offset = offsets.get("null-body")
+
+    if "res-hdr" in offsets or "res-body" in offsets:
+        message = "REQMOD request has unsupported response section"
+        raise IcapProtocolError(message)
+    if body_offset is not None and null_body_offset is not None:
+        message = "REQMOD request has both req-body and null-body"
+        raise IcapProtocolError(message)
+
+    terminal_offset = body_offset if body_offset is not None else null_body_offset
+    if terminal_offset is None:
+        message = "REQMOD request missing req-body/null-body"
+        raise IcapProtocolError(message)
+
+    if request_header_offset is None:
+        if body_offset is not None:
+            message = "REQMOD request missing req-hdr"
+            raise IcapProtocolError(message)
+        if null_body_offset != 0:
+            message = "REQMOD null-body offset must be zero without req-hdr"
+            raise IcapProtocolError(message)
+        return
+
+    if request_header_offset != 0:
+        message = "REQMOD req-hdr offset must be zero"
+        raise IcapProtocolError(message)
+    if terminal_offset > max_header_bytes:
+        message = f"REQMOD encapsulated headers exceed {max_header_bytes} bytes"
+        raise IcapProtocolError(message)
+    if terminal_offset <= request_header_offset:
+        message = "invalid REQMOD encapsulated request offsets"
+        raise IcapProtocolError(message)
+
+
+def _validate_reqmod_encapsulated_boundaries(
+    encapsulated_headers: bytes, offsets: dict[str, int]
+) -> None:
+    terminal_offset = offsets.get("req-body", offsets.get("null-body"))
+    if terminal_offset is None:  # pragma: no cover - offset validation guards this
+        message = "REQMOD request missing req-body/null-body"
+        raise IcapProtocolError(message)
+
+    if offsets.get("req-hdr") is not None:
+        request_header = encapsulated_headers[:terminal_offset]
+        if not request_header.endswith(HEADER_END):
+            message = "invalid REQMOD encapsulated req-hdr boundary"
+            raise IcapProtocolError(message)
+
+
 def _recv_more(sock: socket.socket, data: bytes, size: int) -> bytes:
     while len(data) < size:
         chunk = sock.recv(min(65536, size - len(data)))
@@ -245,16 +301,24 @@ def _drain_encapsulated_body(
     sock: socket.socket, header: bytes, remainder: bytes
 ) -> None:
     _start_line, headers = _split_headers(header)
-    offsets = _parse_encapsulated(headers.get("encapsulated", ""))
-    if "null-body" in offsets:
-        return
+    if "encapsulated" not in headers:
+        message = "REQMOD request missing Encapsulated header"
+        raise IcapProtocolError(message)
+    offsets = _parse_encapsulated(headers["encapsulated"])
+    _validate_reqmod_encapsulated_offsets(offsets)
     body_offset = offsets.get("req-body")
-    if body_offset is None:
-        body_offset = offsets.get("res-body")
+    terminal_offset = body_offset if body_offset is not None else offsets.get("null-body")
+    if terminal_offset is None:  # pragma: no cover - offset validation guards this
+        message = "REQMOD request missing req-body/null-body"
+        raise IcapProtocolError(message)
+    data = _recv_more(sock, remainder, terminal_offset)
+    if len(data) < terminal_offset:
+        message = "REQMOD encapsulated headers ended before declared offsets"
+        raise IcapProtocolError(message)
+    _validate_reqmod_encapsulated_boundaries(data[:terminal_offset], offsets)
     if body_offset is None:
         return
-    data = _recv_more(sock, remainder, body_offset)
-    body = data[body_offset:] if len(data) >= body_offset else b""
+    body = data[body_offset:]
     _drain_chunked_body(sock, body, preview="preview" in headers)
 
 
