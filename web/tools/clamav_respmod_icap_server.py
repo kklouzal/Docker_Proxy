@@ -349,6 +349,9 @@ def read_icap_chunked_body(
                     continue_callback()
                 continue
             return bytes(body), remainder
+        if size > max_bytes - total_size:
+            message = f"ICAP body exceeds {max_bytes} bytes"
+            raise BodyTooLargeError(message)
         chunk, remainder = _read_exact(stream, size + 2, remainder)
         if chunk[-2:] != CRLF:
             message = "ICAP chunk missing CRLF terminator"

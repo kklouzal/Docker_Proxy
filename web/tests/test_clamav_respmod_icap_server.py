@@ -257,6 +257,51 @@ def test_icap_chunked_body_only_treats_ieof_extension_as_preview_eof() -> None:
     assert continues == 1
 
 
+def test_icap_chunked_body_rejects_oversize_declared_chunk_before_body_read() -> None:
+    server = _load_server()
+
+    class OversizeChunkStream:
+        def __init__(self) -> None:
+            self.data = bytearray(b"B\r\n")
+            self.read_sizes: list[int] = []
+
+        def read(self, size: int = -1) -> bytes:
+            self.read_sizes.append(size)
+            if self.data:
+                chunk = bytes(self.data[:size])
+                del self.data[:size]
+                return chunk
+            message = f"oversize chunk body read attempted: read({size})"
+            raise AssertionError(message)
+
+    stream = OversizeChunkStream()
+
+    try:
+        server.read_icap_chunked_body(stream, max_bytes=10)
+    except server.BodyTooLargeError as exc:
+        assert str(exc) == "ICAP body exceeds 10 bytes"
+    else:  # pragma: no cover - regression guard should always raise
+        message = "oversize chunk was accepted"
+        raise AssertionError(message)
+
+    assert stream.read_sizes == [4096]
+
+
+def test_icap_chunked_body_accepts_exact_limit_chunk() -> None:
+    server = _load_server()
+    seen_chunks: list[bytes] = []
+
+    body, remainder = server.read_icap_chunked_body(
+        io.BytesIO(b"A\r\n0123456789\r\n0\r\n\r\n"),
+        max_bytes=10,
+        chunk_callback=seen_chunks.append,
+    )
+
+    assert body == b"0123456789"
+    assert remainder == b""
+    assert seen_chunks == [b"0123456789"]
+
+
 def test_clean_icap_response_replays_body_even_when_204_allowed() -> None:
     server = _load_server()
 
