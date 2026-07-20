@@ -737,7 +737,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 except Exception as exc:
                     scan_error = exc
 
-            body, _remainder = read_icap_chunked_body(
+            body, remainder = read_icap_chunked_body(
                 self.rfile,
                 initial,
                 max_bytes=self.server.max_scan_bytes,
@@ -746,6 +746,13 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 chunk_callback=send_chunk_or_degrade,
                 buffer_body=not allow_204,
             )
+            if remainder:
+                # Terminal chunk trailers have already been drained.  This
+                # helper handles one ICAP request per connection and always
+                # replies Connection: close, so buffered bytes are not a
+                # reusable pipelined exchange for this handler.
+                message = "unexpected data after terminal ICAP body"
+                raise IcapProtocolError(message)
             if scanner is not None and scan_error is None:
                 try:
                     result = scanner.finish()
