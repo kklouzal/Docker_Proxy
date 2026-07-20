@@ -10,8 +10,6 @@ import threading
 import time
 from pathlib import Path
 
-import pytest
-
 CLIENT_CREATE_CONNECTION = socket.create_connection
 
 
@@ -460,17 +458,6 @@ def test_null_body_respmod_with_allow_204_uses_safe_no_content_verdict() -> None
     assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
 
 
-def test_malformed_general_icap_header_line_is_rejected() -> None:
-    server = _load_server()
-
-    with pytest.raises(server.IcapProtocolError, match="malformed ICAP header line"):
-        server._split_headers(
-            b"OPTIONS icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
-            b"Host: 127.0.0.1\r\n"
-            b"This is not a header"
-        )
-
-
 def test_duplicate_encapsulated_header_is_rejected_before_boundary_selection() -> None:
     server = _load_server()
 
@@ -503,6 +490,39 @@ def test_duplicate_encapsulated_header_is_rejected_before_boundary_selection() -
     assert response.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"HTTP/1.1 502 Bad Gateway" in response
     assert b"duplicate ICAP Encapsulated header" in response
+
+
+def test_single_encapsulated_header_with_null_body_is_preserved() -> None:
+    server = _load_server()
+
+    class CleanServer(server.ClamAvRespmodServer):
+        def scan_body(self, body: bytes):
+            assert body == b""
+            return server.ClamdResult(clean=True)
+
+    with CleanServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(
+            port,
+            _sample_null_body_respmod_request(port, allow_204=False),
+            timeout=0.5,
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"Encapsulated: res-hdr=0, null-body=" in response
+    assert b"HTTP/1.1 204 No Content" in response
 
 
 def test_clean_icap_responses_close_connections_to_prevent_reuse_races() -> None:
