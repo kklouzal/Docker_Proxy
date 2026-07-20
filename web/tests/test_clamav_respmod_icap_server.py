@@ -525,6 +525,47 @@ def test_single_encapsulated_header_with_null_body_is_preserved() -> None:
     assert b"HTTP/1.1 204 No Content" in response
 
 
+def test_malformed_respmod_start_line_rejects_before_scanning() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(
+            port,
+            _replace_request_start_line(
+                _sample_respmod_request(port),
+                f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/2.0".encode(
+                    "ascii"
+                ),
+            ),
+            timeout=0.5,
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"unsupported ICAP version" in response
+
+
 def test_clean_icap_responses_close_connections_to_prevent_reuse_races() -> None:
     server = _load_server()
 
@@ -643,6 +684,10 @@ def _options_request(port: int) -> bytes:
         "Host: 127.0.0.1\r\n"
         "Encapsulated: null-body=0\r\n\r\n"
     ).encode("ascii")
+
+
+def _replace_request_start_line(request: bytes, start_line: bytes) -> bytes:
+    return start_line + request[request.index(b"\r\n") :]
 
 
 def _sample_respmod_request(port: int) -> bytes:

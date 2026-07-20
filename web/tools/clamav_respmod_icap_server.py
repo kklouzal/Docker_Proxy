@@ -36,6 +36,7 @@ DEFAULT_SQUID_204_BACKUP_LIMIT = 64 * 1024
 ISTAG = '"clamav-respmod-instream-1"'
 CLAMD_INSTREAM_COMMAND = b"zINSTREAM\0"
 CLAMD_REPLY_TERMINATOR = b"\0"
+ICAP_METHOD_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\Z")
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,24 @@ def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
             raise IcapProtocolError(message)
         headers[header_name] = value.strip()
     return lines[0], headers
+
+
+def _parse_start_line(start_line: str) -> str:
+    parts = start_line.split(" ")
+    if len(parts) != 3 or any(not part for part in parts):
+        message = f"malformed ICAP start line: {start_line!r}"
+        raise IcapProtocolError(message)
+    method, request_target, version = parts
+    if not ICAP_METHOD_TOKEN_RE.fullmatch(method):
+        message = f"malformed ICAP method token: {method!r}"
+        raise IcapProtocolError(message)
+    if any(char.isspace() for char in request_target):  # pragma: no cover - split guard
+        message = f"malformed ICAP request target: {request_target!r}"
+        raise IcapProtocolError(message)
+    if version != "ICAP/1.0":
+        message = f"unsupported ICAP version: {version!r}"
+        raise IcapProtocolError(message)
+    return method.upper()
 
 
 def _parse_encapsulated(value: str) -> dict[str, int]:
@@ -657,7 +676,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
         try:
             raw_header, remainder = _read_until(self.rfile, HEADER_END)
             start_line, headers = _split_headers(raw_header[:-4])
-            method = start_line.split(" ", 1)[0].upper()
+            method = _parse_start_line(start_line)
             if method == "OPTIONS":
                 self._write_response(options_response())
                 return
