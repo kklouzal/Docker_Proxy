@@ -257,6 +257,71 @@ def test_icap_chunked_body_only_treats_ieof_extension_as_preview_eof() -> None:
     assert continues == 1
 
 
+def test_icap_chunked_body_allows_zero_ieof_with_trailers() -> None:
+    server = _load_server()
+    continues = 0
+
+    def on_continue() -> None:
+        nonlocal continues
+        continues += 1
+
+    body, remainder = server.read_icap_chunked_body(
+        io.BytesIO(b"2\r\nhe\r\n0; ieof\r\nX-Trailer: ok\r\n\r\n"),
+        preview=True,
+        continue_callback=on_continue,
+    )
+
+    assert body == b"he"
+    assert remainder == b""
+    assert continues == 0
+
+
+def test_icap_chunked_body_valued_ieof_extension_is_preview_eof() -> None:
+    server = _load_server()
+    continues = 0
+
+    def on_continue() -> None:
+        nonlocal continues
+        continues += 1
+
+    body, remainder = server.read_icap_chunked_body(
+        io.BytesIO(b"2\r\nhe\r\n0; foo=bar; ieof=value\r\n\r\n3\r\nllo\r\n0\r\n\r\n"),
+        preview=True,
+        continue_callback=on_continue,
+    )
+
+    assert body == b"he"
+    assert remainder == b"3\r\nllo\r\n0\r\n\r\n"
+    assert continues == 0
+
+
+def test_icap_chunked_body_rejects_ieof_on_nonzero_chunk() -> None:
+    server = _load_server()
+
+    try:
+        server.read_icap_chunked_body(
+            io.BytesIO(b"2;ieof\r\nhe\r\n0;ieof\r\n\r\n"),
+            preview=True,
+        )
+    except server.IcapProtocolError as exc:
+        assert str(exc) == "invalid ICAP ieof chunk extension on nonzero chunk"
+    else:  # pragma: no cover - regression guard should always raise
+        message = "ieof on a nonzero chunk was accepted"
+        raise AssertionError(message)
+
+
+def test_icap_chunked_body_leaves_bytes_after_ieof_terminator_as_remainder() -> None:
+    server = _load_server()
+
+    body, remainder = server.read_icap_chunked_body(
+        io.BytesIO(b"2\r\nhe\r\n0;ieof\r\n\r\n1\r\nX\r\n0\r\n\r\n"),
+        preview=True,
+    )
+
+    assert body == b"he"
+    assert remainder == b"1\r\nX\r\n0\r\n\r\n"
+
+
 def test_icap_chunked_body_rejects_oversize_declared_chunk_before_body_read() -> None:
     server = _load_server()
 
@@ -1673,6 +1738,42 @@ def test_malformed_zero_chunk_trailer_after_valid_chunk_fails_closed() -> None:
     assert b"HTTP/1.1 502 Bad Gateway" in response
     assert b"scan failed before complete response body" in response
     assert b"5\r\nhello\r\n0\r\n\r\n" not in response
+
+
+def test_respmod_preview_nonzero_ieof_fails_closed_without_clean_replay() -> None:
+    server = _load_server()
+    scanner = RecordingScanner()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return scanner
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_preview_respmod_request(port).replace(
+            b"2\r\nhe\r\n0\r\n\r\n3\r\nllo\r\n0\r\n\r\n",
+            b"2;ieof\r\nhe\r\n0;ieof\r\n\r\n",
+        )
+        response = _recv_icap_exchange(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scanner.closed is True
+    assert scanner.chunks == []
+    assert scanner.finished is False
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"he\r\n0\r\n\r\n" not in response
 
 
 def test_truncated_later_chunk_after_valid_chunk_fails_closed_without_partial_replay() -> None:

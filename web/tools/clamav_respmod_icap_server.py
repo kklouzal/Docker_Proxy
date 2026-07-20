@@ -342,13 +342,13 @@ def read_icap_chunked_body(
         except ValueError as exc:
             message = f"invalid ICAP chunk size: {line!r}"
             raise IcapProtocolError(message) from exc
+        has_ieof = _chunk_has_ieof_extension(line)
+        if has_ieof and size != 0:
+            message = "invalid ICAP ieof chunk extension on nonzero chunk"
+            raise IcapProtocolError(message)
         if size == 0:
             remainder = _drain_chunk_trailers(stream, remainder)
-            if (
-                preview
-                and not preview_terminator_seen
-                and not _chunk_has_ieof_extension(line)
-            ):
+            if preview and not preview_terminator_seen and not has_ieof:
                 preview_terminator_seen = True
                 if continue_callback is not None:
                     continue_callback()
