@@ -645,12 +645,17 @@ def _http_response_allows_squid_204_backup(http_header: bytes) -> bool:
             if value.strip().lower() not in {b"", b"identity"}:
                 return False
         elif header_name == b"content-length":
-            try:
-                length = int(value.strip())
-            except ValueError:
+            raw_length = value.strip()
+            if not re.fullmatch(rb"[0-9]+", raw_length):
                 return False
-            if length < 0:
+            significant_length = raw_length.lstrip(b"0") or b"0"
+            max_backup = str(DEFAULT_SQUID_204_BACKUP_LIMIT).encode("ascii")
+            if len(significant_length) > len(max_backup) or (
+                len(significant_length) == len(max_backup)
+                and significant_length > max_backup
+            ):
                 return False
+            length = int(significant_length)
             content_lengths.append(length)
     if not content_lengths:
         return False

@@ -666,6 +666,109 @@ def test_small_clean_respmod_with_allow_204_still_replays_complete_body() -> Non
     assert b"5\r\nhello\r\n0\r\n\r\n" in response
 
 
+def test_http_response_204_backup_content_length_and_te_matrix() -> None:
+    server = _load_server()
+
+    cases = {
+        "valid single ASCII Content-Length": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n",
+            True,
+        ),
+        "duplicate same Content-Length": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\n",
+            True,
+        ),
+        "duplicate conflicting Content-Length": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n",
+            False,
+        ),
+        "comma-list Content-Length": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5, 5\r\n\r\n",
+            False,
+        ),
+        "signed Content-Length": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: +5\r\n\r\n",
+            False,
+        ),
+        "underscore Content-Length": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1_0\r\n\r\n",
+            False,
+        ),
+        "Unicode-like Content-Length bytes": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: \xef\xbc\x95\r\n\r\n",
+            False,
+        ),
+        "very long Content-Length": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: " + b"9" * 5000 + b"\r\n\r\n",
+            False,
+        ),
+        "Content-Length plus Transfer-Encoding chunked": (
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            ),
+            False,
+        ),
+        "mixed-case Transfer-Encoding chunked": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: ChUnKeD\r\n\r\n",
+            False,
+        ),
+        "duplicate mixed Transfer-Encoding tokens": (
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: identity\r\n"
+                b"Transfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\n"
+            ),
+            False,
+        ),
+        "malformed Content-Length line": (
+            b"HTTP/1.1 200 OK\r\nContent-Length 5\r\n\r\n",
+            False,
+        ),
+    }
+
+    for name, (http_header, expected) in cases.items():
+        assert server._http_response_allows_squid_204_backup(http_header) is expected, name
+
+
+def test_fail_open_replays_invalid_content_length_instead_of_204_after_clamd_reset(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+    fake = ResetBeforeVerdictSocket()
+
+    monkeypatch.setattr(
+        server.socket, "create_connection", lambda address, timeout: fake
+    )
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _respmod_request_with_http_header(
+            port,
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"Content-Length: +5\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+        )
+        response = _recv_icap_response(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"Content-Length: 5\r\n" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" in response
+
+
 def test_respmod_with_req_hdr_offset_replays_only_response_header() -> None:
     server = _load_server()
 
@@ -1557,6 +1660,21 @@ def _sample_respmod_request(port: int) -> bytes:
         + b"\r\n"
     )
     chunked_body = b"5\r\n" + body + b"\r\n0\r\n\r\n"
+    return (
+        (
+            f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Allow: 204\r\n"
+            f"Encapsulated: res-hdr=0, res-body={len(http_header)}\r\n\r\n"
+        ).encode("ascii")
+        + http_header
+        + chunked_body
+    )
+
+
+def _respmod_request_with_http_header(
+    port: int, http_header: bytes, chunked_body: bytes
+) -> bytes:
     return (
         (
             f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
