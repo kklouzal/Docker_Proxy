@@ -488,6 +488,44 @@ def test_icap_chunked_body_rejects_non_hex_size_token_grammar() -> None:
         assert seen_chunks == []
 
 
+def test_encapsulated_offsets_accept_ascii_decimals_and_comma_sections() -> None:
+    server = _load_server()
+
+    assert server._parse_encapsulated(
+        "req-hdr=000, res-hdr=046, res-body=00122"
+    ) == {"req-hdr": 0, "res-hdr": 46, "res-body": 122}
+    assert server._parse_encapsulated("res-hdr=0,null-body=64") == {
+        "res-hdr": 0,
+        "null-body": 64,
+    }
+
+
+def test_encapsulated_offsets_reject_non_strict_decimal_tokens() -> None:
+    server = _load_server()
+
+    malformed = (
+        "+1",
+        "-0",
+        "1_0",
+        "\uff11\uff12",
+        "\t1",
+        "1\t",
+        "",
+        "1e0",
+        "0x10",
+        "9" * 17,
+        "0" * 5000 + "1" * 17,
+    )
+    for token in malformed:
+        try:
+            server._parse_encapsulated(f"res-hdr=0, res-body={token}")
+        except server.IcapProtocolError as exc:
+            assert str(exc).startswith("invalid Encapsulated offset:")
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"malformed Encapsulated offset was accepted: {token!r}"
+            raise AssertionError(message)
+
+
 def test_respmod_rejects_malformed_chunk_size_without_clean_replay() -> None:
     server = _load_server()
     scanner = RecordingScanner()
@@ -1172,6 +1210,43 @@ def test_respmod_body_before_res_hdr_is_rejected_before_scanning() -> None:
     assert b"invalid RESPMOD encapsulated response offsets" in response
 
 
+def test_respmod_signed_offset_rejected_before_scanning() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_respmod_request(port).replace(
+            b"Encapsulated: res-hdr=0, res-body=64",
+            b"Encapsulated: res-hdr=0, res-body=+64",
+        )
+        response = _recv_icap_response(port, request, timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"invalid Encapsulated offset" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" not in response
+
+
 def test_respmod_negative_offset_is_rejected_before_scanning() -> None:
     server = _load_server()
     scan_attempts = 0
@@ -1205,7 +1280,7 @@ def test_respmod_negative_offset_is_rejected_before_scanning() -> None:
     assert scan_attempts == 0
     assert response.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"HTTP/1.1 502 Bad Gateway" in response
-    assert b"negative Encapsulated offset" in response
+    assert b"invalid Encapsulated offset" in response
 
 
 def test_preview_header_parser_accepts_decimal_whitespace_and_rejects_bad_values() -> None:

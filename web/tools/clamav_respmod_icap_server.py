@@ -34,6 +34,7 @@ DEFAULT_MAX_SCANS = 16
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 DEFAULT_SQUID_204_BACKUP_LIMIT = 64 * 1024
 _ICAP_CHUNK_SIZE_RE = re.compile(r"[0-9A-Fa-f]{1,16}")
+_ENCAPSULATED_OFFSET_RE = re.compile(r"[0-9]+")
 ISTAG = '"clamav-respmod-instream-1"'
 CLAMD_INSTREAM_COMMAND = b"zINSTREAM\0"
 CLAMD_REPLY_TERMINATOR = b"\0"
@@ -147,7 +148,7 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
     supported_names = {"req-hdr", "res-hdr", "res-body", "null-body"}
     offsets: dict[str, int] = {}
     for raw_item in value.split(","):
-        item = raw_item.strip()
+        item = raw_item.lstrip()
         if not item or "=" not in item:
             continue
         name, raw_offset = item.split("=", 1)
@@ -158,14 +159,14 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
         if name in offsets:
             message = f"duplicate Encapsulated section name: {name}"
             raise IcapProtocolError(message)
-        try:
-            offset = int(raw_offset.strip())
-        except ValueError as exc:
+        if not _ENCAPSULATED_OFFSET_RE.fullmatch(raw_offset):
             message = f"invalid Encapsulated offset: {item}"
-            raise IcapProtocolError(message) from exc
-        if offset < 0:
-            message = f"negative Encapsulated offset: {item}"
             raise IcapProtocolError(message)
+        significant_offset = raw_offset.lstrip("0") or "0"
+        if len(significant_offset) > 16:
+            message = f"invalid Encapsulated offset: {item}"
+            raise IcapProtocolError(message)
+        offset = int(significant_offset)
         offsets[name] = offset
     return offsets
 
