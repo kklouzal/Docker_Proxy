@@ -738,6 +738,79 @@ def test_http_response_204_backup_content_length_and_te_matrix() -> None:
         assert server._http_response_allows_squid_204_backup(http_header) is expected, name
 
 
+def test_respmod_rejects_malformed_http_status_lines_before_scan_or_replay() -> None:
+    server = _load_server()
+
+    malformed_cases = {
+        "unsupported major version": b"HTTP/2.0 200 OK",
+        "unsupported minor version": b"HTTP/1.2 200 OK",
+        "missing version-status space": b"HTTP/1.1200 OK",
+        "extra version-status space": b"HTTP/1.1  200 OK",
+        "missing status-reason space": b"HTTP/1.1 200",
+        "non-3-digit status": b"HTTP/1.1 20 OK",
+        "signed status": b"HTTP/1.1 +200 OK",
+        "non-digit status": b"HTTP/1.1 2OO OK",
+        "control in reason": b"HTTP/1.1 200 O\x01K",
+        "non-ascii reason": b"HTTP/1.1 200 Caf\xe9",
+        "HTTP request-line masquerading as response": b"GET / HTTP/1.1",
+    }
+
+    for name, status_line in malformed_cases.items():
+        scanner = RecordingScanner()
+
+        class TestServer(server.ClamAvRespmodServer):
+            def open_scan(self):
+                return scanner
+
+        http_header = (
+            status_line
+            + b"\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\n"
+        )
+        with TestServer(
+            ("127.0.0.1", 0),
+            clamd_host="127.0.0.1",
+            clamd_port=3310,
+            clamd_timeout=0.1,
+            fail_open=False,
+            max_scan_bytes=1024,
+            client_timeout=0.5,
+            max_connections=4,
+        ) as icap_server:
+            thread = _serve_in_thread(icap_server)
+            port = icap_server.server_address[1]
+            response = _recv_icap_exchange(
+                port,
+                _respmod_request_with_http_header(
+                    port, http_header, b"5\r\nhello\r\n0\r\n\r\n"
+                ),
+                timeout=1,
+            )
+            icap_server.shutdown()
+            thread.join(timeout=1)
+
+        assert scanner.finished is False, name
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert b"malformed HTTP response status line" in response, name
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
+
+
+def test_http_status_line_validation_preserves_supported_response_lines() -> None:
+    server = _load_server()
+
+    valid_cases = (
+        b"HTTP/1.0 200 OK",
+        b"HTTP/1.1 200 OK",
+        b"HTTP/1.1 204 ",
+        b"HTTP/1.1 404 Not Found",
+        b"HTTP/1.1 200 OK EXTRA",
+        b"HTTP/1.1 599 Ordinary reason-text!?",
+    )
+
+    for status_line in valid_cases:
+        server._validate_http_status_line(status_line)
+
+
 def test_http_header_field_validation_preserves_valid_response_metadata() -> None:
     server = _load_server()
 

@@ -37,6 +37,7 @@ _ICAP_CHUNK_SIZE_RE = re.compile(r"[0-9A-Fa-f]{1,16}")
 _ENCAPSULATED_OFFSET_RE = re.compile(r"[0-9]+")
 _HTTP_TOKEN_RE = re.compile(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _HTTP_TRANSFER_CODING_RE = _HTTP_TOKEN_RE
+_HTTP_STATUS_LINE_RE = re.compile(rb"HTTP/(1\.[01]) ([0-9]{3}) ([\t -~]*)")
 ISTAG = '"clamav-respmod-instream-1"'
 CLAMD_INSTREAM_COMMAND = b"zINSTREAM\0"
 CLAMD_REPLY_TERMINATOR = b"\0"
@@ -628,8 +629,18 @@ def _http_header_lines(http_header: bytes) -> list[bytes]:
     return header_block.split(CRLF) if header_block else []
 
 
+def _validate_http_status_line(status_line: bytes) -> None:
+    if not _HTTP_STATUS_LINE_RE.fullmatch(status_line):
+        message = "malformed HTTP response status line"
+        raise IcapProtocolError(message)
+
+
 def _validate_http_header_field_names(http_header: bytes) -> None:
     lines = _http_header_lines(http_header)
+    if not lines:
+        message = "missing HTTP response status line"
+        raise IcapProtocolError(message)
+    _validate_http_status_line(lines[0])
     for line in lines[1:]:
         if b":" not in line:
             message = "malformed HTTP response header line"
