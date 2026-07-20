@@ -826,6 +826,56 @@ def test_adblock_icap_rejects_duplicate_encapsulated_header_fields() -> None:
     assert force_close is True
 
 
+@pytest.mark.parametrize(
+    "malformed_header",
+    [
+        b"Malformed-Header-Line",
+        b": empty-name",
+        b"Bad Header: value",
+        b"Bad\x01Name: value",
+        b" Continuation-Like: value",
+        b"\tContinuation-Like: value",
+    ],
+)
+def test_adblock_icap_rejects_malformed_general_header_before_pipeline(
+    malformed_header: bytes,
+) -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _read_icap_message
+
+    http = (
+        b"GET http://allowed.example/page HTTP/1.1\r\n"
+        b"Host: allowed.example\r\n\r\n"
+    )
+    next_req = (
+        b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: null-body=0\r\n\r\n"
+    )
+    request = (
+        b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        + malformed_header
+        + b"\r\n"
+        b"Encapsulated: req-hdr=0, null-body="
+        + str(len(http)).encode("ascii")
+        + b"\r\n\r\n"
+        + http
+        + next_req
+    )
+
+    message, pending, force_close = _read_icap_message(
+        _ChunkedSocket([request]),
+        max_bytes=65536,
+        max_body_drain_bytes=65536,
+        timeout_seconds=5.0,
+    )
+
+    assert message == request
+    assert pending == b""
+    assert force_close is True
+
+
 def test_adblock_icap_extracts_request_headers_without_buffering_body() -> None:
     _add_web_to_path()
     from tools.adblock_icap_server import (

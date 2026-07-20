@@ -14,6 +14,9 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 _ALLOWED_URL_SCHEMES = {"http", "https"}
+_HEADER_FIELD_NAME_CHARS = frozenset(
+    "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+)
 
 # This script lives in /app/tools; add /app to sys.path.
 here = Path(Path(__file__).parent).resolve()
@@ -38,6 +41,16 @@ def _parse_headers(lines: list[str]) -> dict[str, str]:
         key, value = line.split(":", 1)
         headers[key.strip().lower()] = value.strip()
     return headers
+
+
+def _has_malformed_header_line(lines: list[str]) -> bool:
+    for line in lines:
+        if ":" not in line:
+            return True
+        key, _value = line.split(":", 1)
+        if not key or any(ch not in _HEADER_FIELD_NAME_CHARS for ch in key):
+            return True
+    return False
 
 
 def _has_duplicate_header(lines: list[str], name: str) -> bool:
@@ -430,6 +443,8 @@ def _read_icap_message(
         return bytes(data), b"", True
     header_blob, rest = bytes(data).split(b"\r\n\r\n", 1)
     header_lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:]
+    if _has_malformed_header_line(header_lines):
+        return bytes(data), b"", True
     if _has_duplicate_header(header_lines, "encapsulated"):
         return bytes(data), b"", True
     headers = _parse_headers(header_lines)
