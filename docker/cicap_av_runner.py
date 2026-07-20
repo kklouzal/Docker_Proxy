@@ -16,12 +16,22 @@ HEADER_END = CRLF + CRLF
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 MAX_ENCAPSULATED_OFFSET_DIGITS = 20
 MAX_ICAP_CHUNK_SIZE_DIGITS = 16
+MAX_ICAP_TRAILER_LINE_BYTES = 8192
+MAX_ICAP_TRAILERS_BYTES = DEFAULT_MAX_HEADER_BYTES
 FALLBACK_OPEN_ISTAG = '"clamav-fail-open-unavailable"'
 FALLBACK_CLOSED_ISTAG = '"clamav-fail-closed-unavailable"'
 _CHUNK_OWS = b" \t"
 _CHUNK_TCHARS = frozenset(
     b"!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 )
+_FORBIDDEN_ICAP_TRAILER_FIELDS = {
+    b"allow",
+    b"content-length",
+    b"encapsulated",
+    b"preview",
+    b"trailer",
+    b"transfer-encoding",
+}
 _SINGLETON_ICAP_HEADERS = {
     "allow": "Allow",
     "encapsulated": "Encapsulated",
@@ -361,21 +371,51 @@ def _parse_chunk_size(line: bytes) -> int:
     return size
 
 
+def _validate_chunk_trailer(line: bytes) -> None:
+    if b":" not in line:
+        message = "invalid ICAP chunk trailer"
+        raise IcapProtocolError(message)
+    field_name, field_value = line.split(b":", 1)
+    if not field_name or any(ch not in _CHUNK_TCHARS for ch in field_name):
+        message = "invalid ICAP chunk trailer field name"
+        raise IcapProtocolError(message)
+    field_name = field_name.lower()
+    if field_name in _FORBIDDEN_ICAP_TRAILER_FIELDS:
+        message = f"forbidden ICAP chunk trailer field: {field_name.decode('ascii')}"
+        raise IcapProtocolError(message)
+    if any(ch != 0x09 and (ch < 0x20 or ch >= 0x7F) for ch in field_value):
+        message = "invalid ICAP chunk trailer value"
+        raise IcapProtocolError(message)
+
+
 def _read_chunk_trailers(sock: socket.socket, data: bytes) -> bytes:
+    total = 0
     while True:
-        data = _recv_until(sock, data, CRLF, max_bytes=8192)
+        data = _recv_until(
+            sock, data, CRLF, max_bytes=MAX_ICAP_TRAILER_LINE_BYTES + len(CRLF)
+        )
         if CRLF not in data:
-            message = "truncated ICAP chunk trailers"
+            if len(data) > MAX_ICAP_TRAILER_LINE_BYTES:
+                message = (
+                    "ICAP chunk trailer line exceeds "
+                    f"{MAX_ICAP_TRAILER_LINE_BYTES} bytes"
+                )
+            else:
+                message = "truncated ICAP chunk trailers"
+            raise IcapProtocolError(message)
+        if data.index(CRLF) > MAX_ICAP_TRAILER_LINE_BYTES:
+            message = (
+                f"ICAP chunk trailer line exceeds {MAX_ICAP_TRAILER_LINE_BYTES} bytes"
+            )
             raise IcapProtocolError(message)
         line, data = data.split(CRLF, 1)
+        total += len(line) + len(CRLF)
+        if total > MAX_ICAP_TRAILERS_BYTES:
+            message = f"ICAP chunk trailers exceed {MAX_ICAP_TRAILERS_BYTES} bytes"
+            raise IcapProtocolError(message)
         if not line:
             return data
-        field_name = line.split(b":", 1)[0]
-        if b":" not in line or not field_name or any(
-            ch <= 0x20 or ch >= 0x7F for ch in field_name
-        ):
-            message = "invalid ICAP chunk trailer"
-            raise IcapProtocolError(message)
+        _validate_chunk_trailer(line)
 
 
 def _read_chunked_body(

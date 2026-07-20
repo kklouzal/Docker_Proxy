@@ -182,6 +182,124 @@ def test_drain_chunked_body_rejects_malformed_or_truncated_reqmod_chunks() -> No
         assert sock.sent == b"", name
 
 
+def test_drain_chunked_body_rejects_invalid_or_unsafe_trailers() -> None:
+    runner = _load_runner()
+    trailer_line_limit = getattr(runner, "MAX_ICAP_TRAILER_LINE_BYTES", 8192)
+    long_line = b"X" * (trailer_line_limit + 1)
+    aggregate_lines = (b"X-Trailer: " + (b"a" * 1024) + b"\r\n") * 70
+    cases = (
+        (
+            "whitespace before colon",
+            b"0\r\nBad : value\r\n\r\n",
+            "invalid ICAP chunk trailer field name",
+        ),
+        (
+            "empty field name",
+            b"0\r\n: value\r\n\r\n",
+            "invalid ICAP chunk trailer field name",
+        ),
+        (
+            "invalid field token",
+            b"0\r\nBad/Name: value\r\n\r\n",
+            "invalid ICAP chunk trailer field name",
+        ),
+        (
+            "non-ASCII field name",
+            b"0\r\nX-\xff: value\r\n\r\n",
+            "invalid ICAP chunk trailer field name",
+        ),
+        (
+            "control field name",
+            b"0\r\nBad\x1f: value\r\n\r\n",
+            "invalid ICAP chunk trailer field name",
+        ),
+        (
+            "obs-fold continuation",
+            b"0\r\nX-Trailer: value\r\n folded\r\n\r\n",
+            "invalid ICAP chunk trailer",
+        ),
+        (
+            "missing colon",
+            b"0\r\nMissing-Colon\r\n\r\n",
+            "invalid ICAP chunk trailer",
+        ),
+        (
+            "NUL value",
+            b"0\r\nX-Trailer: ok\x00bad\r\n\r\n",
+            "invalid ICAP chunk trailer value",
+        ),
+        (
+            "control value",
+            b"0\r\nX-Trailer: ok\x1fbad\r\n\r\n",
+            "invalid ICAP chunk trailer value",
+        ),
+        (
+            "very long individual line",
+            b"0\r\n" + long_line + b": value\r\n\r\n",
+            "ICAP chunk trailer line exceeds",
+        ),
+        (
+            "many lines exceed aggregate bound",
+            b"0\r\n" + aggregate_lines + b"\r\n",
+            "ICAP chunk trailers exceed",
+        ),
+        (
+            "duplicate sensitive framing names",
+            b"0\r\nContent-Length: 1\r\ncontent-length: 2\r\n\r\n",
+            "forbidden ICAP chunk trailer field",
+        ),
+        (
+            "encapsulated control name",
+            b"0\r\nEncapsulated: null-body=0\r\n\r\n",
+            "forbidden ICAP chunk trailer field",
+        ),
+        (
+            "allow control name",
+            b"0\r\nAllow: 204\r\n\r\n",
+            "forbidden ICAP chunk trailer field",
+        ),
+        (
+            "preview control name",
+            b"0\r\nPreview: 0\r\n\r\n",
+            "forbidden ICAP chunk trailer field",
+        ),
+        (
+            "transfer encoding framing name",
+            b"0\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "forbidden ICAP chunk trailer field",
+        ),
+    )
+
+    for name, body, expected in cases:
+        sock = _MemorySocket()
+
+        try:
+            runner._drain_chunked_body(sock, body)
+        except runner.IcapProtocolError as exc:
+            assert expected in str(exc), name
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"{name} trailer was accepted as drained"
+            raise AssertionError(message)
+
+        assert sock.sent == b"", name
+
+
+def test_drain_chunked_body_preserves_valid_token_ows_and_unknown_trailers() -> None:
+    runner = _load_runner()
+    sock = _MemorySocket()
+
+    remainder = runner._drain_chunked_body(
+        sock,
+        b"0\r\n"
+        b"X_Token-Name!#$%&'*+-.^_`|~09AZaz: \t ok \t\r\n"
+        b"X-Unknown-Extension: clean; meta=1\r\n"
+        b"\r\nNEXT",
+    )
+
+    assert sock.sent == b""
+    assert remainder == b"NEXT"
+
+
 def test_drain_chunked_body_preserves_valid_trailers_remainder_and_preview_continue() -> None:
     runner = _load_runner()
     continuation = b"5\r\n-rest\r\n0; done=yes\r\nX-Trailer: ok\r\n\r\nNEXT"
@@ -546,6 +664,50 @@ def test_fail_open_placeholder_rejects_bad_chunk_extension_before_204() -> None:
     assert b"HTTP/1.1 502 Bad Gateway" in response
     assert b"invalid ICAP chunk extension" in response
     assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
+
+
+def test_fail_open_placeholder_rejects_bad_chunk_trailer_before_204() -> None:
+    runner = _load_runner()
+    request_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    body = b"0\r\nX-Trailer: ok\x00bad\r\n\r\n"
+    request = (
+        b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        b"Encapsulated: req-hdr=0, req-body="
+        + str(len(request_header)).encode("ascii")
+        + b"\r\n\r\n"
+        + request_header
+        + body
+    )
+
+    response = _placeholder_raw_exchange(runner, request)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"invalid ICAP chunk trailer value" in response
+    assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
+
+
+def test_fail_open_placeholder_preserves_unknown_chunk_trailer_before_204() -> None:
+    runner = _load_runner()
+    request_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    body = b"0\r\nX-Unknown-Extension: clean\r\n\r\n"
+    request = (
+        b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        b"Encapsulated: req-hdr=0, req-body="
+        + str(len(request_header)).encode("ascii")
+        + b"\r\n\r\n"
+        + request_header
+        + body
+    )
+
+    response = _placeholder_raw_exchange(runner, request)
+
+    assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" not in response
 
 
 def test_fail_open_placeholder_preview_not_ieof_substring_continues() -> None:
