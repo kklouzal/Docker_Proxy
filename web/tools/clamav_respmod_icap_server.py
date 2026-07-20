@@ -35,6 +35,7 @@ DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 DEFAULT_SQUID_204_BACKUP_LIMIT = 64 * 1024
 _ICAP_CHUNK_SIZE_RE = re.compile(r"[0-9A-Fa-f]{1,16}")
 _ENCAPSULATED_OFFSET_RE = re.compile(r"[0-9]+")
+_HTTP_TRANSFER_CODING_RE = re.compile(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 ISTAG = '"clamav-respmod-instream-1"'
 CLAMD_INSTREAM_COMMAND = b"zINSTREAM\0"
 CLAMD_REPLY_TERMINATOR = b"\0"
@@ -639,6 +640,10 @@ def _http_response_allows_squid_204_backup(http_header: bytes) -> bool:
     lines = _http_header_lines(http_header)
     if not lines or not lines[0].startswith(b"HTTP/"):
         return False
+    try:
+        transfer_encoding = _http_transfer_encoding_kind_from_lines(lines)
+    except HttpFramingError:
+        return False
     content_lengths: list[int] = []
     for line in lines[1:]:
         if b":" not in line:
@@ -646,7 +651,7 @@ def _http_response_allows_squid_204_backup(http_header: bytes) -> bool:
         name, value = line.split(b":", 1)
         header_name = name.strip().lower()
         if header_name == b"transfer-encoding":
-            if value.strip().lower() not in {b"", b"identity"}:
+            if transfer_encoding == "chunked":
                 return False
         elif header_name == b"content-length":
             raw_length = value.strip()
@@ -668,21 +673,62 @@ def _http_response_allows_squid_204_backup(http_header: bytes) -> bool:
     return content_lengths[0] <= DEFAULT_SQUID_204_BACKUP_LIMIT
 
 
+def _http_transfer_encoding_kind_from_lines(lines: list[bytes]) -> str:
+    codings: list[bytes] = []
+    for line in lines[1:]:
+        if b":" not in line:
+            continue
+        name, value = line.split(b":", 1)
+        if name.strip().lower() != b"transfer-encoding":
+            continue
+        for raw_part in value.split(b","):
+            part = raw_part.strip()
+            if not part:
+                message = "invalid HTTP Transfer-Encoding header"
+                raise HttpFramingError(message)
+            coding = part.split(b";", 1)[0].strip().lower()
+            if not _HTTP_TRANSFER_CODING_RE.fullmatch(coding):
+                message = "invalid HTTP Transfer-Encoding header"
+                raise HttpFramingError(message)
+            codings.append(coding)
+
+    if not codings:
+        return "absent"
+    if b"chunked" in codings:
+        if codings[-1] != b"chunked":
+            message = "invalid HTTP Transfer-Encoding header: chunked must be final"
+            raise HttpFramingError(message)
+        if codings.count(b"chunked") != 1:
+            message = "invalid HTTP Transfer-Encoding header: repeated chunked"
+            raise HttpFramingError(message)
+        if b"identity" in codings:
+            message = "ambiguous HTTP Transfer-Encoding header: identity with chunked"
+            raise HttpFramingError(message)
+        if len(codings) != 1:
+            message = "unsupported HTTP Transfer-Encoding before chunked"
+            raise HttpFramingError(message)
+        return "chunked"
+    if all(coding == b"identity" for coding in codings):
+        return "identity"
+
+    display = codings[0].decode("ascii", errors="replace")
+    message = f"unsupported HTTP Transfer-Encoding: {display}"
+    raise HttpFramingError(message)
+
+
 def _http_declared_content_length(http_header: bytes) -> bytes | None:
     """Return the single significant Content-Length token, or None when absent."""
     lines = _http_header_lines(http_header)
     if not lines or not lines[0].startswith(b"HTTP/"):
         return None
     content_lengths: list[bytes] = []
-    has_transfer_encoding = False
+    transfer_encoding = _http_transfer_encoding_kind_from_lines(lines)
     for line in lines[1:]:
         if b":" not in line:
             continue
         name, value = line.split(b":", 1)
         header_name = name.strip().lower()
         if header_name == b"transfer-encoding":
-            if value.strip().lower() not in {b"", b"identity"}:
-                has_transfer_encoding = True
             continue
         if header_name != b"content-length":
             continue
@@ -691,7 +737,7 @@ def _http_declared_content_length(http_header: bytes) -> bytes | None:
             message = "invalid HTTP Content-Length header"
             raise HttpFramingError(message)
         content_lengths.append(raw_length.lstrip(b"0") or b"0")
-    if has_transfer_encoding and content_lengths:
+    if transfer_encoding == "chunked" and content_lengths:
         message = "ambiguous HTTP response framing: Content-Length with Transfer-Encoding"
         raise HttpFramingError(message)
     if not content_lengths:

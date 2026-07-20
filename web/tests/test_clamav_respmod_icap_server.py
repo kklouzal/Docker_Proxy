@@ -713,11 +713,19 @@ def test_http_response_204_backup_content_length_and_te_matrix() -> None:
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: ChUnKeD\r\n\r\n",
             False,
         ),
+        "chunked Transfer-Encoding with OWS": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: \tchunked \r\n\r\n",
+            False,
+        ),
         "duplicate mixed Transfer-Encoding tokens": (
             (
                 b"HTTP/1.1 200 OK\r\nTransfer-Encoding: identity\r\n"
                 b"Transfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\n"
             ),
+            False,
+        ),
+        "invalid chunked not final Transfer-Encoding": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, gzip\r\n\r\n",
             False,
         ),
         "malformed Content-Length line": (
@@ -799,6 +807,24 @@ def test_clean_respmod_rejects_known_content_length_body_mismatches() -> None:
         ),
         "chunked Transfer-Encoding replays decoded body with normalized length": (
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+            True,
+            b"Content-Length: 5\r\n",
+        ),
+        "mixed-case chunked Transfer-Encoding is valid": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: ChUnKeD\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+            True,
+            b"Content-Length: 5\r\n",
+        ),
+        "OWS around chunked Transfer-Encoding is valid": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: \tchunked \r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+            True,
+            b"Content-Length: 5\r\n",
+        ),
+        "identity Transfer-Encoding replays decoded body": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: identity\r\n\r\n",
             b"5\r\nhello\r\n0\r\n\r\n",
             True,
             b"Content-Length: 5\r\n",
@@ -926,6 +952,41 @@ def test_fail_open_ambiguous_http_framing_never_returns_204_or_normalized_replay
                 b"Transfer-Encoding: chunked\r\n\r\n"
             ),
             b"ambiguous HTTP response framing",
+        ),
+        "duplicate Transfer-Encoding lines": (
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            ),
+            b"unsupported HTTP Transfer-Encoding before chunked",
+        ),
+        "comma-list Transfer-Encoding before chunked": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
+            b"unsupported HTTP Transfer-Encoding before chunked",
+        ),
+        "Transfer-Encoding chunked not final": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, gzip\r\n\r\n",
+            b"invalid HTTP Transfer-Encoding header: chunked must be final",
+        ),
+        "repeated chunked Transfer-Encoding": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, chunked\r\n\r\n",
+            b"invalid HTTP Transfer-Encoding header: repeated chunked",
+        ),
+        "identity mixed with chunked": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: identity, chunked\r\n\r\n",
+            b"ambiguous HTTP Transfer-Encoding header: identity with chunked",
+        ),
+        "malformed empty Transfer-Encoding token": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip,, chunked\r\n\r\n",
+            b"invalid HTTP Transfer-Encoding header",
+        ),
+        "signed-looking unsupported Transfer-Encoding token": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: +chunked\r\n\r\n",
+            b"unsupported HTTP Transfer-Encoding: +chunked",
+        ),
+        "unsupported Transfer-Encoding coding": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n",
+            b"unsupported HTTP Transfer-Encoding: gzip",
         ),
     }
 
