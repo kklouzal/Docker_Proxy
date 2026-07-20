@@ -598,18 +598,44 @@ def test_adblock_tailer_keeps_partial_line_until_newline(
 
     meta = {"cicap_access_inode": "0", "cicap_access_pos": "0"}
     inserted: list[tuple[object, ...]] = []
+    calls: list[str] = []
+
+    class Result:
+        def __init__(self, row=None, *, rowcount: int = 1) -> None:
+            self._row = row
+            self.rowcount = rowcount
+
+        def fetchone(self):
+            return self._row
 
     class Conn:
+        native = object()
+
         def execute(self, sql, params=()):
             normalized = " ".join(str(sql).split())
+            calls.append(normalized)
             if "SELECT v FROM adblock_proxy_meta" in normalized:
                 key = str((params or ("", ""))[1])
                 value = meta.get(key, "0")
-
-                class Result:
-                    def fetchone(self):
-                        return (value,)
-
+                return Result((value,))
+            if "CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones" in normalized:
+                return Result()
+            if "FROM proxy_lifecycle_tombstones" in normalized:
+                return Result()
+            if "FROM information_schema.tables" in normalized:
+                table_name = str((params or ("",))[0])
+                available_tables = {
+                    "proxy_id_aliases",
+                    "proxy_instances",
+                }
+                return Result({"1": 1} if table_name in available_tables else None)
+            if "FROM proxy_id_aliases" in normalized:
+                return Result()
+            if "FROM proxy_instances" in normalized:
+                return Result({"status": "healthy"})
+            if "GET_LOCK" in normalized:
+                return Result({"acquired": 1})
+            if "RELEASE_LOCK" in normalized:
                 return Result()
             if normalized.startswith("UPDATE adblock_proxy_meta"):
                 value, _proxy_id, key = params
@@ -617,13 +643,13 @@ def test_adblock_tailer_keeps_partial_line_until_newline(
             elif normalized.startswith("INSERT IGNORE INTO adblock_events"):
                 inserted.append(tuple(params or ()))
 
-            return type("Result", (), {"rowcount": 1})()
+            return Result()
 
         def executemany(self, sql, rows):
             normalized = " ".join(str(sql).split())
             if normalized.startswith("INSERT IGNORE INTO adblock_events"):
                 inserted.extend(tuple(row) for row in rows)
-            return type("Result", (), {"rowcount": len(inserted)})()
+            return Result(rowcount=len(inserted))
 
         def commit(self) -> None:
             return None
@@ -640,6 +666,9 @@ def test_adblock_tailer_keeps_partial_line_until_newline(
     assert inserted == []
     assert meta["cicap_access_pos"] == "0"
     assert meta["cicap_access_inode"] == str(log_path.stat().st_ino)
+    assert any("proxy_lifecycle_tombstones" in call for call in calls)
+    assert any("FROM proxy_instances" in call for call in calls)
+    assert any("GET_LOCK" in call for call in calls)
 
     log_path.write_text(partial + suffix, encoding="utf-8")
 
