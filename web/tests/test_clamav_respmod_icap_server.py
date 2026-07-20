@@ -602,6 +602,171 @@ def test_respmod_body_offset_inside_response_header_rejected_before_scanning() -
     assert b"invalid RESPMOD encapsulated res-hdr boundary" in response
 
 
+def test_respmod_huge_terminal_offset_with_short_eof_payload_is_bounded() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        huge_offset = server.DEFAULT_MAX_HEADER_BYTES + 1
+        request = _sample_respmod_request(port).replace(
+            b"Encapsulated: res-hdr=0, res-body=64",
+            f"Encapsulated: res-hdr=0, res-body={huge_offset}".encode("ascii"),
+        )
+        response = _recv_icap_response(port, request, timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"RESPMOD encapsulated headers exceed" in response
+
+
+def test_respmod_truncated_res_hdr_before_declared_terminal_offset_is_bounded() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        huge_offset = server.DEFAULT_MAX_HEADER_BYTES + 1
+        request = (
+            (
+                f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                "Host: 127.0.0.1\r\n"
+                f"Encapsulated: res-hdr=0, res-body={huge_offset}\r\n\r\n"
+            ).encode("ascii")
+            + b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"
+        )
+        response = _recv_icap_response(port, request, timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"RESPMOD encapsulated headers exceed" in response
+
+
+def test_respmod_truncated_req_hdr_res_hdr_combination_is_bounded() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request_header = b"GET /asset.js HTTP/1.1\r\nHost: example.test\r\n\r\n"
+        huge_offset = server.DEFAULT_MAX_HEADER_BYTES + 1
+        request = (
+            (
+                f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Encapsulated: "
+                f"req-hdr=0, res-hdr={len(request_header)}, "
+                f"res-body={huge_offset}\r\n\r\n"
+            ).encode("ascii")
+            + request_header
+            + b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"
+        )
+        response = _recv_icap_response(port, request, timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"RESPMOD encapsulated headers exceed" in response
+
+
+def test_respmod_scanner_not_opened_before_complete_validated_headers() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"
+        request = (
+            (
+                f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                "Host: 127.0.0.1\r\n"
+                f"Encapsulated: res-hdr=0, res-body={len(response_header)}\r\n\r\n"
+            ).encode("ascii")
+            + response_header
+            + b"5\r\nhello\r\n0\r\n\r\n"
+        )
+        response = _recv_icap_response(port, request, timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"invalid RESPMOD encapsulated res-hdr boundary" in response
+
+
 def test_respmod_unknown_section_token_rejected_before_scanning() -> None:
     server = _load_server()
     scan_attempts = 0

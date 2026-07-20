@@ -168,7 +168,11 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
     return offsets
 
 
-def _validate_respmod_encapsulated_offsets(offsets: dict[str, int]) -> None:
+def _validate_respmod_encapsulated_offsets(
+    offsets: dict[str, int],
+    *,
+    max_header_bytes: int = DEFAULT_MAX_HEADER_BYTES,
+) -> None:
     request_header_offset = offsets.get("req-hdr")
     response_header_offset = offsets.get("res-hdr")
     body_offset = offsets.get("res-body")
@@ -201,6 +205,9 @@ def _validate_respmod_encapsulated_offsets(offsets: dict[str, int]) -> None:
         raise IcapProtocolError(message)
 
     terminal_offset = terminal_offsets[0]
+    if terminal_offset > max_header_bytes:
+        message = f"RESPMOD encapsulated headers exceed {max_header_bytes} bytes"
+        raise IcapProtocolError(message)
     if terminal_offset <= response_header_offset:
         message = "invalid RESPMOD encapsulated response offsets"
         raise IcapProtocolError(message)
