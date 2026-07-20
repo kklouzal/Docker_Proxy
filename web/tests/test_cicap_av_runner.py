@@ -154,6 +154,173 @@ class _MemorySocket:
         self.sent.extend(data)
 
 
+class _TimeoutSocket(_MemorySocket):
+    def recv(self, size: int) -> bytes:
+        if self.incoming:
+            return super().recv(size)
+        raise TimeoutError
+
+
+def _reqmod_null_body_outer_header(runner, *, size: int | None = None) -> bytes:
+    lines = [
+        b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0",
+        b"Host: 127.0.0.1",
+        b"Allow: 204",
+        b"Encapsulated: null-body=0",
+    ]
+    if size is None:
+        return runner.CRLF.join(lines)
+
+    prefix = b"X-Pad: "
+    full_pad_len = min(8000, runner.MAX_ICAP_HEADER_LINE_BYTES)
+    base_len = len(runner.CRLF.join(lines))
+    for full_count in range(32):
+        final_len = size - base_len - (full_count * (len(runner.CRLF) + full_pad_len))
+        if full_count or final_len != 0:
+            final_len -= len(runner.CRLF)
+        if len(prefix) <= final_len <= runner.MAX_ICAP_HEADER_LINE_BYTES:
+            lines.extend(
+                prefix + (b"a" * (full_pad_len - len(prefix)))
+                for _ in range(full_count)
+            )
+            lines.append(prefix + (b"b" * (final_len - len(prefix))))
+            header = runner.CRLF.join(lines)
+            assert len(header) == size
+            return header
+    message = f"could not construct {size}-byte ICAP header"
+    raise AssertionError(message)
+
+
+def test_read_icap_outer_header_allows_exact_boundary_and_preserves_remainder() -> None:
+    runner = _load_runner()
+    header = _reqmod_null_body_outer_header(
+        runner, size=runner.DEFAULT_MAX_HEADER_BYTES
+    )
+    remainder = b"0\r\n\r\nPIPELINED"
+    sock = _MemorySocket(header + runner.HEADER_END + remainder)
+
+    parsed, parsed_remainder = runner._read_icap_outer_header(sock)
+
+    assert parsed == header
+    assert parsed_remainder == b""
+    assert bytes(sock.incoming) == remainder
+
+    small_header = _reqmod_null_body_outer_header(runner)
+    sock = _MemorySocket(small_header + runner.HEADER_END + remainder)
+
+    parsed, parsed_remainder = runner._read_icap_outer_header(sock)
+
+    assert parsed == small_header
+    assert parsed_remainder == remainder
+
+
+def test_read_icap_outer_header_rejects_outer_header_read_matrix() -> None:
+    runner = _load_runner()
+    base_header = _reqmod_null_body_outer_header(runner)
+    short_lines_over_limit = _reqmod_null_body_outer_header(
+        runner, size=runner.DEFAULT_MAX_HEADER_BYTES + 1
+    )
+    cases = (
+        (
+            "header block over 64KiB",
+            short_lines_over_limit + runner.HEADER_END,
+            "ICAP header block exceeds",
+            _MemorySocket,
+        ),
+        (
+            "one huge unterminated line",
+            base_header
+            + runner.CRLF
+            + b"X-Huge: "
+            + (b"a" * runner.MAX_ICAP_HEADER_LINE_BYTES),
+            "ICAP header line exceeds",
+            _MemorySocket,
+        ),
+        (
+            "EOF before CRLFCRLF",
+            base_header + runner.CRLF + b"X-Partial: value",
+            "truncated ICAP header",
+            _MemorySocket,
+        ),
+        (
+            "socket timeout after partial reads",
+            base_header + runner.CRLF + b"X-Partial: value",
+            "truncated ICAP header",
+            _TimeoutSocket,
+        ),
+    )
+
+    for name, incoming, expected, socket_factory in cases:
+        sock = socket_factory(incoming)
+        try:
+            runner._read_icap_outer_header(sock)
+        except runner.IcapProtocolError as exc:
+            assert expected in str(exc), name
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"{name} ICAP outer header was accepted"
+            raise AssertionError(message)
+
+
+def test_read_icap_outer_header_rejects_delimiter_beyond_aggregate_bound() -> None:
+    runner = _load_runner()
+    header = _reqmod_null_body_outer_header(
+        runner, size=runner.DEFAULT_MAX_HEADER_BYTES
+    )
+    sock = _MemorySocket(header + b"X" + runner.HEADER_END)
+
+    try:
+        runner._read_icap_outer_header(sock)
+    except runner.IcapProtocolError as exc:
+        assert "ICAP header block exceeds" in str(exc)
+    else:  # pragma: no cover - regression guard should always raise
+        message = "delimiter beyond ICAP header bound was accepted"
+        raise AssertionError(message)
+
+
+def test_fail_open_placeholder_rejects_truncated_or_oversized_outer_header() -> None:
+    runner = _load_runner()
+    base = (
+        b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        b"Encapsulated: null-body=0\r\n"
+    )
+    aggregate_padding = (b"X-Pad: " + (b"a" * 1024) + b"\r\n") * 70
+    cases = (
+        (
+            "aggregate over 64KiB",
+            base + aggregate_padding + b"\r\n",
+            False,
+            b"ICAP header block exceeds",
+        ),
+        (
+            "huge line before delimiter",
+            base
+            + b"X-Huge: "
+            + (b"a" * runner.MAX_ICAP_HEADER_LINE_BYTES)
+            + b"\r\n\r\n",
+            False,
+            b"ICAP header line exceeds",
+        ),
+        (
+            "EOF before CRLFCRLF",
+            base,
+            True,
+            b"truncated ICAP header",
+        ),
+    )
+
+    for name, request, shutdown_write, expected in cases:
+        response = _placeholder_raw_exchange(
+            runner, request, shutdown_write=shutdown_write
+        )
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected in response, name
+        assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+
+
 def test_drain_chunked_body_rejects_malformed_or_truncated_reqmod_chunks() -> None:
     runner = _load_runner()
     cases = (

@@ -16,6 +16,7 @@ HEADER_END = CRLF + CRLF
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 MAX_ENCAPSULATED_OFFSET_DIGITS = 20
 MAX_ICAP_CHUNK_SIZE_DIGITS = 16
+MAX_ICAP_HEADER_LINE_BYTES = 8192
 MAX_ICAP_TRAILER_LINE_BYTES = 8192
 MAX_ICAP_TRAILERS_BYTES = DEFAULT_MAX_HEADER_BYTES
 FALLBACK_OPEN_ISTAG = '"clamav-fail-open-unavailable"'
@@ -277,6 +278,42 @@ def _recv_until(
             break
         data += chunk
     return data
+
+
+def _raise_icap_header_read_error(data: bytes) -> None:
+    for line in data.split(CRLF):
+        if len(line) > MAX_ICAP_HEADER_LINE_BYTES:
+            message = f"ICAP header line exceeds {MAX_ICAP_HEADER_LINE_BYTES} bytes"
+            raise IcapProtocolError(message)
+    if len(data) > DEFAULT_MAX_HEADER_BYTES:
+        message = f"ICAP header block exceeds {DEFAULT_MAX_HEADER_BYTES} bytes"
+        raise IcapProtocolError(message)
+    message = "truncated ICAP header"
+    raise IcapProtocolError(message)
+
+
+def _validate_icap_header_read_bounds(header: bytes) -> None:
+    if len(header) > DEFAULT_MAX_HEADER_BYTES:
+        message = f"ICAP header block exceeds {DEFAULT_MAX_HEADER_BYTES} bytes"
+        raise IcapProtocolError(message)
+    for line in header.split(CRLF):
+        if len(line) > MAX_ICAP_HEADER_LINE_BYTES:
+            message = f"ICAP header line exceeds {MAX_ICAP_HEADER_LINE_BYTES} bytes"
+            raise IcapProtocolError(message)
+
+
+def _read_icap_outer_header(sock: socket.socket) -> tuple[bytes, bytes]:
+    read_limit = DEFAULT_MAX_HEADER_BYTES + len(HEADER_END)
+    try:
+        data = _recv_until(sock, b"", HEADER_END, max_bytes=read_limit)
+    except TimeoutError as exc:
+        message = "truncated ICAP header"
+        raise IcapProtocolError(message) from exc
+    if HEADER_END not in data:
+        _raise_icap_header_read_error(data)
+    header, remainder = data.split(HEADER_END, 1)
+    _validate_icap_header_read_bounds(header)
+    return header, remainder
 
 
 def _drain_chunked_body(
@@ -609,77 +646,76 @@ def _error_response(message: str, istag: str) -> bytes:
 class _FailOpenAvHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         self.request.settimeout(2.0)
-        data = b""
-        while len(data) < 8192 and HEADER_END not in data:
-            chunk = self.request.recv(512)
-            if not chunk:
-                break
-            data += chunk
-        if HEADER_END in data:
-            header, remainder = data.split(HEADER_END, 1)
-        else:
-            header, remainder = data, b""
-        first = (
-            header.split(CRLF, 1)[0]
-            .split(b"\n", 1)[0]
-            .decode("ascii", errors="replace")
-        )
-        method = first.split(" ", 1)[0].upper() if first else ""
         fail_open = bool(getattr(self.server, "fail_open", True))
         istag = FALLBACK_OPEN_ISTAG if fail_open else FALLBACK_CLOSED_ISTAG
-        if method == "OPTIONS":
-            headers = {
-                "Methods": "REQMOD, RESPMOD",
-                "Service": "ClamAV placeholder; backend unavailable",
-                "ISTag": istag,
-                "Preview": "0",
-                "Options-TTL": "30",
-                "Encapsulated": "null-body=0",
-            }
-            if fail_open:
-                headers["Allow"] = "204"
-            response = _icap_response(
-                "200 OK",
-                headers,
+        try:
+            header, remainder = _read_icap_outer_header(self.request)
+            first = (
+                header.split(CRLF, 1)[0]
+                .split(b"\n", 1)[0]
+                .decode("ascii", errors="replace")
             )
-        elif method in {"REQMOD", "RESPMOD"}:
-            if fail_open:
-                try:
-                    if method == "RESPMOD":
-                        _start_line, headers = _split_headers(header)
-                        allow_204 = "204" in {
-                            part.strip()
-                            for part in headers.get("allow", "").split(",")
-                        }
-                        http_header, body, null_body = _read_respmod_payload(
-                            self.request, header, remainder
-                        )
-                        if null_body:
-                            response = _clean_respmod_no_body_response(
-                                allow_204=allow_204,
-                                http_header=http_header,
-                                istag=istag,
+            method = first.split(" ", 1)[0].upper() if first else ""
+            if method == "OPTIONS":
+                headers = {
+                    "Methods": "REQMOD, RESPMOD",
+                    "Service": "ClamAV placeholder; backend unavailable",
+                    "ISTag": istag,
+                    "Preview": "0",
+                    "Options-TTL": "30",
+                    "Encapsulated": "null-body=0",
+                }
+                if fail_open:
+                    headers["Allow"] = "204"
+                response = _icap_response(
+                    "200 OK",
+                    headers,
+                )
+            elif method in {"REQMOD", "RESPMOD"}:
+                if fail_open:
+                    try:
+                        if method == "RESPMOD":
+                            _start_line, headers = _split_headers(header)
+                            allow_204 = "204" in {
+                                part.strip()
+                                for part in headers.get("allow", "").split(",")
+                            }
+                            http_header, body, null_body = _read_respmod_payload(
+                                self.request, header, remainder
                             )
+                            if null_body:
+                                response = _clean_respmod_no_body_response(
+                                    allow_204=allow_204,
+                                    http_header=http_header,
+                                    istag=istag,
+                                )
+                            else:
+                                response = _clean_respmod_response(
+                                    http_header, body, istag
+                                )
                         else:
-                            response = _clean_respmod_response(http_header, body, istag)
-                    else:
-                        _drain_encapsulated_body(self.request, header, remainder)
-                        response = _icap_response(
-                            "204 No Content",
-                            {"ISTag": istag, "Encapsulated": "null-body=0"},
-                        )
-                except IcapProtocolError as exc:
-                    response = _error_response(str(exc), istag)
+                            _drain_encapsulated_body(self.request, header, remainder)
+                            response = _icap_response(
+                                "204 No Content",
+                                {"ISTag": istag, "Encapsulated": "null-body=0"},
+                            )
+                    except IcapProtocolError as exc:
+                        response = _error_response(str(exc), istag)
+                else:
+                    response = _icap_response(
+                        "500 Service Unavailable",
+                        {"ISTag": istag, "Encapsulated": "null-body=0"},
+                    )
             else:
                 response = _icap_response(
-                    "500 Service Unavailable",
-                    {"ISTag": istag, "Encapsulated": "null-body=0"},
+                    "405 Method Not Allowed",
+                    {
+                        "Allow": "REQMOD, RESPMOD, OPTIONS",
+                        "Encapsulated": "null-body=0",
+                    },
                 )
-        else:
-            response = _icap_response(
-                "405 Method Not Allowed",
-                {"Allow": "REQMOD, RESPMOD, OPTIONS", "Encapsulated": "null-body=0"},
-            )
+        except IcapProtocolError as exc:
+            response = _error_response(str(exc), istag)
         self.request.sendall(response)
 
 
