@@ -254,6 +254,31 @@ def _drain_chunked_body(
     return remainder
 
 
+def _parse_chunk_size(line: bytes) -> int:
+    size_token = line.split(b";", 1)[0]
+    if not size_token or any(ch not in b"0123456789abcdefABCDEF" for ch in size_token):
+        message = "invalid ICAP chunk-size line"
+        raise IcapProtocolError(message)
+    return int(size_token, 16)
+
+
+def _read_chunk_trailers(sock: socket.socket, data: bytes) -> bytes:
+    while True:
+        data = _recv_until(sock, data, CRLF, max_bytes=8192)
+        if CRLF not in data:
+            message = "truncated ICAP chunk trailers"
+            raise IcapProtocolError(message)
+        line, data = data.split(CRLF, 1)
+        if not line:
+            return data
+        field_name = line.split(b":", 1)[0]
+        if b":" not in line or not field_name or any(
+            ch <= 0x20 or ch >= 0x7F for ch in field_name
+        ):
+            message = "invalid ICAP chunk trailer"
+            raise IcapProtocolError(message)
+
+
 def _read_chunked_body(
     sock: socket.socket,
     data: bytes,
@@ -267,32 +292,32 @@ def _read_chunked_body(
     while True:
         data = _recv_until(sock, data, CRLF, max_bytes=8192)
         if CRLF not in data:
-            return bytes(body), data
+            message = "truncated ICAP chunk-size line"
+            raise IcapProtocolError(message)
         line, data = data.split(CRLF, 1)
-        try:
-            size = int(line.split(b";", 1)[0].strip(), 16)
-        except ValueError:
-            return bytes(body), data
+        size = _parse_chunk_size(line)
         if size == 0:
-            data = _recv_until(sock, data, CRLF, max_bytes=8192)
-            if data.startswith(CRLF):
-                data = data[len(CRLF) :]
-            else:
-                return bytes(body), data
+            data = _read_chunk_trailers(sock, data)
             if preview_pending and b"ieof" not in line.lower():
                 try:
                     sock.sendall(b"ICAP/1.0 100 Continue\r\n\r\n")
-                except OSError:
-                    return bytes(body), data
+                except OSError as exc:
+                    message = "failed to send ICAP preview continuation"
+                    raise IcapProtocolError(message) from exc
                 preview_pending = False
                 continue
             return bytes(body), data
         total += size
         if total > max_bytes:
-            return bytes(body), data
+            message = f"ICAP chunked body exceeds {max_bytes} bytes"
+            raise IcapProtocolError(message)
         data = _recv_more(sock, data, size + 2)
         if len(data) < size + 2:
-            return bytes(body), data
+            message = "truncated ICAP chunk payload"
+            raise IcapProtocolError(message)
+        if data[size : size + 2] != CRLF:
+            message = "invalid ICAP chunk payload terminator"
+            raise IcapProtocolError(message)
         body.extend(data[:size])
         data = data[size + 2 :]
 

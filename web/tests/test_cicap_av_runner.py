@@ -154,6 +154,73 @@ class _MemorySocket:
         self.sent.extend(data)
 
 
+def test_drain_chunked_body_rejects_malformed_or_truncated_reqmod_chunks() -> None:
+    runner = _load_runner()
+    cases = (
+        ("empty chunk-size line", b"\r\n"),
+        ("non-hex chunk-size line", b"G\r\npayload\r\n0\r\n\r\n"),
+        ("signed chunk-size line", b"+0\r\n\r\n"),
+        ("prefixed chunk-size line", b"0x1\r\nx\r\n0\r\n\r\n"),
+        ("short payload", b"5\r\nabc\r\n0\r\n\r\n"),
+        ("missing payload CRLF", b"3\r\nabcXX0\r\n\r\n"),
+        ("EOF before zero chunk", b"3\r\nabc\r\n"),
+        ("malformed trailer", b"0\r\nBad Trailer: x\r\n\r\n"),
+        ("unterminated trailer", b"0\r\nX-Trailer: x\r\n"),
+    )
+
+    for name, body in cases:
+        sock = _MemorySocket()
+
+        try:
+            runner._drain_chunked_body(sock, body)
+        except runner.IcapProtocolError:
+            pass
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"{name} was accepted as drained"
+            raise AssertionError(message)
+
+        assert sock.sent == b"", name
+
+
+def test_drain_chunked_body_preserves_valid_trailers_remainder_and_preview_continue() -> None:
+    runner = _load_runner()
+    continuation = b"5\r\n-rest\r\n0; done=yes\r\nX-Trailer: ok\r\n\r\nNEXT"
+    sock = _MemorySocket(continuation)
+
+    remainder = runner._drain_chunked_body(
+        sock,
+        b"4; ieof=not-eof\r\ntest\r\n0\r\n\r\n",
+        preview=True,
+    )
+
+    assert sock.sent == b"ICAP/1.0 100 Continue\r\n\r\n"
+    assert remainder == b"NEXT"
+
+
+def test_drain_chunked_body_preview_ieof_zero_does_not_continue() -> None:
+    runner = _load_runner()
+    sock = _MemorySocket()
+
+    remainder = runner._drain_chunked_body(sock, b"0; ieof\r\n\r\n", preview=True)
+
+    assert sock.sent == b""
+    assert remainder == b""
+
+
+def test_drain_chunked_body_duplicate_preview_terminators_send_one_continue() -> None:
+    runner = _load_runner()
+    sock = _MemorySocket()
+
+    remainder = runner._drain_chunked_body(
+        sock,
+        b"0\r\n\r\n0\r\n\r\nTAIL",
+        preview=True,
+    )
+
+    assert sock.sent == b"ICAP/1.0 100 Continue\r\n\r\n"
+    assert remainder == b"TAIL"
+
+
 def test_drain_encapsulated_body_rejects_truncated_reqmod_null_body_boundary() -> None:
     runner = _load_runner()
     sock = _MemorySocket()
@@ -329,6 +396,29 @@ def test_fail_open_placeholder_drains_large_reqmod_body_before_204() -> None:
 
     assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
     assert elapsed < 1
+
+
+def test_fail_open_placeholder_rejects_malformed_reqmod_chunked_body_before_204() -> None:
+    runner = _load_runner()
+    request_header = b"POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    body = b"G\r\nhello\r\n0\r\n\r\n"
+    request = (
+        b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        b"Encapsulated: req-hdr=0, req-body="
+        + str(len(request_header)).encode("ascii")
+        + b"\r\n\r\n"
+        + request_header
+        + body
+    )
+
+    response = _placeholder_raw_exchange(runner, request)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert b"hello" not in response
 
 
 def test_fail_open_placeholder_replays_respmod_body_instead_of_late_204() -> None:
