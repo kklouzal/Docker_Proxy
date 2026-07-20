@@ -786,6 +786,46 @@ def test_adblock_icap_rejects_req_hdr_without_body_boundary() -> None:
     assert force_close is True
 
 
+def test_adblock_icap_rejects_duplicate_encapsulated_header_fields() -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _read_icap_message
+
+    http = (
+        b"GET http://ads.example/banner.js HTTP/1.1\r\n"
+        b"Host: ads.example\r\n\r\n"
+    )
+    next_req = (
+        b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: null-body=0\r\n\r\n"
+    )
+    request = (
+        b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: req-hdr=0, null-body="
+        + str(len(http)).encode("ascii")
+        + b"\r\n"
+        b"Encapsulated: req-hdr=0, req-body="
+        + str(len(http)).encode("ascii")
+        + b"\r\n"
+        b"Preview: 0\r\n\r\n"
+        + http
+        + b"0\r\n\r\n"
+        + next_req
+    )
+
+    message, pending, force_close = _read_icap_message(
+        _ChunkedSocket([request]),
+        max_bytes=65536,
+        max_body_drain_bytes=65536,
+        timeout_seconds=5.0,
+    )
+
+    assert message == request
+    assert pending == b""
+    assert force_close is True
+
+
 def test_adblock_icap_extracts_request_headers_without_buffering_body() -> None:
     _add_web_to_path()
     from tools.adblock_icap_server import (

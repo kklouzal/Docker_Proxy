@@ -40,6 +40,21 @@ def _parse_headers(lines: list[str]) -> dict[str, str]:
     return headers
 
 
+def _has_duplicate_header(lines: list[str], name: str) -> bool:
+    expected = name.strip().lower()
+    seen = False
+    for line in lines:
+        if ":" not in line:
+            continue
+        key, _value = line.split(":", 1)
+        if key.strip().lower() != expected:
+            continue
+        if seen:
+            return True
+        seen = True
+    return False
+
+
 def _parse_encapsulated_offsets(value: str) -> dict[str, int] | None:
     offsets: dict[str, int] = {}
     last_offset = -1
@@ -67,9 +82,10 @@ def _has_encapsulated_http_boundary(offsets: dict[str, int]) -> bool:
 
 def _encapsulated_http_request(data: bytes) -> bytes:
     header_blob, _, rest = data.partition(b"\r\n\r\n")
-    headers = _parse_headers(
-        header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:],
-    )
+    header_lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:]
+    if _has_duplicate_header(header_lines, "encapsulated"):
+        return b""
+    headers = _parse_headers(header_lines)
     offsets = _parse_encapsulated_offsets(headers.get("encapsulated", ""))
     if (
         offsets is None
@@ -413,9 +429,10 @@ def _read_icap_message(
     if b"\r\n\r\n" not in data:
         return bytes(data), b"", True
     header_blob, rest = bytes(data).split(b"\r\n\r\n", 1)
-    headers = _parse_headers(
-        header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:],
-    )
+    header_lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:]
+    if _has_duplicate_header(header_lines, "encapsulated"):
+        return bytes(data), b"", True
+    headers = _parse_headers(header_lines)
     offsets = _parse_encapsulated_offsets(headers.get("encapsulated", ""))
     if offsets is None:
         return bytes(data), b"", True
