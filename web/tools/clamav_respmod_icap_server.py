@@ -373,6 +373,9 @@ def read_icap_chunked_body(
         if size == 0:
             remainder = _drain_chunk_trailers(stream, remainder)
             if preview and not preview_terminator_seen and not has_ieof:
+                if preview_size is not None and total_size < preview_size:
+                    message = "ICAP preview terminated before Preview header size"
+                    raise IcapProtocolError(message)
                 preview_terminator_seen = True
                 if continue_callback is not None:
                     continue_callback()

@@ -322,6 +322,82 @@ def test_icap_chunked_body_leaves_bytes_after_ieof_terminator_as_remainder() -> 
     assert remainder == b"1\r\nX\r\n0\r\n\r\n"
 
 
+def test_preview_terminator_before_declared_size_without_ieof_is_rejected() -> None:
+    server = _load_server()
+    continues = 0
+
+    def on_continue() -> None:
+        nonlocal continues
+        continues += 1
+
+    try:
+        server.read_icap_chunked_body(
+            io.BytesIO(b"2\r\nhe\r\n0\r\n\r\n1\r\nX\r\n0\r\n\r\n"),
+            preview=True,
+            preview_size=3,
+            continue_callback=on_continue,
+        )
+    except server.IcapProtocolError as exc:
+        assert str(exc) == "ICAP preview terminated before Preview header size"
+    else:  # pragma: no cover - regression guard should always raise
+        message = "short preview terminator without ieof was accepted"
+        raise AssertionError(message)
+
+    assert continues == 0
+
+
+def test_preview_ieof_before_declared_size_allows_short_object() -> None:
+    server = _load_server()
+    continues = 0
+
+    def on_continue() -> None:
+        nonlocal continues
+        continues += 1
+
+    body, remainder = server.read_icap_chunked_body(
+        io.BytesIO(b"2\r\nhe\r\n0;ieof\r\n\r\n"),
+        preview=True,
+        preview_size=3,
+        continue_callback=on_continue,
+    )
+
+    assert body == b"he"
+    assert remainder == b""
+    assert continues == 0
+
+
+def test_preview_zero_allows_immediate_continue_then_body() -> None:
+    server = _load_server()
+    continues = 0
+
+    def on_continue() -> None:
+        nonlocal continues
+        continues += 1
+
+    body, remainder = server.read_icap_chunked_body(
+        io.BytesIO(b"0\r\n\r\n5\r\nhello\r\n0\r\n\r\n"),
+        preview=True,
+        preview_size=0,
+        continue_callback=on_continue,
+    )
+
+    assert body == b"hello"
+    assert remainder == b""
+    assert continues == 1
+
+
+def test_no_preview_early_zero_chunk_leaves_extra_body_as_remainder() -> None:
+    server = _load_server()
+
+    body, remainder = server.read_icap_chunked_body(
+        io.BytesIO(b"2\r\nhe\r\n0\r\n\r\n1\r\nX\r\n0\r\n\r\n"),
+        preview=False,
+    )
+
+    assert body == b"he"
+    assert remainder == b"1\r\nX\r\n0\r\n\r\n"
+
+
 def test_icap_chunked_body_rejects_oversize_declared_chunk_before_body_read() -> None:
     server = _load_server()
 
