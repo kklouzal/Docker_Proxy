@@ -148,12 +148,55 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
         if not item or "=" not in item:
             continue
         name, raw_offset = item.split("=", 1)
+        name = name.strip().lower()
         try:
-            offsets[name.strip().lower()] = int(raw_offset.strip())
+            offset = int(raw_offset.strip())
         except ValueError as exc:
             message = f"invalid Encapsulated offset: {item}"
             raise IcapProtocolError(message) from exc
+        if offset < 0:
+            message = f"negative Encapsulated offset: {item}"
+            raise IcapProtocolError(message)
+        offsets[name] = offset
     return offsets
+
+
+def _validate_respmod_encapsulated_offsets(offsets: dict[str, int]) -> None:
+    request_header_offset = offsets.get("req-hdr")
+    response_header_offset = offsets.get("res-hdr")
+    body_offset = offsets.get("res-body")
+    null_body_offset = offsets.get("null-body")
+    terminal_offsets = [
+        offset
+        for offset in (body_offset, null_body_offset)
+        if offset is not None
+    ]
+
+    if response_header_offset is None:
+        message = "RESPMOD request missing res-hdr"
+        raise IcapProtocolError(message)
+    if body_offset is not None and null_body_offset is not None:
+        message = "RESPMOD request has both res-body and null-body"
+        raise IcapProtocolError(message)
+    if not terminal_offsets:
+        message = "RESPMOD request missing res-body/null-body"
+        raise IcapProtocolError(message)
+
+    if request_header_offset is None:
+        if response_header_offset != 0:
+            message = "RESPMOD res-hdr offset must be zero without req-hdr"
+            raise IcapProtocolError(message)
+    elif request_header_offset != 0:
+        message = "RESPMOD req-hdr offset must be zero"
+        raise IcapProtocolError(message)
+    elif response_header_offset <= request_header_offset:
+        message = "invalid RESPMOD encapsulated request/response offsets"
+        raise IcapProtocolError(message)
+
+    terminal_offset = terminal_offsets[0]
+    if terminal_offset <= response_header_offset:
+        message = "invalid RESPMOD encapsulated response offsets"
+        raise IcapProtocolError(message)
 
 
 def _read_some(stream: BinaryIO, size: int) -> bytes:
@@ -689,17 +732,11 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 return
 
             offsets = _parse_encapsulated(headers.get("encapsulated", ""))
+            _validate_respmod_encapsulated_offsets(offsets)
             body_offset = offsets.get("res-body")
             null_body_offset = offsets.get("null-body")
             null_body = null_body_offset is not None
-            terminal_offset = body_offset if body_offset is not None else null_body_offset
-            if terminal_offset is None:
-                message = "RESPMOD request missing res-body/null-body"
-                raise IcapProtocolError(message)
-            response_header_offset = offsets.get("res-hdr", 0)
-            if response_header_offset < 0 or terminal_offset < response_header_offset:
-                message = "invalid RESPMOD encapsulated response offsets"
-                raise IcapProtocolError(message)
+            response_header_offset = offsets["res-hdr"]
             allow_204 = "204" in {
                 part.strip() for part in headers.get("allow", "").split(",")
             }

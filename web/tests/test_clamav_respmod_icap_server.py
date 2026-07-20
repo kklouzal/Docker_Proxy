@@ -525,6 +525,149 @@ def test_single_encapsulated_header_with_null_body_is_preserved() -> None:
     assert b"HTTP/1.1 204 No Content" in response
 
 
+def test_respmod_without_res_hdr_is_rejected_before_empty_body_scan() -> None:
+    server = _load_server()
+    scanned_bodies: list[bytes] = []
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def scan_body(self, body: bytes):
+            scanned_bodies.append(body)
+            return server.ClamdResult(clean=True)
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_null_body_respmod_request(port, allow_204=False).replace(
+            b"req-hdr=0, res-hdr=67, null-body=156",
+            b"req-hdr=0, null-body=156",
+        )
+        response = _recv_icap_response(port, request, timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scanned_bodies == []
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"RESPMOD request missing res-hdr" in response
+
+
+def test_respmod_body_before_res_hdr_is_rejected_before_scanning() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_respmod_request_with_req_hdr(port).replace(
+            b"Encapsulated: req-hdr=0, res-hdr=46, res-body=122",
+            b"Encapsulated: req-hdr=0, res-body=46, res-hdr=122",
+        )
+        response = _recv_icap_response(port, request, timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"invalid RESPMOD encapsulated response offsets" in response
+
+
+def test_respmod_negative_offset_is_rejected_before_scanning() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_respmod_request(port).replace(
+            b"Encapsulated: res-hdr=0, res-body=64",
+            b"Encapsulated: res-hdr=-1, res-body=64",
+        )
+        response = _recv_icap_response(port, request, timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"negative Encapsulated offset" in response
+
+
+def test_respmod_nonzero_res_hdr_without_req_hdr_is_rejected() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_respmod_request(port).replace(
+            b"Encapsulated: res-hdr=0, res-body=64",
+            b"Encapsulated: res-hdr=1, res-body=64",
+        )
+        response = _recv_icap_response(port, request, timeout=0.5)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"RESPMOD res-hdr offset must be zero without req-hdr" in response
+
+
 def test_malformed_respmod_start_line_rejects_before_scanning() -> None:
     server = _load_server()
     scan_attempts = 0
