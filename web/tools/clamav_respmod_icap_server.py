@@ -651,6 +651,24 @@ def _validate_http_header_field_names(http_header: bytes) -> None:
             raise IcapProtocolError(message)
 
 
+def _http_request_method_from_header(request_header: bytes) -> bytes | None:
+    """Return the request method only when the req-hdr start line is reliable."""
+    lines = _http_header_lines(request_header)
+    if not lines:
+        return None
+    parts = lines[0].split(b" ")
+    if len(parts) != 3 or any(not part for part in parts):
+        return None
+    method, request_target, version = parts
+    if not _HTTP_TOKEN_RE.fullmatch(method):
+        return None
+    if version not in {b"HTTP/1.0", b"HTTP/1.1"}:
+        return None
+    if any(char <= 32 or char == 127 for char in request_target):
+        return None
+    return method
+
+
 def _http_response_allows_squid_204_backup(http_header: bytes) -> bool:
     """Return true only when Squid can safely use an ICAP 204 response.
 
@@ -805,30 +823,54 @@ def _http_response_status_forbids_body(status_code: int) -> bool:
 
 
 def _validate_http_response_body_semantics(
-    http_header: bytes, *, has_body_section: bool
+    http_header: bytes,
+    *,
+    has_body_section: bool,
+    request_method: bytes | None = None,
 ) -> None:
     """Reject HTTP response status/framing combinations that cannot carry a body."""
     status_code = _http_response_status_code(http_header)
-    if not _http_response_status_forbids_body(status_code):
+    if _http_response_status_forbids_body(status_code):
+        if has_body_section:
+            message = f"HTTP status {status_code} forbids ICAP res-body"
+            raise HttpFramingError(message)
+
+        transfer_encoding = _http_transfer_encoding_kind_from_lines(
+            _http_header_lines(http_header)
+        )
+        if transfer_encoding != "absent":
+            message = f"HTTP status {status_code} forbids Transfer-Encoding"
+            raise HttpFramingError(message)
+        if status_code != 304 and _http_declared_content_length(http_header) is not None:
+            message = f"HTTP status {status_code} forbids Content-Length"
+            raise HttpFramingError(message)
+        if status_code == 304:
+            # 304 may carry Content-Length metadata for the selected representation,
+            # but duplicate/malformed values remain ordinary HTTP framing errors.
+            _http_declared_content_length(http_header)
         return
 
     if has_body_section:
-        message = f"HTTP status {status_code} forbids ICAP res-body"
-        raise HttpFramingError(message)
+        return
+    if request_method is None or request_method == b"HEAD":
+        return
 
     transfer_encoding = _http_transfer_encoding_kind_from_lines(
         _http_header_lines(http_header)
     )
     if transfer_encoding != "absent":
-        message = f"HTTP status {status_code} forbids Transfer-Encoding"
+        method = request_method.decode("ascii", errors="replace")
+        message = f"HTTP null-body for {method} response conflicts with Transfer-Encoding"
         raise HttpFramingError(message)
-    if status_code != 304 and _http_declared_content_length(http_header) is not None:
-        message = f"HTTP status {status_code} forbids Content-Length"
+    declared_length = _http_declared_content_length(http_header)
+    if declared_length is not None and declared_length != b"0":
+        method = request_method.decode("ascii", errors="replace")
+        length = declared_length.decode("ascii")
+        message = (
+            f"HTTP null-body for {method} response conflicts with Content-Length "
+            f"{length}"
+        )
         raise HttpFramingError(message)
-    if status_code == 304:
-        # 304 may carry Content-Length metadata for the selected representation,
-        # but duplicate/malformed values remain ordinary HTTP framing errors.
-        _http_declared_content_length(http_header)
 
 
 def _http_header_for_body_replay(http_header: bytes, body_length: int) -> bytes:
@@ -1069,9 +1111,16 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 http_header = encapsulated_headers[
                     response_header_offset : null_body_offset or 0
                 ]
+                if offsets.get("req-hdr") is None:
+                    request_method = None
+                else:
+                    request_header = encapsulated_headers[:response_header_offset]
+                    request_method = _http_request_method_from_header(request_header)
                 _validate_http_header_field_names(http_header)
                 _validate_http_response_body_semantics(
-                    http_header, has_body_section=False
+                    http_header,
+                    has_body_section=False,
+                    request_method=request_method,
                 )
                 body_complete = True
                 result = self.server.scan_body(body)

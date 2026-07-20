@@ -1350,6 +1350,196 @@ def test_null_body_respmod_with_allow_204_uses_safe_no_content_verdict() -> None
     assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
 
 
+def _null_body_respmod_request_with_headers(
+    port: int,
+    *,
+    request_header: bytes | None,
+    response_header: bytes,
+    allow_204: bool = True,
+) -> bytes:
+    allow = "Allow: 204\r\n" if allow_204 else ""
+    if request_header is None:
+        return (
+            (
+                f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                "Host: 127.0.0.1\r\n"
+                f"{allow}"
+                f"Encapsulated: res-hdr=0, null-body={len(response_header)}"
+                "\r\n\r\n"
+            ).encode("ascii")
+            + response_header
+        )
+
+    response_offset = len(request_header)
+    null_offset = response_offset + len(response_header)
+    return (
+        (
+            f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            f"{allow}"
+            "Encapsulated: "
+            f"req-hdr=0, res-hdr={response_offset}, null-body={null_offset}"
+            "\r\n\r\n"
+        ).encode("ascii")
+        + request_header
+        + response_header
+    )
+
+
+def _run_null_body_respmod_exchange(
+    server,
+    *,
+    request_header: bytes | None,
+    response_header: bytes,
+    allow_204: bool = True,
+) -> tuple[bytes, list[bytes]]:
+    scanned_bodies: list[bytes] = []
+
+    class CleanServer(server.ClamAvRespmodServer):
+        def scan_body(self, body: bytes):
+            scanned_bodies.append(body)
+            return server.ClamdResult(clean=True)
+
+    with CleanServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(
+            port,
+            _null_body_respmod_request_with_headers(
+                port,
+                request_header=request_header,
+                response_header=response_header,
+                allow_204=allow_204,
+            ),
+            timeout=0.5,
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    return response, scanned_bodies
+
+
+def test_non_head_null_body_positive_framing_is_rejected_before_clean_scan() -> None:
+    server = _load_server()
+
+    cases = {
+        "GET positive Content-Length": (
+            b"GET /asset.js HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n",
+            b"HTTP null-body for GET response conflicts with Content-Length 5",
+        ),
+        "POST positive Content-Length": (
+            b"POST /submit HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n",
+            b"HTTP null-body for POST response conflicts with Content-Length 5",
+        ),
+        "GET Transfer-Encoding chunked": (
+            b"GET /stream HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+            b"HTTP null-body for GET response conflicts with Transfer-Encoding",
+        ),
+    }
+
+    for name, (request_header, response_header, expected) in cases.items():
+        response, scanned_bodies = _run_null_body_respmod_exchange(
+            server,
+            request_header=request_header,
+            response_header=response_header,
+        )
+
+        assert scanned_bodies == [], name
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected in response, name
+        assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+
+
+def test_head_null_body_preserves_representation_content_length() -> None:
+    server = _load_server()
+
+    response, scanned_bodies = _run_null_body_respmod_exchange(
+        server,
+        request_header=b"HEAD /asset.js HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        response_header=(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/javascript\r\n"
+            b"Content-Length: 12345\r\n\r\n"
+        ),
+        allow_204=False,
+    )
+
+    assert scanned_bodies == [b""]
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"Encapsulated: res-hdr=0, null-body=" in response
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"Content-Length: 12345\r\n" in response
+
+
+def test_null_body_without_req_hdr_preserves_framing_ambiguity() -> None:
+    server = _load_server()
+
+    response, scanned_bodies = _run_null_body_respmod_exchange(
+        server,
+        request_header=None,
+        response_header=b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n",
+        allow_204=False,
+    )
+
+    assert scanned_bodies == [b""]
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"Content-Length: 5\r\n" in response
+    assert b"HTTP/1.1 502 Bad Gateway" not in response
+
+
+def test_get_null_body_zero_content_length_remains_valid() -> None:
+    server = _load_server()
+
+    response, scanned_bodies = _run_null_body_respmod_exchange(
+        server,
+        request_header=b"GET /empty HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        response_header=b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        allow_204=False,
+    )
+
+    assert scanned_bodies == [b""]
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"Content-Length: 0\r\n" in response
+
+
+def test_malformed_req_hdr_ignores_method_for_null_body_semantics() -> None:
+    server = _load_server()
+    malformed_request_lines = (
+        b"GET /missing-version\r\nHost: example.test\r\n\r\n",
+        b"GE T /asset.js HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        b"BAD/METHOD /asset.js HTTP/1.1\r\nHost: example.test\r\n\r\n",
+    )
+
+    for request_header in malformed_request_lines:
+        response, scanned_bodies = _run_null_body_respmod_exchange(
+            server,
+            request_header=request_header,
+            response_header=b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n",
+            allow_204=False,
+        )
+
+        assert scanned_bodies == [b""]
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+        assert b"HTTP/1.1 200 OK" in response
+        assert b"Content-Length: 5\r\n" in response
+        assert b"HTTP/1.1 502 Bad Gateway" not in response
+
+
 def test_duplicate_encapsulated_header_is_rejected_before_boundary_selection() -> None:
     server = _load_server()
 
