@@ -664,6 +664,43 @@ def _http_response_allows_squid_204_backup(http_header: bytes) -> bool:
     return content_lengths[0] <= DEFAULT_SQUID_204_BACKUP_LIMIT
 
 
+def _http_declared_content_length(http_header: bytes) -> bytes | None:
+    """Return one significant Content-Length token, or None when absent/invalid."""
+    lines = _http_header_lines(http_header)
+    if not lines or not lines[0].startswith(b"HTTP/"):
+        return None
+    content_lengths: list[bytes] = []
+    for line in lines[1:]:
+        if b":" not in line:
+            continue
+        name, value = line.split(b":", 1)
+        if name.strip().lower() != b"content-length":
+            continue
+        raw_length = value.strip()
+        if not re.fullmatch(rb"[0-9]+", raw_length):
+            return None
+        content_lengths.append(raw_length.lstrip(b"0") or b"0")
+    if not content_lengths or len(set(content_lengths)) != 1:
+        return None
+    return content_lengths[0]
+
+
+def _validate_http_content_length_matches_body(
+    http_header: bytes, body_length: int
+) -> None:
+    declared_length = _http_declared_content_length(http_header)
+    if declared_length is None:
+        return
+    body_length_token = str(body_length).encode("ascii")
+    if declared_length != body_length_token:
+        declared_display = declared_length.decode("ascii")
+        message = (
+            f"HTTP Content-Length {declared_display} does not match "
+            f"decoded ICAP body length {body_length}"
+        )
+        raise IcapProtocolError(message)
+
+
 def _http_header_for_body_replay(http_header: bytes, body_length: int) -> bytes:
     """Normalize HTTP framing when replaying a clean response body to Squid."""
     lines = _http_header_lines(http_header)
@@ -761,6 +798,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
         self,
         *,
         initial: bytes,
+        http_header: bytes,
         allow_204: bool,
         preview_size: int | None,
     ) -> tuple[bytes, ClamdResult]:
@@ -809,6 +847,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 # reusable pipelined exchange for this handler.
                 message = "unexpected data after terminal ICAP body"
                 raise IcapProtocolError(message)
+            _validate_http_content_length_matches_body(http_header, len(body))
             if scanner is not None and scan_error is None:
                 try:
                     result = scanner.finish()
@@ -876,6 +915,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 try:
                     body, result = self._read_respmod_body_for_scan(
                         initial=remainder,
+                        http_header=http_header,
                         allow_204=False,
                         preview_size=preview_size,
                     )

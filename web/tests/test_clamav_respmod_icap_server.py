@@ -730,6 +730,151 @@ def test_http_response_204_backup_content_length_and_te_matrix() -> None:
         assert server._http_response_allows_squid_204_backup(http_header) is expected, name
 
 
+def test_clean_respmod_rejects_known_content_length_body_mismatches() -> None:
+    server = _load_server()
+
+    cases = {
+        "declared Content-Length smaller than decoded body": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+            False,
+            b"HTTP Content-Length 3 does not match decoded ICAP body length 5",
+        ),
+        "declared Content-Length larger than decoded body": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+            False,
+            b"HTTP Content-Length 7 does not match decoded ICAP body length 5",
+        ),
+        "declared zero Content-Length with non-empty decoded body": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+            False,
+            b"HTTP Content-Length 0 does not match decoded ICAP body length 5",
+        ),
+        "declared positive Content-Length with empty terminal body": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n",
+            b"0\r\n\r\n",
+            False,
+            b"HTTP Content-Length 5 does not match decoded ICAP body length 0",
+        ),
+        "duplicate identical Content-Length matches decoded body": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+            True,
+            b"Content-Length: 5\r\n",
+        ),
+        "no Content-Length replays decoded body with normalized length": (
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+            True,
+            b"Content-Length: 5\r\n",
+        ),
+        "chunked Transfer-Encoding replays decoded body with normalized length": (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+            True,
+            b"Content-Length: 5\r\n",
+        ),
+    }
+
+    for name, (http_header, chunked_body, should_replay, expected) in cases.items():
+        scanner = RecordingScanner()
+
+        class TestServer(server.ClamAvRespmodServer):
+            def open_scan(self):
+                return scanner
+
+        with TestServer(
+            ("127.0.0.1", 0),
+            clamd_host="127.0.0.1",
+            clamd_port=3310,
+            clamd_timeout=0.1,
+            fail_open=False,
+            max_scan_bytes=1024,
+            client_timeout=0.5,
+            max_connections=4,
+        ) as icap_server:
+            thread = _serve_in_thread(icap_server)
+            port = icap_server.server_address[1]
+            response = _recv_icap_exchange(
+                port,
+                _respmod_request_with_http_header(port, http_header, chunked_body),
+                timeout=1,
+            )
+            icap_server.shutdown()
+            thread.join(timeout=1)
+
+        if should_replay:
+            assert scanner.finished is True, name
+            assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+            assert b"HTTP/1.1 200 OK" in response, name
+            assert expected in response, name
+            assert b"5\r\nhello\r\n0\r\n\r\n" in response, name
+        else:
+            assert scanner.finished is False, name
+            assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+            assert b"HTTP/1.1 502 Bad Gateway" in response, name
+            assert expected in response, name
+            assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
+
+
+def test_fail_open_content_length_mismatch_never_returns_204_or_normalized_replay(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+
+    cases = {
+        "smaller": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+        ),
+        "larger": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+        ),
+        "zero-with-body": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            b"5\r\nhello\r\n0\r\n\r\n",
+        ),
+        "positive-with-empty-body": (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n",
+            b"0\r\n\r\n",
+        ),
+    }
+
+    for name, (http_header, chunked_body) in cases.items():
+        monkeypatch.setattr(
+            server.socket,
+            "create_connection",
+            lambda address, timeout: ResetBeforeVerdictSocket(),
+        )
+        with server.ClamAvRespmodServer(
+            ("127.0.0.1", 0),
+            clamd_host="127.0.0.1",
+            clamd_port=3310,
+            clamd_timeout=0.1,
+            fail_open=True,
+            max_scan_bytes=1024,
+            client_timeout=0.5,
+            max_connections=4,
+        ) as icap_server:
+            thread = _serve_in_thread(icap_server)
+            port = icap_server.server_address[1]
+            response = _recv_icap_exchange(
+                port,
+                _respmod_request_with_http_header(port, http_header, chunked_body),
+                timeout=1,
+            )
+            icap_server.shutdown()
+            thread.join(timeout=1)
+
+        assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+        assert b"HTTP/1.1 200 OK" not in response, name
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+
+
 def test_fail_open_replays_invalid_content_length_instead_of_204_after_clamd_reset(
     monkeypatch,
 ) -> None:
