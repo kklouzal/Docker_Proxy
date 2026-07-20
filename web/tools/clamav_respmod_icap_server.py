@@ -116,8 +116,9 @@ def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
             continue
         name, value = line.split(":", 1)
         header_name = name.strip().lower()
-        if header_name == "encapsulated" and header_name in headers:
-            message = "duplicate ICAP Encapsulated header"
+        if header_name in {"encapsulated", "preview"} and header_name in headers:
+            display_name = "Encapsulated" if header_name == "encapsulated" else "Preview"
+            message = f"duplicate ICAP {display_name} header"
             raise IcapProtocolError(message)
         headers[header_name] = value.strip()
     return lines[0], headers
@@ -235,6 +236,28 @@ def _validate_respmod_encapsulated_header_boundaries(
         raise IcapProtocolError(message)
 
 
+def _parse_preview_size(
+    headers: dict[str, str],
+    *,
+    has_body: bool,
+    max_bytes: int = DEFAULT_MAX_SCAN_BYTES,
+) -> int | None:
+    value = headers.get("preview")
+    if value is None:
+        return None
+    if not has_body:
+        message = "ICAP Preview header requires res-body"
+        raise IcapProtocolError(message)
+    if not re.fullmatch(r"[0-9]+", value):
+        message = f"invalid ICAP Preview header: {value!r}"
+        raise IcapProtocolError(message)
+    preview_size = int(value)
+    if preview_size > max_bytes:
+        message = f"ICAP Preview header exceeds {max_bytes} bytes"
+        raise IcapProtocolError(message)
+    return preview_size
+
+
 def _read_some(stream: BinaryIO, size: int) -> bytes:
     # StreamRequestHandler wraps sockets in BufferedReader. read(size) can wait
     # for the full size or EOF on an open ICAP keep-alive connection, which
@@ -316,6 +339,7 @@ def read_icap_chunked_body(
     *,
     max_bytes: int = DEFAULT_MAX_SCAN_BYTES,
     preview: bool = False,
+    preview_size: int | None = None,
     continue_callback=None,
     chunk_callback: Callable[[bytes], None] | None = None,
     buffer_body: bool = True,
@@ -369,6 +393,10 @@ def read_icap_chunked_body(
         if total_size > max_bytes:
             message = f"ICAP body exceeds {max_bytes} bytes"
             raise BodyTooLargeError(message)
+        if preview_size is not None and not preview_terminator_seen:
+            if total_size > preview_size:
+                message = "ICAP preview body exceeds Preview header"
+                raise IcapProtocolError(message)
         if chunk_callback is not None:
             chunk_callback(decoded)
         if buffer_body:
@@ -705,9 +733,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
     def _read_respmod_body_for_scan(
         self,
         *,
-        headers: dict[str, str],
         initial: bytes,
         allow_204: bool,
+        preview_size: int | None,
     ) -> tuple[bytes, ClamdResult]:
         """Read the full ICAP body while best-effort streaming to clamd.
 
@@ -741,7 +769,8 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 self.rfile,
                 initial,
                 max_bytes=self.server.max_scan_bytes,
-                preview="preview" in headers,
+                preview=preview_size is not None,
+                preview_size=preview_size,
                 continue_callback=self._send_100_continue,
                 chunk_callback=send_chunk_or_degrade,
                 buffer_body=not allow_204,
@@ -793,6 +822,11 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
             null_body_offset = offsets.get("null-body")
             null_body = null_body_offset is not None
             response_header_offset = offsets["res-hdr"]
+            preview_size = _parse_preview_size(
+                headers,
+                has_body=body_offset is not None,
+                max_bytes=self.server.max_scan_bytes,
+            )
             allow_204 = "204" in {
                 part.strip() for part in headers.get("allow", "").split(",")
             }
@@ -816,9 +850,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 # the body to avoid ICAP_RESPMOD_EARLY failures.
                 try:
                     body, result = self._read_respmod_body_for_scan(
-                        headers=headers,
                         initial=remainder,
                         allow_204=False,
+                        preview_size=preview_size,
                     )
                     body_complete = True
                 except ScanFailedAfterBodyError as exc:

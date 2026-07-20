@@ -1053,6 +1053,34 @@ def test_respmod_negative_offset_is_rejected_before_scanning() -> None:
     assert b"negative Encapsulated offset" in response
 
 
+def test_preview_header_parser_accepts_decimal_whitespace_and_rejects_bad_values() -> None:
+    server = _load_server()
+
+    _start, headers = server._split_headers(
+        b"RESPMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
+        b"Preview:   2   \r\n"
+    )
+    assert server._parse_preview_size(headers, has_body=True, max_bytes=2) == 2
+    assert server._parse_preview_size({"preview": "0"}, has_body=True) == 0
+
+    for value in ("two", "-1", "2, 3"):
+        try:
+            server._parse_preview_size({"preview": value}, has_body=True)
+        except server.IcapProtocolError as exc:
+            assert str(exc).startswith("invalid ICAP Preview header")
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"bad Preview value {value!r} was accepted"
+            raise AssertionError(message)
+
+    try:
+        server._parse_preview_size({"preview": "3"}, has_body=True, max_bytes=2)
+    except server.IcapProtocolError as exc:
+        assert str(exc) == "ICAP Preview header exceeds 2 bytes"
+    else:  # pragma: no cover - regression guard should always raise
+        message = "oversize Preview value was accepted"
+        raise AssertionError(message)
+
+
 def test_respmod_nonzero_res_hdr_without_req_hdr_is_rejected() -> None:
     server = _load_server()
     scan_attempts = 0
@@ -1644,6 +1672,155 @@ def test_post_preview_scan_write_failure_fails_open_after_100_continue() -> None
 
     assert response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
     assert b"ICAP/1.0 204 No Content\r\n" in response
+
+
+def test_duplicate_preview_header_rejected_before_scanning_or_continue() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_preview_respmod_request(port).replace(
+            b"Preview: 2\r\n",
+            b"Preview: 2\r\nPreview: 2\r\n",
+        )
+        response = _recv_icap_exchange(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert not response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"duplicate ICAP Preview header" in response
+
+
+def test_malformed_preview_header_rejected_before_scanning_or_continue() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return CleanScanner()
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_preview_respmod_request(port).replace(
+            b"Preview: 2\r\n",
+            b"Preview: 2, 3\r\n",
+        )
+        response = _recv_icap_exchange(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert not response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"invalid ICAP Preview header" in response
+
+
+def test_preview_body_larger_than_header_rejected_before_scanner_chunk() -> None:
+    server = _load_server()
+    scanner = RecordingScanner()
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return scanner
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_preview_respmod_request(port).replace(
+            b"Preview: 2\r\n",
+            b"Preview: 1\r\n",
+        )
+        response = _recv_icap_exchange(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scanner.closed is True
+    assert scanner.chunks == []
+    assert scanner.finished is False
+    assert not response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"ICAP preview body exceeds Preview header" in response
+
+
+def test_preview_header_on_null_body_rejected_before_allow_204_verdict() -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    class FailClosedServer(server.ClamAvRespmodServer):
+        def scan_body(self, body: bytes):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            assert body == b""
+            return server.ClamdResult(clean=True)
+
+    with FailClosedServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_null_body_respmod_request(port, allow_204=True).replace(
+            b"Encapsulated: ",
+            b"Preview: 0\r\nEncapsulated: ",
+        )
+        response = _recv_icap_exchange(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"ICAP Preview header requires res-body" in response
 
 
 def test_preview_terminator_without_ieof_eof_after_continue_is_not_clean_fail_open() -> None:
