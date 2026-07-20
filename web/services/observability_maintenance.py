@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -36,6 +37,10 @@ OBSERVABILITY_LOG_TABLES: tuple[str, ...] = (
 
 _OBSERVABILITY_MAINTENANCE_LOCK_NAME = "docker_proxy_observability_maintenance"
 _MAINTENANCE_HISTORY_LIMIT = 5
+_SETTINGS_SCHEMA_READY = False
+_SETTINGS_SCHEMA_LOCK = threading.Lock()
+_MAINTENANCE_RUNS_SCHEMA_READY = False
+_MAINTENANCE_RUNS_SCHEMA_LOCK = threading.Lock()
 
 
 def _clear_fallback_max_rows_per_table() -> int:
@@ -182,27 +187,44 @@ def normalize_retention_days(value: object) -> int:
 
 
 def _ensure_observability_settings_table() -> None:
+    if _SETTINGS_SCHEMA_READY:
+        return
     now = int(time.time())
 
     def ensure() -> None:
-        with connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS observability_settings (
-                    id TINYINT PRIMARY KEY,
-                    retention_days INT NOT NULL DEFAULT 30,
-                    updated_ts BIGINT NOT NULL
+        global _SETTINGS_SCHEMA_READY
+        with _SETTINGS_SCHEMA_LOCK:
+            if _SETTINGS_SCHEMA_READY:
+                return
+            with connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        _SETTINGS_SCHEMA_READY = True
+                        return
+                except Exception:
+                    pass
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS observability_settings (
+                        id TINYINT PRIMARY KEY,
+                        retention_days INT NOT NULL DEFAULT 30,
+                        updated_ts BIGINT NOT NULL
+                    )
+                    """,
                 )
-                """,
-            )
-            conn.execute(
-                """
-                INSERT INTO observability_settings(id, retention_days, updated_ts)
-                VALUES(1, %s, %s) AS incoming
-                ON DUPLICATE KEY UPDATE id = observability_settings.id
-                """,
-                (DEFAULT_OBSERVABILITY_RETENTION_DAYS, now),
-            )
+                conn.execute(
+                    """
+                    INSERT INTO observability_settings(id, retention_days, updated_ts)
+                    VALUES(1, %s, %s) AS incoming
+                    ON DUPLICATE KEY UPDATE id = observability_settings.id
+                    """,
+                    (DEFAULT_OBSERVABILITY_RETENTION_DAYS, now),
+                )
+            _SETTINGS_SCHEMA_READY = True
 
     _retry_stale_connection(ensure)
 
@@ -255,28 +277,46 @@ def set_observability_retention_settings(*, retention_days: object) -> dict[str,
 
 
 def _ensure_observability_maintenance_runs_table() -> None:
+    if _MAINTENANCE_RUNS_SCHEMA_READY:
+        return
+
     def ensure() -> None:
-        with connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS observability_maintenance_runs (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    run_type VARCHAR(32) NOT NULL,
-                    started_ts BIGINT NOT NULL,
-                    finished_ts BIGINT NOT NULL,
-                    duration_ms BIGINT NOT NULL DEFAULT 0,
-                    status VARCHAR(16) NOT NULL,
-                    retention_days INT NOT NULL,
-                    `analyze` TINYINT NOT NULL DEFAULT 0,
-                    `optimize` TINYINT NOT NULL DEFAULT 0,
-                    pruned TINYINT NOT NULL DEFAULT 0,
-                    maintained_tables INT NOT NULL DEFAULT 0,
-                    detail VARCHAR(512) NOT NULL DEFAULT '',
-                    KEY idx_observability_maintenance_runs_started (started_ts),
-                    KEY idx_observability_maintenance_runs_status (status)
+        global _MAINTENANCE_RUNS_SCHEMA_READY
+        with _MAINTENANCE_RUNS_SCHEMA_LOCK:
+            if _MAINTENANCE_RUNS_SCHEMA_READY:
+                return
+            with connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        _MAINTENANCE_RUNS_SCHEMA_READY = True
+                        return
+                except Exception:
+                    pass
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS observability_maintenance_runs (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        run_type VARCHAR(32) NOT NULL,
+                        started_ts BIGINT NOT NULL,
+                        finished_ts BIGINT NOT NULL,
+                        duration_ms BIGINT NOT NULL DEFAULT 0,
+                        status VARCHAR(16) NOT NULL,
+                        retention_days INT NOT NULL,
+                        `analyze` TINYINT NOT NULL DEFAULT 0,
+                        `optimize` TINYINT NOT NULL DEFAULT 0,
+                        pruned TINYINT NOT NULL DEFAULT 0,
+                        maintained_tables INT NOT NULL DEFAULT 0,
+                        detail VARCHAR(512) NOT NULL DEFAULT '',
+                        KEY idx_observability_maintenance_runs_started (started_ts),
+                        KEY idx_observability_maintenance_runs_status (status)
+                    )
+                    """,
                 )
-                """,
-            )
+            _MAINTENANCE_RUNS_SCHEMA_READY = True
 
     _retry_stale_connection(ensure)
 

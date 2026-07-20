@@ -210,11 +210,29 @@ class AdblockArtifactStore:
         ).strip() or _DEFAULT_COMPILED_DIR
         self._started = False
         self._lock = threading.Lock()
+        self._schema_ready = False
+        self._schema_lock = threading.Lock()
 
     def _connect(self):
         return connect()
 
     def init_db(self) -> None:
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+        with self._connect() as conn:
+            try:
+                from services.schema_lifecycle import (
+                    runtime_schema_ready_for_lazy_store,
+                )
+
+                if runtime_schema_ready_for_lazy_store(conn):
+                    self._schema_ready = True
+                    return
+            except Exception:
+                pass
         with self._connect() as conn:
             conn.execute(
                 """
@@ -307,6 +325,8 @@ class AdblockArtifactStore:
                 ),
             ):
                 ensure_index(conn, table_name=table, index_name=index_name, ddl=ddl)
+
+        self._schema_ready = True
 
     def _row_to_revision(self, row: object | None) -> AdblockArtifactRevision | None:
         if not row:

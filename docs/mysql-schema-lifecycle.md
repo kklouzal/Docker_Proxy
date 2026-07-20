@@ -1,6 +1,6 @@
 # MySQL schema lifecycle hardening
 
-Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`.  Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `ALTER TABLE` or `information_schema` probes once startup migration version 14 is applied.
+Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`.  Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once startup migration version 15 is applied.
 
 ## Version ownership
 
@@ -20,13 +20,14 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 | 12 | `proxy_lifecycle_indexes` | `proxy_lifecycle_tombstones` plus lifecycle leftmost-key coverage for every known proxy-scoped table and PAC child table. |
 | 13 | `control_plane_retention_indexes` | Bounded housekeeping indexes for revision/application/operation/policy/observability retention paths. |
 | 14 | `schema_lifecycle_complete_runtime_assertions` | Cutover marker used by lazy stores to replace runtime DDL with a one-time process assertion that startup migrations are current. |
+| 15 | `auth_provider_profile_tables` | `directory_auth_profiles` and `saml_auth_profiles`, including default disabled provider rows and SAML compatibility columns, so authentication-provider setup is covered by the startup lifecycle instead of runtime page/login paths. |
 
 ## Lifecycle model
 
 - Startup applies versions in order and records each version checksum/status/events. Already-applied matching versions are no-ops; checksum drift on an applied version blocks startup.
 - MySQL DDL is non-transactional, so every version records a `running` checkpoint before DDL and uses idempotent table/index/column repairs. A failed or interrupted version is marked `failed` and can be retried safely.
 - DDL privilege checks run at startup. Set `MYSQL_CREATE_DATABASE=0` for externally managed databases; migrations still require a DDL-capable account unless a privileged migration job ran first.
-- After version 14, lazy store constructors use cheap process guards/current-schema assertions instead of repeated hot-path `ALTER TABLE` or `information_schema` repair loops.
+- After version 15, lazy store constructors and control-plane stores use cheap process guards/current-schema assertions instead of repeated hot-path `CREATE TABLE`, `ALTER TABLE`, or `information_schema` repair loops.
 
 ## Rollback/compatibility notes
 

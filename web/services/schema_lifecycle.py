@@ -26,7 +26,7 @@ from services.db import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 14
+_SCHEMA_VERSION = 15
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -538,6 +538,14 @@ def _init_pac_schema(_conn: Any) -> None:
     importlib.import_module("services.pac_profiles_store").get_pac_profiles_store().init_db()
 
 
+def _init_directory_auth_schema(_conn: Any) -> None:
+    importlib.import_module("services.directory_auth").get_directory_auth_store().ensure_default_profiles()
+
+
+def _init_saml_auth_schema(_conn: Any) -> None:
+    importlib.import_module("services.saml_auth").get_saml_auth_store().ensure_default_profile()
+
+
 def _init_proxy_lifecycle_schema(conn: Any) -> None:
     lifecycle = importlib.import_module("services.proxy_lifecycle")
     lifecycle.ensure_lifecycle_schema(conn)
@@ -635,6 +643,14 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
             version=14,
             name="schema_lifecycle_complete_runtime_assertions",
             data_steps=(SchemaDataStep("runtime_assertion_cutover", lambda _conn: None),),
+        ),
+        SchemaMigrationSpec(
+            version=15,
+            name="auth_provider_profile_tables",
+            data_steps=(
+                SchemaDataStep("directory_auth_profiles", _init_directory_auth_schema),
+                SchemaDataStep("saml_auth_profiles", _init_saml_auth_schema),
+            ),
         ),
     )
 

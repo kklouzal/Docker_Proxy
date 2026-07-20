@@ -876,3 +876,54 @@ def test_mysql_error_classification_names_operator_relevant_failures() -> None:
         )
         == "connection_lost"
     )
+
+
+def test_ensure_mysql_database_validates_database_identifier_and_charset(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    calls: list[str] = []
+
+    class Cursor:
+        def execute(self, sql, params=()) -> None:
+            calls.append(str(sql))
+
+        def close(self) -> None:
+            return None
+
+    class NativeConnection:
+        def cursor(self):
+            return Cursor()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(db.pymysql, "connect", lambda **_kwargs: NativeConnection())
+    db._ensure_mysql_database(
+        db.DatabaseConfig(
+            host="db",
+            user="u",
+            password="p",
+            database="safe_db",
+            charset="utf8mb4",
+        )
+    )
+
+    assert calls == [
+        "CREATE DATABASE IF NOT EXISTS `safe_db` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+    ]
+
+    db.reset_mysql_ready_for_tests()
+    with pytest.raises(ValueError, match="Unsafe MySQL identifier"):
+        db._ensure_mysql_database(
+            db.DatabaseConfig(host="db", user="u", password="p", database="bad`db")
+        )
+
+    db.reset_mysql_ready_for_tests()
+    with pytest.raises(ValueError, match="Unsafe MySQL charset"):
+        db._ensure_mysql_database(
+            db.DatabaseConfig(
+                host="db", user="u", password="p", database="safe_db", charset="utf8mb4;DROP"
+            )
+        )

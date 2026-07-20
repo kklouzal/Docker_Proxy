@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 import time
 from collections import Counter
 from typing import TYPE_CHECKING, Any
@@ -146,6 +147,10 @@ def _next_schedule_run_ts(cadence: str, now: int | None = None) -> int:
 
 
 class ObservabilityQueries:
+    def __init__(self) -> None:
+        self._schedule_schema_ready = False
+        self._schedule_schema_lock = threading.Lock()
+
     def _connect(self):
         return connect()
 
@@ -1263,30 +1268,46 @@ class ObservabilityQueries:
         ]
 
     def _ensure_report_schedule_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS observability_report_schedules (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    enabled TINYINT(1) NOT NULL DEFAULT 1,
-                    name VARCHAR(120) NOT NULL,
-                    cadence VARCHAR(16) NOT NULL,
-                    recipients VARCHAR(512) NOT NULL,
-                    pane VARCHAR(32) NOT NULL,
-                    report_format VARCHAR(16) NOT NULL,
-                    privacy TINYINT(1) NOT NULL DEFAULT 1,
-                    window_seconds INT NOT NULL,
-                    created_ts BIGINT NOT NULL,
-                    updated_ts BIGINT NOT NULL,
-                    next_run_ts BIGINT NOT NULL DEFAULT 0,
-                    last_run_ts BIGINT NOT NULL DEFAULT 0,
-                    last_status VARCHAR(64) NOT NULL DEFAULT '',
-                    KEY idx_obs_report_schedules_proxy_next (proxy_id, enabled, next_run_ts),
-                    KEY idx_obs_report_schedules_proxy_updated (proxy_id, updated_ts)
+        if self._schedule_schema_ready:
+            return
+        with self._schedule_schema_lock:
+            if self._schedule_schema_ready:
+                return
+            with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._schedule_schema_ready = True
+                        return
+                except Exception:
+                    pass
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS observability_report_schedules (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        enabled TINYINT(1) NOT NULL DEFAULT 1,
+                        name VARCHAR(120) NOT NULL,
+                        cadence VARCHAR(16) NOT NULL,
+                        recipients VARCHAR(512) NOT NULL,
+                        pane VARCHAR(32) NOT NULL,
+                        report_format VARCHAR(16) NOT NULL,
+                        privacy TINYINT(1) NOT NULL DEFAULT 1,
+                        window_seconds INT NOT NULL,
+                        created_ts BIGINT NOT NULL,
+                        updated_ts BIGINT NOT NULL,
+                        next_run_ts BIGINT NOT NULL DEFAULT 0,
+                        last_run_ts BIGINT NOT NULL DEFAULT 0,
+                        last_status VARCHAR(64) NOT NULL DEFAULT '',
+                        KEY idx_obs_report_schedules_proxy_next (proxy_id, enabled, next_run_ts),
+                        KEY idx_obs_report_schedules_proxy_updated (proxy_id, updated_ts)
+                    )
+                    """,
                 )
-                """,
-            )
+            self._schedule_schema_ready = True
 
     def report_schedules(self, *, limit: int = 20) -> list[dict[str, Any]]:
         self._ensure_report_schedule_db()

@@ -15,37 +15,57 @@ logger = logging.getLogger(__name__)
 
 
 class AuditStore:
+    def __init__(self) -> None:
+        self._schema_ready = False
+        self._schema_lock = threading.Lock()
+
     def _connect(self):
         return connect()
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS audit_events (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
-                    ts BIGINT NOT NULL,
-                    kind VARCHAR(80) NOT NULL,
-                    ok TINYINT(1) NOT NULL,
-                    remote_addr VARCHAR(64),
-                    user_agent VARCHAR(256),
-                    detail TEXT,
-                    config_sha256 CHAR(64),
-                    config_text LONGTEXT,
-                    KEY idx_audit_ts (ts),
-                    KEY idx_audit_ts_id (ts, id),
-                    KEY idx_audit_kind (kind),
-                    KEY idx_audit_proxy_ts (proxy_id, ts)
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._schema_ready = True
+                        return
+                except Exception:
+                    pass
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_events (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        ts BIGINT NOT NULL,
+                        kind VARCHAR(80) NOT NULL,
+                        ok TINYINT(1) NOT NULL,
+                        remote_addr VARCHAR(64),
+                        user_agent VARCHAR(256),
+                        detail TEXT,
+                        config_sha256 CHAR(64),
+                        config_text LONGTEXT,
+                        KEY idx_audit_ts (ts),
+                        KEY idx_audit_ts_id (ts, id),
+                        KEY idx_audit_kind (kind),
+                        KEY idx_audit_proxy_ts (proxy_id, ts)
+                    )
+                    """,
                 )
-                """,
-            )
-            ensure_index(
-                conn,
-                table_name="audit_events",
-                index_name="idx_audit_ts_id",
-                ddl="ALTER TABLE audit_events ADD INDEX idx_audit_ts_id (ts, id)",
-            )
+                ensure_index(
+                    conn,
+                    table_name="audit_events",
+                    index_name="idx_audit_ts_id",
+                    ddl="ALTER TABLE audit_events ADD INDEX idx_audit_ts_id (ts, id)",
+                )
+            self._schema_ready = True
 
     def record(
         self,

@@ -60,6 +60,8 @@ _REQUIRED_TABLES: tuple[str, ...] = (
     "observability_settings",
     "observability_maintenance_runs",
     "observability_report_schedules",
+    "directory_auth_profiles",
+    "saml_auth_profiles",
     "policy_requests",
     "policy_exceptions",
     "pac_profiles",
@@ -75,6 +77,10 @@ _REQUIRED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("adblock_artifact_revisions", "active_global_slot"),
     ("proxy_operations", "request_key"),
     ("proxy_operations", "claim_token"),
+    ("saml_auth_profiles", "public_base_url"),
+    ("saml_auth_profiles", "username_attribute"),
+    ("saml_auth_profiles", "groups_attribute"),
+    ("saml_auth_profiles", "required_group"),
 )
 
 _REQUIRED_INDEXES: tuple[tuple[str, str], ...] = (

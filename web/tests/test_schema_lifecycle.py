@@ -209,6 +209,7 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "proxy_lifecycle_indexes",
         "control_plane_retention_indexes",
         "schema_lifecycle_complete_runtime_assertions",
+        "auth_provider_profile_tables",
     } <= names
 
 
@@ -241,25 +242,45 @@ class _CurrentSchemaConn:
 
 
 def test_lazy_store_init_db_skips_hot_path_ddl_when_schema_current(tmp_path, monkeypatch) -> None:
+    from services.adblock_artifacts import AdblockArtifactStore
     from services.adblock_store import AdblockStore
+    from services.audit_store import AuditStore
+    from services.auth_store import AuthStore
+    from services.certificate_bundles import CertificateBundleStore
+    from services.config_revisions import ConfigRevisionStore
+    from services.directory_auth import DirectoryAuthStore
+    from services.observability_queries import ObservabilityQueries
+    from services.operation_ledger import OperationLedger
     from services.pac_profiles_store import PacProfilesStore
     from services.policy_requests import PolicyRequestStore
+    from services.proxy_registry import ProxyRegistry
     from services.safe_browsing_v5 import SafeBrowsingStore
+    from services.saml_auth import SamlAuthStore
     from services.sslfilter_store import SslFilterStore
 
-    stores = [
-        AdblockStore(lists_dir=str(tmp_path / "adblock")),
-        SslFilterStore(),
-        PacProfilesStore(),
-        PolicyRequestStore(),
-        SafeBrowsingStore(),
+    stores_and_methods = [
+        (AdblockStore(lists_dir=str(tmp_path / "adblock")), "init_db"),
+        (SslFilterStore(), "init_db"),
+        (PacProfilesStore(), "init_db"),
+        (PolicyRequestStore(), "init_db"),
+        (SafeBrowsingStore(), "init_db"),
+        (AuthStore(secret_path=str(tmp_path / "secret.key")), "ensure_schema"),
+        (AuditStore(), "init_db"),
+        (ConfigRevisionStore(), "init_db"),
+        (CertificateBundleStore(), "init_db"),
+        (AdblockArtifactStore(compiled_dir=str(tmp_path / "compiled")), "init_db"),
+        (ProxyRegistry(), "init_db"),
+        (OperationLedger(), "init_db"),
+        (DirectoryAuthStore(lambda: "secret"), "ensure_schema"),
+        (SamlAuthStore(), "ensure_schema"),
+        (ObservabilityQueries(), "_ensure_report_schedule_db"),
     ]
     SafeBrowsingStore._schema_ready = False
 
-    for store in stores:
+    for store, method_name in stores_and_methods:
         conn = _CurrentSchemaConn()
         monkeypatch.setattr(store, "_connect", lambda conn=conn: conn)
-        store.init_db()
+        getattr(store, method_name)()
         forbidden = [
             op
             for op in conn.ops

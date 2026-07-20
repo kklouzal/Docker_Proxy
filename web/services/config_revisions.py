@@ -51,6 +51,10 @@ class ConfigRevisionMetadata:
 
 
 class ConfigRevisionStore:
+    def __init__(self) -> None:
+        self._schema_ready = False
+        self._schema_lock = threading.Lock()
+
     def _connect(self):
         return connect()
 
@@ -82,6 +86,22 @@ class ConfigRevisionStore:
         return fn()
 
     def init_db(self) -> None:
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+        with self._connect() as conn:
+            try:
+                from services.schema_lifecycle import (
+                    runtime_schema_ready_for_lazy_store,
+                )
+
+                if runtime_schema_ready_for_lazy_store(conn):
+                    self._schema_ready = True
+                    return
+            except Exception:
+                pass
         with self._connect() as conn:
             conn.execute(
                 """
@@ -139,6 +159,8 @@ class ConfigRevisionStore:
                     "ADD UNIQUE KEY uniq_proxy_config_revisions_active_proxy (active_proxy_id)"
                 ),
             )
+
+        self._schema_ready = True
 
     def _row_to_revision(self, row: object | None) -> ConfigRevision | None:
         if not row:

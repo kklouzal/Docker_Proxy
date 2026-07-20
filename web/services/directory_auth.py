@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -130,38 +131,56 @@ class DirectoryScanResult:
 class DirectoryAuthStore:
     def __init__(self, secret_provider: Callable[[], str] | None = None) -> None:
         self._secret_provider = secret_provider or (lambda: "")
+        self._schema_ready = False
+        self._schema_lock = threading.Lock()
 
     def _connect(self):
         return connect()
 
     def ensure_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS directory_auth_profiles (
-                    provider VARCHAR(32) PRIMARY KEY,
-                    enabled TINYINT(1) NOT NULL DEFAULT 0,
-                    server_urls TEXT NOT NULL,
-                    use_starttls TINYINT(1) NOT NULL DEFAULT 0,
-                    verify_tls TINYINT(1) NOT NULL DEFAULT 1,
-                    ca_bundle TEXT NOT NULL,
-                    bind_dn TEXT NOT NULL,
-                    bind_password TEXT NOT NULL,
-                    base_dn TEXT NOT NULL,
-                    user_search_base TEXT NOT NULL,
-                    user_filter TEXT NOT NULL,
-                    user_attribute VARCHAR(64) NOT NULL,
-                    group_search_base TEXT NOT NULL,
-                    group_filter TEXT NOT NULL,
-                    required_admin_group TEXT NOT NULL,
-                    timeout_seconds INT NOT NULL DEFAULT 5,
-                    last_test_ok TINYINT(1) NOT NULL DEFAULT 0,
-                    last_test_ts BIGINT NOT NULL DEFAULT 0,
-                    last_test_detail TEXT NOT NULL,
-                    updated_ts BIGINT NOT NULL
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._schema_ready = True
+                        return
+                except Exception:
+                    pass
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS directory_auth_profiles (
+                        provider VARCHAR(32) PRIMARY KEY,
+                        enabled TINYINT(1) NOT NULL DEFAULT 0,
+                        server_urls TEXT NOT NULL,
+                        use_starttls TINYINT(1) NOT NULL DEFAULT 0,
+                        verify_tls TINYINT(1) NOT NULL DEFAULT 1,
+                        ca_bundle TEXT NOT NULL,
+                        bind_dn TEXT NOT NULL,
+                        bind_password TEXT NOT NULL,
+                        base_dn TEXT NOT NULL,
+                        user_search_base TEXT NOT NULL,
+                        user_filter TEXT NOT NULL,
+                        user_attribute VARCHAR(64) NOT NULL,
+                        group_search_base TEXT NOT NULL,
+                        group_filter TEXT NOT NULL,
+                        required_admin_group TEXT NOT NULL,
+                        timeout_seconds INT NOT NULL DEFAULT 5,
+                        last_test_ok TINYINT(1) NOT NULL DEFAULT 0,
+                        last_test_ts BIGINT NOT NULL DEFAULT 0,
+                        last_test_detail TEXT NOT NULL,
+                        updated_ts BIGINT NOT NULL
+                    )
+                    """,
                 )
-                """,
-            )
+            self._schema_ready = True
 
     def ensure_default_profiles(self) -> None:
         self.ensure_schema()

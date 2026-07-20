@@ -30,22 +30,40 @@ class AuthStore:
         self.secret_path = (
             secret_path or os.environ.get("FLASK_SECRET_PATH") or DEFAULT_SECRET_PATH
         )
+        self._schema_ready = False
+        self._schema_lock = threading.Lock()
 
     def _connect(self):
         return connect()
 
     def ensure_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    username VARCHAR(64) PRIMARY KEY,
-                    password_hash TEXT NOT NULL,
-                    created_ts BIGINT NOT NULL,
-                    updated_ts BIGINT NOT NULL
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._schema_ready = True
+                        return
+                except Exception:
+                    pass
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        username VARCHAR(64) PRIMARY KEY,
+                        password_hash TEXT NOT NULL,
+                        created_ts BIGINT NOT NULL,
+                        updated_ts BIGINT NOT NULL
+                    )
+                    """,
                 )
-                """,
-            )
+            self._schema_ready = True
 
     def ensure_default_admin(self) -> None:
         self.ensure_schema()

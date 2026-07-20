@@ -96,59 +96,79 @@ class SamlAuthResult:
 
 
 class SamlAuthStore:
+    def __init__(self) -> None:
+        self._schema_ready = False
+        self._schema_lock = threading.Lock()
+
     def _connect(self):
         return connect()
 
     def ensure_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS saml_auth_profiles (
-                    provider VARCHAR(32) PRIMARY KEY,
-                    enabled TINYINT(1) NOT NULL DEFAULT 0,
-                    metadata_url TEXT NOT NULL,
-                    require_https TINYINT(1) NOT NULL DEFAULT 1,
-                    verify_tls TINYINT(1) NOT NULL DEFAULT 1,
-                    ca_bundle TEXT NOT NULL,
-                    timeout_seconds INT NOT NULL DEFAULT 10,
-                    max_metadata_bytes INT NOT NULL DEFAULT 2097152,
-                    raw_metadata_xml LONGTEXT NOT NULL,
-                    parsed_metadata_json LONGTEXT NOT NULL,
-                    entity_id TEXT NOT NULL,
-                    fetched_ts BIGINT NOT NULL DEFAULT 0,
-                    cache_expires_ts BIGINT NOT NULL DEFAULT 0,
-                    valid_until_ts BIGINT NOT NULL DEFAULT 0,
-                    last_refresh_ok TINYINT(1) NOT NULL DEFAULT 0,
-                    last_refresh_ts BIGINT NOT NULL DEFAULT 0,
-                    last_refresh_detail TEXT NOT NULL,
-                    public_base_url TEXT NOT NULL,
-                    username_attribute VARCHAR(255) NOT NULL DEFAULT 'NameID',
-                    groups_attribute VARCHAR(255) NOT NULL DEFAULT 'groups',
-                    required_group TEXT NOT NULL,
-                    updated_ts BIGINT NOT NULL
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._schema_ready = True
+                        return
+                except Exception:
+                    pass
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS saml_auth_profiles (
+                        provider VARCHAR(32) PRIMARY KEY,
+                        enabled TINYINT(1) NOT NULL DEFAULT 0,
+                        metadata_url TEXT NOT NULL,
+                        require_https TINYINT(1) NOT NULL DEFAULT 1,
+                        verify_tls TINYINT(1) NOT NULL DEFAULT 1,
+                        ca_bundle TEXT NOT NULL,
+                        timeout_seconds INT NOT NULL DEFAULT 10,
+                        max_metadata_bytes INT NOT NULL DEFAULT 2097152,
+                        raw_metadata_xml LONGTEXT NOT NULL,
+                        parsed_metadata_json LONGTEXT NOT NULL,
+                        entity_id TEXT NOT NULL,
+                        fetched_ts BIGINT NOT NULL DEFAULT 0,
+                        cache_expires_ts BIGINT NOT NULL DEFAULT 0,
+                        valid_until_ts BIGINT NOT NULL DEFAULT 0,
+                        last_refresh_ok TINYINT(1) NOT NULL DEFAULT 0,
+                        last_refresh_ts BIGINT NOT NULL DEFAULT 0,
+                        last_refresh_detail TEXT NOT NULL,
+                        public_base_url TEXT NOT NULL,
+                        username_attribute VARCHAR(255) NOT NULL DEFAULT 'NameID',
+                        groups_attribute VARCHAR(255) NOT NULL DEFAULT 'groups',
+                        required_group TEXT NOT NULL,
+                        updated_ts BIGINT NOT NULL
+                    )
+                    """,
                 )
-                """,
-            )
-            self._ensure_column(
-                conn,
-                "public_base_url",
-                "ALTER TABLE saml_auth_profiles ADD COLUMN public_base_url TEXT NOT NULL AFTER last_refresh_detail",
-            )
-            self._ensure_column(
-                conn,
-                "username_attribute",
-                "ALTER TABLE saml_auth_profiles ADD COLUMN username_attribute VARCHAR(255) NOT NULL DEFAULT 'NameID' AFTER public_base_url",
-            )
-            self._ensure_column(
-                conn,
-                "groups_attribute",
-                "ALTER TABLE saml_auth_profiles ADD COLUMN groups_attribute VARCHAR(255) NOT NULL DEFAULT 'groups' AFTER username_attribute",
-            )
-            self._ensure_column(
-                conn,
-                "required_group",
-                "ALTER TABLE saml_auth_profiles ADD COLUMN required_group TEXT NOT NULL AFTER groups_attribute",
-            )
+                self._ensure_column(
+                    conn,
+                    "public_base_url",
+                    "ALTER TABLE saml_auth_profiles ADD COLUMN public_base_url TEXT NOT NULL AFTER last_refresh_detail",
+                )
+                self._ensure_column(
+                    conn,
+                    "username_attribute",
+                    "ALTER TABLE saml_auth_profiles ADD COLUMN username_attribute VARCHAR(255) NOT NULL DEFAULT 'NameID' AFTER public_base_url",
+                )
+                self._ensure_column(
+                    conn,
+                    "groups_attribute",
+                    "ALTER TABLE saml_auth_profiles ADD COLUMN groups_attribute VARCHAR(255) NOT NULL DEFAULT 'groups' AFTER username_attribute",
+                )
+                self._ensure_column(
+                    conn,
+                    "required_group",
+                    "ALTER TABLE saml_auth_profiles ADD COLUMN required_group TEXT NOT NULL AFTER groups_attribute",
+                )
+            self._schema_ready = True
 
     def ensure_default_profile(self) -> None:
         self.ensure_schema()

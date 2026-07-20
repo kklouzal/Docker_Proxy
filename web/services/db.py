@@ -4,6 +4,7 @@ import contextlib
 import logging
 import os
 import random
+import re
 import threading
 import time
 from collections import UserDict
@@ -14,11 +15,13 @@ from urllib.parse import unquote, urlparse
 import pymysql  # type: ignore
 
 from services.runtime_helpers import env_int as _env_int
+from services.sql_identifiers import quote_mysql_identifier
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
 MYSQL_DEFAULT_DB = "squid_proxy"
+_MYSQL_CHARSET_RE = re.compile(r"^[A-Za-z0-9_]+$")
 logger = logging.getLogger(__name__)
 
 _MYSQL_CONNECT_RETRY_CODES = {1040, 2002, 2003, 2006, 2013}
@@ -202,6 +205,14 @@ _pooled_connections: dict[
     tuple[str, int, str, str, str, str, int, int, int],
     _PoolState,
 ] = {}
+
+
+def _safe_mysql_charset(value: str) -> str:
+    charset = (value or "utf8mb4").strip() or "utf8mb4"
+    if not _MYSQL_CHARSET_RE.fullmatch(charset):
+        msg = f"Unsafe MySQL charset: {value!r}"
+        raise ValueError(msg)
+    return charset
 
 
 def mysql_error_classification(exc: BaseException) -> str:
@@ -777,8 +788,11 @@ def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
             cur = None
             try:
                 cur = native.cursor()
+                database = quote_mysql_identifier(cfg.database)
+                charset = _safe_mysql_charset(cfg.charset)
+                collation = _safe_mysql_charset(f"{charset}_unicode_ci")
                 cur.execute(
-                    f"CREATE DATABASE IF NOT EXISTS `{cfg.database}` CHARACTER SET {cfg.charset} COLLATE {cfg.charset}_unicode_ci",
+                    f"CREATE DATABASE IF NOT EXISTS {database} CHARACTER SET {charset} COLLATE {collation}",
                 )
             finally:
                 if cur is not None:
