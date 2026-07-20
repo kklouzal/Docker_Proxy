@@ -111,10 +111,20 @@ def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
         raise IcapProtocolError(message)
     headers: dict[str, str] = {}
     for line in lines[1:]:
-        if not line or ":" not in line:
+        if not line:
             continue
+        if ":" not in line:
+            message = f"malformed ICAP header line: {line!r}"
+            raise IcapProtocolError(message)
         name, value = line.split(":", 1)
-        headers[name.strip().lower()] = value.strip()
+        header_name = name.strip().lower()
+        if not header_name:
+            message = f"malformed ICAP header line: {line!r}"
+            raise IcapProtocolError(message)
+        if header_name == "encapsulated" and header_name in headers:
+            message = "duplicate ICAP Encapsulated header"
+            raise IcapProtocolError(message)
+        headers[header_name] = value.strip()
     return lines[0], headers
 
 
@@ -123,13 +133,24 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
     for raw_item in value.split(","):
         item = raw_item.strip()
         if not item or "=" not in item:
-            continue
+            message = f"malformed Encapsulated field: {item or raw_item!r}"
+            raise IcapProtocolError(message)
         name, raw_offset = item.split("=", 1)
+        field_name = name.strip().lower()
+        if not field_name:
+            message = f"malformed Encapsulated field: {item!r}"
+            raise IcapProtocolError(message)
+        if field_name in offsets:
+            message = f"duplicate Encapsulated field: {field_name}"
+            raise IcapProtocolError(message)
         try:
-            offsets[name.strip().lower()] = int(raw_offset.strip())
+            offsets[field_name] = int(raw_offset.strip())
         except ValueError as exc:
             message = f"invalid Encapsulated offset: {item}"
             raise IcapProtocolError(message) from exc
+    if "res-body" in offsets and "null-body" in offsets:
+        message = "Encapsulated header cannot contain both res-body and null-body"
+        raise IcapProtocolError(message)
     return offsets
 
 
