@@ -39,6 +39,11 @@ ISTAG = '"clamav-respmod-instream-1"'
 CLAMD_INSTREAM_COMMAND = b"zINSTREAM\0"
 CLAMD_REPLY_TERMINATOR = b"\0"
 ICAP_METHOD_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\Z")
+_SINGLETON_ICAP_HEADERS = {
+    "allow": "Allow",
+    "encapsulated": "Encapsulated",
+    "preview": "Preview",
+}
 
 
 @dataclass(frozen=True)
@@ -118,12 +123,18 @@ def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
             continue
         name, value = line.split(":", 1)
         header_name = name.strip().lower()
-        if header_name in {"encapsulated", "preview"} and header_name in headers:
-            display_name = "Encapsulated" if header_name == "encapsulated" else "Preview"
+        if header_name in _SINGLETON_ICAP_HEADERS and header_name in headers:
+            display_name = _SINGLETON_ICAP_HEADERS[header_name]
             message = f"duplicate ICAP {display_name} header"
             raise IcapProtocolError(message)
         headers[header_name] = value.strip()
     return lines[0], headers
+
+
+def _icap_allows_204(value: str | None) -> bool:
+    if value is None:
+        return False
+    return any(part.strip() == "204" for part in value.split(","))
 
 
 def _parse_start_line(start_line: str) -> str:
@@ -838,9 +849,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 has_body=body_offset is not None,
                 max_bytes=self.server.max_scan_bytes,
             )
-            allow_204 = "204" in {
-                part.strip() for part in headers.get("allow", "").split(",")
-            }
+            allow_204 = _icap_allows_204(headers.get("allow"))
             result: ClamdResult
             if body_offset is not None:
                 encapsulated_headers, remainder = _read_exact(

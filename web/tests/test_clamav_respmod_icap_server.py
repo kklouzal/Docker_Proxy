@@ -1960,6 +1960,82 @@ def test_duplicate_preview_header_rejected_before_scanning_or_continue() -> None
     assert b"duplicate ICAP Preview header" in response
 
 
+def test_duplicate_allow_header_rejected_before_scanning_or_fail_open_204(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    for first, second in ((b"foo", b"204"), (b"204", b"foo")):
+        try:
+            server._split_headers(
+                b"RESPMOD icap://example.test/av ICAP/1.0\r\n"
+                b"Allow: "
+                + first
+                + b"\r\nAllow: "
+                + second
+            )
+        except server.IcapProtocolError as exc:
+            assert str(exc) == "duplicate ICAP Allow header"
+        else:  # pragma: no cover - regression guard should always reject this path
+            message = f"duplicate Allow headers {first!r}/{second!r} were accepted"
+            raise AssertionError(message)
+
+    def create_connection(*_args, **_kwargs):
+        message = "connection refused"
+        raise ConnectionRefusedError(message)
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return super().open_scan()
+
+    monkeypatch.setattr(server.socket, "create_connection", create_connection)
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_respmod_request_without_allow_204(port).replace(
+            b"Host: 127.0.0.1\r\n",
+            b"Host: 127.0.0.1\r\nAllow: foo\r\nAllow: 204\r\n",
+        )
+        response = _recv_icap_response(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 0
+    assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"scan failed before complete response body" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" not in response
+
+
+def test_allow_204_parsing_accepts_exact_comma_tokens_only() -> None:
+    server = _load_server()
+
+    assert server._icap_allows_204("204") is True
+    assert server._icap_allows_204("206, 204") is True
+    assert server._icap_allows_204(" , 206,, 204 ,") is True
+    assert server._icap_allows_204(None) is False
+    assert server._icap_allows_204("") is False
+    assert server._icap_allows_204("206") is False
+    assert server._icap_allows_204("204foo") is False
+    assert server._icap_allows_204("+204") is False
+    assert server._icap_allows_204("-204") is False
+    assert server._icap_allows_204("2 04") is False
+
+
 def test_malformed_preview_header_rejected_before_scanning_or_continue() -> None:
     server = _load_server()
     scan_attempts = 0
