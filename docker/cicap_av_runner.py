@@ -16,6 +16,7 @@ CRLF = b"\r\n"
 HEADER_END = CRLF + CRLF
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 MAX_ENCAPSULATED_OFFSET_DIGITS = 20
+MAX_HTTP_CONTENT_LENGTH_DIGITS = 20
 MAX_ICAP_CHUNK_SIZE_DIGITS = 16
 MAX_ICAP_HEADER_LINE_BYTES = 8192
 MAX_ICAP_TRAILER_LINE_BYTES = 8192
@@ -27,6 +28,7 @@ _CHUNK_TCHARS = frozenset(
     b"!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 )
 _ICAP_FIELD_NAME_TCHARS = _CHUNK_TCHARS
+_HTTP_FIELD_NAME_TCHARS = _CHUNK_TCHARS
 _FORBIDDEN_ICAP_TRAILER_FIELDS = {
     b"allow",
     b"content-length",
@@ -645,8 +647,91 @@ def _http_header_lines(http_header: bytes) -> list[bytes]:
     return header_block.split(CRLF) if header_block else []
 
 
+def _validate_respmod_http_field_line(line: bytes) -> tuple[bytes, bytes]:
+    if line[:1] in _CHUNK_OWS:
+        message = "obsolete folded RESPMOD encapsulated HTTP header line"
+        raise IcapProtocolError(message)
+    if b":" not in line:
+        message = "malformed RESPMOD encapsulated HTTP header field line"
+        raise IcapProtocolError(message)
+    raw_name, raw_value = line.split(b":", 1)
+    if not raw_name or any(ch not in _HTTP_FIELD_NAME_TCHARS for ch in raw_name):
+        message = "invalid RESPMOD encapsulated HTTP header field name"
+        raise IcapProtocolError(message)
+    if any(ch != 0x09 and (ch < 0x20 or ch == 0x7F) for ch in raw_value):
+        message = "invalid RESPMOD encapsulated HTTP header field value"
+        raise IcapProtocolError(message)
+    return raw_name.lower(), raw_value.strip(b" \t")
+
+
+def _parse_http_content_length(value: bytes) -> int:
+    if (
+        not value
+        or len(value) > MAX_HTTP_CONTENT_LENGTH_DIGITS
+        or any(ch < 0x30 or ch > 0x39 for ch in value)
+    ):
+        message = "invalid RESPMOD encapsulated HTTP Content-Length header"
+        raise IcapProtocolError(message)
+    return int(value, 10)
+
+
+def _http_transfer_codings(value: bytes) -> list[bytes]:
+    codings: list[bytes] = []
+    for raw_coding in value.split(b","):
+        coding = raw_coding.strip(b" \t").lower()
+        if not coding or any(ch not in _HTTP_FIELD_NAME_TCHARS for ch in coding):
+            message = "unsupported RESPMOD encapsulated HTTP Transfer-Encoding header"
+            raise IcapProtocolError(message)
+        codings.append(coding)
+    return codings
+
+
+def _validate_respmod_http_response_fields_for_replay(
+    lines: list[bytes], *, body_length: int, body_present: bool
+) -> None:
+    content_length: int | None = None
+    transfer_encoding_seen = False
+    transfer_codings: list[bytes] = []
+    for line in lines[1:]:
+        if not line:
+            continue
+        name, value = _validate_respmod_http_field_line(line)
+        if name == b"content-length":
+            parsed_length = _parse_http_content_length(value)
+            if content_length is None:
+                content_length = parsed_length
+            elif content_length != parsed_length:
+                message = (
+                    "conflicting RESPMOD encapsulated HTTP Content-Length headers"
+                )
+                raise IcapProtocolError(message)
+        elif name == b"transfer-encoding":
+            if transfer_encoding_seen:
+                message = "duplicate RESPMOD encapsulated HTTP Transfer-Encoding header"
+                raise IcapProtocolError(message)
+            transfer_encoding_seen = True
+            transfer_codings = _http_transfer_codings(value)
+
+    if transfer_codings:
+        if content_length is not None:
+            message = (
+                "ambiguous RESPMOD encapsulated HTTP Content-Length with "
+                "Transfer-Encoding"
+            )
+            raise IcapProtocolError(message)
+        if transfer_codings.count(b"chunked") > 1:
+            message = "duplicate RESPMOD encapsulated HTTP chunked transfer-coding"
+            raise IcapProtocolError(message)
+        if transfer_codings != [b"chunked"]:
+            message = "unsupported RESPMOD encapsulated HTTP Transfer-Encoding header"
+            raise IcapProtocolError(message)
+    elif body_present and content_length is not None and content_length != body_length:
+        message = "RESPMOD encapsulated HTTP Content-Length mismatches decoded body"
+        raise IcapProtocolError(message)
+
+
 def _validate_respmod_http_response_for_replay(
-    http_header: bytes, *, body_length: int
+    http_header: bytes, *, body_length: int, body_present: bool
 ) -> None:
     lines = _http_header_lines(http_header)
     raw_start_line = lines[0] if lines else b""
@@ -679,6 +764,10 @@ def _validate_respmod_http_response_for_replay(
         message = "RESPMOD encapsulated HTTP response status forbids a body"
         raise IcapProtocolError(message)
 
+    _validate_respmod_http_response_fields_for_replay(
+        lines, body_length=body_length, body_present=body_present
+    )
+
 
 def _http_header_for_body_replay(http_header: bytes, body_length: int) -> bytes:
     lines = _http_header_lines(http_header)
@@ -701,7 +790,9 @@ def _encode_icap_body_chunk(body: bytes) -> bytes:
 
 
 def _clean_respmod_response(http_header: bytes, body: bytes, istag: str) -> bytes:
-    _validate_respmod_http_response_for_replay(http_header, body_length=len(body))
+    _validate_respmod_http_response_for_replay(
+        http_header, body_length=len(body), body_present=True
+    )
     http_header = _http_header_for_body_replay(http_header, len(body))
     return _icap_response(
         "200 OK",
@@ -712,7 +803,9 @@ def _clean_respmod_response(http_header: bytes, body: bytes, istag: str) -> byte
 def _clean_respmod_no_body_response(
     *, allow_204: bool, http_header: bytes, istag: str
 ) -> bytes:
-    _validate_respmod_http_response_for_replay(http_header, body_length=0)
+    _validate_respmod_http_response_for_replay(
+        http_header, body_length=0, body_present=False
+    )
     if allow_204:
         return _icap_response("204 No Content", {"ISTag": istag})
     if http_header and not http_header.endswith(HEADER_END):

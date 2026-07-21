@@ -1492,6 +1492,178 @@ def test_fail_open_placeholder_preserves_valid_respmod_status_line_matrix() -> N
             assert b"5\r\nhello\r\n0\r\n\r\n" in response, name
 
 
+def test_fail_open_placeholder_rejects_malformed_respmod_http_field_lines_before_204_or_replay() -> None:
+    runner = _load_runner()
+    cases = (
+        ("missing colon", b"Missing-Colon", b"malformed RESPMOD encapsulated HTTP header field line"),
+        ("empty name", b": value", b"invalid RESPMOD encapsulated HTTP header field name"),
+        ("whitespace before colon", b"Bad : value", b"invalid RESPMOD encapsulated HTTP header field name"),
+        ("tab before colon", b"Bad\t: value", b"invalid RESPMOD encapsulated HTTP header field name"),
+        ("invalid token", b"Bad/Name: value", b"invalid RESPMOD encapsulated HTTP header field name"),
+        ("non-ASCII name", b"Bad-\xff: value", b"invalid RESPMOD encapsulated HTTP header field name"),
+        ("obs-fold", b" folded: value", b"obsolete folded RESPMOD encapsulated HTTP header line"),
+        ("NUL value", b"X-Value: ok\x00bad", b"invalid RESPMOD encapsulated HTTP header field value"),
+        ("control value", b"X-Value: ok\x1fbad", b"invalid RESPMOD encapsulated HTTP header field value"),
+        ("DEL value", b"X-Value: ok\x7fbad", b"invalid RESPMOD encapsulated HTTP header field value"),
+    )
+
+    for name, field_line, expected_error in cases:
+        for path_name, allow_204, body in (
+            ("204", True, None),
+            ("replay", False, b"hello"),
+        ):
+            http_header = b"HTTP/1.1 200 OK\r\n" + field_line + b"\r\n\r\n"
+            response = _placeholder_raw_exchange(
+                runner,
+                _respmod_request_for_response(
+                    http_header,
+                    allow_204=allow_204,
+                    body=body,
+                ),
+            )
+
+            label = f"{name} {path_name}"
+            assert response.startswith(b"ICAP/1.0 200 OK\r\n"), label
+            assert b"HTTP/1.1 502 Bad Gateway" in response, label
+            assert expected_error in response, label
+            assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), label
+            assert b"5\r\nhello\r\n0\r\n\r\n" not in response, label
+
+
+def test_fail_open_placeholder_rejects_ambiguous_respmod_http_framing_before_replay() -> None:
+    runner = _load_runner()
+    long_content_length = b"9" * (runner.MAX_HTTP_CONTENT_LENGTH_DIGITS + 1)
+    cases = (
+        (
+            "conflicting duplicate content-length",
+            b"Content-Length: 5\r\nContent-Length: 6",
+            b"conflicting RESPMOD encapsulated HTTP Content-Length headers",
+        ),
+        (
+            "signed content-length",
+            b"Content-Length: +5",
+            b"invalid RESPMOD encapsulated HTTP Content-Length header",
+        ),
+        (
+            "unicode content-length",
+            b"Content-Length: \xff",
+            b"invalid RESPMOD encapsulated HTTP Content-Length header",
+        ),
+        (
+            "huge content-length",
+            b"Content-Length: " + long_content_length,
+            b"invalid RESPMOD encapsulated HTTP Content-Length header",
+        ),
+        (
+            "declared length mismatch",
+            b"Content-Length: 6",
+            b"RESPMOD encapsulated HTTP Content-Length mismatches decoded body",
+        ),
+        (
+            "content-length plus transfer-encoding",
+            b"Content-Length: 5\r\nTransfer-Encoding: chunked",
+            b"ambiguous RESPMOD encapsulated HTTP Content-Length with Transfer-Encoding",
+        ),
+        (
+            "duplicate transfer-encoding",
+            b"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked",
+            b"duplicate RESPMOD encapsulated HTTP Transfer-Encoding header",
+        ),
+        (
+            "transfer-encoding chunked not final",
+            b"Transfer-Encoding: chunked, gzip",
+            b"unsupported RESPMOD encapsulated HTTP Transfer-Encoding header",
+        ),
+        (
+            "duplicate chunked transfer-coding",
+            b"Transfer-Encoding: chunked, chunked",
+            b"duplicate RESPMOD encapsulated HTTP chunked transfer-coding",
+        ),
+        (
+            "non-chunked transfer-encoding",
+            b"Transfer-Encoding: gzip",
+            b"unsupported RESPMOD encapsulated HTTP Transfer-Encoding header",
+        ),
+    )
+
+    for name, fields, expected_error in cases:
+        http_header = b"HTTP/1.1 200 OK\r\n" + fields + b"\r\n\r\n"
+        response = _placeholder_raw_exchange(
+            runner,
+            _respmod_request_for_response(http_header, body=b"hello"),
+        )
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected_error in response, name
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
+
+
+def test_fail_open_placeholder_preserves_valid_respmod_http_fields_and_framing() -> None:
+    runner = _load_runner()
+    cases = (
+        (
+            "unknown fields with OWS and obs-text value",
+            (
+                b"HTTP/1.1 200 OK\r\n"
+                b"X_Token-Name!#$%&'*+-.^_`|~09AZaz: \t ok \t\r\n"
+                b"X-Obs-Text: caf\xe9\r\n"
+                b"Content-Length: 5\r\n\r\n"
+            ),
+            False,
+            b"hello",
+            (
+                b"X_Token-Name!#$%&'*+-.^_`|~09AZaz: \t ok \t",
+                b"X-Obs-Text: caf\xe9",
+            ),
+        ),
+        (
+            "duplicate matching content-length is normalized",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\ncontent-length: 5\r\n\r\n",
+            False,
+            b"hello",
+            (b"Content-Length: 5\r\n",),
+        ),
+        (
+            "valid chunked transfer-encoding is normalized to content-length",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+            False,
+            b"hello",
+            (b"Content-Length: 5\r\n",),
+        ),
+        (
+            "304 content-length metadata is preserved without body inference",
+            b"HTTP/1.1 304 Not Modified\r\nContent-Length: 12345\r\nETag: \"abc\"\r\n\r\n",
+            False,
+            None,
+            (b"HTTP/1.1 304 Not Modified", b"Content-Length: 12345", b"ETag: \"abc\""),
+        ),
+        (
+            "null-body 200 content-length may be HEAD without request metadata",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 12345\r\n\r\n",
+            False,
+            None,
+            (b"HTTP/1.1 200 OK", b"Content-Length: 12345"),
+        ),
+    )
+
+    for name, http_header, allow_204, body, expected_values in cases:
+        response = _placeholder_raw_exchange(
+            runner,
+            _respmod_request_for_response(
+                http_header,
+                allow_204=allow_204,
+                body=body,
+            ),
+        )
+
+        assert b"HTTP/1.1 502 Bad Gateway" not in response, name
+        for expected in expected_values:
+            assert expected in response, name
+        if body is not None:
+            assert b"5\r\nhello\r\n0\r\n\r\n" in response, name
+
+
 def test_fail_open_placeholder_rejects_duplicate_outer_encapsulated_header() -> None:
     response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
     request = (
