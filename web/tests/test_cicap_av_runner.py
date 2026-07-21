@@ -1324,6 +1324,174 @@ def test_fail_open_placeholder_replays_respmod_body_instead_of_late_204() -> Non
     assert elapsed < 1
 
 
+def _respmod_request_for_response(
+    http_header: bytes,
+    *,
+    allow_204: bool = False,
+    body: bytes | None = None,
+) -> bytes:
+    body_section = b""
+    terminal_name = "null-body"
+    if body is not None:
+        terminal_name = "res-body"
+        body_section = f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n0\r\n\r\n"
+    allow_header = b"Allow: 204\r\n" if allow_204 else b""
+    return (
+        b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        + allow_header
+        + f"Encapsulated: res-hdr=0, {terminal_name}={len(http_header)}".encode(
+            "ascii"
+        )
+        + b"\r\n\r\n"
+        + http_header
+        + body_section
+    )
+
+
+def test_fail_open_placeholder_rejects_malformed_respmod_status_line_before_204_or_replay() -> None:
+    runner = _load_runner()
+    cases = (
+        (
+            "missing status line",
+            b"X-Header: value\r\n\r\n",
+            True,
+            None,
+        ),
+        (
+            "request-line masquerade with body",
+            b"GET /download HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            False,
+            b"hello",
+        ),
+        (
+            "unsupported HTTP version",
+            b"HTTP/2 200 OK\r\nContent-Length: 5\r\n\r\n",
+            False,
+            b"hello",
+        ),
+        (
+            "non-three-digit status",
+            b"HTTP/1.1 20 OK\r\nContent-Length: 5\r\n\r\n",
+            False,
+            b"hello",
+        ),
+        (
+            "out-of-range status",
+            b"HTTP/1.1 700 No Such Status\r\nContent-Length: 5\r\n\r\n",
+            False,
+            b"hello",
+        ),
+        (
+            "extra spacing",
+            b"HTTP/1.1  200 OK\r\nContent-Length: 5\r\n\r\n",
+            False,
+            b"hello",
+        ),
+        (
+            "extra pre-reason spacing",
+            b"HTTP/1.1 200  OK\r\nContent-Length: 5\r\n\r\n",
+            False,
+            b"hello",
+        ),
+        (
+            "control reason byte",
+            b"HTTP/1.1 200 OK\x1f\r\nContent-Length: 5\r\n\r\n",
+            False,
+            b"hello",
+        ),
+        (
+            "non-ASCII reason byte",
+            b"HTTP/1.1 200 Caf\xe9\r\nContent-Length: 5\r\n\r\n",
+            False,
+            b"hello",
+        ),
+        (
+            "1xx with body",
+            b"HTTP/1.1 101 Switching Protocols\r\nContent-Length: 5\r\n\r\n",
+            False,
+            b"hello",
+        ),
+        (
+            "204 with body",
+            b"HTTP/1.1 204 No Content\r\nContent-Length: 5\r\n\r\n",
+            False,
+            b"hello",
+        ),
+        (
+            "304 with body",
+            b"HTTP/1.1 304 Not Modified\r\nContent-Length: 5\r\n\r\n",
+            False,
+            b"hello",
+        ),
+    )
+
+    for name, http_header, allow_204, body in cases:
+        response = _placeholder_raw_exchange(
+            runner,
+            _respmod_request_for_response(
+                http_header,
+                allow_204=allow_204,
+                body=body,
+            ),
+        )
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
+        assert b"GET /download HTTP/1.1" not in response, name
+
+
+def test_fail_open_placeholder_preserves_valid_respmod_status_line_matrix() -> None:
+    runner = _load_runner()
+    cases = (
+        (
+            "HTTP/1.0 body replay",
+            b"HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\n",
+            False,
+            b"hello",
+            b"HTTP/1.0 200 OK",
+        ),
+        (
+            "HTTP/1.1 body replay with reason phrase tokens",
+            b"HTTP/1.1 404 Not Found Here\r\nContent-Length: 5\r\n\r\n",
+            False,
+            b"hello",
+            b"HTTP/1.1 404 Not Found Here",
+        ),
+        (
+            "HTTP/1.1 null-body 304 may become 204 when allowed",
+            b"HTTP/1.1 304 Not Modified\r\nCache-Control: no-store\r\n\r\n",
+            True,
+            None,
+            b"ICAP/1.0 204 No Content",
+        ),
+        (
+            "HTTP/1.1 empty reason phrase",
+            b"HTTP/1.1 500 \r\nConnection: close\r\n\r\n",
+            False,
+            None,
+            b"HTTP/1.1 500 ",
+        ),
+    )
+
+    for name, http_header, allow_204, body, expected in cases:
+        response = _placeholder_raw_exchange(
+            runner,
+            _respmod_request_for_response(
+                http_header,
+                allow_204=allow_204,
+                body=body,
+            ),
+        )
+
+        assert b"HTTP/1.1 502 Bad Gateway" not in response, name
+        assert expected in response, name
+        if body:
+            assert b"5\r\nhello\r\n0\r\n\r\n" in response, name
+
+
 def test_fail_open_placeholder_rejects_duplicate_outer_encapsulated_header() -> None:
     response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
     request = (

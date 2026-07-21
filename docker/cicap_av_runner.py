@@ -645,6 +645,41 @@ def _http_header_lines(http_header: bytes) -> list[bytes]:
     return header_block.split(CRLF) if header_block else []
 
 
+def _validate_respmod_http_response_for_replay(
+    http_header: bytes, *, body_length: int
+) -> None:
+    lines = _http_header_lines(http_header)
+    raw_start_line = lines[0] if lines else b""
+    if raw_start_line.startswith((b"HTTP/1.0 ", b"HTTP/1.1 ")):
+        remainder = raw_start_line[len(b"HTTP/1.1 ") :]
+    else:
+        message = "invalid RESPMOD encapsulated HTTP response start line"
+        raise IcapProtocolError(message)
+
+    if len(remainder) < 4 or remainder[3:4] != b" ":
+        message = "malformed RESPMOD encapsulated HTTP response start line"
+        raise IcapProtocolError(message)
+    raw_status = remainder[:3]
+    if any(ch < 0x30 or ch > 0x39 for ch in raw_status):
+        message = "invalid RESPMOD encapsulated HTTP response status"
+        raise IcapProtocolError(message)
+    status = int(raw_status, 10)
+    if status < 100 or status > 599:
+        message = "invalid RESPMOD encapsulated HTTP response status"
+        raise IcapProtocolError(message)
+
+    reason = remainder[4:]
+    if (reason[:1] and reason[0] in _CHUNK_OWS) or any(
+        ch < 0x20 or ch >= 0x7F for ch in reason
+    ):
+        message = "invalid RESPMOD encapsulated HTTP response reason phrase"
+        raise IcapProtocolError(message)
+
+    if body_length and (100 <= status < 200 or status in {204, 304}):
+        message = "RESPMOD encapsulated HTTP response status forbids a body"
+        raise IcapProtocolError(message)
+
+
 def _http_header_for_body_replay(http_header: bytes, body_length: int) -> bytes:
     lines = _http_header_lines(http_header)
     if not lines or not lines[0].startswith(b"HTTP/"):
@@ -666,6 +701,7 @@ def _encode_icap_body_chunk(body: bytes) -> bytes:
 
 
 def _clean_respmod_response(http_header: bytes, body: bytes, istag: str) -> bytes:
+    _validate_respmod_http_response_for_replay(http_header, body_length=len(body))
     http_header = _http_header_for_body_replay(http_header, len(body))
     return _icap_response(
         "200 OK",
@@ -676,6 +712,7 @@ def _clean_respmod_response(http_header: bytes, body: bytes, istag: str) -> byte
 def _clean_respmod_no_body_response(
     *, allow_204: bool, http_header: bytes, istag: str
 ) -> bytes:
+    _validate_respmod_http_response_for_replay(http_header, body_length=0)
     if allow_204:
         return _icap_response("204 No Content", {"ISTag": istag})
     if http_header and not http_header.endswith(HEADER_END):
