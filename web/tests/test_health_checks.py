@@ -615,6 +615,29 @@ def test_check_http_proxy_forwarding_refuses_self_proxy_loop(monkeypatch) -> Non
     assert "points back at the explicit proxy listener" in result["detail"]
 
 
+def test_check_http_proxy_forwarding_refuses_request_line_injection(monkeypatch) -> None:
+    health_checks = _health_checks_module()
+
+    def fail_connect(*_args, **_kwargs):
+        msg = "unsafe forwarding probe target should not open a socket"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(health_checks.socket, "create_connection", fail_connect)
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url=(
+            "http://127.0.0.1:18080/health HTTP/1.1\r\n"
+            "X-Injected: yes\r\n"
+            "GET http://127.0.0.1:18080/health"
+        ),
+        timeout=0.1,
+    )
+
+    assert result["ok"] is False
+    assert "unsafe forwarding probe target URL" in result["detail"]
+
+
 def test_proxy_health_icap_uses_protocol_probe_for_local_targets(monkeypatch) -> None:
     proxy_health = _proxy_health_module()
 

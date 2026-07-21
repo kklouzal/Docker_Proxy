@@ -7,7 +7,7 @@ import re
 import socket
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from services.errors import public_error_message
 
@@ -390,6 +390,28 @@ def _forwarding_canary_probe_token(target_url: str) -> str:
     return (parse_qs(parsed.query, keep_blank_values=True).get("probe") or [""])[-1]
 
 
+def _safe_forwarding_probe_url(target_url: str) -> tuple[str, str]:
+    raw = str(target_url or "").strip()
+    if not raw:
+        return "", "unsafe forwarding probe target URL: empty"
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        return "", "unsafe forwarding probe target URL: whitespace/control character"
+    if "\\" in raw:
+        return "", "unsafe forwarding probe target URL: backslash"
+    try:
+        parsed = urlsplit(raw)
+        _port = parsed.port
+    except Exception:
+        return "", "unsafe forwarding probe target URL: malformed"
+    if parsed.scheme.lower() != "http" or not parsed.netloc or not parsed.hostname:
+        return "", "unsafe forwarding probe target URL: expected absolute http URL"
+    if parsed.username is not None or parsed.password is not None:
+        return "", "unsafe forwarding probe target URL: embedded credentials"
+    if parsed.fragment:
+        return "", "unsafe forwarding probe target URL: fragment"
+    return urlunsplit(("http", parsed.netloc, parsed.path or "/", parsed.query, "")), ""
+
+
 def check_icap_service(
     host: str,
     port: int,
@@ -445,7 +467,14 @@ def check_http_proxy_forwarding(
     ordinary GET traffic without relying on the public PAC listener that serves
     clients.
     """
-    request_url = _append_forwarding_canary_probe(target_url)
+    safe_target_url, unsafe_detail = _safe_forwarding_probe_url(target_url)
+    if unsafe_detail:
+        return {
+            "ok": False,
+            "detail": unsafe_detail,
+            "probe_url": str(target_url or ""),
+        }
+    request_url = _append_forwarding_canary_probe(safe_target_url)
     if _target_points_at_proxy_listener(
         target_url=request_url,
         proxy_host=proxy_host,
