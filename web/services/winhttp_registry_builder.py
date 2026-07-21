@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from dataclasses import dataclass
@@ -190,6 +191,18 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
     return value, warning
 
 
+def _format_proxy_mapping_host(host: str) -> str:
+    value = (host or "").strip()
+    candidate = value[1:-1] if value.startswith("[") and value.endswith("]") else value
+    try:
+        parsed = ipaddress.ip_address(candidate)
+    except ValueError:
+        return host
+    if parsed.version == 6:
+        return f"[{parsed.compressed}]"
+    return host
+
+
 def _normalize_port(port: object) -> int:
     try:
         parsed = int(str(port or "").strip())
@@ -257,7 +270,8 @@ def build_proxy_string(
         warnings.append(
             "Microsoft's advproxy documentation includes a socks example but also states SOCKS5 is not supported; verify target Windows behavior before deploying socks mappings.",
         )
-    return ";".join(f"{scheme}={host}:{port}" for scheme in schemes), tuple(warnings)
+    mapping_host = _format_proxy_mapping_host(host)
+    return ";".join(f"{scheme}={mapping_host}:{port}" for scheme in schemes), tuple(warnings)
 
 
 def generate_basic_winhttp_binary(proxy_string: str, bypass_string: str) -> str:

@@ -79,6 +79,27 @@ def test_bare_proxy_host_strips_inline_port_before_mapping_generation() -> None:
     assert any("inline port" in warning for warning in result.warnings)
 
 
+@pytest.mark.parametrize(
+    "proxy_host",
+    ["2001:db8::10", "[2001:db8::10]", "http://[2001:db8::10]:8080/proxy.pac"],
+)
+def test_generated_proxy_outputs_bracket_ipv6_literals(proxy_host: str) -> None:
+    result = build_contract_output(
+        {
+            "proxy_host": proxy_host,
+            "proxy_port": 3128,
+            "destination_schemes": ["http", "https"],
+        },
+    )
+
+    expected = "http=[2001:db8::10]:3128;https=[2001:db8::10]:3128"
+    assert result.proxy_string == expected
+    assert result.decoded is not None
+    assert result.decoded.proxy_string == expected
+    assert json.loads(result.advproxy_json)["Proxy"] == expected
+    assert f'proxy-server="{expected}"' in result.legacy_set_proxy_command
+
+
 def test_bypass_list_normalizes_lines_semicolons_dedupes_and_local() -> None:
     assert (
         normalize_bypass_list(
