@@ -1310,6 +1310,283 @@ def test_fail_open_placeholder_rejects_malformed_encapsulated_item_before_204() 
     assert b"hello" not in response
 
 
+def _reqmod_request_for_request(
+    http_header: bytes,
+    *,
+    body: bytes | None = None,
+) -> bytes:
+    body_section = b""
+    terminal_name = "null-body"
+    if body is not None:
+        terminal_name = "req-body"
+        body_section = f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n0\r\n\r\n"
+    return (
+        b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        + f"Encapsulated: req-hdr=0, {terminal_name}={len(http_header)}".encode(
+            "ascii"
+        )
+        + b"\r\n\r\n"
+        + http_header
+        + body_section
+    )
+
+
+def test_fail_open_placeholder_rejects_malformed_reqmod_http_start_line_before_204() -> None:
+    runner = _load_runner()
+    cases = (
+        (
+            "missing request line",
+            b"Host: example.test\r\n\r\n",
+            b"malformed REQMOD encapsulated HTTP request start line",
+        ),
+        (
+            "response-line masquerade",
+            b"HTTP/1.1 200 OK\r\nHost: example.test\r\n\r\n",
+            b"invalid REQMOD encapsulated HTTP request method token",
+        ),
+        (
+            "invalid method token",
+            b"GE/T / HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"invalid REQMOD encapsulated HTTP request method token",
+        ),
+        (
+            "extra spacing",
+            b"GET  / HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"malformed REQMOD encapsulated HTTP request start line",
+        ),
+        (
+            "tab separator",
+            b"GET\t/ HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"malformed REQMOD encapsulated HTTP request start line",
+        ),
+        (
+            "unsupported version",
+            b"GET / HTTP/2\r\nHost: example.test\r\n\r\n",
+            b"unsupported REQMOD encapsulated HTTP request version",
+        ),
+        (
+            "malformed version",
+            b"GET / ICAP/1.0\r\nHost: example.test\r\n\r\n",
+            b"unsupported REQMOD encapsulated HTTP request version",
+        ),
+        (
+            "empty target",
+            b"GET  HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"invalid REQMOD encapsulated HTTP request target",
+        ),
+        (
+            "control target byte",
+            b"GET /bad\x1f HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"invalid REQMOD encapsulated HTTP request target",
+        ),
+    )
+
+    for name, http_header, expected_error in cases:
+        response = _placeholder_raw_exchange(
+            runner, _reqmod_request_for_request(http_header)
+        )
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected_error in response, name
+        assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+
+
+def test_fail_open_placeholder_rejects_malformed_reqmod_http_fields_before_204() -> None:
+    runner = _load_runner()
+    cases = (
+        (
+            "missing colon",
+            b"Missing-Colon",
+            b"malformed REQMOD encapsulated HTTP header field line",
+        ),
+        ("empty name", b": value", b"invalid REQMOD encapsulated HTTP header field name"),
+        (
+            "whitespace before colon",
+            b"Bad : value",
+            b"invalid REQMOD encapsulated HTTP header field name",
+        ),
+        (
+            "tab before colon",
+            b"Bad\t: value",
+            b"invalid REQMOD encapsulated HTTP header field name",
+        ),
+        (
+            "invalid token",
+            b"Bad/Name: value",
+            b"invalid REQMOD encapsulated HTTP header field name",
+        ),
+        (
+            "non-ASCII name",
+            b"Bad-\xff: value",
+            b"invalid REQMOD encapsulated HTTP header field name",
+        ),
+        (
+            "obs-fold",
+            b" folded: value",
+            b"obsolete folded REQMOD encapsulated HTTP header line",
+        ),
+        (
+            "NUL value",
+            b"X-Value: ok\x00bad",
+            b"invalid REQMOD encapsulated HTTP header field value",
+        ),
+        (
+            "control value",
+            b"X-Value: ok\x1fbad",
+            b"invalid REQMOD encapsulated HTTP header field value",
+        ),
+        (
+            "DEL value",
+            b"X-Value: ok\x7fbad",
+            b"invalid REQMOD encapsulated HTTP header field value",
+        ),
+    )
+
+    for name, field_line, expected_error in cases:
+        http_header = b"GET / HTTP/1.1\r\n" + field_line + b"\r\n\r\n"
+        response = _placeholder_raw_exchange(
+            runner, _reqmod_request_for_request(http_header)
+        )
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected_error in response, name
+        assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+
+
+def test_fail_open_placeholder_rejects_ambiguous_reqmod_http_framing_before_204() -> None:
+    runner = _load_runner()
+    long_content_length = b"9" * (runner.MAX_HTTP_CONTENT_LENGTH_DIGITS + 1)
+    cases = (
+        (
+            "conflicting duplicate content-length",
+            b"Content-Length: 5\r\nContent-Length: 6",
+            b"hello",
+            b"conflicting REQMOD encapsulated HTTP Content-Length headers",
+        ),
+        (
+            "signed content-length",
+            b"Content-Length: +5",
+            b"hello",
+            b"invalid REQMOD encapsulated HTTP Content-Length header",
+        ),
+        (
+            "unicode content-length",
+            b"Content-Length: \xff",
+            b"hello",
+            b"invalid REQMOD encapsulated HTTP Content-Length header",
+        ),
+        (
+            "huge content-length",
+            b"Content-Length: " + long_content_length,
+            b"hello",
+            b"invalid REQMOD encapsulated HTTP Content-Length header",
+        ),
+        (
+            "declared length mismatch",
+            b"Content-Length: 6",
+            b"hello",
+            b"REQMOD encapsulated HTTP Content-Length mismatches decoded body",
+        ),
+        (
+            "content-length plus transfer-encoding",
+            b"Content-Length: 5\r\nTransfer-Encoding: chunked",
+            b"hello",
+            b"ambiguous REQMOD encapsulated HTTP Content-Length with Transfer-Encoding",
+        ),
+        (
+            "duplicate transfer-encoding",
+            b"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked",
+            b"hello",
+            b"duplicate REQMOD encapsulated HTTP Transfer-Encoding header",
+        ),
+        (
+            "transfer-encoding chunked not final",
+            b"Transfer-Encoding: chunked, gzip",
+            b"hello",
+            b"unsupported REQMOD encapsulated HTTP Transfer-Encoding header",
+        ),
+        (
+            "duplicate chunked transfer-coding",
+            b"Transfer-Encoding: chunked, chunked",
+            b"hello",
+            b"duplicate REQMOD encapsulated HTTP chunked transfer-coding",
+        ),
+        (
+            "non-chunked transfer-encoding",
+            b"Transfer-Encoding: gzip",
+            b"hello",
+            b"unsupported REQMOD encapsulated HTTP Transfer-Encoding header",
+        ),
+        (
+            "null-body nonzero content-length",
+            b"Content-Length: 5",
+            None,
+            b"REQMOD encapsulated HTTP Content-Length mismatches decoded body",
+        ),
+    )
+
+    for name, fields, body, expected_error in cases:
+        http_header = b"POST /upload HTTP/1.1\r\n" + fields + b"\r\n\r\n"
+        response = _placeholder_raw_exchange(
+            runner, _reqmod_request_for_request(http_header, body=body)
+        )
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected_error in response, name
+        assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
+
+
+def test_fail_open_placeholder_preserves_valid_reqmod_http_metadata_before_204() -> None:
+    runner = _load_runner()
+    cases = (
+        (
+            "HTTP/1.0 unknown method absolute-form with obs-text field",
+            (
+                b"CUSTOM http://example.test/path?q=1 HTTP/1.0\r\n"
+                b"X_Token-Name!#$%&'*+-.^_`|~09AZaz: \t ok \t\r\n"
+                b"X-Obs-Text: caf\xe9\r\n"
+                b"Content-Length: 5\r\n"
+                b"content-length: 5\r\n\r\n"
+            ),
+            b"hello",
+        ),
+        (
+            "HTTP/1.1 origin-form no-body request with OWS and CL zero",
+            b"GET /search?q=a%20b HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            None,
+        ),
+        (
+            "HTTP/1.1 asterisk target no-body request",
+            b"OPTIONS * HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            None,
+        ),
+        (
+            "HTTP/1.1 authority-form no-body request",
+            b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            None,
+        ),
+        (
+            "HTTP/1.1 chunked transfer metadata with decoded body",
+            b"POST /upload HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n",
+            b"hello",
+        ),
+    )
+
+    for name, http_header, body in cases:
+        response = _placeholder_raw_exchange(
+            runner, _reqmod_request_for_request(http_header, body=body)
+        )
+
+        assert response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" not in response, name
+
+
 def test_fail_open_placeholder_replays_respmod_body_instead_of_late_204() -> None:
     runner = _load_runner()
 
@@ -1813,12 +2090,20 @@ def _placeholder_preview_exchange(
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         port = server.server_address[1]
-        http_header = (
-            b"HTTP/1.1 200 OK\r\n"
-            b"Content-Type: application/octet-stream\r\n"
-            b"Transfer-Encoding: chunked\r\n"
-            b"\r\n"
-        )
+        if method == "REQMOD":
+            http_header = (
+                b"POST /upload HTTP/1.1\r\n"
+                b"Host: example.test\r\n"
+                b"Transfer-Encoding: chunked\r\n"
+                b"\r\n"
+            )
+        else:
+            http_header = (
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: application/octet-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n"
+                b"\r\n"
+            )
         header_section = "req-hdr" if method == "REQMOD" else "res-hdr"
         encapsulated = "req-body" if method == "REQMOD" else "res-body"
         request_prefix = (
