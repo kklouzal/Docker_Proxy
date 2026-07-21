@@ -7,6 +7,9 @@ import pathlib
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from cryptography import x509
 
 from services.certificate_core import (
     CertificateBundle,
@@ -49,6 +52,41 @@ class PfxInstallError(Exception):
 
 def _normalize_pubkey(text: str) -> str:
     return "".join([line.strip() for line in text.splitlines() if line.strip()])
+
+
+def _validate_ssl_bump_ca_certificate(cert_pem: str) -> None:
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem.encode("utf-8"))
+    except Exception as exc:
+        msg = "PFX certificate is not valid PEM material."
+        raise PfxInstallError(msg) from exc
+
+    now = datetime.now(UTC)
+    if now < cert.not_valid_before_utc:
+        msg = "PFX certificate is not valid yet."
+        raise PfxInstallError(msg)
+    if now >= cert.not_valid_after_utc:
+        msg = "PFX certificate is expired."
+        raise PfxInstallError(msg)
+
+    try:
+        basic_constraints = cert.extensions.get_extension_for_class(
+            x509.BasicConstraints,
+        ).value
+    except x509.ExtensionNotFound as exc:
+        msg = "PFX certificate must include a CA basic constraints extension."
+        raise PfxInstallError(msg) from exc
+    if not basic_constraints.ca:
+        msg = "PFX certificate is not a CA certificate."
+        raise PfxInstallError(msg)
+
+    try:
+        key_usage = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        return
+    if not key_usage.key_cert_sign:
+        msg = "PFX CA certificate key usage must allow certificate signing."
+        raise PfxInstallError(msg)
 
 
 def _passin_arg(password: str) -> str:
@@ -223,6 +261,8 @@ def parse_pfx_bundle(
             if _normalize_pubkey(cert_pub) != _normalize_pubkey(key_pub):
                 msg = "Certificate and private key do not match."
                 raise PfxInstallError(msg)
+
+            _validate_ssl_bump_ca_certificate(leaf_cert)
 
             chain_certs = _all_pem_blocks(chain_text, "CERTIFICATE")
             bundle = build_certificate_bundle(
