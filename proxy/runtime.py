@@ -2931,23 +2931,42 @@ class ProxyRuntime:
             )
         except Exception as exc:
             restore_detail = ""
+            current_result_sha = current_sha
             if material_snapshot:
-                _restore_ok, restore_detail = self._restore_certificate_material(
+                restore_ok, restore_detail = self._restore_certificate_material(
                     material_snapshot,
                 )
+                current_result_sha = self._current_certificate_bundle_sha() or (
+                    current_sha if restore_ok else ""
+                )
+            elif not current_result_sha:
+                current_result_sha = self._current_certificate_bundle_sha()
             detail = public_error_message(
                 exc,
                 default="Failed to materialize certificate bundle.",
             )
-            if restore_detail:
-                detail = f"{detail}\n{restore_detail}"
+            sha_detail = (
+                "Current certificate bundle after failed materialization/rollback: "
+                f"{current_result_sha}. Desired failed revision bundle: {revision.bundle_sha256}."
+                if current_result_sha
+                else f"Desired failed revision bundle: {revision.bundle_sha256}."
+            )
+            detail = "\n".join(
+                part
+                for part in (
+                    detail,
+                    restore_detail,
+                    sha_detail,
+                )
+                if str(part or "").strip()
+            )
             applied = self.certificate_bundles.record_apply_result(
                 self.proxy_id,
                 revision.revision_id,
                 ok=False,
                 detail=detail,
                 applied_by="proxy",
-                bundle_sha256=revision.bundle_sha256,
+                bundle_sha256=current_result_sha,
             )
             return {
                 "ok": False,
@@ -2956,7 +2975,9 @@ class ProxyRuntime:
                 "application_id": applied.application_id,
                 "changed": False,
                 "detail": detail,
-                "certificate_bundle_sha256": revision.bundle_sha256,
+                "certificate_bundle_sha256": current_result_sha,
+                "desired_certificate_bundle_sha256": revision.bundle_sha256,
+                "current_certificate_sha": current_result_sha,
             }
 
         ok_restart, restart_detail = self._reinitialize_ssl_db_and_restart()
