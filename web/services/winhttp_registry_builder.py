@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -165,7 +166,12 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
         raise WinHttpBuilderError(msg)
     if "://" in value:
         warning = "Normal proxy host should not include http:// or https://; destination scheme mappings are generated separately."
-        value = value.split("://", 1)[1].split("/", 1)[0]
+        try:
+            parsed = urlsplit(value)
+            value = parsed.hostname or ""
+        except ValueError as exc:
+            msg = "Proxy host/IP is invalid."
+            raise WinHttpBuilderError(msg) from exc
     if "/" in value or any(ch.isspace() for ch in value):
         msg = "Proxy host/IP must not contain spaces or path separators."
         raise WinHttpBuilderError(msg)
