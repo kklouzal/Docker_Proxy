@@ -410,13 +410,27 @@ def test_open_download_url_uses_get_without_body_after_303_redirect(
             ),
         ]
 
-    seen_requests: list[tuple[str, str, bytes | None]] = []
+    seen_requests: list[tuple[str, str, bytes | None, str | None]] = []
     redirect_headers = Message()
     redirect_headers["Location"] = "/mirror/feed.csv"
 
+    original_request = download_safety.urllib.request.Request
+
+    def recording_request(*args, **kwargs):
+        req = original_request(*args, **kwargs)
+        req._explicit_method = kwargs.get("method")
+        return req
+
     class _Opener:
         def open(self, req, **_kwargs):
-            seen_requests.append((req.full_url, req.get_method(), req.data))
+            seen_requests.append(
+                (
+                    req.full_url,
+                    req.get_method(),
+                    req.data,
+                    getattr(req, "_explicit_method", None),
+                )
+            )
             if len(seen_requests) == 1:
                 raise download_safety.urllib.error.HTTPError(
                     req.full_url,
@@ -429,6 +443,7 @@ def test_open_download_url_uses_get_without_body_after_303_redirect(
             raise RuntimeError(msg)
 
     monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(download_safety.urllib.request, "Request", recording_request)
     monkeypatch.setattr(
         download_safety.urllib.request,
         "build_opener",
@@ -443,8 +458,8 @@ def test_open_download_url_uses_get_without_body_after_303_redirect(
         )
 
     assert seen_requests == [
-        ("https://public.example/feed.csv", "GET", None),
-        ("https://public.example/mirror/feed.csv", "GET", None),
+        ("https://public.example/feed.csv", "GET", None, "GET"),
+        ("https://public.example/mirror/feed.csv", "GET", None, "GET"),
     ]
 
 
