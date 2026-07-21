@@ -193,6 +193,13 @@ def public_pac(_pac_path: str = "") -> Any:
     return response.make_conditional(request)
 
 
+@app.route("/policy-request", methods=["GET"])
+def public_policy_request_get() -> Any:
+    if not _is_public_listener_request():
+        abort(404)
+    abort(405)
+
+
 @app.route("/policy-request", methods=["POST"])
 def public_policy_request() -> Any:
     if not _is_public_listener_request():

@@ -202,6 +202,25 @@ def test_proxy_public_policy_request_route_records(monkeypatch) -> None:
     assert "Request submitted" in res.get_data(as_text=True)
 
 
+def test_proxy_public_policy_request_get_does_not_fall_through_to_pac(
+    monkeypatch,
+) -> None:
+    ensure_proxy_runtime_import_path()
+    monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    import proxy.app as proxy_app
+
+    proxy_app = importlib.reload(proxy_app)
+
+    res = proxy_app.app.test_client().get(
+        "/policy-request",
+        base_url="http://localhost:80",
+    )
+
+    assert res.status_code == 405
+    assert "FindProxyForURL" not in res.get_data(as_text=True)
+
+
 def test_admin_policy_requests_route_and_link_smoke(monkeypatch, tmp_path) -> None:
     from services.policy_requests import PolicyException, PolicyRequest
 
