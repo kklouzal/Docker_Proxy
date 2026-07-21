@@ -219,6 +219,51 @@ def test_open_download_url_filters_unsafe_headers_on_first_request(
     }
 
 
+def test_open_download_url_ignores_ambient_http_proxy_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        assert host == "public.example"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                ("93.184.216.34", 0),
+            ),
+        ]
+
+    seen_connections: list[tuple[str, int]] = []
+
+    def fake_create_connection(address, *_args, **_kwargs):
+        seen_connections.append(address)
+        msg = "stop before network"
+        raise RuntimeError(msg)
+
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9999")
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        download_safety.socket,
+        "create_connection",
+        fake_create_connection,
+    )
+
+    with pytest.raises(RuntimeError, match="stop before network"):
+        download_safety.open_download_url(
+            "http://public.example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+        )
+
+    assert seen_connections == [("public.example", 80)]
+
+
 def test_open_download_url_drops_malformed_conditional_headers_before_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

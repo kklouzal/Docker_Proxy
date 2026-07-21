@@ -144,7 +144,10 @@ def open_download_url(
     scheme_error: str = "Only http/https URLs are supported.",
 ):
     current = url
-    opener = urllib.request.build_opener(_NoRedirectHandler)
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _NoRedirectHandler,
+    )
     base_headers = {"User-Agent": user_agent}
     safe_headers = _safe_extra_download_headers(headers)
     request_headers = {**safe_headers, **base_headers}
