@@ -7,7 +7,7 @@ from typing import NoReturn
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 
 
@@ -72,7 +72,7 @@ def _new_ca_material(
     *,
     common_name: str,
     issuer_cert: x509.Certificate | None = None,
-    issuer_key: rsa.RSAPrivateKey | None = None,
+    issuer_key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey | None = None,
     not_before_delta: timedelta = timedelta(minutes=-5),
     not_after_delta: timedelta = timedelta(days=30),
 ) -> tuple[str, str, x509.Certificate, rsa.RSAPrivateKey]:
@@ -625,3 +625,53 @@ def test_parse_pfx_can_select_ca_private_key_from_cacerts_output() -> None:
     assert r.bundle.cert_pem == ca_cert_pem
     assert r.bundle.key_pem == ca_key_pem
     assert decoy_cert_pem not in r.bundle.chain_pem
+
+
+def test_parse_pfx_accepts_ec_issuer_signature() -> None:
+    m = _import_cert_manager_module()
+    root_key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "Docker Proxy EC Root")]
+    )
+    now = datetime.now(UTC)
+    root_cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(root_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(root_key, hashes.SHA256())
+    )
+    root_pem = root_cert.public_bytes(serialization.Encoding.PEM).decode()
+    cert_pem, key_pem, _selected_cert, _selected_key = _new_ca_material(
+        common_name="Docker Proxy Uploaded SSL Bump CA",
+        issuer_cert=root_cert,
+        issuer_key=root_key,
+    )
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(cert_pem, key_pem, chain_pem=root_pem),
+    )
+
+    assert r.ok is True
+    assert r.bundle is not None
+    assert r.bundle.chain_pem == root_pem

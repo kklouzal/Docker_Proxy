@@ -171,7 +171,7 @@ def _verify_certificate_signature(
         return False
     public_key = issuer.public_key()
     try:
-        if isinstance(public_key, rsa.RSAPublicKey | ec.EllipticCurvePublicKey):
+        if isinstance(public_key, rsa.RSAPublicKey):
             parameters = child.signature_algorithm_parameters
             if parameters is None:
                 return False
@@ -180,6 +180,15 @@ def _verify_certificate_signature(
                 child.tbs_certificate_bytes,
                 parameters,
                 child.signature_hash_algorithm,
+            )
+        elif isinstance(public_key, ec.EllipticCurvePublicKey):
+            parameters = child.signature_algorithm_parameters
+            if parameters is None:
+                return False
+            public_key.verify(
+                child.signature,
+                child.tbs_certificate_bytes,
+                parameters,
             )
         elif isinstance(public_key, dsa.DSAPublicKey):
             hash_algorithm = child.signature_hash_algorithm
