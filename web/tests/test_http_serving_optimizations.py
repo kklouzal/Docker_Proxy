@@ -162,6 +162,20 @@ def test_admin_html_responses_are_gzip_compressed_when_requested(
     assert b"Squid" in gzip.decompress(response.get_data())
 
 
+def test_admin_html_responses_respect_gzip_quality_zero(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/squid/config", headers={"Accept-Encoding": "gzip;q=0"})
+
+    assert response.status_code == 200
+    assert response.headers.get("Content-Encoding") is None
+    assert b"Squid" in response.get_data()
+
+
 def test_observability_route_reuses_short_ttl_cache(monkeypatch, tmp_path) -> None:
     queries = CountingObservabilityQueries()
     loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)

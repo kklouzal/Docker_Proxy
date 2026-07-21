@@ -35,9 +35,21 @@ def _bool_env(value: str | None, *, default: bool) -> bool:
 
 def _client_accepts_gzip() -> bool:
     header = request.headers.get("Accept-Encoding", "")
-    return "gzip" in {
-        part.split(";", 1)[0].strip().lower() for part in header.split(",")
-    }
+    for part in header.split(","):
+        bits = [bit.strip().lower() for bit in part.split(";")]
+        if not bits or bits[0] != "gzip":
+            continue
+        quality = 1.0
+        for parameter in bits[1:]:
+            if not parameter.startswith("q="):
+                continue
+            try:
+                quality = float(parameter.split("=", 1)[1])
+            except ValueError:
+                quality = 0.0
+            break
+        return quality > 0.0
+    return False
 
 
 def _compressed_body_candidate(response: Any, *, min_size: int) -> bytes | None:
