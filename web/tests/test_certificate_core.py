@@ -188,6 +188,41 @@ def test_admin_ui_leaf_generation_uses_separate_server_cert_with_sans(tmp_path) 
     assert "192.0.2.10" in [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
 
 
+def test_validate_tls_material_paths_rejects_expired_certificate(tmp_path) -> None:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "Expired Admin UI Leaf")]
+    )
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=3))
+        .not_valid_after(now - timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    certfile = tmp_path / "expired.crt"
+    keyfile = tmp_path / "expired.key"
+    certfile.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    keyfile.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ),
+    )
+
+    validation = certificate_core.validate_tls_material_paths(str(certfile), str(keyfile))
+
+    assert validation.ready is False
+    assert validation.cert_status.valid is True
+    assert validation.key_status.valid is True
+    assert validation.detail == "certificate is expired."
+
+
 def test_admin_ui_san_normalization_handles_forwarded_hosts_and_ipv6() -> None:
     sans = certificate_core.normalize_admin_ui_certificate_sans(
         [

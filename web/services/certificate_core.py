@@ -264,6 +264,15 @@ def _public_key_bytes(key: object) -> bytes:
     )
 
 
+def _certificate_validity_detail(cert: x509.Certificate) -> str:
+    now = datetime.now(UTC)
+    if now < cert.not_valid_before_utc:
+        return "certificate is not valid yet."
+    if now >= cert.not_valid_after_utc:
+        return "certificate is expired."
+    return ""
+
+
 def validate_tls_material_paths(certfile: str, keyfile: str) -> TlsMaterialValidation:
     cert_status, cert = _path_status(
         certfile,
@@ -284,6 +293,14 @@ def validate_tls_material_paths(certfile: str, keyfile: str) -> TlsMaterialValid
             key_status=key_status,
             ready=False,
             detail=detail,
+        )
+    validity_detail = _certificate_validity_detail(cert)
+    if validity_detail:
+        return TlsMaterialValidation(
+            cert_status=cert_status,
+            key_status=key_status,
+            ready=False,
+            detail=validity_detail,
         )
     try:
         if _public_key_bytes(cert) != _public_key_bytes(key):
