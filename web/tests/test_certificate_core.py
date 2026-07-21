@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -23,6 +25,7 @@ from services import certificate_core  # type: ignore  # noqa: E402
 CERT_A = "-----BEGIN CERTIFICATE-----\nCERTA\n-----END CERTIFICATE-----\n"
 CERT_B = "-----BEGIN CERTIFICATE-----\nCERTB\n-----END CERTIFICATE-----\n"
 KEY_A = "-----BEGIN PRIVATE KEY-----\nKEYA\n-----END PRIVATE KEY-----\n"
+KEY_B = "-----BEGIN PRIVATE KEY-----\nKEYB\n-----END PRIVATE KEY-----\n"
 
 
 def _valid_ca_bundle() -> certificate_core.CertificateBundle:
@@ -93,6 +96,56 @@ def test_build_certificate_bundle_hashes_content_and_metadata(monkeypatch) -> No
 
     with pytest.raises(ValueError):
         certificate_core.build_certificate_bundle(CERT_A, "")
+
+
+def test_materialize_certificate_bundle_serializes_cert_key_replacement(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        certificate_core, "_extract_certificate_metadata", lambda _cert: ("", "", "")
+    )
+    first = certificate_core.build_certificate_bundle(CERT_A, KEY_A)
+    second = certificate_core.build_certificate_bundle(CERT_B, KEY_B)
+    writes_started = threading.Event()
+    first_replace_can_continue = threading.Event()
+    observed_cert_after_second_cert_replace = ""
+    original_replace = Path.replace
+
+    def slow_first_cert_replace(self: Path, target: object) -> Path:
+        if Path(target).name == "ca.crt" and not writes_started.is_set():
+            result = original_replace(self, target)
+            writes_started.set()
+            assert first_replace_can_continue.wait(timeout=2)
+            return result
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", slow_first_cert_replace)
+
+    first_thread = threading.Thread(
+        target=certificate_core.materialize_certificate_bundle,
+        args=(tmp_path, first),
+    )
+    first_thread.start()
+    assert writes_started.wait(timeout=2)
+
+    second_thread = threading.Thread(
+        target=certificate_core.materialize_certificate_bundle,
+        args=(tmp_path, second),
+    )
+    second_thread.start()
+    time.sleep(0.05)
+    observed_cert_after_second_cert_replace = (tmp_path / "ca.crt").read_text(
+        encoding="utf-8"
+    )
+    first_replace_can_continue.set()
+    first_thread.join(timeout=2)
+    second_thread.join(timeout=2)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert observed_cert_after_second_cert_replace == CERT_A
+    assert (tmp_path / "ca.crt").read_text(encoding="utf-8") == CERT_B
+    assert (tmp_path / "ca.key").read_text(encoding="utf-8") == KEY_B
 
 
 def test_materialize_and_load_certificate_bundle_round_trip_and_manage_pfx_file(

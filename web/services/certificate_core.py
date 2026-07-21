@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import ipaddress
 import logging
@@ -146,6 +147,19 @@ def _run_checked(args: list[str], *, timeout: int = 30) -> subprocess.CompletedP
 
 def _sha256_text(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8", errors="replace")).hexdigest()
+
+
+@contextlib.contextmanager
+def _certificate_material_install_lock(ca_dir: str):
+    lock_path = pathlib.Path(ca_dir) / ".certificate-materialize.lock"
+    with lock_path.open("a+b") as lock_file:
+        with contextlib.suppress(OSError):
+            lock_path.chmod(0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _path_status(
@@ -505,11 +519,12 @@ def materialize_admin_ui_server_certificate(
                 ),
             )
             tmp_key_path = key_tmp.name
-        pathlib.Path(tmp_cert_path).replace(certfile)
-        tmp_cert_path = ""
-        pathlib.Path(tmp_key_path).replace(keyfile)
-        tmp_key_path = ""
-        _set_best_effort_permissions(certfile, keyfile)
+        with _certificate_material_install_lock(ca_dir):
+            pathlib.Path(tmp_cert_path).replace(certfile)
+            tmp_cert_path = ""
+            pathlib.Path(tmp_key_path).replace(keyfile)
+            tmp_key_path = ""
+            _set_best_effort_permissions(certfile, keyfile)
     finally:
         for path in (tmp_cert_path, tmp_key_path):
             if path:
@@ -666,17 +681,18 @@ def materialize_certificate_bundle(
                 pfx_file.write(pfx_bytes)
                 tmp_pfx_path = pfx_file.name
 
-        pathlib.Path(tmp_cert_path).replace(dest_cert)
-        tmp_cert_path = ""
-        pathlib.Path(tmp_key_path).replace(dest_key)
-        tmp_key_path = ""
-        if tmp_pfx_path:
-            pathlib.Path(tmp_pfx_path).replace(dest_pfx)
-            tmp_pfx_path = ""
-        elif pathlib.Path(dest_pfx).exists():
-            pathlib.Path(dest_pfx).unlink()
+        with _certificate_material_install_lock(ca_dir):
+            pathlib.Path(tmp_cert_path).replace(dest_cert)
+            tmp_cert_path = ""
+            pathlib.Path(tmp_key_path).replace(dest_key)
+            tmp_key_path = ""
+            if tmp_pfx_path:
+                pathlib.Path(tmp_pfx_path).replace(dest_pfx)
+                tmp_pfx_path = ""
+            elif pathlib.Path(dest_pfx).exists():
+                pathlib.Path(dest_pfx).unlink()
 
-        _set_best_effort_permissions(dest_cert, dest_key)
+            _set_best_effort_permissions(dest_cert, dest_key)
     finally:
         for path in (tmp_cert_path, tmp_key_path, tmp_pfx_path):
             if path:
