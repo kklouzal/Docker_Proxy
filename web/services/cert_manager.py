@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from cryptography import x509
+from cryptography.hazmat.primitives import hashes
 
 from services.certificate_core import (
     CertificateBundle,
@@ -87,6 +88,26 @@ def _validate_ssl_bump_ca_certificate(cert_pem: str) -> None:
     if not key_usage.key_cert_sign:
         msg = "PFX CA certificate key usage must allow certificate signing."
         raise PfxInstallError(msg)
+
+
+def _certificate_identity(cert_pem: str) -> str:
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem.encode("utf-8"))
+        return f"sha256:{cert.fingerprint(hashes.SHA256()).hex()}"
+    except Exception:
+        return f"pem:{_normalize_pubkey(cert_pem)}"
+
+
+def _dedupe_chain_certificates(leaf_cert: str, chain_certs: list[str]) -> list[str]:
+    seen = {_certificate_identity(leaf_cert)}
+    deduped: list[str] = []
+    for chain_cert in chain_certs:
+        identity = _certificate_identity(chain_cert)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduped.append(chain_cert)
+    return deduped
 
 
 def _passin_arg(password: str) -> str:
@@ -264,7 +285,10 @@ def parse_pfx_bundle(
 
             _validate_ssl_bump_ca_certificate(leaf_cert)
 
-            chain_certs = _all_pem_blocks(chain_text, "CERTIFICATE")
+            chain_certs = _dedupe_chain_certificates(
+                leaf_cert,
+                _all_pem_blocks(chain_text, "CERTIFICATE"),
+            )
             bundle = build_certificate_bundle(
                 leaf_cert,
                 private_key,

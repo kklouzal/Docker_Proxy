@@ -286,6 +286,23 @@ def test_parse_pfx_preserves_chain_and_original_bytes(tmp_path) -> None:
     assert r.bundle.original_pfx_bytes == b"pfx-bytes"
 
 
+def test_parse_pfx_removes_leaf_duplicate_from_ca_chain() -> None:
+    m = _import_cert_manager_module()
+    cert_pem, key_pem = _pem_ca_material()
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(cert_pem, key_pem, chain_pem=cert_pem),
+    )
+
+    assert r.ok is True
+    assert r.bundle is not None
+    assert r.bundle.cert_pem == cert_pem
+    assert r.bundle.chain_pem == ""
+    assert r.bundle.fullchain_pem.count("BEGIN CERTIFICATE") == 1
+
+
 def test_parse_pfx_rejects_non_ca_leaf_certificate() -> None:
     m = _import_cert_manager_module()
     cert_pem, key_pem = _pem_ca_material(ca=False, key_cert_sign=False)
