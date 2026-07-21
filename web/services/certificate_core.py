@@ -847,6 +847,58 @@ def _set_best_effort_permissions(cert_path: str, key_path: str) -> None:
         )
 
 
+def certificate_material_paths(ca_dir: str) -> tuple[str, ...]:
+    base = pathlib.Path(ca_dir)
+    return (
+        str(base / "ca.crt"),
+        str(base / "ca.key"),
+        str(base / "uploaded_ca.pfx"),
+        str(base / ".ca-material.json"),
+    )
+
+
+def snapshot_certificate_material(ca_dir: str) -> dict[str, bytes | None]:
+    pathlib.Path(ca_dir).mkdir(exist_ok=True, parents=True)
+    with _certificate_material_read_lock(ca_dir):
+        snapshot: dict[str, bytes | None] = {}
+        for path in certificate_material_paths(ca_dir):
+            path_obj = pathlib.Path(path)
+            snapshot[path] = path_obj.read_bytes() if path_obj.exists() else None
+        return snapshot
+
+
+def restore_certificate_material_snapshot(
+    ca_dir: str,
+    snapshot: dict[str, bytes | None],
+) -> None:
+    pathlib.Path(ca_dir).mkdir(exist_ok=True, parents=True)
+    with _certificate_material_install_lock(ca_dir):
+        for path in certificate_material_paths(ca_dir):
+            content = snapshot.get(path)
+            path_obj = pathlib.Path(path)
+            if content is None:
+                if path_obj.exists():
+                    path_obj.unlink()
+                continue
+            tmp_path = ""
+            try:
+                with tempfile.NamedTemporaryFile(
+                    "wb",
+                    delete=False,
+                    dir=ca_dir,
+                ) as tmp_file:
+                    tmp_file.write(content)
+                    tmp_file.flush()
+                    os.fsync(tmp_file.fileno())
+                    tmp_path = tmp_file.name
+                pathlib.Path(tmp_path).replace(path_obj)
+                tmp_path = ""
+            finally:
+                if tmp_path:
+                    with contextlib.suppress(OSError):
+                        pathlib.Path(tmp_path).unlink()
+
+
 def materialize_certificate_bundle(
     ca_dir: str,
     bundle: CertificateBundle,

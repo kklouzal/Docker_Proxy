@@ -148,6 +148,72 @@ def test_materialize_certificate_bundle_serializes_cert_key_replacement(
     assert (tmp_path / "ca.key").read_text(encoding="utf-8") == KEY_B
 
 
+def test_snapshot_certificate_material_waits_for_inflight_materialize(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        certificate_core, "_extract_certificate_metadata", lambda _cert: ("", "", "")
+    )
+    first = certificate_core.build_certificate_bundle(
+        CERT_A,
+        KEY_A,
+        source_kind="uploaded_pfx",
+        original_pfx_bytes=b"old-pfx",
+    )
+    second = certificate_core.build_certificate_bundle(
+        CERT_B,
+        KEY_B,
+        source_kind="uploaded_pfx",
+        original_pfx_bytes=b"new-pfx",
+    )
+    certificate_core.materialize_certificate_bundle(tmp_path, first)
+
+    cert_replaced = threading.Event()
+    replace_can_finish = threading.Event()
+    snapshot_done = threading.Event()
+    snapshots: list[dict[str, bytes | None]] = []
+    original_replace = Path.replace
+
+    def slow_cert_replace(self: Path, target: object) -> Path:
+        result = original_replace(self, target)
+        if Path(target).name == "ca.crt" and not cert_replaced.is_set():
+            cert_replaced.set()
+            assert replace_can_finish.wait(timeout=2)
+        return result
+
+    monkeypatch.setattr(Path, "replace", slow_cert_replace)
+
+    materialize_thread = threading.Thread(
+        target=certificate_core.materialize_certificate_bundle,
+        args=(tmp_path, second),
+    )
+    materialize_thread.start()
+    assert cert_replaced.wait(timeout=2)
+
+    snapshot_thread = threading.Thread(
+        target=lambda: (
+            snapshots.append(certificate_core.snapshot_certificate_material(tmp_path)),
+            snapshot_done.set(),
+        ),
+    )
+    snapshot_thread.start()
+    time.sleep(0.05)
+    assert not snapshot_done.is_set()
+
+    replace_can_finish.set()
+    materialize_thread.join(timeout=2)
+    snapshot_thread.join(timeout=2)
+
+    assert not materialize_thread.is_alive()
+    assert not snapshot_thread.is_alive()
+    assert snapshots
+    snapshot = snapshots[0]
+    assert snapshot[str(tmp_path / "ca.crt")] == CERT_B.encode()
+    assert snapshot[str(tmp_path / "ca.key")] == KEY_B.encode()
+    assert snapshot[str(tmp_path / "uploaded_ca.pfx")] == b"new-pfx"
+    assert snapshot[str(tmp_path / ".ca-material.json")] is not None
+
+
 def test_materialize_and_load_certificate_bundle_round_trip_and_manage_pfx_file(
     tmp_path, monkeypatch
 ) -> None:

@@ -26,7 +26,13 @@ from services.adblock_artifacts import (
 )
 from services.adblock_store import get_adblock_store
 from services.certificate_bundles import get_certificate_bundles
-from services.certificate_core import CertManager, materialize_certificate_bundle
+from services.certificate_core import (
+    CertManager,
+    certificate_material_paths,
+    materialize_certificate_bundle,
+    restore_certificate_material_snapshot,
+    snapshot_certificate_material,
+)
 from services.config_revisions import get_config_revisions
 from services.db import DATABASE_ERRORS
 from services.diagnostic_store import get_diagnostic_store
@@ -970,37 +976,18 @@ class ProxyRuntime:
                 with suppress(Exception):
                     pathlib.Path(tmp_path).unlink()
 
-    def _certificate_material_paths(self) -> tuple[str, str, str]:
-        ca_dir = pathlib.Path(self.cert_manager.ca_dir)
-        return (
-            str(ca_dir / "ca.crt"),
-            str(ca_dir / "ca.key"),
-            str(ca_dir / "uploaded_ca.pfx"),
-            str(ca_dir / ".ca-material.json"),
-        )
+    def _certificate_material_paths(self) -> tuple[str, ...]:
+        return certificate_material_paths(self.cert_manager.ca_dir)
 
     def _snapshot_certificate_material(self) -> dict[str, bytes | None]:
-        snapshot: dict[str, bytes | None] = {}
-        for path in self._certificate_material_paths():
-            path_obj = pathlib.Path(path)
-            if path_obj.exists():
-                snapshot[path] = path_obj.read_bytes()
-            else:
-                snapshot[path] = None
-        return snapshot
+        return snapshot_certificate_material(self.cert_manager.ca_dir)
 
     def _restore_certificate_material(
         self,
         snapshot: dict[str, bytes | None],
     ) -> tuple[bool, str]:
         try:
-            for path, content in snapshot.items():
-                path_obj = pathlib.Path(path)
-                if content is None:
-                    if path_obj.exists():
-                        path_obj.unlink()
-                    continue
-                self._atomic_write_bytes(path, content)
+            restore_certificate_material_snapshot(self.cert_manager.ca_dir, snapshot)
             return True, "Restored previous certificate material after failed apply."
         except Exception as exc:
             return (
