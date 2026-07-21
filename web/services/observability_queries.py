@@ -176,14 +176,35 @@ class ObservabilityQueries:
 
     @staticmethod
     def _url_host_sql(url_column: str = "url") -> str:
+        trimmed = f"TRIM(COALESCE({url_column}, ''))"
+        authority_source = (
+            "CASE "
+            f"WHEN LOCATE('://', {trimmed}) > 0 THEN "
+            f"SUBSTRING({trimmed}, LOCATE('://', {trimmed}) + 3) "
+            f"WHEN LEFT({trimmed}, 2) = '//' THEN SUBSTRING({trimmed}, 3) "
+            f"ELSE {trimmed} "
+            "END"
+        )
+        authority = (
+            "SUBSTRING_INDEX("
+            f"SUBSTRING_INDEX(SUBSTRING_INDEX({authority_source}, '/', 1), '?', 1), "
+            "'#', 1)"
+        )
+        hostish = f"SUBSTRING_INDEX({authority}, '@', -1)"
+        host = (
+            "CASE "
+            f"WHEN LEFT({hostish}, 1) = '[' AND LOCATE(']', {hostish}) > 0 "
+            f"THEN SUBSTRING({hostish}, 2, LOCATE(']', {hostish}) - 2) "
+            f"WHEN (CHAR_LENGTH({hostish}) - CHAR_LENGTH(REPLACE({hostish}, ':', ''))) = 1 "
+            f"AND SUBSTRING_INDEX({hostish}, ':', -1) REGEXP '^[0-9]+$' "
+            f"THEN SUBSTRING_INDEX({hostish}, ':', 1) "
+            f"ELSE {hostish} "
+            "END"
+        )
         return (
             "LOWER(TRIM(BOTH '.' FROM "
-            "CASE "
-            f"WHEN LOCATE('://', {url_column}) > 0 THEN "
-            f"SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING({url_column}, LOCATE('://', {url_column}) + 3), '/', 1), ':', 1) "
-            "ELSE "
-            f"SUBSTRING_INDEX(SUBSTRING_INDEX({url_column}, '/', 1), ':', 1) "
-            "END))"
+            f"{host}"
+            "))"
         )
 
     @staticmethod

@@ -168,6 +168,24 @@ def test_runtime_remediation_suggestions_must_match_search_terms() -> None:
     ]
 
 
+def test_url_host_sql_preserves_runtime_domain_edge_case_branches() -> None:
+    _add_web_to_path()
+    from services.observability_queries import ObservabilityQueries  # type: ignore
+
+    sql = ObservabilityQueries._url_host_sql("url")
+
+    # The policy block tables store raw URLs rather than diagnostic_store's
+    # materialized domain column; this SQL must keep the same important
+    # normalization branches as runtime_helpers.extract_domain/normalize_hostish.
+    assert "COALESCE(url, '')" in sql
+    assert "LEFT(TRIM(COALESCE(url, '')), 2) = '//'" in sql
+    assert "'@', -1" in sql
+    assert "LEFT(SUBSTRING_INDEX" in sql
+    assert "LOCATE(']'" in sql
+    assert "REGEXP '^[0-9]+$'" in sql
+    assert "LOWER(TRIM(BOTH '.'" in sql
+
+
 def test_remediation_overview_does_not_keep_runtime_rows_for_unrelated_search(
     monkeypatch,
 ) -> None:
@@ -1419,6 +1437,53 @@ def test_observability_queries_surface_ssl_security_and_performance(
                 3015,
             ),
         )
+        conn.executemany(
+            """
+            INSERT INTO adblock_events(proxy_id, event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            [
+                (
+                    "default",
+                    "b" * 40,
+                    3001,
+                    "192.0.2.43",
+                    "GET",
+                    "https://user:pass@AuthAds.EXAMPLE.:8443/banner.js",
+                    403,
+                    "HTTP/1.1 403 Forbidden",
+                    204,
+                    "blocked userinfo",
+                    3001,
+                ),
+                (
+                    "default",
+                    "c" * 40,
+                    3000,
+                    "192.0.2.44",
+                    "GET",
+                    "//cdn.ads.example:443/banner.js",
+                    403,
+                    "HTTP/1.1 403 Forbidden",
+                    204,
+                    "blocked scheme-relative",
+                    3000,
+                ),
+                (
+                    "default",
+                    "d" * 40,
+                    2999,
+                    "192.0.2.45",
+                    "GET",
+                    "http://[2001:db8::1]:8080/banner.js",
+                    403,
+                    "HTTP/1.1 403 Forbidden",
+                    204,
+                    "blocked ipv6",
+                    2999,
+                ),
+            ],
+        )
 
     with webfilter_store._connect() as conn:
         conn.execute(
@@ -1446,7 +1511,7 @@ def test_observability_queries_surface_ssl_security_and_performance(
 
     security_payload = queries.security_overview(since=2800, limit=10)
     assert security_payload["summary"]["potential_findings"] == 1
-    assert security_payload["summary"]["adblock_blocks"] == 1
+    assert security_payload["summary"]["adblock_blocks"] == 4
     assert security_payload["summary"]["webfilter_blocks"] == 1
     assert security_payload["av_rows"][0]["av_status_label"] == "Potential finding"
     assert (
@@ -1462,6 +1527,9 @@ def test_observability_queries_surface_ssl_security_and_performance(
         == "192.0.2.42"
     )
     assert security_payload["adblock_top_domains"][0]["domain"] == "ads.example"
+    assert {
+        row["domain"] for row in security_payload["adblock_top_domains"]
+    } >= {"authads.example", "cdn.ads.example", "2001:db8::1"}
     assert security_payload["webfilter_top_categories"][0]["category"] == "adult"
 
     performance_payload = queries.performance_overview(since=2800, limit=10)
@@ -1475,7 +1543,7 @@ def test_observability_queries_surface_ssl_security_and_performance(
     overview = queries.overview_bundle(since=2800, limit=5, resolve_hostnames=False)
     assert overview["summary"]["request_records"] == 3
     assert overview["ssl"]["summary"]["total_events"] == 5
-    assert overview["security"]["summary"]["combined_blocks"] == 2
+    assert overview["security"]["summary"]["combined_blocks"] == 5
 
 
 def test_observability_overview_bundle_reuses_precomputed_summary(
