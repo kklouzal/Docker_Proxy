@@ -68,6 +68,31 @@ def _pem_ca_material(
     )
 
 
+def _pem_leaf_material(*, common_name: str) -> tuple[str, str]:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    return (
+        cert.public_bytes(serialization.Encoding.PEM).decode(),
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode(),
+    )
+
+
 def _fake_pfx_runner(cert_pem: str, key_pem: str, chain_pem: str = ""):
     class FakeCP:
         def __init__(self, stdout: str = "") -> None:
@@ -373,3 +398,47 @@ def test_parse_pfx_accepts_valid_ca_certificate() -> None:
     assert r.bundle is not None
     assert r.bundle.cert_pem == cert_pem
     assert r.bundle.original_pfx_bytes == b"pfx-bytes"
+
+
+def test_parse_pfx_selects_matching_ca_when_first_cert_and_key_are_decoys() -> None:
+    m = _import_cert_manager_module()
+    decoy_cert_pem, decoy_key_pem = _pem_leaf_material(common_name="Decoy Client Cert")
+    ca_cert_pem, ca_key_pem = _pem_ca_material()
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(
+            decoy_cert_pem + ca_cert_pem,
+            decoy_key_pem + ca_key_pem,
+        ),
+    )
+
+    assert r.ok is True
+    assert r.bundle is not None
+    assert r.bundle.cert_pem == ca_cert_pem
+    assert r.bundle.key_pem == ca_key_pem
+    assert decoy_cert_pem not in r.bundle.chain_pem
+    assert r.bundle.fullchain_pem.count("BEGIN CERTIFICATE") == 1
+
+
+def test_parse_pfx_can_select_ca_private_key_from_cacerts_output() -> None:
+    m = _import_cert_manager_module()
+    decoy_cert_pem, decoy_key_pem = _pem_leaf_material(common_name="Decoy Client Cert")
+    ca_cert_pem, ca_key_pem = _pem_ca_material()
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(
+            decoy_cert_pem,
+            decoy_key_pem + ca_key_pem,
+            chain_pem=ca_cert_pem,
+        ),
+    )
+
+    assert r.ok is True
+    assert r.bundle is not None
+    assert r.bundle.cert_pem == ca_cert_pem
+    assert r.bundle.key_pem == ca_key_pem
+    assert decoy_cert_pem not in r.bundle.chain_pem

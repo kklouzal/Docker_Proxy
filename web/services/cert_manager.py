@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import pathlib
@@ -10,12 +9,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 
 from services.certificate_core import (
     CertificateBundle,
     _all_pem_blocks,
-    _first_pem_block,
     build_certificate_bundle,
     load_local_certificate_bundle,
     materialize_certificate_bundle,
@@ -53,6 +51,67 @@ class PfxInstallError(Exception):
 
 def _normalize_pubkey(text: str) -> str:
     return "".join([line.strip() for line in text.splitlines() if line.strip()])
+
+
+def _public_key_bytes(key: object) -> bytes:
+    return key.public_key().public_bytes(  # type: ignore[attr-defined]
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+
+def _certificate_and_key_match(cert_pem: str, key_pem: str) -> bool:
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem.encode("utf-8"))
+        key = serialization.load_pem_private_key(
+            key_pem.encode("utf-8"),
+            password=None,
+        )
+        return _public_key_bytes(cert) == _public_key_bytes(key)
+    except Exception:
+        return False
+
+
+def _unique_pem_blocks(blocks: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for block in blocks:
+        normalized = _normalize_pubkey(block)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(block)
+    return unique
+
+
+def _private_key_blocks(key_text: str) -> list[str]:
+    return _unique_pem_blocks(
+        _all_pem_blocks(key_text, "PRIVATE KEY")
+        + _all_pem_blocks(key_text, "RSA PRIVATE KEY")
+        + _all_pem_blocks(key_text, "EC PRIVATE KEY"),
+    )
+
+
+def _select_ssl_bump_ca_material(
+    cert_candidates: list[str],
+    private_keys: list[str],
+) -> tuple[str, str]:
+    first_ca_error = ""
+    for cert_pem in cert_candidates:
+        for key_pem in private_keys:
+            if not _certificate_and_key_match(cert_pem, key_pem):
+                continue
+            try:
+                _validate_ssl_bump_ca_certificate(cert_pem)
+            except PfxInstallError as exc:
+                if not first_ca_error:
+                    first_ca_error = str(exc)
+                continue
+            return cert_pem, key_pem
+    if first_ca_error:
+        raise PfxInstallError(first_ca_error)
+    msg = "Certificate and private key do not match."
+    raise PfxInstallError(msg)
 
 
 def _validate_ssl_bump_ca_certificate(cert_pem: str) -> None:
@@ -231,59 +290,29 @@ def parse_pfx_bundle(
                 errors="ignore",
             )
 
-            leaf_cert = _first_pem_block(leaf_text, "CERTIFICATE")
-            if not leaf_cert:
+            cert_candidates = _unique_pem_blocks(
+                _all_pem_blocks(leaf_text, "CERTIFICATE")
+                + _all_pem_blocks(chain_text, "CERTIFICATE"),
+            )
+            if not cert_candidates:
                 msg = "PFX does not contain a certificate."
                 raise PfxInstallError(msg)
 
-            private_key = (
-                _first_pem_block(key_text, "PRIVATE KEY")
-                or _first_pem_block(key_text, "RSA PRIVATE KEY")
-                or _first_pem_block(key_text, "EC PRIVATE KEY")
-            )
-            if not private_key and "BEGIN ENCRYPTED PRIVATE KEY" in key_text:
+            private_keys = _private_key_blocks(key_text)
+            if not private_keys and "BEGIN ENCRYPTED PRIVATE KEY" in key_text:
                 msg = "Private key is encrypted; Squid needs an unencrypted key."
                 raise PfxInstallError(msg)
-            if not private_key:
+            if not private_keys:
                 msg = "PFX does not contain a private key."
                 raise PfxInstallError(msg)
-            if "ENCRYPTED PRIVATE KEY" in private_key:
+            if any("ENCRYPTED PRIVATE KEY" in private_key for private_key in private_keys):
                 msg = "Private key is encrypted; Squid needs an unencrypted key."
                 raise PfxInstallError(msg)
 
-            with tempfile.NamedTemporaryFile(
-                "w",
-                delete=False,
-                encoding="utf-8",
-            ) as tmp_leaf:
-                tmp_leaf.write(leaf_cert)
-                tmp_leaf_path = tmp_leaf.name
-            with tempfile.NamedTemporaryFile(
-                "w",
-                delete=False,
-                encoding="utf-8",
-            ) as tmp_key:
-                tmp_key.write(private_key)
-                tmp_key_path = tmp_key.name
-
-            try:
-                cert_pub = runner(
-                    ["openssl", "x509", "-in", tmp_leaf_path, "-noout", "-pubkey"],
-                ).stdout
-                key_pub = runner(
-                    ["openssl", "pkey", "-in", tmp_key_path, "-pubout"],
-                ).stdout
-            finally:
-                with contextlib.suppress(OSError):
-                    pathlib.Path(tmp_leaf_path).unlink()
-                with contextlib.suppress(OSError):
-                    pathlib.Path(tmp_key_path).unlink()
-
-            if _normalize_pubkey(cert_pub) != _normalize_pubkey(key_pub):
-                msg = "Certificate and private key do not match."
-                raise PfxInstallError(msg)
-
-            _validate_ssl_bump_ca_certificate(leaf_cert)
+            leaf_cert, private_key = _select_ssl_bump_ca_material(
+                cert_candidates,
+                private_keys,
+            )
 
             chain_certs = _dedupe_chain_certificates(
                 leaf_cert,
