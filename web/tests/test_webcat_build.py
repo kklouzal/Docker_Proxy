@@ -605,6 +605,7 @@ def test_webcat_domain_normalization_is_shared_and_idna() -> None:
         == "xn--bcher-kva.example"
     )
     assert webcat_build._norm_domain("user@Example.COM:443") == "example.com"
+    assert webcat_build._norm_domain("bad..example") == ""
 
 
 def test_build_db_stages_then_renames_without_deleting_live_tables(

@@ -37,8 +37,8 @@ def normalize_domain(value: object) -> str:
         return ""
     if ":" in raw:
         return raw
-    labels = [label for label in raw.split(".") if label]
-    if not labels:
+    labels = raw.split(".")
+    if not labels or any(not label for label in labels):
         return ""
     try:
         labels = [label.encode("idna").decode("ascii").lower() for label in labels]

@@ -233,6 +233,7 @@ def test_direct_domain_normalization_accepts_urls_idn_and_wildcards() -> None:
     )
     assert mod._normalize_domain(".Example.COM") == ("example.com", "")
     assert mod._normalize_domain("-bad.example")[0] is None
+    assert mod._normalize_domain("bad..example")[0] is None
     assert mod._normalize_domain("bad domain.example")[0] is None
 
 

@@ -71,6 +71,10 @@ def test_sslfilter_domain_policy_uses_shared_idna_normalization() -> None:
     assert canonical == ""
     assert "invalid domain characters" in detail.lower()
 
+    ok, _detail, canonical = sslfilter_store._normalize_domain_rule("bad..example")
+    assert ok is False
+    assert canonical == ""
+
 
 def test_webfilter_run_build_passes_provider_to_builder() -> None:
     m = _import_webfilter_store_module()
