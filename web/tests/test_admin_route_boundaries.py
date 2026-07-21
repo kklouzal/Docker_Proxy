@@ -2157,7 +2157,7 @@ class RemediationRowsObservability:
                     "component": "SSL inspection / upstream bot mitigation",
                     "severity": "high",
                     "title": "Cloudflare challenge observed through proxy",
-                    "subject": "challenge.example",
+                    "subject": "Challenge.Example/path",
                     "subject_type": "domain",
                     "count": 1,
                     "clients": 1,
@@ -2311,6 +2311,7 @@ def test_observability_remediation_scopes_row_actions_by_subject_and_kind(
     assert 'action="/observability/remediation/no-bump-domain' in text
     assert text.count('action="/observability/remediation/no-bump-domain') == 1
     assert 'name="domain" value="challenge.example"' in text
+    assert 'name="domain" value="Challenge.Example/path"' not in text
     assert ">No-bump domain<" in text
     assert 'name="domain" value="bad domain"' not in text
     assert 'name="domain" value="video.example"' not in text
