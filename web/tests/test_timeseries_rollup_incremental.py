@@ -1,9 +1,31 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 from services.timeseries_store import TimeSeriesStore
 
 from .mysql_test_utils import configure_test_mysql_env
+
+
+class _SummaryConn:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.calls.append(str(sql))
+        return _SummaryResult()
+
+
+class _SummaryResult:
+    def fetchone(self):
+        return (3, 90.0, 40.0, 60.0)
 
 
 def _insert_hourly(
@@ -181,3 +203,55 @@ def test_rollup_averages_ignore_null_metric_samples(tmp_path) -> None:
 
     assert int(count) == 2
     assert float(cpu) == pytest.approx(20.0)
+
+
+def test_summary_averages_use_metric_non_null_denominators(monkeypatch) -> None:
+    store = TimeSeriesStore.__new__(TimeSeriesStore)
+    store._db_initialized = True
+    store._db_init_lock = threading.Lock()
+    calls: list[str] = []
+    monkeypatch.setattr(store, "_connect", lambda: _SummaryConn(calls))
+    monkeypatch.setattr("services.timeseries_store._now", lambda: 1_777_000_180)
+
+    summary = store.summary()["60s"]
+    query = "\n".join(calls)
+
+    assert summary["count"] == 3
+    assert summary["cpu_avg"] == pytest.approx(90.0)
+    assert summary["mem_avg"] == pytest.approx(40.0)
+    assert summary["hit_rate_avg"] == pytest.approx(60.0)
+    assert "SUM(CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END)" in query
+    assert "SUM(CASE WHEN mem IS NOT NULL THEN count ELSE 0 END)" in query
+    assert "SUM(CASE WHEN hit_rate IS NOT NULL THEN count ELSE 0 END)" in query
+    assert "SUM(cpu * count)/SUM(count)" not in query
+
+
+def test_summary_averages_ignore_null_metric_samples_mysql(monkeypatch, tmp_path) -> None:
+    configure_test_mysql_env(tmp_path)
+    store = TimeSeriesStore()
+    store.init_db()
+    now = 1_777_000_180
+    monkeypatch.setattr("services.timeseries_store._now", lambda: now)
+
+    with store._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ts_1s(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            ("default", now - 30, 2, None, 40.0, None, None, 50.0),
+        )
+        conn.execute(
+            """
+            INSERT INTO ts_1s(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            ("default", now - 20, 1, 90.0, None, None, None, 80.0),
+        )
+
+    summary = store.summary()["60s"]
+
+    assert summary["count"] == 3
+    assert float(summary["cpu_avg"]) == pytest.approx(90.0)
+    assert float(summary["mem_avg"]) == pytest.approx(40.0)
+    assert float(summary["hit_rate_avg"]) == pytest.approx(60.0)

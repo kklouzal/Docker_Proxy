@@ -284,9 +284,9 @@ class TimeSeriesStore:
                         f"""
                         SELECT
                             SUM(count) AS cnt,
-                            CASE WHEN SUM(count) > 0 THEN SUM(cpu * count)/SUM(count) ELSE NULL END AS cpu,
-                            CASE WHEN SUM(count) > 0 THEN SUM(mem * count)/SUM(count) ELSE NULL END AS mem,
-                            CASE WHEN SUM(count) > 0 THEN SUM(hit_rate * count)/SUM(count) ELSE NULL END AS hit
+                            CASE WHEN SUM(CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN cpu IS NOT NULL THEN cpu * count ELSE 0 END)/SUM(CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS cpu,
+                            CASE WHEN SUM(CASE WHEN mem IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN mem IS NOT NULL THEN mem * count ELSE 0 END)/SUM(CASE WHEN mem IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS mem,
+                            CASE WHEN SUM(CASE WHEN hit_rate IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN hit_rate IS NOT NULL THEN hit_rate * count ELSE 0 END)/SUM(CASE WHEN hit_rate IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS hit
                         FROM {table}
                         WHERE proxy_id = %s AND ts >= %s
                         """,
