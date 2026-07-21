@@ -15,6 +15,7 @@ TRUE_VALUES = {"1", "true", "yes", "on", "required", "strict"}
 CRLF = b"\r\n"
 HEADER_END = CRLF + CRLF
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
+CLAMD_READY_MAX_REPLY_BYTES = 64
 MAX_ENCAPSULATED_OFFSET_DIGITS = 20
 MAX_HTTP_CONTENT_LENGTH_DIGITS = 20
 MAX_ICAP_PREVIEW_DIGITS = 20
@@ -91,12 +92,34 @@ def env_enabled(value: str | None) -> bool:
     return (value or "").strip().lower() in TRUE_VALUES
 
 
+def _recv_clamd_ping_reply(sock: socket.socket) -> bytes:
+    data = bytearray()
+    while len(data) < CLAMD_READY_MAX_REPLY_BYTES:
+        chunk = sock.recv(CLAMD_READY_MAX_REPLY_BYTES - len(data))
+        if not chunk:
+            break
+        data.extend(chunk)
+        if b"\n" in chunk or b"\0" in chunk:
+            break
+    return bytes(data)
+
+
+def _clamd_ping_reply_is_pong(data: bytes) -> bool:
+    if data.endswith(b"\r\n"):
+        payload = data[:-2]
+    elif data.endswith((b"\n", b"\0")):
+        payload = data[:-1]
+    else:
+        return False
+    return payload == b"PONG"
+
+
 def clamd_ready(host: str, port: int, timeout: float = 1.0) -> bool:
     try:
         with socket.create_connection((host, port), timeout) as sock:
             sock.settimeout(timeout)
             sock.sendall(b"PING\n")
-            return sock.recv(16).startswith(b"PONG")
+            return _clamd_ping_reply_is_pong(_recv_clamd_ping_reply(sock))
     except OSError:
         return False
 

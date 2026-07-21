@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import socket
 import threading
+import time
 from pathlib import Path
 
 
@@ -75,6 +76,110 @@ def test_ready_clamd_execs_c_icap(monkeypatch) -> None:
 
     assert exec_calls == [
         ("/usr/bin/c-icap", ["/usr/bin/c-icap", "-N", "-f", "/etc/c-icap/av.conf"]),
+    ]
+
+
+def _with_fake_clamd(chunks: tuple[bytes, ...], *, delay: float = 0.0):
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    seen = {"request": b""}
+
+    def serve() -> None:
+        try:
+            conn, _addr = listener.accept()
+        except OSError:
+            return
+        with conn:
+            while b"\n" not in seen["request"]:
+                data = conn.recv(64)
+                if not data:
+                    break
+                seen["request"] += data
+            for chunk in chunks:
+                if delay:
+                    time.sleep(delay)
+                conn.sendall(chunk)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return listener, thread, port, seen
+
+
+def test_clamd_ready_accepts_only_protocol_pong_reply_matrix() -> None:
+    runner = _load_runner()
+    cases = (
+        ("lf terminator", (b"PONG\n",), True),
+        ("crlf terminator", (b"PONG\r\n",), True),
+        ("nul terminator", (b"PONG\0",), True),
+        ("partial reply", (b"PO", b"NG\n"), True),
+        ("extra bytes after line", (b"PONG\nVERSION\n",), False),
+        ("extra bytes before terminator", (b"PONG READY\n",), False),
+        ("pong prefix wrong command", (b"PONG-OLD\n",), False),
+        ("non-pong prefix", (b"OK PONG\n",), False),
+        ("lowercase", (b"pong\n",), False),
+        ("leading whitespace", (b" PONG\n",), False),
+        ("trailing whitespace", (b"PONG \n",), False),
+        ("unterminated", (b"PONG",), False),
+        ("oversized unterminated", (b"PONG" + (b"X" * 256),), False),
+        ("empty eof", (), False),
+    )
+
+    for name, chunks, expected in cases:
+        listener, thread, port, seen = _with_fake_clamd(chunks)
+        try:
+            assert runner.clamd_ready("127.0.0.1", port, timeout=0.5) is expected, name
+            assert seen["request"] == b"PING\n", name
+        finally:
+            listener.close()
+            thread.join(timeout=1)
+
+
+def test_clamd_ready_returns_false_on_delayed_timeout_and_oserror() -> None:
+    runner = _load_runner()
+
+    listener, thread, port, _seen = _with_fake_clamd((b"PONG\n",), delay=0.2)
+    try:
+        assert runner.clamd_ready("127.0.0.1", port, timeout=0.05) is False
+    finally:
+        listener.close()
+        thread.join(timeout=1)
+
+    closed = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    closed.bind(("127.0.0.1", 0))
+    closed_port = closed.getsockname()[1]
+    closed.close()
+    assert runner.clamd_ready("127.0.0.1", closed_port, timeout=0.05) is False
+
+
+def test_malformed_pong_prefix_does_not_exec_real_c_icap(monkeypatch) -> None:
+    runner = _load_runner()
+    placeholder_calls: list[tuple[str, str, int, bool]] = []
+
+    listener, thread, port, _seen = _with_fake_clamd((b"PONG-OLD\n",))
+    monkeypatch.setenv("CLAMD_PORT", str(port))
+    monkeypatch.setattr(
+        runner,
+        "run_unavailable_placeholder",
+        lambda conf_path, *, host, port, fail_open: placeholder_calls.append(
+            (conf_path, host, port, fail_open),
+        ),
+    )
+
+    def fail_execv(_path, _argv):
+        message = "malformed clamd PING reply must not exec c-icap"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(runner.os, "execv", fail_execv)
+    try:
+        assert runner.main(["cicap_av_runner.py", "/etc/c-icap/av.conf"]) == 0
+    finally:
+        listener.close()
+        thread.join(timeout=1)
+
+    assert placeholder_calls == [
+        ("/etc/c-icap/av.conf", "127.0.0.1", port, True),
     ]
 
 
