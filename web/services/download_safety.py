@@ -91,6 +91,14 @@ def _safe_extra_download_headers(headers: dict[str, str] | None) -> dict[str, st
     return safe_headers
 
 
+def _build_download_request(
+    url: str,
+    *,
+    headers: dict[str, str],
+) -> urllib.request.Request:
+    return urllib.request.Request(url, headers=headers, method="GET")  # noqa: S310
+
+
 def validate_download_url(
     url: str,
     *,
@@ -142,7 +150,7 @@ def open_download_url(
     request_headers = {**safe_headers, **base_headers}
     for _ in range(max_redirects + 1):
         parsed = validate_download_url(current, scheme_error=scheme_error)
-        req = urllib.request.Request(current, headers=request_headers)  # noqa: S310
+        req = _build_download_request(current, headers=request_headers)
         try:
             return opener.open(req, timeout=timeout)
         except urllib.error.HTTPError as exc:

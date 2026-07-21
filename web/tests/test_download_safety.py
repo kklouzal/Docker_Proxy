@@ -393,6 +393,61 @@ def test_open_download_url_preserves_extra_headers_on_same_origin_redirect(
     assert redirected["if-none-match"] == "etag-1"
 
 
+def test_open_download_url_uses_get_without_body_after_303_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        assert host == "public.example"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                ("93.184.216.34", 0),
+            ),
+        ]
+
+    seen_requests: list[tuple[str, str, bytes | None]] = []
+    redirect_headers = Message()
+    redirect_headers["Location"] = "/mirror/feed.csv"
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            seen_requests.append((req.full_url, req.get_method(), req.data))
+            if len(seen_requests) == 1:
+                raise download_safety.urllib.error.HTTPError(
+                    req.full_url,
+                    303,
+                    "See Other",
+                    redirect_headers,
+                    None,
+                )
+            msg = "stop"
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(RuntimeError, match="stop"):
+        download_safety.open_download_url(
+            "https://public.example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+        )
+
+    assert seen_requests == [
+        ("https://public.example/feed.csv", "GET", None),
+        ("https://public.example/mirror/feed.csv", "GET", None),
+    ]
+
+
 def test_open_download_url_rejects_https_to_http_redirect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
