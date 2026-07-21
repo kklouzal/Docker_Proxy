@@ -2283,6 +2283,27 @@ def test_observability_ssl_pane_links_to_sslfilter_without_template_error(
     assert "/sslfilter?domain=broken.example" in text
 
 
+def test_observability_ssl_exclusion_candidates_offer_no_bump_quick_action(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=SslPaneRowsObservability(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability?pane=ssl")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert 'action="/ssl-errors/exclude' in text
+    assert text.count('action="/ssl-errors/exclude') == 1
+    assert 'name="domain" value="broken.example"' in text
+    assert ">No-bump domain<" in text
+
+
 def test_observability_remediation_scopes_row_actions_by_subject_and_kind(
     monkeypatch, tmp_path
 ) -> None:

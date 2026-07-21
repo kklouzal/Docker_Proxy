@@ -516,7 +516,7 @@
           <td class="num">{{ row.total }}</td>
           <td class="num">{{ row.buckets }}</td>
           <td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td>
-          <td class="num"><div class="table-action-stack"><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.domain, window=window) }}">Deep dive</a><a class="btn" href="{{ url_for('sslfilter', domain=row.domain) }}">SSL Filtering</a></div></td>
+          <td class="num"><div class="table-action-stack"><form method="post" action="{{ url_for('ssl_errors_exclude') }}">{{ csrf_field() }}<input type="hidden" name="domain" value="{{ row.domain }}" /><button class="btn primary" type="submit">No-bump domain</button></form><a class="btn" href="{{ url_for('observability', pane='ssl', q=row.domain, window=window) }}">Deep dive</a><a class="btn" href="{{ url_for('sslfilter', domain=row.domain) }}">SSL Filtering</a></div></td>
         </tr>
         {% endfor %}
       </tbody>
