@@ -468,6 +468,33 @@ def test_rendered_pac_normalizes_stale_direct_domain_inputs() -> None:
     assert "2001:db8" not in rendered
 
 
+def test_rendered_pac_strips_root_dot_before_host_matching() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_pac(
+        "PROXY proxy.example:3128; DIRECT",
+        proxy_host="proxy.example",
+        direct_domains=["intranet.example"],
+        direct_dst_nets=["192.0.2.0/24"],
+        include_private=False,
+    )
+
+    host_normalizer = "host = (host || '').toLowerCase().replace(/\\.+$/, '');"
+    proxy_host_normalizer = (
+        "var normalizedProxyHost = proxyHost.replace(/^\\[/, '').replace(/\\]$/, '')"
+        ".toLowerCase().replace(/\\.+$/, '');"
+    )
+
+    assert host_normalizer in rendered
+    assert proxy_host_normalizer in rendered
+    assert rendered.index(host_normalizer) < rendered.index("host === 'localhost'")
+    assert rendered.index(host_normalizer) < rendered.index(
+        'host === "intranet.example"'
+    )
+    assert rendered.index(host_normalizer) < rendered.index("var ip = hostIp();")
+
+
 def test_pac_target_advertises_only_explicit_proxy_listener() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
