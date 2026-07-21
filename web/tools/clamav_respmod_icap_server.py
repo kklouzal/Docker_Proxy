@@ -275,9 +275,6 @@ def _parse_preview_size(
     value = headers.get("preview")
     if value is None:
         return None
-    if not has_body:
-        message = "ICAP Preview header requires res-body"
-        raise IcapProtocolError(message)
     if not re.fullmatch(r"[0-9]+", value):
         message = f"invalid ICAP Preview header: {value!r}"
         raise IcapProtocolError(message)
@@ -288,7 +285,11 @@ def _parse_preview_size(
     ):
         message = f"ICAP Preview header exceeds {max_bytes} bytes"
         raise IcapProtocolError(message)
-    return int(significant_value)
+    preview_size = int(significant_value)
+    if not has_body and preview_size != 0:
+        message = "ICAP Preview header requires res-body"
+        raise IcapProtocolError(message)
+    return preview_size
 
 
 def _read_some(stream: BinaryIO, size: int) -> bytes:
@@ -381,6 +382,7 @@ def read_icap_chunked_body(
     max_bytes: int = DEFAULT_MAX_SCAN_BYTES,
     preview: bool = False,
     preview_size: int | None = None,
+    empty_preview_is_complete: bool = False,
     continue_callback=None,
     chunk_callback: Callable[[bytes], None] | None = None,
     buffer_body: bool = True,
@@ -388,7 +390,8 @@ def read_icap_chunked_body(
     """Read an ICAP chunked body, including Squid preview continuation.
 
     Returns (body, remainder). If a preview terminator without ``ieof`` is seen,
-    ``continue_callback`` is called before reading the rest of the chunks.
+    ``continue_callback`` is called before reading the rest of the chunks unless
+    ``empty_preview_is_complete`` allows Squid's body-forbidden 0-preview shape.
     If ``chunk_callback`` is provided, each decoded body chunk is passed through
     as it is read so clamd INSTREAM scanning can proceed without waiting for the
     full response body. Set ``buffer_body`` to false when the caller can return
@@ -412,6 +415,12 @@ def read_icap_chunked_body(
                 if preview_size is not None and total_size < preview_size:
                     message = "ICAP preview terminated before Preview header size"
                     raise IcapProtocolError(message)
+                if (
+                    empty_preview_is_complete
+                    and preview_size == 0
+                    and total_size == 0
+                ):
+                    return bytes(body), remainder
                 preview_terminator_seen = True
                 if continue_callback is not None:
                     continue_callback()
@@ -1125,17 +1134,24 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 if body_forbidden:
                     # Squid can encode body-forbidden HTTP responses (notably
                     # 204) as an ICAP res-body with only the terminal zero
-                    # chunk.  That is semantically a null body, not a failed
-                    # scan.  Drain it before deciding, so fail-open can still
-                    # return a clean verdict when remote clamd is unavailable.
-                    body, remainder = read_icap_chunked_body(
-                        self.rfile,
-                        remainder,
-                        max_bytes=self.server.max_scan_bytes,
-                        preview=preview_size is not None,
-                        preview_size=preview_size,
-                        continue_callback=self._send_100_continue,
-                    )
+                    # chunk.  With Squid's global Preview: 0 setting the same
+                    # live 204 fixture is sent as res-body plus Preview: 0 and
+                    # no response bytes to drain; Squid is already waiting for
+                    # our verdict.  Treat only that body-forbidden zero-preview
+                    # shape as complete, while still draining any terminal
+                    # chunk bytes Squid already placed on the wire.
+                    if preview_size == 0 and not remainder:
+                        body = b""
+                    else:
+                        body, remainder = read_icap_chunked_body(
+                            self.rfile,
+                            remainder,
+                            max_bytes=self.server.max_scan_bytes,
+                            preview=preview_size is not None,
+                            preview_size=preview_size,
+                            empty_preview_is_complete=True,
+                            continue_callback=self._send_100_continue,
+                        )
                     if remainder:
                         message = "unexpected data after terminal ICAP body"
                         raise IcapProtocolError(message)

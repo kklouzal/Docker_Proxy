@@ -1456,7 +1456,7 @@ def test_unavailable_clamd_status_204_encoded_as_empty_res_body_preserves_respon
 ) -> None:
     server = _load_server()
 
-    def create_connection(_address, _timeout):
+    def create_connection(_address, timeout):
         message = "connection refused"
         raise ConnectionRefusedError(message)
 
@@ -1488,6 +1488,71 @@ def test_unavailable_clamd_status_204_encoded_as_empty_res_body_preserves_respon
     assert b"HTTP/1.1 204 No Content" in response
     assert b"ClamAV response scan failed" not in response
     assert not response.endswith(b"0\r\n\r\n")
+
+
+def test_unavailable_clamd_squid_preview_zero_status_204_res_body_preserves_response(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+
+    def create_connection(_address, timeout):
+        _ = timeout
+        message = "connection refused"
+        raise ConnectionRefusedError(message)
+
+    monkeypatch.setattr(server.socket, "create_connection", create_connection)
+
+    request_header = (
+        b"GET /no-body/remote_respmod_stress HTTP/1.1\r\n"
+        b"Host: live-fixture:8080\r\n"
+        b"Cache-Control: no-cache\r\n"
+        b"Pragma: no-cache\r\n\r\n"
+    )
+    response_header = (
+        b"HTTP/1.0 204 No Content\r\n"
+        b"Server: LiveFixture/1.0 Python/3.14\r\n"
+        b"Date: Tue, 21 Jul 2026 13:30:00 GMT\r\n"
+        b"Cache-Control: no-store\r\n\r\n"
+    )
+    response_offset = len(request_header)
+    body_offset = response_offset + len(response_header)
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.2,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        for chunked_tail in (b"", b"0\r\n\r\n"):
+            request = (
+                (
+                    f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                    "Host: 127.0.0.1\r\n"
+                    "Allow: 204\r\n"
+                    "Preview: 0\r\n"
+                    "Encapsulated: "
+                    f"req-hdr=0, res-hdr={response_offset}, res-body={body_offset}"
+                    "\r\n\r\n"
+                ).encode("ascii")
+                + request_header
+                + response_header
+                + chunked_tail
+            )
+            response = _recv_icap_exchange(port, request, timeout=1)
+            assert not response.startswith(b"ICAP/1.0 100 Continue\r\n")
+            assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+            assert b"Encapsulated: res-hdr=0, null-body=" in response
+            assert b"HTTP/1.0 204 No Content" in response
+            assert b"HTTP/1.1 502 Bad Gateway" not in response
+            assert b"scan failed before complete response body" not in response
+        icap_server.shutdown()
+        thread.join(timeout=1)
 
 
 def _null_body_respmod_request_with_headers(
@@ -3229,7 +3294,44 @@ def test_preview_body_larger_than_header_rejected_before_scanner_chunk() -> None
     assert b"ICAP preview body exceeds Preview header" in response
 
 
-def test_preview_header_on_null_body_rejected_before_allow_204_verdict() -> None:
+def test_zero_preview_header_on_null_body_allows_clean_allow_204_verdict(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+
+    def create_connection(_address, timeout):
+        _ = timeout
+        message = "connection refused"
+        raise ConnectionRefusedError(message)
+
+    monkeypatch.setattr(server.socket, "create_connection", create_connection)
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_null_body_respmod_request(port, allow_204=True).replace(
+            b"Encapsulated: ",
+            b"Preview: 0\r\nEncapsulated: ",
+        )
+        response = _recv_icap_exchange(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" not in response
+    assert b"ICAP Preview header requires res-body" not in response
+
+
+def test_nonzero_preview_header_on_null_body_rejected_before_allow_204_verdict() -> None:
     server = _load_server()
     scan_attempts = 0
 
@@ -3254,7 +3356,7 @@ def test_preview_header_on_null_body_rejected_before_allow_204_verdict() -> None
         port = icap_server.server_address[1]
         request = _sample_null_body_respmod_request(port, allow_204=True).replace(
             b"Encapsulated: ",
-            b"Preview: 0\r\nEncapsulated: ",
+            b"Preview: 1\r\nEncapsulated: ",
         )
         response = _recv_icap_exchange(port, request, timeout=1)
         icap_server.shutdown()
@@ -3632,7 +3734,7 @@ def test_clamd_reset_mid_stream_drains_remaining_preview_then_fails_open_204(
 def test_unavailable_clamd_drains_body_and_fails_open_204(monkeypatch) -> None:
     server = _load_server()
 
-    def create_connection(_address, _timeout):
+    def create_connection(_address, timeout):
         message = "connection refused"
         raise ConnectionRefusedError(message)
 
@@ -3665,7 +3767,7 @@ def test_unavailable_clamd_fail_open_stress_handles_mixed_respmod_shapes(
 ) -> None:
     server = _load_server()
 
-    def create_connection(_address, _timeout):
+    def create_connection(_address, timeout):
         message = "connection refused"
         raise ConnectionRefusedError(message)
 
@@ -3692,6 +3794,9 @@ def test_unavailable_clamd_fail_open_stress_handles_mixed_respmod_shapes(
                 _sample_chunked_respmod_request,
                 _sample_preview_respmod_request,
                 _sample_null_body_respmod_request,
+                lambda p: _sample_null_body_respmod_request(p).replace(
+                    b"Encapsulated: ", b"Preview: 0\r\nEncapsulated: "
+                ),
                 lambda p: _sample_null_body_respmod_request(p, allow_204=False),
             )
             return builders[index % len(builders)](port)
