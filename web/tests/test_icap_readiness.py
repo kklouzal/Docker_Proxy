@@ -6,6 +6,8 @@ import threading
 import time
 from pathlib import Path
 
+ResponsePayload = bytes | list[bytes]
+
 
 def _add_repo_paths() -> None:
     import sys
@@ -26,7 +28,9 @@ class _IcapHandler(socketserver.BaseRequestHandler):
             if not chunk:
                 break
             data += chunk
-        if self.server.ready_after_calls and self.server.calls < self.server.ready_after_calls:
+        if self.server.responses:
+            response = self.server.responses[min(self.server.calls, len(self.server.responses)) - 1]
+        elif self.server.ready_after_calls and self.server.calls < self.server.ready_after_calls:
             response = b"ICAP/1.0 503 Service Unavailable\r\nConnection: close\r\n\r\n"
         else:
             response = (
@@ -34,25 +38,67 @@ class _IcapHandler(socketserver.BaseRequestHandler):
                 + f"Methods: {self.server.methods}\r\n".encode("ascii")
                 + b"Connection: close\r\nEncapsulated: null-body=0\r\n\r\n"
             )
-        self.request.sendall(response)
+        if isinstance(response, list):
+            for chunk in response:
+                self.request.sendall(chunk)
+                time.sleep(0.001)
+        else:
+            self.request.sendall(response)
 
 
 class _Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, methods: str = "REQMOD", ready_after_calls: int = 0) -> None:
+    def __init__(
+        self,
+        methods: str = "REQMOD",
+        ready_after_calls: int = 0,
+        responses: list[ResponsePayload] | None = None,
+    ) -> None:
         self.calls = 0
         self.methods = methods
         self.ready_after_calls = ready_after_calls
+        self.responses = responses or []
         super().__init__(("127.0.0.1", 0), _IcapHandler)
 
 
-def _start_server(methods: str = "REQMOD", ready_after_calls: int = 0):
-    server = _Server(methods=methods, ready_after_calls=ready_after_calls)
+def _start_server(
+    methods: str = "REQMOD",
+    ready_after_calls: int = 0,
+    responses: list[ResponsePayload] | None = None,
+):
+    server = _Server(methods=methods, ready_after_calls=ready_after_calls, responses=responses)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
+
+
+def _service(port: int):
+    _add_repo_paths()
+    import icap_readiness  # type: ignore
+
+    return icap_readiness.IcapService(
+        name="adblock_req",
+        method="REQMOD",
+        url=f"icap://127.0.0.1:{port}/adblockreq",
+        host="127.0.0.1",
+        port=port,
+        path="/adblockreq",
+        bypass=False,
+    )
+
+
+def _probe_response(response: ResponsePayload):
+    _add_repo_paths()
+    import icap_readiness  # type: ignore
+
+    server = _start_server(responses=[response])
+    try:
+        return icap_readiness.probe_service(_service(server.server_address[1]), timeout=0.5)
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_icap_readiness_requires_options_method_match(tmp_path) -> None:
@@ -75,6 +121,92 @@ def test_icap_readiness_requires_options_method_match(tmp_path) -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_icap_readiness_accepts_strict_options_200_status() -> None:
+    result = _probe_response(
+        b"ICAP/1.0 200 OK\r\n"
+        b"Methods: REQMOD\r\n"
+        b"Connection: close\r\n"
+        b"Encapsulated: null-body=0\r\n\r\n",
+    )
+
+    assert result.ok is True
+    assert result.status_line == "ICAP/1.0 200 OK"
+    assert result.methods == "REQMOD"
+
+
+def test_icap_readiness_accepts_fragmented_strict_options_200_status() -> None:
+    result = _probe_response(
+        [
+            b"ICAP/1.0 ",
+            b"200 OK\r\nMeth",
+            b"ods: REQMOD\r\nConnection: close\r\n",
+            b"Encapsulated: null-body=0\r\n\r\n",
+        ],
+    )
+
+    assert result.ok is True
+    assert result.status_line == "ICAP/1.0 200 OK"
+    assert result.methods == "REQMOD"
+
+
+def test_icap_readiness_rejects_status_prefix_confusion() -> None:
+    for status_line in (b"ICAP/1.0 2000 Weird", b"ICAP/1.0 200X Weird", b"ICAP/1.0 200OK"):
+        result = _probe_response(status_line + b"\r\nMethods: REQMOD\r\n\r\n")
+
+        assert result.ok is False
+        assert result.status_line == status_line.decode("ascii")
+        assert "malformed ICAP status line" in result.detail
+
+
+def test_icap_readiness_rejects_non_strict_status_lines() -> None:
+    cases = (
+        b"ICAP/1.0 200",
+        b"ICAP/1.0 200\tOK",
+        b" ICAP/1.0 200 OK",
+        b"ICAP/1.1 200 OK",
+    )
+    for status_line in cases:
+        result = _probe_response(status_line + b"\r\nMethods: REQMOD\r\n\r\n")
+
+        assert result.ok is False
+        assert "malformed ICAP status line" in result.detail
+
+
+def test_icap_readiness_rejects_duplicate_interim_response() -> None:
+    result = _probe_response(
+        b"ICAP/1.0 100 Continue\r\n\r\n"
+        b"ICAP/1.0 200 OK\r\nMethods: REQMOD\r\n\r\n",
+    )
+
+    assert result.ok is False
+    assert result.status_line == "ICAP/1.0 100 Continue"
+
+
+def test_icap_readiness_rejects_incomplete_or_oversized_headers() -> None:
+    cases = (
+        b"ICAP/1.0 200 OK",
+        b"ICAP/1.0 200 OK\r\nMethods: REQMOD\r\n" + (b"X-Test: value\r\n" * 600),
+    )
+    for response in cases:
+        result = _probe_response(response)
+
+        assert result.ok is False
+        assert result.detail == "incomplete ICAP response headers"
+
+
+def test_icap_readiness_rejects_malformed_headers() -> None:
+    cases = (
+        b"ICAP/1.0 200 OK\nMethods: REQMOD\n\n",
+        b"ICAP/1.0 200 OK\r\nBad Header: value\r\n\r\n",
+        b"ICAP/1.0 200 OK\r\nMethods: REQMOD\r\nMethods: RESPMOD\r\n\r\n",
+        b"ICAP/1.0 200 OK\r\nX-Test: bad\x01value\r\n\r\n",
+    )
+    for response in cases:
+        result = _probe_response(response)
+
+        assert result.ok is False
 
 
 def test_icap_readiness_waits_until_options_ready(tmp_path, monkeypatch) -> None:

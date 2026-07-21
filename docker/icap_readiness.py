@@ -26,6 +26,9 @@ DEFAULT_CONFIG = "/etc/squid/conf.d/20-icap.conf"
 DEFAULT_STATUS_FILE = "/var/lib/squid-flask-proxy/icap-readiness.json"
 DEFAULT_TIMEOUT_SECONDS = 75.0
 DEFAULT_PROBE_TIMEOUT_SECONDS = 1.0
+MAX_ICAP_HEADER_BYTES = 8192
+ICAP_STATUS_LINE_RE = re.compile(r"^ICAP/1\.0 (?P<code>[0-9]{3}) (?P<reason>[!-~](?:[ -~]*[!-~])?)$")
+ICAP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 
 @dataclass(frozen=True)
@@ -140,7 +143,7 @@ def parse_services(paths: list[str]) -> list[IcapService]:
     return services
 
 
-def _read_icap_headers(sock: socket.socket, *, max_bytes: int = 8192) -> bytes:
+def _read_icap_headers(sock: socket.socket, *, max_bytes: int = MAX_ICAP_HEADER_BYTES) -> bytes:
     data = b""
     while len(data) < max_bytes:
         chunk = sock.recv(min(512, max_bytes - len(data)))
@@ -152,19 +155,39 @@ def _read_icap_headers(sock: socket.socket, *, max_bytes: int = 8192) -> bytes:
     return data
 
 
-def _header_value(head: bytes, name: str) -> str:
-    needle = name.lower()
+def _parse_icap_response_head(head: bytes) -> tuple[bool, str, str, dict[str, list[str]]]:
+    if not head:
+        return False, "no ICAP response headers", "", {}
+    if b"\r\n\r\n" not in head:
+        if b"\n\n" in head:
+            return False, "malformed ICAP header terminator", "", {}
+        return False, "incomplete ICAP response headers", "", {}
+    block = head.split(b"\r\n\r\n", 1)[0]
+    if b"\n" in block.replace(b"\r\n", b"") or b"\r" in block.replace(b"\r\n", b""):
+        return False, "malformed ICAP header line endings", "", {}
+    lines = block.split(b"\r\n")
     try:
-        lines = head.decode("iso-8859-1", errors="replace").replace("\r\n", "\n").split("\n")
-    except Exception:
-        return ""
-    for line in lines[1:]:
+        decoded = [line.decode("ascii") for line in lines]
+    except UnicodeDecodeError:
+        return False, "non-ASCII ICAP response header", "", {}
+    for line in decoded:
+        if any((ord(char) < 32 and char != "\t") or ord(char) == 127 for char in line):
+            return False, "control character in ICAP response header", "", {}
+    first_line = decoded[0] if decoded else ""
+    match = ICAP_STATUS_LINE_RE.fullmatch(first_line)
+    if not match:
+        return False, f"malformed ICAP status line: {first_line or 'empty'}", first_line, {}
+    if match.group("code") != "200":
+        return False, first_line, first_line, {}
+    headers: dict[str, list[str]] = {}
+    for line in decoded[1:]:
         if ":" not in line:
-            continue
+            return False, f"malformed ICAP header line: {line or 'empty'}", first_line, {}
         key, value = line.split(":", 1)
-        if key.strip().lower() == needle:
-            return value.strip()
-    return ""
+        if not ICAP_HEADER_NAME_RE.fullmatch(key):
+            return False, f"malformed ICAP header name: {key or 'empty'}", first_line, {}
+        headers.setdefault(key.lower(), []).append(value.strip())
+    return True, first_line or "ICAP OPTIONS ok", first_line, headers
 
 
 def probe_service(service: IcapService, *, timeout: float) -> ProbeResult:
@@ -186,20 +209,24 @@ def probe_service(service: IcapService, *, timeout: float) -> ProbeResult:
     except Exception as exc:
         return ProbeResult(service=service, ok=False, detail=f"connect/options failed: {exc}")
 
-    first_line = (
-        head.split(b"\r\n", 1)[0]
-        .split(b"\n", 1)[0]
-        .decode("ascii", errors="replace")
-        .strip()
-    )
-    methods = _header_value(head, "Methods")
-    if not first_line.startswith("ICAP/1.0 200"):
+    ok, detail, first_line, headers = _parse_icap_response_head(head)
+    methods_values = headers.get("methods", [])
+    methods = methods_values[0] if methods_values else ""
+    if not ok:
         return ProbeResult(
             service=service,
             ok=False,
-            detail=first_line or "no ICAP status line",
+            detail=detail,
             status_line=first_line,
             methods=methods,
+        )
+    if len(methods_values) > 1:
+        return ProbeResult(
+            service=service,
+            ok=False,
+            detail="duplicate OPTIONS Methods headers",
+            status_line=first_line,
+            methods=", ".join(methods_values),
         )
     if methods:
         allowed = {part.strip().upper() for part in re.split(r"[,\s]+", methods) if part.strip()}
@@ -214,7 +241,7 @@ def probe_service(service: IcapService, *, timeout: float) -> ProbeResult:
     return ProbeResult(
         service=service,
         ok=True,
-        detail=first_line or "ICAP OPTIONS ok",
+        detail=detail,
         status_line=first_line,
         methods=methods,
     )
