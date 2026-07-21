@@ -234,6 +234,65 @@ def test_check_icap_service_and_clamd_protocol_helpers(monkeypatch) -> None:
     assert combined["components"]["clamd"]["detail"] == "clamd ok"
 
 
+@pytest.mark.parametrize(
+    ("name", "chunks", "expected_ok", "detail_fragment"),
+    [
+        ("lf terminator", [b"PONG\n"], True, "PONG"),
+        ("crlf terminator", [b"PONG\r\n"], True, "PONG"),
+        ("nul terminator", [b"PONG\0"], True, "PONG"),
+        ("fragmented reply", [b"PO", b"NG\n"], True, "PONG"),
+        ("extra bytes after terminator", [b"PONG\nVERSION\n"], False, "VERSION"),
+        ("pong prefix wrong command", [b"PONG-OLD\n"], False, "PONG-OLD"),
+        ("leading whitespace", [b" PONG\n"], False, "PONG"),
+        ("trailing whitespace", [b"PONG \n"], False, "PONG"),
+        ("lowercase", [b"pong\n"], False, "pong"),
+        ("unterminated eof", [b"PONG", b""], False, "PONG"),
+        ("oversized unterminated", [b"PONG" + (b"X" * 128)], False, "PONG"),
+        ("error reply", [b"UNKNOWN COMMAND\n"], False, "UNKNOWN COMMAND"),
+        ("empty eof", [], False, "no data"),
+    ],
+)
+def test_check_clamd_accepts_only_exact_bounded_ping_pong(
+    monkeypatch,
+    name: str,
+    chunks: list[bytes],
+    expected_ok: bool,
+    detail_fragment: str,
+) -> None:
+    health_checks = _health_checks_module()
+
+    clamd_sock = _FakeSocket(chunks)
+    monkeypatch.setattr(
+        health_checks.socket, "create_connection", lambda *_args, **_kwargs: clamd_sock
+    )
+
+    result = health_checks.check_clamd("clamd", 3310, timeout=0.5)
+
+    assert result["ok"] is expected_ok, name
+    assert detail_fragment in result["detail"], name
+    assert clamd_sock.sent == [b"PING\n"], name
+
+
+def test_check_clamd_reports_timeout_as_unhealthy(monkeypatch) -> None:
+    health_checks = _health_checks_module()
+
+    class _TimeoutSocket(_FakeSocket):
+        def recv(self, size: int) -> bytes:
+            message = "timed out"
+            raise TimeoutError(message)
+
+    clamd_sock = _TimeoutSocket()
+    monkeypatch.setattr(
+        health_checks.socket, "create_connection", lambda *_args, **_kwargs: clamd_sock
+    )
+
+    result = health_checks.check_clamd("clamd", 3310, timeout=0.5)
+
+    assert result["ok"] is False
+    assert "clamd:3310" in result["detail"]
+    assert clamd_sock.sent == [b"PING\n"]
+
+
 @pytest.mark.parametrize("icap_status", [b"204 No Content", b"200 OK"])
 def test_sample_respmod_reports_fail_open_placeholder_as_degraded(
     monkeypatch,

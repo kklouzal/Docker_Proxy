@@ -527,6 +527,16 @@ def _recv_clamd_reply(sock: socket.socket, *, max_bytes: int = 64) -> bytes:
     return buf
 
 
+def _clamd_ping_reply_is_pong(data: bytes) -> bool:
+    if data.endswith(b"\r\n"):
+        payload = data[:-2]
+    elif data.endswith((b"\n", b"\0")):
+        payload = data[:-1]
+    else:
+        return False
+    return payload == b"PONG"
+
+
 def check_clamd(
     host: str | None = None,
     port: int | None = None,
@@ -548,7 +558,7 @@ def check_clamd(
             or "no data"
         )
         return {
-            "ok": data.startswith(b"PONG"),
+            "ok": _clamd_ping_reply_is_pong(data),
             "detail": f"{detail} ({resolved_host}:{resolved_port})",
         }
     except Exception as exc:
