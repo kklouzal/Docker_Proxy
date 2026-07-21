@@ -65,6 +65,20 @@ def test_url_shaped_proxy_host_strips_inline_port_before_mapping_generation() ->
     assert ":8080:3128" not in result.legacy_set_proxy_command
 
 
+def test_bare_proxy_host_strips_inline_port_before_mapping_generation() -> None:
+    result = build_contract_output(
+        {
+            "proxy_host": "proxy.example:8080",
+            "proxy_port": 3128,
+            "destination_schemes": ["http", "https"],
+        },
+    )
+
+    assert result.proxy_string == "http=proxy.example:3128;https=proxy.example:3128"
+    assert ":8080:3128" not in result.legacy_set_proxy_command
+    assert any("inline port" in warning for warning in result.warnings)
+
+
 def test_bypass_list_normalizes_lines_semicolons_dedupes_and_local() -> None:
     assert (
         normalize_bypass_list(

@@ -172,6 +172,17 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
         except ValueError as exc:
             msg = "Proxy host/IP is invalid."
             raise WinHttpBuilderError(msg) from exc
+    elif value.count(":") == 1:
+        host_part, port_part = value.rsplit(":", 1)
+        if not host_part or not port_part.isdecimal():
+            msg = "Proxy host/IP inline port is invalid; use the separate proxy port field."
+            raise WinHttpBuilderError(msg)
+        inline_port = int(port_part)
+        if inline_port < 1 or inline_port > 65535:
+            msg = "Proxy host/IP inline port is invalid; use the separate proxy port field."
+            raise WinHttpBuilderError(msg)
+        warning = "Proxy host/IP should not include an inline port; the separate proxy port field is used for generated destination scheme mappings."
+        value = host_part
     if "/" in value or any(ch.isspace() for ch in value):
         msg = "Proxy host/IP must not contain spaces or path separators."
         raise WinHttpBuilderError(msg)
