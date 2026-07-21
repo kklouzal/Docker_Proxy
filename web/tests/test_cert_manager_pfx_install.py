@@ -75,6 +75,8 @@ def _new_ca_material(
     issuer_key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey | None = None,
     key: rsa.RSAPrivateKey | None = None,
     path_length: int | None = None,
+    subject_key_identifier: bytes | None = None,
+    authority_key_identifier: bytes | None = None,
     not_before_delta: timedelta = timedelta(minutes=-5),
     not_after_delta: timedelta = timedelta(days=30),
 ) -> tuple[str, str, x509.Certificate, rsa.RSAPrivateKey]:
@@ -83,7 +85,7 @@ def _new_ca_material(
     issuer_name = issuer_cert.subject if issuer_cert is not None else subject
     signing_key = issuer_key if issuer_key is not None else key
     now = datetime.now(UTC)
-    cert = (
+    builder = (
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(issuer_name)
@@ -109,8 +111,22 @@ def _new_ca_material(
             ),
             critical=True,
         )
-        .sign(signing_key, hashes.SHA256())
     )
+    if subject_key_identifier is not None:
+        builder = builder.add_extension(
+            x509.SubjectKeyIdentifier(digest=subject_key_identifier),
+            critical=False,
+        )
+    if authority_key_identifier is not None:
+        builder = builder.add_extension(
+            x509.AuthorityKeyIdentifier(
+                key_identifier=authority_key_identifier,
+                authority_cert_issuer=None,
+                authority_cert_serial_number=None,
+            ),
+            critical=False,
+        )
+    cert = builder.sign(signing_key, hashes.SHA256())
     return (
         cert.public_bytes(serialization.Encoding.PEM).decode(),
         key.private_bytes(
@@ -488,6 +504,47 @@ def test_parse_pfx_skips_same_subject_issuer_with_exceeded_path_length() -> None
         common_name="Docker Proxy Uploaded SSL Bump CA",
         issuer_cert=bad_issuer_cert,
         issuer_key=bad_issuer_key,
+    )
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(
+            cert_pem,
+            key_pem,
+            chain_pem=bad_issuer_pem + good_issuer_pem,
+        ),
+    )
+
+    assert r.ok is True
+    assert r.bundle is not None
+    assert r.bundle.chain_pem == good_issuer_pem
+
+
+def test_parse_pfx_prefers_aki_ski_matching_same_subject_issuer() -> None:
+    m = _import_cert_manager_module()
+    issuer_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    bad_ski = b"\x01" * 20
+    good_ski = b"\x02" * 20
+    bad_issuer_pem, _bad_key_pem, _bad_issuer_cert, _bad_issuer_key = (
+        _new_ca_material(
+            common_name="Docker Proxy Same Subject AKI Root",
+            key=issuer_key,
+            subject_key_identifier=bad_ski,
+        )
+    )
+    good_issuer_pem, _good_key_pem, good_issuer_cert, good_issuer_key = (
+        _new_ca_material(
+            common_name="Docker Proxy Same Subject AKI Root",
+            key=issuer_key,
+            subject_key_identifier=good_ski,
+        )
+    )
+    cert_pem, key_pem, _selected_cert, _selected_key = _new_ca_material(
+        common_name="Docker Proxy Uploaded SSL Bump CA",
+        issuer_cert=good_issuer_cert,
+        issuer_key=good_issuer_key,
+        authority_key_identifier=good_ski,
     )
 
     r = m.parse_pfx_bundle(

@@ -211,6 +211,46 @@ def _verify_certificate_signature(
     return True
 
 
+def _authority_key_identifier(cert: x509.Certificate) -> bytes | None:
+    try:
+        return cert.extensions.get_extension_for_class(
+            x509.AuthorityKeyIdentifier,
+        ).value.key_identifier
+    except x509.ExtensionNotFound:
+        return None
+
+
+def _subject_key_identifier(cert: x509.Certificate) -> bytes | None:
+    try:
+        return cert.extensions.get_extension_for_class(
+            x509.SubjectKeyIdentifier,
+        ).value.digest
+    except x509.ExtensionNotFound:
+        return None
+
+
+def _candidate_issuers_by_authority_key_identifier(
+    child: x509.Certificate,
+    candidates: list[tuple[str, x509.Certificate, str]],
+) -> list[tuple[str, x509.Certificate, str]]:
+    child_aki = _authority_key_identifier(child)
+    if child_aki is None:
+        return candidates
+
+    matching_ski: list[tuple[str, x509.Certificate, str]] = []
+    no_ski: list[tuple[str, x509.Certificate, str]] = []
+    for candidate in candidates:
+        issuer_ski = _subject_key_identifier(candidate[1])
+        if issuer_ski is None:
+            no_ski.append(candidate)
+        elif issuer_ski == child_aki:
+            matching_ski.append(candidate)
+
+    if matching_ski:
+        return matching_ski + no_ski
+    return no_ski
+
+
 def _validate_issuer_ca_certificate(cert: x509.Certificate) -> None:
     now = datetime.now(UTC)
     if now < cert.not_valid_before_utc:
@@ -345,12 +385,22 @@ def _validated_ordered_chain_certificates(
             for candidate in available
             if candidate[2] not in used and candidate[1].subject == current.issuer
         ]
-        verified_matches = [
+        signature_matches = [
             candidate
             for candidate in subject_matches
             if _verify_certificate_signature(current, candidate[1])
         ]
+        verified_matches = _candidate_issuers_by_authority_key_identifier(
+            current,
+            signature_matches,
+        )
         if not verified_matches:
+            if signature_matches:
+                msg = (
+                    "PFX issuer chain authority key identifier does not match "
+                    "the issuer subject key identifier."
+                )
+                raise PfxInstallError(msg)
             if subject_matches:
                 msg = "PFX issuer chain certificate does not verify the selected CA signature."
                 raise PfxInstallError(msg)
