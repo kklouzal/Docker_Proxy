@@ -1451,6 +1451,45 @@ def test_null_body_respmod_with_allow_204_uses_safe_no_content_verdict() -> None
     assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
 
 
+def test_unavailable_clamd_status_204_encoded_as_empty_res_body_preserves_response(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+
+    def create_connection(_address, _timeout):
+        message = "connection refused"
+        raise ConnectionRefusedError(message)
+
+    monkeypatch.setattr(server.socket, "create_connection", create_connection)
+
+    http_header = b"HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n\r\n"
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_exchange(
+            port,
+            _respmod_request_with_http_header(port, http_header, b"0\r\n\r\n"),
+            timeout=1,
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"Encapsulated: res-hdr=0, null-body=" in response
+    assert b"HTTP/1.1 204 No Content" in response
+    assert b"ClamAV response scan failed" not in response
+    assert not response.endswith(b"0\r\n\r\n")
+
+
 def _null_body_respmod_request_with_headers(
     port: int,
     *,

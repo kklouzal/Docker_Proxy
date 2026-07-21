@@ -1105,10 +1105,14 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     _validate_http_request_header(request_header)
                 http_header = encapsulated_headers[response_header_offset:body_offset]
                 _validate_http_header_field_names(http_header)
-                _validate_http_response_body_semantics(
-                    http_header, has_body_section=True
+                body_forbidden = _http_response_status_forbids_body(
+                    _http_response_status_code(http_header)
                 )
-                _http_declared_content_length(http_header)
+                if not body_forbidden:
+                    _validate_http_response_body_semantics(
+                        http_header, has_body_section=True
+                    )
+                    _http_declared_content_length(http_header)
                 can_use_204 = allow_204 and _http_response_allows_squid_204_backup(
                     http_header
                 )
@@ -1118,18 +1122,46 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 # Squid can safely back it up. If Squid advertised Allow: 204
                 # for an unknown/chunked/large response, still buffer and replay
                 # the body to avoid ICAP_RESPMOD_EARLY failures.
-                try:
-                    body, result = self._read_respmod_body_for_scan(
-                        initial=remainder,
-                        http_header=http_header,
-                        allow_204=False,
+                if body_forbidden:
+                    # Squid can encode body-forbidden HTTP responses (notably
+                    # 204) as an ICAP res-body with only the terminal zero
+                    # chunk.  That is semantically a null body, not a failed
+                    # scan.  Drain it before deciding, so fail-open can still
+                    # return a clean verdict when remote clamd is unavailable.
+                    body, remainder = read_icap_chunked_body(
+                        self.rfile,
+                        remainder,
+                        max_bytes=self.server.max_scan_bytes,
+                        preview=preview_size is not None,
                         preview_size=preview_size,
+                        continue_callback=self._send_100_continue,
                     )
+                    if remainder:
+                        message = "unexpected data after terminal ICAP body"
+                        raise IcapProtocolError(message)
                     body_complete = True
-                except ScanFailedAfterBodyError as exc:
-                    body = exc.body
-                    body_complete = True
-                    raise
+                    if body:
+                        status_code = _http_response_status_code(http_header)
+                        message = f"HTTP status {status_code} forbids ICAP res-body"
+                        raise HttpFramingError(message)
+                    _validate_http_response_body_semantics(
+                        http_header, has_body_section=False
+                    )
+                    null_body = True
+                    result = self.server.scan_body(body)
+                else:
+                    try:
+                        body, result = self._read_respmod_body_for_scan(
+                            initial=remainder,
+                            http_header=http_header,
+                            allow_204=False,
+                            preview_size=preview_size,
+                        )
+                        body_complete = True
+                    except ScanFailedAfterBodyError as exc:
+                        body = exc.body
+                        body_complete = True
+                        raise
             else:
                 encapsulated_headers, remainder = _read_exact(
                     self.rfile, null_body_offset or 0, remainder
