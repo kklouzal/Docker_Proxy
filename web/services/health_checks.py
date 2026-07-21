@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import socket
 from collections.abc import Callable
 from typing import Any
@@ -11,6 +12,11 @@ from urllib.parse import parse_qs, urlsplit
 from services.errors import public_error_message
 
 ErrorFormatter = Callable[[Exception], str]
+
+_ICAP_STATUS_LINE_RE = re.compile(
+    r"^ICAP/1\.0 (?P<code>[0-9]{3}) (?P<reason>[!-~](?:[ -~]*[!-~])?)$",
+)
+_ICAP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 
 def _format_error(
@@ -111,6 +117,25 @@ def _recv_response_head(sock: socket.socket, *, max_bytes: int = 8192) -> bytes:
     return buf
 
 
+def _read_icap_response_head(
+    sock: socket.socket,
+    *,
+    max_bytes: int = 8192,
+) -> tuple[bytes, bool, bool]:
+    buf = b""
+    while len(buf) < max_bytes:
+        chunk = sock.recv(min(512, max_bytes - len(buf)))
+        if not chunk:
+            break
+        buf += chunk
+        if b"\r\n\r\n" in buf:
+            head, tail = buf.split(b"\r\n\r\n", 1)
+            return head, True, bool(tail)
+        if b"\n\n" in buf:
+            return buf, False, False
+    return buf, False, False
+
+
 def _decode_status_line(data: bytes) -> str:
     return data.decode("ascii", errors="replace") if data else "no data"
 
@@ -149,6 +174,63 @@ def _parse_protocol_status_code(status_line: str) -> int | None:
 def _icap_status_reason(status_line: str) -> str:
     parts = str(status_line or "").split(None, 2)
     return parts[2] if len(parts) >= 3 else ""
+
+
+def _parse_icap_options_response_head(
+    head: bytes,
+    *,
+    headers_complete: bool,
+    has_extra_data: bool,
+) -> tuple[bool, str]:
+    if not head:
+        return False, "no ICAP response headers"
+    if not headers_complete:
+        if b"\n\n" in head:
+            return False, "malformed ICAP header terminator"
+        first = head.split(b"\r\n", 1)[0].split(b"\n", 1)[0]
+        try:
+            first_line = first.decode("ascii")
+        except UnicodeDecodeError:
+            return False, "non-ASCII ICAP response header"
+        match = _ICAP_STATUS_LINE_RE.fullmatch(first_line)
+        if match and match.group("code") != "200":
+            return False, first_line
+        return False, "incomplete ICAP response headers"
+
+    block = head
+    if b"\n" in block.replace(b"\r\n", b"") or b"\r" in block.replace(b"\r\n", b""):
+        return False, "malformed ICAP header line endings"
+    lines = block.split(b"\r\n")
+    try:
+        decoded = [line.decode("ascii") for line in lines]
+    except UnicodeDecodeError:
+        return False, "non-ASCII ICAP response header"
+    for line in decoded:
+        if any((ord(char) < 32 and char != "\t") or ord(char) == 127 for char in line):
+            return False, "control character in ICAP response header"
+    first_line = decoded[0] if decoded else ""
+    match = _ICAP_STATUS_LINE_RE.fullmatch(first_line)
+    if not match:
+        return False, f"malformed ICAP status line: {first_line or 'empty'}"
+    if match.group("code") != "200":
+        return False, first_line
+    if has_extra_data:
+        return False, "unexpected data after ICAP response headers"
+
+    headers: dict[str, list[str]] = {}
+    for line in decoded[1:]:
+        if not line:
+            return False, "malformed ICAP header line: empty"
+        if ":" not in line:
+            return False, f"malformed ICAP header line: {line}"
+        key, value = line.split(":", 1)
+        if not _ICAP_HEADER_NAME_RE.fullmatch(key):
+            return False, f"malformed ICAP header name: {key or 'empty'}"
+        headers.setdefault(key.lower(), []).append(value.strip())
+    duplicates = sorted(name for name, values in headers.items() if len(values) > 1)
+    if duplicates:
+        return False, f"duplicate ICAP response header: {duplicates[0]}"
+    return True, first_line
 
 
 def _normalize_icap_istag(value: str) -> str:
@@ -329,11 +411,15 @@ def check_icap_service(
         with socket.create_connection((host, int(port)), timeout=timeout) as sock:
             sock.settimeout(timeout)
             sock.sendall(req)
-            status_line = _recv_status_line(sock)
-        first = _decode_status_line(status_line)
-        if status_line.startswith(b"ICAP/1.0 200"):
-            return {"ok": True, "detail": success_detail or first}
-        return {"ok": False, "detail": first}
+            head, headers_complete, has_extra_data = _read_icap_response_head(sock)
+        ok, detail = _parse_icap_options_response_head(
+            head,
+            headers_complete=headers_complete,
+            has_extra_data=has_extra_data,
+        )
+        if ok:
+            return {"ok": True, "detail": success_detail or detail}
+        return {"ok": False, "detail": detail}
     except Exception as exc:
         return {
             "ok": False,

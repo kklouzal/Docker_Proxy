@@ -234,6 +234,112 @@ def test_check_icap_service_and_clamd_protocol_helpers(monkeypatch) -> None:
     assert combined["components"]["clamd"]["detail"] == "clamd ok"
 
 
+def _run_check_icap_service_response(monkeypatch, chunks: list[bytes]):
+    health_checks = _health_checks_module()
+    sock = _FakeSocket(chunks)
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: sock,
+    )
+
+    result = health_checks.check_icap_service(
+        "127.0.0.1",
+        14000,
+        "adblockreq",
+        timeout=0.5,
+    )
+
+    assert b"OPTIONS icap://127.0.0.1:14000/adblockreq ICAP/1.0" in sock.sent[0]
+    return result
+
+
+def test_check_icap_service_accepts_only_complete_strict_icap_200(monkeypatch) -> None:
+    result = _run_check_icap_service_response(
+        monkeypatch,
+        [
+            b"ICAP/1.0 ",
+            b"200 OK\r\nMeth",
+            b"ods: REQMOD\r\nConnection: close\r\nEncapsulated: null-body=0\r\n\r\n",
+        ],
+    )
+
+    assert result == {"ok": True, "detail": "ICAP/1.0 200 OK"}
+
+
+def test_check_icap_service_preserves_success_detail_for_strict_200(
+    monkeypatch,
+) -> None:
+    health_checks = _health_checks_module()
+    sock = _FakeSocket([b"ICAP/1.0 200 OK\r\nMethods: REQMOD\r\n\r\n"])
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: sock,
+    )
+
+    result = health_checks.check_icap_service(
+        "127.0.0.1",
+        14000,
+        "adblockreq",
+        success_detail="adblock ICAP ready",
+    )
+
+    assert result == {"ok": True, "detail": "adblock ICAP ready"}
+
+
+@pytest.mark.parametrize(
+    ("response", "detail"),
+    [
+        (b"ICAP/1.0 2000 Weird\r\nMethods: REQMOD\r\n\r\n", "malformed"),
+        (b"ICAP/1.0 200X Weird\r\nMethods: REQMOD\r\n\r\n", "malformed"),
+        (b"ICAP/1.0 200OK\r\nMethods: REQMOD\r\n\r\n", "malformed"),
+        (b"ICAP/1.0 200\r\nMethods: REQMOD\r\n\r\n", "malformed"),
+        (b"ICAP/1.0 200\tOK\r\nMethods: REQMOD\r\n\r\n", "malformed"),
+        (b"ICAP/1.0 200 O\x01K\r\nMethods: REQMOD\r\n\r\n", "control"),
+        (b" ICAP/1.0 200 OK\r\nMethods: REQMOD\r\n\r\n", "malformed"),
+        (b"ICAP/1.1 200 OK\r\nMethods: REQMOD\r\n\r\n", "malformed"),
+        (b"ICAP/1.0 204 No Content\r\nMethods: REQMOD\r\n\r\n", "204"),
+        (b"HTTP/1.1 200 OK\r\nMethods: REQMOD\r\n\r\n", "malformed"),
+        (b"ICAP/1.0 200 OK", "incomplete"),
+        (
+            b"ICAP/1.0 200 OK\r\nMethods: REQMOD\r\n" + (b"X-Test: value\r\n" * 600),
+            "incomplete",
+        ),
+        (b"ICAP/1.0 200 OK\nMethods: REQMOD\n\n", "terminator"),
+        (b"ICAP/1.0 200 OK\r\nBad Header: value\r\n\r\n", "header name"),
+        (
+            b"ICAP/1.0 200 OK\r\nMethods: REQMOD\r\nMethods: RESPMOD\r\n\r\n",
+            "duplicate",
+        ),
+        (b"ICAP/1.0 200 OK\r\nX-Test: bad\x01value\r\n\r\n", "control"),
+        (
+            (
+                b"ICAP/1.0 100 Continue\r\n\r\n"
+                b"ICAP/1.0 200 OK\r\nMethods: REQMOD\r\n\r\n"
+            ),
+            "100 Continue",
+        ),
+        (
+            (
+                b"ICAP/1.0 200 OK\r\nMethods: REQMOD\r\n\r\n"
+                b"ICAP/1.0 204 No Content\r\n\r\n"
+            ),
+            "unexpected data",
+        ),
+    ],
+)
+def test_check_icap_service_rejects_confusable_or_incomplete_options_responses(
+    monkeypatch,
+    response: bytes,
+    detail: str,
+) -> None:
+    result = _run_check_icap_service_response(monkeypatch, [response])
+
+    assert result["ok"] is False
+    assert detail in result["detail"]
+
+
 @pytest.mark.parametrize(
     ("name", "chunks", "expected_ok", "detail_fragment"),
     [
