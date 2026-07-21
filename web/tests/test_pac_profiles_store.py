@@ -241,6 +241,14 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
     _add_web_path()
     import services.pac_profiles_store as mod
 
+    assert mod._normalize_proxy_host_port("Backup.Proxy.Example.", None) == (
+        "backup.proxy.example",
+        3128,
+        "",
+    )
+    assert mod._normalize_proxy_host_port(
+        "http://Backup.Proxy.Example.:8080/proxy.pac", ""
+    ) == ("backup.proxy.example", 8080, "")
     assert mod._normalize_proxy_host_port(
         "http://Backup.Example:8080/proxy.pac", ""
     ) == ("backup.example", 8080, "")

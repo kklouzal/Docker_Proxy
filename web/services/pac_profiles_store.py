@@ -150,7 +150,7 @@ def _normalize_proxy_host_port(
             else:
                 return None, None, "Invalid proxy port."
 
-    host = host.strip().strip("[]").lower()
+    host = host.strip().strip("[]").lower().removesuffix(".")
     if not _is_valid_proxy_host(host):
         return None, None, "Invalid proxy host."
 
