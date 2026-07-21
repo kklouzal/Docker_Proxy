@@ -324,7 +324,11 @@ def _operation_completion_status(
     if target_kind == "certificate_revision":
         target_ref = _int_or_none(getattr(operation, "target_ref", None))
         applied_ref = _int_or_none(result.get("certificate_revision_id"))
-        applied_hash = str(result.get("certificate_bundle_sha256") or "").strip()
+        applied_hash = str(
+            result.get("desired_certificate_bundle_sha256")
+            or result.get("certificate_bundle_sha256")
+            or ""
+        ).strip()
         if target_ref is None:
             op_detail = (
                 "Certificate operation completed reconciliation but did not include "
@@ -2957,6 +2961,7 @@ class ProxyRuntime:
 
         ok_restart, restart_detail = self._reinitialize_ssl_db_and_restart()
         detail = restart_detail.strip() or "Certificate bundle applied."
+        current_result_sha = revision.bundle_sha256
         if not ok_restart:
             rollback_ok, rollback_detail = self._restore_certificate_material(
                 material_snapshot,
@@ -2965,6 +2970,17 @@ class ProxyRuntime:
             recovery_detail = ""
             if rollback_ok:
                 recovery_ok, recovery_detail = self._reinitialize_ssl_db_and_restart()
+            restored_sha = self._current_certificate_bundle_sha() or (
+                current_sha if rollback_ok else ""
+            )
+            if restored_sha:
+                current_result_sha = restored_sha
+            sha_detail = (
+                "Current certificate bundle after failed apply/rollback: "
+                f"{restored_sha}. Desired failed revision bundle: {revision.bundle_sha256}."
+                if restored_sha
+                else f"Desired failed revision bundle: {revision.bundle_sha256}."
+            )
             detail = "\n".join(
                 part
                 for part in (
@@ -2978,6 +2994,7 @@ class ProxyRuntime:
                     if rollback_ok
                     else "",
                     recovery_detail,
+                    sha_detail,
                 )
                 if str(part or "").strip()
             )
@@ -2987,7 +3004,7 @@ class ProxyRuntime:
             ok=ok_restart,
             detail=detail,
             applied_by="proxy",
-            bundle_sha256=revision.bundle_sha256,
+            bundle_sha256=current_result_sha,
         )
         return {
             "ok": ok_restart,
@@ -2996,7 +3013,9 @@ class ProxyRuntime:
             "application_id": applied.application_id,
             "changed": ok_restart,
             "detail": detail,
-            "certificate_bundle_sha256": revision.bundle_sha256,
+            "certificate_bundle_sha256": current_result_sha,
+            "desired_certificate_bundle_sha256": revision.bundle_sha256,
+            "current_certificate_sha": current_result_sha,
         }
 
     def start_background_tasks(self) -> None:
