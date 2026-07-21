@@ -1626,6 +1626,281 @@ def _respmod_request_for_response(
     )
 
 
+def _respmod_request_with_req_hdr(
+    request_header: bytes,
+    response_header: bytes,
+    *,
+    allow_204: bool = False,
+    body: bytes | None = None,
+) -> bytes:
+    body_section = b""
+    terminal_name = "null-body"
+    if body is not None:
+        terminal_name = "res-body"
+        body_section = f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n0\r\n\r\n"
+    allow_header = b"Allow: 204\r\n" if allow_204 else b""
+    response_offset = len(request_header)
+    terminal_offset = response_offset + len(response_header)
+    return (
+        b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        + allow_header
+        + (
+            "Encapsulated: req-hdr=0, res-hdr="
+            f"{response_offset}, {terminal_name}={terminal_offset}"
+        ).encode("ascii")
+        + b"\r\n\r\n"
+        + request_header
+        + response_header
+        + body_section
+    )
+
+
+def test_fail_open_placeholder_rejects_malformed_respmod_req_hdr_before_204_or_replay() -> None:
+    runner = _load_runner()
+    response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+    null_response_header = b"HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n\r\n"
+    cases = (
+        (
+            "missing request line before 204",
+            b"Host: example.test\r\n\r\n",
+            True,
+            None,
+            null_response_header,
+            b"malformed RESPMOD encapsulated HTTP request start line",
+        ),
+        (
+            "missing request line before replay",
+            b"Host: example.test\r\n\r\n",
+            False,
+            b"hello",
+            response_header,
+            b"malformed RESPMOD encapsulated HTTP request start line",
+        ),
+        (
+            "response-line masquerade",
+            b"HTTP/1.1 200 OK\r\nHost: example.test\r\n\r\n",
+            False,
+            b"hello",
+            response_header,
+            b"invalid RESPMOD encapsulated HTTP request method token",
+        ),
+        (
+            "invalid method token",
+            b"GE/T / HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            False,
+            b"hello",
+            response_header,
+            b"invalid RESPMOD encapsulated HTTP request method token",
+        ),
+        (
+            "malformed request spacing",
+            b"GET  / HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            False,
+            b"hello",
+            response_header,
+            b"malformed RESPMOD encapsulated HTTP request start line",
+        ),
+        (
+            "unsupported version",
+            b"GET / HTTP/2\r\nHost: example.test\r\n\r\n",
+            False,
+            b"hello",
+            response_header,
+            b"unsupported RESPMOD encapsulated HTTP request version",
+        ),
+        (
+            "control target byte",
+            b"GET /bad\x1f HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            False,
+            b"hello",
+            response_header,
+            b"invalid RESPMOD encapsulated HTTP request target",
+        ),
+    )
+
+    for name, req_header, allow_204, body, res_header, expected_error in cases:
+        response = _placeholder_raw_exchange(
+            runner,
+            _respmod_request_with_req_hdr(
+                req_header,
+                res_header,
+                allow_204=allow_204,
+                body=body,
+            ),
+        )
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected_error in response, name
+        assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
+
+
+def test_fail_open_placeholder_rejects_malformed_respmod_req_hdr_fields() -> None:
+    runner = _load_runner()
+    response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+    cases = (
+        (
+            "missing colon",
+            b"Missing-Colon",
+            b"malformed RESPMOD encapsulated HTTP request header field line",
+        ),
+        (
+            "empty name",
+            b": value",
+            b"invalid RESPMOD encapsulated HTTP request header field name",
+        ),
+        (
+            "obs-fold",
+            b" folded: value",
+            b"obsolete folded RESPMOD encapsulated HTTP request header line",
+        ),
+        (
+            "control value",
+            b"X-Value: ok\x1fbad",
+            b"invalid RESPMOD encapsulated HTTP request header field value",
+        ),
+    )
+
+    for name, field_line, expected_error in cases:
+        request_header = b"GET /download HTTP/1.1\r\n" + field_line + b"\r\n\r\n"
+        response = _placeholder_raw_exchange(
+            runner,
+            _respmod_request_with_req_hdr(
+                request_header,
+                response_header,
+                body=b"hello",
+            ),
+        )
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected_error in response, name
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
+
+
+def test_fail_open_placeholder_rejects_respmod_req_hdr_body_framing_claims() -> None:
+    runner = _load_runner()
+    response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+    long_content_length = b"9" * (runner.MAX_HTTP_CONTENT_LENGTH_DIGITS + 1)
+    cases = (
+        (
+            "conflicting content-length",
+            b"Content-Length: 5\r\nContent-Length: 6",
+            b"conflicting RESPMOD encapsulated HTTP request Content-Length headers",
+        ),
+        (
+            "invalid content-length",
+            b"Content-Length: +5",
+            b"invalid RESPMOD encapsulated HTTP request Content-Length header",
+        ),
+        (
+            "huge content-length",
+            b"Content-Length: " + long_content_length,
+            b"invalid RESPMOD encapsulated HTTP request Content-Length header",
+        ),
+        (
+            "nonzero content-length without req-body",
+            b"Content-Length: 5",
+            b"RESPMOD encapsulated HTTP request Content-Length requires req-body",
+        ),
+        (
+            "content-length plus transfer-encoding",
+            b"Content-Length: 0\r\nTransfer-Encoding: chunked",
+            (
+                b"ambiguous RESPMOD encapsulated HTTP request Content-Length with "
+                b"Transfer-Encoding"
+            ),
+        ),
+        (
+            "duplicate transfer-encoding",
+            b"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked",
+            b"duplicate RESPMOD encapsulated HTTP request Transfer-Encoding header",
+        ),
+        (
+            "non-chunked transfer-encoding",
+            b"Transfer-Encoding: gzip",
+            b"unsupported RESPMOD encapsulated HTTP request Transfer-Encoding header",
+        ),
+        (
+            "chunked without req-body",
+            b"Transfer-Encoding: chunked",
+            b"RESPMOD encapsulated HTTP request Transfer-Encoding requires req-body",
+        ),
+    )
+
+    for name, fields, expected_error in cases:
+        request_header = b"POST /upload HTTP/1.1\r\n" + fields + b"\r\n\r\n"
+        response = _placeholder_raw_exchange(
+            runner,
+            _respmod_request_with_req_hdr(
+                request_header,
+                response_header,
+                body=b"hello",
+            ),
+        )
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected_error in response, name
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
+
+
+def test_fail_open_placeholder_preserves_valid_respmod_req_hdr_metadata() -> None:
+    runner = _load_runner()
+    response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+    null_response_header = b"HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n\r\n"
+    cases = (
+        (
+            "GET metadata with body replay",
+            b"GET /download HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            response_header,
+            False,
+            b"hello",
+            b"HTTP/1.1 200 OK",
+        ),
+        (
+            "HEAD metadata with 204 conversion",
+            b"HEAD /generate_204 HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            null_response_header,
+            True,
+            None,
+            b"ICAP/1.0 204 No Content",
+        ),
+        (
+            "POST metadata with explicit zero body claim",
+            (
+                b"POST /submit HTTP/1.1\r\n"
+                b"Host: example.test\r\n"
+                b"Content-Length: 0\r\n"
+                b"content-length: 0\r\n"
+                b"X-Obs-Text: caf\xe9\r\n\r\n"
+            ),
+            response_header,
+            False,
+            b"hello",
+            b"HTTP/1.1 200 OK",
+        ),
+    )
+
+    for name, req_header, res_header, allow_204, body, expected in cases:
+        response = _placeholder_raw_exchange(
+            runner,
+            _respmod_request_with_req_hdr(
+                req_header,
+                res_header,
+                allow_204=allow_204,
+                body=body,
+            ),
+        )
+
+        assert b"HTTP/1.1 502 Bad Gateway" not in response, name
+        assert expected in response, name
+        assert b"GET /download HTTP/1.1" not in response, name
+        assert b"POST /submit HTTP/1.1" not in response, name
+
+
 def test_fail_open_placeholder_rejects_malformed_respmod_status_line_before_204_or_replay() -> None:
     runner = _load_runner()
     cases = (

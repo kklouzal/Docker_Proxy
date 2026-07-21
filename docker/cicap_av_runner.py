@@ -631,6 +631,8 @@ def _read_respmod_payload(
         message = "RESPMOD encapsulated headers ended before declared offsets"
         raise IcapProtocolError(message)
     _validate_respmod_encapsulated_boundaries(data[:terminal_offset], offsets)
+    if offsets.get("req-hdr") is not None:
+        _validate_respmod_http_request_header(data[:response_header_offset])
     http_header = data[response_header_offset:terminal_offset]
     if body_offset is None:
         return http_header, b"", True
@@ -770,6 +772,126 @@ def _validate_reqmod_http_request_for_204(
     _validate_reqmod_http_request_fields_for_204(
         lines, body_length=body_length, body_present=body_present
     )
+
+
+def _validate_respmod_http_request_start_line(raw_start_line: bytes) -> None:
+    try:
+        method, target, version = raw_start_line.split(b" ")
+    except ValueError as exc:
+        message = "malformed RESPMOD encapsulated HTTP request start line"
+        raise IcapProtocolError(message) from exc
+
+    if not method or any(ch not in _HTTP_FIELD_NAME_TCHARS for ch in method):
+        message = "invalid RESPMOD encapsulated HTTP request method token"
+        raise IcapProtocolError(message)
+    if not target or any(ch < 0x21 or ch > 0x7E for ch in target):
+        message = "invalid RESPMOD encapsulated HTTP request target"
+        raise IcapProtocolError(message)
+    if version not in {b"HTTP/1.0", b"HTTP/1.1"}:
+        message = "unsupported RESPMOD encapsulated HTTP request version"
+        raise IcapProtocolError(message)
+
+
+def _validate_respmod_http_request_field_line(line: bytes) -> tuple[bytes, bytes]:
+    if line[:1] in _CHUNK_OWS:
+        message = "obsolete folded RESPMOD encapsulated HTTP request header line"
+        raise IcapProtocolError(message)
+    if b":" not in line:
+        message = "malformed RESPMOD encapsulated HTTP request header field line"
+        raise IcapProtocolError(message)
+    raw_name, raw_value = line.split(b":", 1)
+    if not raw_name or any(ch not in _HTTP_FIELD_NAME_TCHARS for ch in raw_name):
+        message = "invalid RESPMOD encapsulated HTTP request header field name"
+        raise IcapProtocolError(message)
+    if any(ch != 0x09 and (ch < 0x20 or ch == 0x7F) for ch in raw_value):
+        message = "invalid RESPMOD encapsulated HTTP request header field value"
+        raise IcapProtocolError(message)
+    return raw_name.lower(), raw_value.strip(b" \t")
+
+
+def _parse_respmod_http_request_content_length(value: bytes) -> int:
+    if (
+        not value
+        or len(value) > MAX_HTTP_CONTENT_LENGTH_DIGITS
+        or any(ch < 0x30 or ch > 0x39 for ch in value)
+    ):
+        message = "invalid RESPMOD encapsulated HTTP request Content-Length header"
+        raise IcapProtocolError(message)
+    return int(value, 10)
+
+
+def _respmod_http_request_transfer_codings(value: bytes) -> list[bytes]:
+    codings: list[bytes] = []
+    for raw_coding in value.split(b","):
+        coding = raw_coding.strip(b" \t").lower()
+        if not coding or any(ch not in _HTTP_FIELD_NAME_TCHARS for ch in coding):
+            message = (
+                "unsupported RESPMOD encapsulated HTTP request "
+                "Transfer-Encoding header"
+            )
+            raise IcapProtocolError(message)
+        codings.append(coding)
+    return codings
+
+
+def _validate_respmod_http_request_fields(lines: list[bytes]) -> None:
+    content_length: int | None = None
+    transfer_encoding_seen = False
+    transfer_codings: list[bytes] = []
+    for line in lines[1:]:
+        if not line:
+            continue
+        name, value = _validate_respmod_http_request_field_line(line)
+        if name == b"content-length":
+            parsed_length = _parse_respmod_http_request_content_length(value)
+            if content_length is None:
+                content_length = parsed_length
+            elif content_length != parsed_length:
+                message = (
+                    "conflicting RESPMOD encapsulated HTTP request "
+                    "Content-Length headers"
+                )
+                raise IcapProtocolError(message)
+        elif name == b"transfer-encoding":
+            if transfer_encoding_seen:
+                message = (
+                    "duplicate RESPMOD encapsulated HTTP request "
+                    "Transfer-Encoding header"
+                )
+                raise IcapProtocolError(message)
+            transfer_encoding_seen = True
+            transfer_codings = _respmod_http_request_transfer_codings(value)
+
+    if transfer_codings:
+        if content_length is not None:
+            message = (
+                "ambiguous RESPMOD encapsulated HTTP request Content-Length with "
+                "Transfer-Encoding"
+            )
+            raise IcapProtocolError(message)
+        if transfer_codings.count(b"chunked") > 1:
+            message = (
+                "duplicate RESPMOD encapsulated HTTP request chunked transfer-coding"
+            )
+            raise IcapProtocolError(message)
+        if transfer_codings != [b"chunked"]:
+            message = (
+                "unsupported RESPMOD encapsulated HTTP request "
+                "Transfer-Encoding header"
+            )
+            raise IcapProtocolError(message)
+        message = "RESPMOD encapsulated HTTP request Transfer-Encoding requires req-body"
+        raise IcapProtocolError(message)
+    if content_length not in {None, 0}:
+        message = "RESPMOD encapsulated HTTP request Content-Length requires req-body"
+        raise IcapProtocolError(message)
+
+
+def _validate_respmod_http_request_header(http_header: bytes) -> None:
+    lines = _http_header_lines(http_header)
+    raw_start_line = lines[0] if lines else b""
+    _validate_respmod_http_request_start_line(raw_start_line)
+    _validate_respmod_http_request_fields(lines)
 
 
 def _validate_respmod_http_field_line(line: bytes) -> tuple[bytes, bytes]:
