@@ -73,10 +73,12 @@ def _new_ca_material(
     common_name: str,
     issuer_cert: x509.Certificate | None = None,
     issuer_key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey | None = None,
+    key: rsa.RSAPrivateKey | None = None,
+    path_length: int | None = None,
     not_before_delta: timedelta = timedelta(minutes=-5),
     not_after_delta: timedelta = timedelta(days=30),
 ) -> tuple[str, str, x509.Certificate, rsa.RSAPrivateKey]:
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key = key or rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
     issuer_name = issuer_cert.subject if issuer_cert is not None else subject
     signing_key = issuer_key if issuer_key is not None else key
@@ -89,7 +91,10 @@ def _new_ca_material(
         .serial_number(x509.random_serial_number())
         .not_valid_before(now + not_before_delta)
         .not_valid_after(now + not_after_delta)
-        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.BasicConstraints(ca=True, path_length=path_length),
+            critical=True,
+        )
         .add_extension(
             x509.KeyUsage(
                 digital_signature=True,
@@ -406,6 +411,121 @@ def test_parse_pfx_accepts_verified_partial_issuer_chain() -> None:
     assert r.bundle is not None
     assert root_pem not in r.bundle.chain_pem
     assert r.bundle.chain_pem == intermediate_pem
+
+
+def test_parse_pfx_rejects_issuer_path_length_zero_signing_selected_ca() -> None:
+    m = _import_cert_manager_module()
+    issuer_pem, _issuer_key_pem, issuer_cert, issuer_key = _new_ca_material(
+        common_name="Docker Proxy PathLen Zero Issuer",
+        path_length=0,
+    )
+    cert_pem, key_pem, _selected_cert, _selected_key = _new_ca_material(
+        common_name="Docker Proxy Uploaded SSL Bump CA",
+        issuer_cert=issuer_cert,
+        issuer_key=issuer_key,
+    )
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(cert_pem, key_pem, chain_pem=issuer_pem),
+    )
+
+    assert r.ok is False
+    assert "path length" in r.message
+
+
+def test_parse_pfx_rejects_higher_issuer_path_length_exceeded() -> None:
+    m = _import_cert_manager_module()
+    root_pem, _root_key_pem, root_cert, root_key = _new_ca_material(
+        common_name="Docker Proxy PathLen One Root",
+        path_length=1,
+    )
+    intermediate_pem, _intermediate_key_pem, intermediate_cert, intermediate_key = (
+        _new_ca_material(
+            common_name="Docker Proxy Test Intermediate",
+            issuer_cert=root_cert,
+            issuer_key=root_key,
+            path_length=1,
+        )
+    )
+    cert_pem, key_pem, _selected_cert, _selected_key = _new_ca_material(
+        common_name="Docker Proxy Uploaded SSL Bump CA",
+        issuer_cert=intermediate_cert,
+        issuer_key=intermediate_key,
+    )
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(
+            cert_pem,
+            key_pem,
+            chain_pem=intermediate_pem + root_pem,
+        ),
+    )
+
+    assert r.ok is False
+    assert "path length" in r.message
+
+
+def test_parse_pfx_skips_same_subject_issuer_with_exceeded_path_length() -> None:
+    m = _import_cert_manager_module()
+    issuer_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    bad_issuer_pem, _bad_key_pem, bad_issuer_cert, bad_issuer_key = _new_ca_material(
+        common_name="Docker Proxy Same Subject Issuer",
+        key=issuer_key,
+        path_length=0,
+    )
+    good_issuer_pem, _good_key_pem, _good_issuer_cert, _good_issuer_key = (
+        _new_ca_material(
+            common_name="Docker Proxy Same Subject Issuer",
+            key=issuer_key,
+            path_length=1,
+        )
+    )
+    cert_pem, key_pem, _selected_cert, _selected_key = _new_ca_material(
+        common_name="Docker Proxy Uploaded SSL Bump CA",
+        issuer_cert=bad_issuer_cert,
+        issuer_key=bad_issuer_key,
+    )
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(
+            cert_pem,
+            key_pem,
+            chain_pem=bad_issuer_pem + good_issuer_pem,
+        ),
+    )
+
+    assert r.ok is True
+    assert r.bundle is not None
+    assert r.bundle.chain_pem == good_issuer_pem
+
+
+def test_parse_pfx_accepts_self_issued_selected_ca_below_path_length_zero() -> None:
+    m = _import_cert_manager_module()
+    issuer_pem, _issuer_key_pem, issuer_cert, issuer_key = _new_ca_material(
+        common_name="Docker Proxy Self-Issued Rollover CA",
+        path_length=0,
+    )
+    cert_pem, key_pem, _selected_cert, _selected_key = _new_ca_material(
+        common_name="Docker Proxy Self-Issued Rollover CA",
+        issuer_cert=issuer_cert,
+        issuer_key=issuer_key,
+    )
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(cert_pem, key_pem, chain_pem=issuer_pem),
+    )
+
+    assert r.ok is True
+    assert r.bundle is not None
+    assert r.bundle.chain_pem == issuer_pem
 
 
 def test_parse_pfx_rejects_unrelated_chain_certificate() -> None:

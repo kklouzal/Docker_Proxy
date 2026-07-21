@@ -240,6 +240,41 @@ def _validate_issuer_ca_certificate(cert: x509.Certificate) -> None:
         raise PfxInstallError(msg)
 
 
+def _is_self_issued_certificate(cert: x509.Certificate) -> bool:
+    return cert.subject == cert.issuer
+
+
+def _validate_issuer_path_length(
+    issuer: x509.Certificate,
+    ordered_children: list[x509.Certificate],
+) -> None:
+    try:
+        basic_constraints = issuer.extensions.get_extension_for_class(
+            x509.BasicConstraints,
+        ).value
+    except x509.ExtensionNotFound:
+        return
+    if basic_constraints.path_length is None:
+        return
+
+    non_self_issued_ca_children = 0
+    for child in ordered_children:
+        if _is_self_issued_certificate(child):
+            continue
+        try:
+            child_basic_constraints = child.extensions.get_extension_for_class(
+                x509.BasicConstraints,
+            ).value
+        except x509.ExtensionNotFound:
+            continue
+        if child_basic_constraints.ca:
+            non_self_issued_ca_children += 1
+
+    if non_self_issued_ca_children > basic_constraints.path_length:
+        msg = "PFX issuer chain exceeds a CA path length constraint."
+        raise PfxInstallError(msg)
+
+
 def _chain_certificates_from_pem_blocks(
     selected_cert_pem: str,
     chain_certs: list[str],
@@ -333,6 +368,7 @@ def _validated_ordered_chain_certificates(
         for candidate in verified_matches:
             try:
                 _validate_issuer_ca_certificate(candidate[1])
+                _validate_issuer_path_length(candidate[1], ordered_children)
             except PfxInstallError as exc:
                 if not first_error:
                     first_error = str(exc)
