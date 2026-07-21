@@ -1852,6 +1852,139 @@ def test_fail_open_placeholder_rejects_respmod_req_hdr_body_framing_claims() -> 
         assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
 
 
+def test_fail_open_placeholder_respmod_null_body_method_matrix() -> None:
+    runner = _load_runner()
+    head_request = b"HEAD /download HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    get_request = b"GET /download HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    post_request = (
+        b"POST /submit HTTP/1.1\r\n"
+        b"Host: example.test\r\n"
+        b"Content-Length: 0\r\n\r\n"
+    )
+    put_request = (
+        b"PUT /resource HTTP/1.1\r\n"
+        b"Host: example.test\r\n"
+        b"Content-Length: 0\r\n\r\n"
+    )
+    head_response = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Length: 12345\r\n"
+        b"ETag: \"head-meta\"\r\n\r\n"
+    )
+    cl0_response = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Length: 0\r\n"
+        b"ETag: \"empty\"\r\n\r\n"
+    )
+    not_modified_response = (
+        b"HTTP/1.1 304 Not Modified\r\n"
+        b"Content-Length: 12345\r\n"
+        b"ETag: \"cached\"\r\n\r\n"
+    )
+    cases = (
+        (
+            "HEAD preserves representation metadata",
+            _respmod_request_with_req_hdr(
+                head_request,
+                head_response,
+                allow_204=False,
+            ),
+            (b"HTTP/1.1 200 OK", b"Content-Length: 12345", b"ETag: \"head-meta\""),
+            (),
+        ),
+        (
+            "GET rejects impossible positive Content-Length before 204",
+            _respmod_request_with_req_hdr(
+                get_request,
+                b"HTTP/1.1 200 OK\r\nContent-Length: 12345\r\n\r\n",
+                allow_204=True,
+            ),
+            (
+                b"HTTP/1.1 502 Bad Gateway",
+                b"RESPMOD null-body response framing requires HEAD request metadata",
+            ),
+            (b"ICAP/1.0 204 No Content", b"Content-Length: 12345\r\n\r\n"),
+        ),
+        (
+            "POST rejects impossible Transfer-Encoding before replay",
+            _respmod_request_with_req_hdr(
+                post_request,
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+                allow_204=False,
+            ),
+            (
+                b"HTTP/1.1 502 Bad Gateway",
+                b"RESPMOD null-body response framing requires HEAD request metadata",
+            ),
+            (b"Transfer-Encoding: chunked\r\n\r\n",),
+        ),
+        (
+            "PUT rejects impossible positive Content-Length before replay",
+            _respmod_request_with_req_hdr(
+                put_request,
+                b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n",
+                allow_204=False,
+            ),
+            (
+                b"HTTP/1.1 502 Bad Gateway",
+                b"RESPMOD null-body response framing requires HEAD request metadata",
+            ),
+            (b"Content-Length: 7\r\n\r\n",),
+        ),
+        (
+            "GET preserves explicit zero Content-Length",
+            _respmod_request_with_req_hdr(
+                get_request,
+                cl0_response,
+                allow_204=False,
+            ),
+            (b"HTTP/1.1 200 OK", b"Content-Length: 0", b"ETag: \"empty\""),
+            (b"HTTP/1.1 502 Bad Gateway",),
+        ),
+        (
+            "GET preserves 304 metadata rules",
+            _respmod_request_with_req_hdr(
+                get_request,
+                not_modified_response,
+                allow_204=False,
+            ),
+            (
+                b"HTTP/1.1 304 Not Modified",
+                b"Content-Length: 12345",
+                b"ETag: \"cached\"",
+            ),
+            (b"HTTP/1.1 502 Bad Gateway",),
+        ),
+    )
+
+    for name, request, expected_values, forbidden_values in cases:
+        response = _placeholder_raw_exchange(runner, request)
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        for expected in expected_values:
+            assert expected in response, name
+        for forbidden in forbidden_values:
+            assert forbidden not in response, name
+
+
+def test_fail_open_placeholder_preserves_absent_respmod_req_hdr_ambiguity() -> None:
+    runner = _load_runner()
+    response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 12345\r\n\r\n"
+    response = _placeholder_raw_exchange(
+        runner,
+        _respmod_request_for_response(
+            response_header,
+            allow_204=False,
+            body=None,
+        ),
+    )
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" not in response
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"Content-Length: 12345" in response
+
+
 def test_fail_open_placeholder_preserves_valid_respmod_req_hdr_metadata() -> None:
     runner = _load_runner()
     response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"

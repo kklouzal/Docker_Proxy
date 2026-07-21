@@ -611,7 +611,7 @@ def _drain_encapsulated_body(
 
 def _read_respmod_payload(
     sock: socket.socket, header: bytes, remainder: bytes
-) -> tuple[bytes, bytes, bool]:
+) -> tuple[bytes, bytes, bool, bytes | None]:
     _start_line, headers = _split_headers(header)
     offsets = _parse_encapsulated(headers.get("encapsulated", ""))
     _validate_respmod_encapsulated_offsets(offsets)
@@ -631,15 +631,18 @@ def _read_respmod_payload(
         message = "RESPMOD encapsulated headers ended before declared offsets"
         raise IcapProtocolError(message)
     _validate_respmod_encapsulated_boundaries(data[:terminal_offset], offsets)
+    request_method = None
     if offsets.get("req-hdr") is not None:
-        _validate_respmod_http_request_header(data[:response_header_offset])
+        request_method = _validate_respmod_http_request_header(
+            data[:response_header_offset]
+        )
     http_header = data[response_header_offset:terminal_offset]
     if body_offset is None:
-        return http_header, b"", True
+        return http_header, b"", True, request_method
     body, _unused = _read_chunked_body(
         sock, data[body_offset:], preview="preview" in headers
     )
-    return http_header, body, False
+    return http_header, body, False, request_method
 
 
 def _icap_response(status: str, headers: dict[str, str] | None = None) -> bytes:
@@ -774,7 +777,7 @@ def _validate_reqmod_http_request_for_204(
     )
 
 
-def _validate_respmod_http_request_start_line(raw_start_line: bytes) -> None:
+def _validate_respmod_http_request_start_line(raw_start_line: bytes) -> bytes:
     try:
         method, target, version = raw_start_line.split(b" ")
     except ValueError as exc:
@@ -790,6 +793,7 @@ def _validate_respmod_http_request_start_line(raw_start_line: bytes) -> None:
     if version not in {b"HTTP/1.0", b"HTTP/1.1"}:
         message = "unsupported RESPMOD encapsulated HTTP request version"
         raise IcapProtocolError(message)
+    return method
 
 
 def _validate_respmod_http_request_field_line(line: bytes) -> tuple[bytes, bytes]:
@@ -882,11 +886,12 @@ def _validate_respmod_http_request_fields(lines: list[bytes]) -> None:
             raise IcapProtocolError(message)
 
 
-def _validate_respmod_http_request_header(http_header: bytes) -> None:
+def _validate_respmod_http_request_header(http_header: bytes) -> bytes:
     lines = _http_header_lines(http_header)
     raw_start_line = lines[0] if lines else b""
-    _validate_respmod_http_request_start_line(raw_start_line)
+    method = _validate_respmod_http_request_start_line(raw_start_line)
     _validate_respmod_http_request_fields(lines)
+    return method
 
 
 def _validate_respmod_http_field_line(line: bytes) -> tuple[bytes, bytes]:
@@ -930,7 +935,7 @@ def _http_transfer_codings(value: bytes) -> list[bytes]:
 
 def _validate_respmod_http_response_fields_for_replay(
     lines: list[bytes], *, body_length: int, body_present: bool
-) -> None:
+) -> tuple[int | None, list[bytes]]:
     content_length: int | None = None
     transfer_encoding_seen = False
     transfer_codings: list[bytes] = []
@@ -970,11 +975,12 @@ def _validate_respmod_http_response_fields_for_replay(
     elif body_present and content_length is not None and content_length != body_length:
         message = "RESPMOD encapsulated HTTP Content-Length mismatches decoded body"
         raise IcapProtocolError(message)
+    return content_length, transfer_codings
 
 
 def _validate_respmod_http_response_for_replay(
     http_header: bytes, *, body_length: int, body_present: bool
-) -> None:
+) -> tuple[int, int | None, list[bytes]]:
     lines = _http_header_lines(http_header)
     raw_start_line = lines[0] if lines else b""
     if raw_start_line.startswith((b"HTTP/1.0 ", b"HTTP/1.1 ")):
@@ -1006,9 +1012,25 @@ def _validate_respmod_http_response_for_replay(
         message = "RESPMOD encapsulated HTTP response status forbids a body"
         raise IcapProtocolError(message)
 
-    _validate_respmod_http_response_fields_for_replay(
+    content_length, transfer_codings = _validate_respmod_http_response_fields_for_replay(
         lines, body_length=body_length, body_present=body_present
     )
+    return status, content_length, transfer_codings
+
+
+def _validate_respmod_null_body_framing_for_replay(
+    http_header: bytes, *, request_method: bytes | None
+) -> None:
+    status, content_length, transfer_codings = _validate_respmod_http_response_for_replay(
+        http_header, body_length=0, body_present=False
+    )
+    if request_method is None or request_method == b"HEAD":
+        return
+    if 100 <= status < 200 or status in {204, 304}:
+        return
+    if transfer_codings or (content_length is not None and content_length > 0):
+        message = "RESPMOD null-body response framing requires HEAD request metadata"
+        raise IcapProtocolError(message)
 
 
 def _http_header_for_body_replay(http_header: bytes, body_length: int) -> bytes:
@@ -1043,10 +1065,10 @@ def _clean_respmod_response(http_header: bytes, body: bytes, istag: str) -> byte
 
 
 def _clean_respmod_no_body_response(
-    *, allow_204: bool, http_header: bytes, istag: str
+    *, allow_204: bool, http_header: bytes, istag: str, request_method: bytes | None
 ) -> bytes:
-    _validate_respmod_http_response_for_replay(
-        http_header, body_length=0, body_present=False
+    _validate_respmod_null_body_framing_for_replay(
+        http_header, request_method=request_method
     )
     if allow_204:
         return _icap_response("204 No Content", {"ISTag": istag})
@@ -1106,14 +1128,15 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
                                 part.strip()
                                 for part in headers.get("allow", "").split(",")
                             }
-                            http_header, body, null_body = _read_respmod_payload(
-                                self.request, header, remainder
+                            http_header, body, null_body, request_method = (
+                                _read_respmod_payload(self.request, header, remainder)
                             )
                             if null_body:
                                 response = _clean_respmod_no_body_response(
                                     allow_204=allow_204,
                                     http_header=http_header,
                                     istag=istag,
+                                    request_method=request_method,
                                 )
                             else:
                                 response = _clean_respmod_response(
