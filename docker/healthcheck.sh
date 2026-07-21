@@ -289,6 +289,45 @@ clamd_host_is_remote() {
     esac
 }
 
+remote_clamd_responding() {
+    python3 - <<'PY'
+import os
+import socket
+
+
+def recv_clamd_reply(sock: socket.socket, max_bytes: int = 64) -> bytes:
+    data = bytearray()
+    while len(data) < max_bytes:
+        chunk = sock.recv(max_bytes - len(data))
+        if not chunk:
+            break
+        data.extend(chunk)
+        if b"\n" in chunk or b"\0" in chunk:
+            break
+    return bytes(data)
+
+
+def clamd_ping_reply_is_pong(data: bytes) -> bool:
+    if data.endswith(b"\r\n"):
+        payload = data[:-2]
+    elif data.endswith((b"\n", b"\0")):
+        payload = data[:-1]
+    else:
+        return False
+    return payload == b"PONG"
+
+
+host = (os.environ.get("CLAMD_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+port = int((os.environ.get("CLAMD_PORT") or "3310").strip())
+with socket.create_connection((host, port), 1.5) as sock:
+    sock.settimeout(1.5)
+    sock.sendall(b"PING\n")
+    reply = recv_clamd_reply(sock)
+if not clamd_ping_reply_is_pong(reply):
+    raise SystemExit(1)
+PY
+}
+
 clamp_workers() {
     raw="${1:-1}"
     case "$raw" in
@@ -478,7 +517,7 @@ if clamav_required; then
     done
 
     # Check the remote clamd backend used by the local AV ICAP services.
-    if ! python3 -c "import os,socket; host=(os.environ.get('CLAMD_HOST') or '127.0.0.1').strip() or '127.0.0.1'; port=int((os.environ.get('CLAMD_PORT') or '3310').strip()); s=socket.create_connection((host, port), 1.5); s.settimeout(1.5); s.sendall(b'PING\n'); d=s.recv(64); s.close(); assert d.startswith(b'PONG')" >/dev/null 2>&1; then
+    if ! remote_clamd_responding >/dev/null 2>&1; then
         echo "CLAMAV_REQUIRED is set but remote clamd is not responding"
         exit 1
     fi
