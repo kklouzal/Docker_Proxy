@@ -1605,6 +1605,7 @@ def _respmod_request_for_response(
     http_header: bytes,
     *,
     allow_204: bool = False,
+    allow_header: bytes | None = None,
     body: bytes | None = None,
 ) -> bytes:
     body_section = b""
@@ -1612,7 +1613,8 @@ def _respmod_request_for_response(
     if body is not None:
         terminal_name = "res-body"
         body_section = f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n0\r\n\r\n"
-    allow_header = b"Allow: 204\r\n" if allow_204 else b""
+    if allow_header is None:
+        allow_header = b"Allow: 204\r\n" if allow_204 else b""
     return (
         b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
         b"Host: 127.0.0.1\r\n"
@@ -1624,6 +1626,47 @@ def _respmod_request_for_response(
         + http_header
         + body_section
     )
+
+
+def test_fail_open_placeholder_respmod_allow_204_eligibility_matrix() -> None:
+    runner = _load_runner()
+    http_header = b"HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n\r\n"
+    cases = (
+        ("absent Allow", b"", False),
+        ("plain 204", b"Allow: 204\r\n", True),
+        ("outer OWS around 204", b"Allow: \t204 \t\r\n", True),
+        ("mixed-case field name", b"aLlOw: 204\r\n", True),
+        ("comma-separated extension before 204", b"Allow: preview, 204\r\n", True),
+        ("comma-separated extension after 204", b"Allow: 204, preview\r\n", True),
+        ("repeated 204 token", b"Allow: 204, 204\r\n", True),
+        ("unsupported tokens only", b"Allow: preview, x-feature\r\n", False),
+        ("204 prefix token", b"Allow: 204foo\r\n", False),
+        ("leading zero token", b"Allow: 0204\r\n", False),
+        ("parameterized token", b"Allow: 204;param\r\n", False),
+        ("empty value", b"Allow: \r\n", False),
+        ("empty element before 204", b"Allow: , 204\r\n", False),
+        ("empty element after 204", b"Allow: 204,\r\n", False),
+        ("empty element between tokens", b"Allow: 204,,preview\r\n", False),
+        ("internal whitespace token", b"Allow: 204\tfoo\r\n", False),
+        ("non-ascii token", b"Allow: 204, caf\xe9\r\n", False),
+    )
+
+    for name, allow_header, expected_204 in cases:
+        response = _placeholder_raw_exchange(
+            runner,
+            _respmod_request_for_response(
+                http_header,
+                allow_header=allow_header,
+            ),
+        )
+
+        if expected_204:
+            assert response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
+            assert b"HTTP/1.1 204 No Content" not in response, name
+        else:
+            assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+            assert b"HTTP/1.1 204 No Content" in response, name
+            assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
 
 
 def _respmod_request_with_req_hdr(

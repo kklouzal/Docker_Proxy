@@ -180,6 +180,25 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
     return offsets
 
 
+def _respmod_allow_204_eligible(value: str | None) -> bool:
+    if value is None or value == "":
+        return False
+    allow_204 = False
+    for raw_item in value.split(","):
+        item = raw_item.strip(" \t")
+        if not item:
+            return False
+        try:
+            token = item.encode("ascii")
+        except UnicodeEncodeError:
+            return False
+        if any(ch not in _CHUNK_TCHARS for ch in token):
+            return False
+        if item == "204":
+            allow_204 = True
+    return allow_204
+
+
 def _validate_respmod_encapsulated_offsets(
     offsets: dict[str, int],
     *,
@@ -1124,10 +1143,9 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
                     try:
                         if method == "RESPMOD":
                             _start_line, headers = _split_headers(header)
-                            allow_204 = "204" in {
-                                part.strip()
-                                for part in headers.get("allow", "").split(",")
-                            }
+                            allow_204 = _respmod_allow_204_eligible(
+                                headers.get("allow")
+                            )
                             http_header, body, null_body, request_method = (
                                 _read_respmod_payload(self.request, header, remainder)
                             )
