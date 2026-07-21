@@ -632,6 +632,23 @@ def test_admin_ui_https_preference_persists_configured_sans_in_leaf(
     assert "192.0.2.10" in [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
 
 
+def test_admin_ui_https_request_sans_parse_bracketed_ipv6_request_host(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    with loaded.module.app.test_request_context(
+        "/certs",
+        base_url="http://[2001:db8::10]:8443",
+    ):
+        tokens = loaded.module._admin_ui_https_request_san_tokens()
+
+    assert tokens[:2] == ("[2001:db8::10]:8443", "2001:db8::10")
+    normalized = loaded.module.normalize_admin_ui_certificate_sans(tokens)
+    assert "2001:db8::10" in normalized
+    assert "[2001" not in normalized
+
+
 def test_admin_ui_https_preference_rejects_invalid_configured_san(
     monkeypatch, tmp_path
 ) -> None:

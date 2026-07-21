@@ -3852,7 +3852,7 @@ def _admin_ui_https_request_san_tokens() -> tuple[str, ...]:
         tokens.extend(
             [
                 request.host,
-                request.host.split(":", 1)[0],
+                sanitize_admin_ui_certificate_san_token(request.host),
                 request.headers.get("X-Forwarded-Host", ""),
             ],
         )
