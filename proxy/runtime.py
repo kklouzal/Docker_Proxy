@@ -2931,25 +2931,28 @@ class ProxyRuntime:
             )
         except Exception as exc:
             restore_detail = ""
-            current_result_sha = current_sha
             if material_snapshot:
-                restore_ok, restore_detail = self._restore_certificate_material(
+                _restore_ok, restore_detail = self._restore_certificate_material(
                     material_snapshot,
                 )
-                current_result_sha = self._current_certificate_bundle_sha() or (
-                    current_sha if restore_ok else ""
-                )
-            elif not current_result_sha:
-                current_result_sha = self._current_certificate_bundle_sha()
+            verified_current_sha = self._current_certificate_bundle_sha()
             detail = public_error_message(
                 exc,
                 default="Failed to materialize certificate bundle.",
             )
             sha_detail = (
                 "Current certificate bundle after failed materialization/rollback: "
-                f"{current_result_sha}. Desired failed revision bundle: {revision.bundle_sha256}."
-                if current_result_sha
-                else f"Desired failed revision bundle: {revision.bundle_sha256}."
+                f"{verified_current_sha}. Desired failed revision bundle: {revision.bundle_sha256}."
+                if verified_current_sha
+                else (
+                    "Current certificate bundle after failed materialization/rollback could not be verified. "
+                    f"Desired failed revision bundle: {revision.bundle_sha256}."
+                )
+            )
+            previous_sha_detail = (
+                f"Last-known certificate bundle before failed apply: {current_sha}."
+                if current_sha
+                else ""
             )
             detail = "\n".join(
                 part
@@ -2957,6 +2960,7 @@ class ProxyRuntime:
                     detail,
                     restore_detail,
                     sha_detail,
+                    previous_sha_detail,
                 )
                 if str(part or "").strip()
             )
@@ -2966,7 +2970,7 @@ class ProxyRuntime:
                 ok=False,
                 detail=detail,
                 applied_by="proxy",
-                bundle_sha256=current_result_sha,
+                bundle_sha256=verified_current_sha,
             )
             return {
                 "ok": False,
@@ -2975,9 +2979,10 @@ class ProxyRuntime:
                 "application_id": applied.application_id,
                 "changed": False,
                 "detail": detail,
-                "certificate_bundle_sha256": current_result_sha,
+                "certificate_bundle_sha256": verified_current_sha,
                 "desired_certificate_bundle_sha256": revision.bundle_sha256,
-                "current_certificate_sha": current_result_sha,
+                "previous_certificate_bundle_sha256": current_sha,
+                "current_certificate_sha": verified_current_sha,
             }
 
         ok_restart, restart_detail = self._reinitialize_ssl_db_and_restart()
@@ -2991,16 +2996,21 @@ class ProxyRuntime:
             recovery_detail = ""
             if rollback_ok:
                 recovery_ok, recovery_detail = self._reinitialize_ssl_db_and_restart()
-            restored_sha = self._current_certificate_bundle_sha() or (
-                current_sha if rollback_ok else ""
-            )
-            if restored_sha:
-                current_result_sha = restored_sha
+            verified_current_sha = self._current_certificate_bundle_sha()
+            current_result_sha = verified_current_sha
             sha_detail = (
                 "Current certificate bundle after failed apply/rollback: "
-                f"{restored_sha}. Desired failed revision bundle: {revision.bundle_sha256}."
-                if restored_sha
-                else f"Desired failed revision bundle: {revision.bundle_sha256}."
+                f"{verified_current_sha}. Desired failed revision bundle: {revision.bundle_sha256}."
+                if verified_current_sha
+                else (
+                    "Current certificate bundle after failed apply/rollback could not be verified. "
+                    f"Desired failed revision bundle: {revision.bundle_sha256}."
+                )
+            )
+            previous_sha_detail = (
+                f"Last-known certificate bundle before failed apply: {current_sha}."
+                if current_sha
+                else ""
             )
             detail = "\n".join(
                 part
@@ -3016,6 +3026,7 @@ class ProxyRuntime:
                     else "",
                     recovery_detail,
                     sha_detail,
+                    previous_sha_detail,
                 )
                 if str(part or "").strip()
             )
@@ -3036,6 +3047,7 @@ class ProxyRuntime:
             "detail": detail,
             "certificate_bundle_sha256": current_result_sha,
             "desired_certificate_bundle_sha256": revision.bundle_sha256,
+            "previous_certificate_bundle_sha256": current_sha,
             "current_certificate_sha": current_result_sha,
         }
 

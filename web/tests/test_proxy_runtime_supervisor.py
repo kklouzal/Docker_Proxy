@@ -5621,6 +5621,175 @@ def test_sync_certificate_bundle_retries_materialization_after_successful_rollba
     assert records == [(False, "oldsha"), (True, "newsha")]
 
 
+def test_sync_certificate_bundle_failed_restart_and_failed_rollback_reports_unknown_current(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.certificate_core import CertificateBundle  # type: ignore
+
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    current_sha = {"value": "oldsha"}
+    runtime.services = SimpleNamespace(
+        current_certificate_sha_reader=lambda: current_sha["value"]
+    )
+    runtime.cert_manager = SimpleNamespace(ca_dir="/unused")
+    runtime._snapshot_certificate_material = lambda: {"ca.crt": b"old cert"}
+    runtime._restore_certificate_material = lambda _snapshot: (
+        current_sha.update(value="")
+        or (False, "failed to restore previous certificate material")
+    )
+    restart_calls: list[bool] = []
+    runtime._reinitialize_ssl_db_and_restart = lambda: (
+        restart_calls.append(True) or (False, "squid restart failed")
+    )
+
+    def fake_materialize(_ca_dir, bundle, **_kwargs) -> None:
+        current_sha["value"] = bundle.bundle_sha256
+
+    monkeypatch.setattr(
+        runtime_module,
+        "materialize_certificate_bundle",
+        fake_materialize,
+    )
+
+    class Revision:
+        revision_id = 7
+        bundle_sha256 = "newsha"
+        original_pfx_blob = None
+
+        def to_bundle(self):
+            return CertificateBundle(
+                cert_pem="NEW CERT\n",
+                key_pem="NEW KEY\n",
+                bundle_sha256="newsha",
+                cert_sha256="newcertsha",
+            )
+
+    records: list[tuple[bool, str, str]] = []
+
+    class Bundles:
+        def get_active_bundle_metadata(self):
+            return SimpleNamespace(revision_id=7, bundle_sha256="newsha")
+
+        def latest_apply(self, *_args, **_kwargs):
+            return None
+
+        def get_active_bundle(self):
+            return Revision()
+
+        def record_apply_result(self, _proxy_id, revision_id, **kwargs):
+            records.append(
+                (
+                    bool(kwargs["ok"]),
+                    str(kwargs["bundle_sha256"]),
+                    str(kwargs["detail"]),
+                )
+            )
+            return SimpleNamespace(application_id=12, revision_id=revision_id)
+
+    runtime.certificate_bundles = Bundles()
+
+    result = runtime.sync_certificate_bundle(force=False)
+
+    assert result["ok"] is False
+    assert result["changed"] is False
+    assert restart_calls == [True]
+    assert records
+    assert records[-1][0] is False
+    assert records[-1][1] == ""
+    assert result["certificate_bundle_sha256"] == ""
+    assert result["current_certificate_sha"] == ""
+    assert result["previous_certificate_bundle_sha256"] == "oldsha"
+    assert result["desired_certificate_bundle_sha256"] == "newsha"
+    assert "squid restart failed" in result["detail"]
+    assert "failed to restore previous certificate material" in result["detail"]
+    assert "could not be verified" in result["detail"]
+    assert "Last-known certificate bundle before failed apply: oldsha" in result["detail"]
+
+
+def test_sync_certificate_bundle_retry_after_unknown_rollback_rematerializes(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.certificate_core import CertificateBundle  # type: ignore
+
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    current_sha = {"value": ""}
+    runtime.services = SimpleNamespace(
+        current_certificate_sha_reader=lambda: current_sha["value"]
+    )
+    runtime.cert_manager = SimpleNamespace(ca_dir="/unused")
+    runtime._snapshot_certificate_material = lambda: {"ca.crt": b"unknown current"}
+    runtime._restore_certificate_material = lambda _snapshot: (
+        False,
+        "failed to restore previous certificate material",
+    )
+    restart_calls: list[bool] = []
+    runtime._reinitialize_ssl_db_and_restart = lambda: (
+        restart_calls.append(True) or (True, "new squid ready")
+    )
+
+    materialized: list[str] = []
+
+    def fake_materialize(_ca_dir, bundle, **_kwargs) -> None:
+        materialized.append(bundle.bundle_sha256)
+        current_sha["value"] = bundle.bundle_sha256
+
+    monkeypatch.setattr(
+        runtime_module,
+        "materialize_certificate_bundle",
+        fake_materialize,
+    )
+
+    class Revision:
+        revision_id = 7
+        bundle_sha256 = "newsha"
+        original_pfx_blob = None
+
+        def to_bundle(self):
+            return CertificateBundle(
+                cert_pem="NEW CERT\n",
+                key_pem="NEW KEY\n",
+                bundle_sha256="newsha",
+                cert_sha256="newcertsha",
+            )
+
+    records: list[tuple[bool, str]] = []
+
+    class Bundles:
+        def get_active_bundle_metadata(self):
+            return SimpleNamespace(revision_id=7, bundle_sha256="newsha")
+
+        def latest_apply(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                revision_id=7,
+                ok=False,
+                detail="previous rollback failed; current certificate unknown",
+                bundle_sha256="",
+            )
+
+        def get_active_bundle(self):
+            return Revision()
+
+        def record_apply_result(self, _proxy_id, revision_id, **kwargs):
+            records.append((bool(kwargs["ok"]), str(kwargs["bundle_sha256"])))
+            return SimpleNamespace(application_id=13, revision_id=revision_id)
+
+    runtime.certificate_bundles = Bundles()
+
+    result = runtime.sync_certificate_bundle(force=False)
+
+    assert result["ok"] is True
+    assert materialized == ["newsha"]
+    assert restart_calls == [True]
+    assert records == [(True, "newsha")]
+    assert result["certificate_bundle_sha256"] == "newsha"
+
+
 def test_sync_certificate_bundle_retries_failed_rollback_against_desired_revision(
     monkeypatch,
 ) -> None:
