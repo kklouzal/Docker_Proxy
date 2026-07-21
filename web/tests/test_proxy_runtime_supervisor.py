@@ -5418,6 +5418,7 @@ def test_sync_certificate_bundle_rolls_back_material_after_restart_failure(
     assert (cert_dir / "ca.crt").read_text(encoding="utf-8") == "OLD CERT\n"
     assert (cert_dir / "ca.key").read_text(encoding="utf-8") == "OLD KEY\n"
     assert (cert_dir / "uploaded_ca.pfx").read_bytes() == b"old-pfx"
+    assert not (cert_dir / ".ca-material.json").exists()
     assert records
     assert records[-1][0] is False
     assert records[-1][2] == "newsha"

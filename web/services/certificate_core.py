@@ -4,6 +4,7 @@ import contextlib
 import fcntl
 import hashlib
 import ipaddress
+import json
 import logging
 import os
 import pathlib
@@ -149,17 +150,176 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8", errors="replace")).hexdigest()
 
 
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 @contextlib.contextmanager
-def _certificate_material_install_lock(ca_dir: str):
+def _certificate_material_lock(ca_dir: str, *, exclusive: bool):
     lock_path = pathlib.Path(ca_dir) / ".certificate-materialize.lock"
     with lock_path.open("a+b") as lock_file:
         with contextlib.suppress(OSError):
             lock_path.chmod(0o600)
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        lock_mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(lock_file.fileno(), lock_mode)
         try:
             yield
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def _certificate_material_install_lock(ca_dir: str):
+    with _certificate_material_lock(ca_dir, exclusive=True):
+        yield
+
+
+@contextlib.contextmanager
+def _certificate_material_read_lock(ca_dir: str):
+    with _certificate_material_lock(ca_dir, exclusive=False):
+        yield
+
+
+def _certificate_material_marker_name(cert_name: str, key_name: str) -> str:
+    if cert_name == "ca.crt" and key_name == "ca.key":
+        return ".ca-material.json"
+    if cert_name == ADMIN_UI_CERT_FILENAME and key_name == ADMIN_UI_KEY_FILENAME:
+        return ".admin-ui-material.json"
+    return ""
+
+
+def _certificate_material_marker_path(
+    ca_dir: str,
+    *,
+    cert_name: str,
+    key_name: str,
+) -> pathlib.Path | None:
+    marker_name = _certificate_material_marker_name(cert_name, key_name)
+    if not marker_name:
+        return None
+    return pathlib.Path(ca_dir) / marker_name
+
+
+def _path_sha256_if_present(path: pathlib.Path) -> str:
+    if not path.exists():
+        return ""
+    return _sha256_bytes(path.read_bytes())
+
+
+def _certificate_material_state(
+    ca_dir: str,
+    *,
+    cert_name: str,
+    key_name: str,
+    pfx_name: str = "",
+) -> dict[str, object]:
+    base = pathlib.Path(ca_dir)
+    state: dict[str, object] = {
+        "version": 1,
+        "cert_name": cert_name,
+        "key_name": key_name,
+        "cert_sha256": _path_sha256_if_present(base / cert_name),
+        "key_sha256": _path_sha256_if_present(base / key_name),
+    }
+    if pfx_name:
+        state["pfx_name"] = pfx_name
+        state["pfx_sha256"] = _path_sha256_if_present(base / pfx_name)
+    return state
+
+
+def _write_certificate_material_marker(
+    ca_dir: str,
+    *,
+    cert_name: str,
+    key_name: str,
+    pfx_name: str = "",
+) -> None:
+    marker_path = _certificate_material_marker_path(
+        ca_dir,
+        cert_name=cert_name,
+        key_name=key_name,
+    )
+    if marker_path is None:
+        return
+    payload = json.dumps(
+        _certificate_material_state(
+            ca_dir,
+            cert_name=cert_name,
+            key_name=key_name,
+            pfx_name=pfx_name,
+        ),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            delete=False,
+            dir=ca_dir,
+            encoding="utf-8",
+        ) as marker_file:
+            marker_file.write(payload)
+            marker_file.write("\n")
+            marker_file.flush()
+            os.fsync(marker_file.fileno())
+            tmp_path = marker_file.name
+        pathlib.Path(tmp_path).replace(marker_path)
+        tmp_path = ""
+    finally:
+        if tmp_path:
+            with contextlib.suppress(OSError):
+                pathlib.Path(tmp_path).unlink()
+
+
+def _ensure_existing_certificate_material_marker(
+    ca_dir: str,
+    *,
+    cert_name: str,
+    key_name: str,
+    pfx_name: str = "",
+) -> None:
+    marker_path = _certificate_material_marker_path(
+        ca_dir,
+        cert_name=cert_name,
+        key_name=key_name,
+    )
+    if marker_path is None or marker_path.exists():
+        return
+    base = pathlib.Path(ca_dir)
+    if (base / cert_name).exists() and (base / key_name).exists():
+        _write_certificate_material_marker(
+            ca_dir,
+            cert_name=cert_name,
+            key_name=key_name,
+            pfx_name=pfx_name,
+        )
+
+
+def _certificate_material_marker_matches_current(
+    ca_dir: str,
+    *,
+    cert_name: str,
+    key_name: str,
+    pfx_name: str = "",
+) -> bool:
+    marker_path = _certificate_material_marker_path(
+        ca_dir,
+        cert_name=cert_name,
+        key_name=key_name,
+    )
+    if marker_path is None or not marker_path.exists():
+        return True
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return marker == _certificate_material_state(
+        ca_dir,
+        cert_name=cert_name,
+        key_name=key_name,
+        pfx_name=pfx_name,
+    )
 
 
 def _path_status(
@@ -287,7 +447,7 @@ def _certificate_validity_detail(cert: x509.Certificate) -> str:
     return ""
 
 
-def validate_tls_material_paths(certfile: str, keyfile: str) -> TlsMaterialValidation:
+def _validate_tls_material_paths_unlocked(certfile: str, keyfile: str) -> TlsMaterialValidation:
     cert_status, cert = _path_status(
         certfile,
         parser=_load_pem_certificate,
@@ -337,6 +497,44 @@ def validate_tls_material_paths(certfile: str, keyfile: str) -> TlsMaterialValid
         ready=True,
         detail="certificate and private key are valid.",
     )
+
+
+def _managed_material_pair(certfile: str, keyfile: str) -> tuple[str, str, str, str] | None:
+    cert_path = pathlib.Path((certfile or "").strip())
+    key_path = pathlib.Path((keyfile or "").strip())
+    if not cert_path.name or not key_path.name or cert_path.parent != key_path.parent:
+        return None
+    marker_name = _certificate_material_marker_name(cert_path.name, key_path.name)
+    if not marker_name:
+        return None
+    pfx_name = "uploaded_ca.pfx" if cert_path.name == "ca.crt" and key_path.name == "ca.key" else ""
+    return str(cert_path.parent), cert_path.name, key_path.name, pfx_name
+
+
+def validate_tls_material_paths(certfile: str, keyfile: str) -> TlsMaterialValidation:
+    managed_pair = _managed_material_pair(certfile, keyfile)
+    if managed_pair is None or not pathlib.Path(managed_pair[0]).is_dir():
+        return _validate_tls_material_paths_unlocked(certfile, keyfile)
+
+    ca_dir, cert_name, key_name, pfx_name = managed_pair
+    with _certificate_material_read_lock(ca_dir):
+        validation = _validate_tls_material_paths_unlocked(certfile, keyfile)
+        if validation.ready and not _certificate_material_marker_matches_current(
+            ca_dir,
+            cert_name=cert_name,
+            key_name=key_name,
+            pfx_name=pfx_name,
+        ):
+            return TlsMaterialValidation(
+                cert_status=validation.cert_status,
+                key_status=validation.key_status,
+                ready=False,
+                detail=(
+                    "certificate material transaction marker does not match current "
+                    "certificate/key files; retry installation before trusting this material."
+                ),
+            )
+        return validation
 
 
 def _dns_san_valid(hostname: str) -> bool:
@@ -505,6 +703,8 @@ def materialize_admin_ui_server_certificate(
             dir=ca_dir,
         ) as cert_tmp:
             cert_tmp.write(cert.public_bytes(serialization.Encoding.PEM))
+            cert_tmp.flush()
+            os.fsync(cert_tmp.fileno())
             tmp_cert_path = cert_tmp.name
         with tempfile.NamedTemporaryFile(
             "wb",
@@ -518,13 +718,25 @@ def materialize_admin_ui_server_certificate(
                     serialization.NoEncryption(),
                 ),
             )
+            key_tmp.flush()
+            os.fsync(key_tmp.fileno())
             tmp_key_path = key_tmp.name
         with _certificate_material_install_lock(ca_dir):
+            _ensure_existing_certificate_material_marker(
+                ca_dir,
+                cert_name=ADMIN_UI_CERT_FILENAME,
+                key_name=ADMIN_UI_KEY_FILENAME,
+            )
             pathlib.Path(tmp_cert_path).replace(certfile)
             tmp_cert_path = ""
             pathlib.Path(tmp_key_path).replace(keyfile)
             tmp_key_path = ""
             _set_best_effort_permissions(certfile, keyfile)
+            _write_certificate_material_marker(
+                ca_dir,
+                cert_name=ADMIN_UI_CERT_FILENAME,
+                key_name=ADMIN_UI_KEY_FILENAME,
+            )
     finally:
         for path in (tmp_cert_path, tmp_key_path):
             if path:
@@ -657,6 +869,8 @@ def materialize_certificate_bundle(
             encoding="utf-8",
         ) as cert_file:
             cert_file.write(bundle.fullchain_pem or bundle.cert_pem)
+            cert_file.flush()
+            os.fsync(cert_file.fileno())
             tmp_cert_path = cert_file.name
         with tempfile.NamedTemporaryFile(
             "w",
@@ -665,6 +879,8 @@ def materialize_certificate_bundle(
             encoding="utf-8",
         ) as key_file:
             key_file.write(bundle.key_pem)
+            key_file.flush()
+            os.fsync(key_file.fileno())
             tmp_key_path = key_file.name
 
         pfx_bytes = (
@@ -679,9 +895,17 @@ def materialize_certificate_bundle(
                 dir=ca_dir,
             ) as pfx_file:
                 pfx_file.write(pfx_bytes)
+                pfx_file.flush()
+                os.fsync(pfx_file.fileno())
                 tmp_pfx_path = pfx_file.name
 
         with _certificate_material_install_lock(ca_dir):
+            _ensure_existing_certificate_material_marker(
+                ca_dir,
+                cert_name="ca.crt",
+                key_name="ca.key",
+                pfx_name="uploaded_ca.pfx",
+            )
             pathlib.Path(tmp_cert_path).replace(dest_cert)
             tmp_cert_path = ""
             pathlib.Path(tmp_key_path).replace(dest_key)
@@ -693,6 +917,12 @@ def materialize_certificate_bundle(
                 pathlib.Path(dest_pfx).unlink()
 
             _set_best_effort_permissions(dest_cert, dest_key)
+            _write_certificate_material_marker(
+                ca_dir,
+                cert_name="ca.crt",
+                key_name="ca.key",
+                pfx_name="uploaded_ca.pfx",
+            )
     finally:
         for path in (tmp_cert_path, tmp_key_path, tmp_pfx_path):
             if path:
@@ -701,36 +931,47 @@ def materialize_certificate_bundle(
 
 
 def load_local_certificate_bundle(ca_dir: str) -> CertificateBundle | None:
-    cert_path = os.path.join(ca_dir, "ca.crt")
-    key_path = os.path.join(ca_dir, "ca.key")
-    if not (pathlib.Path(cert_path).exists() and pathlib.Path(key_path).exists()):
+    base = pathlib.Path(ca_dir)
+    cert_path = base / "ca.crt"
+    key_path = base / "ca.key"
+    if not base.is_dir():
         return None
     try:
-        cert_text = pathlib.Path(cert_path).read_text(encoding="utf-8", errors="ignore")
-        key_text = pathlib.Path(key_path).read_text(encoding="utf-8", errors="ignore")
-        leaf_cert, chain_pem = _split_cert_chain(cert_text)
-        if not leaf_cert:
-            return None
-        private_key = (
-            _first_pem_block(key_text, "PRIVATE KEY")
-            or _first_pem_block(key_text, "RSA PRIVATE KEY")
-            or _first_pem_block(key_text, "EC PRIVATE KEY")
-        )
-        if not private_key:
-            return None
-        original_pfx_bytes = None
-        uploaded_pfx_path = os.path.join(ca_dir, "uploaded_ca.pfx")
-        if pathlib.Path(uploaded_pfx_path).exists():
-            try:
-                original_pfx_bytes = pathlib.Path(uploaded_pfx_path).read_bytes()
-            except Exception:
-                original_pfx_bytes = None
-        return build_certificate_bundle(
-            leaf_cert,
-            private_key,
-            chain_pem=chain_pem,
-            source_kind="local",
-            original_pfx_bytes=original_pfx_bytes,
-        )
+        with _certificate_material_read_lock(ca_dir):
+            if not (cert_path.exists() and key_path.exists()):
+                return None
+            if not _certificate_material_marker_matches_current(
+                ca_dir,
+                cert_name="ca.crt",
+                key_name="ca.key",
+                pfx_name="uploaded_ca.pfx",
+            ):
+                return None
+            cert_text = cert_path.read_text(encoding="utf-8", errors="ignore")
+            key_text = key_path.read_text(encoding="utf-8", errors="ignore")
+            leaf_cert, chain_pem = _split_cert_chain(cert_text)
+            if not leaf_cert:
+                return None
+            private_key = (
+                _first_pem_block(key_text, "PRIVATE KEY")
+                or _first_pem_block(key_text, "RSA PRIVATE KEY")
+                or _first_pem_block(key_text, "EC PRIVATE KEY")
+            )
+            if not private_key:
+                return None
+            original_pfx_bytes = None
+            uploaded_pfx_path = base / "uploaded_ca.pfx"
+            if uploaded_pfx_path.exists():
+                try:
+                    original_pfx_bytes = uploaded_pfx_path.read_bytes()
+                except Exception:
+                    original_pfx_bytes = None
+            return build_certificate_bundle(
+                leaf_cert,
+                private_key,
+                chain_pem=chain_pem,
+                source_kind="local",
+                original_pfx_bytes=original_pfx_bytes,
+            )
     except Exception:
         return None

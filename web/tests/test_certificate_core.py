@@ -189,6 +189,65 @@ def test_load_local_certificate_bundle_returns_none_for_missing_or_incomplete_ma
     assert certificate_core.load_local_certificate_bundle(tmp_path) is None
 
 
+def test_load_local_certificate_bundle_rejects_crash_between_ca_replaces(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        certificate_core, "_extract_certificate_metadata", lambda _cert: ("", "", "")
+    )
+    (tmp_path / "ca.crt").write_text(CERT_A, encoding="utf-8")
+    (tmp_path / "ca.key").write_text(KEY_A, encoding="utf-8")
+    (tmp_path / "uploaded_ca.pfx").write_bytes(b"old-pfx")
+    replacement = certificate_core.build_certificate_bundle(
+        CERT_B,
+        KEY_B,
+        source_kind="uploaded_pfx",
+        original_pfx_bytes=b"new-pfx",
+    )
+    original_replace = Path.replace
+
+    def crash_after_cert_replace(self: Path, target: object) -> Path:
+        result = original_replace(self, target)
+        if Path(target).name == "ca.crt":
+            msg = "simulated crash after cert replace"
+            raise RuntimeError(msg)
+        return result
+
+    monkeypatch.setattr(Path, "replace", crash_after_cert_replace)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        certificate_core.materialize_certificate_bundle(tmp_path, replacement)
+
+    assert (tmp_path / ".ca-material.json").exists()
+    assert (tmp_path / "ca.crt").read_text(encoding="utf-8") == CERT_B
+    assert (tmp_path / "ca.key").read_text(encoding="utf-8") == KEY_A
+    assert certificate_core.load_local_certificate_bundle(tmp_path) is None
+
+
+def test_validate_tls_material_paths_rejects_stale_admin_leaf_marker(tmp_path) -> None:
+    bundle = _valid_ca_bundle()
+    material = certificate_core.materialize_admin_ui_server_certificate(
+        tmp_path,
+        bundle,
+        san_tokens=["admin.example.test"],
+    )
+    assert certificate_core.validate_tls_material_paths(
+        material.certfile,
+        material.keyfile,
+    ).ready is True
+
+    cert_path = Path(material.certfile)
+    cert_path.write_bytes(cert_path.read_bytes() + b"\n")
+
+    validation = certificate_core.validate_tls_material_paths(
+        material.certfile,
+        material.keyfile,
+    )
+
+    assert validation.ready is False
+    assert "transaction marker does not match" in validation.detail
+
+
 def test_admin_ui_leaf_generation_uses_separate_server_cert_with_sans(tmp_path) -> None:
     bundle = _valid_ca_bundle()
     certificate_core.materialize_certificate_bundle(tmp_path, bundle)

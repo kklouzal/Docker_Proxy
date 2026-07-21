@@ -976,6 +976,7 @@ class ProxyRuntime:
             str(ca_dir / "ca.crt"),
             str(ca_dir / "ca.key"),
             str(ca_dir / "uploaded_ca.pfx"),
+            str(ca_dir / ".ca-material.json"),
         )
 
     def _snapshot_certificate_material(self) -> dict[str, bytes | None]:
