@@ -1801,11 +1801,6 @@ def test_fail_open_placeholder_rejects_respmod_req_hdr_body_framing_claims() -> 
             b"invalid RESPMOD encapsulated HTTP request Content-Length header",
         ),
         (
-            "nonzero content-length without req-body",
-            b"Content-Length: 5",
-            b"RESPMOD encapsulated HTTP request Content-Length requires req-body",
-        ),
-        (
             "content-length plus transfer-encoding",
             b"Content-Length: 0\r\nTransfer-Encoding: chunked",
             (
@@ -1819,14 +1814,24 @@ def test_fail_open_placeholder_rejects_respmod_req_hdr_body_framing_claims() -> 
             b"duplicate RESPMOD encapsulated HTTP request Transfer-Encoding header",
         ),
         (
-            "non-chunked transfer-encoding",
-            b"Transfer-Encoding: gzip",
-            b"unsupported RESPMOD encapsulated HTTP request Transfer-Encoding header",
+            "chunked transfer-encoding not final",
+            b"Transfer-Encoding: chunked, gzip",
+            b"invalid RESPMOD encapsulated HTTP request Transfer-Encoding header",
         ),
         (
-            "chunked without req-body",
-            b"Transfer-Encoding: chunked",
-            b"RESPMOD encapsulated HTTP request Transfer-Encoding requires req-body",
+            "duplicate chunked transfer-coding",
+            b"Transfer-Encoding: gzip, chunked, chunked",
+            b"duplicate RESPMOD encapsulated HTTP request chunked transfer-coding",
+        ),
+        (
+            "empty transfer-coding",
+            b"Transfer-Encoding: gzip, , chunked",
+            b"invalid RESPMOD encapsulated HTTP request Transfer-Encoding header",
+        ),
+        (
+            "non-chunked transfer-encoding",
+            b"Transfer-Encoding: gzip",
+            b"invalid RESPMOD encapsulated HTTP request Transfer-Encoding header",
         ),
     )
 
@@ -1876,6 +1881,43 @@ def test_fail_open_placeholder_preserves_valid_respmod_req_hdr_metadata() -> Non
                 b"Content-Length: 0\r\n"
                 b"content-length: 0\r\n"
                 b"X-Obs-Text: caf\xe9\r\n\r\n"
+            ),
+            response_header,
+            False,
+            b"hello",
+            b"HTTP/1.1 200 OK",
+        ),
+        (
+            "POST metadata with positive body claim",
+            (
+                b"POST /submit HTTP/1.1\r\n"
+                b"Host: example.test\r\n"
+                b"Content-Length: 5\r\n"
+                b"content-length: 5\r\n\r\n"
+            ),
+            response_header,
+            False,
+            b"hello",
+            b"HTTP/1.1 200 OK",
+        ),
+        (
+            "POST metadata with chunked request body claim",
+            (
+                b"POST /submit HTTP/1.1\r\n"
+                b"Host: example.test\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            ),
+            response_header,
+            False,
+            b"hello",
+            b"HTTP/1.1 200 OK",
+        ),
+        (
+            "POST metadata with standard coding order request body claim",
+            (
+                b"POST /submit HTTP/1.1\r\n"
+                b"Host: example.test\r\n"
+                b"Transfer-Encoding: gzip, chunked\r\n\r\n"
             ),
             response_header,
             False,

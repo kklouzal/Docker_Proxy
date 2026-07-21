@@ -826,7 +826,7 @@ def _respmod_http_request_transfer_codings(value: bytes) -> list[bytes]:
         coding = raw_coding.strip(b" \t").lower()
         if not coding or any(ch not in _HTTP_FIELD_NAME_TCHARS for ch in coding):
             message = (
-                "unsupported RESPMOD encapsulated HTTP request "
+                "invalid RESPMOD encapsulated HTTP request "
                 "Transfer-Encoding header"
             )
             raise IcapProtocolError(message)
@@ -874,17 +874,12 @@ def _validate_respmod_http_request_fields(lines: list[bytes]) -> None:
                 "duplicate RESPMOD encapsulated HTTP request chunked transfer-coding"
             )
             raise IcapProtocolError(message)
-        if transfer_codings != [b"chunked"]:
+        if b"chunked" not in transfer_codings or transfer_codings[-1] != b"chunked":
             message = (
-                "unsupported RESPMOD encapsulated HTTP request "
+                "invalid RESPMOD encapsulated HTTP request "
                 "Transfer-Encoding header"
             )
             raise IcapProtocolError(message)
-        message = "RESPMOD encapsulated HTTP request Transfer-Encoding requires req-body"
-        raise IcapProtocolError(message)
-    if content_length not in {None, 0}:
-        message = "RESPMOD encapsulated HTTP request Content-Length requires req-body"
-        raise IcapProtocolError(message)
 
 
 def _validate_respmod_http_request_header(http_header: bytes) -> None:
