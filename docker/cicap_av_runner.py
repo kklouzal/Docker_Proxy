@@ -17,6 +17,7 @@ HEADER_END = CRLF + CRLF
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 MAX_ENCAPSULATED_OFFSET_DIGITS = 20
 MAX_HTTP_CONTENT_LENGTH_DIGITS = 20
+MAX_ICAP_PREVIEW_DIGITS = 20
 MAX_ICAP_CHUNK_SIZE_DIGITS = 16
 MAX_ICAP_HEADER_LINE_BYTES = 8192
 MAX_ICAP_TRAILER_LINE_BYTES = 8192
@@ -178,6 +179,23 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
         offset = int(offset_text, 10)
         offsets[name] = offset
     return offsets
+
+
+def _parse_icap_preview_header(value: str | None, *, max_bytes: int) -> int | None:
+    if value is None:
+        return None
+    if (
+        not value
+        or len(value) > MAX_ICAP_PREVIEW_DIGITS
+        or any(ch < "0" or ch > "9" for ch in value)
+    ):
+        message = "invalid ICAP Preview header"
+        raise IcapProtocolError(message)
+    preview_size = int(value, 10)
+    if preview_size > max_bytes:
+        message = f"ICAP Preview header exceeds {max_bytes} bytes"
+        raise IcapProtocolError(message)
+    return preview_size
 
 
 def _respmod_allow_204_eligible(value: str | None) -> bool:
@@ -544,10 +562,11 @@ def _read_chunked_body(
     *,
     max_bytes: int = 1024 * 1024 * 1024,
     preview: bool = False,
+    preview_size: int | None = None,
 ) -> tuple[bytes, bytes]:
     body = bytearray()
     total = 0
-    preview_pending = preview
+    preview_pending = preview or preview_size is not None
     while True:
         try:
             data = _recv_until(sock, data, CRLF, max_bytes=8192)
@@ -561,7 +580,12 @@ def _read_chunked_body(
         size, extensions = _parse_chunk_line(line)
         if size == 0:
             data = _read_chunk_trailers(sock, data)
-            if preview_pending and b"ieof" not in extensions:
+            if preview_pending:
+                if b"ieof" in extensions:
+                    return bytes(body), data
+                if preview_size is not None and total < preview_size:
+                    message = "ICAP preview terminated before Preview header size"
+                    raise IcapProtocolError(message)
                 try:
                     sock.sendall(b"ICAP/1.0 100 Continue\r\n\r\n")
                 except OSError as exc:
@@ -573,6 +597,9 @@ def _read_chunked_body(
         total += size
         if total > max_bytes:
             message = f"ICAP chunked body exceeds {max_bytes} bytes"
+            raise IcapProtocolError(message)
+        if preview_pending and preview_size is not None and total > preview_size:
+            message = "ICAP preview body exceeds Preview header"
             raise IcapProtocolError(message)
         try:
             data = _recv_more(sock, data, size + 2)
@@ -599,6 +626,9 @@ def _drain_encapsulated_body(
     offsets = _parse_encapsulated(headers["encapsulated"])
     _validate_reqmod_encapsulated_offsets(offsets)
     body_offset = offsets.get("req-body")
+    preview_size = _parse_icap_preview_header(
+        headers.get("preview"), max_bytes=1024 * 1024 * 1024
+    )
     terminal_offset = body_offset if body_offset is not None else offsets.get("null-body")
     if terminal_offset is None:  # pragma: no cover - offset validation guards this
         message = "REQMOD request missing req-body/null-body"
@@ -615,13 +645,18 @@ def _drain_encapsulated_body(
     _validate_reqmod_encapsulated_boundaries(encapsulated_header, offsets)
     request_header = encapsulated_header[:terminal_offset]
     if body_offset is None:
+        if preview_size is not None:
+            message = "ICAP Preview header requires req-body"
+            raise IcapProtocolError(message)
         if offsets.get("req-hdr") is not None:
             _validate_reqmod_http_request_for_204(
                 request_header, body_length=0, body_present=False
             )
         return
     body = data[body_offset:]
-    decoded_body, _unused = _read_chunked_body(sock, body, preview="preview" in headers)
+    decoded_body, _unused = _read_chunked_body(
+        sock, body, preview_size=preview_size
+    )
     if offsets.get("req-hdr") is not None:
         _validate_reqmod_http_request_for_204(
             request_header, body_length=len(decoded_body), body_present=True
@@ -636,6 +671,9 @@ def _read_respmod_payload(
     _validate_respmod_encapsulated_offsets(offsets)
     body_offset = offsets.get("res-body")
     null_body_offset = offsets.get("null-body")
+    preview_size = _parse_icap_preview_header(
+        headers.get("preview"), max_bytes=1024 * 1024 * 1024
+    )
     terminal_offset = body_offset if body_offset is not None else null_body_offset
     if terminal_offset is None:  # pragma: no cover - offset validation guards this
         message = "RESPMOD request missing res-body/null-body"
@@ -657,9 +695,12 @@ def _read_respmod_payload(
         )
     http_header = data[response_header_offset:terminal_offset]
     if body_offset is None:
+        if preview_size is not None:
+            message = "ICAP Preview header requires res-body"
+            raise IcapProtocolError(message)
         return http_header, b"", True, request_method
     body, _unused = _read_chunked_body(
-        sock, data[body_offset:], preview="preview" in headers
+        sock, data[body_offset:], preview_size=preview_size
     )
     return http_header, body, False, request_method
 

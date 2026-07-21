@@ -863,6 +863,147 @@ def test_drain_chunked_body_duplicate_preview_terminators_send_one_continue() ->
     assert remainder == b"TAIL"
 
 
+def test_parse_icap_preview_header_rejects_non_decimal_and_unbounded_values() -> None:
+    runner = _load_runner()
+    huge_decimal = "9" * (runner.MAX_ICAP_PREVIEW_DIGITS + 1)
+    cases = (
+        ("empty", ""),
+        ("comma list", "0, 4"),
+        ("plus sign", "+0"),
+        ("minus sign", "-0"),
+        ("underscore", "1_0"),
+        ("Unicode digits", "\N{ARABIC-INDIC DIGIT ZERO}"),
+        ("internal whitespace", "4 2"),
+        ("huge decimal", huge_decimal),
+    )
+
+    for name, value in cases:
+        try:
+            runner._parse_icap_preview_header(value, max_bytes=1024)
+        except runner.IcapProtocolError as exc:
+            assert str(exc) == "invalid ICAP Preview header", name
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"{name} Preview value was accepted"
+            raise AssertionError(message)
+
+
+def test_parse_icap_preview_header_preserves_decimal_zero_and_edge_ows() -> None:
+    runner = _load_runner()
+    _start_line, headers = runner._split_headers(
+        b"REQMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
+        b"Preview: \t00042 \t"
+    )
+
+    assert runner._parse_icap_preview_header(None, max_bytes=1024) is None
+    assert runner._parse_icap_preview_header("0", max_bytes=1024) == 0
+    assert runner._parse_icap_preview_header(headers["preview"], max_bytes=1024) == 42
+
+
+def test_parse_icap_preview_header_rejects_decimal_above_body_bound() -> None:
+    runner = _load_runner()
+
+    try:
+        runner._parse_icap_preview_header("1025", max_bytes=1024)
+    except runner.IcapProtocolError as exc:
+        assert str(exc) == "ICAP Preview header exceeds 1024 bytes"
+    else:  # pragma: no cover - regression guard should always raise
+        message = "oversize Preview value was accepted"
+        raise AssertionError(message)
+
+
+def test_read_chunked_body_enforces_preview_declared_size_relation() -> None:
+    runner = _load_runner()
+    cases = (
+        (
+            "equal declared count continues",
+            4,
+            b"4\r\ntest\r\n0\r\n\r\n",
+            b"5\r\n-rest\r\n0\r\n\r\nTAIL",
+            b"test-rest",
+            b"TAIL",
+            b"ICAP/1.0 100 Continue\r\n\r\n",
+        ),
+        (
+            "zero preview continues before body",
+            0,
+            b"0\r\n\r\n",
+            b"4\r\ntest\r\n0\r\n\r\nTAIL",
+            b"test",
+            b"TAIL",
+            b"ICAP/1.0 100 Continue\r\n\r\n",
+        ),
+        (
+            "equal declared count with ieof is final",
+            4,
+            b"4\r\ntest\r\n0;ieof\r\n\r\nTAIL",
+            b"",
+            b"test",
+            b"TAIL",
+            b"",
+        ),
+        (
+            "short object ieof before declared count is final",
+            4,
+            b"2\r\nhe\r\n0;ieof\r\n\r\nTAIL",
+            b"",
+            b"he",
+            b"TAIL",
+            b"",
+        ),
+        (
+            "zero preview ieof is final",
+            0,
+            b"0;ieof\r\n\r\nTAIL",
+            b"",
+            b"",
+            b"TAIL",
+            b"",
+        ),
+    )
+
+    for name, preview_size, initial, incoming, expected_body, expected_remainder, sent in cases:
+        sock = _MemorySocket(incoming)
+
+        body, remainder = runner._read_chunked_body(
+            sock, initial, preview_size=preview_size
+        )
+
+        assert body == expected_body, name
+        assert remainder == expected_remainder, name
+        assert sock.sent == sent, name
+
+
+def test_read_chunked_body_rejects_preview_count_mismatches_without_continue() -> None:
+    runner = _load_runner()
+    cases = (
+        (
+            "preview chunk larger than declared count",
+            4,
+            b"5\r\ntests\r\n0\r\n\r\n",
+            "ICAP preview body exceeds Preview header",
+        ),
+        (
+            "preview chunk smaller than declared count without ieof",
+            5,
+            b"4\r\ntest\r\n0\r\n\r\n",
+            "ICAP preview terminated before Preview header size",
+        ),
+    )
+
+    for name, preview_size, initial, expected_error in cases:
+        sock = _MemorySocket(b"5\r\n-rest\r\n0\r\n\r\n")
+
+        try:
+            runner._read_chunked_body(sock, initial, preview_size=preview_size)
+        except runner.IcapProtocolError as exc:
+            assert str(exc) == expected_error, name
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"{name} was accepted"
+            raise AssertionError(message)
+
+        assert sock.sent == b"", name
+
+
 def test_parse_encapsulated_rejects_non_ascii_decimal_offsets_and_malformed_items() -> None:
     runner = _load_runner()
     enormous_offset = "9" * (runner.MAX_ENCAPSULATED_OFFSET_DIGITS + 1)
@@ -2561,6 +2702,21 @@ def test_fail_open_placeholder_rejects_malformed_outer_header_metadata() -> None
             b"invalid ICAP header field name",
             (b"ICAP/1.0 100 Continue\r\n", b"ICAP/1.0 204 No Content\r\n"),
         ),
+        (
+            "malformed Preview value cannot trigger preview continue",
+            b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Allow: 204\r\n"
+            b"Preview: 4, 5\r\n"
+            + f"Encapsulated: req-hdr=0, req-body={len(request_header)}".encode(
+                "ascii"
+            )
+            + b"\r\n\r\n"
+            + request_header
+            + b"4\r\ntest\r\n0\r\n\r\n",
+            b"invalid ICAP Preview header",
+            (b"ICAP/1.0 100 Continue\r\n", b"ICAP/1.0 204 No Content\r\n"),
+        ),
     )
 
     for name, request, expected_error, forbidden in cases:
@@ -2643,6 +2799,98 @@ def test_fail_open_placeholder_continues_respmod_preview_before_204() -> None:
     assert final.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"9\r\ntest-rest\r\n0\r\n\r\n" in final
     assert extra == b""
+
+
+def test_fail_open_placeholder_rejects_preview_on_null_body() -> None:
+    runner = _load_runner()
+    request_header = b"GET /empty HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    response_header = b"HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n\r\n"
+    cases = (
+        (
+            "REQMOD null-body",
+            b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Allow: 204\r\n"
+            b"Preview: 0\r\n"
+            + f"Encapsulated: req-hdr=0, null-body={len(request_header)}".encode(
+                "ascii"
+            )
+            + b"\r\n\r\n"
+            + request_header,
+            b"ICAP Preview header requires req-body",
+            (b"ICAP/1.0 204 No Content\r\n",),
+        ),
+        (
+            "RESPMOD null-body",
+            b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Allow: 204\r\n"
+            b"Preview: 0\r\n"
+            + f"Encapsulated: res-hdr=0, null-body={len(response_header)}".encode(
+                "ascii"
+            )
+            + b"\r\n\r\n"
+            + response_header,
+            b"ICAP Preview header requires res-body",
+            (b"ICAP/1.0 204 No Content\r\n", b"HTTP/1.1 204 No Content"),
+        ),
+    )
+
+    for name, request, expected_error, forbidden in cases:
+        response = _placeholder_raw_exchange(runner, request)
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected_error in response, name
+        assert b"ICAP/1.0 100 Continue\r\n" not in response, name
+        for forbidden_bytes in forbidden:
+            assert forbidden_bytes not in response, name
+
+
+def test_fail_open_placeholder_rejects_preview_body_relation_errors_before_continue() -> None:
+    runner = _load_runner()
+    http_header = (
+        b"POST /upload HTTP/1.1\r\n"
+        b"Host: example.test\r\n"
+        b"Transfer-Encoding: chunked\r\n"
+        b"\r\n"
+    )
+    cases = (
+        (
+            "larger preview chunk",
+            b"Preview: 4\r\n",
+            b"5\r\ntests\r\n0\r\n\r\n",
+            b"ICAP preview body exceeds Preview header",
+        ),
+        (
+            "short preview terminator without ieof",
+            b"Preview: 5\r\n",
+            b"4\r\ntest\r\n0\r\n\r\n",
+            b"ICAP preview terminated before Preview header size",
+        ),
+    )
+
+    for name, preview_header, body, expected_error in cases:
+        request = (
+            b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Allow: 204\r\n"
+            + preview_header
+            + f"Encapsulated: req-hdr=0, req-body={len(http_header)}".encode(
+                "ascii"
+            )
+            + b"\r\n\r\n"
+            + http_header
+            + body
+        )
+
+        response = _placeholder_raw_exchange(runner, request)
+
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
+        assert b"HTTP/1.1 502 Bad Gateway" in response, name
+        assert expected_error in response, name
+        assert b"ICAP/1.0 100 Continue\r\n" not in response, name
+        assert not response.startswith(b"ICAP/1.0 204 No Content\r\n"), name
 
 
 def test_fail_open_placeholder_respmod_null_body_with_req_hdr_is_valid() -> None:
