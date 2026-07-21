@@ -68,6 +68,56 @@ def _pem_ca_material(
     )
 
 
+def _new_ca_material(
+    *,
+    common_name: str,
+    issuer_cert: x509.Certificate | None = None,
+    issuer_key: rsa.RSAPrivateKey | None = None,
+    not_before_delta: timedelta = timedelta(minutes=-5),
+    not_after_delta: timedelta = timedelta(days=30),
+) -> tuple[str, str, x509.Certificate, rsa.RSAPrivateKey]:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+    issuer_name = issuer_cert.subject if issuer_cert is not None else subject
+    signing_key = issuer_key if issuer_key is not None else key
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer_name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now + not_before_delta)
+        .not_valid_after(now + not_after_delta)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(signing_key, hashes.SHA256())
+    )
+    return (
+        cert.public_bytes(serialization.Encoding.PEM).decode(),
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode(),
+        cert,
+        key,
+    )
+
+
 def _pem_leaf_material(*, common_name: str) -> tuple[str, str]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
@@ -291,24 +341,157 @@ def test_parse_pfx_reports_encrypted_private_key(tmp_path) -> None:
     assert "encrypted" in r.message
 
 
-def test_parse_pfx_preserves_chain_and_original_bytes(tmp_path) -> None:
+def test_parse_pfx_orders_verified_issuer_chain_and_original_bytes(tmp_path) -> None:
     m = _import_cert_manager_module()
-    cert_pem, key_pem = _pem_ca_material()
-    chain_pem = (
-        "-----BEGIN CERTIFICATE-----\nCHAIN1\n-----END CERTIFICATE-----\n"
-        "-----BEGIN CERTIFICATE-----\nCHAIN2\n-----END CERTIFICATE-----\n"
+    root_pem, _root_key_pem, root_cert, root_key = _new_ca_material(
+        common_name="Docker Proxy Test Root",
+    )
+    intermediate_pem, _intermediate_key_pem, intermediate_cert, intermediate_key = (
+        _new_ca_material(
+            common_name="Docker Proxy Test Intermediate",
+            issuer_cert=root_cert,
+            issuer_key=root_key,
+        )
+    )
+    cert_pem, key_pem, _selected_cert, _selected_key = _new_ca_material(
+        common_name="Docker Proxy Uploaded SSL Bump CA",
+        issuer_cert=intermediate_cert,
+        issuer_key=intermediate_key,
     )
 
     r = m.parse_pfx_bundle(
         b"pfx-bytes",
         password="secret",
-        run_checked=_fake_pfx_runner(cert_pem, key_pem, chain_pem=chain_pem),
+        run_checked=_fake_pfx_runner(
+            cert_pem,
+            key_pem,
+            chain_pem=root_pem + cert_pem + intermediate_pem + root_pem,
+        ),
     )
     assert r.ok is True
     assert r.bundle is not None
-    assert "CHAIN1" in r.bundle.chain_pem
-    assert "CHAIN2" in r.bundle.chain_pem
+    assert r.bundle.chain_pem == intermediate_pem + root_pem
     assert r.bundle.original_pfx_bytes == b"pfx-bytes"
+
+
+def test_parse_pfx_accepts_verified_partial_issuer_chain() -> None:
+    m = _import_cert_manager_module()
+    root_pem, _root_key_pem, root_cert, root_key = _new_ca_material(
+        common_name="Docker Proxy Test Root",
+    )
+    intermediate_pem, _intermediate_key_pem, intermediate_cert, intermediate_key = (
+        _new_ca_material(
+            common_name="Docker Proxy Test Intermediate",
+            issuer_cert=root_cert,
+            issuer_key=root_key,
+        )
+    )
+    cert_pem, key_pem, _selected_cert, _selected_key = _new_ca_material(
+        common_name="Docker Proxy Uploaded SSL Bump CA",
+        issuer_cert=intermediate_cert,
+        issuer_key=intermediate_key,
+    )
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(
+            cert_pem,
+            key_pem,
+            chain_pem=intermediate_pem,
+        ),
+    )
+
+    assert r.ok is True
+    assert r.bundle is not None
+    assert root_pem not in r.bundle.chain_pem
+    assert r.bundle.chain_pem == intermediate_pem
+
+
+def test_parse_pfx_rejects_unrelated_chain_certificate() -> None:
+    m = _import_cert_manager_module()
+    cert_pem, key_pem = _pem_ca_material()
+    unrelated_pem, _unrelated_key_pem, _unrelated_cert, _unrelated_key = (
+        _new_ca_material(common_name="Unrelated Extra CA")
+    )
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(
+            cert_pem,
+            key_pem,
+            chain_pem=unrelated_pem,
+        ),
+    )
+
+    assert r.ok is False
+    assert "do not form a verified issuer chain" in r.message
+
+
+def test_parse_pfx_rejects_issuer_chain_signature_mismatch() -> None:
+    m = _import_cert_manager_module()
+    issuer_pem, _issuer_key_pem, issuer_cert, issuer_key = _new_ca_material(
+        common_name="Docker Proxy Test Intermediate",
+    )
+    cert_pem, key_pem, _selected_cert, _selected_key = _new_ca_material(
+        common_name="Docker Proxy Uploaded SSL Bump CA",
+        issuer_cert=issuer_cert,
+        issuer_key=issuer_key,
+    )
+    _rogue_pem, _rogue_key_pem, rogue_cert, rogue_key = _new_ca_material(
+        common_name="Rogue Intermediate",
+    )
+    rogue_same_name_pem, _rogue_same_name_key_pem, _rogue_same_name, _key = (
+        _new_ca_material(
+            common_name="Docker Proxy Test Intermediate",
+            issuer_cert=rogue_cert,
+            issuer_key=rogue_key,
+        )
+    )
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(
+            cert_pem,
+            key_pem,
+            chain_pem=rogue_same_name_pem,
+        ),
+    )
+
+    assert issuer_pem != rogue_same_name_pem
+    assert r.ok is False
+    assert "does not verify" in r.message
+
+
+def test_parse_pfx_rejects_expired_issuer_chain_certificate() -> None:
+    m = _import_cert_manager_module()
+    expired_issuer_pem, _issuer_key_pem, expired_issuer_cert, expired_issuer_key = (
+        _new_ca_material(
+            common_name="Expired Docker Proxy Intermediate",
+            not_before_delta=timedelta(days=-30),
+            not_after_delta=timedelta(days=-1),
+        )
+    )
+    cert_pem, key_pem, _selected_cert, _selected_key = _new_ca_material(
+        common_name="Docker Proxy Uploaded SSL Bump CA",
+        issuer_cert=expired_issuer_cert,
+        issuer_key=expired_issuer_key,
+    )
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password="secret",
+        run_checked=_fake_pfx_runner(
+            cert_pem,
+            key_pem,
+            chain_pem=expired_issuer_pem,
+        ),
+    )
+
+    assert r.ok is False
+    assert "expired" in r.message
 
 
 def test_parse_pfx_removes_leaf_duplicate_from_ca_chain() -> None:

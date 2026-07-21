@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from cryptography import x509
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, rsa
 
 from services.certificate_core import (
     CertificateBundle,
@@ -157,16 +159,199 @@ def _certificate_identity(cert_pem: str) -> str:
         return f"pem:{_normalize_pubkey(cert_pem)}"
 
 
-def _dedupe_chain_certificates(leaf_cert: str, chain_certs: list[str]) -> list[str]:
-    seen = {_certificate_identity(leaf_cert)}
-    deduped: list[str] = []
-    for chain_cert in chain_certs:
-        identity = _certificate_identity(chain_cert)
+def _certificate_identity_from_cert(cert: x509.Certificate) -> str:
+    return f"sha256:{cert.fingerprint(hashes.SHA256()).hex()}"
+
+
+def _verify_certificate_signature(
+    child: x509.Certificate,
+    issuer: x509.Certificate,
+) -> bool:
+    if child.issuer != issuer.subject:
+        return False
+    public_key = issuer.public_key()
+    try:
+        if isinstance(public_key, rsa.RSAPublicKey | ec.EllipticCurvePublicKey):
+            parameters = child.signature_algorithm_parameters
+            if parameters is None:
+                return False
+            public_key.verify(
+                child.signature,
+                child.tbs_certificate_bytes,
+                parameters,
+                child.signature_hash_algorithm,
+            )
+        elif isinstance(public_key, dsa.DSAPublicKey):
+            hash_algorithm = child.signature_hash_algorithm
+            if hash_algorithm is None:
+                return False
+            public_key.verify(
+                child.signature,
+                child.tbs_certificate_bytes,
+                hash_algorithm,
+            )
+        elif isinstance(
+            public_key,
+            ed25519.Ed25519PublicKey | ed448.Ed448PublicKey,
+        ):
+            public_key.verify(child.signature, child.tbs_certificate_bytes)
+        else:
+            return False
+    except (InvalidSignature, TypeError, ValueError, UnsupportedAlgorithm):
+        return False
+    return True
+
+
+def _validate_issuer_ca_certificate(cert: x509.Certificate) -> None:
+    now = datetime.now(UTC)
+    if now < cert.not_valid_before_utc:
+        msg = "PFX issuer chain certificate is not valid yet."
+        raise PfxInstallError(msg)
+    if now >= cert.not_valid_after_utc:
+        msg = "PFX issuer chain certificate is expired."
+        raise PfxInstallError(msg)
+
+    try:
+        basic_constraints = cert.extensions.get_extension_for_class(
+            x509.BasicConstraints,
+        ).value
+    except x509.ExtensionNotFound as exc:
+        msg = "PFX issuer chain certificate must include a CA basic constraints extension."
+        raise PfxInstallError(msg) from exc
+    if not basic_constraints.ca:
+        msg = "PFX issuer chain certificate is not a CA certificate."
+        raise PfxInstallError(msg)
+
+    try:
+        key_usage = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        return
+    if not key_usage.key_cert_sign:
+        msg = "PFX issuer chain certificate key usage must allow certificate signing."
+        raise PfxInstallError(msg)
+
+
+def _chain_certificates_from_pem_blocks(
+    selected_cert_pem: str,
+    chain_certs: list[str],
+) -> list[tuple[str, x509.Certificate, str]]:
+    try:
+        selected_cert = x509.load_pem_x509_certificate(
+            selected_cert_pem.encode("utf-8"),
+        )
+    except Exception as exc:
+        msg = "PFX certificate is not valid PEM material."
+        raise PfxInstallError(msg) from exc
+
+    selected_identity = _certificate_identity_from_cert(selected_cert)
+    seen = {selected_identity}
+    parsed: list[tuple[str, x509.Certificate, str]] = []
+    for chain_cert_pem in chain_certs:
+        try:
+            chain_cert = x509.load_pem_x509_certificate(
+                chain_cert_pem.encode("utf-8"),
+            )
+        except Exception as exc:
+            msg = "PFX issuer chain includes invalid certificate PEM material."
+            raise PfxInstallError(msg) from exc
+        identity = _certificate_identity_from_cert(chain_cert)
         if identity in seen:
             continue
         seen.add(identity)
-        deduped.append(chain_cert)
-    return deduped
+        parsed.append((chain_cert_pem, chain_cert, identity))
+    return parsed
+
+
+def _orders_as_alternate_issuer(
+    candidate: x509.Certificate,
+    ordered_children: list[x509.Certificate],
+) -> bool:
+    try:
+        _validate_issuer_ca_certificate(candidate)
+    except PfxInstallError:
+        return False
+    return any(
+        child.issuer == candidate.subject
+        and _verify_certificate_signature(child, candidate)
+        for child in ordered_children
+    )
+
+
+def _validated_ordered_chain_certificates(
+    selected_cert_pem: str,
+    chain_certs: list[str],
+) -> list[str]:
+    try:
+        selected_cert = x509.load_pem_x509_certificate(
+            selected_cert_pem.encode("utf-8"),
+        )
+    except Exception as exc:
+        msg = "PFX certificate is not valid PEM material."
+        raise PfxInstallError(msg) from exc
+
+    available = _chain_certificates_from_pem_blocks(selected_cert_pem, chain_certs)
+    ordered: list[tuple[str, x509.Certificate, str]] = []
+    ordered_children = [selected_cert]
+    used = {_certificate_identity_from_cert(selected_cert)}
+    current = selected_cert
+
+    while not _verify_certificate_signature(current, current):
+        subject_matches = [
+            candidate
+            for candidate in available
+            if candidate[2] not in used and candidate[1].subject == current.issuer
+        ]
+        verified_matches = [
+            candidate
+            for candidate in subject_matches
+            if _verify_certificate_signature(current, candidate[1])
+        ]
+        if not verified_matches:
+            if subject_matches:
+                msg = "PFX issuer chain certificate does not verify the selected CA signature."
+                raise PfxInstallError(msg)
+            unused = [candidate for candidate in available if candidate[2] not in used]
+            if unused:
+                msg = (
+                    "PFX issuer chain includes certificate(s) that do not form a "
+                    "verified issuer chain for the selected CA."
+                )
+                raise PfxInstallError(msg)
+            break
+
+        chosen: tuple[str, x509.Certificate, str] | None = None
+        first_error = ""
+        for candidate in verified_matches:
+            try:
+                _validate_issuer_ca_certificate(candidate[1])
+            except PfxInstallError as exc:
+                if not first_error:
+                    first_error = str(exc)
+                continue
+            chosen = candidate
+            break
+        if chosen is None:
+            raise PfxInstallError(first_error or "PFX issuer chain certificate is invalid.")
+
+        ordered.append(chosen)
+        ordered_children.append(chosen[1])
+        used.add(chosen[2])
+        current = chosen[1]
+
+    unused = [candidate for candidate in available if candidate[2] not in used]
+    unexpected = [
+        candidate
+        for candidate in unused
+        if not _orders_as_alternate_issuer(candidate[1], ordered_children)
+    ]
+    if unexpected:
+        msg = (
+            "PFX issuer chain includes certificate(s) that do not form a verified "
+            "issuer chain for the selected CA."
+        )
+        raise PfxInstallError(msg)
+
+    return [chain_cert_pem for chain_cert_pem, _cert, _identity in ordered]
 
 
 def _passin_arg(password: str) -> str:
@@ -314,7 +499,7 @@ def parse_pfx_bundle(
                 private_keys,
             )
 
-            chain_certs = _dedupe_chain_certificates(
+            chain_certs = _validated_ordered_chain_certificates(
                 leaf_cert,
                 _all_pem_blocks(chain_text, "CERTIFICATE"),
             )
