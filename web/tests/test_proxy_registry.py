@@ -32,6 +32,12 @@ def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> 
         80,
         "/proxy.pac",
     )
+    assert proxy_registry._parse_public_pac_url("BadHost.Example.") == (
+        "badhost.example",
+        "http",
+        80,
+        "/proxy.pac",
+    )
     assert proxy_registry._parse_public_pac_url("https://proxy.example/proxy.pac") == (
         "proxy.example",
         "https",
@@ -54,6 +60,18 @@ def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> 
     assert proxy_registry._parse_public_pac_url(
         "https://proxy.example:not-a-port/proxy.pac"
     ) == ("proxy.example", "https", 443, "/proxy.pac")
+    assert proxy_registry._parse_public_pac_url("https://bad host.example/proxy.pac") == (
+        "",
+        "http",
+        80,
+        "/proxy.pac",
+    )
+    assert proxy_registry._parse_public_pac_url("http://bad_host.example/proxy.pac") == (
+        "",
+        "http",
+        80,
+        "/proxy.pac",
+    )
 
 
 def test_public_pac_path_normalization_rejects_unsafe_route_shapes() -> None:
@@ -111,7 +129,7 @@ def test_resolve_local_proxy_public_fields_prefers_explicit_env_over_public_pac_
     monkeypatch.setenv(
         "PROXY_PUBLIC_PAC_URL", "https://from-url.example:8443/proxy.pac"
     )
-    monkeypatch.setenv("PROXY_PUBLIC_HOST", "explicit.example")
+    monkeypatch.setenv("PROXY_PUBLIC_HOST", "Explicit.Example.")
     monkeypatch.setenv("PROXY_PUBLIC_PAC_SCHEME", "http")
     monkeypatch.setenv("PROXY_PUBLIC_PAC_PORT", "8080")
     monkeypatch.setenv("PROXY_PUBLIC_HTTP_PROXY_PORT", "3129")
@@ -122,6 +140,26 @@ def test_resolve_local_proxy_public_fields_prefers_explicit_env_over_public_pac_
         "public_pac_port": 8080,
         "public_pac_path": "/proxy.pac",
         "public_http_proxy_port": 3129,
+    }
+
+
+def test_resolve_local_proxy_public_fields_rejects_invalid_explicit_public_host(
+    monkeypatch,
+) -> None:
+    proxy_registry = _proxy_registry()
+
+    monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", "https://pac.example/wpad.dat?site=lab")
+    monkeypatch.setenv("PROXY_PUBLIC_HOST", "bad host.example")
+    monkeypatch.delenv("PROXY_PUBLIC_PAC_SCHEME", raising=False)
+    monkeypatch.delenv("PROXY_PUBLIC_PAC_PORT", raising=False)
+    monkeypatch.delenv("PROXY_PUBLIC_HTTP_PROXY_PORT", raising=False)
+
+    assert proxy_registry.resolve_local_proxy_public_fields() == {
+        "public_host": "pac.example",
+        "public_pac_scheme": "https",
+        "public_pac_port": 443,
+        "public_pac_path": "/wpad.dat?site=lab",
+        "public_http_proxy_port": 3128,
     }
 
 
@@ -289,7 +327,7 @@ def test_row_to_instance_normalizes_ports_booleans_and_display_name() -> None:
         "display_name": "",
         "hostname": "edge-host",
         "management_url": "http://edge:5000",
-        "public_host": "edge.example",
+        "public_host": "Bad_Edge.Example",
         "public_pac_scheme": "ftp",
         "public_pac_port": 0,
         "public_pac_path": "/../secret.pac",
@@ -307,6 +345,7 @@ def test_row_to_instance_normalizes_ports_booleans_and_display_name() -> None:
     instance = proxy_registry.ProxyRegistry()._row_to_instance(row)
     assert instance is not None
     assert instance.display_name == "edge-2"
+    assert instance.public_host == ""
     assert instance.public_pac_scheme == "http"
     assert instance.public_pac_port == 80
     assert instance.public_pac_path == "/proxy.pac"

@@ -214,6 +214,26 @@ def test_resolve_proxy_pac_target_ignores_invalid_absolute_public_pac_url(
     assert target.pac_url == ""
 
 
+def test_resolve_proxy_pac_target_ignores_invalid_env_public_host(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services import pac_renderer  # type: ignore
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.setenv("PROXY_PUBLIC_HOST", "bad host.example")
+    monkeypatch.delenv("PROXY_PUBLIC_PAC_URL", raising=False)
+
+    target = pac_renderer.resolve_proxy_pac_target("default")
+
+    assert target.public_host == ""
+    assert target.pac_url == ""
+    assert target.uses_request_host_fallback is True
+    assert target.proxy_chain == "PROXY __PAC_PROXY_HOST__:3128; DIRECT"
+
+
 def test_resolve_proxy_pac_target_uses_env_endpoint_when_registry_has_no_public_host(
     monkeypatch,
 ) -> None:
@@ -316,7 +336,7 @@ def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
     class _RegistryWithPublicHost:
         def get_proxy(self, _proxy_id):
             return _proxy_record(
-                "registry.example",
+                "Registry.Example.",
                 public_pac_port=8080,
                 public_pac_path="/registered/wpad.dat?site=a",
             )
