@@ -538,6 +538,59 @@ def test_check_http_proxy_forwarding_uses_dedicated_canary_and_requires_marker(
     assert "local health body did not confirm ok" in malformed["detail"]
 
 
+def test_check_http_proxy_forwarding_custom_canary_path_requires_probe_marker(
+    monkeypatch,
+) -> None:
+    health_checks = _health_checks_module()
+    monkeypatch.setenv("FORWARDING_CANARY_PATH", "/custom-canary")
+
+    sock = _FakeSocket([_forwarding_canary_response()])
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: sock,
+    )
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url="http://127.0.0.1:18080/custom-canary",
+        timeout=0.4,
+    )
+
+    assert result == {
+        "ok": True,
+        "detail": "HTTP/1.1 200 OK; local health ok",
+        "status_code": 200,
+        "probe_url": "http://127.0.0.1:18080/custom-canary?probe=squid-respmod",
+        "headers_complete": True,
+        "body_complete": True,
+        "local_health_ok": True,
+        "canary_probe_ok": True,
+    }
+    assert (
+        b"GET http://127.0.0.1:18080/custom-canary?probe=squid-respmod HTTP/1.1"
+        in sock.sent[0]
+    )
+
+    sock = _FakeSocket([_http_response(body=b'{"ok":true}\n')])
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: sock,
+    )
+
+    malformed = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url="http://127.0.0.1:18080/custom-canary",
+        timeout=0.4,
+    )
+
+    assert malformed["ok"] is False
+    assert malformed["local_health_ok"] is False
+    assert malformed["canary_probe_ok"] is False
+    assert "local health body did not confirm ok" in malformed["detail"]
+
+
 def test_check_http_proxy_forwarding_accepts_complete_chunked_local_health(
     monkeypatch,
 ) -> None:

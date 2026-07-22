@@ -345,11 +345,34 @@ def _decode_chunked_body(data: bytes) -> tuple[bytes, bool]:
     return bytes(body), False
 
 
+def _forwarding_canary_path() -> str:
+    path = (
+        os.environ.get("FORWARDING_CANARY_PATH")
+        or "/__docker_proxy_forwarding_canary"
+    ).strip()
+    if (
+        not path.startswith("/")
+        or "?" in path
+        or "#" in path
+        or "\\" in path
+        or "//" in path
+    ):
+        return "/__docker_proxy_forwarding_canary"
+    return path
+
+
+def _normalized_url_path(path: str) -> str:
+    normalized = str(path or "/").rstrip("/")
+    return normalized or "/"
+
+
 def _target_is_local_json_health(target_url: str) -> bool:
     parsed = urlsplit(str(target_url or ""))
-    return parsed.scheme.lower() == "http" and parsed.path.rstrip("/") in {
+    return parsed.scheme.lower() == "http" and _normalized_url_path(
+        parsed.path,
+    ) in {
         "/health",
-        "/__docker_proxy_forwarding_canary",
+        _normalized_url_path(_forwarding_canary_path()),
     }
 
 
@@ -357,7 +380,8 @@ def _target_is_forwarding_canary(target_url: str) -> bool:
     parsed = urlsplit(str(target_url or ""))
     return (
         parsed.scheme.lower() == "http"
-        and parsed.path.rstrip("/") == "/__docker_proxy_forwarding_canary"
+        and _normalized_url_path(parsed.path)
+        == _normalized_url_path(_forwarding_canary_path())
     )
 
 
