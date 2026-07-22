@@ -320,6 +320,27 @@ def test_saml_profile_https_is_required_by_default() -> None:
         store.save_profile({"metadata_url": "http://adfs.example.local/metadata.xml"})
 
 
+@pytest.mark.parametrize(
+    "metadata_url",
+    [
+        "https://adfs.example.local\\@evil.example/metadata.xml",
+        "https://adfs.example.local/%5cmetadata.xml",
+        "https://adfs.example.local/metadata.xml?next=%0d%0aHost:evil.example",
+        "https://adfs.example.local/metadata xml",
+    ],
+)
+def test_saml_profile_rejects_parser_ambiguous_metadata_urls(
+    metadata_url: str,
+) -> None:
+    store = MemorySamlAuthStore()
+
+    with pytest.raises(
+        ValueError,
+        match="whitespace, control characters, or backslashes",
+    ):
+        store.save_profile({"metadata_url": metadata_url})
+
+
 def test_saml_profile_accepts_valid_public_base_url_port() -> None:
     store = MemorySamlAuthStore()
 
@@ -331,6 +352,31 @@ def test_saml_profile_accepts_valid_public_base_url_port() -> None:
     )
 
     assert profile.public_base_url == "https://admin.example.test:8443"
+
+
+@pytest.mark.parametrize(
+    "public_base_url",
+    [
+        "https://admin.example.test\\@evil.example/",
+        "https://admin.example.test/%5cmetadata",
+        "https://admin.example.test/base path",
+    ],
+)
+def test_saml_profile_rejects_parser_ambiguous_public_base_urls(
+    public_base_url: str,
+) -> None:
+    store = MemorySamlAuthStore()
+
+    with pytest.raises(
+        ValueError,
+        match="whitespace, control characters, or backslashes",
+    ):
+        store.save_profile(
+            {
+                "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+                "public_base_url": public_base_url,
+            }
+        )
 
 
 @pytest.mark.parametrize(
