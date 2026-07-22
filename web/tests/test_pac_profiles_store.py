@@ -252,6 +252,9 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
     assert mod._normalize_proxy_host_port(
         "http://Backup.Example:8080/proxy.pac", ""
     ) == ("backup.example", 8080, "")
+    assert mod._normalize_proxy_host_port(
+        "https://Backup.Example/proxy.pac", "9090"
+    ) == ("backup.example", 9090, "")
     assert mod._normalize_proxy_host_port("[2001:db8::10]:3129", None) == (
         "2001:db8::10",
         3129,
@@ -296,6 +299,22 @@ def test_backup_proxy_host_port_normalization_rejects_unsafe_hosts() -> None:
             None,
             None,
             "Invalid proxy host.",
+        )
+
+
+def test_backup_proxy_host_port_normalization_rejects_embedded_credentials() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    for host in (
+        "http://user:pass@backup.example:8080/proxy.pac",
+        "http://user@backup.example:8080/proxy.pac",
+        "http://:pass@backup.example:8080/proxy.pac",
+    ):
+        assert mod._normalize_proxy_host_port(host, "") == (
+            None,
+            None,
+            "Proxy host must not include embedded credentials.",
         )
 
 
