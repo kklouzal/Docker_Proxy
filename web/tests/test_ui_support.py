@@ -15,6 +15,13 @@ from services.ui_support import (
         "http://[::1",
         "//[::1",
         "https://example.invalid/admin",
+        "/%2F%2Fevil.example/path",
+        "/%5Cevil.example/path",
+        "/safe\\..\\login",
+        "/admin%0d%0aLocation:%20//evil.example",
+        "/admin%00",
+        "/admin%2Fsettings",
+        "/%252fevil.example/path",
     ],
 )
 def test_safe_local_return_url_rejects_absolute_or_malformed(value: str) -> None:
@@ -33,6 +40,13 @@ def test_append_query_to_local_return_preserves_and_replaces_query_values() -> N
     assert (
         append_query_to_local_return("/admin?pane=old&keep=1#top", pane="ssl", ok=1)
         == "/admin?keep=1&pane=ssl&ok=1#top"
+    )
+
+
+def test_append_query_to_local_return_preserves_valid_query_and_fragment() -> None:
+    assert (
+        append_query_to_local_return("/admin/ssl?pane=old&keep=1#details", pane="tls")
+        == "/admin/ssl?keep=1&pane=tls#details"
     )
 
 

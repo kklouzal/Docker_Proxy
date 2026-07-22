@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from services.runtime_helpers import normalize_hostish as _normalize_hostish
 
@@ -657,7 +657,7 @@ def bulk_lines(value: str | None) -> list[str]:
 
 def safe_local_return_url(value: str | None) -> str | None:
     raw = (value or "").strip()
-    if not raw:
+    if not raw or "\\" in raw:
         return None
     try:
         parsed = urlsplit(raw)
@@ -667,6 +667,26 @@ def safe_local_return_url(value: str | None) -> str | None:
         return None
     if not parsed.path.startswith("/") or parsed.path.startswith("//"):
         return None
+
+    decoded = raw
+    for _ in range(3):
+        previous = decoded
+        decoded = unquote(previous, errors="replace")
+        if decoded == previous:
+            break
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in decoded):
+        return None
+    if "\\" in decoded or decoded.startswith("//"):
+        return None
+    try:
+        decoded_parsed = urlsplit(decoded)
+    except ValueError:
+        return None
+    if decoded_parsed.scheme or decoded_parsed.netloc:
+        return None
+    if decoded.count("/") > raw.count("/"):
+        return None
+
     return urlunsplit(("", "", parsed.path, parsed.query, parsed.fragment))
 
 
