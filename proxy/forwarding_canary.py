@@ -12,6 +12,15 @@ DEFAULT_CANARY_HOST = "127.0.0.1"
 DEFAULT_CANARY_PORT = 18080
 DEFAULT_CANARY_PATH = "/__docker_proxy_forwarding_canary"
 CANARY_SERVICE = "docker-proxy-forwarding-canary"
+MAX_PROBE_HEADER_VALUE_LEN = 128
+
+
+def _probe_header_value(probe: str) -> str:
+    bounded = probe[:MAX_PROBE_HEADER_VALUE_LEN]
+    return "".join(
+        char if 0x20 <= ord(char) <= 0xFF and ord(char) != 0x7F else "?"
+        for char in bounded
+    )
 
 
 def _canary_host() -> str:
@@ -91,7 +100,7 @@ class ForwardingCanaryHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store, no-cache, max-age=0")
         self.send_header("Pragma", "no-cache")
-        self.send_header("X-Docker-Proxy-Forwarding-Canary", probe)
+        self.send_header("X-Docker-Proxy-Forwarding-Canary", _probe_header_value(probe))
         self.end_headers()
         if include_body:
             self.wfile.write(body)
