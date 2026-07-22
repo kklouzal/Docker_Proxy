@@ -71,9 +71,6 @@ def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> 
         80,
         "/proxy.pac",
     )
-    assert proxy_registry._parse_public_pac_url(
-        "https://proxy.example:not-a-port/proxy.pac"
-    ) == ("proxy.example", "https", 443, "/proxy.pac")
     assert proxy_registry._parse_public_pac_url("https://bad host.example/proxy.pac") == (
         "",
         "http",
@@ -111,6 +108,26 @@ def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> 
     ],
 )
 def test_parse_public_pac_url_rejects_empty_explicit_authority_ports(
+    value: str,
+) -> None:
+    proxy_registry = _proxy_registry()
+
+    assert proxy_registry._parse_public_pac_url(value) == (
+        "",
+        "http",
+        80,
+        "/proxy.pac",
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://proxy.example:not-a-port/proxy.pac",
+        "proxy.example:not-a-port/proxy.pac",
+    ],
+)
+def test_parse_public_pac_url_rejects_invalid_explicit_authority_ports(
     value: str,
 ) -> None:
     proxy_registry = _proxy_registry()

@@ -214,7 +214,7 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
     try:
         parsed_port = parsed.port
     except ValueError:
-        parsed_port = None
+        return "", "http", 80, "/proxy.pac"
     path = normalize_public_pac_path(candidate)
     return host, scheme, int(parsed_port or default_port), path
 
