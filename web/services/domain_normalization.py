@@ -24,6 +24,26 @@ def _valid_dns_hostname(raw: str) -> bool:
     return True
 
 
+def _is_ambiguous_ipv4_host(raw: str) -> bool:
+    candidate = raw.rstrip(".").lower()
+    if not candidate:
+        return False
+    labels = candidate.split(".")
+    if not 1 <= len(labels) <= 4:
+        return False
+    for label in labels:
+        if not label:
+            return False
+        if label.isdecimal():
+            continue
+        if label.startswith("0x"):
+            digits = label.removeprefix("0x")
+            if digits and all(ch in "0123456789abcdef" for ch in digits):
+                continue
+        return False
+    return True
+
+
 def normalize_domain(value: object) -> str:
     """Normalize host/domain strings shared by webcat builders and ACL helpers."""
     raw = str(value or "").strip().lower().rstrip(".")
@@ -75,6 +95,8 @@ def normalize_domain(value: object) -> str:
     except Exception:
         return ""
     normalized = ".".join(labels).rstrip(".")
+    if _is_ambiguous_ipv4_host(normalized):
+        return ""
     return normalized if _valid_dns_hostname(normalized) else ""
 
 

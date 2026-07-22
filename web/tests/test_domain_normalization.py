@@ -50,6 +50,18 @@ def test_normalize_domain_rejects_malformed_dns_labels_and_wildcards() -> None:
         assert looks_like_domain(value) is False
 
 
+def test_normalize_domain_rejects_ambiguous_ipv4_host_forms() -> None:
+    for value in (
+        "12345",
+        "127.1",
+        "0177.0.0.1",
+        "0x7f000001",
+        "http://127.1:8080/path",
+    ):
+        assert normalize_domain(value) == ""
+        assert looks_like_domain(value) is False
+
+
 def test_normalize_domain_preserves_supported_host_forms() -> None:
     assert normalize_domain("https://Bücher.Example:443/path") == (
         "xn--bcher-kva.example"
