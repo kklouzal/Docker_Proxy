@@ -410,6 +410,10 @@ class SamlAuthStore:
             timeout=profile.timeout_seconds,
             context=context,
         ) as resp:
+            final_url = resp.geturl()
+            if profile.require_https and urlsplit(final_url).scheme.lower() != "https":
+                msg = "SAML metadata final response URL must use https://."
+                raise ValueError(msg)
             chunks: list[bytes] = []
             total = 0
             while True:

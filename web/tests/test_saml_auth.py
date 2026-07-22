@@ -6,6 +6,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from services import saml_auth
 from services.saml_auth import SamlAuthStore, parse_saml_metadata, prepare_flask_request
 
 SIGNING_CERT = "MIICsigningCERTvalue"
@@ -398,6 +399,69 @@ def test_saml_profile_rejects_invalid_public_base_url_ports(
                 "public_base_url": public_base_url,
             }
         )
+
+
+class _FakeMetadataResponse:
+    def __init__(self, body: bytes, final_url: str) -> None:
+        self._body = body
+        self._final_url = final_url
+        self._read = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def geturl(self) -> str:
+        return self._final_url
+
+    def read(self, _size: int = -1) -> bytes:
+        if self._read:
+            return b""
+        self._read = True
+        return self._body
+
+
+def test_saml_fetch_rejects_https_metadata_redirect_to_http(monkeypatch) -> None:
+    store = MemorySamlAuthStore()
+    profile = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            "require_https": "1",
+        }
+    )
+
+    def fake_urlopen(_request, *, timeout, context):
+        return _FakeMetadataResponse(
+            SAMPLE_METADATA.encode(),
+            "http://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+        )
+
+    monkeypatch.setattr(saml_auth, "urlopen", fake_urlopen)
+
+    with pytest.raises(ValueError, match="must use https://"):
+        store.fetch_metadata(profile)
+
+
+def test_saml_fetch_accepts_https_metadata_redirect_to_https(monkeypatch) -> None:
+    store = MemorySamlAuthStore()
+    profile = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            "require_https": "1",
+        }
+    )
+
+    def fake_urlopen(_request, *, timeout, context):
+        return _FakeMetadataResponse(
+            SAMPLE_METADATA.encode(),
+            "https://login.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+        )
+
+    monkeypatch.setattr(saml_auth, "urlopen", fake_urlopen)
+
+    assert store.fetch_metadata(profile) == SAMPLE_METADATA
 
 
 def test_saml_refresh_fetches_and_caches_static_metadata(monkeypatch) -> None:
