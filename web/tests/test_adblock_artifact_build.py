@@ -200,6 +200,35 @@ def test_artifact_revision_and_summary_share_json_property_parsing(
     assert revision.report == summary.report == {}
 
 
+def test_materialize_archive_to_directory_replaces_target_and_writes_marker(
+    tmp_path: Path,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    target = tmp_path / "compiled"
+    target.mkdir()
+    (target / "stale.txt").write_text("old", encoding="utf-8")
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w") as zf:
+        zf.writestr("settings.json", '{"enabled": true}')
+        zf.writestr("nested/rules.jsonl", '{"rule": "||ads.example^"}\n')
+
+    artifacts_module.materialize_archive_to_directory(
+        target,
+        archive_blob=buffer.getvalue(),
+        artifact_sha256="abc123",
+    )
+
+    assert not (target / "stale.txt").exists()
+    assert (target / "settings.json").read_text(encoding="utf-8") == (
+        '{"enabled": true}'
+    )
+    assert (target / "nested" / "rules.jsonl").read_text(encoding="utf-8") == (
+        '{"rule": "||ads.example^"}\n'
+    )
+    assert artifacts_module.read_materialized_artifact_sha(target) == "abc123"
+
+
 def test_build_active_artifact_packages_compiled_lists_and_settings(
     tmp_path, monkeypatch
 ) -> None:
