@@ -90,6 +90,32 @@ def _recursive_unquote(value: str, *, limit: int = 8) -> str:
     return current
 
 
+def _split_url_preserving_escaped_fragment(raw: str) -> urllib.parse.SplitResult:
+    parsed = urllib.parse.urlsplit(raw)
+    if not parsed.fragment:
+        return parsed
+
+    # Safe Browsing canonicalization removes literal URL fragments before
+    # repeated percent-unescaping. Escaped '#'/ '?' bytes inside the path/query
+    # are URL data after unescaping, not fragment/query delimiters, so a second
+    # parse would incorrectly truncate them.
+    without_fragment = urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, parsed.query, ""),
+    )
+    return urllib.parse.urlsplit(without_fragment)
+
+
+def _escape_safe_browsing_url_chars(value: str) -> str:
+    out: list[str] = []
+    for b in value.encode("utf-8", errors="surrogatepass"):
+        ch = chr(b)
+        if b <= 32 or b >= 127 or ch in "#%":
+            out.append(f"%{b:02X}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _escape_safe_browsing_component(value: str, *, safe: str) -> str:
     out: list[str] = []
     allowed = set(safe)
@@ -194,21 +220,21 @@ def canonicalize_url(value: str) -> str:
     raw = _strip_control_url_chars((value or "").strip())
     if not raw:
         return ""
-    raw = urllib.parse.urldefrag(raw)[0]
-    raw = _recursive_unquote(raw)
     if "://" not in raw:
         raw = "http://" + raw
     try:
-        parsed = urllib.parse.urlsplit(raw)
+        parsed = _split_url_preserving_escaped_fragment(raw)
         hostname = parsed.hostname
     except ValueError:
         return ""
     scheme = (parsed.scheme or "http").lower()
     host = _normalize_host(
-        hostname or parsed.netloc.split("@")[-1].split(":")[0],
+        _recursive_unquote(hostname or parsed.netloc.split("@")[-1].split(":")[0]),
     )
     if not host:
         return ""
+    if not _is_ip_literal(host):
+        host = _escape_safe_browsing_url_chars(host)
     path = _canonical_path(parsed.path or "/")
     query = _escape_safe_browsing_component(
         _recursive_unquote(parsed.query or ""),
