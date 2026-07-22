@@ -750,6 +750,22 @@ include /etc/squid/conf.d/30-webfilter.conf
     )
 
 
+def test_squid_controller_forwarding_canary_path_rejects_double_slash(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    monkeypatch.setenv("FORWARDING_CANARY_PATH", "/bad//canary")
+
+    ctl = SquidController()
+    text = ctl._forwarding_canary_access_block()
+
+    assert "^/__docker_proxy_forwarding_canary([?].*)?$" in text
+    assert "/bad//canary" not in text
+
+
 def test_squid_controller_normalize_config_text_keeps_includes_outside_canary_block() -> (
     None
 ):
