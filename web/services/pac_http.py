@@ -337,16 +337,18 @@ class LocalPacCache:
     def _load_locked(self) -> bool:
         state_sha = self._read_state_sha()
         state_signatures = self._state_file_signatures()
-        file_signatures = self._pac_file_signatures(tuple(self._files))
+        cached_file_paths = tuple(self._files)
+        file_signatures: tuple[_FileSignature, ...] | None = None
         if (
             state_sha
             and state_sha == self._state_sha
             and state_signatures == self._state_signatures
-            and file_signatures == self._file_signatures
             and self._manifest
             and self._files
         ):
-            return True
+            file_signatures = self._pac_file_signatures(cached_file_paths)
+            if file_signatures == self._file_signatures:
+                return True
 
         manifest_path = self.pac_dir / PAC_MANIFEST_FILENAME
         if not manifest_path.exists():
@@ -430,7 +432,12 @@ class LocalPacCache:
         self._manifest = manifest
         self._files = files
         self._state_signatures = state_signatures
-        self._file_signatures = self._pac_file_signatures(tuple(files))
+        loaded_file_paths = tuple(files)
+        same_cached_files = frozenset(loaded_file_paths) == frozenset(cached_file_paths)
+        if file_signatures is not None and same_cached_files:
+            self._file_signatures = file_signatures
+        else:
+            self._file_signatures = self._pac_file_signatures(loaded_file_paths)
         return True
 
     def public_paths(self) -> frozenset[str]:

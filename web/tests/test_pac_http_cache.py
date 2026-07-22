@@ -423,6 +423,57 @@ def test_local_pac_cache_reloads_when_referenced_pac_file_changes(
     )
 
 
+def test_local_pac_cache_warm_reload_scans_pac_signatures_once(
+    tmp_path,
+    pac_http,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        """{"fallback_file":"fallback.pac","state_sha256":"state-one"}""",
+        encoding="utf-8",
+    )
+    fallback = pac_dir / "fallback.pac"
+    fallback.write_text(
+        'function FindProxyForURL(){return "PROXY one";}\n',
+        encoding="utf-8",
+    )
+
+    class CountingPacCache(pac_http.LocalPacCache):
+        def __init__(self, pac_dir: str) -> None:
+            super().__init__(pac_dir)
+            self.pac_signature_requests: list[tuple[str, ...]] = []
+
+        def _pac_file_signatures(self, rel_paths: object):
+            if isinstance(rel_paths, (list, set, tuple, frozenset)):
+                self.pac_signature_requests.append(
+                    tuple(sorted(str(item) for item in rel_paths))
+                )
+            else:
+                self.pac_signature_requests.append(())
+            return super()._pac_file_signatures(rel_paths)
+
+    cache = CountingPacCache(str(pac_dir))
+    first = b'function FindProxyForURL(){return "PROXY one";}\n'
+    second = b'function FindProxyForURL(){return "PROXY two";}\n'
+
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == first
+
+    cache.pac_signature_requests.clear()
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == first
+    assert cache.pac_signature_requests == [("fallback.pac",)]
+
+    fallback.write_text(
+        'function FindProxyForURL(){return "PROXY two";}\n',
+        encoding="utf-8",
+    )
+    cache.pac_signature_requests.clear()
+
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == second
+    assert cache.pac_signature_requests == [("fallback.pac",)]
+
+
 def test_local_pac_cache_reloads_when_referenced_pac_file_is_replaced_same_signature(
     tmp_path, pac_http
 ) -> None:
