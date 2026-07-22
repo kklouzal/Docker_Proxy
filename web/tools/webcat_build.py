@@ -152,7 +152,7 @@ def _collect_from_csv(path: Path) -> list[tuple[str, str]]:
             continue
 
         # categories can be comma/pipe/space separated
-        cat_tokens = re.split(r"[|,]+", str(cats))
+        cat_tokens = re.split(r"[|,\s]+", str(cats))
         for ct in cat_tokens:
             c = _norm_category(ct)
             if c:

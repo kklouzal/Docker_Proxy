@@ -378,6 +378,27 @@ def test_provider_category_dir_can_parse_non_ut1_archive() -> None:
         assert aliases == {}
 
 
+def test_csv_category_column_splits_comma_pipe_and_space_separators() -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_csv_categories_") as td:
+        feed_path = Path(td) / "feed.csv"
+        feed_path.write_text(
+            'domain,category\nexample.com,"ads malware|tracking,phishing"\n',
+            encoding="utf-8",
+        )
+
+        pairs = webcat_build._collect_from_csv(feed_path)
+
+        assert pairs == [
+            ("example.com", "ads"),
+            ("example.com", "malware"),
+            ("example.com", "tracking"),
+            ("example.com", "phishing"),
+        ]
+        assert ("example.com", "ads_malware") not in pairs
+
+
 def test_download_rejects_redirect_to_internal_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
