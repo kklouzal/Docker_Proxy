@@ -256,6 +256,36 @@ def test_resolve_proxy_pac_target_ignores_ambiguous_ipv4_public_host(
     assert target.proxy_chain == "PROXY __PAC_PROXY_HOST__:3128; DIRECT"
 
 
+@pytest.mark.parametrize(
+    ("env_name", "value"),
+    [
+        ("PROXY_PUBLIC_HOST", "[fe80::1%eth0]:3128"),
+        ("PROXY_PUBLIC_PAC_URL", "http://[fe80::1%25eth0]/proxy.pac"),
+    ],
+)
+def test_resolve_proxy_pac_target_ignores_scoped_ipv6_public_endpoint(
+    monkeypatch,
+    env_name: str,
+    value: str,
+) -> None:
+    _add_web_to_path()
+
+    from services import pac_renderer  # type: ignore
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.delenv("PROXY_PUBLIC_HOST", raising=False)
+    monkeypatch.delenv("PROXY_PUBLIC_PAC_URL", raising=False)
+    monkeypatch.setenv(env_name, value)
+
+    target = pac_renderer.resolve_proxy_pac_target("default")
+
+    assert target.public_host == ""
+    assert target.pac_url == ""
+    assert target.uses_request_host_fallback is True
+    assert target.proxy_chain == "PROXY __PAC_PROXY_HOST__:3128; DIRECT"
+
+
 def test_resolve_proxy_pac_target_uses_env_endpoint_when_registry_has_no_public_host(
     monkeypatch,
 ) -> None:

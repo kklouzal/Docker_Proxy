@@ -76,9 +76,13 @@ def normalize_public_host(value: object | None, default: str = "") -> str:
     if not host:
         return fallback
     try:
-        return str(ipaddress.ip_address(host))
+        parsed_ip = ipaddress.ip_address(host)
     except ValueError:
         pass
+    else:
+        if getattr(parsed_ip, "scope_id", None):
+            return fallback
+        return str(parsed_ip)
     if _is_ambiguous_ipv4_host(host):
         return fallback
     return host.rstrip(".").lower() if _valid_public_dns_host(host) else fallback
