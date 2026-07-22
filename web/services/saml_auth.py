@@ -49,6 +49,16 @@ def _decoded_url_component_is_unsafe(value: str) -> bool:
     return _has_unsafe_url_text(decoded) or "\\" in decoded
 
 
+def _decoded_authority_component_is_unsafe(value: str) -> bool:
+    try:
+        decoded = unquote(value or "")
+    except Exception:
+        decoded = str(value or "")
+    return _decoded_url_component_is_unsafe(value) or any(
+        delimiter in decoded for delimiter in ("/", "?", "#", "@")
+    )
+
+
 @dataclass(frozen=True)
 class SamlProviderProfile:
     provider: str
@@ -576,11 +586,11 @@ class SamlAuthStore:
         except ValueError as exc:
             msg = "SAML metadata URL includes an invalid port."
             raise ValueError(msg) from exc
-        if any(
+        if _decoded_authority_component_is_unsafe(parsed.netloc) or any(
             _decoded_url_component_is_unsafe(component)
-            for component in (parsed.netloc, parsed.path, parsed.query)
+            for component in (parsed.path, parsed.query)
         ):
-            msg = "SAML metadata URL must not include encoded whitespace, control characters, or backslashes."
+            msg = "SAML metadata URL must not include encoded whitespace, control characters, or backslashes, or encoded authority delimiters."
             raise ValueError(msg)
         return parsed.geturl()
 
@@ -603,11 +613,10 @@ class SamlAuthStore:
         except ValueError as exc:
             msg = "SAML public base URL includes an invalid port."
             raise ValueError(msg) from exc
-        if any(
-            _decoded_url_component_is_unsafe(component)
-            for component in (parsed.netloc, parsed.path)
+        if _decoded_authority_component_is_unsafe(parsed.netloc) or any(
+            _decoded_url_component_is_unsafe(component) for component in (parsed.path,)
         ):
-            msg = "SAML public base URL must not include encoded whitespace, control characters, or backslashes."
+            msg = "SAML public base URL must not include encoded whitespace, control characters, or backslashes, or encoded authority delimiters."
             raise ValueError(msg)
         return parsed.geturl().rstrip("/")
 

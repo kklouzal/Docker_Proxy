@@ -325,6 +325,7 @@ def test_saml_profile_https_is_required_by_default() -> None:
     "metadata_url",
     [
         "https://adfs.example.local\\@evil.example/metadata.xml",
+        "https://adfs.example.local%2fevil.example/metadata.xml",
         "https://adfs.example.local/%5cmetadata.xml",
         "https://adfs.example.local/metadata.xml?next=%0d%0aHost:evil.example",
         "https://adfs.example.local/metadata xml",
@@ -359,6 +360,7 @@ def test_saml_profile_accepts_valid_public_base_url_port() -> None:
     "public_base_url",
     [
         "https://admin.example.test\\@evil.example/",
+        "https://admin.example.test%2fevil.example/",
         "https://admin.example.test/%5cmetadata",
         "https://admin.example.test/base path",
     ],
