@@ -47,6 +47,8 @@ def is_internal_host(hostname: str) -> bool:
         pass
     if h.endswith((".local", ".internal", ".localhost")):
         return True
+    if "." not in h:
+        return True
 
     try:
         infos = socket.getaddrinfo(h, None, type=socket.SOCK_STREAM)

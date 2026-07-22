@@ -92,6 +92,23 @@ def test_validate_download_url_rejects_hostname_resolving_to_non_global_ip(
         download_safety.validate_download_url("https://public.example/feed.csv")
 
 
+def test_validate_download_url_rejects_single_label_hostname_before_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("single-label download hosts should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="internal/localhost"):
+        download_safety.validate_download_url("https://intranet/feed.csv")
+
+
 @pytest.mark.parametrize(
     "source_url",
     [
