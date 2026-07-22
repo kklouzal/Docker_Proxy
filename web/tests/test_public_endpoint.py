@@ -39,6 +39,22 @@ def test_normalize_public_host_rejects_internal_reserved_dns_names(value: str) -
 @pytest.mark.parametrize(
     "value",
     [
+        "proxy",
+        "Proxy.",
+        "http://proxy:8080/proxy.pac",
+    ],
+)
+def test_normalize_public_host_rejects_single_label_dns_names(value: str) -> None:
+    _add_web_to_path()
+    from services.public_endpoint import normalize_public_host  # type: ignore
+
+    assert normalize_public_host(value) == ""
+    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "127.0.0.1",
         "10.0.0.1",
         "::1",
