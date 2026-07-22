@@ -125,6 +125,29 @@ def test_reg_export_normalizer_stops_before_following_values() -> None:
     assert normalize_reg_binary_export(exported) == original
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '"OtherValue"=hex:ff',
+        "Windows Registry Editor Version 5.00\n\n"
+        "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Example]\n"
+        '"OtherValue"=hex:ff\n',
+        "arbitrary words",
+        "---",
+    ],
+)
+def test_reg_export_normalizer_rejects_non_hex_without_winhttpsettings(payload: str) -> None:
+    with pytest.raises(WinHttpBuilderError, match="No WinHttpSettings REG_BINARY value was found"):
+        normalize_reg_binary_export(payload)
+
+
+def test_reg_export_normalizer_preserves_raw_hex_input() -> None:
+    original = generate_basic_winhttp_binary("http=proxy.example:3128", "<local>")
+    grouped = " ".join(original[index : index + 2] for index in range(0, len(original), 2))
+
+    assert normalize_reg_binary_export(grouped) == original
+
+
 def test_decode_round_trip_rejects_non_ascii_strings() -> None:
     with pytest.raises(WinHttpBuilderError):
         generate_basic_winhttp_binary("http=proxy.example:3128", "cafe\u0301")

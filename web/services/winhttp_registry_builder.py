@@ -27,6 +27,7 @@ TRACING_OUTPUTS = ("file", "debugger", "both")
 TRACING_LEVELS = ("default", "verbose")
 TRACING_FORMATS = ("ansi", "hex")
 COMMAND_UNSAFE_RE = re.compile(r'["&|\x00-\x1f\x7f]')
+RAW_HEX_INPUT_RE = re.compile(r"^[0-9a-fA-F,\s\\-]*$")
 
 
 class WinHttpBuilderError(ValueError):
@@ -366,8 +367,23 @@ def normalize_reg_binary_export(value: str) -> str:
         if not continued:
             break
 
-    body = "".join(chunks) if chunks else text
+    if chunks:
+        body = "".join(chunks)
+    else:
+        if text.strip() and not RAW_HEX_INPUT_RE.fullmatch(text):
+            msg = (
+                f'No {VALUE_NAME} {VALUE_TYPE} value was found; paste a registry export '
+                f'containing "{VALUE_NAME}"=hex:... or raw hex bytes.'
+            )
+            raise WinHttpBuilderError(msg)
+        body = text
     clean = normalize_hex_only(body)
+    if not chunks and text.strip() and not clean:
+        msg = (
+            f'No {VALUE_NAME} {VALUE_TYPE} value was found; paste a registry export '
+            f'containing "{VALUE_NAME}"=hex:... or raw hex bytes.'
+        )
+        raise WinHttpBuilderError(msg)
     if len(clean) % 2:
         msg = "Normalized WinHttpSettings hex has an odd number of characters."
         raise WinHttpBuilderError(msg)
