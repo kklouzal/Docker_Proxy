@@ -65,6 +65,15 @@ def test_normalize_hostish_handles_placeholders_and_ports() -> None:
     assert normalize_hostish("[2001:db8::1]:8443") == "2001:db8::1"
 
 
+def test_normalize_hostish_uses_url_parsing_for_scheme_bearing_values() -> None:
+    assert normalize_hostish("http://example.com/path") == "example.com"
+    assert (
+        normalize_hostish("https://user:pass@Example.COM:443/path?x=1#frag")
+        == "example.com"
+    )
+    assert normalize_hostish("https://[2001:db8::1]:8443/path") == "2001:db8::1"
+
+
 def test_extract_domain_prefers_sni_host_then_url() -> None:
     assert (
         extract_domain("https://fallback.example/path", sni="api.example")

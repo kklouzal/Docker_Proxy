@@ -25,6 +25,14 @@ def normalize_hostish(value: object | None) -> str:
     host = str(value or "").strip().lower().lstrip(".")
     if not host or host in {"-", "(nil)", "none", "null"}:
         return ""
+
+    try:
+        parsed = urlsplit(host)
+        if (parsed.scheme or parsed.netloc) and parsed.hostname:
+            host = parsed.hostname
+    except Exception:
+        pass
+
     if "/" in host:
         host = host.split("/", 1)[0]
     if "?" in host:
