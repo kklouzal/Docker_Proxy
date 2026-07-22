@@ -177,8 +177,11 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
     offsets: dict[str, int] = {}
     for raw_item in value.split(","):
         item = raw_item.lstrip()
-        if not item or "=" not in item:
+        if not item:
             continue
+        if "=" not in item:
+            message = f"malformed Encapsulated section: {item}"
+            raise IcapProtocolError(message)
         name, raw_offset = item.split("=", 1)
         name = name.strip().lower()
         if name not in supported_names:
