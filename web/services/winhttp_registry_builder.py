@@ -180,7 +180,17 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
             inline_port = parsed.port
             if inline_port is not None and inline_port < 1:
                 raise ValueError
+            if inline_port is not None:
+                warning = f"{warning} {inline_port_warning}"
+            if parsed.path or parsed.query or parsed.fragment or parsed.username or parsed.password:
+                msg = "Proxy host/IP must be only a host name or IP address, not a full URL."
+                raise WinHttpBuilderError(msg)
             value = parsed.hostname or ""
+            if not value:
+                msg = "Proxy host/IP is invalid."
+                raise WinHttpBuilderError(msg)
+        except WinHttpBuilderError:
+            raise
         except ValueError as exc:
             msg = "Proxy host/IP is invalid."
             raise WinHttpBuilderError(msg) from exc

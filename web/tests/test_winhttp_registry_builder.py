@@ -52,10 +52,23 @@ def test_default_static_output_maps_http_and_https_destinations() -> None:
     assert '"AutoDetect": false' in result.advproxy_json
 
 
+def test_scheme_qualified_bare_proxy_host_is_supported_with_warning() -> None:
+    result = build_contract_output(
+        {
+            "proxy_host": "http://proxy.example",
+            "proxy_port": 3128,
+            "destination_schemes": ["http", "https"],
+        },
+    )
+
+    assert result.proxy_string == "http=proxy.example:3128;https=proxy.example:3128"
+    assert any("should not include http:// or https://" in warning for warning in result.warnings)
+
+
 def test_url_shaped_proxy_host_strips_inline_port_before_mapping_generation() -> None:
     result = build_contract_output(
         {
-            "proxy_host": "http://proxy.example:8080/proxy.pac",
+            "proxy_host": "http://proxy.example:8080",
             "proxy_port": 3128,
             "destination_schemes": ["http", "https"],
         },
@@ -63,6 +76,27 @@ def test_url_shaped_proxy_host_strips_inline_port_before_mapping_generation() ->
 
     assert result.proxy_string == "http=proxy.example:3128;https=proxy.example:3128"
     assert ":8080:3128" not in result.legacy_set_proxy_command
+    assert any("inline port" in warning for warning in result.warnings)
+
+
+@pytest.mark.parametrize(
+    "proxy_host",
+    [
+        "http://proxy.example/proxy.pac",
+        "http://proxy.example?target=winhttp",
+        "http://proxy.example#primary",
+        "http://operator:secret@proxy.example",
+    ],
+)
+def test_scheme_qualified_proxy_host_rejects_url_components(proxy_host: str) -> None:
+    with pytest.raises(WinHttpBuilderError, match="Proxy host/IP"):
+        build_contract_output(
+            {
+                "proxy_host": proxy_host,
+                "proxy_port": 3128,
+                "destination_schemes": ["http", "https"],
+            },
+        )
 
 
 def test_bare_proxy_host_strips_inline_port_before_mapping_generation() -> None:
@@ -96,7 +130,7 @@ def test_bracketed_ipv6_proxy_host_strips_inline_port_before_mapping_generation(
 
 @pytest.mark.parametrize(
     "proxy_host",
-    ["2001:db8::10", "[2001:db8::10]", "http://[2001:db8::10]:8080/proxy.pac"],
+    ["2001:db8::10", "[2001:db8::10]", "http://[2001:db8::10]:8080"],
 )
 def test_generated_proxy_outputs_bracket_ipv6_literals(proxy_host: str) -> None:
     result = build_contract_output(
