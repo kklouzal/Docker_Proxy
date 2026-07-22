@@ -28,13 +28,14 @@ class _ValidationConn:
         module,
         *,
         missing_tables=(),
+        missing_columns=(),
         duplicate_ops: int = 0,
         schema_checksum: str | None = None,
         terminal_claims: int = 0,
         orphan_operations: int = 0,
     ) -> None:
         self.tables = set(module._REQUIRED_TABLES) - set(missing_tables)
-        self.columns = set(module._REQUIRED_COLUMNS)
+        self.columns = set(module._REQUIRED_COLUMNS) - set(missing_columns)
         self.indexes = set(module._REQUIRED_INDEXES)
         self.duplicate_ops = duplicate_ops
         self.schema_checksum = schema_checksum or module.latest_schema_checksum()
@@ -111,6 +112,40 @@ def test_mysql_state_validation_fails_duplicate_active_operation_keys() -> None:
 
     assert result.ok is False
     assert any("duplicate active idempotency keys" in error for error in result.errors)
+
+
+def test_mysql_state_validation_fails_missing_operation_status_before_invariants() -> None:
+    _add_web_to_path()
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(
+            mysql_state_validation,
+            missing_columns=(("proxy_operations", "status"),),
+            duplicate_ops=2,
+        ),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert result.errors == ["missing generated/idempotency columns: proxy_operations.status"]
+
+
+def test_mysql_state_validation_fails_missing_operation_proxy_id_before_invariants() -> None:
+    _add_web_to_path()
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(
+            mysql_state_validation,
+            missing_columns=(("proxy_operations", "proxy_id"),),
+            orphan_operations=1,
+        ),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert result.errors == ["missing generated/idempotency columns: proxy_operations.proxy_id"]
 
 
 def test_mysql_state_validation_fails_invalid_schema_checksum() -> None:

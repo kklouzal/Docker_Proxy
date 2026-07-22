@@ -75,6 +75,8 @@ _REQUIRED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("proxy_config_revisions", "active_proxy_id"),
     ("certificate_bundle_revisions", "active_global_slot"),
     ("adblock_artifact_revisions", "active_global_slot"),
+    ("proxy_operations", "proxy_id"),
+    ("proxy_operations", "status"),
     ("proxy_operations", "request_key"),
     ("proxy_operations", "claim_token"),
     ("saml_auth_profiles", "public_base_url"),
@@ -237,6 +239,7 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
         missing_columns = [f"{table}.{column}" for table, column in _REQUIRED_COLUMNS if (table, column) not in columns]
         if missing_columns:
             result.error("missing generated/idempotency columns: " + ", ".join(missing_columns))
+            return result
 
         indexes = _index_names(active_conn)
         missing_indexes = [f"{table}.{index}" for table, index in _REQUIRED_INDEXES if (table, index) not in indexes]
