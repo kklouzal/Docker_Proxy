@@ -370,6 +370,7 @@ def _render_pac(
             "  var normalizedProxyHost = proxyHost.replace(/^\\[/, '').replace(/\\]$/, '').toLowerCase().replace(/\\.+$/, '');",
             "  var isIpv6Literal = host.indexOf(':') >= 0;",
             "  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'DIRECT';",
+            "  if (/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(host) && isInNet(host, '127.0.0.0', '255.0.0.0')) return 'DIRECT';",
             "  if (!isIpv6Literal && isPlainHostName(host)) return 'DIRECT';",
             "  if (host === normalizedProxyHost) return 'DIRECT';",
         ),

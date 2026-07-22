@@ -803,6 +803,30 @@ def test_rendered_pac_does_not_treat_ipv6_literals_as_plain_hosts() -> None:
     assert "if (isPlainHostName(host)) return 'DIRECT';" not in rendered
 
 
+def test_rendered_pac_always_bypasses_loopback_ipv4_literals() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_fallback_pac(
+        pac_renderer.ProxyPacTarget(
+            proxy_id="default",
+            public_host="proxy.example",
+            pac_scheme="http",
+            pac_port=80,
+            http_proxy_port=3128,
+        ),
+        include_private=False,
+    )
+
+    loopback_rule = (
+        "if (/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(host) && "
+        "isInNet(host, '127.0.0.0', '255.0.0.0')) return 'DIRECT';"
+    )
+
+    assert loopback_rule in rendered
+    assert "var ip = hostIp();" not in rendered
+
+
 def test_select_manifest_file_prefers_most_specific_overlapping_cidr() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
