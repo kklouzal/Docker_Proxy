@@ -104,6 +104,8 @@ def normalize_public_host(value: object | None, default: str = "") -> str:
     else:
         if getattr(parsed_ip, "scope_id", None):
             return fallback
+        if parsed_ip.is_multicast or not parsed_ip.is_global:
+            return fallback
         return str(parsed_ip)
     if _is_ambiguous_ipv4_host(host):
         return fallback

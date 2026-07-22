@@ -157,12 +157,12 @@ def test_resolve_proxy_pac_target_honors_public_pac_url_when_registry_is_empty(
     ("public_pac_url", "expected_url"),
     [
         (
-            "2001:db8::10/custom/proxy.pac?site=lab",
-            "http://[2001:db8::10]/custom/proxy.pac?site=lab",
+            "2001:4860:4860::8888/custom/proxy.pac?site=lab",
+            "http://[2001:4860:4860::8888]/custom/proxy.pac?site=lab",
         ),
         (
-            "https://2001:db8::10/custom/proxy.pac",
-            "https://[2001:db8::10]/custom/proxy.pac",
+            "https://2001:4860:4860::8888/custom/proxy.pac",
+            "https://[2001:4860:4860::8888]/custom/proxy.pac",
         ),
     ],
 )
@@ -180,10 +180,10 @@ def test_resolve_proxy_pac_target_preserves_unbracketed_ipv6_public_pac_url(
 
     target = pac_renderer.resolve_proxy_pac_target("default")
 
-    assert target.public_host == "2001:db8::10"
+    assert target.public_host == "2001:4860:4860::8888"
     assert target.pac_path.startswith("/custom/proxy.pac")
     assert target.pac_url == expected_url
-    assert target.proxy_chain == "PROXY [2001:db8::10]:3128; DIRECT"
+    assert target.proxy_chain == "PROXY [2001:4860:4860::8888]:3128; DIRECT"
 
 
 @pytest.mark.parametrize(
@@ -296,6 +296,39 @@ def test_resolve_proxy_pac_target_ignores_ambiguous_ipv4_public_host(
     ],
 )
 def test_resolve_proxy_pac_target_ignores_scoped_ipv6_public_endpoint(
+    monkeypatch,
+    env_name: str,
+    value: str,
+) -> None:
+    _add_web_to_path()
+
+    from services import pac_renderer  # type: ignore
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.delenv("PROXY_PUBLIC_HOST", raising=False)
+    monkeypatch.delenv("PROXY_PUBLIC_PAC_URL", raising=False)
+    monkeypatch.setenv(env_name, value)
+
+    target = pac_renderer.resolve_proxy_pac_target("default")
+
+    assert target.public_host == ""
+    assert target.pac_url == ""
+    assert target.uses_request_host_fallback is True
+    assert target.proxy_chain == "PROXY __PAC_PROXY_HOST__:3128; DIRECT"
+
+
+@pytest.mark.parametrize(
+    ("env_name", "value"),
+    [
+        ("PROXY_PUBLIC_HOST", "127.0.0.1"),
+        ("PROXY_PUBLIC_HOST", "10.0.0.1"),
+        ("PROXY_PUBLIC_PAC_URL", "http://[::1]/proxy.pac"),
+        ("PROXY_PUBLIC_PAC_URL", "http://169.254.1.1/proxy.pac"),
+        ("PROXY_PUBLIC_PAC_URL", "http://224.0.0.1/proxy.pac"),
+    ],
+)
+def test_resolve_proxy_pac_target_ignores_non_public_ip_literal_endpoint(
     monkeypatch,
     env_name: str,
     value: str,
