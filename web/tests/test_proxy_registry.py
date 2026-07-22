@@ -297,6 +297,12 @@ def test_management_url_normalization_rejects_unsafe_shapes() -> None:
     assert (
         proxy_registry.normalize_management_url("http://proxy:5000/root%5cadmin") == ""
     )
+    assert (
+        proxy_registry.normalize_management_url("http://proxy:5000/root?debug=1") == ""
+    )
+    assert (
+        proxy_registry.normalize_management_url("http://proxy:5000/root#status") == ""
+    )
     assert proxy_registry.normalize_management_url("http://proxy:5000/root\nx") == ""
 
 

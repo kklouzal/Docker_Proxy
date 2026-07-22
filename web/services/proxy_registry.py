@@ -117,6 +117,8 @@ def normalize_management_url(value: object | None) -> str:
     host = str(parsed.hostname or "").strip().lower()
     if not host or parsed.username or parsed.password:
         return ""
+    if parsed.query or parsed.fragment:
+        return ""
     try:
         ip_address(host)
     except ValueError:
