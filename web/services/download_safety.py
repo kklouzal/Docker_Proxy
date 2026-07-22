@@ -187,6 +187,10 @@ def _url_origin(parsed) -> tuple[str, str, int | None]:
     )
 
 
+def _has_http_header_control_chars(value: str) -> bool:
+    return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+
+
 def _safe_extra_download_headers(headers: dict[str, str] | None) -> dict[str, str]:
     if not headers:
         return {}
@@ -198,8 +202,8 @@ def _safe_extra_download_headers(headers: dict[str, str] | None) -> dict[str, st
         header_value = str(value)
         if (
             name != name.strip()
-            or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
-            or any(ord(ch) < 32 or ord(ch) == 127 for ch in header_value)
+            or _has_http_header_control_chars(name)
+            or _has_http_header_control_chars(header_value)
         ):
             continue
         safe_name = _ALLOWED_DOWNLOAD_REQUEST_HEADERS.get(name.lower())
@@ -262,7 +266,11 @@ def open_download_url(
     scheme_error: str = "Only http/https URLs are supported.",
 ):
     current = url
-    base_headers = {"User-Agent": user_agent}
+    user_agent_value = str(user_agent)
+    if _has_http_header_control_chars(user_agent_value):
+        msg = "Download user agent must be a valid HTTP header value."
+        raise ValueError(msg)
+    base_headers = {"User-Agent": user_agent_value}
     safe_headers = _safe_extra_download_headers(headers)
     request_headers = {**safe_headers, **base_headers}
     for _ in range(max_redirects + 1):

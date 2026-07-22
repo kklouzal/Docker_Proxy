@@ -161,6 +161,27 @@ def test_validate_download_url_preserves_scheme_error_without_dns(
         )
 
 
+def test_open_download_url_rejects_malformed_user_agent_before_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("malformed user agent should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="valid HTTP header value"):
+        download_safety.open_download_url(
+            "https://public.example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent\r\nX-Injected: yes",
+        )
+
+
 def test_open_download_url_filters_unsafe_headers_on_first_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
