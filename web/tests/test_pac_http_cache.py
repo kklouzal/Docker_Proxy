@@ -152,6 +152,30 @@ def test_request_host_uses_trusted_forwarded_host(monkeypatch, pac_http) -> None
     )
 
 
+def test_request_host_lowercases_dns_authority_and_preserves_port(pac_http) -> None:
+    assert (
+        pac_http.request_host_from_headers({"Host": "Proxy.Example:3128"})
+        == "proxy.example:3128"
+    )
+
+
+def test_request_host_lowercases_trusted_forwarded_dns_authority(
+    monkeypatch, pac_http
+) -> None:
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
+
+    assert (
+        pac_http.request_host_from_headers(
+            {
+                "Host": "internal-proxy:5000",
+                "X-Forwarded-Host": "Public-Proxy.Example:8080, internal-proxy:5000",
+            },
+            "198.51.100.10",
+        )
+        == "public-proxy.example:8080"
+    )
+
+
 def test_request_host_preserves_valid_authority_shapes(monkeypatch, pac_http) -> None:
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
 

@@ -100,14 +100,14 @@ def _valid_dns_host(value: str) -> bool:
     )
 
 
-def _valid_request_authority_host(value: str) -> bool:
+def _normalize_request_authority_host(value: str) -> str:
     try:
-        ipaddress.ip_address(value)
-        return True
+        parsed_ip = ipaddress.ip_address(value)
     except ValueError:
-        if _is_ambiguous_ipv4_host(value):
-            return False
-        return _valid_dns_host(value)
+        if _is_ambiguous_ipv4_host(value) or not _valid_dns_host(value):
+            return ""
+        return value.lower()
+    return str(parsed_ip)
 
 
 def _normalize_request_authority(value: object | None) -> str:
@@ -163,11 +163,12 @@ def _normalize_request_authority(value: object | None) -> str:
         host, port = candidate.rsplit(":", 1)
         if not _valid_authority_port(port):
             return ""
-        if not _valid_request_authority_host(host):
+        normalized_host = _normalize_request_authority_host(host)
+        if not normalized_host:
             return ""
-        return f"{host}:{port}"
+        return f"{normalized_host}:{port}"
 
-    return candidate if _valid_request_authority_host(candidate) else ""
+    return _normalize_request_authority_host(candidate)
 
 
 def forwarded_headers_trusted(remote_addr: str | None = None) -> bool:
