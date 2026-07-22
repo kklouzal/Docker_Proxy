@@ -35,6 +35,31 @@ def test_normalize_domain_rejects_malformed_named_ports() -> None:
     assert normalize_domain("http://example.com:http/path") == ""
 
 
+def test_normalize_domain_rejects_malformed_dns_labels_and_wildcards() -> None:
+    for value in (
+        "bad domain.example",
+        "_bad.example",
+        "-bad.example",
+        "bad-.example",
+        "bad.-example",
+        "*.example.com",
+        "bad/example",
+        "bad?example.com",
+    ):
+        assert normalize_domain(value) == ""
+        assert looks_like_domain(value) is False
+
+
+def test_normalize_domain_preserves_supported_host_forms() -> None:
+    assert normalize_domain("https://Bücher.Example:443/path") == (
+        "xn--bcher-kva.example"
+    )
+    assert normalize_domain("example.com:443") == "example.com"
+    assert normalize_domain("localhost") == "localhost"
+    assert normalize_domain("traffic-fixture") == "traffic-fixture"
+    assert normalize_domain("[2001:db8::1]:443") == "2001:db8::1"
+
+
 def test_normalize_domain_preserves_valid_ipv6_literals_only() -> None:
     assert normalize_domain("2001:db8::1") == "2001:db8::1"
     assert normalize_domain("[2001:db8::1]:443") == "2001:db8::1"

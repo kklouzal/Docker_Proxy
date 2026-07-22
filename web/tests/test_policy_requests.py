@@ -123,7 +123,24 @@ def test_webfilter_materialization_renders_client_scoped_exceptions(
                     0,
                     "",
                     1,
-                )
+                ),
+                PolicyException(
+                    8,
+                    proxy_id or "edge-a",
+                    "active",
+                    "webfilter",
+                    "192.168.1.56",
+                    "bad domain.example",
+                    "adult",
+                    1,
+                    1,
+                    "admin",
+                    "",
+                    0,
+                    0,
+                    "",
+                    2,
+                ),
             ]
 
     monkeypatch.setattr(core, "get_policy_request_store", RequestStore)
@@ -134,6 +151,8 @@ def test_webfilter_materialization_renders_client_scoped_exceptions(
         reset_proxy_id(token)
     assert "acl webfilter_exception_src_7 src 192.168.1.55" in text
     assert "acl webfilter_exception_dst_7 dstdomain bad.example .bad.example" in text
+    assert "webfilter_exception_src_8" not in text
+    assert "bad domain.example" not in text
     assert text.index("http_access allow webfilter_exception_src_7") < text.index(
         "http_access deny webfilter_block_adult"
     )
