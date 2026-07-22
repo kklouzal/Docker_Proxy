@@ -129,12 +129,14 @@ def _normalize_proxy_host_port(
             host = parsed.hostname or ""
         except Exception:
             return None, None, "Invalid proxy host."
-        if not parsed_port:
-            try:
-                inline_port = parsed.port
-            except ValueError:
-                return None, None, "Invalid proxy port."
-            if inline_port is not None:
+        try:
+            inline_port = parsed.port
+        except ValueError:
+            return None, None, "Invalid proxy port."
+        if inline_port is not None:
+            if inline_port < 1 or inline_port > 65535:
+                return None, None, "Proxy port must be between 1 and 65535."
+            if not parsed_port:
                 parsed_port = str(inline_port)
     elif host.startswith("[") and "]" in host:
         end = host.find("]")

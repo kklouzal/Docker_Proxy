@@ -450,3 +450,24 @@ def test_backup_proxy_host_port_normalization_rejects_malformed_inline_ports() -
         None,
         "Proxy port must be between 1 and 65535.",
     )
+    assert mod._normalize_proxy_host_port(
+        "http://backup.example:abc/proxy.pac", "9090"
+    ) == (
+        None,
+        None,
+        "Invalid proxy port.",
+    )
+    assert mod._normalize_proxy_host_port(
+        "http://backup.example:65536/proxy.pac", "9090"
+    ) == (
+        None,
+        None,
+        "Invalid proxy port.",
+    )
+    assert mod._normalize_proxy_host_port(
+        "http://backup.example:0/proxy.pac", "9090"
+    ) == (
+        None,
+        None,
+        "Proxy port must be between 1 and 65535.",
+    )
