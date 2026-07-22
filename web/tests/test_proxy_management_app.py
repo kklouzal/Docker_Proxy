@@ -226,6 +226,57 @@ def test_proxy_management_sync_rejects_invalid_force_string(monkeypatch) -> None
     assert runtime.sync_force is None
 
 
+def test_proxy_management_json_payloads_reject_non_objects(monkeypatch) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    runtime = _Runtime()
+    proxy_app.runtime = runtime
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret"}
+
+    cases = [
+        ("/api/manage/sync", ["unexpected"]),
+        ("/api/manage/config/validate", "workers 1\n"),
+        ("/api/manage/config/rollback", 7),
+    ]
+    for path, payload in cases:
+        response = _management_post(client, path, json=payload, headers=headers)
+
+        assert response.status_code == 400, path
+        assert response.is_json, path
+        assert response.get_json() == {
+            "ok": False,
+            "detail": "Management JSON payload must be an object.",
+        }
+
+    assert runtime.sync_force is None
+    assert runtime.validation_text is None
+    assert runtime.rollback_reason is None
+
+
+def test_proxy_management_json_payloads_preserve_missing_body_defaults(
+    monkeypatch,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    runtime = _Runtime()
+    proxy_app.runtime = runtime
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret"}
+
+    sync = _management_post(client, "/api/manage/sync", headers=headers)
+    validate = _management_post(client, "/api/manage/config/validate", headers=headers)
+    rollback = _management_post(client, "/api/manage/config/rollback", headers=headers)
+
+    assert sync.status_code == 409
+    assert runtime.sync_force is False
+    assert runtime.sync_operation_id is None
+    assert validate.status_code == 200
+    assert runtime.validation_text == ""
+    assert rollback.status_code == 409
+    assert runtime.rollback_reason == "Rollback requested by management API."
+
+
 def test_proxy_management_api_status_codes_and_payload_mapping(monkeypatch) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")

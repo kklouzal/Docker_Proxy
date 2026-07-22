@@ -7,7 +7,7 @@ from collections.abc import Callable
 from functools import wraps
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from flask import Flask, Response, abort, jsonify, request
+from flask import Flask, Response, abort, jsonify, make_response, request
 from markupsafe import escape
 from services.errors import public_error_message
 from services.http_optimizations import install_http_optimizations
@@ -78,6 +78,25 @@ def _test_mode_enabled() -> bool:
         "yes",
         "on",
     }
+
+
+def _management_json_payload() -> dict[str, Any]:
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        abort(
+            make_response(
+                jsonify(
+                    {
+                        "ok": False,
+                        "detail": "Management JSON payload must be an object.",
+                    },
+                ),
+                400,
+            ),
+        )
+    return payload
 
 
 def _parse_management_force(payload: dict[str, Any]) -> tuple[bool, str | None]:
@@ -343,7 +362,7 @@ def manage_logs() -> Any:
 @app.route("/api/manage/sync", methods=["POST"])
 @_require_management_auth
 def manage_sync() -> Any:
-    payload = request.get_json(silent=True) or {}
+    payload = _management_json_payload()
     operation_id = None
     if payload.get("operation_id") is not None:
         try:
@@ -370,7 +389,7 @@ def manage_sync() -> Any:
 @app.route("/api/manage/config/validate", methods=["POST"])
 @_require_management_auth
 def manage_config_validate() -> Any:
-    payload = request.get_json(silent=True) or {}
+    payload = _management_json_payload()
     result = _runtime().validate_config_text(str(payload.get("config_text") or ""))
     return jsonify(result), 200
 
@@ -378,7 +397,7 @@ def manage_config_validate() -> Any:
 @app.route("/api/manage/config/rollback", methods=["POST"])
 @_require_management_auth
 def manage_config_rollback() -> Any:
-    payload = request.get_json(silent=True) or {}
+    payload = _management_json_payload()
     result = _runtime().rollback_last_known_good_config(
         reason=str(payload.get("reason") or "Rollback requested by management API."),
     )
