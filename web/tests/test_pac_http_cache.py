@@ -193,6 +193,9 @@ def test_request_host_rejects_malformed_host_header_values(pac_http) -> None:
         "proxy.example:bad",
         "proxy.example:0",
         "proxy.example:65536",
+        "2130706433",
+        "017700000001",
+        "127.1",
         "[2001:db8::20",
         "[2001:db8::20]:bad",
     ]

@@ -38,6 +38,18 @@ def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> 
         80,
         "/proxy.pac",
     )
+    assert proxy_registry._parse_public_pac_url("2130706433/proxy.pac") == (
+        "",
+        "http",
+        80,
+        "/proxy.pac",
+    )
+    assert proxy_registry._parse_public_pac_url("017700000001/proxy.pac") == (
+        "",
+        "http",
+        80,
+        "/proxy.pac",
+    )
     assert proxy_registry._parse_public_pac_url("https://proxy.example/proxy.pac") == (
         "proxy.example",
         "https",
@@ -274,6 +286,14 @@ def test_management_url_normalization_rejects_unsafe_shapes() -> None:
         proxy_registry.normalize_management_url("http://proxy:5000/root%5cadmin") == ""
     )
     assert proxy_registry.normalize_management_url("http://proxy:5000/root\nx") == ""
+
+
+def test_management_url_normalization_rejects_ambiguous_ipv4_hosts() -> None:
+    proxy_registry = _proxy_registry()
+
+    assert proxy_registry.normalize_management_url("http://2130706433:5000") == ""
+    assert proxy_registry.normalize_management_url("017700000001:5000") == ""
+    assert proxy_registry.normalize_management_url("127.1:5000") == ""
 
 
 def test_resolve_local_proxy_management_url_derives_from_proxy_id(monkeypatch) -> None:

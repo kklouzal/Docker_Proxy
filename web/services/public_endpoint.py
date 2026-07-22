@@ -4,6 +4,26 @@ import ipaddress
 from urllib.parse import urlsplit
 
 
+def _is_ambiguous_ipv4_host(value: str) -> bool:
+    candidate = value.rstrip(".").lower()
+    if not candidate:
+        return False
+    labels = candidate.split(".")
+    if not 1 <= len(labels) <= 4:
+        return False
+    for label in labels:
+        if not label:
+            return False
+        if label.isdecimal():
+            continue
+        if label.startswith("0x"):
+            digits = label.removeprefix("0x")
+            if digits and all(ch in "0123456789abcdef" for ch in digits):
+                continue
+        return False
+    return True
+
+
 def _valid_public_dns_host(value: str) -> bool:
     candidate = value.rstrip(".").lower()
     if not candidate or len(candidate) > 253:
@@ -59,6 +79,8 @@ def normalize_public_host(value: object | None, default: str = "") -> str:
         return str(ipaddress.ip_address(host))
     except ValueError:
         pass
+    if _is_ambiguous_ipv4_host(host):
+        return fallback
     return host.rstrip(".").lower() if _valid_public_dns_host(host) else fallback
 
 

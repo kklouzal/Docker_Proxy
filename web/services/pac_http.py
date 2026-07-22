@@ -20,6 +20,7 @@ from services.proxy_registry import (
     _safe_decoded_path_segments,
     normalize_public_pac_path,
 )
+from services.public_endpoint import _is_ambiguous_ipv4_host
 
 PAC_CONTENT_TYPE = "application/x-ns-proxy-autoconfig"
 DEFAULT_PUBLIC_PAC_PATHS = frozenset({"/proxy.pac", "/wpad.dat"})
@@ -104,6 +105,8 @@ def _valid_request_authority_host(value: str) -> bool:
         ipaddress.ip_address(value)
         return True
     except ValueError:
+        if _is_ambiguous_ipv4_host(value):
+            return False
         return _valid_dns_host(value)
 
 

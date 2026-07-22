@@ -27,6 +27,9 @@ from services.proxy_lifecycle import (
 )
 from services.proxy_write_guard import clear_proxy_write_guard_cache
 from services.public_endpoint import (
+    _is_ambiguous_ipv4_host,
+)
+from services.public_endpoint import (
     coerce_public_port as _coerce_port,
 )
 from services.public_endpoint import (
@@ -114,6 +117,11 @@ def normalize_management_url(value: object | None) -> str:
     host = str(parsed.hostname or "").strip().lower()
     if not host or parsed.username or parsed.password:
         return ""
+    try:
+        ip_address(host)
+    except ValueError:
+        if _is_ambiguous_ipv4_host(host):
+            return ""
     if _safe_decoded_path_segments(parsed.path or "") is None:
         return ""
 
