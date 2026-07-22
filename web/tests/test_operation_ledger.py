@@ -228,6 +228,54 @@ def test_claim_pending_preserves_force_flag(monkeypatch) -> None:
     assert [op.force for op in claimed] == [False, False]
 
 
+def test_list_recent_since_preserves_claim_token(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    row = _operation_row(
+        id=7,
+        status="applying",
+        updated_ts=456,
+        force_sync=1,
+        claim_token="claim-recent",
+    )
+
+    class _RecentConnection:
+        def __init__(self) -> None:
+            self.queries = []
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            self.queries.append((compact, tuple(params or ())))
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([row])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _RecentConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+
+    recent = ledger.list_recent_since(
+        "edge-a",
+        after_updated_ts=123,
+        after_id=6,
+        limit=5,
+    )
+
+    assert [op.operation_id for op in recent] == [7]
+    assert recent[0].claim_token == "claim-recent"
+    select_sql, select_params = conn.queries[0]
+    assert "claim_token" in select_sql
+    assert select_params == ("edge-a", 123, 123, 6, 5)
+
+
 def test_requeue_stale_applying_recovers_without_active_key_collisions(
     monkeypatch,
 ) -> None:
