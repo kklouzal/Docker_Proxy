@@ -570,6 +570,39 @@ def test_check_http_proxy_forwarding_accepts_complete_chunked_local_health(
     assert "local health ok" in result["detail"]
 
 
+def test_check_http_proxy_forwarding_rejects_conflicting_content_lengths(
+    monkeypatch,
+) -> None:
+    health_checks = _health_checks_module()
+    body = b'{"ok":true}\n'
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Content-Length: 999\r\n"
+        + b"Content-Length: "
+        + str(len(body)).encode("ascii")
+        + b"\r\n\r\n"
+        + body
+    )
+
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: _FakeSocket([response]),
+    )
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url="http://127.0.0.1:80/health",
+        timeout=0.1,
+    )
+
+    assert result["ok"] is False
+    assert result["local_health_ok"] is False
+    assert result["body_complete"] is False
+    assert "conflicting Content-Length" in result["detail"]
+
+
 @pytest.mark.parametrize(
     ("target_url", "body", "expected_canary_ok"),
     [

@@ -145,6 +145,24 @@ def _http_header_value(headers: dict[str, list[str]], name: str) -> str:
     return values[-1] if values else ""
 
 
+def _http_content_length_error(headers: dict[str, list[str]]) -> str:
+    values = headers.get("content-length") or []
+    if len(values) <= 1:
+        return ""
+    lengths: set[int] = set()
+    for value in values:
+        try:
+            length = int(value)
+        except Exception:
+            return "invalid Content-Length response header"
+        if length < 0:
+            return "invalid Content-Length response header"
+        lengths.add(length)
+    if len(lengths) > 1:
+        return "conflicting Content-Length response headers"
+    return ""
+
+
 def _parse_http_response_head(data: bytes) -> tuple[str, dict[str, list[str]]]:
     lines = data.decode("iso-8859-1", errors="replace").split("\r\n")
     if len(lines) == 1:
@@ -262,6 +280,8 @@ def _read_http_response(
         return data, b"", headers_complete, False
 
     _status, headers = _parse_http_response_head(head)
+    if _http_content_length_error(headers):
+        return head, body[:max_body_bytes], headers_complete, False
     body_complete = False
     transfer_encoding = _http_header_value(headers, "transfer-encoding").lower()
     content_length_header = _http_header_value(headers, "content-length")
@@ -523,6 +543,22 @@ def check_http_proxy_forwarding(
         detail = first or "no HTTP status from proxy forwarding path"
         local_health_ok: bool | None = None
         canary_probe_ok: bool | None = None
+        header_error = _http_content_length_error(headers)
+        if header_error:
+            return {
+                "ok": False,
+                "detail": f"{detail}; {header_error}",
+                "status_code": code,
+                "probe_url": request_url,
+                "headers_complete": True,
+                "body_complete": False,
+                "local_health_ok": (
+                    False if _target_is_local_json_health(request_url) else None
+                ),
+                "canary_probe_ok": (
+                    False if _target_is_forwarding_canary(request_url) else None
+                ),
+            }
         if status_ok and _target_is_local_json_health(request_url):
             response_body = body
             if "chunked" in _http_header_value(headers, "transfer-encoding").lower():
