@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -11,6 +13,37 @@ from types import SimpleNamespace
 from typing import NoReturn
 
 import pytest
+
+
+def _healthcheck_forwarding_canary_url_script() -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(
+        encoding="utf-8",
+    )
+    match = re.search(
+        r"^def forwarding_canary_url\(\) -> str:\n(?P<body>.*?)^target_url = forwarding_canary_url\(\)",
+        healthcheck,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None
+    return (
+        "import ipaddress\n"
+        "import os\n"
+        "def forwarding_canary_url() -> str:\n"
+        + match.group("body")
+        + "print(forwarding_canary_url())\n"
+    )
+
+
+def _healthcheck_forwarding_canary_url(**env_overrides: str) -> str:
+    result = subprocess.run(
+        [sys.executable, "-c", _healthcheck_forwarding_canary_url_script()],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **env_overrides},
+    )
+    return result.stdout.strip()
 
 
 def _add_repo_paths() -> None:
@@ -3956,6 +3989,21 @@ def test_packaged_proxy_healthcheck_checks_https_intercept_listeners() -> None:
 
     assert "lower.startswith(('http_port ', 'https_port '))" in healthcheck
     assert "Squid listener(s) not accepting connections" in healthcheck
+
+
+def test_packaged_proxy_healthcheck_normalizes_forwarding_canary_path_like_runtime() -> None:
+    default_url = (
+        "http://127.0.0.1:18080/__docker_proxy_forwarding_canary?probe=squid-respmod"
+    )
+
+    assert (
+        _healthcheck_forwarding_canary_url(FORWARDING_CANARY_PATH="/bad//canary")
+        == default_url
+    )
+    assert (
+        _healthcheck_forwarding_canary_url(FORWARDING_CANARY_PATH="/custom-canary")
+        == "http://127.0.0.1:18080/custom-canary?probe=squid-respmod"
+    )
 
 
 def test_packaged_proxy_entrypoint_does_not_wait_for_optional_clamav() -> None:

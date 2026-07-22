@@ -227,7 +227,7 @@ def forwarding_canary_url() -> str:
     if port < 1 or port > 65535:
         port = 18080
     path = (os.environ.get('FORWARDING_CANARY_PATH') or '/__docker_proxy_forwarding_canary').strip()
-    if not path.startswith('/') or '?' in path or '#' in path or '\\' in path:
+    if not path.startswith('/') or '?' in path or '#' in path or '\\' in path or '//' in path:
         path = '/__docker_proxy_forwarding_canary'
     return f'http://{display_host}:{port}{path}?probe=squid-respmod'
 
