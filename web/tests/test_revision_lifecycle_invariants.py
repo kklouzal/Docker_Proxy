@@ -56,6 +56,8 @@ def test_duplicate_active_repair_uses_deterministic_partition_update() -> None:
 
 
 class _ConfigRestoreConn:
+    native = object()
+
     def __init__(self, *, current_id: int | None, previous_exists: bool = True) -> None:
         self.current_id = current_id
         self.previous_exists = previous_exists
@@ -70,6 +72,12 @@ class _ConfigRestoreConn:
     def execute(self, sql, params=()):
         text = " ".join(str(sql).split())
         params = tuple(params or ())
+        if "proxy_lifecycle_tombstones" in text:
+            return _SqlResult()
+        if "proxy_id_aliases" in text:
+            return _SqlResult()
+        if "proxy_instances" in text:
+            return _SqlResult([{"status": "running"}])
         if "GET_LOCK" in text:
             return _SqlResult([{"acquired": 1}])
         if "RELEASE_LOCK" in text:
@@ -90,10 +98,49 @@ def test_config_restore_previous_is_compare_and_swap(monkeypatch) -> None:
     conn = _ConfigRestoreConn(current_id=7)
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(
+        "services.proxy_write_guard._ensure_metadata_tables",
+        lambda _conn: None,
+    )
+    monkeypatch.setattr(
+        "services.proxy_write_guard._table_available",
+        lambda _conn, _table_name: True,
+    )
 
     assert store.restore_previous_if_current("edge-a", 7, 3) is True
     assert any("id<>%s" in sql and params == ("edge-a", 3) for sql, params in conn.updates)
     assert any("id=%s" in sql and params == ("edge-a", 3) for sql, params in conn.updates)
+
+
+def test_config_restore_previous_respects_proxy_lifecycle_guard(monkeypatch) -> None:
+    from services.proxy_write_guard import ProxyLifecycleWriteError  # type: ignore
+
+    store = ConfigRevisionStore()
+    conn = _ConfigRestoreConn(current_id=7)
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(
+        "services.proxy_write_guard._ensure_metadata_tables",
+        lambda _conn: None,
+    )
+    monkeypatch.setattr(
+        "services.proxy_write_guard._table_available",
+        lambda _conn, _table_name: True,
+    )
+
+    def removed_tombstone(_conn, _proxy_key, *, allow_alias):
+        msg = "Proxy 'edge-a' has been removed; proxy-scoped writes are blocked."
+        raise ProxyLifecycleWriteError(msg)
+
+    monkeypatch.setattr(
+        "services.proxy_write_guard._check_tombstone",
+        removed_tombstone,
+    )
+
+    with pytest.raises(ProxyLifecycleWriteError, match="removed"):
+        store.restore_previous_if_current("edge-a", 7, 3)
+
+    assert conn.updates == []
 
 
 def test_config_restore_does_not_stomp_newer_active(monkeypatch) -> None:
@@ -101,6 +148,14 @@ def test_config_restore_does_not_stomp_newer_active(monkeypatch) -> None:
     conn = _ConfigRestoreConn(current_id=9)
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(
+        "services.proxy_write_guard._ensure_metadata_tables",
+        lambda _conn: None,
+    )
+    monkeypatch.setattr(
+        "services.proxy_write_guard._table_available",
+        lambda _conn, _table_name: True,
+    )
 
     assert store.restore_previous_if_current("edge-a", 7, 3) is False
     assert conn.updates == []

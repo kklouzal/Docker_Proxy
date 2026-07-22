@@ -536,44 +536,46 @@ class ConfigRevisionStore:
         failed_id = int(failed_revision_id or 0)
         previous_id = int(previous_revision_id or 0) if previous_revision_id else 0
         with self._connect() as conn:
-            with mysql_advisory_lock(
-                conn,
-                namespace="proxy_config_revisions.active",
-                scope=proxy_key,
-            ):
-                current = conn.execute(
-                    """
-                    SELECT id FROM proxy_config_revisions
-                    WHERE proxy_id=%s AND is_active=1
-                    ORDER BY created_ts DESC, id DESC
-                    LIMIT 1
-                    FOR UPDATE
-                    """,
-                    (proxy_key,),
-                ).fetchone()
-                if current is None or int(current["id"] or 0) != failed_id:
-                    return False
-                if previous_id > 0:
-                    previous = conn.execute(
-                        "SELECT id FROM proxy_config_revisions WHERE proxy_id=%s AND id=%s LIMIT 1 FOR UPDATE",
-                        (proxy_key, previous_id),
+            with guarded_proxy_write(conn, proxy_key) as guard:
+                proxy_key = guard.proxy_id
+                with mysql_advisory_lock(
+                    conn,
+                    namespace="proxy_config_revisions.active",
+                    scope=proxy_key,
+                ):
+                    current = conn.execute(
+                        """
+                        SELECT id FROM proxy_config_revisions
+                        WHERE proxy_id=%s AND is_active=1
+                        ORDER BY created_ts DESC, id DESC
+                        LIMIT 1
+                        FOR UPDATE
+                        """,
+                        (proxy_key,),
                     ).fetchone()
-                    if previous is None:
+                    if current is None or int(current["id"] or 0) != failed_id:
                         return False
-                    conn.execute(
-                        "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND is_active=1 AND id<>%s",
-                        (proxy_key, previous_id),
-                    )
-                    conn.execute(
-                        "UPDATE proxy_config_revisions SET is_active=1 WHERE proxy_id=%s AND id=%s",
-                        (proxy_key, previous_id),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND id=%s",
-                        (proxy_key, failed_id),
-                    )
-                return True
+                    if previous_id > 0:
+                        previous = conn.execute(
+                            "SELECT id FROM proxy_config_revisions WHERE proxy_id=%s AND id=%s LIMIT 1 FOR UPDATE",
+                            (proxy_key, previous_id),
+                        ).fetchone()
+                        if previous is None:
+                            return False
+                        conn.execute(
+                            "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND is_active=1 AND id<>%s",
+                            (proxy_key, previous_id),
+                        )
+                        conn.execute(
+                            "UPDATE proxy_config_revisions SET is_active=1 WHERE proxy_id=%s AND id=%s",
+                            (proxy_key, previous_id),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND id=%s",
+                            (proxy_key, failed_id),
+                        )
+                    return True
 
     def record_apply_result(
         self,
