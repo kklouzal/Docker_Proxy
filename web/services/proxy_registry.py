@@ -74,6 +74,8 @@ def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac")
         parsed = urlsplit(candidate)
     except Exception:
         return fallback
+    if parsed.username is not None or parsed.password is not None:
+        return fallback
     if parsed.netloc and not parsed.scheme:
         return fallback
     if parsed.scheme and parsed.scheme.lower() not in {"http", "https"}:

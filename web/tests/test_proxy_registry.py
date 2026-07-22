@@ -87,6 +87,12 @@ def test_public_pac_path_normalization_rejects_unsafe_route_shapes() -> None:
         )
         == "/custom/proxy.pac?site=lab"
     )
+    assert (
+        proxy_registry.normalize_public_pac_path(
+            "https://user:secret@proxy.example/custom/proxy.pac?site=lab"
+        )
+        == "/proxy.pac"
+    )
     assert proxy_registry.normalize_public_pac_path("//evil.example/wpad.dat") == (
         "/proxy.pac"
     )
