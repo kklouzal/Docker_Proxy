@@ -26,3 +26,17 @@ def test_normalize_domain_rejects_consecutive_empty_labels() -> None:
 
 def test_normalize_domain_preserves_intentional_leading_and_trailing_dot_cleanup() -> None:
     assert normalize_domain(".Example.COM.") == "example.com"
+
+
+def test_normalize_domain_rejects_malformed_named_ports() -> None:
+    assert normalize_domain("example.com:http") == ""
+    assert normalize_domain("example.com:abc") == ""
+    assert normalize_domain("user@example.com:abc") == ""
+    assert normalize_domain("http://example.com:http/path") == ""
+
+
+def test_normalize_domain_preserves_valid_ipv6_literals_only() -> None:
+    assert normalize_domain("2001:db8::1") == "2001:db8::1"
+    assert normalize_domain("[2001:db8::1]:443") == "2001:db8::1"
+    assert normalize_domain("example.com:abc:def") == ""
+    assert normalize_domain("[2001:db8::1]:abc") == ""

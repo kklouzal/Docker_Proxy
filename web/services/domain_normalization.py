@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import re
 import urllib.parse
 
@@ -17,6 +18,10 @@ def normalize_domain(value: object) -> str:
     if "://" in raw:
         try:
             parsed = urllib.parse.urlsplit(raw)
+            try:
+                parsed.port
+            except ValueError:
+                return ""
             if parsed.hostname:
                 raw = parsed.hostname
         except Exception:
@@ -27,15 +32,25 @@ def normalize_domain(value: object) -> str:
     if "@" in raw:
         raw = raw.rsplit("@", 1)[1]
     if raw.startswith("[") and "]" in raw:
+        suffix = raw[raw.index("]") + 1 :].strip()
+        if suffix:
+            if not suffix.startswith(":") or not suffix[1:].isdigit():
+                return ""
         raw = raw[1 : raw.index("]")]
     elif ":" in raw and raw.count(":") == 1:
         host, port = raw.rsplit(":", 1)
         if port.isdigit():
             raw = host
+        else:
+            return ""
     raw = raw.strip().strip("[]").rstrip(".")
     if not raw:
         return ""
     if ":" in raw:
+        try:
+            ipaddress.ip_address(raw)
+        except ValueError:
+            return ""
         return raw
     labels = raw.split(".")
     if not labels or any(not label for label in labels):
