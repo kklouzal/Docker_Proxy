@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -13,6 +14,8 @@ from services.runtime_helpers import env_float as _env_float
 
 UNKNOWN_VALUE = "unknown"
 DEFAULT_GITHUB_REPOSITORY = "kklouzal/Docker_Proxy"
+_GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+_GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 
 def _clean(value: object | None) -> str:
@@ -39,6 +42,21 @@ def _int_or_zero(value: object | None) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _normalize_github_repository(value: object | None) -> tuple[str, str]:
+    repository = _clean(value).strip("/")
+    parts = repository.split("/")
+    if len(parts) != 2 or not all(parts):
+        return repository, "GitHub repository must be in owner/name form."
+    owner, name = parts
+    if not _GITHUB_OWNER_RE.fullmatch(owner) or not _GITHUB_REPOSITORY_RE.fullmatch(
+        name
+    ):
+        return repository, "GitHub repository contains unsupported characters."
+    if name in {".", ".."}:
+        return repository, "GitHub repository name is not valid."
+    return repository, ""
 
 
 def current_component_metadata(component: str) -> dict[str, str]:
@@ -94,11 +112,14 @@ class VersionStatusClient:
         urlopen: Any | None = None,
         monotonic: Any | None = None,
     ) -> None:
-        self.repository = (
+        repository_value = (
             repository
             or _clean(os.environ.get("VERSION_STATUS_GITHUB_REPOSITORY"))
             or DEFAULT_GITHUB_REPOSITORY
-        ).strip("/")
+        )
+        self.repository, self.repository_error = _normalize_github_repository(
+            repository_value
+        )
         self.branch = (
             branch or _clean(os.environ.get("VERSION_STATUS_GITHUB_BRANCH")) or "main"
         )
@@ -146,6 +167,13 @@ class VersionStatusClient:
         current = _clean(revision)
         if not current or current == UNKNOWN_VALUE:
             return CompareResult("unknown", None, "", "No running commit is stamped.")
+        if self.repository_error:
+            return CompareResult(
+                "unknown",
+                None,
+                "",
+                f"GitHub version check disabled: {self.repository_error}",
+            )
 
         ttl = (
             float(ttl_seconds)

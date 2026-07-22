@@ -144,6 +144,20 @@ def test_compare_revision_diverged_reports_main_and_running_counts() -> None:
     assert "(4 behind, 2 ahead)" in status.detail
 
 
+def test_compare_revision_rejects_path_like_repository_without_github_call() -> None:
+    def urlopen(request, *, timeout):
+        msg = f"unexpected GitHub call to {request.full_url}"
+        raise AssertionError(msg)
+
+    client = VersionStatusClient(repository="owner/repo/issues", urlopen=urlopen)
+
+    status = client.compare_revision("abc123")
+
+    assert status.state == "unknown"
+    assert status.commits_behind is None
+    assert "repository" in status.detail
+
+
 def test_compare_cache_survives_later_github_failure() -> None:
     calls = {"count": 0}
 
