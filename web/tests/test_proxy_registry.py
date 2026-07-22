@@ -283,6 +283,21 @@ def test_management_url_normalization_rejects_unsafe_shapes() -> None:
     assert proxy_registry.normalize_management_url("ftp://proxy-mgmt:5000") == ""
     assert proxy_registry.normalize_management_url("http://user:pass@proxy:5000") == ""
     assert proxy_registry.normalize_management_url("http://proxy:bad/api/manage") == ""
+    assert proxy_registry.normalize_management_url("http://proxy:") == ""
+    assert proxy_registry.normalize_management_url("http://proxy:/api/manage") == ""
+    assert proxy_registry.normalize_management_url("proxy:") == ""
+    assert (
+        proxy_registry.normalize_management_url(
+            "http://[2001:4860:4860::8888]:",
+        )
+        == ""
+    )
+    assert (
+        proxy_registry.normalize_management_url(
+            "http://[2001:4860:4860::8888]:/api/manage",
+        )
+        == ""
+    )
     assert proxy_registry.normalize_management_url("http://proxy:5000/../admin") == ""
     assert (
         proxy_registry.normalize_management_url("http://proxy:5000/api%2fmanage/health")

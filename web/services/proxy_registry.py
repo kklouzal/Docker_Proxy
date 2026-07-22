@@ -48,6 +48,14 @@ def _has_unsafe_url_text(value: str) -> bool:
     return any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value)
 
 
+def _has_empty_explicit_authority_port(netloc: str) -> bool:
+    authority = netloc.rsplit("@", 1)[-1]
+    if authority.startswith("["):
+        bracket_end = authority.find("]")
+        return bracket_end >= 0 and authority[bracket_end + 1 :] == ":"
+    return authority.endswith(":") and ":" in authority
+
+
 def _safe_decoded_path_segments(path: str) -> list[str] | None:
     raw_segments = path.split("/")
     decoded_segments = [unquote(segment) for segment in raw_segments]
@@ -108,6 +116,8 @@ def normalize_management_url(value: object | None) -> str:
         candidate = f"http://{candidate}"
     try:
         parsed = urlsplit(candidate)
+        if _has_empty_explicit_authority_port(parsed.netloc):
+            return ""
         _port = parsed.port
     except Exception:
         return ""
