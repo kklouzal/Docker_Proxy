@@ -446,6 +446,38 @@ def test_saml_fetch_rejects_https_metadata_redirect_to_http(monkeypatch) -> None
         store.fetch_metadata(profile)
 
 
+@pytest.mark.parametrize(
+    "final_url",
+    [
+        "https://login.example.local/FederationMetadata.xml?next=%0d%0aHost:evil.example",
+        "https://login.example.local/%5cFederationMetadata.xml",
+        "https://login.example.local%40evil.example/FederationMetadata.xml",
+    ],
+)
+def test_saml_fetch_rejects_parser_ambiguous_https_metadata_redirects(
+    monkeypatch,
+    final_url: str,
+) -> None:
+    store = MemorySamlAuthStore()
+    profile = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            "require_https": "1",
+        }
+    )
+
+    def fake_urlopen(_request, *, timeout, context):
+        return _FakeMetadataResponse(SAMPLE_METADATA.encode(), final_url)
+
+    monkeypatch.setattr(saml_auth, "urlopen", fake_urlopen)
+
+    with pytest.raises(
+        ValueError,
+        match="metadata final response URL must not include encoded whitespace",
+    ):
+        store.fetch_metadata(profile)
+
+
 def test_saml_fetch_accepts_https_metadata_redirect_to_https(monkeypatch) -> None:
     store = MemorySamlAuthStore()
     profile = store.save_profile(

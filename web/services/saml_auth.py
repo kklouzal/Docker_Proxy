@@ -59,6 +59,35 @@ def _decoded_authority_component_is_unsafe(value: str) -> bool:
     )
 
 
+def _normalize_saml_url(value: Any, *, label: str) -> str:
+    url = str(value or "").strip()
+    if not url:
+        msg = f"SAML {label} URL is required."
+        raise ValueError(msg)
+    if _has_unsafe_url_text(url) or "\\" in url:
+        msg = f"SAML {label} URL must not include whitespace, control characters, or backslashes."
+        raise ValueError(msg)
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in {"https", "http"} or not parsed.netloc:
+        msg = f"SAML {label} URL must be a valid http:// or https:// URL."
+        raise ValueError(msg)
+    if parsed.username or parsed.password or parsed.fragment:
+        msg = f"SAML {label} URL must not include credentials or fragments."
+        raise ValueError(msg)
+    try:
+        _port = parsed.port
+    except ValueError as exc:
+        msg = f"SAML {label} URL includes an invalid port."
+        raise ValueError(msg) from exc
+    if _decoded_authority_component_is_unsafe(parsed.netloc) or any(
+        _decoded_url_component_is_unsafe(component)
+        for component in (parsed.path, parsed.query)
+    ):
+        msg = f"SAML {label} URL must not include encoded whitespace, control characters, or backslashes, or encoded authority delimiters."
+        raise ValueError(msg)
+    return parsed.geturl()
+
+
 @dataclass(frozen=True)
 class SamlProviderProfile:
     provider: str
@@ -424,6 +453,7 @@ class SamlAuthStore:
             if profile.require_https and urlsplit(final_url).scheme.lower() != "https":
                 msg = "SAML metadata final response URL must use https://."
                 raise ValueError(msg)
+            _normalize_saml_url(final_url, label="metadata final response")
             chunks: list[bytes] = []
             total = 0
             while True:
@@ -567,32 +597,7 @@ class SamlAuthStore:
             conn.execute(ddl)
 
     def _normalize_metadata_url(self, value: Any) -> str:
-        url = str(value or "").strip()
-        if not url:
-            msg = "SAML metadata URL is required."
-            raise ValueError(msg)
-        if _has_unsafe_url_text(url) or "\\" in url:
-            msg = "SAML metadata URL must not include whitespace, control characters, or backslashes."
-            raise ValueError(msg)
-        parsed = urlsplit(url)
-        if parsed.scheme.lower() not in {"https", "http"} or not parsed.netloc:
-            msg = "SAML metadata URL must be a valid http:// or https:// URL."
-            raise ValueError(msg)
-        if parsed.username or parsed.password or parsed.fragment:
-            msg = "SAML metadata URL must not include credentials or fragments."
-            raise ValueError(msg)
-        try:
-            _port = parsed.port
-        except ValueError as exc:
-            msg = "SAML metadata URL includes an invalid port."
-            raise ValueError(msg) from exc
-        if _decoded_authority_component_is_unsafe(parsed.netloc) or any(
-            _decoded_url_component_is_unsafe(component)
-            for component in (parsed.path, parsed.query)
-        ):
-            msg = "SAML metadata URL must not include encoded whitespace, control characters, or backslashes, or encoded authority delimiters."
-            raise ValueError(msg)
-        return parsed.geturl()
+        return _normalize_saml_url(value, label="metadata")
 
     def _normalize_public_base_url(self, value: Any) -> str:
         url = str(value or "").strip().rstrip("/")
