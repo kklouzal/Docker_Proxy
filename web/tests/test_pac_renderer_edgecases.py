@@ -234,6 +234,38 @@ def test_resolve_proxy_pac_target_ignores_invalid_env_public_host(
     assert target.proxy_chain == "PROXY __PAC_PROXY_HOST__:3128; DIRECT"
 
 
+@pytest.mark.parametrize(
+    "public_host",
+    [
+        "localhost",
+        "localhost.localdomain",
+        "api.localhost",
+        "printer.local",
+        "proxy.internal",
+        "gateway.home.arpa",
+    ],
+)
+def test_resolve_proxy_pac_target_ignores_reserved_dns_public_host(
+    monkeypatch,
+    public_host: str,
+) -> None:
+    _add_web_to_path()
+
+    from services import pac_renderer  # type: ignore
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.setenv("PROXY_PUBLIC_HOST", public_host)
+    monkeypatch.delenv("PROXY_PUBLIC_PAC_URL", raising=False)
+
+    target = pac_renderer.resolve_proxy_pac_target("default")
+
+    assert target.public_host == ""
+    assert target.pac_url == ""
+    assert target.uses_request_host_fallback is True
+    assert target.proxy_chain == "PROXY __PAC_PROXY_HOST__:3128; DIRECT"
+
+
 @pytest.mark.parametrize("public_host", ["2130706433", "017700000001", "127.1"])
 def test_resolve_proxy_pac_target_ignores_ambiguous_ipv4_public_host(
     monkeypatch,

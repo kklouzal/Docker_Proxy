@@ -40,6 +40,28 @@ def _valid_public_dns_host(value: str) -> bool:
     )
 
 
+def _is_reserved_public_dns_host(value: str) -> bool:
+    candidate = value.rstrip(".").lower()
+    if not candidate:
+        return True
+    if candidate in {
+        "localhost",
+        "localhost.localdomain",
+        "ip6-localhost",
+        "ip6-loopback",
+    }:
+        return True
+    return candidate.endswith(
+        (
+            ".localhost",
+            ".local",
+            ".localdomain",
+            ".internal",
+            ".home.arpa",
+        ),
+    )
+
+
 def normalize_public_host(value: object | None, default: str = "") -> str:
     candidate = str(value or "").strip()
     fallback = str(default or "").strip()
@@ -84,6 +106,8 @@ def normalize_public_host(value: object | None, default: str = "") -> str:
             return fallback
         return str(parsed_ip)
     if _is_ambiguous_ipv4_host(host):
+        return fallback
+    if _is_reserved_public_dns_host(host):
         return fallback
     return host.rstrip(".").lower() if _valid_public_dns_host(host) else fallback
 

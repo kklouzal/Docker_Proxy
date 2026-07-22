@@ -84,6 +84,18 @@ def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> 
         80,
         "/proxy.pac",
     )
+    assert proxy_registry._parse_public_pac_url("http://localhost/proxy.pac") == (
+        "",
+        "http",
+        80,
+        "/proxy.pac",
+    )
+    assert proxy_registry._parse_public_pac_url("proxy.internal/proxy.pac") == (
+        "",
+        "http",
+        80,
+        "/proxy.pac",
+    )
 
 
 def test_public_pac_path_normalization_rejects_unsafe_route_shapes() -> None:
