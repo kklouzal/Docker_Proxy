@@ -109,6 +109,23 @@ def test_validate_download_url_rejects_single_label_hostname_before_dns(
         download_safety.validate_download_url("https://intranet/feed.csv")
 
 
+def test_validate_download_url_rejects_percent_encoded_authority_before_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("percent-encoded authority should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="valid absolute HTTP/HTTPS"):
+        download_safety.validate_download_url("https://public%2Fexample.com/feed.csv")
+
+
 @pytest.mark.parametrize(
     "source_url",
     [
