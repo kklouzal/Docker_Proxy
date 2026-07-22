@@ -570,6 +570,11 @@ class SamlAuthStore:
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             msg = "SAML public base URL must not include credentials, query, or fragment."
             raise ValueError(msg)
+        try:
+            _port = parsed.port
+        except ValueError as exc:
+            msg = "SAML public base URL includes an invalid port."
+            raise ValueError(msg) from exc
         return parsed.geturl().rstrip("/")
 
     def _normalize_attribute_name(self, value: Any, *, default: str) -> str:

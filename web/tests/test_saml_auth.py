@@ -320,6 +320,40 @@ def test_saml_profile_https_is_required_by_default() -> None:
         store.save_profile({"metadata_url": "http://adfs.example.local/metadata.xml"})
 
 
+def test_saml_profile_accepts_valid_public_base_url_port() -> None:
+    store = MemorySamlAuthStore()
+
+    profile = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            "public_base_url": "https://admin.example.test:8443/",
+        }
+    )
+
+    assert profile.public_base_url == "https://admin.example.test:8443"
+
+
+@pytest.mark.parametrize(
+    "public_base_url",
+    [
+        "https://admin.example.test:99999",
+        "https://admin.example.test:notaport",
+    ],
+)
+def test_saml_profile_rejects_invalid_public_base_url_ports(
+    public_base_url: str,
+) -> None:
+    store = MemorySamlAuthStore()
+
+    with pytest.raises(ValueError, match="public base URL includes an invalid port"):
+        store.save_profile(
+            {
+                "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+                "public_base_url": public_base_url,
+            }
+        )
+
+
 def test_saml_refresh_fetches_and_caches_static_metadata(monkeypatch) -> None:
     store = MemorySamlAuthStore()
     store.save_profile(
