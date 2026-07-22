@@ -267,7 +267,7 @@ def validate_download_url(
         _port = parsed.port
     except ValueError as exc:
         raise ValueError(invalid_url_msg) from exc
-    if not parsed.netloc or not hostname:
+    if not parsed.netloc or not hostname or parsed.fragment:
         raise ValueError(invalid_url_msg)
     if parsed.username or parsed.password:
         msg = "Download URLs must not include embedded credentials."

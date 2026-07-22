@@ -141,6 +141,25 @@ def test_validate_download_url_rejects_malformed_absolute_url_before_dns(
         download_safety.validate_download_url(source_url)
 
 
+def test_validate_download_url_rejects_fragment_before_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fragmented download URLs should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="valid absolute HTTP/HTTPS"):
+        download_safety.validate_download_url(
+            "https://public.example/feed.csv#https://127.0.0.1/admin",
+        )
+
+
 def test_validate_download_url_rejects_embedded_credentials_before_dns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
