@@ -107,6 +107,22 @@ def test_public_listener_serves_percent_encoded_configured_pac_path(
     assert response.headers["Content-Disposition"] == 'inline; filename="wpad.dat"'
 
 
+def test_public_listener_rejects_encoded_separator_alias_for_configured_pac_path(
+    tmp_path,
+    public_pac_client,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    _write_pac_artifacts(pac_dir, public_pac_path="/download/wpad.dat")
+    client = public_pac_client(pac_dir)
+    response = client.get(
+        "/download%2fwpad.dat",
+        base_url="http://public-proxy.example",
+    )
+
+    assert response.status_code == 404
+    assert b"PAC public-proxy.example" not in response.data
+
+
 def test_public_listener_rejects_wrong_query_for_configured_pac_path(
     tmp_path,
     public_pac_client,

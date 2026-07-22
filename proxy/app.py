@@ -16,6 +16,7 @@ from services.pac_http import (
     client_ip_from_headers,
     pac_content_disposition,
     public_pac_request_allowed,
+    public_pac_request_path_safe,
     request_host_from_headers,
     resolve_pac_bytes,
 )
@@ -116,6 +117,13 @@ def _is_public_listener_path(
     query_string: object | None = None,
 ) -> bool:
     normalized_path = str(path or "/")
+    raw_target = (
+        request.environ.get("RAW_URI")
+        or request.environ.get("REQUEST_URI")
+        or request.full_path
+    )
+    if not public_pac_request_path_safe(raw_target):
+        return normalized_path in _PUBLIC_LISTENER_NON_PAC_PATHS
     if normalized_path in _PUBLIC_LISTENER_NON_PAC_PATHS:
         return True
     try:

@@ -493,6 +493,11 @@ def public_pac_request_allowed(
     return get_pac_cache(pac_dir).public_request_allowed(path, query_string)
 
 
+def public_pac_request_path_safe(path: object) -> bool:
+    raw_path = str(path or "/").split("?", 1)[0]
+    return _safe_decoded_path_segments(raw_path) is not None
+
+
 def resolve_pac_bytes(
     *,
     client_ip: str,
