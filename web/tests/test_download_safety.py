@@ -620,6 +620,58 @@ def test_open_download_url_preserves_extra_headers_on_same_origin_redirect(
     assert redirected["if-none-match"] == "etag-1"
 
 
+def test_open_download_url_rejects_malformed_redirect_location_before_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    lookups: list[str] = []
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        lookups.append(host)
+        if host != "public.example":
+            msg = "malformed redirect location should not reach DNS"
+            raise AssertionError(msg)
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                ("93.184.216.34", 0),
+            ),
+        ]
+
+    redirect_headers = Message()
+    redirect_headers["Location"] = "\nhttps://mirror.example/feed.csv"
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            raise download_safety.urllib.error.HTTPError(
+                req.full_url,
+                302,
+                "Found",
+                redirect_headers,
+                None,
+            )
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(ValueError, match="valid HTTP URI reference"):
+        download_safety.open_download_url(
+            "https://public.example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+        )
+
+    assert lookups == ["public.example", "public.example"]
+
+
 def test_open_download_url_uses_get_without_body_after_303_redirect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

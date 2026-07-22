@@ -223,6 +223,16 @@ def _build_download_request(
     return urllib.request.Request(url, headers=headers, method="GET")  # noqa: S310
 
 
+def _validate_download_redirect_location(location: str) -> None:
+    if (
+        not location
+        or "\\" in location
+        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in location)
+    ):
+        msg = "Download redirect Location must be a valid HTTP URI reference."
+        raise ValueError(msg)
+
+
 def validate_download_url(
     url: str,
     *,
@@ -300,6 +310,7 @@ def open_download_url(
             if not location:
                 msg = "Download redirect response did not include a Location header."
                 raise ValueError(msg) from exc
+            _validate_download_redirect_location(str(location))
             redirect_url = urljoin(current, location)
             redirect_parsed = validate_download_url(
                 redirect_url,
