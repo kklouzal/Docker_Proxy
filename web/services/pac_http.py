@@ -24,7 +24,7 @@ from services.public_endpoint import _is_ambiguous_ipv4_host
 
 PAC_CONTENT_TYPE = "application/x-ns-proxy-autoconfig"
 DEFAULT_PUBLIC_PAC_PATHS = frozenset({"/proxy.pac", "/wpad.dat"})
-_FileSignature = tuple[str, int, int, int, int]
+_FileSignature = tuple[str, int, int, int, int, int]
 
 
 @lru_cache(maxsize=1)
@@ -294,12 +294,13 @@ class LocalPacCache:
             try:
                 stat = path.stat()
             except OSError:
-                signatures.append((rel_path, -1, -1, -1, -1))
+                signatures.append((rel_path, -1, -1, -1, -1, -1))
                 continue
             signatures.append(
                 (
                     rel_path,
                     int(stat.st_mtime_ns),
+                    int(getattr(stat, "st_ctime_ns", 0) or 0),
                     int(stat.st_size),
                     int(getattr(stat, "st_dev", 0) or 0),
                     int(getattr(stat, "st_ino", 0) or 0),
@@ -321,12 +322,13 @@ class LocalPacCache:
             try:
                 stat = path.stat()
             except OSError:
-                signatures.append((safe_path, -1, -1, -1, -1))
+                signatures.append((safe_path, -1, -1, -1, -1, -1))
                 continue
             signatures.append(
                 (
                     safe_path,
                     int(stat.st_mtime_ns),
+                    int(getattr(stat, "st_ctime_ns", 0) or 0),
                     int(stat.st_size),
                     int(getattr(stat, "st_dev", 0) or 0),
                     int(getattr(stat, "st_ino", 0) or 0),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -501,6 +502,39 @@ def test_local_pac_cache_reloads_when_referenced_pac_file_is_replaced_same_signa
     replacement.replace(fallback)
     os.utime(fallback, ns=(stat.st_atime_ns, stat.st_mtime_ns))
 
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
+        new_content.encode("utf-8")
+    )
+
+
+def test_local_pac_cache_reloads_when_referenced_pac_file_ctime_changes_only(
+    tmp_path,
+    pac_http,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        """{"fallback_file":"fallback.pac","state_sha256":"state-one"}""",
+        encoding="utf-8",
+    )
+    fallback = pac_dir / "fallback.pac"
+    old_content = 'function FindProxyForURL(){return "PROXY one";}\n'
+    new_content = 'function FindProxyForURL(){return "DIRECTtwo";}\n'
+    assert len(old_content) == len(new_content)
+    fallback.write_text(old_content, encoding="utf-8")
+    stat = fallback.stat()
+
+    cache = pac_http.LocalPacCache(str(pac_dir))
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
+        old_content.encode("utf-8")
+    )
+
+    time.sleep(0.01)
+    fallback.write_text(new_content, encoding="utf-8")
+    os.utime(fallback, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+    assert fallback.stat().st_ino == stat.st_ino
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
         new_content.encode("utf-8")
     )
