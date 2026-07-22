@@ -353,6 +353,61 @@ def test_https_download_connection_preserves_hostname_for_sni(
     assert seen_sni == ["public.example"]
 
 
+def test_download_connection_uses_vetted_ipv6_sockaddr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+    addresses = (
+        download_safety._ResolvedDownloadAddress(
+            socket.AF_INET6,
+            socket.SOCK_STREAM,
+            0,
+            ("2001:4860:4860::8888", 80, 0, 0),
+        ),
+    )
+    seen_socket_args: list[tuple[int, int, int]] = []
+    seen_timeouts: list[int] = []
+    seen_connections: list[tuple[str, int, int, int]] = []
+
+    class _Socket:
+        def settimeout(self, timeout: int) -> None:
+            seen_timeouts.append(timeout)
+
+        def connect(self, sockaddr) -> None:
+            seen_connections.append(sockaddr)
+
+        def setsockopt(self, *_args) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    def fake_socket(family: int, socktype: int, proto: int):
+        seen_socket_args.append((family, socktype, proto))
+        return _Socket()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("IPv6 vetted sockaddr must not be sent to create_connection")
+        ),
+    )
+    monkeypatch.setattr(download_safety.socket, "socket", fake_socket)
+
+    conn_cls = download_safety._download_connection_class(
+        download_safety.http.client.HTTPConnection,
+        addresses,
+    )
+    conn = conn_cls("public-v6.example", timeout=3)
+
+    conn.connect()
+
+    assert seen_socket_args == [(socket.AF_INET6, socket.SOCK_STREAM, 0)]
+    assert seen_timeouts == [3]
+    assert seen_connections == [("2001:4860:4860::8888", 80, 0, 0)]
+
+
 def test_open_download_url_drops_malformed_conditional_headers_before_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

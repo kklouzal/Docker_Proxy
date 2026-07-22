@@ -104,14 +104,25 @@ def _create_download_connection(
     ):
         last_error: OSError | None = None
         for address in addresses:
+            sock = None
             try:
-                return socket.create_connection(
-                    address.sockaddr,
-                    timeout,
-                    source_address,
-                )
+                if len(address.sockaddr) == 2:
+                    return socket.create_connection(
+                        address.sockaddr,
+                        timeout,
+                        source_address,
+                    )
+                sock = socket.socket(address.family, address.socktype, address.proto)
+                if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                    sock.settimeout(timeout)
+                if source_address:
+                    sock.bind(source_address)
+                sock.connect(address.sockaddr)
+                return sock
             except OSError as exc:
                 last_error = exc
+                if sock is not None:
+                    sock.close()
         if last_error is not None:
             raise last_error
         raise OSError("no vetted download addresses available")
