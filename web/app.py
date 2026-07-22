@@ -2404,11 +2404,13 @@ def _safe_next_url(next_url: str) -> str:
     if "\\" in candidate:
         return ""
     decoded = candidate
-    for _ in range(3):
+    for _ in range(max(1, len(candidate))):
         previous = decoded
         decoded = unquote(previous, errors="replace")
         if decoded == previous:
             break
+    else:
+        return ""
     if any(ord(char) < 0x20 or ord(char) == 0x7F for char in decoded):
         return ""
     if "\\" in decoded or decoded.startswith("//"):
