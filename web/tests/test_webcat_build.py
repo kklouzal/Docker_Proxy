@@ -127,6 +127,26 @@ def test_zip_extraction_blocks_path_traversal() -> None:
         assert not Path(pwned_path).exists()
 
 
+def test_zip_extraction_skips_windows_drive_and_unc_members() -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_zip_abs_") as td:
+        zip_path = Path(td) / "payload.zip"
+        out_dir = Path(td) / "out"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("C:/Windows/System32/drivers/etc/hosts", "drive-root")
+            archive.writestr("C:relative/path.txt", "drive-relative")
+            archive.writestr("//server/share/file.txt", "unc-forward")
+            archive.writestr(r"\\server\share\file.txt", "unc-backslash")
+            archive.writestr("blacklists/adult/domains", "example.com\n")
+
+        webcat_build._extract_zip(zip_path, out_dir)
+
+        assert (out_dir / "blacklists/adult/domains").read_text() == "example.com\n"
+        assert not (out_dir / "C:").exists()
+        assert not (out_dir / "server").exists()
+
+
 def test_download_rejects_oversized_content_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -192,6 +212,31 @@ def test_tar_extraction_blocks_traversal_and_enforces_size_limit(
         with pytest.raises(ValueError, match="Extracted data exceeded limit"):
             webcat_build._extract_tar(tar_path, Path(td) / "out")
         assert not pwned_path.exists()
+
+
+def test_tar_extraction_skips_windows_drive_and_unc_members() -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_tar_abs_") as td:
+        tar_path = Path(td) / "payload.tar"
+        out_dir = Path(td) / "out"
+        with tarfile.open(tar_path, "w") as archive:
+            for name, data in {
+                "C:/Windows/System32/drivers/etc/hosts": b"drive-root",
+                "C:relative/path.txt": b"drive-relative",
+                "//server/share/file.txt": b"unc-forward",
+                r"\\server\share\file.txt": b"unc-backslash",
+                "blacklists/adult/domains": b"example.com\n",
+            }.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+
+        webcat_build._extract_tar(tar_path, out_dir)
+
+        assert (out_dir / "blacklists/adult/domains").read_text() == "example.com\n"
+        assert not (out_dir / "C:").exists()
+        assert not (out_dir / "server").exists()
 
 
 def test_download_rejects_hostname_resolving_private(

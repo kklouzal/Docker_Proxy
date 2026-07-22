@@ -344,6 +344,25 @@ def _download_if_changed(
             pass
 
 
+_WINDOWS_DRIVE_ARCHIVE_NAME_RE = re.compile(r"^[A-Za-z]:")
+
+
+def _safe_archive_member_name(name: str) -> str | None:
+    """Return a normalized safe relative archive path, or None to skip it."""
+    name = (name or "").replace("\\", "/")
+    if (
+        not name
+        or name.startswith(("//", "/"))
+        or _WINDOWS_DRIVE_ARCHIVE_NAME_RE.match(name)
+    ):
+        return None
+
+    parts = [part for part in name.split("/") if part not in {"", "."}]
+    if not parts or any(part == ".." for part in parts):
+        return None
+    return "/".join(parts)
+
+
 def _extract_zip(zip_path: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_root = out_dir.resolve()
@@ -356,10 +375,8 @@ def _extract_zip(zip_path: Path, out_dir: Path) -> None:
     total = 0
     with zipfile.ZipFile(zip_path, "r") as z:
         for info in z.infolist():
-            name = info.filename or ""
-            # Normalize separators and reject absolute/traversal paths.
-            name = name.replace("\\", "/")
-            if not name or name.startswith(("/", "../")) or "/../" in name:
+            name = _safe_archive_member_name(info.filename or "")
+            if name is None:
                 continue
 
             target = (out_dir / name).resolve()
@@ -404,11 +421,11 @@ def _extract_tar(tar_path: Path, out_dir: Path) -> None:
             if not (m.isdir() or m.isfile()):
                 continue
 
-            name = (m.name or "").replace("\\", "/")
-            if not name or name.startswith(("/", "../")) or "/../" in name:
+            # Prevent path traversal / absolute paths, including Windows drive paths.
+            name = _safe_archive_member_name(m.name or "")
+            if name is None:
                 continue
 
-            # Prevent path traversal / absolute paths, including Windows drive paths.
             target = (out_dir / name).resolve()
             try:
                 ok = (
