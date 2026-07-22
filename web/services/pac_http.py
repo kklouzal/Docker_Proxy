@@ -166,7 +166,11 @@ def _normalize_request_authority(value: object | None) -> str:
     return candidate if _valid_request_authority_host(candidate) else ""
 
 
-def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
+def forwarded_headers_trusted(remote_addr: str | None = None) -> bool:
+    return _remote_addr_trusts_forwarded_headers(remote_addr)
+
+
+def forwarded_client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
     if headers is not None and _remote_addr_trusts_forwarded_headers(remote_addr):
         xff = _first_forwarded_ip(headers.get("X-Forwarded-For"))
         if xff:
@@ -174,6 +178,13 @@ def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
         xri = _first_forwarded_ip(headers.get("X-Real-IP"))
         if xri:
             return xri
+    return ""
+
+
+def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
+    forwarded_ip = forwarded_client_ip_from_headers(headers, remote_addr)
+    if forwarded_ip:
+        return forwarded_ip
     return str(remote_addr or "").strip()
 
 

@@ -14,13 +14,15 @@ from services.http_optimizations import install_http_optimizations
 from services.pac_http import (
     PAC_CONTENT_TYPE,
     client_ip_from_headers,
+    forwarded_client_ip_from_headers,
+    forwarded_headers_trusted,
     pac_content_disposition,
     public_pac_request_allowed,
     public_pac_request_path_safe,
     request_host_from_headers,
     resolve_pac_bytes,
 )
-from services.policy_requests import get_policy_request_store
+from services.policy_requests import get_policy_request_store, normalize_client_ip
 from services.proxy_context import get_proxy_id
 from services.proxy_logs import proxy_log_status_code, read_proxy_log
 from services.version_status import current_component_metadata
@@ -132,6 +134,17 @@ def _is_public_listener_path(
         return normalized_path in {"/proxy.pac", "/wpad.dat"}
 
 
+def _policy_request_client_ip() -> str:
+    forwarded_ip = forwarded_client_ip_from_headers(request.headers, request.remote_addr)
+    if forwarded_ip:
+        return forwarded_ip
+    remote_ip = request.remote_addr or ""
+    form_ip = request.form.get("client_ip") or ""
+    if forwarded_headers_trusted(remote_ip) and normalize_client_ip(form_ip):
+        return form_ip
+    return remote_ip
+
+
 @app.before_request
 def _restrict_public_listener() -> None:
     if _is_public_listener_request() and not _is_public_listener_path(
@@ -228,9 +241,7 @@ def public_policy_request() -> Any:
     if not _is_public_listener_request():
         abort(404)
     form = request.form
-    client_ip = client_ip_from_headers(request.headers, request.remote_addr) or (
-        form.get("client_ip") or ""
-    )
+    client_ip = _policy_request_client_ip()
     try:
         req = get_policy_request_store().create_request(
             proxy_id=get_proxy_id(),
