@@ -167,6 +167,65 @@ def test_proxy_management_api_accepts_bearer_and_x_proxy_token(monkeypatch) -> N
     assert bad.status_code == 403
 
 
+def test_proxy_management_sync_parses_string_force_false(monkeypatch) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    runtime = _Runtime()
+    proxy_app.runtime = runtime
+    client = proxy_app.app.test_client()
+
+    response = _management_post(
+        client,
+        "/api/manage/sync",
+        json={"force": "false"},
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    assert response.status_code == 409
+    assert runtime.sync_force is False
+
+
+def test_proxy_management_sync_accepts_boolean_and_string_force_true(
+    monkeypatch,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    runtime = _Runtime()
+    proxy_app.runtime = runtime
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret"}
+
+    boolean_response = _management_post(
+        client, "/api/manage/sync", json={"force": True}, headers=headers
+    )
+    string_response = _management_post(
+        client, "/api/manage/sync", json={"force": "true"}, headers=headers
+    )
+
+    assert boolean_response.status_code == 409
+    assert string_response.status_code == 409
+    assert runtime.sync_force is True
+
+
+def test_proxy_management_sync_rejects_invalid_force_string(monkeypatch) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    runtime = _Runtime()
+    proxy_app.runtime = runtime
+    client = proxy_app.app.test_client()
+
+    response = _management_post(
+        client,
+        "/api/manage/sync",
+        json={"force": "definitely"},
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"ok": False, "detail": "force must be a boolean."}
+    assert runtime.sync_force is None
+
+
 def test_proxy_management_api_status_codes_and_payload_mapping(monkeypatch) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")

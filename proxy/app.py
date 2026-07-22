@@ -77,6 +77,21 @@ def _test_mode_enabled() -> bool:
     }
 
 
+def _parse_management_force(payload: dict[str, Any]) -> tuple[bool, str | None]:
+    if "force" not in payload:
+        return False, None
+    value = payload.get("force")
+    if isinstance(value, bool):
+        return value, None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True, None
+        if normalized in {"0", "false", "no", "off"}:
+            return False, None
+    return False, "force must be a boolean."
+
+
 def _public_pac_port() -> str:
     raw = (os.environ.get("PAC_HTTP_PORT") or "80").strip() or "80"
     try:
@@ -322,8 +337,12 @@ def manage_sync() -> Any:
             return jsonify(
                 {"ok": False, "detail": "operation_id must be a positive integer."},
             ), 400
+    force, force_error = _parse_management_force(payload)
+    if force_error is not None:
+        return jsonify({"ok": False, "detail": force_error}), 400
+
     result = _runtime().sync_from_db(
-        force=bool(payload.get("force")),
+        force=force,
         operation_id=operation_id,
     )
     return jsonify(result), (200 if result.get("ok") else 409)
