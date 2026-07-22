@@ -502,7 +502,10 @@ def test_rendered_pac_strips_root_dot_before_host_matching() -> None:
         include_private=False,
     )
 
-    host_normalizer = "host = (host || '').toLowerCase().replace(/\\.+$/, '');"
+    host_normalizer = (
+        "host = (host || '').toLowerCase().replace(/\\.+$/, '')"
+        ".replace(/^\\[/, '').replace(/\\]$/, '');"
+    )
     proxy_host_normalizer = (
         "var normalizedProxyHost = proxyHost.replace(/^\\[/, '').replace(/\\]$/, '')"
         ".toLowerCase().replace(/\\.+$/, '');"
@@ -515,6 +518,30 @@ def test_rendered_pac_strips_root_dot_before_host_matching() -> None:
         'host === "intranet.example"'
     )
     assert rendered.index(host_normalizer) < rendered.index("var ip = hostIp();")
+
+
+def test_rendered_pac_strips_ipv6_url_brackets_before_local_and_proxy_matching() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_pac(
+        "PROXY [::1]:3128; DIRECT",
+        proxy_host="[::1]",
+        direct_domains=[],
+        direct_dst_nets=[],
+        include_private=False,
+    )
+
+    host_normalizer = (
+        "host = (host || '').toLowerCase().replace(/\\.+$/, '')"
+        ".replace(/^\\[/, '').replace(/\\]$/, '');"
+    )
+
+    assert host_normalizer in rendered
+    assert rendered.index(host_normalizer) < rendered.index("host === '::1'")
+    assert rendered.index(host_normalizer) < rendered.index(
+        "host === normalizedProxyHost"
+    )
 
 
 def test_pac_target_advertises_only_explicit_proxy_listener() -> None:

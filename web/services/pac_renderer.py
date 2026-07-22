@@ -362,7 +362,10 @@ def _render_pac(
     lines.extend(
         (
             "function FindProxyForURL(url, host) {",
-            "  host = (host || '').toLowerCase().replace(/\\.+$/, '');",
+            (
+                "  host = (host || '').toLowerCase().replace(/\\.+$/, '')"
+                ".replace(/^\\[/, '').replace(/\\]$/, '');"
+            ),
             f"  var proxyHost = {json.dumps(str(proxy_host or PAC_HOST_PLACEHOLDER))};",
             "  var normalizedProxyHost = proxyHost.replace(/^\\[/, '').replace(/\\]$/, '').toLowerCase().replace(/\\.+$/, '');",
             "  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'DIRECT';",
