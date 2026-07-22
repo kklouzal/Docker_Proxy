@@ -3248,28 +3248,29 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
         options.get("intercept_port"),
         _default_intercept_port(explicit_port),
     )
-    if intercept_port == explicit_port:
+    intercept_enabled = coerce_config_bool(options.get("intercept_enabled_on"))
+    if intercept_enabled and intercept_port == explicit_port:
         intercept_port = _default_intercept_port(explicit_port)
         if intercept_port == explicit_port:
             intercept_port = 3129 if explicit_port != 3129 else 3130
     options["explicit_proxy_port"] = explicit_port
     options["intercept_port"] = intercept_port
-    options["intercept_enabled_on"] = coerce_config_bool(
-        options.get("intercept_enabled_on"),
-    )
+    options["intercept_enabled_on"] = intercept_enabled
     https_intercept_port = _clamp_port(
         options.get("https_intercept_port"),
         3130 if explicit_port != 3130 else 3131,
     )
-    used_ports = {
-        explicit_port,
-        intercept_port if options["intercept_enabled_on"] else None,
-    }
-    https_intercept_port = _first_available_port(https_intercept_port, used_ports)
-    options["https_intercept_port"] = https_intercept_port
-    options["https_intercept_enabled_on"] = coerce_config_bool(
+    https_intercept_enabled = coerce_config_bool(
         options.get("https_intercept_enabled_on"),
     )
+    if https_intercept_enabled:
+        used_ports = {
+            explicit_port,
+            intercept_port if options["intercept_enabled_on"] else None,
+        }
+        https_intercept_port = _first_available_port(https_intercept_port, used_ports)
+    options["https_intercept_port"] = https_intercept_port
+    options["https_intercept_enabled_on"] = https_intercept_enabled
     options["https_intercept_splice_only_on"] = (
         coerce_config_bool(options.get("https_intercept_splice_only_on"))
         and options["https_intercept_enabled_on"]

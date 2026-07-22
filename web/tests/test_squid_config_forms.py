@@ -359,6 +359,31 @@ def test_build_template_options_from_form_resolves_three_way_listener_port_colli
     assert options["https_intercept_port"] == 3132
 
 
+def test_build_template_options_from_form_disabled_intercepts_keep_persisted_ports() -> (
+    None
+):
+    options = build_template_options_from_form(
+        {
+            "explicit_proxy_port": 3128,
+            "intercept_enabled": False,
+            "intercept_port": 8080,
+            "https_intercept_enabled": False,
+            "https_intercept_port": 8080,
+        },
+        {
+            "explicit_proxy_port": "8080",
+        },
+        form_kind="network",
+        max_workers=4,
+    )
+
+    assert options["explicit_proxy_port"] == 8080
+    assert options["intercept_enabled_on"] is False
+    assert options["intercept_port"] == 8080
+    assert options["https_intercept_enabled_on"] is False
+    assert options["https_intercept_port"] == 8080
+
+
 def test_renderer_avoids_intercept_collision_with_unmanaged_listener() -> None:
     from services.squidctl import SquidController  # type: ignore
 
