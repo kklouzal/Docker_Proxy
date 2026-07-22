@@ -144,6 +144,8 @@ def _normalize_request_authority(value: object | None) -> str:
             parsed_ip = ipaddress.ip_address(host)
         except ValueError:
             return ""
+        if getattr(parsed_ip, "scope_id", None):
+            return ""
         if parsed_ip.version != 6:
             return ""
         return f"[{parsed_ip}]{f':{port}' if port else ''}"
@@ -152,6 +154,8 @@ def _normalize_request_authority(value: object | None) -> str:
         try:
             parsed_ip = ipaddress.ip_address(candidate)
         except ValueError:
+            return ""
+        if getattr(parsed_ip, "scope_id", None):
             return ""
         return str(parsed_ip) if parsed_ip.version == 6 else ""
 

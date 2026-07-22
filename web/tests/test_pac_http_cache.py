@@ -175,6 +175,39 @@ def test_request_host_preserves_valid_authority_shapes(monkeypatch, pac_http) ->
     )
 
 
+def test_request_host_rejects_scoped_ipv6_authority_values(
+    monkeypatch, pac_http
+) -> None:
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
+
+    bad_hosts = [
+        "fe80::1%eth0",
+        "[fe80::1%eth0]",
+        "[fe80::1%eth0]:8080",
+    ]
+
+    for bad_host in bad_hosts:
+        assert pac_http.request_host_from_headers({"Host": bad_host}) == "127.0.0.1"
+
+    assert (
+        pac_http.request_host_from_headers(
+            {"Host": "internal-proxy:5000", "X-Forwarded-Host": "fe80::1%eth0"},
+            "198.51.100.10",
+        )
+        == "internal-proxy:5000"
+    )
+    assert (
+        pac_http.request_host_from_headers(
+            {
+                "Host": "internal-proxy:5000",
+                "X-Forwarded-Host": "[fe80::1%eth0]:8080",
+            },
+            "198.51.100.10",
+        )
+        == "internal-proxy:5000"
+    )
+
+
 def test_request_host_rejects_malformed_host_header_values(pac_http) -> None:
     bad_hosts = [
         "",
