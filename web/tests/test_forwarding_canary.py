@@ -64,3 +64,15 @@ def test_forwarding_canary_env_hardening_keeps_listener_loopback_only(
     assert forwarding_canary._canary_host() == "127.0.0.1"
     assert forwarding_canary._canary_port() == 18080
     assert forwarding_canary._canary_path() == "/__docker_proxy_forwarding_canary"
+
+
+def test_forwarding_canary_rejects_dns_names_that_look_like_loopback(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from proxy import forwarding_canary
+
+    for host in ("127.evil.test", "127.0.0.1.evil.test"):
+        monkeypatch.setenv("FORWARDING_CANARY_HOST", host)
+
+        assert forwarding_canary._canary_host() == "127.0.0.1"

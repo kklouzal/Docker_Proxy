@@ -868,6 +868,30 @@ def test_forwarding_path_health_no_longer_targets_public_listener_self_dependenc
     assert captured["target_url"] != "http://127.0.0.1:80/health"
 
 
+def test_forwarding_path_health_rejects_dns_names_that_look_like_loopback(
+    monkeypatch,
+) -> None:
+    proxy_health = _proxy_health_module()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setenv("SQUID_HTTP_PORT", "3128")
+    monkeypatch.setenv("FORWARDING_CANARY_HOST", "127.0.0.1.evil.test")
+    monkeypatch.setenv("FORWARDING_CANARY_PORT", "18080")
+
+    def fake_probe(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "detail": "HTTP/1.1 200 OK; local health ok"}
+
+    monkeypatch.setattr(proxy_health, "check_http_proxy_forwarding", fake_probe)
+
+    result = proxy_health.check_forwarding_path_health(timeout=0.3)
+
+    assert result["ok"] is True
+    assert captured["target_url"] == (
+        "http://127.0.0.1:18080/__docker_proxy_forwarding_canary"
+    )
+
+
 def test_forwarding_path_success_contract_cannot_include_stale_error(
     monkeypatch,
 ) -> None:

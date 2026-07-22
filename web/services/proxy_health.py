@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 from typing import Any
 
@@ -70,8 +71,21 @@ def _forwarding_canary_target_url() -> str:
     host = (
         os.environ.get("FORWARDING_CANARY_HOST") or "127.0.0.1"
     ).strip() or "127.0.0.1"
-    if host in {"0.0.0.0", "::", "[::]", "::1", "[::1]"}:  # noqa: S104 - normalize wildcard/IPv6 loopback bind hosts to IPv4 loopback probe targets.
-        host = "127.0.0.1"
+    normalized_host = host.strip("[]")
+    if normalized_host.lower() == "localhost":
+        host = "localhost"
+    else:
+        try:
+            address = ipaddress.ip_address(normalized_host)
+        except ValueError:
+            address = None
+        if not (address is not None and address.version == 4 and address.is_loopback):
+            # Normalize wildcard, IPv6, and DNS-name inputs to the local IPv4
+            # canary target. The canary listener intentionally only accepts
+            # IPv4 loopback bind addresses.
+            host = "127.0.0.1"
+        else:
+            host = normalized_host
     display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
     try:
         port = int((os.environ.get("FORWARDING_CANARY_PORT") or "18080").strip())

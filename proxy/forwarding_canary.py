@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 from http import HTTPStatus
@@ -17,12 +18,17 @@ def _canary_host() -> str:
     candidate = (
         os.environ.get("FORWARDING_CANARY_HOST") or DEFAULT_CANARY_HOST
     ).strip()
-    if candidate in {"", "0.0.0.0", "::", "[::]"}:  # noqa: S104 - unsafe bind env is coerced to loopback below.
+    candidate = candidate.strip("[]")
+    if candidate == "":
         return DEFAULT_CANARY_HOST
-    if candidate.lower() in {"::1", "[::1]"}:
+    if candidate.lower() == "localhost":
+        return candidate
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
         return DEFAULT_CANARY_HOST
-    if candidate.lower() in {"localhost", "127.0.0.1"} or candidate.startswith("127."):
-        return candidate.strip("[]")
+    if address.version == 4 and address.is_loopback:
+        return candidate
     return DEFAULT_CANARY_HOST
 
 

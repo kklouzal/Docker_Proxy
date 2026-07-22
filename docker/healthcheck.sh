@@ -142,8 +142,9 @@ check_icap_readiness() {
 
 check_squid_forwarding_path() {
     SQUID_CONFIG_PATH="${SQUID_CONFIG_PATH:-/etc/squid/squid.conf}" python3 - <<'PY'
-import os
+import ipaddress
 import json
+import os
 import socket
 
 
@@ -206,8 +207,18 @@ def response_ports(config_path: str):
 
 def forwarding_canary_url() -> str:
     host = (os.environ.get('FORWARDING_CANARY_HOST') or '127.0.0.1').strip() or '127.0.0.1'
-    if host in {'0.0.0.0', '::', '[::]', '::1', '[::1]'}:
-        host = '127.0.0.1'
+    normalized_host = host.strip('[]')
+    if normalized_host.lower() == 'localhost':
+        host = 'localhost'
+    else:
+        try:
+            address = ipaddress.ip_address(normalized_host)
+        except ValueError:
+            address = None
+        if not (address is not None and address.version == 4 and address.is_loopback):
+            host = '127.0.0.1'
+        else:
+            host = normalized_host
     display_host = f'[{host}]' if ':' in host and not host.startswith('[') else host
     try:
         port = int((os.environ.get('FORWARDING_CANARY_PORT') or '18080').strip() or '18080')
