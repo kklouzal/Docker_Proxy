@@ -439,6 +439,46 @@ def test_resolve_proxy_pac_target_scopes_chain_settings_to_requested_proxy(
     assert "DIRECT" not in target.proxy_chain
 
 
+def test_resolve_proxy_pac_target_filters_stale_invalid_backup_proxy_ports(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services import pac_renderer  # type: ignore
+
+    class _Registry:
+        def get_proxy(self, _proxy_id):
+            return _proxy_record("proxy.example")
+
+    class _StalePacProfilesStore:
+        def list_proxy_chain_settings(self):
+            return SimpleNamespace(
+                backup_proxies=[
+                    SimpleNamespace(proxy_host="backup-zero.example", proxy_port=0),
+                    SimpleNamespace(proxy_host="backup-empty.example", proxy_port=""),
+                    SimpleNamespace(proxy_host="backup-good.example", proxy_port=8080),
+                ],
+                direct_enabled=True,
+            )
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _Registry)
+    monkeypatch.setattr(
+        pac_renderer,
+        "get_pac_profiles_store",
+        _StalePacProfilesStore,
+    )
+
+    target = pac_renderer.resolve_proxy_pac_target("default")
+
+    assert target.normalized_backup_proxies == (
+        ("backup-empty.example", 3128),
+        ("backup-good.example", 8080),
+    )
+    assert "backup-zero.example" not in target.proxy_chain
+    assert "PROXY backup-empty.example:3128" in target.proxy_chain
+    assert "PROXY backup-good.example:8080" in target.proxy_chain
+
+
 def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore

@@ -28,12 +28,14 @@ class _FakeConn:
         direct_domain_rows: list[dict[str, object]] | None = None,
         direct_dst_net_rows: list[dict[str, object]] | None = None,
         profile_ids: set[int] | None = None,
+        backup_proxy_rows: list[dict[str, object]] | None = None,
         backup_proxy_ids: list[int] | None = None,
     ) -> None:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
         self.direct_domain_rows = direct_domain_rows
         self.direct_dst_net_rows = direct_dst_net_rows
         self.profile_ids = profile_ids if profile_ids is not None else {11, 12}
+        self.backup_proxy_rows = backup_proxy_rows
         self.backup_proxy_ids = (
             backup_proxy_ids if backup_proxy_ids is not None else [21, 22]
         )
@@ -73,7 +75,9 @@ class _FakeConn:
             )
         if "FROM pac_backup_proxies" in sql and sql.lstrip().startswith("SELECT id"):
             return _FakeResult(
-                [
+                self.backup_proxy_rows
+                if self.backup_proxy_rows is not None
+                else [
                     {
                         "id": self.backup_proxy_ids[0],
                         "proxy_host": "backup-a.example",
@@ -202,6 +206,46 @@ def test_list_proxy_chain_settings_returns_backups_and_direct_toggle(
     assert settings.direct_enabled is False
 
 
+def test_list_proxy_chain_settings_filters_stale_invalid_backup_rows(
+    monkeypatch,
+) -> None:
+    _, _, store = _patched_store(
+        monkeypatch,
+        _FakeConn(
+            backup_proxy_rows=[
+                {
+                    "id": 21,
+                    "proxy_host": "backup-zero.example",
+                    "proxy_port": 0,
+                    "position": 1,
+                    "created_ts": 1,
+                },
+                {
+                    "id": 22,
+                    "proxy_host": "backup-hostile.example;DIRECT",
+                    "proxy_port": 3128,
+                    "position": 2,
+                    "created_ts": 2,
+                },
+                {
+                    "id": 23,
+                    "proxy_host": "backup-good.example",
+                    "proxy_port": 8080,
+                    "position": 3,
+                    "created_ts": 3,
+                },
+            ],
+            backup_proxy_ids=[21, 22, 23],
+        ),
+    )
+
+    settings = store.list_proxy_chain_settings()
+
+    assert [(item.proxy_host, item.proxy_port) for item in settings.backup_proxies] == [
+        ("backup-good.example", 8080),
+    ]
+
+
 def test_backup_proxy_mutations_report_changed_status(monkeypatch) -> None:
     _, _, store = _patched_store(monkeypatch)
 
@@ -322,6 +366,11 @@ def test_backup_proxy_host_port_normalization_rejects_malformed_inline_ports() -
     _add_web_path()
     import services.pac_profiles_store as mod
 
+    assert mod._normalize_proxy_host_port("backup.example", 0) == (
+        None,
+        None,
+        "Proxy port must be between 1 and 65535.",
+    )
     assert mod._normalize_proxy_host_port("backup.example:abc", None) == (
         None,
         None,

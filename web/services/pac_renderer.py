@@ -106,7 +106,7 @@ class ProxyPacTarget:
     pac_scheme: str
     pac_port: int
     http_proxy_port: int
-    backup_proxies: tuple[tuple[str, int], ...] = ()
+    backup_proxies: tuple[tuple[str, object | None], ...] = ()
     direct_enabled: bool = True
     pac_path: str = "/proxy.pac"
 
@@ -301,7 +301,7 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
     pac_path = proxy_pac_path if proxy_owns_public_endpoint else url_pac_path
     if not pac_path:
         pac_path = "/proxy.pac"
-    backup_proxies: tuple[tuple[str, int], ...] = ()
+    backup_proxies: tuple[tuple[str, object | None], ...] = ()
     direct_enabled = True
     token = set_proxy_id(normalized_proxy_id)
     try:
@@ -309,7 +309,7 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
         backup_proxies = tuple(
             (
                 str(getattr(item, "proxy_host", "") or ""),
-                _coerce_port(getattr(item, "proxy_port", None), 3128),
+                getattr(item, "proxy_port", None),
             )
             for item in list(getattr(chain_settings, "backup_proxies", []) or [])
         )

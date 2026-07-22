@@ -114,7 +114,7 @@ def _normalize_proxy_host_port(
     proxy_port: object | None,
 ) -> tuple[str | None, int | None, str]:
     host = (proxy_host or "").strip()
-    raw_port = "" if proxy_port is None else str(proxy_port or "").strip()
+    raw_port = "" if proxy_port is None else str(proxy_port).strip()
     if not host:
         return None, None, "Proxy host is required."
 
@@ -324,16 +324,23 @@ class PacProfilesStore:
                 (proxy_id,),
             ).fetchone()
 
-        backups = [
-            PacBackupProxy(
-                id=int(row["id"]),
-                proxy_host=str(row["proxy_host"] or ""),
-                proxy_port=int(row["proxy_port"] or 3128),
-                position=int(row["position"] or 0),
-                created_ts=int(row["created_ts"] or 0),
+        backups: list[PacBackupProxy] = []
+        for row in rows:
+            host, port, _err = _normalize_proxy_host_port(
+                str(row["proxy_host"] or ""),
+                row["proxy_port"],
             )
-            for row in rows
-        ]
+            if host is None or port is None:
+                continue
+            backups.append(
+                PacBackupProxy(
+                    id=int(row["id"]),
+                    proxy_host=host,
+                    proxy_port=port,
+                    position=int(row["position"] or 0),
+                    created_ts=int(row["created_ts"] or 0),
+                ),
+            )
         direct_enabled = (
             True if setting is None else bool(int(setting["direct_enabled"] or 0))
         )
