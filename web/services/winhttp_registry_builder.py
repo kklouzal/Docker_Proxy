@@ -228,6 +228,15 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
             raise WinHttpBuilderError(inline_port_error)
         warning = inline_port_warning
         value = host_part
+    elif ":" in value:
+        try:
+            parsed_host = ipaddress.ip_address(value)
+        except ValueError as exc:
+            msg = "Proxy host/IP is invalid."
+            raise WinHttpBuilderError(msg) from exc
+        if parsed_host.version != 6:
+            msg = "Proxy host/IP is invalid."
+            raise WinHttpBuilderError(msg)
     if "/" in value or any(ch.isspace() for ch in value):
         msg = "Proxy host/IP must not contain spaces or path separators."
         raise WinHttpBuilderError(msg)

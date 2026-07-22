@@ -149,6 +149,18 @@ def test_generated_proxy_outputs_bracket_ipv6_literals(proxy_host: str) -> None:
     assert f'proxy-server="{expected}"' in result.legacy_set_proxy_command
 
 
+@pytest.mark.parametrize("proxy_host", ["proxy:example:bad", "bad::host::name"])
+def test_unbracketed_colon_proxy_host_rejects_non_ipv6_values(proxy_host: str) -> None:
+    with pytest.raises(WinHttpBuilderError, match="Proxy host/IP"):
+        build_contract_output(
+            {
+                "proxy_host": proxy_host,
+                "proxy_port": 3128,
+                "destination_schemes": ["http"],
+            },
+        )
+
+
 @pytest.mark.parametrize(
     "proxy_host",
     [
