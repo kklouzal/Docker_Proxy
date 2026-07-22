@@ -261,7 +261,96 @@ def test_open_download_url_ignores_ambient_http_proxy_env(
             user_agent="unit-test-agent",
         )
 
-    assert seen_connections == [("public.example", 80)]
+    assert seen_connections == [("93.184.216.34", 80)]
+
+
+def test_open_download_url_rejects_rebind_between_validation_and_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    lookups: list[tuple[str, int | None]] = []
+
+    def fake_getaddrinfo(host: str, port, *_args, **_kwargs):
+        assert host == "public.example"
+        lookups.append((host, port))
+        address = "93.184.216.34" if len(lookups) == 1 else "127.0.0.1"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                (address, port or 0),
+            ),
+        ]
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        download_safety.socket,
+        "create_connection",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("private rebound address must be rejected before connect")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="internal/localhost"):
+        download_safety.open_download_url(
+            "http://public.example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+        )
+
+    assert lookups == [("public.example", None), ("public.example", 80)]
+
+
+def test_https_download_connection_preserves_hostname_for_sni(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+    addresses = (
+        download_safety._ResolvedDownloadAddress(
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            0,
+            ("93.184.216.34", 443),
+        ),
+    )
+    seen_connections: list[tuple[str, int]] = []
+    seen_sni: list[str] = []
+
+    class _Socket:
+        def setsockopt(self, *_args):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_create_connection(address, *_args, **_kwargs):
+        seen_connections.append(address)
+        return _Socket()
+
+    class _Context:
+        def wrap_socket(self, sock, *, server_hostname):
+            seen_sni.append(server_hostname)
+            return sock
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "create_connection",
+        fake_create_connection,
+    )
+
+    conn_cls = download_safety._download_connection_class(
+        download_safety.http.client.HTTPSConnection,
+        addresses,
+    )
+    conn = conn_cls("public.example", timeout=1, context=_Context())
+
+    conn.connect()
+
+    assert seen_connections == [("93.184.216.34", 443)]
+    assert seen_sni == ["public.example"]
 
 
 def test_open_download_url_drops_malformed_conditional_headers_before_request(

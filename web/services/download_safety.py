@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import socket
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
 _ALLOWED_DOWNLOAD_REQUEST_HEADERS = {
     "if-modified-since": "If-Modified-Since",
     "if-none-match": "If-None-Match",
 }
+
+
+@dataclass(frozen=True)
+class _ResolvedDownloadAddress:
+    family: int
+    socktype: int
+    proto: int
+    sockaddr: tuple
 
 
 def _is_forbidden_download_ip(address: str) -> bool:
@@ -47,6 +57,103 @@ def is_internal_host(hostname: str) -> bool:
     if not resolved:
         return True
     return any(_is_forbidden_download_ip(address) for address in resolved)
+
+
+def _resolve_download_addresses(
+    hostname: str,
+    port: int,
+) -> tuple[_ResolvedDownloadAddress, ...]:
+    try:
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, OSError):
+        return ()
+
+    addresses: list[_ResolvedDownloadAddress] = []
+    seen: set[tuple[int, int, int, tuple]] = set()
+    for info in infos:
+        if not info or not info[4]:
+            continue
+        family, socktype, proto, _canonname, sockaddr = info
+        address = sockaddr[0]
+        if _is_forbidden_download_ip(address):
+            return ()
+        resolved_sockaddr = (address, port, *sockaddr[2:])
+        item = _ResolvedDownloadAddress(family, socktype, proto, resolved_sockaddr)
+        key = (item.family, item.socktype, item.proto, item.sockaddr)
+        if key in seen:
+            continue
+        seen.add(key)
+        addresses.append(item)
+    return tuple(addresses)
+
+
+def _download_url_port(parsed) -> int:
+    port = parsed.port
+    if port is None:
+        return 443 if parsed.scheme == "https" else 80
+    return port
+
+
+def _create_download_connection(
+    addresses: tuple[_ResolvedDownloadAddress, ...],
+):
+    def create_connection(
+        _address,
+        timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+        source_address=None,
+    ):
+        last_error: OSError | None = None
+        for address in addresses:
+            try:
+                return socket.create_connection(
+                    address.sockaddr,
+                    timeout,
+                    source_address,
+                )
+            except OSError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise OSError("no vetted download addresses available")
+
+    return create_connection
+
+
+def _download_connection_class(
+    base_class: type[http.client.HTTPConnection],
+    addresses: tuple[_ResolvedDownloadAddress, ...],
+) -> type[http.client.HTTPConnection]:
+    class _VettedDownloadConnection(base_class):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._create_connection = _create_download_connection(addresses)
+
+    return _VettedDownloadConnection
+
+
+class _BoundAddressHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, addresses: tuple[_ResolvedDownloadAddress, ...]):
+        super().__init__()
+        self._addresses = addresses
+
+    def http_open(self, req):
+        return self.do_open(
+            _download_connection_class(http.client.HTTPConnection, self._addresses),
+            req,
+        )
+
+
+class _BoundAddressHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, addresses: tuple[_ResolvedDownloadAddress, ...]):
+        super().__init__()
+        self._addresses = addresses
+
+    def https_open(self, req):
+        return self.do_open(
+            _download_connection_class(http.client.HTTPSConnection, self._addresses),
+            req,
+            context=self._context,
+        )
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -144,15 +251,24 @@ def open_download_url(
     scheme_error: str = "Only http/https URLs are supported.",
 ):
     current = url
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),
-        _NoRedirectHandler,
-    )
     base_headers = {"User-Agent": user_agent}
     safe_headers = _safe_extra_download_headers(headers)
     request_headers = {**safe_headers, **base_headers}
     for _ in range(max_redirects + 1):
         parsed = validate_download_url(current, scheme_error=scheme_error)
+        addresses = _resolve_download_addresses(
+            str(parsed.hostname or ""),
+            _download_url_port(parsed),
+        )
+        if not addresses:
+            msg = "Downloads from internal/localhost addresses are not allowed."
+            raise ValueError(msg)
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            _BoundAddressHTTPHandler(addresses),
+            _BoundAddressHTTPSHandler(addresses),
+            _NoRedirectHandler,
+        )
         req = _build_download_request(current, headers=request_headers)
         try:
             return opener.open(req, timeout=timeout)
