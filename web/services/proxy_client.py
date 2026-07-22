@@ -17,6 +17,45 @@ class ProxyClientError(RuntimeError):
     pass
 
 
+_UNSAFE_EMPTY_MANAGEMENT_PATH = "Unsafe proxy management path: empty path."
+_UNSAFE_MANAGEMENT_PATH_TEXT = (
+    "Unsafe proxy management path: control, whitespace, or backslash."
+)
+_UNSAFE_SCHEME_RELATIVE_MANAGEMENT_PATH = (
+    "Unsafe proxy management path: scheme-relative path."
+)
+_UNSAFE_UNPARSABLE_MANAGEMENT_PATH = "Unsafe proxy management path: unparsable path."
+_UNSAFE_ABSOLUTE_MANAGEMENT_PATH = (
+    "Unsafe proxy management path: absolute URL or authority."
+)
+_UNSAFE_FRAGMENT_MANAGEMENT_PATH = (
+    "Unsafe proxy management path: fragments are not allowed."
+)
+_UNSAFE_AMBIGUOUS_ROOT_MANAGEMENT_PATH = (
+    "Unsafe proxy management path: ambiguous path root."
+)
+_UNSAFE_ENCODED_MANAGEMENT_PATH = (
+    "Unsafe proxy management path: ambiguous encoded path."
+)
+_UNSAFE_QUERY_MANAGEMENT_PATH = "Unsafe proxy management path: ambiguous query string."
+
+
+def _has_unsafe_management_path_text(value: str) -> bool:
+    return any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value)
+
+
+def _safe_decoded_management_path(path: str) -> bool:
+    raw_segments = path.split("/")
+    decoded_segments = [urllib.parse.unquote(segment) for segment in raw_segments]
+    if any(
+        "/" in segment or "\\" in segment or _has_unsafe_management_path_text(segment)
+        for segment in decoded_segments
+    ):
+        return False
+    segments = [segment for segment in decoded_segments if segment]
+    return not any(segment in {".", ".."} for segment in segments)
+
+
 @dataclass(frozen=True)
 class ProxyResponse:
     ok: bool
@@ -80,6 +119,46 @@ class ProxyClient:
             raise ProxyClientError(msg)
         return management_url.rstrip("/") + "/"
 
+    def _management_url(self, base: str, path: str) -> str:
+        relative_path = self._management_relative_path(path)
+        return base.rstrip("/") + "/" + relative_path
+
+    def _management_relative_path(self, path: str) -> str:
+        candidate = str(path or "").strip()
+        if not candidate:
+            raise ProxyClientError(_UNSAFE_EMPTY_MANAGEMENT_PATH)
+        if _has_unsafe_management_path_text(candidate) or "\\" in candidate:
+            raise ProxyClientError(_UNSAFE_MANAGEMENT_PATH_TEXT)
+        if candidate.startswith("//"):
+            raise ProxyClientError(_UNSAFE_SCHEME_RELATIVE_MANAGEMENT_PATH)
+        try:
+            parsed = urllib.parse.urlsplit(candidate)
+        except Exception as exc:
+            raise ProxyClientError(_UNSAFE_UNPARSABLE_MANAGEMENT_PATH) from exc
+        if parsed.scheme or parsed.netloc:
+            raise ProxyClientError(_UNSAFE_ABSOLUTE_MANAGEMENT_PATH)
+        if parsed.fragment:
+            raise ProxyClientError(_UNSAFE_FRAGMENT_MANAGEMENT_PATH)
+
+        raw_path = parsed.path or ""
+        if not raw_path:
+            raise ProxyClientError(_UNSAFE_EMPTY_MANAGEMENT_PATH)
+        if raw_path.startswith("//"):
+            raise ProxyClientError(_UNSAFE_AMBIGUOUS_ROOT_MANAGEMENT_PATH)
+        if not raw_path.startswith("/"):
+            raw_path = f"/{raw_path}"
+        if not _safe_decoded_management_path(raw_path):
+            raise ProxyClientError(_UNSAFE_ENCODED_MANAGEMENT_PATH)
+
+        query = parsed.query
+        if query:
+            decoded_query = urllib.parse.unquote(query)
+            if _has_unsafe_management_path_text(decoded_query) or "\\" in decoded_query:
+                raise ProxyClientError(_UNSAFE_QUERY_MANAGEMENT_PATH)
+
+        relative_path = raw_path.lstrip("/")
+        return f"{relative_path}?{query}" if query else relative_path
+
     def _request(
         self,
         proxy_id: object | None,
@@ -90,7 +169,7 @@ class ProxyClient:
         timeout_seconds: float | None = None,
     ) -> ProxyResponse:
         base = self._proxy_base_url(proxy_id)
-        url = urllib.parse.urljoin(base, path.lstrip("/"))
+        url = self._management_url(base, path)
         body = None
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")

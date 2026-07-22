@@ -390,7 +390,9 @@ def test_proxy_client_timeout_error_is_actionable(
     assert "reachable from the Admin UI container" in message
 
 
-def test_proxy_client_url_error_surfaces_reason(monkeypatch, proxy_client_module) -> None:
+def test_proxy_client_url_error_surfaces_reason(
+    monkeypatch, proxy_client_module
+) -> None:
     proxy_client = proxy_client_module
     monkeypatch.setattr(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
@@ -405,3 +407,63 @@ def test_proxy_client_url_error_surfaces_reason(monkeypatch, proxy_client_module
 
     with pytest.raises(proxy_client.ProxyClientError, match="network unreachable"):
         proxy_client.ProxyClient().clear_proxy_cache("live")
+
+
+def test_proxy_client_builds_management_url_with_query_under_registered_base(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
+    opened_urls: list[str] = []
+    monkeypatch.setattr(
+        proxy_client,
+        "get_proxy_registry",
+        lambda: _Registry("http://proxy-mgmt:5000/root"),
+    )
+
+    def fake_urlopen(request, timeout):
+        opened_urls.append(request.full_url)
+        return _Response({"ok": True})
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    client = proxy_client.ProxyClient()
+    client._request("live", method="GET", path="/api/manage/health?full=1")
+    client._request("live", method="GET", path="api/manage/health")
+
+    assert opened_urls == [
+        "http://proxy-mgmt:5000/root/api/manage/health?full=1",
+        "http://proxy-mgmt:5000/root/api/manage/health",
+    ]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "https://attacker.example/api",
+        "//attacker.example/api",
+        "/api\\manage/health",
+        "/api/manage/%0ahealth",
+    ],
+)
+def test_proxy_client_rejects_unsafe_management_paths_before_urlopen(
+    monkeypatch,
+    proxy_client_module,
+    path: str,
+) -> None:
+    proxy_client = proxy_client_module
+    monkeypatch.setattr(
+        proxy_client,
+        "get_proxy_registry",
+        lambda: _Registry("http://proxy-mgmt:5000/root"),
+    )
+
+    def fail_urlopen(*_args, **_kwargs) -> NoReturn:
+        msg = "urlopen should not be called for unsafe paths"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fail_urlopen)
+
+    with pytest.raises(
+        proxy_client.ProxyClientError, match="Unsafe proxy management path"
+    ):
+        proxy_client.ProxyClient()._request("live", method="GET", path=path)
