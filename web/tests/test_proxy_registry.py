@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pytest
+
 from .mysql_test_utils import configure_test_mysql_env
 
 if TYPE_CHECKING:
@@ -91,6 +93,29 @@ def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> 
         "/proxy.pac",
     )
     assert proxy_registry._parse_public_pac_url("proxy.internal/proxy.pac") == (
+        "",
+        "http",
+        80,
+        "/proxy.pac",
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://proxy.example:/proxy.pac",
+        "proxy.example:/proxy.pac",
+        "https://[2001:4860:4860::8888]:/proxy.pac",
+        "[2001:4860:4860::8888]:/proxy.pac",
+        "https://user:secret@proxy.example:/proxy.pac",
+    ],
+)
+def test_parse_public_pac_url_rejects_empty_explicit_authority_ports(
+    value: str,
+) -> None:
+    proxy_registry = _proxy_registry()
+
+    assert proxy_registry._parse_public_pac_url(value) == (
         "",
         "http",
         80,

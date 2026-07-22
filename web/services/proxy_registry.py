@@ -183,6 +183,8 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
         parsed = urlsplit(candidate)
     except Exception:
         return "", "http", 80, "/proxy.pac"
+    if _has_empty_explicit_authority_port(parsed.netloc):
+        return "", "http", 80, "/proxy.pac"
     if (
         parsed.netloc
         and not parsed.netloc.startswith("[")
