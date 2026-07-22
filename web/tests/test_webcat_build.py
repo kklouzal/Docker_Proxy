@@ -181,6 +181,31 @@ def test_zip_extraction_preserves_positive_extract_byte_limit(
             webcat_build._extract_zip(zip_path, Path(td) / "out")
 
 
+def test_zip_extraction_removes_partial_output_when_member_fails_crc() -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_zip_crc_") as td:
+        zip_path = Path(td) / "payload.zip"
+        out_dir = Path(td) / "out"
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("blacklists/adult/domains", "example.com\n")
+
+        data = bytearray(zip_path.read_bytes())
+        central_dir = data.index(b"PK\x01\x02")
+        original_crc = bytes(data[central_dir + 16 : central_dir + 20])
+        data[central_dir + 16 : central_dir + 20] = (
+            b"\x00\x00\x00\x00"
+            if original_crc != b"\x00\x00\x00\x00"
+            else b"\x01\x00\x00\x00"
+        )
+        zip_path.write_bytes(data)
+
+        with pytest.raises(zipfile.BadZipFile):
+            webcat_build._extract_zip(zip_path, out_dir)
+
+        assert not out_dir.exists()
+
+
 def test_download_rejects_oversized_content_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -289,6 +314,32 @@ def test_tar_extraction_blocks_traversal_and_enforces_size_limit(
         with pytest.raises(ValueError, match="Extracted data exceeded limit"):
             webcat_build._extract_tar(tar_path, Path(td) / "out")
         assert not pwned_path.exists()
+
+
+def test_tar_extraction_removes_partial_output_when_limit_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_tar_partial_") as td:
+        tar_path = Path(td) / "payload.tar"
+        out_dir = Path(td) / "out"
+        first_data = b"example.com\n"
+        with tarfile.open(tar_path, "w") as archive:
+            first = tarfile.TarInfo("blacklists/adult/domains")
+            first.size = len(first_data)
+            archive.addfile(first, io.BytesIO(first_data))
+
+            second_data = b"drug.example\n"
+            second = tarfile.TarInfo("blacklists/drogue/domains")
+            second.size = len(second_data)
+            archive.addfile(second, io.BytesIO(second_data))
+
+        monkeypatch.setenv("WEBCAT_MAX_EXTRACT_BYTES", str(len(first_data)))
+        with pytest.raises(ValueError, match="Extracted data exceeded limit"):
+            webcat_build._extract_tar(tar_path, out_dir)
+
+        assert not out_dir.exists()
 
 
 @pytest.mark.parametrize("bad_value", ["not-an-int", "", "0", "-1"])

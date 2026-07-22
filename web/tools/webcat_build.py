@@ -10,6 +10,7 @@ import re
 import shutil
 import sys
 import tarfile
+import tempfile
 import urllib.error
 import zipfile
 from pathlib import Path
@@ -396,6 +397,19 @@ def _extract_max_bytes() -> int:
 
 
 def _extract_zip(zip_path: Path, out_dir: Path) -> None:
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{out_dir.name}.tmp-",
+        dir=str(out_dir.parent),
+    ) as staging_dir:
+        staging = Path(staging_dir)
+        _extract_zip_into(zip_path, staging)
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        staging.replace(out_dir)
+
+
+def _extract_zip_into(zip_path: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_root = out_dir.resolve()
     max_bytes = _extract_max_bytes()
@@ -434,6 +448,19 @@ def _extract_zip(zip_path: Path, out_dir: Path) -> None:
 
 
 def _extract_tar(tar_path: Path, out_dir: Path) -> None:
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{out_dir.name}.tmp-",
+        dir=str(out_dir.parent),
+    ) as staging_dir:
+        staging = Path(staging_dir)
+        _extract_tar_into(tar_path, staging)
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        staging.replace(out_dir)
+
+
+def _extract_tar_into(tar_path: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_root = out_dir.resolve()
     # Supports .tar, .tar.gz, .tgz
