@@ -667,9 +667,12 @@ def _validate_http_header_field_names(http_header: bytes) -> None:
         if b":" not in line:
             message = "malformed HTTP response header line"
             raise IcapProtocolError(message)
-        name = line.split(b":", 1)[0]
+        name, value = line.split(b":", 1)
         if not name or not _HTTP_TOKEN_RE.fullmatch(name):
             message = "malformed HTTP response header field name"
+            raise IcapProtocolError(message)
+        if any((char < 32 and char != 9) or char == 127 for char in value):
+            message = "malformed HTTP response header field value"
             raise IcapProtocolError(message)
 
 
