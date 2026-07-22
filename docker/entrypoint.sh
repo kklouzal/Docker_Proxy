@@ -902,7 +902,7 @@ fi
 if [ -f /etc/squid/squid.conf ] && ! grep -q "^\s*logfile_rotate\b" /etc/squid/squid.conf 2>/dev/null; then
     {
         echo ""
-        echo "# Default log retention for squid -k rotate (daily via supervisor)."
+        echo "# Default log retention for supervisor-managed Squid log rotation."
         echo "logfile_rotate 10"
     } >> /etc/squid/squid.conf
 fi
