@@ -147,6 +147,40 @@ def test_zip_extraction_skips_windows_drive_and_unc_members() -> None:
         assert not (out_dir / "server").exists()
 
 
+@pytest.mark.parametrize("bad_value", ["not-an-int", "", "0", "-1"])
+def test_zip_extraction_uses_default_for_invalid_extract_byte_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    bad_value: str,
+) -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_zip_limit_") as td:
+        zip_path = Path(td) / "payload.zip"
+        out_dir = Path(td) / "out"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("blacklists/adult/domains", "example.com\n")
+
+        monkeypatch.setenv("WEBCAT_MAX_EXTRACT_BYTES", bad_value)
+        webcat_build._extract_zip(zip_path, out_dir)
+
+        assert (out_dir / "blacklists/adult/domains").read_text() == "example.com\n"
+
+
+def test_zip_extraction_preserves_positive_extract_byte_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_zip_limit_") as td:
+        zip_path = Path(td) / "payload.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("blacklists/adult/domains", "example.com\n")
+
+        monkeypatch.setenv("WEBCAT_MAX_EXTRACT_BYTES", "5")
+        with pytest.raises(ValueError, match="Extracted data exceeded limit"):
+            webcat_build._extract_zip(zip_path, Path(td) / "out")
+
+
 def test_download_rejects_oversized_content_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -255,6 +289,28 @@ def test_tar_extraction_blocks_traversal_and_enforces_size_limit(
         with pytest.raises(ValueError, match="Extracted data exceeded limit"):
             webcat_build._extract_tar(tar_path, Path(td) / "out")
         assert not pwned_path.exists()
+
+
+@pytest.mark.parametrize("bad_value", ["not-an-int", "", "0", "-1"])
+def test_tar_extraction_uses_default_for_invalid_extract_byte_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    bad_value: str,
+) -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_tar_limit_") as td:
+        tar_path = Path(td) / "payload.tar"
+        out_dir = Path(td) / "out"
+        with tarfile.open(tar_path, "w") as archive:
+            safe = tarfile.TarInfo("blacklists/adult/domains")
+            safe_data = b"example.com\n"
+            safe.size = len(safe_data)
+            archive.addfile(safe, io.BytesIO(safe_data))
+
+        monkeypatch.setenv("WEBCAT_MAX_EXTRACT_BYTES", bad_value)
+        webcat_build._extract_tar(tar_path, out_dir)
+
+        assert (out_dir / "blacklists/adult/domains").read_text() == "example.com\n"
 
 
 def test_tar_extraction_skips_windows_drive_and_unc_members() -> None:

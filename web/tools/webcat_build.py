@@ -373,14 +373,32 @@ def _safe_archive_member_name(name: str) -> str | None:
     return "/".join(parts)
 
 
+_DEFAULT_MAX_EXTRACT_BYTES = 2 * 1024 * 1024 * 1024
+
+
+def _extract_max_bytes() -> int:
+    try:
+        max_bytes = int(
+            (
+                os.environ.get(
+                    "WEBCAT_MAX_EXTRACT_BYTES",
+                    str(_DEFAULT_MAX_EXTRACT_BYTES),
+                )
+                or str(_DEFAULT_MAX_EXTRACT_BYTES)
+            ).strip()
+            or str(_DEFAULT_MAX_EXTRACT_BYTES),
+        )
+    except Exception:
+        return _DEFAULT_MAX_EXTRACT_BYTES
+    if max_bytes <= 0:
+        return _DEFAULT_MAX_EXTRACT_BYTES
+    return max_bytes
+
+
 def _extract_zip(zip_path: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_root = out_dir.resolve()
-    max_bytes = int(
-        os.environ.get("WEBCAT_MAX_EXTRACT_BYTES", str(2 * 1024 * 1024 * 1024)),
-    )
-    if max_bytes <= 0:
-        max_bytes = 2 * 1024 * 1024 * 1024
+    max_bytes = _extract_max_bytes()
 
     total = 0
     with zipfile.ZipFile(zip_path, "r") as z:
@@ -419,11 +437,7 @@ def _extract_tar(tar_path: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_root = out_dir.resolve()
     # Supports .tar, .tar.gz, .tgz
-    max_bytes = int(
-        os.environ.get("WEBCAT_MAX_EXTRACT_BYTES", str(2 * 1024 * 1024 * 1024)),
-    )
-    if max_bytes <= 0:
-        max_bytes = 2 * 1024 * 1024 * 1024
+    max_bytes = _extract_max_bytes()
     total = 0
     with tarfile.open(tar_path, "r:*") as t:
         for m in t.getmembers():
