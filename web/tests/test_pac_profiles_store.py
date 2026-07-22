@@ -130,6 +130,39 @@ def _patched_store(monkeypatch, conn: _FakeConn | None = None):
     return mod, conn, store
 
 
+def test_init_db_lazy_bootstrap_uses_valid_pac_dst_net_ddl(monkeypatch) -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+    from services import schema_lifecycle
+
+    conn = _FakeConn()
+    store = mod.PacProfilesStore()
+
+    monkeypatch.setattr(mod, "connect", lambda: _FakeStore(conn))
+    monkeypatch.setattr(
+        schema_lifecycle,
+        "runtime_schema_ready_for_lazy_store",
+        lambda _conn: False,
+    )
+
+    store.init_db()
+
+    pac_dst_net_ddls = [
+        " ".join(sql.split())
+        for sql, _params in conn.calls
+        if sql.lstrip().startswith(
+            "CREATE TABLE IF NOT EXISTS pac_direct_dst_nets",
+        )
+    ]
+    assert pac_dst_net_ddls == [(
+        "CREATE TABLE IF NOT EXISTS pac_direct_dst_nets ( "
+        "profile_id BIGINT NOT NULL, cidr VARCHAR(64) NOT NULL, "
+        "PRIMARY KEY(profile_id, cidr) )"
+    )]
+    assert pac_dst_net_ddls[0].count("PRIMARY KEY") == 1
+    assert store._schema_ready is True
+
+
 def test_list_profiles_batches_child_queries(monkeypatch) -> None:
     _, conn, store = _patched_store(monkeypatch)
 
