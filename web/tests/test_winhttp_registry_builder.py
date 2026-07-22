@@ -158,6 +158,13 @@ def test_decode_round_trip_rejects_non_ascii_strings() -> None:
     assert decoded.bypass_string == "<local>"
 
 
+def test_decode_round_trip_rejects_trailing_binary_payload() -> None:
+    normalized = generate_basic_winhttp_binary("http=proxy.example:3128", "<local>")
+
+    with pytest.raises(WinHttpBuilderError, match="trailing|unexpected"):
+        decode_basic_winhttp_settings_hex(normalized + "ff00aa")
+
+
 def test_advproxy_json_contains_all_documented_keys_and_command_scope() -> None:
     settings = build_advproxy_settings_json(
         proxy_string="http=proxy.example:3128;https=proxy.example:3128",

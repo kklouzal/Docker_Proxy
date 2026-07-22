@@ -311,6 +311,10 @@ def decode_basic_winhttp_settings_hex(hex_value: str) -> DecodedBasicWinHttpSett
         msg = "Bypass string length exceeds available binary data."
         raise WinHttpBuilderError(msg)
     bypass_string = _ascii_from_bytes(bytes_[offset : offset + bypass_length])
+    offset += bypass_length
+    if offset != len(bytes_):
+        msg = "Unexpected trailing data after bypass string."
+        raise WinHttpBuilderError(msg)
     return DecodedBasicWinHttpSettings(
         header_marker=header,
         reserved=reserved,
