@@ -79,6 +79,21 @@ def test_bare_proxy_host_strips_inline_port_before_mapping_generation() -> None:
     assert any("inline port" in warning for warning in result.warnings)
 
 
+def test_bracketed_ipv6_proxy_host_strips_inline_port_before_mapping_generation() -> None:
+    result = build_contract_output(
+        {
+            "proxy_host": "[2001:db8::10]:8080",
+            "proxy_port": 3128,
+            "destination_schemes": ["http", "https"],
+        },
+    )
+
+    expected = "http=[2001:db8::10]:3128;https=[2001:db8::10]:3128"
+    assert result.proxy_string == expected
+    assert ":8080:3128" not in result.legacy_set_proxy_command
+    assert any("inline port" in warning for warning in result.warnings)
+
+
 @pytest.mark.parametrize(
     "proxy_host",
     ["2001:db8::10", "[2001:db8::10]", "http://[2001:db8::10]:8080/proxy.pac"],
@@ -98,6 +113,28 @@ def test_generated_proxy_outputs_bracket_ipv6_literals(proxy_host: str) -> None:
     assert result.decoded.proxy_string == expected
     assert json.loads(result.advproxy_json)["Proxy"] == expected
     assert f'proxy-server="{expected}"' in result.legacy_set_proxy_command
+
+
+@pytest.mark.parametrize(
+    "proxy_host",
+    [
+        "[2001:db8::10]:abc",
+        "[2001:db8::10]:65536",
+        "[2001:db8::10]junk",
+        "[proxy.example]:8080",
+    ],
+)
+def test_bracketed_proxy_host_rejects_malformed_inline_port_suffixes(
+    proxy_host: str,
+) -> None:
+    with pytest.raises(WinHttpBuilderError, match="Proxy host/IP"):
+        build_contract_output(
+            {
+                "proxy_host": proxy_host,
+                "proxy_port": 3128,
+                "destination_schemes": ["http"],
+            },
+        )
 
 
 def test_bypass_list_normalizes_lines_semicolons_dedupes_and_local() -> None:

@@ -163,6 +163,13 @@ def normalize_bypass_list(
 def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
     value = (host or "").strip()
     warning = None
+    inline_port_warning = (
+        "Proxy host/IP should not include an inline port; the separate proxy port field "
+        "is used for generated destination scheme mappings."
+    )
+    inline_port_error = (
+        "Proxy host/IP inline port is invalid; use the separate proxy port field."
+    )
     if not value:
         msg = "Proxy host/IP is required."
         raise WinHttpBuilderError(msg)
@@ -170,20 +177,46 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
         warning = "Normal proxy host should not include http:// or https://; destination scheme mappings are generated separately."
         try:
             parsed = urlsplit(value)
+            inline_port = parsed.port
+            if inline_port is not None and inline_port < 1:
+                raise ValueError
             value = parsed.hostname or ""
         except ValueError as exc:
             msg = "Proxy host/IP is invalid."
             raise WinHttpBuilderError(msg) from exc
+    elif value.startswith("["):
+        end = value.find("]")
+        if end <= 1:
+            raise WinHttpBuilderError(inline_port_error)
+        host_part = value[1:end]
+        try:
+            parsed_host = ipaddress.ip_address(host_part)
+        except ValueError as exc:
+            msg = "Proxy host/IP is invalid."
+            raise WinHttpBuilderError(msg) from exc
+        if parsed_host.version != 6:
+            msg = "Proxy host/IP is invalid."
+            raise WinHttpBuilderError(msg)
+        suffix = value[end + 1 :]
+        if suffix:
+            if not suffix.startswith(":") or not suffix[1:].isdecimal():
+                raise WinHttpBuilderError(inline_port_error)
+            inline_port = int(suffix[1:])
+            if inline_port < 1 or inline_port > 65535:
+                raise WinHttpBuilderError(inline_port_error)
+            warning = inline_port_warning
+        value = host_part
+    elif "[" in value or "]" in value:
+        msg = "Proxy host/IP is invalid."
+        raise WinHttpBuilderError(msg)
     elif value.count(":") == 1:
         host_part, port_part = value.rsplit(":", 1)
         if not host_part or not port_part.isdecimal():
-            msg = "Proxy host/IP inline port is invalid; use the separate proxy port field."
-            raise WinHttpBuilderError(msg)
+            raise WinHttpBuilderError(inline_port_error)
         inline_port = int(port_part)
         if inline_port < 1 or inline_port > 65535:
-            msg = "Proxy host/IP inline port is invalid; use the separate proxy port field."
-            raise WinHttpBuilderError(msg)
-        warning = "Proxy host/IP should not include an inline port; the separate proxy port field is used for generated destination scheme mappings."
+            raise WinHttpBuilderError(inline_port_error)
+        warning = inline_port_warning
         value = host_part
     if "/" in value or any(ch.isspace() for ch in value):
         msg = "Proxy host/IP must not contain spaces or path separators."
