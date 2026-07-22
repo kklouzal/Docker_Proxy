@@ -231,30 +231,40 @@ def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
 
     tmp = dest.with_suffix(dest.suffix + ".tmp")
 
-    total = 0
-    with _open_download_url(url, timeout=timeout) as r:
-        cl = r.headers.get("Content-Length")
-        if cl is not None:
-            try:
-                content_length = int(cl)
-            except (TypeError, ValueError):
-                content_length = None
-            if content_length is not None and content_length > max_bytes:
-                msg = f"Download too large (Content-Length={cl})."
-                raise ValueError(msg)
-
-        with Path(tmp).open("wb") as f:
-            while True:
-                chunk = r.read(512 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    msg = f"Download exceeded limit ({max_bytes} bytes)."
+    completed = False
+    try:
+        total = 0
+        with _open_download_url(url, timeout=timeout) as r:
+            cl = r.headers.get("Content-Length")
+            if cl is not None:
+                try:
+                    content_length = int(cl)
+                except (TypeError, ValueError):
+                    content_length = None
+                if content_length is not None and content_length > max_bytes:
+                    msg = f"Download too large (Content-Length={cl})."
                     raise ValueError(msg)
-                f.write(chunk)
 
-    tmp.replace(dest)
+            with Path(tmp).open("wb") as f:
+                while True:
+                    chunk = r.read(512 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        msg = f"Download exceeded limit ({max_bytes} bytes)."
+                        raise ValueError(msg)
+                    f.write(chunk)
+
+        tmp.replace(dest)
+        completed = True
+    finally:
+        if not completed:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
 
 
 def _download_if_changed(

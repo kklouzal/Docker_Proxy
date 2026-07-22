@@ -189,6 +189,49 @@ def test_download_rejects_oversized_content_length(
             )
 
 
+def test_download_removes_partial_tmp_when_stream_exceeds_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    webcat_build = _import_webcat_build()
+    _allow_public_example_dns(webcat_build, monkeypatch)
+
+    class _Headers:
+        def get(self, _name: str) -> str | None:
+            return None
+
+    class _Response:
+        headers = _Headers()
+
+        def __init__(self) -> None:
+            self._chunks = iter([b"12345", b"678901"])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, _size: int) -> bytes:
+            return next(self._chunks, b"")
+
+    monkeypatch.setenv("WEBCAT_MAX_DOWNLOAD_BYTES", "10")
+    monkeypatch.setattr(
+        webcat_build,
+        "_open_download_url",
+        lambda *_args, **_kwargs: _Response(),
+    )
+
+    with tempfile.TemporaryDirectory(prefix="webcat_download_tmp_") as td:
+        dest = Path(td) / "feed.csv"
+        tmp = dest.with_suffix(dest.suffix + ".tmp")
+
+        with pytest.raises(ValueError, match="Download exceeded limit"):
+            webcat_build._download("https://public.example/feed.csv", dest)
+
+        assert not dest.exists()
+        assert not tmp.exists()
+
+
 def test_tar_extraction_blocks_traversal_and_enforces_size_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
