@@ -42,6 +42,10 @@ def _valid_public_dns_host(value: str) -> bool:
     )
 
 
+def _has_empty_explicit_authority_port(netloc: str) -> bool:
+    return netloc.endswith(":")
+
+
 def _is_reserved_public_dns_host(value: str) -> bool:
     candidate = value.rstrip(".").lower()
     if not candidate:
@@ -83,6 +87,8 @@ def normalize_public_host(value: object | None, default: str = "") -> str:
             return fallback
         if parsed.username is not None or parsed.password is not None:
             return fallback
+        if _has_empty_explicit_authority_port(parsed.netloc):
+            return fallback
         host = parsed.hostname or ""
     elif candidate.startswith("[") or candidate.count(":") == 1:
         try:
@@ -91,6 +97,8 @@ def normalize_public_host(value: object | None, default: str = "") -> str:
         except Exception:
             return fallback
         if parsed.username is not None or parsed.password is not None:
+            return fallback
+        if _has_empty_explicit_authority_port(parsed.netloc):
             return fallback
         host = parsed.hostname or ""
     elif candidate.count(":") > 1:

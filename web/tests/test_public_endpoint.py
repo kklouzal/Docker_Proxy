@@ -90,3 +90,21 @@ def test_normalize_public_host_accepts_public_endpoint_hosts(
     from services.public_endpoint import normalize_public_host  # type: ignore
 
     assert normalize_public_host(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "proxy.example:",
+        "https://proxy.example:",
+        "http://proxy.example:/proxy.pac",
+        "[2001:4860:4860::8888]:",
+        "https://[2001:4860:4860::8888]:/proxy.pac",
+    ],
+)
+def test_normalize_public_host_rejects_empty_explicit_authority_ports(value: str) -> None:
+    _add_web_to_path()
+    from services.public_endpoint import normalize_public_host  # type: ignore
+
+    assert normalize_public_host(value) == ""
+    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
