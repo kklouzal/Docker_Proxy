@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 import threading
 import time
@@ -14,6 +15,13 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 _TIMEOUT_LOCK = threading.Lock()
+_DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
+_RESERVED_RDNS_HOSTNAMES = {
+    "localhost",
+    "localhost.localdomain",
+    "ip6-localhost",
+    "ip6-loopback",
+}
 
 
 @dataclass
@@ -52,6 +60,39 @@ class ClientIdentityCache:
         except Exception:
             return ""
 
+    def _is_ip_literal_hostname(self, hostname: str) -> bool:
+        candidate = hostname.strip("[]")
+        try:
+            ipaddress.ip_address(candidate)
+            return True
+        except ValueError:
+            pass
+
+        labels = candidate.split(".")
+        if not 1 <= len(labels) <= 4:
+            return False
+        return all(label.isdecimal() for label in labels if label)
+
+    def _normalize_rdns_hostname(self, hostname: object) -> str:
+        cleaned = str(hostname or "").strip().rstrip(".").lower()
+        if not cleaned:
+            return ""
+        if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in cleaned):
+            return ""
+        if cleaned in _RESERVED_RDNS_HOSTNAMES or cleaned.endswith(".localhost"):
+            return ""
+        if self._is_ip_literal_hostname(cleaned):
+            return ""
+        if len(cleaned) > 253:
+            return ""
+
+        labels = cleaned.split(".")
+        if not labels or any(not label for label in labels):
+            return ""
+        if any(_DNS_LABEL_RE.fullmatch(label) is None for label in labels):
+            return ""
+        return cleaned
+
     def _lookup_hostname(self, ip: str) -> tuple[str, str, str]:
         with _TIMEOUT_LOCK:
             previous_timeout = socket.getdefaulttimeout()
@@ -63,7 +104,7 @@ class ClientIdentityCache:
             finally:
                 socket.setdefaulttimeout(previous_timeout)
 
-        cleaned = str(hostname or "").strip().rstrip(".")
+        cleaned = self._normalize_rdns_hostname(hostname)
         if not cleaned:
             return "", "", "unresolved"
         return cleaned, "rdns", "resolved"
