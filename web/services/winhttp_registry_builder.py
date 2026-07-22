@@ -451,8 +451,7 @@ def build_advproxy_command(
     settings_json: str,
 ) -> str:
     chosen_scope = scope if scope in ADVPROXY_SCOPES else "machine"
-    escaped = settings_json.replace('"', r"\"")
-    return f"netsh winhttp set advproxy setting-scope={chosen_scope} settings={escaped}"
+    return f"netsh winhttp set advproxy setting-scope={chosen_scope} settings={_quote_cmd(settings_json)}"
 
 
 def build_legacy_set_proxy_command(proxy_string: str, bypass_string: str) -> str:

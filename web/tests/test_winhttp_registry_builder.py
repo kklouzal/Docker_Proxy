@@ -218,6 +218,22 @@ def test_advproxy_json_contains_all_documented_keys_and_command_scope() -> None:
     assert '\\"Proxy\\"' in command
 
 
+def test_advproxy_command_wraps_escaped_json_as_single_settings_argument() -> None:
+    settings = build_advproxy_settings_json(
+        proxy_string="http=proxy.example:3128;https=proxy.example:3128",
+        bypass_string="<local>",
+    )
+
+    command = build_advproxy_command(scope="machine", settings_json=settings)
+
+    assert command == (
+        'netsh winhttp set advproxy setting-scope=machine '
+        'settings="{\\"Proxy\\":\\"http=proxy.example:3128;https=proxy.example:3128\\",'
+        '\\"ProxyBypass\\":\\"<local>\\",\\"AutoconfigUrl\\":\\"\\",'
+        '\\"AutoDetect\\":false}"'
+    )
+
+
 def test_pac_or_autodetect_disables_basic_registry_binary() -> None:
     result = build_contract_output(
         {
