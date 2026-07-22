@@ -109,6 +109,91 @@ class CountingObservabilityQueries:
         return {"summary": {"combined_blocks": 0, "potential_findings": 0}}
 
 
+class ReportsPrivacyLeakQueries(CountingObservabilityQueries):
+    def reporting_overview(self, **kwargs):
+        self.reporting_calls += 1
+        assert kwargs["privacy"] is True
+        return {
+            "summary": {},
+            "cache_savings": {"estimated_saved_bytes": 0, "byte_hit_pct": 0.0},
+            "top_users": [
+                {
+                    "client_ip": "192.0.2.80",
+                    "client_label": "user-safe",
+                    "hostname": "alice-laptop",
+                    "requests": 2,
+                    "destinations": 1,
+                    "bytes": 4096,
+                    "cache_hit_bytes": 1024,
+                    "last_seen": 4100,
+                }
+            ],
+            "top_blocked_categories": [],
+            "top_malware_attempts": [
+                {
+                    "domain": "malware.example",
+                    "client_ip": "192.0.2.80",
+                    "client_label": "user-safe",
+                    "attempts": 1,
+                    "last_seen": 4120,
+                    "sample": "blocked malware",
+                }
+            ],
+            "top_ssl_bump_failures": [],
+            "top_spliced_destinations": [],
+            "per_group": [
+                {
+                    "group": "192.0.2.0/24",
+                    "requests": 2,
+                    "clients": 1,
+                    "destinations": 1,
+                    "bytes": 4096,
+                    "cache_hit_bytes": 1024,
+                    "last_seen": 4100,
+                    "group_source": "client_subnet",
+                }
+            ],
+            "security": {
+                "summary": {},
+                "av_rows": [{"ts": 4120, "client_ip": "192.0.2.80"}],
+                "adblock_rows": [{"ts": 4130, "src_ip": "192.0.2.80"}],
+                "webfilter_rows": [
+                    {
+                        "ts": 4140,
+                        "src_ip": "192.0.2.80",
+                        "correlated_candidates": [
+                            {"client_ip": "192.0.2.80", "url": "https://blocked.example/"}
+                        ],
+                    }
+                ],
+            },
+            "audit": {
+                "summary": {"events": 1, "failed_events": 0, "last_seen": 4150},
+                "top_kinds": [],
+                "recent": [
+                    {
+                        "ts": 4150,
+                        "kind": "config_apply_manual",
+                        "ok": True,
+                        "remote_addr": "198.51.100.44",
+                        "detail": "admin alice@example.com applied client 192.0.2.80",
+                    }
+                ],
+            },
+            "time_series": {"tables": [], "latest_ts": 0, "rollup_points": 0},
+            "schedules": [
+                {
+                    "name": "Daily report",
+                    "recipients": "ops@example.com",
+                    "report_format": "csv",
+                    "privacy": True,
+                }
+            ],
+            "export_contracts": [],
+            "privacy": {"enabled": True, "mode": "pseudonymized"},
+        }
+
+
 def _add_repo_paths() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     web_root = repo_root / "web"
@@ -215,6 +300,33 @@ def test_observability_reports_pane_json_export_and_metrics_routes_render(
     assert b'"mode":"pseudonymized"' in export.data
     assert metrics.status_code == 200
     assert b"docker_proxy_observability_requests" in metrics.data
+
+
+def test_observability_reports_privacy_export_scrubs_user_identifiers_across_formats(
+    monkeypatch, tmp_path
+) -> None:
+    queries = ReportsPrivacyLeakQueries()
+    loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    leaked_tokens = (
+        b"192.0.2.80",
+        b"198.51.100.44",
+        b"alice-laptop",
+        b"alice@example.com",
+        b"ops@example.com",
+    )
+    for export_format in ("json", "jsonl", "csv"):
+        response = client.get(
+            f"/observability/export?pane=reports&window=3600&privacy=1&format={export_format}"
+        )
+
+        assert response.status_code == 200
+        assert b"user-safe" in response.data
+        assert b"user-" in response.data
+        for token in leaked_tokens:
+            assert token not in response.data
 
 
 def test_observability_report_schedule_post_records_configuration(

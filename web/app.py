@@ -1983,6 +1983,52 @@ def _observability_export_response(
     return _csv_response(headers, materialized)
 
 
+def _observability_privacy_label(
+    value: object,
+    *,
+    namespace: str = "user",
+) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith(f"{namespace}-"):
+        return text
+    return pseudonymize(text, namespace=namespace)
+
+
+def _observability_reports_privacy_payload(payload: Any) -> Any:
+    """Remove or pseudonymize user/client identifiers from reports exports."""
+    if isinstance(payload, list):
+        return [_observability_reports_privacy_payload(item) for item in payload]
+    if not isinstance(payload, dict):
+        return payload
+
+    sanitized: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in {"client_ip", "src_ip", "remote_addr", "client_label"}:
+            sanitized[key] = _observability_privacy_label(value)
+        elif key == "group":
+            sanitized[key] = _observability_privacy_label(value, namespace="group")
+        elif key in {
+            "detail",
+            "hostname",
+            "hostname_source",
+            "recipients",
+            "user_agent",
+        }:
+            sanitized[key] = ""
+        else:
+            sanitized[key] = _observability_reports_privacy_payload(value)
+
+    if "privacy" in sanitized and isinstance(sanitized["privacy"], dict):
+        sanitized["privacy"] = {
+            **sanitized["privacy"],
+            "enabled": True,
+            "mode": "pseudonymized",
+        }
+    return sanitized
+
+
 def _observability_pane_from_request() -> str:
     return _normalize_choice(
         request.args.get("pane") or "overview",
@@ -5954,6 +6000,8 @@ def observability_export():
                 privacy=privacy,
                 summary=summary_data or {},
             )
+            if privacy:
+                payload = _observability_reports_privacy_payload(payload)
             if export_format == "json":
                 return _json_response(payload)
             if export_format == "jsonl":
