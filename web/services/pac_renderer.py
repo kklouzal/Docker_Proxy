@@ -368,8 +368,9 @@ def _render_pac(
             ),
             f"  var proxyHost = {json.dumps(str(proxy_host or PAC_HOST_PLACEHOLDER))};",
             "  var normalizedProxyHost = proxyHost.replace(/^\\[/, '').replace(/\\]$/, '').toLowerCase().replace(/\\.+$/, '');",
+            "  var isIpv6Literal = host.indexOf(':') >= 0;",
             "  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'DIRECT';",
-            "  if (isPlainHostName(host)) return 'DIRECT';",
+            "  if (!isIpv6Literal && isPlainHostName(host)) return 'DIRECT';",
             "  if (host === normalizedProxyHost) return 'DIRECT';",
         ),
     )

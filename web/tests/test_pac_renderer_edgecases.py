@@ -721,6 +721,26 @@ def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback
     )
 
 
+def test_rendered_pac_does_not_treat_ipv6_literals_as_plain_hosts() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_fallback_pac(
+        pac_renderer.ProxyPacTarget(
+            proxy_id="default",
+            public_host="proxy.example",
+            pac_scheme="http",
+            pac_port=80,
+            http_proxy_port=3128,
+        ),
+        include_private=False,
+    )
+
+    assert "var isIpv6Literal = host.indexOf(':') >= 0;" in rendered
+    assert "if (!isIpv6Literal && isPlainHostName(host)) return 'DIRECT';" in rendered
+    assert "if (isPlainHostName(host)) return 'DIRECT';" not in rendered
+
+
 def test_select_manifest_file_prefers_most_specific_overlapping_cidr() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
