@@ -359,6 +359,21 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
     )
 
 
+def test_backup_proxy_host_port_normalization_rejects_unsupported_url_schemes() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    for host in (
+        "ftp://backup.example:21/proxy.pac",
+        "gopher://backup.example:3128/",
+    ):
+        assert mod._normalize_proxy_host_port(host, "") == (
+            None,
+            None,
+            "Invalid proxy host.",
+        )
+
+
 def test_backup_proxy_host_port_normalization_rejects_unsafe_hosts() -> None:
     _add_web_path()
     import services.pac_profiles_store as mod

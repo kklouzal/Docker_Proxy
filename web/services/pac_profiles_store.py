@@ -122,6 +122,8 @@ def _normalize_proxy_host_port(
     if "://" in host:
         try:
             parsed = urlsplit(host)
+            if parsed.scheme.lower() not in {"http", "https"}:
+                return None, None, "Invalid proxy host."
             if parsed.username is not None or parsed.password is not None:
                 return None, None, "Proxy host must not include embedded credentials."
             host = parsed.hostname or ""
