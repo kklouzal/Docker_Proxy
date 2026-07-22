@@ -59,6 +59,8 @@ def _compressed_body_candidate(response: Any, *, min_size: int) -> bytes | None:
         return None
     if response.status_code < 200 or response.status_code >= 300:
         return None
+    if response.status_code == 206 or response.headers.get("Content-Range"):
+        return None
     if response.direct_passthrough:
         return None
     if response.headers.get("Content-Encoding"):

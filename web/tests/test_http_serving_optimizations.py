@@ -5,6 +5,8 @@ import importlib
 import sys
 from pathlib import Path
 
+from flask import Flask, Response
+
 from .admin_route_test_utils import csrf_token, load_admin_app, login_client
 
 
@@ -259,6 +261,33 @@ def test_admin_html_responses_respect_gzip_quality_zero(
     assert response.status_code == 200
     assert response.headers.get("Content-Encoding") is None
     assert b"Squid" in response.get_data()
+
+
+def test_partial_content_responses_are_not_gzip_transformed() -> None:
+    app = Flask(__name__)
+
+    from web.services.http_optimizations import install_http_optimizations
+
+    install_http_optimizations(app, compress_min_size=1)
+
+    @app.get("/partial.txt")
+    def partial_text():
+        return Response(
+            b"a" * 1000,
+            status=206,
+            mimetype="text/plain",
+            headers={"Content-Range": "bytes 0-999/2000"},
+        )
+
+    client = app.test_client()
+
+    response = client.get("/partial.txt", headers={"Accept-Encoding": "gzip"})
+
+    assert response.status_code == 206
+    assert response.headers.get("Content-Range") == "bytes 0-999/2000"
+    assert response.headers.get("Content-Encoding") is None
+    assert response.headers.get("Content-Length") == "1000"
+    assert response.get_data() == b"a" * 1000
 
 
 def test_observability_route_reuses_short_ttl_cache(monkeypatch, tmp_path) -> None:
