@@ -126,7 +126,6 @@ def _normalize_proxy_host_port(
                 return None, None, "Invalid proxy host."
             if parsed.username is not None or parsed.password is not None:
                 return None, None, "Proxy host must not include embedded credentials."
-            host = parsed.hostname or ""
         except Exception:
             return None, None, "Invalid proxy host."
         try:
@@ -138,6 +137,9 @@ def _normalize_proxy_host_port(
                 return None, None, "Proxy port must be between 1 and 65535."
             if not parsed_port:
                 parsed_port = str(inline_port)
+        if parsed.path or parsed.query or parsed.fragment:
+            return None, None, "Invalid proxy host."
+        host = parsed.hostname or ""
     elif host.startswith("[") and "]" in host:
         end = host.find("]")
         suffix = host[end + 1 :].strip()

@@ -324,13 +324,13 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
         "",
     )
     assert mod._normalize_proxy_host_port(
-        "http://Backup.Proxy.Example.:8080/proxy.pac", ""
+        "http://Backup.Proxy.Example.:8080", ""
     ) == ("backup.proxy.example", 8080, "")
     assert mod._normalize_proxy_host_port(
-        "http://Backup.Example:8080/proxy.pac", ""
+        "http://Backup.Example:8080", ""
     ) == ("backup.example", 8080, "")
     assert mod._normalize_proxy_host_port(
-        "https://Backup.Example/proxy.pac", "9090"
+        "https://Backup.Example", "9090"
     ) == ("backup.example", 9090, "")
     assert mod._normalize_proxy_host_port("[2001:db8::10]:3129", None) == (
         "2001:db8::10",
@@ -368,6 +368,23 @@ def test_backup_proxy_host_port_normalization_rejects_unsupported_url_schemes() 
         "gopher://backup.example:3128/",
     ):
         assert mod._normalize_proxy_host_port(host, "") == (
+            None,
+            None,
+            "Invalid proxy host.",
+        )
+
+
+def test_backup_proxy_host_port_normalization_rejects_url_paths_queries_fragments() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    for host in (
+        "https://backup.example/proxy.pac",
+        "https://backup.example:8443/proxy.pac",
+        "https://backup.example?x=1",
+        "https://backup.example#frag",
+    ):
+        assert mod._normalize_proxy_host_port(host, "9090") == (
             None,
             None,
             "Invalid proxy host.",
