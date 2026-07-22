@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import os
 import time
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 def now_ts() -> int:
@@ -21,9 +21,18 @@ def decode_bytes(value: object | None) -> str:
     return str(value or "").strip()
 
 
+def _decoded_hostish_has_delimiters(value: str) -> bool:
+    if "%" not in value:
+        return False
+    decoded = unquote(value, errors="replace")
+    return any(delimiter in decoded for delimiter in ("/", "\\", "?", "#", "@"))
+
+
 def normalize_hostish(value: object | None) -> str:
     host = str(value or "").strip().lower().lstrip(".")
     if not host or host in {"-", "(nil)", "none", "null"}:
+        return ""
+    if _decoded_hostish_has_delimiters(host):
         return ""
 
     try:
