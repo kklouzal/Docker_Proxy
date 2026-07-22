@@ -538,6 +538,80 @@ def test_check_http_proxy_forwarding_uses_dedicated_canary_and_requires_marker(
     assert "local health body did not confirm ok" in malformed["detail"]
 
 
+def test_check_http_proxy_forwarding_accepts_complete_chunked_local_health(
+    monkeypatch,
+) -> None:
+    health_checks = _health_checks_module()
+    body = b'{"ok":true}\n'
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n"
+        + f"{len(body):x}\r\n".encode("ascii")
+        + body
+        + b"\r\n0\r\n\r\n"
+    )
+
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: _FakeSocket([response]),
+    )
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url="http://127.0.0.1:80/health",
+        timeout=0.1,
+    )
+
+    assert result["ok"] is True
+    assert result["body_complete"] is True
+    assert result["local_health_ok"] is True
+    assert "local health ok" in result["detail"]
+
+
+@pytest.mark.parametrize(
+    ("target_url", "body", "expected_canary_ok"),
+    [
+        ("http://127.0.0.1:80/health", b'{"ok":true}\n', None),
+        (
+            "http://127.0.0.1:18080/__docker_proxy_forwarding_canary",
+            (
+                b'{"ok":true,"probe":"squid-respmod",'
+                b'"service":"docker-proxy-forwarding-canary"}\n'
+            ),
+            False,
+        ),
+    ],
+)
+def test_check_http_proxy_forwarding_rejects_unframed_local_json_eof(
+    monkeypatch,
+    target_url,
+    body,
+    expected_canary_ok,
+) -> None:
+    health_checks = _health_checks_module()
+    response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + body
+
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: _FakeSocket([response]),
+    )
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url=target_url,
+        timeout=0.1,
+    )
+
+    assert result["ok"] is False
+    assert result["body_complete"] is False
+    assert result["local_health_ok"] is False
+    assert result["canary_probe_ok"] is expected_canary_ok
+    assert "incomplete local health response body" in result["detail"]
+
+
 def test_check_http_proxy_forwarding_reports_blocked_or_timed_out_path(
     monkeypatch,
 ) -> None:

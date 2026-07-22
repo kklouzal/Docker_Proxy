@@ -294,7 +294,6 @@ def _read_http_response(
         while len(body) < max_body_bytes:
             chunk = sock.recv(min(512, max_body_bytes - len(body)))
             if not chunk:
-                body_complete = True
                 break
             body += chunk
     return head, body[:max_body_bytes], headers_complete, body_complete
@@ -532,6 +531,9 @@ def check_http_proxy_forwarding(
                 detail = f"{detail}; incomplete local health response body"
                 status_ok = False
                 local_health_ok = False
+                canary_probe_ok = (
+                    False if _target_is_forwarding_canary(request_url) else None
+                )
             else:
                 try:
                     payload = json.loads(response_body.decode("utf-8"))
