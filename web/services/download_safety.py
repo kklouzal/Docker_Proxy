@@ -96,6 +96,14 @@ def _download_url_port(parsed) -> int:
     return port
 
 
+def _has_empty_explicit_authority_port(netloc: str) -> bool:
+    authority = netloc.rsplit("@", 1)[-1]
+    if authority.startswith("["):
+        bracket_end = authority.find("]")
+        return bracket_end >= 0 and authority[bracket_end + 1 :] == ":"
+    return authority.endswith(":") and ":" in authority
+
+
 def _create_download_connection(
     addresses: tuple[_ResolvedDownloadAddress, ...],
 ):
@@ -252,6 +260,8 @@ def validate_download_url(
         raise ValueError(invalid_url_msg) from exc
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(scheme_error)
+    if _has_empty_explicit_authority_port(parsed.netloc):
+        raise ValueError(invalid_url_msg)
     try:
         hostname = parsed.hostname or ""
         _port = parsed.port

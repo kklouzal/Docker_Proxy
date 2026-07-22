@@ -115,6 +115,8 @@ def test_validate_download_url_rejects_single_label_hostname_before_dns(
         "http://example.com\t/feed.csv",
         "http://example.com\n.evil/feed.csv",
         "https://public.example:bad/feed.csv",
+        "https://public.example:/feed.csv",
+        "http://public.example:/feed.csv",
         "https:///feed.csv",
         "https://[::1/feed.csv",
         r"https://public.example\@127.0.0.1/feed.csv",
