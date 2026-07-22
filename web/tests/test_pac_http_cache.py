@@ -441,6 +441,24 @@ def test_local_pac_cache_rejects_marker_manifest_sha_mismatch(tmp_path, pac_http
     assert cache.public_paths() == frozenset({"/proxy.pac", "/wpad.dat"})
 
 
+def test_local_pac_cache_rejects_manifest_without_state_marker(tmp_path, pac_http) -> None:
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / "manifest.json").write_text(
+        """{"fallback_file":"fallback.pac","state_sha256":"state-one"}""",
+        encoding="utf-8",
+    )
+    (pac_dir / "fallback.pac").write_text(
+        'function FindProxyForURL(){return "PROXY orphaned";}\n',
+        encoding="utf-8",
+    )
+
+    cache = pac_http.LocalPacCache(str(pac_dir))
+
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
+    assert cache.public_paths() == frozenset({"/proxy.pac", "/wpad.dat"})
+
+
 def test_pac_content_disposition_uses_requested_filename(pac_http) -> None:
     assert (
         pac_http.pac_content_disposition("/download/wpad.dat?site=lab")

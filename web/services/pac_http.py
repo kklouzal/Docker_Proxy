@@ -361,7 +361,14 @@ class LocalPacCache:
             self._file_signatures = ()
             return False
         manifest_state_sha = str(manifest.get("state_sha256") or "").strip()
-        if state_sha and manifest_state_sha and state_sha != manifest_state_sha:
+        if not state_sha:
+            self._state_sha = ""
+            self._manifest = {}
+            self._files = {}
+            self._state_signatures = state_signatures
+            self._file_signatures = ()
+            return False
+        if manifest_state_sha and state_sha != manifest_state_sha:
             self._state_sha = ""
             self._manifest = {}
             self._files = {}
