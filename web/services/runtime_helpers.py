@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import time
 from urllib.parse import urlsplit
@@ -185,6 +186,9 @@ def env_float(
 ) -> float:
     try:
         value = float((os.environ.get(name) or str(default)).strip() or str(default))
+        if not math.isfinite(value):
+            msg = f"{name} must be finite"
+            raise ValueError(msg)
     except Exception:
         value = float(default)
     if minimum is not None:

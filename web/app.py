@@ -140,6 +140,7 @@ from services.proxy_health import test_eicar as _shared_test_eicar
 from services.proxy_logs import proxy_log_status_code
 from services.proxy_registry import get_proxy_registry as _default_get_proxy_registry
 from services.proxy_sync import request_proxy_reconcile
+from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import extract_domain as _extract_domain
 from services.safe_browsing_v5 import SafeBrowsingStore
 from services.saml_auth import (
@@ -213,14 +214,6 @@ _asset_version = str(int(time.time()))
 OBSERVABILITY_DEFAULT_WINDOW = 24 * 60 * 60
 _PROXY_HEALTH_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 _ADMIN_VERSION_STATUS_CACHE: tuple[float, dict[str, Any]] | None = None
-
-
-def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
-    try:
-        value = float((os.environ.get(name) or str(default)).strip() or default)
-    except Exception:
-        value = float(default)
-    return max(float(minimum), min(float(maximum), value))
 
 
 _PROXY_HEALTH_TTL_SECONDS = _env_float(

@@ -9,6 +9,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from services.runtime_helpers import env_float as _env_float
+
 UNKNOWN_VALUE = "unknown"
 DEFAULT_GITHUB_REPOSITORY = "kklouzal/Docker_Proxy"
 
@@ -22,14 +24,6 @@ def _short_commit(value: object | None) -> str:
     if not raw:
         return UNKNOWN_VALUE
     return raw[:12]
-
-
-def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
-    try:
-        value = float(_clean(os.environ.get(name)) or default)
-    except Exception:
-        value = float(default)
-    return max(float(minimum), min(float(maximum), value))
 
 
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
