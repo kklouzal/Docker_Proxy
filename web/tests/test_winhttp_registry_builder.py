@@ -407,6 +407,52 @@ def test_command_safety_preserves_common_valid_values() -> None:
     assert 'trace-file-prefix="C:\\Temp\\winhttp"' in result.tracing_command
 
 
+def test_custom_proxy_map_allows_bracketed_ipv6_targets() -> None:
+    result = build_contract_output(
+        {
+            "use_custom_proxy_map": True,
+            "custom_proxy_map": "http=[2001:db8::10]:3128;https=[2001:db8::10]:3128",
+            "proxy_port": 3128,
+            "destination_schemes": ["http"],
+        },
+    )
+
+    expected = "http=[2001:db8::10]:3128;https=[2001:db8::10]:3128"
+    assert result.proxy_string == expected
+    assert result.decoded is not None
+    assert result.decoded.proxy_string == expected
+
+
+@pytest.mark.parametrize(
+    "custom_proxy_map",
+    [
+        "http=;https=proxy.example:3128",
+        "http=http://proxy.example:3128/path",
+        "http=http://operator:secret@proxy.example:3128",
+        "http=proxy.example:",
+        "http=proxy.example:abc",
+        "http=proxy.example:65536",
+        "http=[2001:db8::10",
+        "http=2001:db8::10:3128",
+        "proxy.example:3128=http",
+        "http=proxy.example:3128 https=proxy.example:3128",
+        "http=proxy.example:3128;orphan.example:3128",
+    ],
+)
+def test_custom_proxy_map_rejects_structurally_invalid_entries(
+    custom_proxy_map: str,
+) -> None:
+    with pytest.raises(WinHttpBuilderError, match="Custom proxy map"):
+        build_contract_output(
+            {
+                "use_custom_proxy_map": True,
+                "custom_proxy_map": custom_proxy_map,
+                "proxy_port": 3128,
+                "destination_schemes": ["http"],
+            },
+        )
+
+
 @pytest.mark.parametrize(
     "trace_file_prefix",
     ['C:\\Temp\\win"http', "C:\\Temp\\winhttp&whoami"],

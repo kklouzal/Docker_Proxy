@@ -28,6 +28,7 @@ TRACING_LEVELS = ("default", "verbose")
 TRACING_FORMATS = ("ansi", "hex")
 COMMAND_UNSAFE_RE = re.compile(r'["&|\x00-\x1f\x7f]')
 RAW_HEX_INPUT_RE = re.compile(r"^[0-9a-fA-F,\s\\-]*$")
+CUSTOM_PROXY_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
 
 
 class WinHttpBuilderError(ValueError):
@@ -282,6 +283,93 @@ def _normalize_scheme_list(values: Iterable[str]) -> list[str]:
     return normalized
 
 
+def _validate_custom_proxy_target(target: str) -> None:
+    value = (target or "").strip()
+    if not value:
+        msg = "Custom proxy map targets must not be empty."
+        raise WinHttpBuilderError(msg)
+    if "://" in value or any(ch in value for ch in "/?#@="):
+        msg = "Custom proxy map targets must be proxy host[:port] values, not URLs."
+        raise WinHttpBuilderError(msg)
+    if any(ch.isspace() for ch in value):
+        msg = "Custom proxy map entries must be separated with semicolons and contain no whitespace."
+        raise WinHttpBuilderError(msg)
+    if value.startswith("["):
+        end = value.find("]")
+        if end <= 1:
+            msg = "Custom proxy map target contains malformed bracketed IPv6."
+            raise WinHttpBuilderError(msg)
+        host_part = value[1:end]
+        try:
+            parsed_host = ipaddress.ip_address(host_part)
+        except ValueError as exc:
+            msg = "Custom proxy map target contains malformed bracketed IPv6."
+            raise WinHttpBuilderError(msg) from exc
+        if parsed_host.version != 6:
+            msg = "Custom proxy map target contains malformed bracketed IPv6."
+            raise WinHttpBuilderError(msg)
+        suffix = value[end + 1 :]
+        if suffix:
+            if not suffix.startswith(":") or not suffix[1:].isdecimal():
+                msg = "Custom proxy map target port must be an integer from 1 to 65535."
+                raise WinHttpBuilderError(msg)
+            port = int(suffix[1:])
+            if port < 1 or port > 65535:
+                msg = "Custom proxy map target port must be an integer from 1 to 65535."
+                raise WinHttpBuilderError(msg)
+        return
+    if "[" in value or "]" in value:
+        msg = "Custom proxy map target contains malformed bracketed IPv6."
+        raise WinHttpBuilderError(msg)
+    if value.count(":") == 1:
+        host_part, port_part = value.rsplit(":", 1)
+        if not host_part or not port_part.isdecimal():
+            msg = "Custom proxy map target port must be an integer from 1 to 65535."
+            raise WinHttpBuilderError(msg)
+        port = int(port_part)
+        if port < 1 or port > 65535:
+            msg = "Custom proxy map target port must be an integer from 1 to 65535."
+            raise WinHttpBuilderError(msg)
+    elif ":" in value:
+        msg = "Custom proxy map IPv6 targets must use bracket notation."
+        raise WinHttpBuilderError(msg)
+
+
+def _validate_custom_proxy_map(proxy_string: str) -> tuple[str, tuple[str, ...]]:
+    _validate_command_value(proxy_string, "Custom proxy map")
+    entries = [entry.strip() for entry in proxy_string.split(";") if entry.strip()]
+    if not entries:
+        msg = "Custom proxy map is enabled but empty."
+        raise WinHttpBuilderError(msg)
+    has_mapping = any("=" in entry for entry in entries)
+    warnings: list[str] = []
+    for entry in entries:
+        if any(ch.isspace() for ch in entry):
+            msg = "Custom proxy map entries must be separated with semicolons and contain no whitespace."
+            raise WinHttpBuilderError(msg)
+        if "=" not in entry:
+            if has_mapping:
+                msg = "Custom proxy map must not mix scheme mappings with bare proxy targets."
+                raise WinHttpBuilderError(msg)
+            _validate_custom_proxy_target(entry)
+            continue
+        scheme, target = entry.split("=", 1)
+        scheme = scheme.strip().lower()
+        if not scheme or not CUSTOM_PROXY_SCHEME_RE.fullmatch(scheme):
+            msg = "Custom proxy map contains an invalid scheme mapping."
+            raise WinHttpBuilderError(msg)
+        _validate_custom_proxy_target(target)
+        if scheme not in DESTINATION_SCHEMES:
+            warnings.append(
+                f"Custom proxy map contains a nonstandard WinHTTP scheme mapping: {scheme}.",
+            )
+        if scheme == "socks":
+            warnings.append(
+                "Microsoft's advproxy documentation includes a socks example but also states SOCKS5 is not supported; verify target Windows behavior before deploying socks mappings.",
+            )
+    return ";".join(entries), tuple(warnings)
+
+
 def build_proxy_string(
     *,
     proxy_host: str,
@@ -296,20 +384,7 @@ def build_proxy_string(
         if not proxy_string:
             msg = "Custom proxy map is enabled but empty."
             raise WinHttpBuilderError(msg)
-        _validate_command_value(proxy_string, "Custom proxy map")
-        for token in re.split(r"[;\s]+", proxy_string):
-            if "=" not in token:
-                continue
-            scheme = token.split("=", 1)[0].strip().lower()
-            if scheme and scheme not in DESTINATION_SCHEMES:
-                warnings.append(
-                    f"Custom proxy map contains a nonstandard WinHTTP scheme mapping: {scheme}.",
-                )
-            if scheme == "socks":
-                warnings.append(
-                    "Microsoft's advproxy documentation includes a socks example but also states SOCKS5 is not supported; verify target Windows behavior before deploying socks mappings.",
-                )
-        return proxy_string, tuple(warnings)
+        return _validate_custom_proxy_map(proxy_string)
 
     host, host_warning = _normalize_proxy_host(proxy_host)
     if host_warning:
