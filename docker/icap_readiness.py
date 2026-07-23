@@ -327,7 +327,7 @@ def wait_ready(
     probe_timeout: float,
     interval: float,
     status_file: str,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, dict[str, object]]:
     deadline = time.monotonic() + max(0.1, timeout)
     last_detail = "ICAP readiness has not been checked yet."
     last_payload: dict[str, object] = {"ok": False, "detail": last_detail, "services": []}
@@ -336,12 +336,13 @@ def wait_ready(
         payload = {**payload, "checked_at": int(time.time()), "timeout_seconds": timeout}
         _write_status(status_file, payload)
         if ok:
-            return True, detail
+            return True, detail, payload
         last_detail = detail
         last_payload = payload
         if time.monotonic() >= deadline:
-            _write_status(status_file, {**last_payload, "ok": False, "timed_out": True})
-            return False, last_detail
+            timeout_payload = {**last_payload, "ok": False, "timed_out": True}
+            _write_status(status_file, timeout_payload)
+            return False, last_detail, timeout_payload
         time.sleep(max(0.05, min(interval, deadline - time.monotonic())))
 
 
@@ -403,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             sys.stdout.write(detail + "\n")
         return 0 if ok else 1
-    ok, detail = wait_ready(
+    ok, detail, payload = wait_ready(
         configs,
         timeout=max(0.1, args.timeout),
         probe_timeout=max(0.1, args.probe_timeout),
@@ -411,7 +412,6 @@ def main(argv: list[str] | None = None) -> int:
         status_file=args.status_file,
     )
     if args.json:
-        _ok, _detail, payload = check_once(configs, probe_timeout=max(0.1, args.probe_timeout))
         sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
     else:
         sys.stdout.write(detail + "\n")

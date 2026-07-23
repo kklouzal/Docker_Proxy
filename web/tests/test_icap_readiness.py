@@ -251,7 +251,7 @@ def test_icap_readiness_waits_until_options_ready(tmp_path, monkeypatch) -> None
             encoding="utf-8",
         )
 
-        ok, detail = icap_readiness.wait_ready(
+        ok, detail, payload = icap_readiness.wait_ready(
             [str(config)],
             timeout=3.0,
             probe_timeout=0.5,
@@ -261,9 +261,113 @@ def test_icap_readiness_waits_until_options_ready(tmp_path, monkeypatch) -> None
 
         assert ok is True
         assert "All configured ICAP services" in detail
+        assert payload["ok"] is True
         assert server.calls == 3
         assert sleeps == [0.1, 0.1]
-        assert '"ok": true' in status_file.read_text(encoding="utf-8")
+        assert json.loads(status_file.read_text(encoding="utf-8")) == payload
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_icap_readiness_wait_json_uses_success_payload_without_extra_probe(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _add_repo_paths()
+    import icap_readiness  # type: ignore
+
+    server = _start_server(
+        responses=[
+            b"ICAP/1.0 200 OK\r\nMethods: REQMOD\r\nConnection: close\r\nEncapsulated: null-body=0\r\n\r\n",
+            b"ICAP/1.0 503 Service Unavailable\r\nConnection: close\r\n\r\n",
+        ]
+    )
+    monkeypatch.setattr(icap_readiness.time, "sleep", lambda _seconds: None)
+    try:
+        config = tmp_path / "20-icap.conf"
+        status_file = tmp_path / "status.json"
+        config.write_text(
+            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{server.server_address[1]}/adblockreq bypass=on\n",
+            encoding="utf-8",
+        )
+
+        exit_code = icap_readiness.main(
+            [
+                "wait",
+                "--config",
+                str(config),
+                "--status-file",
+                str(status_file),
+                "--timeout",
+                "1",
+                "--probe-timeout",
+                "0.5",
+                "--interval",
+                "0.1",
+                "--json",
+            ]
+        )
+
+        stdout_payload = json.loads(capsys.readouterr().out)
+        status_payload = json.loads(status_file.read_text(encoding="utf-8"))
+        assert exit_code == 0
+        assert stdout_payload == status_payload
+        assert stdout_payload["ok"] is True
+        assert "timed_out" not in stdout_payload
+        assert server.calls == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_icap_readiness_wait_json_reports_timeout_payload_without_recheck(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _add_repo_paths()
+    import icap_readiness  # type: ignore
+
+    server = _start_server(
+        responses=[
+            b"ICAP/1.0 503 Service Unavailable\r\nConnection: close\r\n\r\n",
+            b"ICAP/1.0 200 OK\r\nMethods: REQMOD\r\nConnection: close\r\nEncapsulated: null-body=0\r\n\r\n",
+        ]
+    )
+    monkeypatch.setattr(icap_readiness.time, "sleep", lambda _seconds: None)
+    monotonic_values = iter([0.0, 0.1])
+    monkeypatch.setattr(icap_readiness.time, "monotonic", lambda: next(monotonic_values))
+    try:
+        config = tmp_path / "20-icap.conf"
+        status_file = tmp_path / "status.json"
+        config.write_text(
+            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{server.server_address[1]}/adblockreq bypass=on\n",
+            encoding="utf-8",
+        )
+
+        exit_code = icap_readiness.main(
+            [
+                "wait",
+                "--config",
+                str(config),
+                "--status-file",
+                str(status_file),
+                "--timeout",
+                "0.1",
+                "--probe-timeout",
+                "0.5",
+                "--interval",
+                "0.1",
+                "--json",
+            ]
+        )
+
+        stdout_payload = json.loads(capsys.readouterr().out)
+        status_payload = json.loads(status_file.read_text(encoding="utf-8"))
+        assert exit_code == 1
+        assert stdout_payload == status_payload
+        assert stdout_payload["ok"] is False
+        assert stdout_payload["timed_out"] is True
+        assert stdout_payload["services"][0]["status_line"] == "ICAP/1.0 503 Service Unavailable"
+        assert server.calls == 1
     finally:
         server.shutdown()
         server.server_close()
@@ -296,14 +400,13 @@ def test_icap_readiness_cli_ignores_malformed_numeric_env_defaults(
         == 0
     )
 
-    assert json.loads(capsys.readouterr().out) == {
-        "detail": "No ICAP services are configured.",
-        "ok": True,
-        "services": [],
-    }
-    assert json.loads(status_file.read_text(encoding="utf-8"))[
-        "timeout_seconds"
-    ] == pytest.approx(75.0)
+    stdout_payload = json.loads(capsys.readouterr().out)
+    status_payload = json.loads(status_file.read_text(encoding="utf-8"))
+    assert stdout_payload == status_payload
+    assert stdout_payload["detail"] == "No ICAP services are configured."
+    assert stdout_payload["ok"] is True
+    assert stdout_payload["services"] == []
+    assert stdout_payload["timeout_seconds"] == pytest.approx(75.0)
 
 
 def test_icap_readiness_cli_rejects_non_finite_numeric_flags(capsys) -> None:
