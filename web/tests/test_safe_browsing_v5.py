@@ -113,6 +113,18 @@ def test_safe_browsing_malformed_authority_urls_are_empty(url: str) -> None:
     assert url_expressions(url) == []
 
 
+def test_safe_browsing_percent_encoded_authority_delimiters_are_empty() -> None:
+    for url in (
+        "http://good.example%40evil.example/path",
+        "http://good.example%5Cevil.example/path",
+        "http://good.example%2Fevil.example/path",
+        "http://good.example%3A80/path",
+        "http://good.example%5B.evil/path",
+    ):
+        assert canonicalize_url(url) == ""
+        assert url_expressions(url) == []
+
+
 def test_safe_browsing_hashes_are_sha256_expression_hashes() -> None:
     expressions = url_expressions("example.com/")
     hashes = expression_hashes("example.com/")

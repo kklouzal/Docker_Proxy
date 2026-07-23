@@ -230,9 +230,12 @@ def canonicalize_url(value: str) -> str:
     scheme = (parsed.scheme or "http").lower()
     if _has_malformed_authority(parsed):
         return ""
-    host = _normalize_host(
-        _recursive_unquote(hostname or parsed.netloc.split("@")[-1].split(":")[0]),
+    decoded_host = _recursive_unquote(
+        hostname or parsed.netloc.split("@")[-1].split(":")[0],
     )
+    if _has_decoded_authority_delimiter(decoded_host):
+        return ""
+    host = _normalize_host(decoded_host)
     if not host:
         return ""
     if not _is_ip_literal(host):
@@ -270,6 +273,12 @@ def _has_malformed_authority(parsed: urllib.parse.SplitResult) -> bool:
         remainder = hostport[closing + 1 :]
         return remainder == ":"
     return hostport.endswith(":")
+
+
+def _has_decoded_authority_delimiter(host: str) -> bool:
+    if any(ch in host for ch in ("@", "/", "\\", "?", "#", "[", "]")):
+        return True
+    return ":" in host and not _is_ip_literal(host)
 
 
 def _is_ip_literal(host: str) -> bool:
