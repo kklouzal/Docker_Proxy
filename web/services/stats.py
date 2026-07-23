@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.logutil import log_exception_throttled
+from services.runtime_helpers import env_int as _env_int
 
 logger = logging.getLogger(__name__)
 
@@ -393,13 +394,10 @@ def parse_squid_hit_rate(mgr_5min: str) -> dict[str, float | None]:
 def get_stats() -> dict[str, Any]:
     # These values can be expensive to compute (filesystem walks, subprocesses).
     # The UI and sampler don't need sub-second freshness, so we cache them.
-    dir_size_ttl = max(5, int(os.environ.get("STATS_CACHE_DIR_SIZE_TTL_SECONDS", "60")))
-    disk_usage_ttl = max(
-        2,
-        int(os.environ.get("STATS_CACHE_DISK_USAGE_TTL_SECONDS", "15")),
-    )
-    hit_rate_ttl = max(1, int(os.environ.get("STATS_CACHE_HIT_RATE_TTL_SECONDS", "5")))
-    cpu_ttl = max(1, int(os.environ.get("STATS_CACHE_CPU_TTL_SECONDS", "2")))
+    dir_size_ttl = _env_int("STATS_CACHE_DIR_SIZE_TTL_SECONDS", 60, minimum=5)
+    disk_usage_ttl = _env_int("STATS_CACHE_DISK_USAGE_TTL_SECONDS", 15, minimum=2)
+    hit_rate_ttl = _env_int("STATS_CACHE_HIT_RATE_TTL_SECONDS", 5, minimum=1)
+    cpu_ttl = _env_int("STATS_CACHE_CPU_TTL_SECONDS", 2, minimum=1)
 
     try:
         cpu_sample_seconds = float(os.environ.get("STATS_CPU_SAMPLE_SECONDS", "0.15"))
