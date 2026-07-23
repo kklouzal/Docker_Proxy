@@ -484,6 +484,26 @@ def test_backup_proxy_host_port_normalization_rejects_malformed_inline_ports() -
         None,
         "Invalid proxy port.",
     )
+    assert mod._normalize_proxy_host_port("[2001:db8::10]:abc", "8080") == (
+        None,
+        None,
+        "Invalid proxy port.",
+    )
+    assert mod._normalize_proxy_host_port("[2001:db8::10]junk", "8080") == (
+        None,
+        None,
+        "Invalid proxy port.",
+    )
+    assert mod._normalize_proxy_host_port("[2001:db8::10]:8443", "3128") == (
+        None,
+        None,
+        "Conflicting proxy ports.",
+    )
+    assert mod._normalize_proxy_host_port("http://backup.example:8443", "3128") == (
+        None,
+        None,
+        "Conflicting proxy ports.",
+    )
     assert mod._normalize_proxy_host_port(
         "http://backup.example:abc/proxy.pac", ""
     ) == (

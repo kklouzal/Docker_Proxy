@@ -135,20 +135,23 @@ def _normalize_proxy_host_port(
         if inline_port is not None:
             if inline_port < 1 or inline_port > 65535:
                 return None, None, "Proxy port must be between 1 and 65535."
-            if not parsed_port:
-                parsed_port = str(inline_port)
         if parsed.path or parsed.query or parsed.fragment:
             return None, None, "Invalid proxy host."
+        if inline_port is not None:
+            if parsed_port and parsed_port != str(inline_port):
+                return None, None, "Conflicting proxy ports."
+            parsed_port = str(inline_port)
         host = parsed.hostname or ""
     elif host.startswith("[") and "]" in host:
         end = host.find("]")
         suffix = host[end + 1 :].strip()
         host = host[1:end]
-        if not parsed_port:
-            if suffix.startswith(":") and suffix[1:].isdigit():
-                parsed_port = suffix[1:]
-            elif suffix:
+        if suffix:
+            if not suffix.startswith(":") or not suffix[1:].isdigit():
                 return None, None, "Invalid proxy port."
+            if parsed_port and parsed_port != suffix[1:]:
+                return None, None, "Conflicting proxy ports."
+            parsed_port = suffix[1:]
     elif host.count(":") == 1:
         candidate_host, candidate_port = host.rsplit(":", 1)
         if not parsed_port:
