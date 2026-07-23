@@ -28,6 +28,18 @@ def _decoded_hostish_has_delimiters(value: str) -> bool:
     return any(delimiter in decoded for delimiter in ("/", "\\", "?", "#", "@"))
 
 
+def _is_valid_port(value: str) -> bool:
+    return value.isdigit() and 0 <= int(value) <= 65535
+
+
+def _parsed_netloc_has_empty_port(netloc: str) -> bool:
+    authority = netloc.rsplit("@", 1)[-1]
+    if authority.startswith("["):
+        closing_bracket = authority.find("]")
+        return authority[closing_bracket + 1 :] == ":" if closing_bracket >= 0 else False
+    return authority.count(":") == 1 and authority.endswith(":")
+
+
 def normalize_hostish(value: object | None) -> str:
     host = str(value or "").strip().lower().lstrip(".")
     if not host or host in {"-", "(nil)", "none", "null"}:
@@ -38,6 +50,12 @@ def normalize_hostish(value: object | None) -> str:
     try:
         parsed = urlsplit(host)
         if (parsed.scheme or parsed.netloc) and parsed.hostname:
+            if _parsed_netloc_has_empty_port(parsed.netloc):
+                return ""
+            try:
+                _ = parsed.port
+            except ValueError:
+                return ""
             host = parsed.hostname
     except Exception:
         pass
@@ -50,12 +68,20 @@ def normalize_hostish(value: object | None) -> str:
         host = host.split("#", 1)[0]
     if "@" in host:
         host = host.split("@", 1)[1]
-    if host.startswith("[") and "]" in host:
-        host = host[1 : host.find("]")]
+    if host.startswith("["):
+        closing_bracket = host.find("]")
+        if closing_bracket < 0:
+            return ""
+        remainder = host[closing_bracket + 1 :]
+        if remainder:
+            if not remainder.startswith(":") or not _is_valid_port(remainder[1:]):
+                return ""
+        host = host[1:closing_bracket]
     elif ":" in host and host.count(":") == 1:
         host_part, port = host.rsplit(":", 1)
-        if port.isdigit():
-            host = host_part
+        if not _is_valid_port(port):
+            return ""
+        host = host_part
     return host.strip().strip(".")
 
 
@@ -77,6 +103,12 @@ def extract_domain(
     try:
         parsed = urlsplit(raw)
         if parsed.hostname:
+            if _parsed_netloc_has_empty_port(parsed.netloc):
+                return ""
+            try:
+                _ = parsed.port
+            except ValueError:
+                return ""
             return normalize_hostish(parsed.hostname)
     except Exception:
         pass

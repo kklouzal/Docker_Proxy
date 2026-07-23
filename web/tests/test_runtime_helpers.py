@@ -62,7 +62,25 @@ def test_env_float_clamps_finite_values_to_optional_bounds(monkeypatch) -> None:
 def test_normalize_hostish_handles_placeholders_and_ports() -> None:
     assert normalize_hostish("-") == ""
     assert normalize_hostish("Example.COM:443") == "example.com"
+    assert normalize_hostish("example.com:65535") == "example.com"
     assert normalize_hostish("[2001:db8::1]:8443") == "2001:db8::1"
+
+
+def test_normalize_hostish_rejects_malformed_authority_ports() -> None:
+    for value in (
+        "example.com:notaport",
+        "example.com:",
+        "example.com:65536",
+        "[2001:db8::1]:notaport",
+        "[2001:db8::1]:65536",
+        "https://example.com:notaport/path",
+        "https://example.com:/path",
+        "https://example.com:65536/path",
+        "https://[2001:db8::1]:notaport/path",
+        "https://[2001:db8::1]:65536/path",
+    ):
+        assert normalize_hostish(value) == ""
+        assert extract_domain(value) == ""
 
 
 def test_normalize_hostish_uses_url_parsing_for_scheme_bearing_values() -> None:
