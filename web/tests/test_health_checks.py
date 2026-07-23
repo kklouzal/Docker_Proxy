@@ -115,6 +115,60 @@ def test_health_check_local_host_listener_and_target_helpers(
         default_port=1234,
     ) == ("host", 1234)
 
+    for invalid_port in ("0", "-1", "65536"):
+        monkeypatch.setenv("TEST_PORT", invalid_port)
+        assert health_checks.resolve_host_port(
+            host_env="TEST_HOST",
+            port_env="TEST_PORT",
+            default_host="host",
+            default_port=1234,
+        ) == ("host", 1234)
+
+    monkeypatch.setenv("TEST_PORT", "65535")
+    assert health_checks.resolve_host_port(
+        host_env="TEST_HOST",
+        port_env="TEST_PORT",
+        default_host="host",
+        default_port=1234,
+    ) == ("host", 65535)
+
+
+def test_resolve_clamd_target_rejects_invalid_ports(monkeypatch) -> None:
+    health_checks = _health_checks_module()
+
+    monkeypatch.setenv("CLAMD_HOST", "clamd-host")
+    for invalid_port in ("0", "-1", "65536", "not-int", ""):
+        monkeypatch.setenv("CLAMD_PORT", invalid_port)
+        assert health_checks._resolve_clamd_target() == ("clamd-host", 3310)
+
+    monkeypatch.setenv("CLAMD_PORT", "65535")
+    assert health_checks._resolve_clamd_target() == ("clamd-host", 65535)
+    assert health_checks._resolve_clamd_target(port=0) == ("clamd-host", 3310)
+    assert health_checks._resolve_clamd_target(port=1) == ("clamd-host", 1)
+
+
+def test_proxy_health_resolved_override_rejects_invalid_ports(monkeypatch) -> None:
+    proxy_health = _proxy_health_module()
+
+    monkeypatch.setenv("CICAP_HOST", "icap-host")
+    for invalid_port in ("0", "-1", "65536"):
+        monkeypatch.setenv("CICAP_AV_PORT", invalid_port)
+        assert proxy_health._resolve_host_port_override(
+            host=None,
+            port=None,
+            host_env="CICAP_HOST",
+            port_env="CICAP_AV_PORT",
+            default_port=14001,
+        ) == ("icap-host", 14001)
+
+    assert proxy_health._resolve_host_port_override(
+        host=None,
+        port=65536,
+        host_env="CICAP_HOST",
+        port_env="CICAP_AV_PORT",
+        default_port=14001,
+    ) == ("icap-host", 14001)
+
 
 def test_recv_clamd_reply_stops_on_null_or_newline() -> None:
     health_checks = _health_checks_module()

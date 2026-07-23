@@ -12,6 +12,7 @@ from services.health_checks import (
     check_http_proxy_forwarding,
     check_icap_service,
     resolve_host_port,
+    resolve_tcp_port,
     send_sample_respmod_to,
     test_clamd_eicar,
 )
@@ -43,12 +44,10 @@ def _resolve_host_port_override(
     resolved_host = (
         host or os.environ.get(host_env) or default_host
     ).strip() or default_host
-    try:
-        resolved_port = int(
-            port if port is not None else (os.environ.get(port_env) or default_port),
-        )
-    except Exception:
-        resolved_port = int(default_port)
+    resolved_port = resolve_tcp_port(
+        port if port is not None else (os.environ.get(port_env) or default_port),
+        default_port,
+    )
     return resolved_host, resolved_port
 
 

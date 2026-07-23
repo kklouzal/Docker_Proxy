@@ -661,6 +661,16 @@ def annotate_service_target(
     return status
 
 
+def resolve_tcp_port(value: Any, default_port: int) -> int:
+    try:
+        resolved_port = int(value)
+    except Exception:
+        return int(default_port)
+    if 1 <= resolved_port <= 65535:
+        return resolved_port
+    return int(default_port)
+
+
 def resolve_host_port(
     *,
     host_env: str,
@@ -669,10 +679,10 @@ def resolve_host_port(
     default_port: int,
 ) -> tuple[str, int]:
     resolved_host = (os.environ.get(host_env) or default_host).strip() or default_host
-    try:
-        resolved_port = int(os.environ.get(port_env, default_port))
-    except Exception:
-        resolved_port = int(default_port)
+    resolved_port = resolve_tcp_port(
+        os.environ.get(port_env, default_port),
+        default_port,
+    )
     return resolved_host, resolved_port
 
 
@@ -683,12 +693,10 @@ def _resolve_clamd_target(
     resolved_host = (
         host or os.environ.get("CLAMD_HOST") or "127.0.0.1"
     ).strip() or "127.0.0.1"
-    try:
-        resolved_port = int(
-            port if port is not None else (os.environ.get("CLAMD_PORT") or "3310"),
-        )
-    except Exception:
-        resolved_port = 3310
+    resolved_port = resolve_tcp_port(
+        port if port is not None else (os.environ.get("CLAMD_PORT") or "3310"),
+        3310,
+    )
     return resolved_host, resolved_port
 
 
