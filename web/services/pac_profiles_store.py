@@ -110,16 +110,29 @@ def _is_ambiguous_ipv4_proxy_host(host: str) -> bool:
     return True
 
 
+def _is_loopback_proxy_dns_host(host: str) -> bool:
+    candidate = host.rstrip(".").lower()
+    return candidate in {"localhost", "localhost.localdomain"} or candidate.endswith(
+        ".localhost",
+    )
+
+
 def _is_valid_proxy_host(host: str) -> bool:
     if not host or any(ch.isspace() for ch in host) or "/" in host:
         return False
     try:
         parsed_ip = ip_address(host)
-        return not bool(getattr(parsed_ip, "scope_id", None))
+        return not bool(getattr(parsed_ip, "scope_id", None)) and not (
+            parsed_ip.is_loopback
+        )
     except Exception:
         pass
 
-    if _is_ambiguous_ipv4_proxy_host(host) or len(host) > 253:
+    if (
+        _is_loopback_proxy_dns_host(host)
+        or _is_ambiguous_ipv4_proxy_host(host)
+        or len(host) > 253
+    ):
         return False
     labels = host.split(".")
     return all(

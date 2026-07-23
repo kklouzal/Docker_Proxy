@@ -435,6 +435,27 @@ def test_backup_proxy_host_port_normalization_rejects_scoped_ipv6() -> None:
         )
 
 
+def test_backup_proxy_host_port_normalization_rejects_loopback_hosts() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    for host in (
+        "localhost",
+        "localhost.localdomain",
+        "api.localhost",
+        "127.0.0.1",
+        "127.10.20.30",
+        "::1",
+        "[::1]:3128",
+        "http://[::1]:3128",
+    ):
+        assert mod._normalize_proxy_host_port(host, None) == (
+            None,
+            None,
+            "Invalid proxy host.",
+        )
+
+
 def test_backup_proxy_host_port_normalization_rejects_unsupported_url_schemes() -> None:
     _add_web_path()
     import services.pac_profiles_store as mod
