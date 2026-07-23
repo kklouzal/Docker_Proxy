@@ -12,6 +12,120 @@ from .mysql_test_utils import (
 )
 
 
+class _PolicyApproveResult:
+    def __init__(self, row=None, *, lastrowid: int = 0, rowcount: int = 1):
+        self._rows = row if isinstance(row, list) else ([] if row is None else [row])
+        self.lastrowid = lastrowid
+        self.rowcount = rowcount
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+class _PolicyApproveConn:
+    def __init__(self):
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+        self.inserted_expires_ts: int | None = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=()):
+        text = " ".join(str(sql).split())
+        params_t = tuple(params or ())
+        self.calls.append((text, params_t))
+        if "FROM policy_requests WHERE id=%s" in text:
+            return _PolicyApproveResult(
+                {
+                    "id": 7,
+                    "proxy_id": "edge-a",
+                    "status": "pending",
+                    "block_type": "webfilter",
+                    "client_ip": "192.168.1.55",
+                    "request_url": "https://example.com/path",
+                    "domain": "example.com",
+                    "category": "adult",
+                    "method": "GET",
+                    "squid_error": "ERR_ACCESS_DENIED",
+                    "user_note": "please allow",
+                    "admin_note": "",
+                    "created_ts": 900,
+                    "updated_ts": 900,
+                    "reviewed_ts": 0,
+                    "reviewer": "",
+                    "exception_id": None,
+                },
+            )
+        if "INSERT INTO policy_exceptions" in text:
+            self.inserted_expires_ts = int(params_t[9])
+            return _PolicyApproveResult(lastrowid=11)
+        if "FROM policy_exceptions WHERE id=%s" in text:
+            return _PolicyApproveResult(
+                {
+                    "id": 11,
+                    "proxy_id": "edge-a",
+                    "status": "active",
+                    "block_type": "webfilter",
+                    "client_ip": "192.168.1.55",
+                    "domain": "example.com",
+                    "category": "adult",
+                    "created_ts": 1000,
+                    "updated_ts": 1000,
+                    "created_by": "admin",
+                    "admin_note": "ok",
+                    "expires_ts": self.inserted_expires_ts,
+                    "revoked_ts": 0,
+                    "revoked_by": "",
+                    "source_request_id": 7,
+                },
+            )
+        return _PolicyApproveResult(rowcount=1)
+
+
+def test_policy_request_store_approval_omitted_duration_defaults_not_indefinite(
+    monkeypatch,
+) -> None:
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    conn = _PolicyApproveConn()
+    store = module.PolicyRequestStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(module, "now_ts", lambda: 1000)
+
+    exception = store.approve_request(7, reviewer="admin", admin_note="ok")
+
+    assert exception.expires_ts == (
+        1000 + module.POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS
+    )
+
+
+def test_policy_request_store_approval_indefinite_flag_keeps_no_expiry(
+    monkeypatch,
+) -> None:
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    conn = _PolicyApproveConn()
+    store = module.PolicyRequestStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(module, "now_ts", lambda: 1000)
+
+    exception = store.approve_request(7, reviewer="admin", indefinite=True)
+
+    assert exception.expires_ts == 0
+
+
 def test_policy_request_store_normalizes_approves_lists_and_revokes(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "policy-requests")
     ensure_web_import_path()
@@ -73,7 +187,20 @@ def test_policy_request_store_bounds_direct_approval_durations(tmp_path) -> None
     minimum = approve("min.example", 0)
     default = approve("default.example", "not-int")
     maximum = approve("max.example", 999999999)
-    indefinite = approve("indefinite.example", None)
+    omitted = approve("omitted.example", None)
+
+    indefinite_req = store.create_request(
+        proxy_id="edge-a",
+        client_ip="192.168.1.55",
+        request_url="https://indefinite.example/",
+        domain="indefinite.example",
+    )
+    indefinite = store.approve_request(
+        indefinite_req.id,
+        reviewer="admin",
+        duration_seconds=None,
+        indefinite=True,
+    )
 
     assert minimum.expires_ts - minimum.created_ts == (
         POLICY_EXCEPTION_MIN_DURATION_SECONDS
@@ -83,6 +210,9 @@ def test_policy_request_store_bounds_direct_approval_durations(tmp_path) -> None
     )
     assert maximum.expires_ts - maximum.created_ts == (
         POLICY_EXCEPTION_MAX_DURATION_SECONDS
+    )
+    assert omitted.expires_ts - omitted.created_ts == (
+        POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS
     )
     assert indefinite.expires_ts == 0
 

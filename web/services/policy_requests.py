@@ -374,17 +374,13 @@ class PolicyRequestStore:
         *,
         reviewer: object = "",
         admin_note: object = "",
-        duration_seconds: int | None = None,
+        duration_seconds: object = None,
         indefinite: bool = False,
         proxy_id: str | None = None,
     ) -> PolicyException:
         self.init_db()
         now = now_ts()
-        exp = (
-            0
-            if indefinite or duration_seconds is None
-            else now + _bounded_duration_seconds(duration_seconds)
-        )
+        exp = 0 if indefinite else now + _bounded_duration_seconds(duration_seconds)
         reviewer_s = _text(reviewer, 128)
         note = _text(admin_note, 2000, True)
         scoped_proxy_id = (
