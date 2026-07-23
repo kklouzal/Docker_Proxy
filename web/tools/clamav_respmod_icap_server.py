@@ -365,7 +365,14 @@ def _drain_chunk_trailers(stream: BinaryIO, initial: bytes = b"") -> bytes:
         if line == CRLF:
             return remainder
         trailer = line[:-2]
-        if b":" not in trailer or not trailer.split(b":", 1)[0].strip():
+        if b":" not in trailer:
+            message = "malformed ICAP chunk trailer"
+            raise IcapProtocolError(message)
+        name, value = trailer.split(b":", 1)
+        if not name or not _HTTP_TOKEN_RE.fullmatch(name):
+            message = "malformed ICAP chunk trailer"
+            raise IcapProtocolError(message)
+        if any((char < 32 and char != 9) or char == 127 for char in value):
             message = "malformed ICAP chunk trailer"
             raise IcapProtocolError(message)
 

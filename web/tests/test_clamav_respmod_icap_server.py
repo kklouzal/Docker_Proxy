@@ -276,6 +276,29 @@ def test_icap_chunked_body_allows_zero_ieof_with_trailers() -> None:
     assert continues == 0
 
 
+def test_icap_chunked_body_rejects_malformed_trailer_fields() -> None:
+    server = _load_server()
+
+    malformed = (
+        b"bad trailer: ok",
+        b"Bad@Trailer: ok",
+        b": ok",
+        b"X-Trailer: bad\x00value",
+        b"X-Trailer: bad\x7fvalue",
+    )
+    for trailer in malformed:
+        try:
+            server.read_icap_chunked_body(
+                io.BytesIO(b"2\r\nhe\r\n0; ieof\r\n" + trailer + b"\r\n\r\n"),
+                preview=True,
+            )
+        except server.IcapProtocolError as exc:
+            assert str(exc) == "malformed ICAP chunk trailer"
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"malformed ICAP chunk trailer was accepted: {trailer!r}"
+            raise AssertionError(message)
+
+
 def test_icap_chunked_body_valued_ieof_extension_is_preview_eof() -> None:
     server = _load_server()
     continues = 0
