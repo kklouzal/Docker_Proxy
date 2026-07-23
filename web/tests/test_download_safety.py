@@ -283,6 +283,8 @@ def test_validate_download_url_rejects_percent_encoded_authority_before_dns(
         "http://example.com\t/feed.csv",
         "http://example.com\n.evil/feed.csv",
         "https://public.example:bad/feed.csv",
+        "http://public.example:0/feed.csv",
+        "https://public.example:0/feed.csv",
         "https://public.example:/feed.csv",
         "http://public.example:/feed.csv",
         "https:///feed.csv",

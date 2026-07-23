@@ -328,6 +328,8 @@ def validate_download_url(
         _port = parsed.port
     except ValueError as exc:
         raise ValueError(invalid_url_msg) from exc
+    if _port is not None and _port < 1:
+        raise ValueError(invalid_url_msg)
     if not parsed.netloc or not hostname or parsed.fragment:
         raise ValueError(invalid_url_msg)
     if parsed.username or parsed.password:
