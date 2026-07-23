@@ -20,6 +20,7 @@ from services.helper_runtime import (  # noqa: E402
     split_acl_channel,
     write_acl_response,
 )
+from services.runtime_helpers import env_int as _env_int  # noqa: E402
 from services.safe_browsing_v5 import SafeBrowsingLocalChecker  # noqa: E402
 
 if TYPE_CHECKING:
@@ -49,6 +50,10 @@ def _parse_line(line: str) -> tuple[str | None, str, str]:
     return channel_id, "", ""
 
 
+def _default_log_max_rows() -> int:
+    return _env_int("WEBFILTER_LOG_MAX_ROWS", 5000)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Squid external ACL helper for Google Safe Browsing v5 cached/local-list checks.",
@@ -68,7 +73,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument(
         "--log-max-rows",
         type=int,
-        default=int(os.environ.get("WEBFILTER_LOG_MAX_ROWS", "5000")),
+        default=_default_log_max_rows(),
     )
     args = ap.parse_args(list(argv) if argv is not None else None)
     fail_open = args.fail == "open"

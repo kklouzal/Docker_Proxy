@@ -721,6 +721,24 @@ def test_safe_browsing_legacy_negative_cache_does_not_skip_selected_lookup(
     assert remote_calls == [(target[:4],)]
 
 
+@pytest.mark.parametrize("env_value", ["", "not-an-int"])
+def test_safe_browsing_acl_ignores_invalid_log_max_rows_env_for_argparse_help(
+    monkeypatch, capsys, env_value
+) -> None:
+    from tools import safe_browsing_acl
+
+    monkeypatch.setenv("WEBFILTER_LOG_MAX_ROWS", env_value)
+
+    try:
+        safe_browsing_acl.main(["--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:  # pragma: no cover - argparse --help should exit
+        raise AssertionError
+
+    assert "--log-max-rows" in capsys.readouterr().out
+
+
 def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:
     from tools import safe_browsing_acl
 
