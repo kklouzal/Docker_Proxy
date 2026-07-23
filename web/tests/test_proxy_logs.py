@@ -19,6 +19,36 @@ def test_proxy_logs_reads_only_allowlisted_current_file_tail(
     assert payload["size_bytes"] == 19
 
 
+def test_proxy_log_tail_bounds_match_file_opened_after_log_grows(
+    monkeypatch, tmp_path
+) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    log_path = log_dir / "access.log"
+    log_path.write_text("old\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+
+    real_open = proxy_logs.Path.open
+    grew = False
+
+    def growing_open(self, *args, **kwargs):
+        nonlocal grew
+        if self == log_path and not grew:
+            grew = True
+            with real_open(self, "w", encoding="utf-8") as handle:
+                handle.write("old\nfresh-tail\n")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(proxy_logs.Path, "open", growing_open)
+
+    payload = proxy_logs.read_proxy_log("access", max_bytes=len("fresh-tail\n"))
+
+    assert payload["ok"] is True
+    assert payload["content"] == "fresh-tail\n"
+    assert payload["size_bytes"] == len("old\nfresh-tail\n")
+    assert payload["truncated"] is True
+
+
 def test_proxy_logs_rejects_arbitrary_path_input(monkeypatch, tmp_path) -> None:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()

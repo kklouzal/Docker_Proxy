@@ -30,9 +30,9 @@ def _log_dir() -> Path:
 
 
 def _tail_bytes(path: Path, *, max_bytes: int) -> tuple[str, int, bool]:
-    size = path.stat().st_size
-    offset = max(0, size - max_bytes)
     with path.open("rb") as handle:
+        size = os.fstat(handle.fileno()).st_size
+        offset = max(0, size - max_bytes)
         handle.seek(offset)
         raw = handle.read(max_bytes)
     return raw.decode("utf-8", errors="replace"), size, offset > 0
