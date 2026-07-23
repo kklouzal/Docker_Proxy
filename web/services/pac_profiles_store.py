@@ -86,6 +86,30 @@ def _normalize_pac_dst_v4_cidr(cidr: str) -> tuple[str | None, str]:
     return str(net), ""
 
 
+def _is_ambiguous_ipv4_proxy_host(host: str) -> bool:
+    # ip_address() above accepts canonical IPv4 literals.  Keep numeric legacy
+    # forms (for example inet_aton-style shortened, octal, or hex components)
+    # out of the hostname fallback because resolvers/proxies may disagree on
+    # whether they are names or IP addresses.
+    candidate = host.rstrip(".").lower()
+    if not candidate:
+        return False
+    labels = candidate.split(".")
+    if not 1 <= len(labels) <= 4:
+        return False
+    for label in labels:
+        if not label:
+            return False
+        if label.isdecimal():
+            continue
+        if label.startswith("0x"):
+            digits = label.removeprefix("0x")
+            if digits and all(ch in "0123456789abcdef" for ch in digits):
+                continue
+        return False
+    return True
+
+
 def _is_valid_proxy_host(host: str) -> bool:
     if not host or any(ch.isspace() for ch in host) or "/" in host:
         return False
@@ -95,7 +119,7 @@ def _is_valid_proxy_host(host: str) -> bool:
     except Exception:
         pass
 
-    if len(host) > 253:
+    if _is_ambiguous_ipv4_proxy_host(host) or len(host) > 253:
         return False
     labels = host.split(".")
     return all(

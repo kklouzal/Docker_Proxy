@@ -374,6 +374,16 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
         3128,
         "",
     )
+    assert mod._normalize_proxy_host_port("192.0.2.10", None) == (
+        "192.0.2.10",
+        3128,
+        "",
+    )
+    assert mod._normalize_proxy_host_port("http://192.0.2.10:8080", "") == (
+        "192.0.2.10",
+        8080,
+        "",
+    )
     assert mod._normalize_proxy_host_port("2001:db8::10", None) == (
         "2001:db8::10",
         3128,
@@ -469,6 +479,26 @@ def test_backup_proxy_host_port_normalization_rejects_unsafe_hosts() -> None:
         "-backup.example",
         "backup-.example",
         "backup..example",
+    ):
+        assert mod._normalize_proxy_host_port(host, None) == (
+            None,
+            None,
+            "Invalid proxy host.",
+        )
+
+
+def test_backup_proxy_host_port_normalization_rejects_ambiguous_ipv4_hosts() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    for host in (
+        "010.000.000.001",
+        "192.168.1",
+        "999.999.999.999",
+        "0x7f.0x0.0x0.0x1",
+        "http://010.000.000.001:8080",
+        "http://192.168.1:8080",
+        "http://999.999.999.999:8080",
     ):
         assert mod._normalize_proxy_host_port(host, None) == (
             None,
