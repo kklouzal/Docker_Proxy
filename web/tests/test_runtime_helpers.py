@@ -96,6 +96,16 @@ def test_normalize_hostish_uses_url_parsing_for_scheme_bearing_values() -> None:
     assert normalize_hostish("https://[2001:db8::1]:8443/path") == "2001:db8::1"
 
 
+def test_normalize_hostish_rejects_raw_userinfo_or_email_like_hosts() -> None:
+    for value in (
+        "user@example.com",
+        "operator:secret@example.com",
+        "example.com@evil.test",
+    ):
+        assert normalize_hostish(value) == ""
+        assert extract_domain(value) == ""
+
+
 def test_normalize_hostish_rejects_percent_encoded_authority_delimiters() -> None:
     for value in (
         "https://safe.example%2f.evil.example/path",

@@ -65,7 +65,7 @@ def normalize_domain(value: object) -> str:
     if any(ch in raw for ch in ("/", "?", "#")):
         return ""
     if "@" in raw:
-        raw = raw.rsplit("@", 1)[1]
+        return ""
     if raw.startswith("[") and "]" in raw:
         suffix = raw[raw.index("]") + 1 :].strip()
         if suffix:

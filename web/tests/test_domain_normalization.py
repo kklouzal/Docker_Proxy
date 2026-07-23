@@ -35,6 +35,20 @@ def test_normalize_domain_rejects_malformed_named_ports() -> None:
     assert normalize_domain("http://example.com:http/path") == ""
 
 
+def test_normalize_domain_rejects_raw_userinfo_or_email_like_hosts() -> None:
+    for value in (
+        "user@example.com",
+        "operator:secret@example.com",
+        "example.com@evil.test",
+    ):
+        assert normalize_domain(value) == ""
+        assert looks_like_domain(value) is False
+
+
+def test_normalize_domain_preserves_explicit_url_userinfo_hostname() -> None:
+    assert normalize_domain("https://user:pass@Example.COM:443/path") == "example.com"
+
+
 def test_normalize_domain_rejects_malformed_dns_labels_and_wildcards() -> None:
     for value in (
         "bad domain.example",

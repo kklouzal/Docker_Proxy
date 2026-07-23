@@ -69,7 +69,7 @@ def normalize_hostish(value: object | None) -> str:
     if "#" in host:
         host = host.split("#", 1)[0]
     if "@" in host:
-        host = host.split("@", 1)[1]
+        return ""
     if host.startswith("["):
         closing_bracket = host.find("]")
         if closing_bracket < 0:

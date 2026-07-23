@@ -794,6 +794,16 @@ def test_admin_policy_requests_invalid_mutation_ids_report_controlled_errors(
     assert store.revoked == []
 
 
+def test_policy_request_domain_normalization_rejects_raw_userinfo_or_email_like_hosts() -> None:
+    ensure_web_import_path()
+    from services.policy_requests import normalize_domain
+
+    assert normalize_domain("user@example.com") == ""
+    assert normalize_domain("operator:secret@example.com") == ""
+    assert normalize_domain("example.com@evil.test") == ""
+    assert normalize_domain("https://user:pass@Example.COM:443/path") == "example.com"
+
+
 def test_policy_request_store_rejects_invalid_scope_and_filters_active_exceptions(
     tmp_path,
 ) -> None:
