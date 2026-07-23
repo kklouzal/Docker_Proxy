@@ -1765,11 +1765,35 @@ if (os.environ.get("SESSION_COOKIE_SECURE") or "").strip() in {
     app.config["SESSION_COOKIE_SECURE"] = True
 
 # Session timeout: auto-logout after 8 hours of inactivity (configurable via env).
-try:
-    _session_hours = int(os.environ.get("SESSION_TIMEOUT_HOURS", "8").strip())
-except Exception:
-    _session_hours = 8
-app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=max(1, _session_hours))
+_SESSION_TIMEOUT_DEFAULT_HOURS = 8
+_SESSION_TIMEOUT_MIN_HOURS = 1
+# Keep operator-configured sessions flexible without letting an oversized integer
+# make datetime.timedelta overflow during Admin UI import/startup.
+_SESSION_TIMEOUT_MAX_HOURS = 24 * 30
+
+
+def _configured_session_timeout_hours() -> int:
+    try:
+        configured = int(
+            (
+                os.environ.get(
+                    "SESSION_TIMEOUT_HOURS",
+                    str(_SESSION_TIMEOUT_DEFAULT_HOURS),
+                )
+                or str(_SESSION_TIMEOUT_DEFAULT_HOURS)
+            ).strip()
+        )
+    except Exception:
+        configured = _SESSION_TIMEOUT_DEFAULT_HOURS
+    return min(
+        _SESSION_TIMEOUT_MAX_HOURS,
+        max(_SESSION_TIMEOUT_MIN_HOURS, configured),
+    )
+
+
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
+    hours=_configured_session_timeout_hours()
+)
 
 # Ensure there is at least one login.
 with contextlib.suppress(Exception):

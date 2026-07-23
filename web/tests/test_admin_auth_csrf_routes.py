@@ -174,6 +174,23 @@ def test_session_timeout_configuration_is_bounded_to_at_least_one_hour(
     assert loaded.module.app.config["PERMANENT_SESSION_LIFETIME"] == timedelta(hours=1)
 
 
+@pytest.mark.parametrize("value", ["", "not-an-int"])
+def test_session_timeout_configuration_defaults_on_blank_or_malformed_values(
+    monkeypatch, tmp_path, value: str
+) -> None:
+    monkeypatch.setenv("SESSION_TIMEOUT_HOURS", value)
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    assert loaded.module.app.config["PERMANENT_SESSION_LIFETIME"] == timedelta(hours=8)
+
+
+def test_session_timeout_configuration_caps_oversized_values(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("SESSION_TIMEOUT_HOURS", "100000000000000000000000000000000")
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    assert loaded.module.app.config["PERMANENT_SESSION_LIFETIME"] == timedelta(days=30)
+
+
 def test_csrf_wrong_header_with_correct_form_field_is_rejected(
     monkeypatch, tmp_path
 ) -> None:
