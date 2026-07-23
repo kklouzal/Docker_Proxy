@@ -366,6 +366,13 @@ def test_saml_profile_rejects_parser_ambiguous_metadata_urls(
         store.save_profile({"metadata_url": metadata_url})
 
 
+def test_saml_profile_rejects_zero_metadata_url_port() -> None:
+    store = MemorySamlAuthStore()
+
+    with pytest.raises(ValueError, match="metadata URL includes an invalid port"):
+        store.save_profile({"metadata_url": "https://adfs.example.local:0/metadata.xml"})
+
+
 def test_saml_profile_accepts_valid_public_base_url_port() -> None:
     store = MemorySamlAuthStore()
 
@@ -410,6 +417,7 @@ def test_saml_profile_rejects_parser_ambiguous_public_base_urls(
     [
         "https://admin.example.test:99999",
         "https://admin.example.test:notaport",
+        "https://admin.example.test:0",
     ],
 )
 def test_saml_profile_rejects_invalid_public_base_url_ports(
@@ -501,6 +509,30 @@ def test_saml_fetch_rejects_parser_ambiguous_https_metadata_redirects(
         store.fetch_metadata(profile)
 
 
+def test_saml_fetch_rejects_zero_port_https_metadata_redirect(monkeypatch) -> None:
+    store = MemorySamlAuthStore()
+    profile = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            "require_https": "1",
+        }
+    )
+
+    def fake_urlopen(_request, *, timeout, context):
+        return _FakeMetadataResponse(
+            SAMPLE_METADATA.encode(),
+            "https://login.example.local:0/FederationMetadata.xml",
+        )
+
+    monkeypatch.setattr(saml_auth, "urlopen", fake_urlopen)
+
+    with pytest.raises(
+        ValueError,
+        match="metadata final response URL includes an invalid port",
+    ):
+        store.fetch_metadata(profile)
+
+
 def test_saml_fetch_accepts_https_metadata_redirect_to_https(monkeypatch) -> None:
     store = MemorySamlAuthStore()
     profile = store.save_profile(
@@ -574,7 +606,7 @@ def test_build_saml_settings_revalidates_cached_idp_endpoint_locations() -> None
         parsed_metadata_json=json.dumps(parsed, sort_keys=True),
     )
 
-    with pytest.raises(ValueError, match="SingleSignOnService.*must use https://"):
+    with pytest.raises(ValueError, match=r"SingleSignOnService.*must use https://"):
         build_saml_settings(
             profile,
             _saml_request("https://admin.example.test/auth/saml/login"),

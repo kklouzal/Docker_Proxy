@@ -75,10 +75,13 @@ def _normalize_saml_url(value: Any, *, label: str) -> str:
         msg = f"SAML {label} URL must not include credentials or fragments."
         raise ValueError(msg)
     try:
-        _port = parsed.port
+        port = parsed.port
     except ValueError as exc:
         msg = f"SAML {label} URL includes an invalid port."
         raise ValueError(msg) from exc
+    if port == 0:
+        msg = f"SAML {label} URL includes an invalid port."
+        raise ValueError(msg)
     if _decoded_authority_component_is_unsafe(parsed.netloc) or any(
         _decoded_url_component_is_unsafe(component)
         for component in (parsed.path, parsed.query)
@@ -618,10 +621,13 @@ class SamlAuthStore:
             msg = "SAML public base URL must not include credentials, query, or fragment."
             raise ValueError(msg)
         try:
-            _port = parsed.port
+            port = parsed.port
         except ValueError as exc:
             msg = "SAML public base URL includes an invalid port."
             raise ValueError(msg) from exc
+        if port == 0:
+            msg = "SAML public base URL includes an invalid port."
+            raise ValueError(msg)
         if _decoded_authority_component_is_unsafe(parsed.netloc) or any(
             _decoded_url_component_is_unsafe(component) for component in (parsed.path,)
         ):
