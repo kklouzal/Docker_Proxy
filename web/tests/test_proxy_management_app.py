@@ -167,6 +167,31 @@ def test_proxy_management_api_accepts_bearer_and_x_proxy_token(monkeypatch) -> N
     assert bad.status_code == 403
 
 
+def test_proxy_management_auth_uses_constant_time_compare(monkeypatch) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    proxy_app.runtime = _Runtime()
+    client = proxy_app.app.test_client()
+    comparisons: list[tuple[str, str]] = []
+
+    def observed_compare(provided: str, expected: str) -> bool:
+        comparisons.append((provided, expected))
+        return provided == expected
+
+    monkeypatch.setattr(proxy_app.hmac, "compare_digest", observed_compare)
+
+    bearer = _management_get(
+        client, "/api/manage/health", headers={"Authorization": "Bearer secret"}
+    )
+    bad = _management_get(
+        client, "/api/manage/health", headers={"Authorization": "Bearer wrong"}
+    )
+
+    assert bearer.status_code == 200
+    assert bad.status_code == 403
+    assert comparisons == [("secret", "secret"), ("wrong", "secret")]
+
+
 def test_proxy_management_sync_parses_string_force_false(monkeypatch) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")

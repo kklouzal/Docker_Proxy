@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import time
 from collections.abc import Callable
@@ -64,7 +65,7 @@ def _require_management_auth[F: Callable[..., Any]](func: F) -> F:
         expected = _expected_token()
         if expected:
             provided = _provided_token()
-            if not provided or provided != expected:
+            if not provided or not hmac.compare_digest(provided, expected):
                 abort(403)
         return func(*args, **kwargs)
 
