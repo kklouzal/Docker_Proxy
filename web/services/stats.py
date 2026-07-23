@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.logutil import log_exception_throttled
+from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,10 @@ _CACHE_HIT_RATE_SOURCE_VALUE: str = ""
 _CACHE_CPU_INFLIGHT = False
 _CACHE_CPU_TS = 0.0
 _CACHE_CPU_VALUE: dict[str, Any] | None = None
+
+_CPU_SAMPLE_DEFAULT_SECONDS = 0.15
+# Keep env-tuned CPU sampling useful while preventing unbounded stats/UI latency.
+_CPU_SAMPLE_MAX_SECONDS = 1.0
 
 
 @dataclass
@@ -399,10 +404,12 @@ def get_stats() -> dict[str, Any]:
     hit_rate_ttl = _env_int("STATS_CACHE_HIT_RATE_TTL_SECONDS", 5, minimum=1)
     cpu_ttl = _env_int("STATS_CACHE_CPU_TTL_SECONDS", 2, minimum=1)
 
-    try:
-        cpu_sample_seconds = float(os.environ.get("STATS_CPU_SAMPLE_SECONDS", "0.15"))
-    except Exception:
-        cpu_sample_seconds = 0.15
+    cpu_sample_seconds = _env_float(
+        "STATS_CPU_SAMPLE_SECONDS",
+        _CPU_SAMPLE_DEFAULT_SECONDS,
+        minimum=0.05,
+        maximum=_CPU_SAMPLE_MAX_SECONDS,
+    )
 
     mem = get_meminfo()
     used_mem = None

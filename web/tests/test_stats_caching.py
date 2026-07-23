@@ -124,6 +124,29 @@ def test_get_stats_invalid_ttl_env_falls_back_without_crashing(monkeypatch) -> N
     assert calls == {"dir": 1, "disk": 1, "hit": 1, "cpu": 1, "load": 1}
 
 
+def test_get_stats_cpu_sample_env_is_finite_and_bounded(monkeypatch) -> None:
+    for raw_value, expected in (
+        ("invalid", stats._CPU_SAMPLE_DEFAULT_SECONDS),
+        ("nan", stats._CPU_SAMPLE_DEFAULT_SECONDS),
+        ("inf", stats._CPU_SAMPLE_DEFAULT_SECONDS),
+        ("999999", stats._CPU_SAMPLE_MAX_SECONDS),
+        ("0.25", 0.25),
+    ):
+        _reset_cpu_cache()
+        monkeypatch.setenv("STATS_CPU_SAMPLE_SECONDS", raw_value)
+        seen: list[float] = []
+
+        def fake_cpu(sample_seconds: float = 0.15) -> float:
+            seen.append(sample_seconds)
+            return 12.34
+
+        monkeypatch.setattr(stats, "get_cpu_utilization_percent", fake_cpu)
+        monkeypatch.setattr(stats, "get_loadavg", lambda: None)
+
+        assert stats.get_stats()["cpu"]["util_percent"] == pytest.approx(12.34)
+        assert seen == [pytest.approx(expected)]
+
+
 def test_get_stats_ttl_env_values_are_clamped_to_existing_minimums(monkeypatch) -> None:
     _reset_stats_caches()
     monkeypatch.setenv("STATS_CACHE_DIR_SIZE_TTL_SECONDS", "0")
