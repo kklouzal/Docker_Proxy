@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 from services import saml_auth
-from services.saml_auth import SamlAuthStore, parse_saml_metadata, prepare_flask_request
+from services.saml_auth import (
+    SamlAuthStore,
+    build_saml_settings,
+    parse_saml_metadata,
+    prepare_flask_request,
+)
 
 SIGNING_CERT = "MIICsigningCERTvalue"
 ENCRYPTION_CERT = "MIICencryptionCERTvalue"
@@ -147,9 +152,11 @@ class MemorySamlAuthStore(SamlAuthStore):
 
 
 def _saml_request(url: str, *, scheme: str = "https", server_port: str = ""):
-    host = url.split("://", 1)[1].split("/", 1)[0]
+    root = url.split("://", 1)[1].split("/", 1)[0]
+    host = root
     return SimpleNamespace(
         url=url,
+        url_root=f"{scheme}://{root}/",
         scheme=scheme,
         host=host,
         path="/auth/saml/login",
@@ -552,6 +559,26 @@ def test_saml_refresh_rejects_http_idp_endpoint_locations_when_https_required(
     assert "must use https://" in result.detail
     assert store.profile.last_refresh_ok is False
     assert store.profile.parsed_metadata_json == ""
+
+
+def test_build_saml_settings_revalidates_cached_idp_endpoint_locations() -> None:
+    parsed = parse_saml_metadata(
+        _metadata_with_service_locations(
+            sso_location="http://adfs.example.local/adfs/ls/"
+        )
+    )
+    profile = replace(
+        MemorySamlAuthStore().default_profile(),
+        require_https=True,
+        raw_metadata_xml="cached",
+        parsed_metadata_json=json.dumps(parsed, sort_keys=True),
+    )
+
+    with pytest.raises(ValueError, match="SingleSignOnService.*must use https://"):
+        build_saml_settings(
+            profile,
+            _saml_request("https://admin.example.test/auth/saml/login"),
+        )
 
 
 def test_saml_refresh_accepts_http_idp_endpoint_locations_when_https_disabled(

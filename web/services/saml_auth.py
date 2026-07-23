@@ -903,6 +903,10 @@ def build_saml_settings(
         msg = "SAML metadata cache is empty. Refresh metadata before using SAML."
         raise ValueError(msg)
     parsed = profile.parsed_metadata if profile.has_metadata else {}
+    _validate_saml_metadata_service_locations(
+        parsed,
+        require_https=profile.require_https,
+    )
     sp = build_sp_info(profile, request)
     return {
         "strict": True,
