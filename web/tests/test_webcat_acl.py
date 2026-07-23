@@ -3,6 +3,8 @@ import pathlib
 import sys
 from typing import NoReturn
 
+import pytest
+
 from .mysql_test_utils import configure_test_mysql_env
 
 
@@ -179,6 +181,23 @@ def test_webcat_acl_response_can_include_matched_category(capsys) -> None:
     webcat_acl._write_response("7", True, message="category=adult")
 
     assert capsys.readouterr().out == "7 OK message=category=adult\n"
+
+
+@pytest.mark.parametrize("env_value", ["", "not-an-int"])
+def test_webcat_acl_ignores_invalid_log_max_rows_env_for_argparse_help(
+    monkeypatch, capsys, env_value
+) -> None:
+    webcat_acl = _webcat_acl_module()
+    monkeypatch.setenv("WEBFILTER_LOG_MAX_ROWS", env_value)
+
+    try:
+        webcat_acl.main(["--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:  # pragma: no cover - argparse --help should exit
+        raise AssertionError("expected argparse --help to exit")
+
+    assert "--log-max-rows" in capsys.readouterr().out
 
 
 def test_webcat_acl_discards_stale_remote_connection_after_lookup_error() -> None:

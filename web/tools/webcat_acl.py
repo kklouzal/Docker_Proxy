@@ -754,6 +754,10 @@ def _write_response(
     write_acl_response(channel_id, ok, message=message)
 
 
+def _default_log_max_rows() -> int:
+    return _env_int("WEBFILTER_LOG_MAX_ROWS", 5000)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Squid external ACL helper for domain category blocking (local categories DB).",
@@ -761,7 +765,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument(
         "--log-max-rows",
         type=int,
-        default=int(os.environ.get("WEBFILTER_LOG_MAX_ROWS", "5000")),
+        default=_default_log_max_rows(),
     )
     ap.add_argument(
         "--fail",
