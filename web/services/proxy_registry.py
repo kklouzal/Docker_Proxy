@@ -48,6 +48,10 @@ def _has_unsafe_url_text(value: str) -> bool:
     return any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value)
 
 
+def _has_unsafe_query_text(value: str) -> bool:
+    return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+
+
 def _has_empty_explicit_authority_port(netloc: str) -> bool:
     authority = netloc.rsplit("@", 1)[-1]
     if authority.startswith("["):
@@ -101,7 +105,7 @@ def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac")
     query = parsed.query
     if query:
         decoded_query = unquote(query)
-        if _has_unsafe_url_text(decoded_query):
+        if _has_unsafe_query_text(decoded_query):
             return fallback
     return f"{path}?{query}" if query else path
 
