@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import socket
 import socketserver
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 ResponsePayload = bytes | list[bytes]
 
@@ -240,6 +243,59 @@ def test_icap_readiness_waits_until_options_ready(tmp_path, monkeypatch) -> None
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_icap_readiness_cli_ignores_malformed_numeric_env_defaults(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _add_repo_paths()
+    import icap_readiness  # type: ignore
+
+    config = tmp_path / "20-icap.conf"
+    config.write_text("", encoding="utf-8")
+    status_file = tmp_path / "status.json"
+    monkeypatch.setenv("SQUID_ICAP_READY_PROBE_TIMEOUT_SECONDS", "bogus")
+    monkeypatch.setenv("SQUID_ICAP_READY_TIMEOUT_SECONDS", "also-bogus")
+    monkeypatch.setenv("SQUID_ICAP_READY_INTERVAL_SECONDS", "nan")
+
+    assert (
+        icap_readiness.main(
+            [
+                "wait",
+                "--config",
+                str(config),
+                "--status-file",
+                str(status_file),
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    assert json.loads(capsys.readouterr().out) == {
+        "detail": "No ICAP services are configured.",
+        "ok": True,
+        "services": [],
+    }
+    assert json.loads(status_file.read_text(encoding="utf-8"))[
+        "timeout_seconds"
+    ] == pytest.approx(75.0)
+
+
+def test_icap_readiness_cli_rejects_non_finite_numeric_flags(capsys) -> None:
+    _add_repo_paths()
+    import icap_readiness  # type: ignore
+
+    try:
+        icap_readiness.main(["check", "--probe-timeout", "inf"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:  # pragma: no cover - argparse should exit for invalid values
+        msg = "expected argparse to reject non-finite timeout"
+        raise AssertionError(msg)
+
+    captured = capsys.readouterr()
+    assert "argument --probe-timeout: must be a finite number" in captured.err
 
 
 def test_cicap_av_runner_optional_fallback_answers_options(tmp_path, monkeypatch) -> None:

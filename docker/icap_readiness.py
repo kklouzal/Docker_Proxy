@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import socket
@@ -26,6 +27,7 @@ DEFAULT_CONFIG = "/etc/squid/conf.d/20-icap.conf"
 DEFAULT_STATUS_FILE = "/var/lib/squid-flask-proxy/icap-readiness.json"
 DEFAULT_TIMEOUT_SECONDS = 75.0
 DEFAULT_PROBE_TIMEOUT_SECONDS = 1.0
+DEFAULT_INTERVAL_SECONDS = 0.25
 MAX_ICAP_HEADER_BYTES = 8192
 ICAP_STATUS_LINE_RE = re.compile(r"^ICAP/1\.0 (?P<code>[0-9]{3}) (?P<reason>[!-~](?:[ -~]*[!-~])?)$")
 ICAP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
@@ -60,6 +62,29 @@ def _env_enabled(name: str, *, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in TRUE_VALUES
+
+
+def _finite_float(value: str) -> float:
+    error = "must be a finite number"
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(error) from exc
+    if not math.isfinite(number):
+        raise argparse.ArgumentTypeError(error)
+    return number
+
+
+def _env_float(name: str, default: float, *, minimum: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        value = float(default)
+    else:
+        try:
+            value = _finite_float(raw)
+        except argparse.ArgumentTypeError:
+            value = float(default)
+    return max(float(minimum), value)
 
 
 def _logical_lines(text: str):
@@ -335,20 +360,32 @@ def main(argv: list[str] | None = None) -> int:
         sub.add_argument("--config", action="append", dest="configs")
         sub.add_argument(
             "--probe-timeout",
-            type=float,
-            default=float(os.environ.get("SQUID_ICAP_READY_PROBE_TIMEOUT_SECONDS", DEFAULT_PROBE_TIMEOUT_SECONDS)),
+            type=_finite_float,
+            default=_env_float(
+                "SQUID_ICAP_READY_PROBE_TIMEOUT_SECONDS",
+                DEFAULT_PROBE_TIMEOUT_SECONDS,
+                minimum=0.1,
+            ),
         )
         sub.add_argument("--json", action="store_true")
         if name == "wait":
             sub.add_argument(
                 "--timeout",
-                type=float,
-                default=float(os.environ.get("SQUID_ICAP_READY_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)),
+                type=_finite_float,
+                default=_env_float(
+                    "SQUID_ICAP_READY_TIMEOUT_SECONDS",
+                    DEFAULT_TIMEOUT_SECONDS,
+                    minimum=0.1,
+                ),
             )
             sub.add_argument(
                 "--interval",
-                type=float,
-                default=float(os.environ.get("SQUID_ICAP_READY_INTERVAL_SECONDS", "0.25")),
+                type=_finite_float,
+                default=_env_float(
+                    "SQUID_ICAP_READY_INTERVAL_SECONDS",
+                    DEFAULT_INTERVAL_SECONDS,
+                    minimum=0.05,
+                ),
             )
             sub.add_argument(
                 "--status-file",
