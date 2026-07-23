@@ -115,6 +115,26 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
     try:
         text = header_bytes.decode("iso-8859-1")
@@ -1343,46 +1363,38 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--host", default=os.environ.get("CLAMAV_RESPMOD_HOST", "127.0.0.1")
     )
     parser.add_argument(
-        "--port", type=int, default=int(os.environ.get("CLAMAV_RESPMOD_PORT", "15001"))
+        "--port", type=int, default=_env_int("CLAMAV_RESPMOD_PORT", 15001)
     )
     parser.add_argument(
         "--clamd-host", default=os.environ.get("CLAMD_HOST", "127.0.0.1")
     )
     parser.add_argument(
-        "--clamd-port", type=int, default=int(os.environ.get("CLAMD_PORT", "3310"))
+        "--clamd-port", type=int, default=_env_int("CLAMD_PORT", 3310)
     )
     parser.add_argument(
         "--clamd-timeout",
         type=float,
-        default=float(os.environ.get("CLAMD_TIMEOUT", "5")),
+        default=_env_float("CLAMD_TIMEOUT", 5.0),
     )
     parser.add_argument(
         "--max-scan-bytes",
         type=int,
-        default=int(
-            os.environ.get("CLAMAV_STREAM_MAX_BYTES", str(DEFAULT_MAX_SCAN_BYTES))
-        ),
+        default=_env_int("CLAMAV_STREAM_MAX_BYTES", DEFAULT_MAX_SCAN_BYTES),
     )
     parser.add_argument(
         "--client-timeout",
         type=float,
-        default=float(
-            os.environ.get("CLAMAV_RESPMOD_CLIENT_TIMEOUT", str(DEFAULT_CLIENT_TIMEOUT))
-        ),
+        default=_env_float("CLAMAV_RESPMOD_CLIENT_TIMEOUT", DEFAULT_CLIENT_TIMEOUT),
     )
     parser.add_argument(
         "--max-connections",
         type=int,
-        default=int(
-            os.environ.get(
-                "CLAMAV_RESPMOD_MAX_CONNECTIONS", str(DEFAULT_MAX_CONNECTIONS)
-            )
-        ),
+        default=_env_int("CLAMAV_RESPMOD_MAX_CONNECTIONS", DEFAULT_MAX_CONNECTIONS),
     )
     parser.add_argument(
         "--max-scans",
         type=int,
-        default=int(os.environ.get("CLAMAV_RESPMOD_MAX_SCANS", str(DEFAULT_MAX_SCANS))),
+        default=_env_int("CLAMAV_RESPMOD_MAX_SCANS", DEFAULT_MAX_SCANS),
     )
     parser.add_argument("--fail-open", dest="fail_open", action="store_true")
     parser.add_argument("--fail-closed", dest="fail_open", action="store_false")

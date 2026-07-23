@@ -4080,3 +4080,62 @@ def test_respmod_runtime_args_bound_clients_and_concurrency(monkeypatch) -> None
     assert math.isclose(args.client_timeout, 0.1)
     assert args.max_connections == 1
     assert args.max_scans == 1
+
+
+def test_respmod_runtime_args_cli_overrides_malformed_numeric_env(monkeypatch) -> None:
+    server = _load_server()
+    monkeypatch.setenv("CLAMAV_RESPMOD_PORT", "not-an-int")
+    monkeypatch.setenv("CLAMD_PORT", "")
+    monkeypatch.setenv("CLAMD_TIMEOUT", "not-a-float")
+    monkeypatch.setenv("CLAMAV_STREAM_MAX_BYTES", " ")
+    monkeypatch.setenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", "bad")
+    monkeypatch.setenv("CLAMAV_RESPMOD_MAX_CONNECTIONS", "nope")
+    monkeypatch.setenv("CLAMAV_RESPMOD_MAX_SCANS", "also-nope")
+
+    args = server._parse_args(
+        [
+            "--port",
+            "15002",
+            "--clamd-port",
+            "3311",
+            "--clamd-timeout",
+            "7.5",
+            "--max-scan-bytes",
+            "4096",
+            "--client-timeout",
+            "1.5",
+            "--max-connections",
+            "8",
+            "--max-scans",
+            "4",
+        ]
+    )
+
+    assert args.port == 15002
+    assert args.clamd_port == 3311
+    assert math.isclose(args.clamd_timeout, 7.5)
+    assert args.max_scan_bytes == 4096
+    assert math.isclose(args.client_timeout, 1.5)
+    assert args.max_connections == 8
+    assert args.max_scans == 4
+
+
+def test_respmod_runtime_args_malformed_numeric_env_uses_defaults(monkeypatch) -> None:
+    server = _load_server()
+    monkeypatch.setenv("CLAMAV_RESPMOD_PORT", "not-an-int")
+    monkeypatch.setenv("CLAMD_PORT", "")
+    monkeypatch.setenv("CLAMD_TIMEOUT", "not-a-float")
+    monkeypatch.setenv("CLAMAV_STREAM_MAX_BYTES", " ")
+    monkeypatch.setenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", "bad")
+    monkeypatch.setenv("CLAMAV_RESPMOD_MAX_CONNECTIONS", "nope")
+    monkeypatch.setenv("CLAMAV_RESPMOD_MAX_SCANS", "also-nope")
+
+    args = server._parse_args([])
+
+    assert args.port == 15001
+    assert args.clamd_port == 3310
+    assert math.isclose(args.clamd_timeout, 5.0)
+    assert args.max_scan_bytes == server.DEFAULT_MAX_SCAN_BYTES
+    assert math.isclose(args.client_timeout, server.DEFAULT_CLIENT_TIMEOUT)
+    assert args.max_connections == server.DEFAULT_MAX_CONNECTIONS
+    assert args.max_scans == server.DEFAULT_MAX_SCANS
