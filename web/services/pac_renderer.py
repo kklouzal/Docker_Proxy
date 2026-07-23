@@ -669,11 +669,30 @@ def read_materialized_pac_state_sha(
         return ""
 
 
+def _safe_manifest_relative_path(value: object) -> str:
+    candidate = str(value or "").strip().replace("\\", "/")
+    if not candidate or candidate.startswith("/"):
+        return ""
+    parts = candidate.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return ""
+    if ":" in parts[0]:
+        return ""
+    rel_path = os.path.normpath(candidate).replace("\\", "/")
+    if not rel_path or rel_path in {".", ".."} or rel_path.startswith("../"):
+        return ""
+    return rel_path
+
+
+def _manifest_fallback_file(manifest: dict[str, object]) -> str:
+    return _safe_manifest_relative_path(manifest.get("fallback_file")) or "fallback.pac"
+
+
 def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
+    fallback_file = _manifest_fallback_file(manifest)
     profiles = manifest.get("profiles")
     if not isinstance(profiles, list):
-        fallback = manifest.get("fallback_file")
-        return str(fallback or "fallback.pac")
+        return fallback_file
 
     try:
         parsed_ip = ipaddress.ip_address((client_ip or "").strip())
@@ -687,7 +706,7 @@ def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
         if not isinstance(entry, dict):
             continue
         client_cidr = str(entry.get("client_cidr") or "").strip()
-        file_name = str(entry.get("file") or "").strip()
+        file_name = _safe_manifest_relative_path(entry.get("file"))
         if not file_name:
             continue
         if not client_cidr:
@@ -710,7 +729,7 @@ def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
         return best_match
     if catch_all:
         return catch_all
-    return str(manifest.get("fallback_file") or "fallback.pac")
+    return fallback_file
 
 
 def _pac_string_literal_fragment(value: str) -> str:
