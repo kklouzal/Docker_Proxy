@@ -401,6 +401,58 @@ def test_advproxy_contract_allows_pac_only_without_static_proxy() -> None:
     assert result.legacy_set_proxy_command == "netsh winhttp reset proxy"
 
 
+def test_advproxy_contract_accepts_https_pac_url_with_path_query_and_port() -> None:
+    result = build_contract_output(
+        {
+            "proxy_host": "proxy.example",
+            "proxy_port": 3128,
+            "destination_schemes": ["http", "https"],
+            "autoconfig_url": "https://pac.example.local:8443/winhttp/proxy.pac?site=main",
+            "advproxy_scope": "user",
+        },
+    )
+
+    parsed = json.loads(result.advproxy_json)
+    assert parsed["AutoconfigUrl"] == "https://pac.example.local:8443/winhttp/proxy.pac?site=main"
+    assert result.static_registry_available is False
+    assert "setting-scope=user" in result.advproxy_command
+    assert "https://pac.example.local:8443/winhttp/proxy.pac?site=main" in result.advproxy_command
+
+
+@pytest.mark.parametrize(
+    "autoconfig_url",
+    [
+        "not-a-url",
+        "/proxy.pac",
+        "proxy.example/proxy.pac",
+        "ftp://proxy.example/proxy.pac",
+        "file://proxy.example/proxy.pac",
+        "http:///proxy.pac",
+        "http://operator:secret@proxy.example/proxy.pac",
+        "https://proxy.example/proxy.pac#deployment",
+        "https://proxy.example:bad/proxy.pac",
+        "https://proxy.example:65536/proxy.pac",
+        "https://010.000.000.001/proxy.pac",
+        "https://proxy.example/proxy pac",
+        " https://proxy.example/proxy.pac",
+        "https://proxy.example/proxy.pac\n",
+    ],
+)
+def test_advproxy_contract_rejects_invalid_autoconfig_urls(
+    autoconfig_url: str,
+) -> None:
+    with pytest.raises(WinHttpBuilderError, match="Autoconfig URL"):
+        build_contract_output(
+            {
+                "proxy_host": "",
+                "proxy_port": "",
+                "destination_schemes": [],
+                "autoconfig_url": autoconfig_url,
+                "advproxy_scope": "machine",
+            },
+        )
+
+
 def test_tracing_command_validates_documented_values() -> None:
     assert (
         build_tracing_command(

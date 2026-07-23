@@ -333,6 +333,40 @@ def _normalize_scheme_list(values: Iterable[str]) -> list[str]:
     return normalized
 
 
+def _normalize_autoconfig_url(value: object) -> str:
+    raw_url = str(value or "")
+    autoconfig_url = raw_url.strip()
+    if raw_url and (raw_url != autoconfig_url or any(ch.isspace() for ch in raw_url)):
+        msg = "Autoconfig URL must not contain whitespace."
+        raise WinHttpBuilderError(msg)
+    if not autoconfig_url:
+        return ""
+    _validate_command_value(autoconfig_url, "Autoconfig URL")
+    try:
+        parsed = urlsplit(autoconfig_url)
+        port = parsed.port
+    except ValueError as exc:
+        msg = "Autoconfig URL must be a valid http:// or https:// absolute URL."
+        raise WinHttpBuilderError(msg) from exc
+    if (parsed.scheme or "").lower() not in {"http", "https"}:
+        msg = "Autoconfig URL must use http:// or https://."
+        raise WinHttpBuilderError(msg)
+    if not parsed.netloc or parsed.hostname is None:
+        msg = "Autoconfig URL must include a host name or IP address."
+        raise WinHttpBuilderError(msg)
+    if parsed.username or parsed.password:
+        msg = "Autoconfig URL must not include credentials."
+        raise WinHttpBuilderError(msg)
+    if parsed.fragment:
+        msg = "Autoconfig URL must not include a fragment."
+        raise WinHttpBuilderError(msg)
+    if parsed.netloc.endswith(":") or (port is not None and port < 1):
+        msg = "Autoconfig URL port must be an integer from 1 to 65535."
+        raise WinHttpBuilderError(msg)
+    _validate_proxy_host_identity(parsed.hostname, "Autoconfig URL host")
+    return autoconfig_url
+
+
 def _validate_custom_proxy_target(target: str) -> None:
     value = (target or "").strip()
     if not value:
@@ -603,7 +637,7 @@ def build_advproxy_settings_json(
     payload = {
         "Proxy": proxy_string or "",
         "ProxyBypass": bypass_string or "",
-        "AutoconfigUrl": (autoconfig_url or "").strip(),
+        "AutoconfigUrl": _normalize_autoconfig_url(autoconfig_url or ""),
         "AutoDetect": bool(autodetect),
     }
     for key in DOCUMENTED_ADVPROXY_KEYS:
@@ -685,7 +719,7 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
     schemes = form.get("destination_schemes") or []
     if isinstance(schemes, str):
         schemes = [schemes]
-    autoconfig_url = str(form.get("autoconfig_url") or "").strip()
+    autoconfig_url = _normalize_autoconfig_url(str(form.get("autoconfig_url") or ""))
     autodetect = _form_bool(form, "autodetect")
     proxy_host = str(form.get("proxy_host") or "")
     custom_proxy_map = str(form.get("custom_proxy_map") or "")
@@ -721,7 +755,6 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
     if "<local>" not in bypass_string.lower().split(";"):
         warnings.append("<local> is not present in the bypass list.")
     if autoconfig_url:
-        _validate_command_value(autoconfig_url, "Autoconfig URL")
         warnings.append(
             "Autoconfig/PAC URL deployment is represented by advproxy JSON/commands, not by the basic static WinHttpSettings binary.",
         )

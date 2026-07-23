@@ -91,6 +91,7 @@
         <div>
           <label for="autoconfig_url">Autoconfig/PAC URL</label>
           <input id="autoconfig_url" name="autoconfig_url" type="url" value="{{ form.autoconfig_url }}" placeholder="http://proxy.example.lan/proxy.pac" />
+          <div class="surface-note small">Optional. Must be an absolute http:// or https:// URL with a host; credentials, fragments, whitespace, and command metacharacters are rejected.</div>
         </div>
         <label class="checkbox-inline">
           <input type="checkbox" name="autodetect" {% if form.autodetect %}checked{% endif %} />
