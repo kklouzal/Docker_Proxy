@@ -205,6 +205,27 @@ def test_spa_form_posts_include_clicked_submit_action_and_clear_cached_pages() -
     assert "buildSubmitFormData(form, event.submitter)" in js
 
 
+def test_spa_submit_interceptor_preserves_submitter_overrides() -> None:
+    js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
+
+    assert "const resolveSubmitRequest = (form, submitter)" in js
+    assert "getSubmitterFormAttribute(submitter, 'formaction')" in js
+    assert "getSubmitterFormAttribute(submitter, 'formmethod')" in js
+    assert "getSubmitterFormAttribute(submitter, 'formenctype')" in js
+    assert "getSubmitterFormAttribute(submitter, 'formtarget')" in js
+    assert "enctype !== 'multipart/form-data' && enctype !== 'application/x-www-form-urlencoded'" in js
+    assert "if (target && target !== '_self') return;" in js
+    assert "buildUrlEncodedSubmitBody(form, event.submitter)" in js
+    assert "buildSubmitFormData(form, event.submitter)" in js
+
+
+def test_administration_directory_provider_external_submitters_share_main_form() -> None:
+    html = (TEMPLATES / "administration.html").read_text(encoding="utf-8")
+
+    assert 'form="{{ current_tab }}-auth-provider-form" name="action" value="scan_auth_provider"' in html
+    assert 'form="{{ current_tab }}-auth-provider-form" name="action" value="test_auth_provider"' in html
+
+
 def test_spa_operation_polling_preserves_rendered_proxy_scope() -> None:
     js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
 

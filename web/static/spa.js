@@ -1300,6 +1300,38 @@
     return body;
   };
 
+  const getSubmitterFormAttribute = (submitter, name) => {
+    if (!(submitter instanceof HTMLElement)) return null;
+    if (!submitter.hasAttribute(name)) return null;
+    return submitter.getAttribute(name) || '';
+  };
+
+  const resolveSubmitRequest = (form, submitter) => {
+    const actionOverride = getSubmitterFormAttribute(submitter, 'formaction');
+    const methodOverride = getSubmitterFormAttribute(submitter, 'formmethod');
+    const enctypeOverride = getSubmitterFormAttribute(submitter, 'formenctype');
+    const targetOverride = getSubmitterFormAttribute(submitter, 'formtarget');
+    return {
+      action: actionOverride !== null ? (actionOverride || window.location.href) : (form.getAttribute('action') || window.location.href),
+      method: (methodOverride || form.getAttribute('method') || 'GET').toUpperCase(),
+      enctype: String(enctypeOverride || form.getAttribute('enctype') || 'application/x-www-form-urlencoded').toLowerCase(),
+      target: targetOverride !== null ? targetOverride : (form.getAttribute('target') || ''),
+    };
+  };
+
+  const buildUrlEncodedSubmitBody = (form, submitter) => {
+    const formData = buildSubmitFormData(form, submitter);
+    const params = new URLSearchParams();
+    for (const [key, value] of formData.entries()) {
+      if (typeof value === 'string') {
+        params.append(key, value);
+      } else if (value && typeof value.name === 'string') {
+        params.append(key, value.name);
+      }
+    }
+    return params;
+  };
+
   const onDocumentSubmit = (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) return;
@@ -1308,10 +1340,10 @@
     if (!container || !container.contains(form)) return;
     if (form.hasAttribute('data-no-spa')) return;
 
-    const action = form.getAttribute('action') || window.location.href;
+    const submitRequest = resolveSubmitRequest(form, event.submitter);
+    const { action, method, enctype, target } = submitRequest;
+    if (target && target !== '_self') return;
     if (!isSameOrigin(action)) return;
-
-    const method = (form.getAttribute('method') || 'GET').toUpperCase();
 
     // Let the browser handle non-GET/POST methods.
     if (method !== 'GET' && method !== 'POST') return;
@@ -1328,17 +1360,17 @@
 
     if (method === 'GET') {
       const url = new URL(action, window.location.href);
-      const formData = new FormData(form);
-      const params = new URLSearchParams();
-      for (const [key, value] of formData.entries()) {
-        if (typeof value === 'string') params.append(key, value);
-      }
+      const params = buildUrlEncodedSubmitBody(form, event.submitter);
       url.search = params.toString();
       void fetchAndSwap(url.toString(), { push: true, method: 'GET' });
       return;
     }
 
-    const body = buildSubmitFormData(form, event.submitter);
+    if (enctype !== 'multipart/form-data' && enctype !== 'application/x-www-form-urlencoded') return;
+
+    const body = enctype === 'multipart/form-data'
+      ? buildSubmitFormData(form, event.submitter)
+      : buildUrlEncodedSubmitBody(form, event.submitter);
     setFormPending(form, true);
     showToast('Saved locally; queuing proxy reconciliation…', 'pending');
     // For POST, avoid adding noisy history entries; the server usually redirects back.
