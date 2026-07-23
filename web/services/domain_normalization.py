@@ -81,12 +81,13 @@ def normalize_domain(value: object) -> str:
     raw = raw.strip().strip("[]").rstrip(".")
     if not raw:
         return ""
-    if ":" in raw:
-        try:
-            ipaddress.ip_address(raw)
-        except ValueError:
+    try:
+        parsed_ip = ipaddress.ip_address(raw)
+    except ValueError:
+        if ":" in raw:
             return ""
-        return raw
+    else:
+        return str(parsed_ip)
     labels = raw.split(".")
     if not labels or any(not label for label in labels):
         return ""

@@ -72,6 +72,12 @@ def test_normalize_domain_preserves_supported_host_forms() -> None:
     assert normalize_domain("[2001:db8::1]:443") == "2001:db8::1"
 
 
+def test_normalize_domain_preserves_canonical_ipv4_literals() -> None:
+    assert normalize_domain("192.168.1.10") == "192.168.1.10"
+    assert normalize_domain("http://192.168.1.10:8080/path") == "192.168.1.10"
+    assert normalize_domain("255.255.255.255") == "255.255.255.255"
+
+
 def test_normalize_domain_preserves_valid_ipv6_literals_only() -> None:
     assert normalize_domain("2001:db8::1") == "2001:db8::1"
     assert normalize_domain("[2001:db8::1]:443") == "2001:db8::1"
