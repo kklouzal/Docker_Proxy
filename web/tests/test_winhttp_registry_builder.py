@@ -248,6 +248,36 @@ def test_decode_round_trip_rejects_trailing_binary_payload() -> None:
         decode_basic_winhttp_settings_hex(normalized + "ff00aa")
 
 
+def _mutate_winhttp_dword(hex_value: str, offset: int, value: int) -> str:
+    data = bytearray.fromhex(hex_value)
+    data[offset : offset + 4] = value.to_bytes(4, "little")
+    return data.hex()
+
+
+def test_decode_rejects_unsupported_header_marker_before_strings() -> None:
+    normalized = generate_basic_winhttp_binary("http=proxy.example:3128", "<local>")
+    mutated = _mutate_winhttp_dword(normalized, 0, 0x29)
+
+    with pytest.raises(WinHttpBuilderError, match="header marker"):
+        decode_basic_winhttp_settings_hex(mutated)
+
+
+def test_decode_rejects_nonzero_reserved_field_before_strings() -> None:
+    normalized = generate_basic_winhttp_binary("http=proxy.example:3128", "<local>")
+    mutated = _mutate_winhttp_dword(normalized, 4, 1)
+
+    with pytest.raises(WinHttpBuilderError, match="reserved field"):
+        decode_basic_winhttp_settings_hex(mutated)
+
+
+def test_decode_rejects_unsupported_access_type_before_strings() -> None:
+    normalized = generate_basic_winhttp_binary("http=proxy.example:3128", "<local>")
+    mutated = _mutate_winhttp_dword(normalized, 8, 1)
+
+    with pytest.raises(WinHttpBuilderError, match="access type"):
+        decode_basic_winhttp_settings_hex(mutated)
+
+
 def test_advproxy_json_contains_all_documented_keys_and_command_scope() -> None:
     settings = build_advproxy_settings_json(
         proxy_string="http=proxy.example:3128;https=proxy.example:3128",

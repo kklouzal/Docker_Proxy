@@ -425,6 +425,25 @@ def decode_basic_winhttp_settings_hex(hex_value: str) -> DecodedBasicWinHttpSett
     offset += 4
     access_type = _read_dword_le(bytes_, offset)
     offset += 4
+    if header != HEADER_MARKER:
+        msg = (
+            "Unsupported WinHttpSettings header marker: "
+            f"expected 0x{HEADER_MARKER:08x}, got 0x{header:08x}."
+        )
+        raise WinHttpBuilderError(msg)
+    if reserved != 0:
+        msg = (
+            "Unsupported WinHttpSettings reserved field: "
+            f"expected 0x00000000, got 0x{reserved:08x}."
+        )
+        raise WinHttpBuilderError(msg)
+    if access_type != ACCESS_TYPE_NAMED_PROXY:
+        msg = (
+            "Unsupported WinHTTP access type: "
+            f"expected named proxy 0x{ACCESS_TYPE_NAMED_PROXY:08x}, "
+            f"got 0x{access_type:08x}."
+        )
+        raise WinHttpBuilderError(msg)
     proxy_length = _read_dword_le(bytes_, offset)
     offset += 4
     if offset + proxy_length > len(bytes_):
