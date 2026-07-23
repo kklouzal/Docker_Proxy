@@ -12,7 +12,9 @@ from services.pac_renderer import (
     PAC_MANIFEST_FILENAME,
     PAC_RENDER_DIR,
     PAC_STATE_SHA_FILENAME,
+    RenderedPacFile,
     build_emergency_pac,
+    calculate_pac_state_sha,
     select_manifest_file,
     substitute_request_host,
 )
@@ -263,6 +265,42 @@ def _safe_manifest_file(
     return safe_path, file_path
 
 
+def _is_rendered_state_sha(value: str) -> bool:
+    candidate = str(value or "").strip().lower()
+    return len(candidate) == 64 and all(ch in "0123456789abcdef" for ch in candidate)
+
+
+def _materialized_state_sha_matches(
+    *,
+    manifest: dict[str, object],
+    files: dict[str, str],
+    state_sha: str,
+) -> bool:
+    # build_proxy_pac_state hashes the manifest before state_sha256 is filled,
+    # then writes the populated manifest and a marker file.  Recompute the same
+    # hash when a real renderer SHA is present so the runtime cache cannot serve
+    # a partially-written or tampered file set just because the marker and
+    # manifest agree with each other.
+    manifest_for_hash = dict(manifest)
+    manifest_for_hash["state_sha256"] = ""
+    manifest_text_for_hash = json.dumps(
+        manifest_for_hash,
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+    files_for_hash = [
+        RenderedPacFile(relative_path=path, content=content)
+        for path, content in sorted(files.items())
+    ]
+    files_for_hash.append(
+        RenderedPacFile(
+            relative_path=PAC_MANIFEST_FILENAME,
+            content=manifest_text_for_hash,
+        ),
+    )
+    return calculate_pac_state_sha(files_for_hash) == state_sha
+
+
 def default_pac_bytes(request_host: str) -> bytes:
     content = build_emergency_pac()
     return substitute_request_host(content, request_host).encode("utf-8")
@@ -424,6 +462,18 @@ class LocalPacCache:
                 continue
 
         if not files:
+            self._state_sha = ""
+            self._manifest = {}
+            self._files = {}
+            self._state_signatures = state_signatures
+            self._file_signatures = ()
+            return False
+
+        if _is_rendered_state_sha(state_sha) and not _materialized_state_sha_matches(
+            manifest=manifest,
+            files=files,
+            state_sha=state_sha,
+        ):
             self._state_sha = ""
             self._manifest = {}
             self._files = {}

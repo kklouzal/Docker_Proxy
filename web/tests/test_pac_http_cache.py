@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -578,6 +579,47 @@ def test_local_pac_cache_rejects_marker_manifest_sha_mismatch(tmp_path, pac_http
     )
 
     cache = pac_http.LocalPacCache(str(pac_dir))
+
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
+    assert cache.public_paths() == frozenset({"/proxy.pac", "/wpad.dat"})
+
+
+def test_local_pac_cache_rejects_tampered_pac_file_with_valid_state_sha(
+    tmp_path,
+    pac_http,
+) -> None:
+    _add_repo_paths()
+    from services.pac_renderer import RenderedPacFile, calculate_pac_state_sha
+
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    manifest = {"fallback_file": "fallback.pac", "profiles": [], "state_sha256": ""}
+    trusted_fallback = 'function FindProxyForURL(){return "PROXY trusted:3128";}\n'
+    manifest_text_for_hash = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    state_sha = calculate_pac_state_sha(
+        [
+            RenderedPacFile("fallback.pac", trusted_fallback),
+            RenderedPacFile("manifest.json", manifest_text_for_hash),
+        ],
+    )
+    manifest["state_sha256"] = state_sha
+    (pac_dir / ".state-sha256").write_text(state_sha + "\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (pac_dir / "fallback.pac").write_text(trusted_fallback, encoding="utf-8")
+
+    cache = pac_http.LocalPacCache(str(pac_dir))
+
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == (
+        trusted_fallback.encode("utf-8")
+    )
+
+    (pac_dir / "fallback.pac").write_text(
+        'function FindProxyForURL(){return "DIRECT";}\n',
+        encoding="utf-8",
+    )
 
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
     assert cache.public_paths() == frozenset({"/proxy.pac", "/wpad.dat"})
