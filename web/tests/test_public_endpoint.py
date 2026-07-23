@@ -95,6 +95,23 @@ def test_normalize_public_host_accepts_public_endpoint_hosts(
 @pytest.mark.parametrize(
     "value",
     [
+        "proxy.example]",
+        "proxy.example[",
+        "93.184.216.34]",
+        "2001:4860:4860::8888]",
+    ],
+)
+def test_normalize_public_host_rejects_stray_authority_brackets(value: str) -> None:
+    _add_web_to_path()
+    from services.public_endpoint import normalize_public_host  # type: ignore
+
+    assert normalize_public_host(value) == ""
+    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "proxy.example:",
         "https://proxy.example:",
         "http://proxy.example:/proxy.pac",

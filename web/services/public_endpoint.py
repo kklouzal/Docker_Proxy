@@ -108,8 +108,8 @@ def normalize_public_host(value: object | None, default: str = "") -> str:
     elif candidate.count(":") > 1:
         host = candidate
 
-    host = host.strip().strip("[]")
-    if not host:
+    host = host.strip()
+    if not host or "[" in host or "]" in host:
         return fallback
     try:
         parsed_ip = ipaddress.ip_address(host)
