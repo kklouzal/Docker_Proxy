@@ -60,6 +60,22 @@ def _has_empty_explicit_authority_port(netloc: str) -> bool:
     return authority.endswith(":") and ":" in authority
 
 
+def _valid_management_dns_host(value: str) -> bool:
+    candidate = value.rstrip(".").lower()
+    if not candidate or len(candidate) > 253:
+        return False
+    labels = candidate.split(".")
+    return not any(
+        not label
+        or len(label) > 63
+        or not label.isascii()
+        or not label[0].isalnum()
+        or not label[-1].isalnum()
+        or any(not (ch.isalnum() or ch == "-") for ch in label)
+        for label in labels
+    )
+
+
 def _safe_decoded_path_segments(path: str) -> list[str] | None:
     raw_segments = path.split("/")
     decoded_segments = [unquote(segment) for segment in raw_segments]
@@ -134,10 +150,14 @@ def normalize_management_url(value: object | None) -> str:
     if parsed.query or parsed.fragment:
         return ""
     try:
-        ip_address(host)
+        parsed_ip = ip_address(host)
     except ValueError:
-        if _is_ambiguous_ipv4_host(host):
+        if _is_ambiguous_ipv4_host(host) or not _valid_management_dns_host(host):
             return ""
+    else:
+        if getattr(parsed_ip, "scope_id", None):
+            return ""
+        host = str(parsed_ip)
     if _safe_decoded_path_segments(parsed.path or "") is None:
         return ""
 

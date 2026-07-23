@@ -375,6 +375,24 @@ def test_management_url_normalization_rejects_ambiguous_ipv4_hosts() -> None:
     assert proxy_registry.normalize_management_url("127.1:5000") == ""
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://bad_host:5000",
+        "http://proxy;evil:5000",
+        "http://proxy%2eexample:5000",
+        "http://proxy。example.com:5000",
+        "http://[2001:4860:4860::8888%25eth0]:5000/api/manage",
+    ],
+)
+def test_management_url_normalization_rejects_malformed_authority_hosts(
+    value: str,
+) -> None:
+    proxy_registry = _proxy_registry()
+
+    assert proxy_registry.normalize_management_url(value) == ""
+
+
 def test_resolve_local_proxy_management_url_derives_from_proxy_id(monkeypatch) -> None:
     proxy_registry = _proxy_registry()
 
