@@ -529,7 +529,9 @@ def calculate_pac_state_sha(
 
 
 def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
-    normalized_proxy_id = normalize_proxy_id(proxy_id)
+    normalized_proxy_id = (
+        get_proxy_id() if proxy_id is None else normalize_proxy_id(proxy_id)
+    )
     token = set_proxy_id(normalized_proxy_id)
     try:
         target = resolve_proxy_pac_target(normalized_proxy_id)

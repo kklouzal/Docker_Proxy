@@ -479,6 +479,42 @@ def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
     assert target.pac_url == "http://registry.example:8080/registered/wpad.dat?site=a"
 
 
+def test_build_proxy_pac_state_uses_active_proxy_context_when_unspecified(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services import pac_renderer  # type: ignore
+    from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
+
+    class _Registry:
+        def get_proxy(self, proxy_id):
+            return _proxy_record(f"{proxy_id}.example")
+
+    monkeypatch.setattr(pac_renderer, "get_proxy_registry", _Registry)
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.setattr(pac_renderer, "get_sslfilter_store", _EmptySslFilterStore)
+
+    token = set_proxy_id("edge-b")
+    try:
+        state = pac_renderer.build_proxy_pac_state()
+    finally:
+        reset_proxy_id(token)
+
+    manifest = json.loads(
+        next(
+            item.content
+            for item in state.files
+            if item.relative_path == "manifest.json"
+        )
+    )
+
+    assert state.proxy_id == "edge-b"
+    assert manifest["proxy_id"] == "edge-b"
+    assert manifest["public_host"] == "edge-b.example"
+    assert manifest["proxy_chain"] == "PROXY edge-b.example:3128; DIRECT"
+
+
 def test_resolve_proxy_pac_target_scopes_chain_settings_to_requested_proxy(
     monkeypatch,
 ) -> None:
