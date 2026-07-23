@@ -86,6 +86,8 @@ def test_url_shaped_proxy_host_strips_inline_port_before_mapping_generation() ->
         "http://proxy.example?target=winhttp",
         "http://proxy.example#primary",
         "http://operator:secret@proxy.example",
+        "http://proxy.example:",
+        "http://[2001:db8::10]:",
     ],
 )
 def test_scheme_qualified_proxy_host_rejects_url_components(proxy_host: str) -> None:

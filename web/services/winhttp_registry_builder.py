@@ -226,6 +226,8 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
         try:
             parsed = urlsplit(value)
             inline_port = parsed.port
+            if parsed.netloc.endswith(":"):
+                raise ValueError
             if inline_port is not None and inline_port < 1:
                 raise ValueError
             if inline_port is not None:
