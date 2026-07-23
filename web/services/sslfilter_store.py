@@ -128,19 +128,54 @@ def _dedupe_squid_domains(values: list[str]) -> list[str]:
         for value in values
         if (normalized := _normalize_domain_for_squid(str(value)))
     ]
-    wildcard_domains = {value[1:] for value in raw if value.startswith(".")}
+    wildcards = [value for value in raw if value.startswith(".")]
     out: list[str] = []
     seen: set[str] = set()
     for value in raw:
         # Squid dstdomain/ssl::server_name treats .example.com as covering both
         # example.com and subdomains, so avoid warning-producing duplicates.
-        if value in wildcard_domains:
+        if _squid_domain_is_covered_by_other_wildcard(value, wildcards):
             continue
         if value in seen:
             continue
         seen.add(value)
         out.append(value)
     return out
+
+
+def _squid_domain_is_covered_by_wildcard(value: str, wildcard: str) -> bool:
+    if not value or not wildcard.startswith("."):
+        return False
+    core = wildcard[1:]
+    target = value.removeprefix(".")
+    return target == core or target.endswith(f".{core}")
+
+
+def _squid_domain_is_covered_by_other_wildcard(
+    value: str,
+    wildcards: list[str],
+) -> bool:
+    for wildcard in wildcards:
+        if wildcard == value:
+            continue
+        if _squid_domain_is_covered_by_wildcard(value, wildcard):
+            return True
+    return False
+
+
+def _squid_domain_is_effectively_configured(
+    domain: str,
+    configured: list[str],
+) -> bool:
+    normalized = _normalize_domain_for_squid(domain)
+    if not normalized:
+        return False
+    for value in configured:
+        if value == normalized:
+            return True
+        if _squid_domain_is_covered_by_wildcard(normalized, value):
+            return True
+    return False
 
 
 class SslFilterStore:
@@ -424,11 +459,19 @@ class SslFilterStore:
         return list(PRIVATE_NETS_V4)
 
     def list_compatibility_presets(self) -> list[dict[str, Any]]:
-        current = set(self.list_all().no_bump_domains)
+        current = _dedupe_squid_domains(self.list_all().no_bump_domains)
         presets: list[dict[str, Any]] = []
         for preset in COMPATIBILITY_PRESETS:
-            installed = [domain for domain in preset.domains if domain in current]
-            missing = [domain for domain in preset.domains if domain not in current]
+            installed = [
+                domain
+                for domain in preset.domains
+                if _squid_domain_is_effectively_configured(domain, current)
+            ]
+            missing = [
+                domain
+                for domain in preset.domains
+                if not _squid_domain_is_effectively_configured(domain, current)
+            ]
             presets.append(
                 {
                     "id": preset.id,

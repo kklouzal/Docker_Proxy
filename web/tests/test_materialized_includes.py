@@ -118,6 +118,55 @@ def test_sslfilter_apply_squid_include_writes_materialized_files(
     )
 
 
+def test_sslfilter_wildcard_domains_match_squid_suffix_semantics(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_sslfilter_store_module()
+    store = module.SslFilterStore(
+        squid_include_path=str(tmp_path / "10-sslfilter.conf"),
+        nobump_list_path=str(tmp_path / "nobump.txt"),
+        nocache_src_list_path=str(tmp_path / "nocache-src.txt"),
+    )
+    monkeypatch.setattr(
+        store,
+        "list_all",
+        lambda: SimpleNamespace(
+            no_bump_domains=[
+                "*.discord.com",
+                "api.discord.com",
+                "gateway.discord.gg",
+            ],
+            no_cache_domains=["*.cache.example", "cdn.cache.example"],
+            no_bump_src_nets=[],
+            no_cache_src_nets=[],
+            exclude_private_nets=True,
+            inspection_enabled=True,
+        ),
+    )
+
+    rendered = store.render_materialized_state().include_text
+
+    ssl_acl_line = next(
+        line
+        for line in rendered.splitlines()
+        if line.startswith("acl sslfilter_nobump_domains ssl::server_name")
+    )
+    cache_acl_line = next(
+        line
+        for line in rendered.splitlines()
+        if line.startswith("acl sslfilter_nocache_domains dstdomain")
+    )
+    assert ssl_acl_line.split()[3:] == [".discord.com", "gateway.discord.gg"]
+    assert cache_acl_line.split()[3:] == [".cache.example"]
+
+    discord_preset = next(
+        preset for preset in store.list_compatibility_presets() if preset["id"] == "discord"
+    )
+    assert discord_preset["installed"] == 2
+    assert discord_preset["missing"] == 6
+    assert discord_preset["complete"] is False
+
+
 def test_webfilter_apply_squid_include_writes_materialized_files(
     tmp_path, monkeypatch
 ) -> None:
