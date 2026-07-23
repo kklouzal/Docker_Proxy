@@ -149,6 +149,51 @@ def test_generated_proxy_outputs_bracket_ipv6_literals(proxy_host: str) -> None:
     assert f'proxy-server="{expected}"' in result.legacy_set_proxy_command
 
 
+@pytest.mark.parametrize(
+    "proxy_host",
+    [
+        "010.000.000.001",
+        "999.999.999.999",
+        "-bad.example",
+        "bad..example",
+    ],
+)
+def test_proxy_host_rejects_ambiguous_ipv4_and_malformed_dns_labels(
+    proxy_host: str,
+) -> None:
+    with pytest.raises(WinHttpBuilderError, match="Proxy host/IP"):
+        build_contract_output(
+            {
+                "proxy_host": proxy_host,
+                "proxy_port": 3128,
+                "destination_schemes": ["http"],
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "custom_proxy_map",
+    [
+        "http=010.000.000.001:3128",
+        "http=999.999.999.999:3128",
+        "http=-bad.example:3128",
+        "http=bad..example:3128",
+    ],
+)
+def test_custom_proxy_map_rejects_ambiguous_ipv4_and_malformed_dns_labels(
+    custom_proxy_map: str,
+) -> None:
+    with pytest.raises(WinHttpBuilderError, match="Custom proxy map"):
+        build_contract_output(
+            {
+                "use_custom_proxy_map": True,
+                "custom_proxy_map": custom_proxy_map,
+                "proxy_port": 3128,
+                "destination_schemes": ["http"],
+            },
+        )
+
+
 @pytest.mark.parametrize("proxy_host", ["proxy:example:bad", "bad::host::name"])
 def test_unbracketed_colon_proxy_host_rejects_non_ipv6_values(proxy_host: str) -> None:
     with pytest.raises(WinHttpBuilderError, match="Proxy host/IP"):

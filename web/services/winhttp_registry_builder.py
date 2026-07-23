@@ -175,6 +175,39 @@ def normalize_bypass_list(
     return bypass
 
 
+def _validate_proxy_host_identity(value: str, field_name: str) -> None:
+    host = (value or "").strip()
+    if not host:
+        msg = f"{field_name} must be a valid IP address or DNS hostname."
+        raise WinHttpBuilderError(msg)
+    try:
+        parsed_host = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        if getattr(parsed_host, "scope_id", None):
+            msg = f"{field_name} must not contain a scoped IPv6 zone identifier."
+            raise WinHttpBuilderError(msg)
+        return
+
+    dns_host = host[:-1] if host.endswith(".") else host
+    labels = dns_host.split(".")
+    if 2 <= len(labels) <= 4 and all(label.isdecimal() for label in labels):
+        msg = f"{field_name} must not use ambiguous or invalid dotted-decimal IPv4 forms."
+        raise WinHttpBuilderError(msg)
+    if len(dns_host) > 253 or not all(
+        label
+        and len(label) <= 63
+        and label.isascii()
+        and label[0].isalnum()
+        and label[-1].isalnum()
+        and all(ch.isascii() and (ch.isalnum() or ch == "-") for ch in label)
+        for label in labels
+    ):
+        msg = f"{field_name} must be a valid IP address or DNS hostname."
+        raise WinHttpBuilderError(msg)
+
+
 def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
     value = (host or "").strip()
     warning = None
@@ -219,7 +252,7 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
         except ValueError as exc:
             msg = "Proxy host/IP is invalid."
             raise WinHttpBuilderError(msg) from exc
-        if parsed_host.version != 6:
+        if parsed_host.version != 6 or getattr(parsed_host, "scope_id", None):
             msg = "Proxy host/IP is invalid."
             raise WinHttpBuilderError(msg)
         suffix = value[end + 1 :]
@@ -249,13 +282,14 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
         except ValueError as exc:
             msg = "Proxy host/IP is invalid."
             raise WinHttpBuilderError(msg) from exc
-        if parsed_host.version != 6:
+        if parsed_host.version != 6 or getattr(parsed_host, "scope_id", None):
             msg = "Proxy host/IP is invalid."
             raise WinHttpBuilderError(msg)
     if "/" in value or any(ch.isspace() for ch in value):
         msg = "Proxy host/IP must not contain spaces or path separators."
         raise WinHttpBuilderError(msg)
     _validate_command_value(value, "Proxy host/IP")
+    _validate_proxy_host_identity(value, "Proxy host/IP")
     return value, warning
 
 
@@ -319,7 +353,7 @@ def _validate_custom_proxy_target(target: str) -> None:
         except ValueError as exc:
             msg = "Custom proxy map target contains malformed bracketed IPv6."
             raise WinHttpBuilderError(msg) from exc
-        if parsed_host.version != 6:
+        if parsed_host.version != 6 or getattr(parsed_host, "scope_id", None):
             msg = "Custom proxy map target contains malformed bracketed IPv6."
             raise WinHttpBuilderError(msg)
         suffix = value[end + 1 :]
@@ -344,9 +378,12 @@ def _validate_custom_proxy_target(target: str) -> None:
         if port < 1 or port > 65535:
             msg = "Custom proxy map target port must be an integer from 1 to 65535."
             raise WinHttpBuilderError(msg)
+        _validate_proxy_host_identity(host_part, "Custom proxy map target")
     elif ":" in value:
         msg = "Custom proxy map IPv6 targets must use bracket notation."
         raise WinHttpBuilderError(msg)
+    else:
+        _validate_proxy_host_identity(value, "Custom proxy map target")
 
 
 def _validate_custom_proxy_map(proxy_string: str) -> tuple[str, tuple[str, ...]]:
