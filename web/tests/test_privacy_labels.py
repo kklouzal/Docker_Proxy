@@ -28,3 +28,17 @@ def test_pseudonymize_is_stable_and_namespaced(monkeypatch) -> None:
         "10.0.0.5",
         namespace="user",
     ) != privacy_labels.pseudonymize("10.0.0.5", namespace="group")
+
+
+def test_pseudonymize_casefolds_identifier_values(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import privacy_labels  # type: ignore
+
+    monkeypatch.setattr(privacy_labels, "get_proxy_id", lambda: "proxy-a")
+
+    assert privacy_labels.pseudonymize("Example.COM", namespace="user") == (
+        privacy_labels.pseudonymize(" example.com ", namespace="user")
+    )
+    assert privacy_labels.pseudonymize("GROUP-A", namespace="group") == (
+        privacy_labels.pseudonymize("group-a", namespace="group")
+    )

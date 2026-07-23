@@ -6,7 +6,7 @@ from services.proxy_context import get_proxy_id
 
 
 def pseudonymize(value: object, *, namespace: str) -> str:
-    raw = str(value or "").strip()
+    raw = str(value or "").strip().casefold()
     if not raw:
         return ""
     digest = hashlib.sha256(
