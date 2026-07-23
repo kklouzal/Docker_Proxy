@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.client
 import ipaddress
 import socket
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -293,6 +294,14 @@ def validate_download_url(
     return parsed
 
 
+def _remaining_download_timeout(deadline: float, timeout_seconds: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        msg = f"Download timed out after {timeout_seconds:g} seconds."
+        raise TimeoutError(msg)
+    return remaining
+
+
 def open_download_url(
     url: str,
     *,
@@ -310,7 +319,10 @@ def open_download_url(
     base_headers = {"User-Agent": user_agent_value}
     safe_headers = _safe_extra_download_headers(headers)
     request_headers = {**safe_headers, **base_headers}
+    timeout_seconds = float(timeout)
+    deadline = time.monotonic() + timeout_seconds
     for _ in range(max_redirects + 1):
+        _remaining_download_timeout(deadline, timeout_seconds)
         parsed = validate_download_url(current, scheme_error=scheme_error)
         addresses = _resolve_download_addresses(
             str(parsed.hostname or ""),
@@ -327,7 +339,10 @@ def open_download_url(
         )
         req = _build_download_request(current, headers=request_headers)
         try:
-            return opener.open(req, timeout=timeout)
+            return opener.open(
+                req,
+                timeout=_remaining_download_timeout(deadline, timeout_seconds),
+            )
         except urllib.error.HTTPError as exc:
             if exc.code not in {301, 302, 303, 307, 308}:
                 raise

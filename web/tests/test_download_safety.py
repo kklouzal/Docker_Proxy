@@ -855,6 +855,61 @@ def test_open_download_url_rejects_https_to_http_redirect(
     assert seen_urls == ["https://public.example/feed.csv"]
 
 
+def test_open_download_url_applies_total_timeout_across_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        assert host == "public.example"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                ("93.184.216.34", 0),
+            ),
+        ]
+
+    redirect_headers = Message()
+    redirect_headers["Location"] = "/next.csv"
+    seen_timeouts: list[float] = []
+    ticks = iter([100.0, 100.0, 100.0, 100.7, 100.7, 101.1])
+
+    class _Opener:
+        def open(self, req, **kwargs):
+            seen_timeouts.append(kwargs["timeout"])
+            raise download_safety.urllib.error.HTTPError(
+                req.full_url,
+                302,
+                "Found",
+                redirect_headers,
+                None,
+            )
+
+    class _Clock:
+        def monotonic(self):
+            return next(ticks)
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setitem(download_safety.__dict__, "time", _Clock())
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(TimeoutError, match="timed out"):
+        download_safety.open_download_url(
+            "https://public.example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+        )
+
+    assert seen_timeouts == [pytest.approx(1.0), pytest.approx(0.3)]
+
+
 def test_open_download_url_preserves_extra_headers_when_same_origin_redirect_adds_default_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
