@@ -222,13 +222,33 @@ def _download_origin(url: str) -> tuple[str, str, int | None]:
     return (scheme, str(parsed.hostname or "").lower().rstrip("."), port)
 
 
+_DEFAULT_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+
+
+def _download_max_bytes() -> int:
+    try:
+        max_bytes = int(
+            (
+                os.environ.get(
+                    "WEBCAT_MAX_DOWNLOAD_BYTES",
+                    str(_DEFAULT_MAX_DOWNLOAD_BYTES),
+                )
+                or str(_DEFAULT_MAX_DOWNLOAD_BYTES)
+            ).strip()
+            or str(_DEFAULT_MAX_DOWNLOAD_BYTES),
+        )
+    except Exception:
+        return _DEFAULT_MAX_DOWNLOAD_BYTES
+    if max_bytes <= 0:
+        return _DEFAULT_MAX_DOWNLOAD_BYTES
+    return max_bytes
+
+
 def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     _validate_download_url(url)
 
-    max_bytes = int(os.environ.get("WEBCAT_MAX_DOWNLOAD_BYTES", str(512 * 1024 * 1024)))
-    if max_bytes <= 0:
-        max_bytes = 512 * 1024 * 1024
+    max_bytes = _download_max_bytes()
 
     tmp = dest.with_suffix(dest.suffix + ".tmp")
 
@@ -288,9 +308,7 @@ def _download_if_changed(
             headers["If-Modified-Since"] = last_modified
 
     tmp = dest.with_suffix(dest.suffix + ".tmp")
-    max_bytes = int(os.environ.get("WEBCAT_MAX_DOWNLOAD_BYTES", str(512 * 1024 * 1024)))
-    if max_bytes <= 0:
-        max_bytes = 512 * 1024 * 1024
+    max_bytes = _download_max_bytes()
 
     try:
         total = 0
