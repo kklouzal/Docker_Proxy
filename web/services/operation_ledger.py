@@ -651,6 +651,8 @@ class OperationLedger:
         completed = now if status in TERMINAL_STATUSES else 0
         where = "id=%s"
         where_params: list[Any] = [int(operation_id or 0)]
+        if status not in TERMINAL_STATUSES:
+            where += " AND status NOT IN ('applied','superseded','failed')"
         if expected_status:
             expected_status_text = str(expected_status or "")
             if expected_status_text not in OPERATION_STATUSES:

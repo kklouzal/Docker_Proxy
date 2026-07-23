@@ -1280,4 +1280,61 @@ def test_non_terminal_status_keeps_active_request_key(monkeypatch) -> None:
     update_sql, update_params = conn.queries[0]
     assert "request_key=IF(%s, NULL, request_key)" in update_sql
     assert "claim_token=IF(%s, NULL, claim_token)" in update_sql
+    assert "AND status NOT IN ('applied','superseded','failed')" in update_sql
     assert update_params == ("applying", "retrying", 0, 789, False, False, 7)
+
+
+def test_non_terminal_status_cannot_reopen_terminal_operation(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _TerminalConnection:
+        def __init__(self) -> None:
+            self.row = _operation_row(
+                id=7,
+                status="applied",
+                detail="already completed",
+                completed_ts=600,
+                updated_ts=600,
+                request_key=None,
+                claim_token=None,
+            )
+            self.queries = []
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("UPDATE proxy_operations SET status=%s"):
+                if "AND status NOT IN ('applied','superseded','failed')" not in compact:
+                    self.row["status"] = params[0]
+                    self.row["detail"] = params[1]
+                    self.row["completed_ts"] = params[2]
+                    self.row["updated_ts"] = params[3]
+                result = _Result()
+                result.rowcount = 0
+                return result
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.row])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _TerminalConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 789)
+
+    current = ledger.mark_status(7, status="applying", detail="late retry")
+
+    assert current is not None
+    assert current.status == "applied"
+    assert current.detail == "already completed"
+    update_sql, update_params = conn.queries[0]
+    assert "AND status NOT IN ('applied','superseded','failed')" in update_sql
+    assert update_params == ("applying", "late retry", 0, 789, False, False, 7)
