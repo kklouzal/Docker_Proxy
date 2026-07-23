@@ -90,8 +90,8 @@ def _is_valid_proxy_host(host: str) -> bool:
     if not host or any(ch.isspace() for ch in host) or "/" in host:
         return False
     try:
-        ip_address(host)
-        return True
+        parsed_ip = ip_address(host)
+        return not bool(getattr(parsed_ip, "scope_id", None))
     except Exception:
         pass
 

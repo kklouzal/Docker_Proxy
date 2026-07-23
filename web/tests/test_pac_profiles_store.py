@@ -267,8 +267,29 @@ def test_list_proxy_chain_settings_filters_stale_invalid_backup_rows(
                     "position": 3,
                     "created_ts": 3,
                 },
+                {
+                    "id": 24,
+                    "proxy_host": "fe80::1%eth0",
+                    "proxy_port": 3128,
+                    "position": 4,
+                    "created_ts": 4,
+                },
+                {
+                    "id": 25,
+                    "proxy_host": "[fe80::2%eth0]:3129",
+                    "proxy_port": 3129,
+                    "position": 5,
+                    "created_ts": 5,
+                },
+                {
+                    "id": 26,
+                    "proxy_host": "2001:db8::10",
+                    "proxy_port": 3130,
+                    "position": 6,
+                    "created_ts": 6,
+                },
             ],
-            backup_proxy_ids=[21, 22, 23],
+            backup_proxy_ids=[21, 22, 23, 24, 25, 26],
         ),
     )
 
@@ -276,6 +297,7 @@ def test_list_proxy_chain_settings_filters_stale_invalid_backup_rows(
 
     assert [(item.proxy_host, item.proxy_port) for item in settings.backup_proxies] == [
         ("backup-good.example", 8080),
+        ("2001:db8::10", 3130),
     ]
 
 
@@ -357,6 +379,22 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
         3128,
         "",
     )
+
+
+def test_backup_proxy_host_port_normalization_rejects_scoped_ipv6() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    for host in (
+        "fe80::1%eth0",
+        "[fe80::1%eth0]:3128",
+        "http://[fe80::1%25eth0]:3128",
+    ):
+        assert mod._normalize_proxy_host_port(host, None) == (
+            None,
+            None,
+            "Invalid proxy host.",
+        )
 
 
 def test_backup_proxy_host_port_normalization_rejects_unsupported_url_schemes() -> None:

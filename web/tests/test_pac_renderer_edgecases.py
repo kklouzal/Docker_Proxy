@@ -114,8 +114,11 @@ def test_proxy_chain_filters_stale_invalid_backup_hosts() -> None:
         backup_proxies=(
             ("backup.example;DIRECT", 3128),
             ("backup.example", 8080),
-            ("https://Backup-02.Example:8443/proxy.pac", None),
+            ("https://Backup-02.Example:8443", None),
             ("[2001:db8::10]:3130", None),
+            ("fe80::1%eth0", 3128),
+            ("[fe80::2%eth0]:3131", None),
+            ("http://[fe80::3%25eth0]:3132", None),
             ("bad_host.example", 3128),
         ),
     )
@@ -125,6 +128,9 @@ def test_proxy_chain_filters_stale_invalid_backup_hosts() -> None:
         "PROXY backup-02.example:8443; PROXY [2001:db8::10]:3130; DIRECT"
     )
     assert "backup.example;DIRECT" not in target.proxy_chain
+    assert "fe80" not in target.proxy_chain
+    assert "%eth0" not in target.proxy_chain
+    assert "%25eth0" not in target.proxy_chain
     assert "bad_host" not in target.proxy_chain
 
 
@@ -750,7 +756,7 @@ def test_pac_target_filters_stale_invalid_backup_proxy_rows() -> None:
         pac_port=80,
         http_proxy_port=3128,
         backup_proxies=(
-            ("http://Backup.Example:8080/proxy.pac", 3128),
+            ("http://Backup.Example:8080", 3128),
             ("bad host.example", 8080),
             ("backup.example/path", 8080),
             ("[2001:db8::20]:8443", None),
