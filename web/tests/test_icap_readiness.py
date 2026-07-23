@@ -126,6 +126,30 @@ def test_icap_readiness_requires_options_method_match(tmp_path) -> None:
         server.server_close()
 
 
+def test_icap_readiness_skips_malformed_icap_service_ports(tmp_path) -> None:
+    _add_repo_paths()
+    import icap_readiness  # type: ignore
+
+    config = tmp_path / "20-icap.conf"
+    config.write_text(
+        "\n".join(
+            [
+                "icap_service good_req reqmod_precache icap://127.0.0.1:1344/adblockreq bypass=on",
+                "icap_service bad_text reqmod_precache icap://127.0.0.1:notaport/adblockreq bypass=on",
+                "icap_service bad_range reqmod_precache icap://127.0.0.1:70000/adblockreq bypass=on",
+                "icap_service bad_empty reqmod_precache icap://127.0.0.1:/adblockreq bypass=on",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    services = icap_readiness.parse_services([str(config)])
+
+    assert [(service.name, service.port, service.path) for service in services] == [
+        ("good_req", 1344, "/adblockreq")
+    ]
+
+
 def test_icap_readiness_accepts_strict_options_200_status() -> None:
     result = _probe_response(
         b"ICAP/1.0 200 OK\r\n"

@@ -116,7 +116,10 @@ def _parse_icap_url(raw_url: str) -> tuple[str, int, str] | None:
     if parsed.scheme.lower() != "icap":
         return None
     host = parsed.hostname or ""
-    port = parsed.port
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
     if not host or port is None or port < 1 or port > 65535:
         return None
     path = parsed.path or "/"
