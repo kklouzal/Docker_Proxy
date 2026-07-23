@@ -70,6 +70,21 @@ def test_public_listener_serves_configured_pac_path(tmp_path, public_pac_client)
     assert response.headers["Content-Disposition"] == 'inline; filename="wpad.dat"'
 
 
+def test_public_listener_fallback_pac_rejects_single_label_request_host(
+    tmp_path,
+    public_pac_client,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    _write_pac_artifacts(pac_dir)
+    client = public_pac_client(pac_dir)
+
+    response = client.get("/proxy.pac", base_url="http://proxy")
+
+    assert response.status_code == 200
+    assert response.data == b"PAC 127.0.0.1"
+    assert b"PAC proxy" not in response.data
+
+
 def test_public_listener_serves_configured_pac_url_path(
     tmp_path,
     public_pac_client,

@@ -92,6 +92,8 @@ def _valid_dns_host(value: str) -> bool:
     if not candidate or len(candidate) > 253:
         return False
     labels = candidate.split(".")
+    if len(labels) < 2:
+        return False
     return not any(
         not label
         or len(label) > 63

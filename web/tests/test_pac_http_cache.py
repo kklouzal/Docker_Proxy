@@ -131,10 +131,10 @@ def test_request_host_ignores_untrusted_forwarded_host(monkeypatch, pac_http) ->
 
     assert (
         pac_http.request_host_from_headers(
-            {"Host": "internal-proxy:5000", "X-Forwarded-Host": "public-proxy"},
+            {"Host": "internal-proxy.example:5000", "X-Forwarded-Host": "public-proxy"},
             "203.0.113.10",
         )
-        == "internal-proxy:5000"
+        == "internal-proxy.example:5000"
     )
 
 
@@ -144,8 +144,8 @@ def test_request_host_uses_trusted_forwarded_host(monkeypatch, pac_http) -> None
     assert (
         pac_http.request_host_from_headers(
             {
-                "Host": "internal-proxy:5000",
-                "X-Forwarded-Host": "public-proxy.example:80, internal-proxy:5000",
+                "Host": "internal-proxy.example:5000",
+                "X-Forwarded-Host": "public-proxy.example:80, internal-proxy.example:5000",
             },
             "198.51.100.10",
         )
@@ -160,6 +160,11 @@ def test_request_host_lowercases_dns_authority_and_preserves_port(pac_http) -> N
     )
 
 
+def test_request_host_rejects_single_label_dns_authority(pac_http) -> None:
+    assert pac_http.request_host_from_headers({"Host": "proxy"}) == "127.0.0.1"
+    assert pac_http.request_host_from_headers({"Host": "Proxy:3128"}) == "127.0.0.1"
+
+
 def test_request_host_lowercases_trusted_forwarded_dns_authority(
     monkeypatch, pac_http
 ) -> None:
@@ -168,8 +173,8 @@ def test_request_host_lowercases_trusted_forwarded_dns_authority(
     assert (
         pac_http.request_host_from_headers(
             {
-                "Host": "internal-proxy:5000",
-                "X-Forwarded-Host": "Public-Proxy.Example:8080, internal-proxy:5000",
+                "Host": "internal-proxy.example:5000",
+                "X-Forwarded-Host": "Public-Proxy.Example:8080, internal-proxy.example:5000",
             },
             "198.51.100.10",
         )
@@ -192,7 +197,7 @@ def test_request_host_preserves_valid_authority_shapes(monkeypatch, pac_http) ->
     assert (
         pac_http.request_host_from_headers(
             {
-                "Host": "internal-proxy:5000",
+                "Host": "internal-proxy.example:5000",
                 "X-Forwarded-Host": "public-proxy.example:80",
             },
             "198.51.100.10",
@@ -217,20 +222,20 @@ def test_request_host_rejects_scoped_ipv6_authority_values(
 
     assert (
         pac_http.request_host_from_headers(
-            {"Host": "internal-proxy:5000", "X-Forwarded-Host": "fe80::1%eth0"},
+            {"Host": "internal-proxy.example:5000", "X-Forwarded-Host": "fe80::1%eth0"},
             "198.51.100.10",
         )
-        == "internal-proxy:5000"
+        == "internal-proxy.example:5000"
     )
     assert (
         pac_http.request_host_from_headers(
             {
-                "Host": "internal-proxy:5000",
+                "Host": "internal-proxy.example:5000",
                 "X-Forwarded-Host": "[fe80::1%eth0]:8080",
             },
             "198.51.100.10",
         )
-        == "internal-proxy:5000"
+        == "internal-proxy.example:5000"
     )
 
 
@@ -271,12 +276,12 @@ def test_request_host_falls_back_when_trusted_forwarded_host_is_malformed(
     assert (
         pac_http.request_host_from_headers(
             {
-                "Host": "internal-proxy:5000",
+                "Host": "internal-proxy.example:5000",
                 "X-Forwarded-Host": "http://public-proxy.example:80/proxy.pac",
             },
             "198.51.100.10",
         )
-        == "internal-proxy:5000"
+        == "internal-proxy.example:5000"
     )
     assert (
         pac_http.request_host_from_headers(
