@@ -624,6 +624,23 @@ def test_encapsulated_offsets_accept_ascii_decimals_and_comma_sections() -> None
     }
 
 
+def test_encapsulated_offsets_reject_empty_comma_sections() -> None:
+    server = _load_server()
+
+    malformed = (
+        "res-hdr=0,,res-body=122",
+        "res-hdr=0, res-body=122,",
+    )
+    for value in malformed:
+        try:
+            server._parse_encapsulated(value)
+        except server.IcapProtocolError as exc:
+            assert str(exc).startswith("malformed Encapsulated section:")
+        else:  # pragma: no cover - regression guard should always raise
+            message = f"empty Encapsulated comma section was accepted: {value!r}"
+            raise AssertionError(message)
+
+
 def test_encapsulated_offsets_reject_non_strict_decimal_tokens() -> None:
     server = _load_server()
 
@@ -1948,6 +1965,49 @@ def test_duplicate_encapsulated_header_is_rejected_before_boundary_selection() -
     assert response.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"HTTP/1.1 502 Bad Gateway" in response
     assert b"duplicate ICAP Encapsulated header" in response
+
+
+def test_empty_encapsulated_comma_sections_are_rejected_before_scanning() -> None:
+    server = _load_server()
+    malformed_headers = (
+        b"Encapsulated: res-hdr=0,,res-body=64",
+        b"Encapsulated: res-hdr=0, res-body=64,",
+    )
+
+    for replacement in malformed_headers:
+        scan_attempts = 0
+
+        class FailClosedServer(server.ClamAvRespmodServer):
+            def open_scan(self):
+                nonlocal scan_attempts
+                scan_attempts += 1
+                return CleanScanner()
+
+        with FailClosedServer(
+            ("127.0.0.1", 0),
+            clamd_host="127.0.0.1",
+            clamd_port=3310,
+            clamd_timeout=0.1,
+            fail_open=False,
+            max_scan_bytes=1024,
+            client_timeout=0.5,
+            max_connections=4,
+        ) as icap_server:
+            thread = _serve_in_thread(icap_server)
+            port = icap_server.server_address[1]
+            request = _sample_respmod_request(port).replace(
+                b"Encapsulated: res-hdr=0, res-body=64",
+                replacement,
+            )
+            response = _recv_icap_response(port, request, timeout=0.5)
+            icap_server.shutdown()
+            thread.join(timeout=1)
+
+        assert scan_attempts == 0
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+        assert b"HTTP/1.1 502 Bad Gateway" in response
+        assert b"malformed Encapsulated section" in response
+        assert b"5\r\nhello\r\n0\r\n\r\n" not in response
 
 
 def test_malformed_encapsulated_section_item_is_rejected_before_scanning() -> None:

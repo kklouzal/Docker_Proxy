@@ -198,7 +198,8 @@ def _parse_encapsulated(value: str) -> dict[str, int]:
     for raw_item in value.split(","):
         item = raw_item.lstrip()
         if not item:
-            continue
+            message = "malformed Encapsulated section:"
+            raise IcapProtocolError(message)
         if "=" not in item:
             message = f"malformed Encapsulated section: {item}"
             raise IcapProtocolError(message)
