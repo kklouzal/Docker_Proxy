@@ -671,6 +671,40 @@ def _env_bool(name: str, default: str = "0") -> bool:
     return v in {"1", "true", "yes", "on"}
 
 
+def _parse_mysql_env_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    raw = (os.environ.get(name) or str(default)).strip() or str(default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        msg = f"Invalid {name} for MySQL configuration: {raw!r}"
+        raise ValueError(msg) from exc
+    if minimum is not None and value < minimum:
+        msg = f"Invalid {name} for MySQL configuration: {value} < {minimum}"
+        raise ValueError(msg)
+    if maximum is not None and value > maximum:
+        msg = f"Invalid {name} for MySQL configuration: {value} > {maximum}"
+        raise ValueError(msg)
+    return value
+
+
+def _database_config_timeouts() -> dict[str, int]:
+    return {
+        "connect_timeout": _parse_mysql_env_int(
+            "MYSQL_CONNECT_TIMEOUT",
+            10,
+            minimum=1,
+        ),
+        "read_timeout": _parse_mysql_env_int("MYSQL_READ_TIMEOUT", 15, minimum=1),
+        "write_timeout": _parse_mysql_env_int("MYSQL_WRITE_TIMEOUT", 15, minimum=1),
+    }
+
+
 def _parse_database_url(url: str) -> DatabaseConfig:
     try:
         parsed = urlparse(url)
@@ -696,20 +730,14 @@ def _parse_database_url(url: str) -> DatabaseConfig:
     )
     return DatabaseConfig(
         host=hostname or os.environ.get("MYSQL_HOST") or "127.0.0.1",
-        port=int(port or int(os.environ.get("MYSQL_PORT") or 3306)),
+        port=port
+        if port is not None
+        else _parse_mysql_env_int("MYSQL_PORT", 3306, minimum=1, maximum=65535),
         user=unquote(parsed.username or os.environ.get("MYSQL_USER") or "root"),
         password=unquote(parsed.password or os.environ.get("MYSQL_PASSWORD") or ""),
         database=db_name,
         charset=(os.environ.get("MYSQL_CHARSET") or "utf8mb4").strip() or "utf8mb4",
-        connect_timeout=int(
-            (os.environ.get("MYSQL_CONNECT_TIMEOUT") or "10").strip() or "10",
-        ),
-        read_timeout=int(
-            (os.environ.get("MYSQL_READ_TIMEOUT") or "15").strip() or "15",
-        ),
-        write_timeout=int(
-            (os.environ.get("MYSQL_WRITE_TIMEOUT") or "15").strip() or "15",
-        ),
+        **_database_config_timeouts(),
         create_database=_env_bool("MYSQL_CREATE_DATABASE", "1"),
     )
 
@@ -728,20 +756,12 @@ def resolve_database_config() -> DatabaseConfig:
 
     return DatabaseConfig(
         host=mysql_host or "127.0.0.1",
-        port=int((os.environ.get("MYSQL_PORT") or "3306").strip() or "3306"),
+        port=_parse_mysql_env_int("MYSQL_PORT", 3306, minimum=1, maximum=65535),
         user=mysql_user or "root",
         password=os.environ.get("MYSQL_PASSWORD") or "",
         database=mysql_db or MYSQL_DEFAULT_DB,
         charset=(os.environ.get("MYSQL_CHARSET") or "utf8mb4").strip() or "utf8mb4",
-        connect_timeout=int(
-            (os.environ.get("MYSQL_CONNECT_TIMEOUT") or "10").strip() or "10",
-        ),
-        read_timeout=int(
-            (os.environ.get("MYSQL_READ_TIMEOUT") or "15").strip() or "15",
-        ),
-        write_timeout=int(
-            (os.environ.get("MYSQL_WRITE_TIMEOUT") or "15").strip() or "15",
-        ),
+        **_database_config_timeouts(),
         create_database=_env_bool("MYSQL_CREATE_DATABASE", "1"),
     )
 

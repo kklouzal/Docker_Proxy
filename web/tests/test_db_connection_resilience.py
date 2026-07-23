@@ -57,6 +57,98 @@ def test_parse_database_url_reports_malformed_url_as_mysql_config_error(
 
 
 @pytest.mark.parametrize(
+    ("env", "expected_message"),
+    [
+        ({"MYSQL_HOST": "db", "MYSQL_PORT": "not-a-port"}, "Invalid MYSQL_PORT"),
+        (
+            {"MYSQL_HOST": "db", "MYSQL_PORT": "0"},
+            "MYSQL_PORT for MySQL configuration: 0 < 1",
+        ),
+        (
+            {"MYSQL_HOST": "db", "MYSQL_CONNECT_TIMEOUT": "soon"},
+            "Invalid MYSQL_CONNECT_TIMEOUT",
+        ),
+        (
+            {"MYSQL_HOST": "db", "MYSQL_READ_TIMEOUT": "0"},
+            "MYSQL_READ_TIMEOUT for MySQL configuration: 0 < 1",
+        ),
+        (
+            {"MYSQL_HOST": "db", "MYSQL_WRITE_TIMEOUT": "later"},
+            "Invalid MYSQL_WRITE_TIMEOUT",
+        ),
+    ],
+)
+def test_resolve_database_config_reports_invalid_numeric_mysql_env(
+    monkeypatch,
+    env,
+    expected_message,
+) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    for name in (
+        "MYSQL_HOST",
+        "MYSQL_DATABASE",
+        "MYSQL_USER",
+        "MYSQL_PORT",
+        "MYSQL_CONNECT_TIMEOUT",
+        "MYSQL_READ_TIMEOUT",
+        "MYSQL_WRITE_TIMEOUT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=expected_message):
+        db.resolve_database_config()
+
+
+@pytest.mark.parametrize(
+    ("env_name", "env_value", "expected_message"),
+    [
+        ("MYSQL_PORT", "bad", "Invalid MYSQL_PORT"),
+        ("MYSQL_CONNECT_TIMEOUT", "bad", "Invalid MYSQL_CONNECT_TIMEOUT"),
+        ("MYSQL_READ_TIMEOUT", "bad", "Invalid MYSQL_READ_TIMEOUT"),
+        ("MYSQL_WRITE_TIMEOUT", "bad", "Invalid MYSQL_WRITE_TIMEOUT"),
+    ],
+)
+def test_parse_database_url_reports_invalid_numeric_mysql_fallback_env(
+    monkeypatch,
+    env_name: str,
+    env_value: str,
+    expected_message: str,
+) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    for name in (
+        "MYSQL_PORT",
+        "MYSQL_CONNECT_TIMEOUT",
+        "MYSQL_READ_TIMEOUT",
+        "MYSQL_WRITE_TIMEOUT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(env_name, env_value)
+
+    with pytest.raises(ValueError, match=expected_message):
+        db._parse_database_url("mysql://user:pass@db.example/proxy")
+
+
+def test_parse_database_url_explicit_port_does_not_read_mysql_port_fallback(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    monkeypatch.setenv("MYSQL_PORT", "bad")
+
+    cfg = db._parse_database_url("mysql://user:pass@db.example:3307/proxy")
+
+    assert cfg.port == 3307
+
+
+@pytest.mark.parametrize(
     ("exc", "expected"),
     [
         (Exception(1060, "Duplicate column"), 1060),
