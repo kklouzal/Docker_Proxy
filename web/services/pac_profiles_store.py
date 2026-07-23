@@ -126,6 +126,9 @@ def _normalize_proxy_host_port(
                 return None, None, "Invalid proxy host."
             if parsed.username is not None or parsed.password is not None:
                 return None, None, "Proxy host must not include embedded credentials."
+            authority = parsed.netloc.rsplit("@", 1)[-1]
+            if parsed.hostname is not None and authority.endswith(":"):
+                return None, None, "Invalid proxy port."
         except Exception:
             return None, None, "Invalid proxy host."
         try:

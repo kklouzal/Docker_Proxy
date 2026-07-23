@@ -381,6 +381,34 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
     )
 
 
+def test_backup_proxy_host_port_normalization_accepts_scheme_url_without_port() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    assert mod._normalize_proxy_host_port("http://backup.example", None) == (
+        "backup.example",
+        3128,
+        "",
+    )
+    assert mod._normalize_proxy_host_port("https://backup.example", "9090") == (
+        "backup.example",
+        9090,
+        "",
+    )
+
+
+def test_backup_proxy_host_port_normalization_rejects_scheme_url_empty_port() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    for host in ("http://backup.example:", "https://backup.example:"):
+        assert mod._normalize_proxy_host_port(host, None) == (
+            None,
+            None,
+            "Invalid proxy port.",
+        )
+
+
 def test_backup_proxy_host_port_normalization_rejects_scoped_ipv6() -> None:
     _add_web_path()
     import services.pac_profiles_store as mod
