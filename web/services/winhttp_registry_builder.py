@@ -26,7 +26,8 @@ DESTINATION_SCHEMES = ("http", "https", "ftp", "socks")
 TRACING_OUTPUTS = ("file", "debugger", "both")
 TRACING_LEVELS = ("default", "verbose")
 TRACING_FORMATS = ("ansi", "hex")
-COMMAND_UNSAFE_RE = re.compile(r'["&|\x00-\x1f\x7f]')
+COMMAND_UNSAFE_RE = re.compile(r'["&|%!^\x00-\x1f\x7f]')
+COMMAND_REDIRECTION_RE = re.compile(r"[<>]")
 RAW_HEX_INPUT_RE = re.compile(r"^[0-9a-fA-F,\s\\-]*$")
 CUSTOM_PROXY_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
 
@@ -74,8 +75,21 @@ def _quote_cmd(value: str) -> str:
 
 def _validate_command_value(value: str, field_name: str) -> None:
     _ascii_bytes(value)
-    if COMMAND_UNSAFE_RE.search(value or ""):
-        msg = f"{field_name} must not contain quotes, control characters, or command separators."
+    command_value = value or ""
+    redirection_check_value = command_value
+    if field_name in {"Bypass list", "ProxyBypass"}:
+        redirection_check_value = ";".join(
+            entry
+            for entry in command_value.split(";")
+            if entry.strip().lower() != "<local>"
+        )
+    if COMMAND_UNSAFE_RE.search(command_value) or COMMAND_REDIRECTION_RE.search(
+        redirection_check_value,
+    ):
+        msg = (
+            f"{field_name} must not contain quotes, control characters, command "
+            "separators, expansion, escape, or redirection metacharacters."
+        )
         raise WinHttpBuilderError(msg)
 
 

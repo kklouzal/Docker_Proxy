@@ -404,6 +404,35 @@ def test_contract_output_rejects_unsafe_command_characters(
         build_contract_output(form)
 
 
+@pytest.mark.parametrize(
+    ("form_update", "message"),
+    [
+        ({"bypass_list": "%TEMP%;safe.example"}, "Bypass list"),
+        ({"bypass_list": "!USERPROFILE!;safe.example"}, "Bypass list"),
+        ({"bypass_list": "safe.example^whoami"}, "Bypass list"),
+        ({"bypass_list": "safe.example<in"}, "Bypass list"),
+        ({"bypass_list": "safe.example>out"}, "Bypass list"),
+        (
+            {"autoconfig_url": "http://proxy.example/%USERNAME%/proxy.pac"},
+            "Autoconfig URL",
+        ),
+    ],
+)
+def test_contract_output_rejects_cmd_expansion_escape_and_redirection_metacharacters(
+    form_update: dict[str, object],
+    message: str,
+) -> None:
+    form: dict[str, object] = {
+        "proxy_host": "proxy.example",
+        "proxy_port": 3128,
+        "destination_schemes": ["http", "https"],
+    }
+    form.update(form_update)
+
+    with pytest.raises(WinHttpBuilderError, match=message):
+        build_contract_output(form)
+
+
 def test_contract_output_rejects_control_characters_after_normalization() -> None:
     with pytest.raises(WinHttpBuilderError, match="Custom proxy map"):
         build_contract_output(
