@@ -137,7 +137,14 @@ def _conf_listen_address(conf_path: str) -> tuple[str, int]:
         port = int(match.group(2))
         if 1 <= port <= 65535:
             return host, port
-    return "127.0.0.1", int(os.environ.get("CICAP_AV_PORT", "14001") or "14001")
+    fallback_port_raw = (os.environ.get("CICAP_AV_PORT") or "14001").strip()
+    try:
+        fallback_port = int(fallback_port_raw or "14001")
+    except ValueError:
+        fallback_port = 14001
+    if not 1 <= fallback_port <= 65535:
+        fallback_port = 14001
+    return "127.0.0.1", fallback_port
 
 
 def _validate_icap_field_line(line: bytes) -> tuple[str, str]:

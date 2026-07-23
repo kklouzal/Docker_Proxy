@@ -17,6 +17,48 @@ def _load_runner():
     return module
 
 
+def test_conf_listen_address_falls_back_to_default_for_malformed_env(
+    tmp_path, monkeypatch
+) -> None:
+    runner = _load_runner()
+    conf = tmp_path / "c-icap-av.conf"
+    conf.write_text("# no port directive\n", encoding="utf-8")
+    monkeypatch.setenv("CICAP_AV_PORT", "not-a-port")
+
+    assert runner._conf_listen_address(str(conf)) == ("127.0.0.1", 14001)
+
+
+def test_conf_listen_address_falls_back_to_default_for_blank_env(
+    tmp_path, monkeypatch
+) -> None:
+    runner = _load_runner()
+    conf = tmp_path / "c-icap-av.conf"
+    conf.write_text("# no port directive\n", encoding="utf-8")
+    monkeypatch.setenv("CICAP_AV_PORT", "   ")
+
+    assert runner._conf_listen_address(str(conf)) == ("127.0.0.1", 14001)
+
+
+def test_conf_listen_address_falls_back_to_default_for_out_of_range_env(
+    tmp_path, monkeypatch
+) -> None:
+    runner = _load_runner()
+    conf = tmp_path / "c-icap-av.conf"
+    conf.write_text("# no port directive\n", encoding="utf-8")
+    monkeypatch.setenv("CICAP_AV_PORT", "70000")
+
+    assert runner._conf_listen_address(str(conf)) == ("127.0.0.1", 14001)
+
+
+def test_conf_listen_address_preserves_valid_env_fallback(tmp_path, monkeypatch) -> None:
+    runner = _load_runner()
+    conf = tmp_path / "c-icap-av.conf"
+    conf.write_text("# no port directive\n", encoding="utf-8")
+    monkeypatch.setenv("CICAP_AV_PORT", "15017")
+
+    assert runner._conf_listen_address(str(conf)) == ("127.0.0.1", 15017)
+
+
 def test_optional_unavailable_clamd_serves_fail_open_placeholder(monkeypatch) -> None:
     runner = _load_runner()
     calls: list[tuple[str, str, int, bool]] = []
