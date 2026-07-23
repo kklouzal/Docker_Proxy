@@ -206,6 +206,36 @@ def test_zip_extraction_removes_partial_output_when_member_fails_crc() -> None:
         assert not out_dir.exists()
 
 
+def test_zip_collect_replaces_stale_extraction_symlink_without_following_it() -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_zip_symlink_") as td:
+        root = Path(td)
+        zip_path = root / "payload.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("blacklists/adult/domains", "example.com\n")
+
+        protected = root / "operator-data"
+        protected.mkdir()
+        keep = protected / "keep.txt"
+        keep.write_text("preserve me", encoding="utf-8")
+
+        extracted = root / "payload_extracted"
+        extracted.symlink_to(protected, target_is_directory=True)
+
+        pairs, source, aliases = webcat_build._collect(zip_path)
+
+        assert pairs == [("example.com", "adult")]
+        assert source == f"ut1zip:{zip_path}"
+        assert aliases == {}
+        assert keep.read_text(encoding="utf-8") == "preserve me"
+        assert extracted.is_dir()
+        assert not extracted.is_symlink()
+        assert (extracted / "blacklists/adult/domains").read_text(
+            encoding="utf-8",
+        ) == "example.com\n"
+
+
 def test_download_rejects_oversized_content_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

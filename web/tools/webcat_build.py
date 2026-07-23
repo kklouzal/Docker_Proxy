@@ -422,9 +422,7 @@ def _extract_zip(zip_path: Path, out_dir: Path) -> None:
     ) as staging_dir:
         staging = Path(staging_dir)
         _extract_zip_into(zip_path, staging)
-        if out_dir.exists():
-            shutil.rmtree(out_dir)
-        staging.replace(out_dir)
+        _replace_extracted_dir(staging, out_dir)
 
 
 def _extract_zip_into(zip_path: Path, out_dir: Path) -> None:
@@ -473,9 +471,16 @@ def _extract_tar(tar_path: Path, out_dir: Path) -> None:
     ) as staging_dir:
         staging = Path(staging_dir)
         _extract_tar_into(tar_path, staging)
-        if out_dir.exists():
-            shutil.rmtree(out_dir)
-        staging.replace(out_dir)
+        _replace_extracted_dir(staging, out_dir)
+
+
+def _replace_extracted_dir(staging: Path, out_dir: Path) -> None:
+    """Atomically publish an extracted archive without following stale symlinks."""
+    if out_dir.is_symlink() or not out_dir.is_dir():
+        out_dir.unlink(missing_ok=True)
+    else:
+        shutil.rmtree(out_dir)
+    staging.replace(out_dir)
 
 
 def _extract_tar_into(tar_path: Path, out_dir: Path) -> None:
@@ -833,17 +838,6 @@ def _collect(
     # Files: treat archives specially, else attempt CSV/TSV
     if source_path.is_file() and source_path.suffix.lower() == ".zip":
         extracted = source_path.parent / (source_path.stem + "_extracted")
-        # Always re-extract to avoid stale partial extraction
-        if extracted.exists():
-            # Best-effort clean
-            for p in sorted(extracted.rglob("*"), reverse=True):
-                try:
-                    if p.is_file():
-                        p.unlink()
-                    else:
-                        p.rmdir()
-                except Exception:
-                    pass
         _extract_zip(source_path, extracted)
         # Prefer UT1 layout if present.
         if provider in {"auto", "ut1"}:
@@ -871,15 +865,6 @@ def _collect(
         else:
             stem = source_path.stem
         extracted = source_path.parent / (stem + "_extracted")
-        if extracted.exists():
-            for p in sorted(extracted.rglob("*"), reverse=True):
-                try:
-                    if p.is_file():
-                        p.unlink()
-                    else:
-                        p.rmdir()
-                except Exception:
-                    pass
         _extract_tar(source_path, extracted)
 
         # UT1 layout may be nested; detect case-insensitively.
