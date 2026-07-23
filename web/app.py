@@ -1946,6 +1946,17 @@ def _query_int_arg(
     )
 
 
+def _positive_form_id(name: str, message: str) -> int:
+    value = request.form.get(name)
+    try:
+        parsed = int(str(value).strip())
+    except Exception as exc:
+        raise ValueError(message) from exc
+    if parsed <= 0:
+        raise ValueError(message)
+    return parsed
+
+
 def _csv_response(headers: Sequence[str], rows: Iterable[Sequence[object]]):
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter=";", lineterminator="\n")
@@ -6737,8 +6748,12 @@ def policy_requests():
                     maximum=POLICY_EXCEPTION_MAX_DURATION_SECONDS,
                 )
                 indefinite = request.form.get("duration_mode") == "indefinite"
+                request_id = _positive_form_id(
+                    "request_id",
+                    "Invalid policy request id.",
+                )
                 store.approve_request(
-                    int(request.form.get("request_id") or "0"),
+                    request_id,
                     reviewer=reviewer,
                     admin_note=request.form.get("admin_note") or "",
                     duration_seconds=duration,
@@ -6761,8 +6776,12 @@ def policy_requests():
                     ),
                 )
             if action in {"reject", "close"}:
+                request_id = _positive_form_id(
+                    "request_id",
+                    "Invalid policy request id.",
+                )
                 store.close_request(
-                    int(request.form.get("request_id") or "0"),
+                    request_id,
                     reviewer=reviewer,
                     admin_note=request.form.get("admin_note") or "",
                     status=("closed" if action == "close" else "rejected"),
@@ -6770,8 +6789,12 @@ def policy_requests():
                 )
                 return _redirect_to("policy_requests", ok=action)
             if action == "revoke":
+                exception_id = _positive_form_id(
+                    "exception_id",
+                    "Invalid policy exception id.",
+                )
                 store.revoke_exception(
-                    int(request.form.get("exception_id") or "0"),
+                    exception_id,
                     revoked_by=reviewer,
                     admin_note=request.form.get("admin_note") or "",
                     proxy_id=proxy_id,

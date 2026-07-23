@@ -718,6 +718,82 @@ def test_admin_policy_requests_route_scopes_selected_proxy(
     assert store.approved[0][1]["proxy_id"] == "edge-b"
 
 
+def test_admin_policy_requests_invalid_mutation_ids_report_controlled_errors(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from .admin_route_test_utils import load_admin_app, login_client
+
+    class Store:
+        def __init__(self) -> None:
+            self.approved: list[tuple[int, dict[str, object]]] = []
+            self.closed: list[tuple[int, dict[str, object]]] = []
+            self.revoked: list[tuple[int, dict[str, object]]] = []
+
+        def init_db(self) -> None:
+            pass
+
+        def approve_request(self, request_id, **kwargs):
+            self.approved.append((request_id, kwargs))
+
+        def close_request(self, request_id, **kwargs) -> None:
+            self.closed.append((request_id, kwargs))
+
+        def revoke_exception(self, exception_id, **kwargs) -> None:
+            self.revoked.append((exception_id, kwargs))
+
+    store = Store()
+    monkeypatch.setenv("DISABLE_CSRF", "1")
+    loaded = load_admin_app(monkeypatch, tmp_path, policy_request_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    cases = (
+        (
+            {"action": "reject"},
+            "Invalid policy request id.",
+        ),
+        (
+            {
+                "action": "approve",
+                "request_id": "abc",
+                "duration_seconds": "3600",
+            },
+            "Invalid policy request id.",
+        ),
+        (
+            {"action": "close", "request_id": "0"},
+            "Invalid policy request id.",
+        ),
+        (
+            {"action": "revoke"},
+            "Invalid policy exception id.",
+        ),
+        (
+            {"action": "revoke", "exception_id": "abc"},
+            "Invalid policy exception id.",
+        ),
+        (
+            {"action": "revoke", "exception_id": "0"},
+            "Invalid policy exception id.",
+        ),
+    )
+
+    for data, expected_error in cases:
+        response = client.post("/requests", data=data, follow_redirects=False)
+
+        assert response.status_code in {302, 303}
+        params = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(response.headers.get("Location", "")).query,
+        )
+        assert params.get("error") == [expected_error]
+        assert "invalid literal for int" not in response.headers.get("Location", "")
+
+    assert store.approved == []
+    assert store.closed == []
+    assert store.revoked == []
+
+
 def test_policy_request_store_rejects_invalid_scope_and_filters_active_exceptions(
     tmp_path,
 ) -> None:
