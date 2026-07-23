@@ -59,6 +59,22 @@ SAMPLE_METADATA = f"""<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+def _metadata_with_service_locations(
+    *,
+    sso_location: str = "https://adfs.example.local/adfs/ls/",
+    slo_location: str = "https://adfs.example.local/adfs/ls/?wa=wsignout1.0",
+) -> str:
+    return SAMPLE_METADATA.replace(
+        'Location="https://adfs.example.local/adfs/ls/"',
+        f'Location="{sso_location}"',
+        1,
+    ).replace(
+        'Location="https://adfs.example.local/adfs/ls/?wa=wsignout1.0"',
+        f'Location="{slo_location}"',
+        1,
+    )
+
+
 class MemorySamlAuthStore(SamlAuthStore):
     def __init__(self) -> None:
         self.profile = self.default_profile()
@@ -496,6 +512,73 @@ def test_saml_fetch_accepts_https_metadata_redirect_to_https(monkeypatch) -> Non
     monkeypatch.setattr(saml_auth, "urlopen", fake_urlopen)
 
     assert store.fetch_metadata(profile) == SAMPLE_METADATA
+
+
+@pytest.mark.parametrize(
+    ("metadata", "blocked_service"),
+    [
+        (
+            _metadata_with_service_locations(
+                sso_location="http://adfs.example.local/adfs/ls/"
+            ),
+            "SingleSignOnService",
+        ),
+        (
+            _metadata_with_service_locations(
+                slo_location="http://adfs.example.local/adfs/slo"
+            ),
+            "SingleLogoutService",
+        ),
+    ],
+)
+def test_saml_refresh_rejects_http_idp_endpoint_locations_when_https_required(
+    monkeypatch,
+    metadata: str,
+    blocked_service: str,
+) -> None:
+    store = MemorySamlAuthStore()
+    store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            "require_https": "1",
+        }
+    )
+    monkeypatch.setattr(store, "fetch_metadata", lambda _profile: metadata)
+
+    result = store.refresh_metadata()
+
+    assert result.ok is False
+    assert blocked_service in result.detail
+    assert "must use https://" in result.detail
+    assert store.profile.last_refresh_ok is False
+    assert store.profile.parsed_metadata_json == ""
+
+
+def test_saml_refresh_accepts_http_idp_endpoint_locations_when_https_disabled(
+    monkeypatch,
+) -> None:
+    store = MemorySamlAuthStore()
+    store.save_profile(
+        {
+            "metadata_url": "http://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            "require_https": "0",
+        }
+    )
+    metadata = _metadata_with_service_locations(
+        sso_location="http://adfs.example.local/adfs/ls/",
+        slo_location="http://adfs.example.local/adfs/slo",
+    )
+    monkeypatch.setattr(store, "fetch_metadata", lambda _profile: metadata)
+
+    result = store.refresh_metadata()
+
+    assert result.ok is True
+    assert store.profile.parsed_metadata["sso_services"][0]["location"] == (
+        "http://adfs.example.local/adfs/ls/"
+    )
+    assert store.profile.parsed_metadata["slo_services"][0]["location"] == (
+        "http://adfs.example.local/adfs/slo"
+    )
 
 
 def test_saml_refresh_fetches_and_caches_static_metadata(monkeypatch) -> None:

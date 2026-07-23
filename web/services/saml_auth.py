@@ -412,6 +412,10 @@ class SamlAuthStore:
         try:
             raw_xml = self.fetch_metadata(profile)
             parsed = parse_saml_metadata(raw_xml)
+            _validate_saml_metadata_service_locations(
+                parsed,
+                require_https=profile.require_https,
+            )
             self.record_metadata_refresh(profile, raw_xml=raw_xml, parsed=parsed)
             return SamlMetadataRefreshResult(
                 True,
@@ -722,6 +726,30 @@ def parse_saml_metadata(raw_xml: str) -> dict[str, Any]:
         "name_id_formats": name_id_formats,
         "settings": settings,
     }
+
+
+def _validate_saml_metadata_service_locations(
+    parsed: dict[str, Any],
+    *,
+    require_https: bool,
+) -> None:
+    for key, label in (
+        ("sso_services", "IdP SingleSignOnService Location"),
+        ("slo_services", "IdP SingleLogoutService Location"),
+    ):
+        services = parsed.get(key) or []
+        if not isinstance(services, list):
+            continue
+        for service in services:
+            if not isinstance(service, dict):
+                continue
+            normalized = _normalize_saml_url(
+                service.get("location"),
+                label=label,
+            )
+            if require_https and urlsplit(normalized).scheme.lower() != "https":
+                msg = f"SAML {label} URL must use https://."
+                raise ValueError(msg)
 
 
 def _first_entity_descriptor(root: ElementTree.Element) -> ElementTree.Element:
