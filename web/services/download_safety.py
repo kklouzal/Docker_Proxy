@@ -51,8 +51,30 @@ def _is_forbidden_download_ip(address: str) -> bool:
     )
 
 
+def _canonical_download_hostname(hostname: str) -> str:
+    h = (hostname or "").strip()
+    if not h:
+        return ""
+    try:
+        return h.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError as exc:
+        msg = "Download hostname must be a valid DNS name or IP address."
+        raise ValueError(msg) from exc
+
+
+def _canonical_download_url(parsed, hostname: str) -> str:
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    port = parsed.port
+    if port is not None:
+        host = f"{host}:{port}"
+    return parsed._replace(netloc=host).geturl()
+
+
 def is_internal_host(hostname: str) -> bool:
-    h = (hostname or "").strip().lower().rstrip(".")
+    try:
+        h = _canonical_download_hostname(hostname)
+    except ValueError:
+        return True
     if not h:
         return True
     if h in _RESERVED_DOWNLOAD_HOSTS:
@@ -288,6 +310,10 @@ def validate_download_url(
     if parsed.username or parsed.password:
         msg = "Download URLs must not include embedded credentials."
         raise ValueError(msg)
+    try:
+        hostname = _canonical_download_hostname(hostname)
+    except ValueError as exc:
+        raise ValueError(invalid_url_msg) from exc
     if is_internal_host(hostname):
         msg = "Downloads from internal/localhost addresses are not allowed."
         raise ValueError(msg)
@@ -324,8 +350,10 @@ def open_download_url(
     for _ in range(max_redirects + 1):
         _remaining_download_timeout(deadline, timeout_seconds)
         parsed = validate_download_url(current, scheme_error=scheme_error)
+        hostname = _canonical_download_hostname(str(parsed.hostname or ""))
+        current = _canonical_download_url(parsed, hostname)
         addresses = _resolve_download_addresses(
-            str(parsed.hostname or ""),
+            hostname,
             _download_url_port(parsed),
         )
         if not addresses:
@@ -355,6 +383,10 @@ def open_download_url(
             redirect_parsed = validate_download_url(
                 redirect_url,
                 scheme_error=scheme_error,
+            )
+            redirect_url = _canonical_download_url(
+                redirect_parsed,
+                _canonical_download_hostname(str(redirect_parsed.hostname or "")),
             )
             if parsed.scheme == "https" and redirect_parsed.scheme == "http":
                 msg = "Download redirects must not downgrade from https to http."

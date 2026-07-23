@@ -135,6 +135,83 @@ def test_validate_download_url_rejects_reserved_internal_dns_suffixes_before_dns
         download_safety.validate_download_url(source_url)
 
 
+def test_validate_download_url_canonicalizes_unicode_dot_host_before_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    seen_hosts: list[str] = []
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        seen_hosts.append(host)
+        if host == "public.example":
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("93.184.216.34", 0),
+                ),
+            ]
+        raise AssertionError(f"unexpected DNS host: {host!r}")
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+
+    parsed = download_safety.validate_download_url(
+        "https://public\u3002example/feed.csv",
+    )
+
+    assert parsed.hostname == "public\u3002example"
+    assert seen_hosts == ["public.example"]
+
+
+def test_open_download_url_uses_canonicalized_unicode_dot_request_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    seen_hosts: list[str] = []
+    seen_urls: list[str] = []
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        seen_hosts.append(host)
+        if host == "public.example":
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("93.184.216.34", 0),
+                ),
+            ]
+        raise AssertionError(f"unexpected DNS host: {host!r}")
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            seen_urls.append(req.full_url)
+            msg = "stop"
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(RuntimeError, match="stop"):
+        download_safety.open_download_url(
+            "https://public\u3002example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+        )
+
+    assert seen_hosts == ["public.example", "public.example"]
+    assert seen_urls == ["https://public.example/feed.csv"]
+
+
 def test_validate_download_url_rejects_percent_encoded_authority_before_dns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
