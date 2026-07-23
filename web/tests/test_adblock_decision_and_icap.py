@@ -1864,6 +1864,70 @@ def test_adblock_icap_server_drains_and_closes_after_unpreviewed_request_body(
         server.server_close()
 
 
+def test_adblock_icap_parse_args_falls_back_for_malformed_numeric_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _parse_args
+
+    malformed_env = {
+        "CICAP_PORT": "not-a-port",
+        "ADBLOCK_CACHE_TTL": "not-a-ttl",
+        "ADBLOCK_CACHE_MAX": "not-a-cache-max",
+        "ADBLOCK_RULE_CACHE_MAX": "not-a-rule-cache-max",
+        "ADBLOCK_ICAP_MAX_REQUEST_BYTES": "not-max-request-bytes",
+        "ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES": "not-max-body-drain-bytes",
+        "ADBLOCK_ICAP_REQUEST_TIMEOUT": "not-a-timeout",
+        "ADBLOCK_ICAP_MAX_KEEPALIVE_REQUESTS": "not-keepalive-requests",
+    }
+    for name, value in malformed_env.items():
+        monkeypatch.setenv(name, value)
+
+    args = _parse_args([])
+
+    assert args.port == 14000
+    assert args.cache_ttl == 3600
+    assert args.cache_max == 200000
+    assert args.rule_cache_max == 50000
+    assert args.max_request_bytes == 262144
+    assert args.max_body_drain_bytes == 8388608
+    assert args.request_timeout == 5.0
+    assert args.max_keepalive_requests == 1000
+
+
+def test_adblock_icap_parse_args_preserves_cli_numeric_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _parse_args
+
+    monkeypatch.setenv("ADBLOCK_CACHE_TTL", "1800")
+    monkeypatch.setenv("ADBLOCK_ICAP_REQUEST_TIMEOUT", "2.5")
+
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_args(["--cache-ttl", "bad-cli-int"])
+    assert exc_info.value.code == 2
+
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_args(["--request-timeout", "bad-cli-float"])
+    assert exc_info.value.code == 2
+
+
+def test_adblock_icap_parse_args_reads_valid_numeric_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _parse_args
+
+    monkeypatch.setenv("ADBLOCK_CACHE_TTL", "1800")
+    monkeypatch.setenv("ADBLOCK_ICAP_REQUEST_TIMEOUT", "2.5")
+
+    args = _parse_args([])
+
+    assert args.cache_ttl == 1800
+    assert args.request_timeout == 2.5
+
+
 def test_proxy_payload_includes_sqlite_adblock_runtime() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     dockerfile = (repo_root / "docker/Dockerfile.proxy").read_text(encoding="utf-8")
