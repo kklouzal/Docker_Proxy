@@ -441,6 +441,8 @@ def test_proxy_client_builds_management_url_with_query_under_registered_base(
     [
         "https://attacker.example/api",
         "//attacker.example/api",
+        " /api/manage/health",
+        "/api/manage/health ",
         "/api\\manage/health",
         "/api/manage/%0ahealth",
     ],

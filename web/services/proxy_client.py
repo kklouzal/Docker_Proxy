@@ -124,7 +124,7 @@ class ProxyClient:
         return base.rstrip("/") + "/" + relative_path
 
     def _management_relative_path(self, path: str) -> str:
-        candidate = str(path or "").strip()
+        candidate = str(path or "")
         if not candidate:
             raise ProxyClientError(_UNSAFE_EMPTY_MANAGEMENT_PATH)
         if _has_unsafe_management_path_text(candidate) or "\\" in candidate:
