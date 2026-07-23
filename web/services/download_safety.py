@@ -13,6 +13,21 @@ _ALLOWED_DOWNLOAD_REQUEST_HEADERS = {
     "if-none-match": "If-None-Match",
 }
 
+_RESERVED_DOWNLOAD_HOSTS = {
+    "localhost",
+    "localhost.localdomain",
+    "ip6-localhost",
+    "ip6-loopback",
+    "home.arpa",
+}
+_RESERVED_DOWNLOAD_SUFFIXES = (
+    ".local",
+    ".localdomain",
+    ".internal",
+    ".localhost",
+    ".home.arpa",
+)
+
 
 @dataclass(frozen=True)
 class _ResolvedDownloadAddress:
@@ -39,13 +54,13 @@ def is_internal_host(hostname: str) -> bool:
     h = (hostname or "").strip().lower().rstrip(".")
     if not h:
         return True
-    if h in {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}:
+    if h in _RESERVED_DOWNLOAD_HOSTS:
         return True
     try:
         return _is_forbidden_download_ip(h)
     except ValueError:
         pass
-    if h.endswith((".local", ".internal", ".localhost")):
+    if h.endswith(_RESERVED_DOWNLOAD_SUFFIXES):
         return True
     if "." not in h:
         return True

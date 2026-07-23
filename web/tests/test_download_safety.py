@@ -109,6 +109,32 @@ def test_validate_download_url_rejects_single_label_hostname_before_dns(
         download_safety.validate_download_url("https://intranet/feed.csv")
 
 
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "https://api.localdomain/feed.csv",
+        "https://gateway.home.arpa/feed.csv",
+        "https://home.arpa/feed.csv",
+    ],
+)
+def test_validate_download_url_rejects_reserved_internal_dns_suffixes_before_dns(
+    source_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("reserved internal download hosts should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="internal/localhost"):
+        download_safety.validate_download_url(source_url)
+
+
 def test_validate_download_url_rejects_percent_encoded_authority_before_dns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
