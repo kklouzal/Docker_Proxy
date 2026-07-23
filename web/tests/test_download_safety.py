@@ -69,6 +69,52 @@ def test_validate_download_url_rejects_non_global_ip_literals(
         download_safety.validate_download_url(source_url)
 
 
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "http://1.2.3/feed.csv",
+        "http://0177.0.0.1/feed.csv",
+        "http://0x7f.0.0.1/feed.csv",
+        "http://2130706433/feed.csv",
+    ],
+)
+def test_validate_download_url_rejects_ambiguous_ipv4_hosts_before_dns(
+    source_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ambiguous numeric IPv4 hosts should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="internal/localhost"):
+        download_safety.validate_download_url(source_url)
+
+
+def test_validate_download_url_accepts_public_ipv4_literal_without_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("canonical IPv4 literals should not reach DNS")
+        ),
+    )
+
+    parsed = download_safety.validate_download_url("https://93.184.216.34/feed.csv")
+
+    assert parsed.scheme == "https"
+    assert parsed.hostname == "93.184.216.34"
+
+
 def test_validate_download_url_rejects_hostname_resolving_to_non_global_ip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -154,7 +200,8 @@ def test_validate_download_url_canonicalizes_unicode_dot_host_before_dns(
                     ("93.184.216.34", 0),
                 ),
             ]
-        raise AssertionError(f"unexpected DNS host: {host!r}")
+        msg = f"unexpected DNS host: {host!r}"
+        raise AssertionError(msg)
 
     monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
 
@@ -186,7 +233,8 @@ def test_open_download_url_uses_canonicalized_unicode_dot_request_host(
                     ("93.184.216.34", 0),
                 ),
             ]
-        raise AssertionError(f"unexpected DNS host: {host!r}")
+        msg = f"unexpected DNS host: {host!r}"
+        raise AssertionError(msg)
 
     class _Opener:
         def open(self, req, **_kwargs):

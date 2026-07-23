@@ -62,6 +62,26 @@ def _canonical_download_hostname(hostname: str) -> str:
         raise ValueError(msg) from exc
 
 
+def _is_ambiguous_ipv4_download_host(hostname: str) -> bool:
+    candidate = hostname.rstrip(".").lower()
+    if not candidate:
+        return False
+    labels = candidate.split(".")
+    if not 1 <= len(labels) <= 4:
+        return False
+    for label in labels:
+        if not label:
+            return False
+        if label.isdecimal():
+            continue
+        if label.startswith("0x"):
+            digits = label.removeprefix("0x")
+            if digits and all(ch in "0123456789abcdef" for ch in digits):
+                continue
+        return False
+    return True
+
+
 def _canonical_download_url(parsed, hostname: str) -> str:
     host = f"[{hostname}]" if ":" in hostname else hostname
     port = parsed.port
@@ -83,6 +103,8 @@ def is_internal_host(hostname: str) -> bool:
         return _is_forbidden_download_ip(h)
     except ValueError:
         pass
+    if _is_ambiguous_ipv4_download_host(h):
+        return True
     if h.endswith(_RESERVED_DOWNLOAD_SUFFIXES):
         return True
     if "." not in h:
@@ -173,7 +195,8 @@ def _create_download_connection(
                     sock.close()
         if last_error is not None:
             raise last_error
-        raise OSError("no vetted download addresses available")
+        msg = "no vetted download addresses available"
+        raise OSError(msg)
 
     return create_connection
 
