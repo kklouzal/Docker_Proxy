@@ -29,7 +29,7 @@ def _decoded_hostish_has_delimiters(value: str) -> bool:
 
 
 def _is_valid_port(value: str) -> bool:
-    return value.isdigit() and 0 <= int(value) <= 65535
+    return value.isdigit() and 1 <= int(value) <= 65535
 
 
 def _parsed_netloc_has_empty_port(netloc: str) -> bool:
@@ -53,8 +53,10 @@ def normalize_hostish(value: object | None) -> str:
             if _parsed_netloc_has_empty_port(parsed.netloc):
                 return ""
             try:
-                _ = parsed.port
+                parsed_port = parsed.port
             except ValueError:
+                return ""
+            if parsed_port is not None and not _is_valid_port(str(parsed_port)):
                 return ""
             host = parsed.hostname
     except Exception:
@@ -106,8 +108,10 @@ def extract_domain(
             if _parsed_netloc_has_empty_port(parsed.netloc):
                 return ""
             try:
-                _ = parsed.port
+                parsed_port = parsed.port
             except ValueError:
+                return ""
+            if parsed_port is not None and not _is_valid_port(str(parsed_port)):
                 return ""
             return normalize_hostish(parsed.hostname)
     except Exception:

@@ -70,13 +70,17 @@ def test_normalize_hostish_rejects_malformed_authority_ports() -> None:
     for value in (
         "example.com:notaport",
         "example.com:",
+        "example.com:0",
         "example.com:65536",
         "[2001:db8::1]:notaport",
+        "[2001:db8::1]:0",
         "[2001:db8::1]:65536",
         "https://example.com:notaport/path",
         "https://example.com:/path",
+        "https://example.com:0/path",
         "https://example.com:65536/path",
         "https://[2001:db8::1]:notaport/path",
+        "https://[2001:db8::1]:0/path",
         "https://[2001:db8::1]:65536/path",
     ):
         assert normalize_hostish(value) == ""
