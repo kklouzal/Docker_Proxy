@@ -145,6 +145,27 @@ def test_safe_next_url_edge_cases(
     assert loaded.module._safe_next_url(candidate) == expected
 
 
+def test_safe_next_url_delegates_to_shared_local_return_sanitizer(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    calls: list[str | None] = []
+
+    def fake_safe_local_return_url(value: str | None) -> str | None:
+        calls.append(value)
+        return "/shared?ok=1" if value == "/admin" else None
+
+    monkeypatch.setattr(
+        loaded.module,
+        "_safe_local_return_url",
+        fake_safe_local_return_url,
+    )
+
+    assert loaded.module._safe_next_url("/admin") == "/shared?ok=1"
+    assert loaded.module._safe_next_url("https://evil.example/phish") == ""
+    assert calls == ["/admin", "https://evil.example/phish"]
+
+
 def test_session_timeout_configuration_is_bounded_to_at_least_one_hour(
     monkeypatch, tmp_path
 ) -> None:

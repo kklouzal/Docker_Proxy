@@ -22,6 +22,9 @@ from services.ui_support import (
         "/admin%00",
         "/admin%2Fsettings",
         "/%252fevil.example/path",
+        "/%2525252fevil.example/path",
+        "/%E0%A4%A",
+        "/%C0%AF",
     ],
 )
 def test_safe_local_return_url_rejects_absolute_or_malformed(value: str) -> None:

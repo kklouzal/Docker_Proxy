@@ -669,11 +669,16 @@ def safe_local_return_url(value: str | None) -> str | None:
         return None
 
     decoded = raw
-    for _ in range(3):
+    for _ in range(max(1, len(raw))):
         previous = decoded
-        decoded = unquote(previous, errors="replace")
+        try:
+            decoded = unquote(previous, errors="strict")
+        except UnicodeDecodeError:
+            return None
         if decoded == previous:
             break
+    else:
+        return None
     if any(ord(char) < 0x20 or ord(char) == 0x7F for char in decoded):
         return None
     if "\\" in decoded or decoded.startswith("//"):

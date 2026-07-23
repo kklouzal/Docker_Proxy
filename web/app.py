@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import unquote, urlparse, urlsplit
+from urllib.parse import urlsplit
 
 from flask import (
     Flask,
@@ -181,6 +181,9 @@ from services.ui_support import (
 )
 from services.ui_support import (
     present_ssl_error_rows as _present_ssl_error_rows,
+)
+from services.ui_support import (
+    safe_local_return_url as _safe_local_return_url,
 )
 from services.ui_support import (
     window_label as _window_label,
@@ -2390,40 +2393,7 @@ def _selected_proxy_pac_context() -> tuple[Any, str, str]:
 
 def _safe_next_url(next_url: str) -> str:
     """Allow only local relative redirects to avoid open-redirect issues."""
-    candidate = (next_url or "").strip()
-    if not candidate:
-        return ""
-    # Disallow scheme-relative (//evil.com) and absolute URLs.
-    if candidate.startswith("//"):
-        return ""
-    parsed = urlparse(candidate)
-    if parsed.scheme or parsed.netloc:
-        return ""
-    # Backslashes are path separators for some clients/proxies and can turn a
-    # path-looking redirect into an authority-looking URL after normalization.
-    if "\\" in candidate:
-        return ""
-    decoded = candidate
-    for _ in range(max(1, len(candidate))):
-        previous = decoded
-        decoded = unquote(previous, errors="replace")
-        if decoded == previous:
-            break
-    else:
-        return ""
-    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in decoded):
-        return ""
-    if "\\" in decoded or decoded.startswith("//"):
-        return ""
-    decoded_parsed = urlparse(decoded)
-    if decoded_parsed.scheme or decoded_parsed.netloc:
-        return ""
-    if decoded.count("/") > candidate.count("/"):
-        return ""
-    # Only allow app-local paths.
-    if not candidate.startswith("/"):
-        return ""
-    return candidate
+    return _safe_local_return_url(next_url) or ""
 
 
 def _clear_recoverable_session_state() -> None:
