@@ -32,6 +32,26 @@ RAW_HEX_INPUT_RE = re.compile(r"^[0-9a-fA-F,\s\\-]*$")
 CUSTOM_PROXY_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
 
 
+def _is_ambiguous_ipv4_like_host(value: str) -> bool:
+    candidate = (value or "").rstrip(".").lower()
+    if not candidate:
+        return False
+    labels = candidate.split(".")
+    if not 1 <= len(labels) <= 4:
+        return False
+    for label in labels:
+        if not label:
+            return False
+        if label.isdecimal():
+            continue
+        if label.startswith("0x"):
+            digits = label.removeprefix("0x")
+            if digits and all(ch in "0123456789abcdef" for ch in digits):
+                continue
+        return False
+    return True
+
+
 class WinHttpBuilderError(ValueError):
     pass
 
@@ -192,8 +212,8 @@ def _validate_proxy_host_identity(value: str, field_name: str) -> None:
 
     dns_host = host[:-1] if host.endswith(".") else host
     labels = dns_host.split(".")
-    if 2 <= len(labels) <= 4 and all(label.isdecimal() for label in labels):
-        msg = f"{field_name} must not use ambiguous or invalid dotted-decimal IPv4 forms."
+    if _is_ambiguous_ipv4_like_host(host):
+        msg = f"{field_name} must not use ambiguous or invalid IPv4 forms."
         raise WinHttpBuilderError(msg)
     if len(dns_host) > 253 or not all(
         label

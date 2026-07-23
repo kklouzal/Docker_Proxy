@@ -156,11 +156,15 @@ def test_generated_proxy_outputs_bracket_ipv6_literals(proxy_host: str) -> None:
     [
         "010.000.000.001",
         "999.999.999.999",
+        "2130706433",
+        "017700000001",
+        "0x7f000001",
+        "1234",
         "-bad.example",
         "bad..example",
     ],
 )
-def test_proxy_host_rejects_ambiguous_ipv4_and_malformed_dns_labels(
+def test_proxy_host_rejects_ambiguous_ipv4_like_and_malformed_dns_labels(
     proxy_host: str,
 ) -> None:
     with pytest.raises(WinHttpBuilderError, match="Proxy host/IP"):
@@ -178,11 +182,15 @@ def test_proxy_host_rejects_ambiguous_ipv4_and_malformed_dns_labels(
     [
         "http=010.000.000.001:3128",
         "http=999.999.999.999:3128",
+        "http=2130706433:3128",
+        "http=017700000001:3128",
+        "http=0x7f000001:3128",
+        "http=1234:3128",
         "http=-bad.example:3128",
         "http=bad..example:3128",
     ],
 )
-def test_custom_proxy_map_rejects_ambiguous_ipv4_and_malformed_dns_labels(
+def test_custom_proxy_map_rejects_ambiguous_ipv4_like_and_malformed_dns_labels(
     custom_proxy_map: str,
 ) -> None:
     with pytest.raises(WinHttpBuilderError, match="Custom proxy map"):
@@ -579,6 +587,53 @@ def test_custom_proxy_map_allows_bracketed_ipv6_targets() -> None:
     assert result.proxy_string == expected
     assert result.decoded is not None
     assert result.decoded.proxy_string == expected
+
+
+@pytest.mark.parametrize(
+    ("proxy_host", "expected"),
+    [
+        ("127.0.0.1", "http=127.0.0.1:3128"),
+        ("2001:db8::10", "http=[2001:db8::10]:3128"),
+        ("proxy1234.example", "http=proxy1234.example:3128"),
+    ],
+)
+def test_proxy_host_allows_canonical_ip_literals_and_alphanumeric_dns(
+    proxy_host: str,
+    expected: str,
+) -> None:
+    result = build_contract_output(
+        {
+            "proxy_host": proxy_host,
+            "proxy_port": 3128,
+            "destination_schemes": ["http"],
+        },
+    )
+
+    assert result.proxy_string == expected
+
+
+@pytest.mark.parametrize(
+    ("custom_proxy_map", "expected"),
+    [
+        ("http=127.0.0.1:3128", "http=127.0.0.1:3128"),
+        ("http=[2001:db8::10]:3128", "http=[2001:db8::10]:3128"),
+        ("http=proxy1234.example:3128", "http=proxy1234.example:3128"),
+    ],
+)
+def test_custom_proxy_map_allows_canonical_ip_literals_and_alphanumeric_dns(
+    custom_proxy_map: str,
+    expected: str,
+) -> None:
+    result = build_contract_output(
+        {
+            "use_custom_proxy_map": True,
+            "custom_proxy_map": custom_proxy_map,
+            "proxy_port": 3128,
+            "destination_schemes": ["http"],
+        },
+    )
+
+    assert result.proxy_string == expected
 
 
 @pytest.mark.parametrize(
