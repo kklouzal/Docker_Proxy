@@ -2380,6 +2380,9 @@ def _uses_remote_proxy_runtime() -> bool:
     return bool(_active_proxy_management_url())
 
 
+_MYSQL_SIGNED_BIGINT_MAX = 9_223_372_036_854_775_807
+
+
 def _pac_profile_form_data(*, profile_id: int | None) -> dict[str, Any]:
     return {
         "profile_id": profile_id,
@@ -2388,6 +2391,17 @@ def _pac_profile_form_data(*, profile_id: int | None) -> dict[str, Any]:
         "direct_domains_text": request.form.get("direct_domains") or "",
         "direct_dst_nets_text": request.form.get("direct_dst_nets") or "",
     }
+
+
+def _pac_profile_id_from_form() -> tuple[int | None, str]:
+    raw = (request.form.get("profile_id") or "").strip()
+    try:
+        profile_id = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None, "Invalid PAC profile id."
+    if profile_id < 1 or profile_id > _MYSQL_SIGNED_BIGINT_MAX:
+        return None, "Invalid PAC profile id."
+    return profile_id, ""
 
 
 def _selected_proxy_pac_context() -> tuple[Any, str, str]:
@@ -4566,14 +4580,18 @@ def _handle_pac_builder_post(store: Any):
             return _redirect_after_pac_refresh("pac_builder", ok="1")
 
         if action == "update":
-            pid = int(request.form.get("profile_id") or "0")
+            pid, id_err = _pac_profile_id_from_form()
+            if pid is None:
+                return _redirect_to("pac_builder", error="1", msg=id_err)
             ok, err, _ = store.upsert_profile(**_pac_profile_form_data(profile_id=pid))
             if not ok:
                 return _redirect_to("pac_builder", error="1", msg=err)
             return _redirect_after_pac_refresh("pac_builder", ok="1")
 
         if action == "delete":
-            pid = int(request.form.get("profile_id") or "0")
+            pid, id_err = _pac_profile_id_from_form()
+            if pid is None:
+                return _redirect_to("pac_builder", error="1", msg=id_err)
             changed = store.delete_profile(pid)
             if not changed:
                 return _redirect_to("pac_builder", error="1", msg="Profile not found.")

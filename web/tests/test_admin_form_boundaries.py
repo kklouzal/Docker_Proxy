@@ -218,13 +218,20 @@ def test_pac_builder_bad_ids_and_xss_like_names_are_handled(
     assert _params(created.location)["ok"] == ["1"]
     assert store.profiles[1].name == "<script>alert(1)</script>"
 
-    with loaded.module.app.test_request_context(
-        "/pac", method="POST", data={"action": "update", "profile_id": "not-int"}
-    ):
-        bad_id = loaded.module._handle_pac_builder_post(store)
-    params = _params(bad_id.location)
-    assert params["error"] == ["1"]
-    assert params["msg"]
+    invalid_profile_ids = ["not-int", "999999999999999999999999999999999999"]
+    for action in ("update", "delete"):
+        for profile_id in invalid_profile_ids:
+            with loaded.module.app.test_request_context(
+                "/pac",
+                method="POST",
+                data={"action": action, "profile_id": profile_id},
+            ):
+                bad_id = loaded.module._handle_pac_builder_post(store)
+            params = _params(bad_id.location)
+            assert params["error"] == ["1"]
+            assert params["msg"] == ["Invalid PAC profile id."]
+            assert "ok" not in params
+    assert len(loaded.operation_ledger.operations) == 1
 
 
 def test_pac_builder_backup_proxy_chain_actions(monkeypatch, tmp_path) -> None:
