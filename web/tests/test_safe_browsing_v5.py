@@ -75,6 +75,7 @@ def test_safe_browsing_canonicalization_preserves_encoded_fragment_marker_in_pat
 
 def test_safe_browsing_ipv6_literals_stay_bracketed_for_expression_generation() -> None:
     assert canonicalize_url("http://[2001:db8::1]/a") == "http://[2001:db8::1]/a"
+    assert canonicalize_url("http://[2001:db8::1]:443/a") == "http://[2001:db8::1]/a"
     assert url_expressions("http://[2001:db8::1]/a") == [
         "2001:db8::1/a",
         "2001:db8::1/",
@@ -90,6 +91,24 @@ def test_safe_browsing_ipv6_literals_stay_bracketed_for_expression_generation() 
     ],
 )
 def test_safe_browsing_malformed_bracket_urls_are_empty(url: str) -> None:
+    assert canonicalize_url(url) == ""
+    assert url_expressions(url) == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.com:bad/path",
+        "http://example.com:/path",
+        "http://example.com:99999/path",
+        "http://user:pass@example.com:/path",
+        "http://[2001:db8::1]:/a",
+        "http://[2001:db8::1]:bad/a",
+        r"http://example.com\evil.test/path",
+        r"http://example.com\@evil.test/path",
+    ],
+)
+def test_safe_browsing_malformed_authority_urls_are_empty(url: str) -> None:
     assert canonicalize_url(url) == ""
     assert url_expressions(url) == []
 
