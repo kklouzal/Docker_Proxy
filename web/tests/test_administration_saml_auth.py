@@ -266,6 +266,71 @@ def test_saml_login_and_acs_create_standard_session(monkeypatch, tmp_path):
     assert audit.records[-1]["detail"] == "user=saml-user@example.test provider=saml"
 
 
+def test_saml_login_clears_stale_request_id_when_provider_unavailable(
+    monkeypatch, tmp_path
+):
+    loaded, store = _load_with_saml(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    with client.session_transaction() as sess:
+        sess["saml_request_id"] = "STALE-REQ"
+
+    response = client.get("/auth/saml/login?next=/administration")
+
+    assert response.status_code in {302, 303}
+    assert "error=saml_unavailable" in response.headers["Location"]
+    with client.session_transaction() as sess:
+        assert "saml_request_id" not in sess
+    assert not store.profile.enabled
+
+
+def test_saml_login_replaces_stale_request_id_after_initiation_failure(
+    monkeypatch, tmp_path
+):
+    loaded, store = _load_with_saml(monkeypatch, tmp_path)
+    store.enable_with_metadata()
+    calls = 0
+
+    def build_auth(_profile, _request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            msg = "idp initiation failed"
+            raise RuntimeError(msg)
+        return FakeSamlToolkit()
+
+    monkeypatch.setattr(loaded.module, "build_saml_auth", build_auth)
+    client = loaded.module.app.test_client()
+    with client.session_transaction() as sess:
+        sess["saml_request_id"] = "STALE-REQ"
+
+    failed = client.get("/auth/saml/login?next=/administration")
+
+    assert failed.status_code in {302, 303}
+    with client.session_transaction() as sess:
+        assert "saml_request_id" not in sess
+
+    started = client.get("/auth/saml/login?next=/administration")
+
+    assert started.status_code in {302, 303}
+    with client.session_transaction() as sess:
+        assert sess["saml_request_id"] == "REQ-123"
+
+
+def test_saml_acs_clears_stale_request_id_when_provider_unavailable(
+    monkeypatch, tmp_path
+):
+    loaded, _store = _load_with_saml(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    with client.session_transaction() as sess:
+        sess["saml_request_id"] = "STALE-REQ"
+
+    response = client.post("/auth/saml/acs", data={"RelayState": "/administration"})
+
+    assert response.status_code in {302, 303}
+    with client.session_transaction() as sess:
+        assert "saml_request_id" not in sess
+
+
 def test_saml_acs_drops_external_relay_state(monkeypatch, tmp_path):
     loaded, store = _load_with_saml(monkeypatch, tmp_path)
     store.enable_with_metadata(required_group="")

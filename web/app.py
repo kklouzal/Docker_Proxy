@@ -2758,6 +2758,7 @@ def auth_saml_metadata():
 def auth_saml_login():
     profile = _saml_auth_store.get_profile()
     next_url = _safe_next_url(request.args.get("next") or "")
+    session.pop("saml_request_id", None)
     if not profile_metadata_ready(profile):
         _record_audit_event(
             "saml_login_failed",
@@ -2791,6 +2792,7 @@ def auth_saml_acs():
     profile = _saml_auth_store.get_profile()
     next_url = _safe_next_url(request.form.get("RelayState") or "")
     if not profile_metadata_ready(profile):
+        session.pop("saml_request_id", None)
         _record_audit_event(
             "saml_login_failed",
             ok=False,
