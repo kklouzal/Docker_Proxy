@@ -279,6 +279,45 @@ def test_webcat_acl_clears_cached_remote_connection_after_category_lookup() -> N
     assert db._conn is None
 
 
+def test_webcat_acl_clears_cached_remote_connection_after_snapshot_build(
+    tmp_path, monkeypatch
+) -> None:
+    webcat_acl = _webcat_acl_module()
+    snapshot_dir = tmp_path / "snapshot"
+    monkeypatch.setenv("WEBFILTER_SNAPSHOT_DIR", str(snapshot_dir))
+
+    class FakeCursor:
+        def execute(self, *_args, **_kwargs) -> None:
+            return None
+
+        def fetchmany(self, _size):
+            return []
+
+        def close(self) -> None:
+            return None
+
+    class FakeNative:
+        def cursor(self):
+            return FakeCursor()
+
+    class CachedConn:
+        native = FakeNative()
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    db = webcat_acl._Db()
+    conn = CachedConn()
+    db._conn = conn
+
+    assert db._build_snapshot_from_db(expected_built_ts=123) is True
+    assert conn.closed is True
+    assert db._conn is None
+
+
 def test_blocked_log_db_closes_connection_when_schema_init_fails(monkeypatch) -> None:
     webcat_acl = _webcat_acl_module()
 

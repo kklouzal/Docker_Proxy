@@ -393,8 +393,7 @@ class _Db:
             return False
         finally:
             if remote_conn is not None:
-                with contextlib.suppress(Exception):
-                    remote_conn.close()
+                self._close_remote_conn(remote_conn)
             if local_db is not None:
                 with contextlib.suppress(Exception):
                     local_db.close()
