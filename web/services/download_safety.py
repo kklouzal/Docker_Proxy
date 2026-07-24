@@ -253,7 +253,7 @@ def _url_origin(parsed) -> tuple[str, str, int | None]:
             port = 443
     return (
         scheme,
-        str(parsed.hostname or "").lower().rstrip("."),
+        _canonical_download_hostname(str(parsed.hostname or "")),
         port,
     )
 

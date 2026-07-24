@@ -811,6 +811,62 @@ def test_open_download_url_preserves_extra_headers_on_same_origin_redirect(
     assert redirected["if-none-match"] == "etag-1"
 
 
+def test_open_download_url_preserves_extra_headers_on_canonicalized_same_origin_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        assert host == "public.example"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                ("93.184.216.34", 0),
+            ),
+        ]
+
+    seen_headers: list[dict[str, str]] = []
+    redirect_headers = Message()
+    redirect_headers["Location"] = "/mirror/feed.csv"
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            seen_headers.append(dict(req.header_items()))
+            if len(seen_headers) == 1:
+                raise download_safety.urllib.error.HTTPError(
+                    req.full_url,
+                    302,
+                    "Found",
+                    redirect_headers,
+                    None,
+                )
+            msg = "stop"
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(RuntimeError, match="stop"):
+        download_safety.open_download_url(
+            "https://public\u3002example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+            headers={"If-None-Match": "etag-1"},
+        )
+
+    assert len(seen_headers) == 2
+    redirected = {k.lower(): v for k, v in seen_headers[1].items()}
+    assert redirected["user-agent"] == "unit-test-agent"
+    assert redirected["if-none-match"] == "etag-1"
+
+
 def test_open_download_url_rejects_malformed_redirect_location_before_dns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
