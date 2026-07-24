@@ -1475,6 +1475,192 @@ def test_sync_from_db_forced_noop_does_not_reapply_current_config() -> None:
     assert runtime.controller.token == "adblock-sha"
 
 
+def test_sync_from_db_records_noop_apply_for_claimed_current_config_operation() -> None:
+    runtime = _runtime_shell()
+    recorded: list[tuple[object, int, bool, str]] = []
+    registry_marks: list[tuple[object, bool, str, str]] = []
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="config_apply",
+        target_kind="config_revision",
+        target_ref="9",
+        force=True,
+    )
+
+    class Controller:
+        def normalize_config_text(self, text):
+            return text
+
+        def apply_config_text(self, _text):
+            msg = "current config operation should not reapply active config"
+            raise AssertionError(msg)
+
+        def set_adblock_icap_revision_token(self, token) -> None:
+            self.token = token
+
+        def materialize_clamav_runtime_files(self, _config_text, **_kwargs):
+            return True, "ClamAV runtime files already current."
+
+        def get_current_config(self):
+            return "http_port 3128\n"
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256="current-sha")
+
+        def latest_apply(self, _proxy_id) -> None:
+            return None
+
+        def record_apply_result(
+            self,
+            proxy_id,
+            revision_id,
+            *,
+            ok,
+            detail,
+            applied_by,
+        ):
+            recorded.append((proxy_id, revision_id, ok, applied_by))
+            assert detail.endswith("Proxy is already using the active config revision.")
+            return SimpleNamespace(application_id=77)
+
+        def get_active_revision(self, _proxy_id):
+            msg = "current config operation should not load active config text"
+            raise AssertionError(msg)
+
+    class Registry:
+        def mark_apply_result(self, proxy_id, *, ok, detail, current_config_sha):
+            registry_marks.append((proxy_id, ok, detail, current_config_sha))
+            return SimpleNamespace()
+
+    runtime.controller = Controller()
+    runtime.revisions = Revisions()
+    runtime.registry = Registry()
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "adblock-sha",
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime._reload_for_policy_update = lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("current config operation should not reload policy includes"),
+    )
+
+    result = runtime._sync_from_db_unlocked(
+        force=True,
+        artifact_force=True,
+        operations=[op],
+    )
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["config_changed"] is False
+    assert result["revision_id"] == 9
+    assert result["application_id"] == 77
+    assert recorded == [("default", 9, True, "proxy")]
+    assert registry_marks == [
+        (
+            "default",
+            True,
+            "Proxy is already using the active config revision.",
+            "current-sha",
+        ),
+    ]
+
+
+def test_sync_from_db_does_not_duplicate_noop_apply_when_current_revision_recorded() -> (
+    None
+):
+    runtime = _runtime_shell()
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="config_apply",
+        target_kind="config_revision",
+        target_ref="9",
+        force=True,
+    )
+
+    class Controller:
+        def normalize_config_text(self, text):
+            return text
+
+        def apply_config_text(self, _text):
+            msg = "current config operation should not reapply active config"
+            raise AssertionError(msg)
+
+        def set_adblock_icap_revision_token(self, _token) -> None:
+            return None
+
+        def materialize_clamav_runtime_files(self, _config_text, **_kwargs):
+            return True, "ClamAV runtime files already current."
+
+        def get_current_config(self):
+            return "http_port 3128\n"
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256="current-sha")
+
+        def latest_apply(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, ok=True, application_id=44)
+
+        def record_apply_result(self, *_args, **_kwargs):
+            msg = "already recorded current revision should not duplicate apply evidence"
+            raise AssertionError(msg)
+
+        def get_active_revision(self, _proxy_id):
+            msg = "current config operation should not load active config text"
+            raise AssertionError(msg)
+
+    class Registry:
+        def mark_apply_result(self, *_args, **_kwargs):
+            msg = "already recorded current revision should not mark registry"
+            raise AssertionError(msg)
+
+    runtime.controller = Controller()
+    runtime.revisions = Revisions()
+    runtime.registry = Registry()
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "adblock-sha",
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime._reload_for_policy_update = lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("current config operation should not reload policy includes"),
+    )
+
+    result = runtime._sync_from_db_unlocked(
+        force=True,
+        artifact_force=True,
+        operations=[op],
+    )
+
+    assert result["ok"] is True
+    assert result["revision_id"] == 9
+    assert "application_id" not in result
+
+
 def test_sync_from_db_noop_materializes_adblock_setting_state() -> None:
     runtime = _runtime_shell()
     materialized_enabled = []

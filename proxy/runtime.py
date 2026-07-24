@@ -217,6 +217,34 @@ def _operations_request_config_force(operations: list[Any] | None) -> bool:
     )
 
 
+def _operations_target_config_revision(
+    operations: list[Any] | None,
+    revision_id: object,
+) -> bool:
+    target_revision_id = _int_or_none(revision_id)
+    if target_revision_id is None:
+        return False
+    for operation in operations or []:
+        if str(getattr(operation, "target_kind", "") or "") != "config_revision":
+            continue
+        if _int_or_none(getattr(operation, "target_ref", None)) == target_revision_id:
+            return True
+    return False
+
+
+def _latest_apply_matches_config_revision(
+    latest_apply: Any,
+    revision_id: object,
+) -> bool:
+    target_revision_id = _int_or_none(revision_id)
+    if latest_apply is None or target_revision_id is None:
+        return False
+    return bool(
+        _int_or_none(getattr(latest_apply, "revision_id", None)) == target_revision_id
+        and bool(getattr(latest_apply, "ok", False))
+    )
+
+
 def _mark_claimed_operation_status(
     ledger: Any,
     operation: Any,
@@ -4033,6 +4061,16 @@ class ProxyRuntime:
                     message="Failed to normalize active config revision for sync comparison",
                 )
 
+        latest_apply = None
+        try:
+            latest_apply = self.revisions.latest_apply(self.proxy_id)
+        except Exception:
+            latest_apply = None
+        active_config_operation_claimed = _operations_target_config_revision(
+            operations,
+            revision_meta.revision_id,
+        )
+
         if normalized_config_current:
             reload_ok = True
             if reload_required_after_runtime_materialization():
@@ -4045,7 +4083,30 @@ class ProxyRuntime:
             if detail_parts:
                 detail_parts.append(detail)
                 detail = "\n".join(detail_parts).strip()
-            if (
+            should_record_noop_apply = bool(
+                reload_ok
+                and active_config_operation_claimed
+                and not _latest_apply_matches_config_revision(
+                    latest_apply,
+                    revision_meta.revision_id,
+                )
+            )
+            applied = None
+            if should_record_noop_apply:
+                applied = self.revisions.record_apply_result(
+                    self.proxy_id,
+                    revision_meta.revision_id,
+                    ok=True,
+                    detail=detail,
+                    applied_by="proxy",
+                )
+                self.registry.mark_apply_result(
+                    self.proxy_id,
+                    ok=True,
+                    detail=detail,
+                    current_config_sha=current_sha,
+                )
+            elif (
                 reload_required_after_runtime_materialization()
             ) and not reload_ok:
                 self.registry.mark_apply_result(
@@ -4054,7 +4115,7 @@ class ProxyRuntime:
                     detail=detail,
                     current_config_sha=current_sha,
                 )
-            return {
+            result = {
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
@@ -4074,12 +4135,9 @@ class ProxyRuntime:
                 **pac_evidence,
                 **operation_evidence,
             }
-
-        latest_apply = None
-        try:
-            latest_apply = self.revisions.latest_apply(self.proxy_id)
-        except Exception:
-            latest_apply = None
+            if applied is not None:
+                result["application_id"] = applied.application_id
+            return result
         if (
             not force
             and latest_apply is not None
@@ -4136,7 +4194,30 @@ class ProxyRuntime:
             if detail_parts:
                 detail_parts.append(detail)
                 detail = "\n".join(detail_parts).strip()
-            if (
+            should_record_noop_apply = bool(
+                reload_ok
+                and active_config_operation_claimed
+                and not _latest_apply_matches_config_revision(
+                    latest_apply,
+                    revision_meta.revision_id,
+                )
+            )
+            applied = None
+            if should_record_noop_apply:
+                applied = self.revisions.record_apply_result(
+                    self.proxy_id,
+                    revision_meta.revision_id,
+                    ok=True,
+                    detail=detail,
+                    applied_by="proxy",
+                )
+                self.registry.mark_apply_result(
+                    self.proxy_id,
+                    ok=True,
+                    detail=detail,
+                    current_config_sha=current_sha,
+                )
+            elif (
                 reload_required_after_runtime_materialization()
             ) and not reload_ok:
                 self.registry.mark_apply_result(
@@ -4145,7 +4226,7 @@ class ProxyRuntime:
                     detail=detail,
                     current_config_sha=current_sha,
                 )
-            return {
+            result = {
                 "ok": reload_ok,
                 "proxy_id": self.proxy_id,
                 "revision_id": revision_meta.revision_id,
@@ -4163,6 +4244,9 @@ class ProxyRuntime:
                 **pac_evidence,
                 **operation_evidence,
             }
+            if applied is not None:
+                result["application_id"] = applied.application_id
+            return result
 
         if revision is None:
             revision = self.revisions.get_active_revision(self.proxy_id)
