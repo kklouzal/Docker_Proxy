@@ -1330,6 +1330,24 @@ class ObservabilityQueries:
                 )
             self._schedule_schema_ready = True
 
+    @staticmethod
+    def _present_report_schedule_row(row: Any) -> dict[str, Any]:
+        return {
+            "id": int(row[0] or 0),
+            "enabled": bool(row[1]),
+            "name": str(row[2] or ""),
+            "cadence": str(row[3] or "daily"),
+            "recipients": str(row[4] or ""),
+            "pane": str(row[5] or "reports"),
+            "report_format": str(row[6] or "csv"),
+            "privacy": bool(row[7]),
+            "window_seconds": int(row[8] or 86400),
+            "next_run_ts": int(row[9] or 0),
+            "last_run_ts": int(row[10] or 0),
+            "last_status": str(row[11] or ""),
+            "updated_ts": int(row[12] or 0),
+        }
+
     def report_schedules(self, *, limit: int = 20) -> list[dict[str, Any]]:
         self._ensure_report_schedule_db()
         proxy_id = get_proxy_id()
@@ -1346,24 +1364,7 @@ class ObservabilityQueries:
                 """,
                 (proxy_id, lim),
             ).fetchall()
-        return [
-            {
-                "id": int(row[0] or 0),
-                "enabled": bool(row[1]),
-                "name": str(row[2] or ""),
-                "cadence": str(row[3] or "daily"),
-                "recipients": str(row[4] or ""),
-                "pane": str(row[5] or "reports"),
-                "report_format": str(row[6] or "csv"),
-                "privacy": bool(row[7]),
-                "window_seconds": int(row[8] or 86400),
-                "next_run_ts": int(row[9] or 0),
-                "last_run_ts": int(row[10] or 0),
-                "last_status": str(row[11] or ""),
-                "updated_ts": int(row[12] or 0),
-            }
-            for row in rows
-        ]
+        return [self._present_report_schedule_row(row) for row in rows]
 
     def save_report_schedule(
         self,
@@ -1407,7 +1408,7 @@ class ObservabilityQueries:
             raise ValueError(msg)
         with self._connect() as conn:
             with guarded_proxy_write(conn, get_proxy_id()) as guard:
-                conn.execute(
+                result = conn.execute(
                     """
                     INSERT INTO observability_report_schedules(
                         proxy_id, enabled, name, cadence, recipients, pane, report_format, privacy,
@@ -1430,6 +1431,20 @@ class ObservabilityQueries:
                         _next_schedule_run_ts(cadence_s, now),
                     ),
                 )
+                inserted_id = int(getattr(result, "lastrowid", 0) or 0)
+                if inserted_id > 0:
+                    row = conn.execute(
+                        """
+                        SELECT id, enabled, name, cadence, recipients, pane, report_format, privacy,
+                               window_seconds, next_run_ts, last_run_ts, last_status, updated_ts
+                        FROM observability_report_schedules
+                        WHERE proxy_id = %s AND id = %s
+                        LIMIT 1
+                        """,
+                        (guard.proxy_id, inserted_id),
+                    ).fetchone()
+                    if row is not None:
+                        return self._present_report_schedule_row(row)
         return self.report_schedules(limit=1)[0]
 
     def audit_activity(self, *, since: int, limit: int = 20) -> dict[str, Any]:

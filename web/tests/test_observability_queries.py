@@ -1704,6 +1704,85 @@ def test_observability_performance_overview_reuses_precomputed_summary(
     assert payload["summary"]["icap_events"] == 4
 
 
+def test_save_report_schedule_returns_inserted_row_instead_of_sorted_first(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services import observability_queries  # type: ignore
+
+    class InsertResult:
+        lastrowid = 22
+
+    class SelectResult:
+        def fetchone(self):
+            return (
+                22,
+                1,
+                "Weekly inserted second",
+                "weekly",
+                "weekly@example.com",
+                "reports",
+                "jsonl",
+                1,
+                86400,
+                123456,
+                0,
+                "configured",
+                123400,
+            )
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def execute(self, sql: str, params=()):
+            text = " ".join(str(sql).split())
+            params_t = tuple(params or ())
+            self.calls.append((text, params_t))
+            if "INSERT INTO observability_report_schedules" in text:
+                return InsertResult()
+            if "WHERE proxy_id = %s AND id = %s" in text:
+                assert params_t == ("default", 22)
+                return SelectResult()
+            message = f"unexpected SQL: {text}"
+            raise AssertionError(message)
+
+    conn = FakeConnection()
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_ensure_report_schedule_db", lambda: None)
+    monkeypatch.setattr(queries, "_connect", lambda: conn)
+    monkeypatch.setattr(
+        queries,
+        "report_schedules",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("save_report_schedule used sorted list fallback"),
+        ),
+    )
+
+    weekly = queries.save_report_schedule(
+        name="Weekly inserted second",
+        cadence="weekly",
+        recipients="weekly@example.com",
+        report_format="jsonl",
+    )
+
+    assert weekly["id"] == 22
+    assert weekly["name"] == "Weekly inserted second"
+    assert weekly["cadence"] == "weekly"
+    assert weekly["recipients"] == "weekly@example.com"
+    assert any(
+        "WHERE proxy_id = %s AND id = %s" in sql and params == ("default", 22)
+        for sql, params in conn.calls
+    )
+
+
 def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_privacy(
     tmp_path, monkeypatch
 ) -> None:
