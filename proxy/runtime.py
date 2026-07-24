@@ -247,13 +247,21 @@ def _latest_apply_matches_config_revision(
 
 def _should_record_noop_config_apply(
     *,
+    force: bool,
     operations: list[Any] | None,
+    latest_apply: Any,
     revision_id: object,
 ) -> bool:
-    # Claimed config-apply operations are operator-visible apply attempts, so
-    # record fresh no-op evidence even if an older apply row already matches the
-    # same revision. Bare/manual sync no-ops remain status checks, not applies.
-    return _operations_target_config_revision(operations, revision_id)
+    # Claimed config operations are operator-visible apply attempts, so record
+    # fresh no-op evidence even if an older apply row already matches the same
+    # revision. A bare forced management sync should fill missing evidence for an
+    # already-current active revision without churning rows once that evidence
+    # exists.
+    if _operations_target_config_revision(operations, revision_id):
+        return True
+    return bool(
+        force and not _latest_apply_matches_config_revision(latest_apply, revision_id)
+    )
 
 
 def _mark_claimed_operation_status(
@@ -4092,7 +4100,12 @@ class ProxyRuntime:
             should_record_noop_apply = bool(
                 reload_ok
                 and _should_record_noop_config_apply(
+                    force=force
+                    and not changed_since_sync_start(
+                        policy_config_changed=bool(policy_config_changed),
+                    ),
                     operations=operations,
+                    latest_apply=latest_apply,
                     revision_id=revision_meta.revision_id,
                 )
             )
@@ -4202,7 +4215,9 @@ class ProxyRuntime:
             should_record_noop_apply = bool(
                 reload_ok
                 and _should_record_noop_config_apply(
+                    force=force and not sync_changed,
                     operations=operations,
+                    latest_apply=latest_apply,
                     revision_id=revision_meta.revision_id,
                 )
             )

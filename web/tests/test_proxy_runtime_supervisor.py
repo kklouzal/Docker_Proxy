@@ -1403,8 +1403,10 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
     assert "Squid reconfigured for policy update." in recorded[0][2]
 
 
-def test_sync_from_db_forced_noop_does_not_reapply_current_config() -> None:
+def test_sync_from_db_forced_noop_records_apply_for_current_config() -> None:
     runtime = _runtime_shell()
+    recorded: list[tuple[object, int, bool, str]] = []
+    registry_marks: list[tuple[object, bool, str, str]] = []
 
     class Controller:
         def normalize_config_text(self, text):
@@ -1430,14 +1432,27 @@ def test_sync_from_db_forced_noop_does_not_reapply_current_config() -> None:
         def latest_apply(self, _proxy_id) -> None:
             return None
 
+        def record_apply_result(
+            self,
+            proxy_id,
+            revision_id,
+            *,
+            ok,
+            detail,
+            applied_by,
+        ):
+            recorded.append((proxy_id, revision_id, ok, applied_by))
+            assert detail.endswith("Proxy is already using the active config revision.")
+            return SimpleNamespace(application_id=55)
+
         def get_active_revision(self, _proxy_id):
             msg = "forced no-op should not load active config"
             raise AssertionError(msg)
 
     class Registry:
-        def mark_apply_result(self, *_args, **_kwargs):
-            msg = "forced no-op should not mark config apply result"
-            raise AssertionError(msg)
+        def mark_apply_result(self, proxy_id, *, ok, detail, current_config_sha):
+            registry_marks.append((proxy_id, ok, detail, current_config_sha))
+            return SimpleNamespace()
 
     runtime.controller = Controller()
     runtime.revisions = Revisions()
@@ -1458,20 +1473,32 @@ def test_sync_from_db_forced_noop_does_not_reapply_current_config() -> None:
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
+    runtime._current_adblock_enabled = lambda: True
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
     runtime._reload_for_policy_update = lambda **_kwargs: (_ for _ in ()).throw(
         AssertionError("forced no-op should not reload policy includes"),
     )
 
-    result = runtime.sync_from_db(force=True)
+    result = runtime._sync_from_db_unlocked(force=True, operations=[])
 
     assert result["ok"] is True
     assert result["changed"] is False
     assert result["config_changed"] is False
     assert result["policy_changed"] is False
     assert result["adblock_changed"] is False
+    assert result["application_id"] == 55
     assert result["detail"].endswith(
         "Proxy is already using the active config revision.",
     )
+    assert recorded == [("default", 9, True, "proxy")]
+    assert registry_marks == [
+        (
+            "default",
+            True,
+            "Proxy is already using the active config revision.",
+            "current-sha",
+        ),
+    ]
     assert runtime.controller.token == "adblock-sha"
 
 
