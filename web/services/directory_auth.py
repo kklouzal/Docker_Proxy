@@ -322,8 +322,15 @@ class DirectoryAuthStore:
         current = self.get_profile(provider)
         enabled = self._truthy(payload.get("enabled"))
         bind_password = str(payload.get("bind_password") or "")
+        current_bind_password = self._decrypt(current.bind_password)
         if bind_password:
-            stored_password = self._encrypt(bind_password)
+            if (
+                current.bind_password.startswith("enc:v1:")
+                and bind_password == current_bind_password
+            ):
+                stored_password = current.bind_password
+            else:
+                stored_password = self._encrypt(bind_password)
         elif current.provider == provider:
             stored_password = current.bind_password
         else:

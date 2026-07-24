@@ -32,10 +32,55 @@ class MemoryDirectoryAuthStore(DirectoryAuthStore):
         self.ensure_default_profiles()
         return dict(self.rows)
 
+    def _connect(self):
+        store = self
+
+        class _MemoryConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def execute(self, sql, params=()):
+                if "UPDATE directory_auth_profiles SET enabled = 0 WHERE provider <>" in sql:
+                    active_provider = params[0]
+                    for key, profile in list(store.rows.items()):
+                        if key != active_provider:
+                            store.rows[key] = replace(profile, enabled=False)
+                    return self
+                if "UPDATE directory_auth_profiles" in sql and "WHERE provider =" in sql:
+                    provider = params[-1]
+                    store.rows[provider] = replace(
+                        store.rows.get(provider) or store.default_profile(provider),
+                        enabled=bool(params[0]),
+                        server_urls=params[1],
+                        use_starttls=bool(params[2]),
+                        verify_tls=bool(params[3]),
+                        ca_bundle=params[4],
+                        bind_dn=params[5],
+                        bind_password=params[6],
+                        base_dn=params[7],
+                        user_search_base=params[8],
+                        user_filter=params[9],
+                        user_attribute=params[10],
+                        group_search_base=params[11],
+                        group_filter=params[12],
+                        required_admin_group=params[13],
+                        timeout_seconds=params[14],
+                        last_test_ok=bool(params[15]),
+                        last_test_ts=params[16],
+                        last_test_detail=params[17],
+                        updated_ts=params[18],
+                    )
+                    return self
+                msg = "unexpected SQL in memory store"
+                raise AssertionError(msg)
+
+        return _MemoryConnection()
+
     def save_profile(self, provider, payload):
-        profile = super().save_profile(provider, payload)
-        self.rows[provider] = profile
-        return profile
+        return super().save_profile(provider, payload)
 
 
 def _test_ca_pem() -> str:
@@ -391,6 +436,42 @@ def test_profile_requires_successful_connection_test_before_enable(tmp_path) -> 
     assert active.enabled is True
     assert active.last_test_ok is True
     assert active.bind_password == tested.bind_password
+
+
+def test_profile_enable_accepts_same_plaintext_bind_password_without_retest() -> None:
+    store = MemoryDirectoryAuthStore()
+    payload = {
+        "enabled": "0",
+        "server_urls": "ldaps://ldap.example.org:636",
+        "bind_dn": "cn=bind,dc=example,dc=org",
+        "bind_password": "secret",
+        "base_dn": "dc=example,dc=org",
+        "user_filter": "(uid={username})",
+        "user_attribute": "uid",
+        "group_filter": "(member={user_dn})",
+        "required_admin_group": "cn=admins,dc=example,dc=org",
+        "timeout_seconds": "5",
+        "verify_tls": "1",
+    }
+
+    saved = store.save_profile("ldap", payload)
+    tested = replace(
+        saved,
+        last_test_ok=True,
+        last_test_ts=123456789,
+        last_test_detail="Directory bind and base search succeeded.",
+    )
+    store.rows["ldap"] = tested
+
+    enabled = store.save_profile(
+        "ldap",
+        {**payload, "enabled": "1", "bind_password": "secret"},
+    )
+
+    assert enabled.enabled is True
+    assert enabled.last_test_ok is True
+    assert enabled.last_test_ts == tested.last_test_ts
+    assert enabled.bind_password == tested.bind_password
 
 
 def test_active_directory_auth_without_bind_password_fails_before_ldap(
