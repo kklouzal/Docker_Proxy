@@ -246,6 +246,17 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     assert "squid_logs_edge_2:" in live_compose
     assert live_compose.count('test: ["CMD", "/healthcheck.sh"]') == 2
     assert "squid -k check >/dev/null 2>&1 && python3 -c" not in live_compose
+    primary_proxy_block = live_compose.split("\n  proxy:\n", 1)[1].split(
+        "\n  proxy-edge-2:\n",
+        1,
+    )[0]
+    assert "        aliases:" in primary_proxy_block
+    assert "          - proxy" in primary_proxy_block
+    assert "          - ${LIVE_TEST_PROXY_ID:-live}" in primary_proxy_block
+    assert (
+        "PROXY_MANAGEMENT_URL: ${LIVE_TEST_PROXY_MANAGEMENT_URL:-http://proxy:5000}"
+        in primary_proxy_block
+    )
     assert (
         "--max-allowed-packet=${LIVE_TEST_MYSQL_MAX_ALLOWED_PACKET:-256M}"
         in live_compose

@@ -80,6 +80,7 @@ services:
       PROXY_INSTANCE_ID: ${LIVE_TEST_PROXY_ID:-live}
       PROXY_DISPLAY_NAME: ${LIVE_TEST_PROXY_DISPLAY_NAME:-Live Test Proxy}
       PROXY_MANAGEMENT_TOKEN: ${LIVE_TEST_PROXY_MANAGEMENT_TOKEN:-live-tests-token}
+      PROXY_MANAGEMENT_URL: ${LIVE_TEST_PROXY_MANAGEMENT_URL:-http://proxy:5000}
       PROXY_PUBLIC_HOST: ${LIVE_TEST_PROXY_PUBLIC_HOST:-proxy}
       PROXY_PUBLIC_PAC_URL: ${LIVE_TEST_PROXY_PUBLIC_PAC_URL:-http://proxy/proxy.pac}
       SQUID_HTTP_PORT: ${LIVE_TEST_SQUID_HTTP_PORT:-}
@@ -99,6 +100,11 @@ services:
       timeout: 5s
       retries: 24
       start_period: 10s
+    networks:
+      control:
+        aliases:
+          - proxy
+          - ${LIVE_TEST_PROXY_ID:-live}
 
   proxy-edge-2:
     build:
