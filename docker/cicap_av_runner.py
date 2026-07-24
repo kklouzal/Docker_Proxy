@@ -302,12 +302,12 @@ def _validate_respmod_encapsulated_boundaries(
 
     if offsets.get("req-hdr") is not None:
         request_header = encapsulated_headers[:response_header_offset]
-        if not request_header.endswith(HEADER_END):
+        if not _is_single_encapsulated_header_block(request_header):
             message = "invalid RESPMOD encapsulated req-hdr boundary"
             raise IcapProtocolError(message)
 
     response_header = encapsulated_headers[response_header_offset:terminal_offset]
-    if not response_header.endswith(HEADER_END):
+    if not _is_single_encapsulated_header_block(response_header):
         message = "invalid RESPMOD encapsulated res-hdr boundary"
         raise IcapProtocolError(message)
 
@@ -363,9 +363,14 @@ def _validate_reqmod_encapsulated_boundaries(
 
     if offsets.get("req-hdr") is not None:
         request_header = encapsulated_headers[:terminal_offset]
-        if not request_header.endswith(HEADER_END):
+        if not _is_single_encapsulated_header_block(request_header):
             message = "invalid REQMOD encapsulated req-hdr boundary"
             raise IcapProtocolError(message)
+
+
+def _is_single_encapsulated_header_block(header: bytes) -> bool:
+    header_end = header.find(HEADER_END)
+    return header_end >= 0 and header_end == len(header) - len(HEADER_END)
 
 
 def _recv_more(sock: socket.socket, data: bytes, size: int) -> bytes:

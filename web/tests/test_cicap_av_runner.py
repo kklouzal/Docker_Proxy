@@ -1245,6 +1245,57 @@ def test_drain_encapsulated_body_preserves_valid_reqmod_req_body_and_null_body()
         assert sock.sent == b""
 
 
+def test_fail_open_placeholder_rejects_surplus_bytes_inside_reqmod_header_section() -> None:
+    runner = _load_runner()
+    request_header = (
+        b"POST /upload HTTP/1.1\r\n"
+        b"Host: example.test\r\n"
+        b"Content-Length: 5\r\n\r\n"
+        b"SMUGGLED\r\n\r\n"
+    )
+    request = (
+        b"REQMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        + f"Encapsulated: req-hdr=0, req-body={len(request_header)}".encode(
+            "ascii"
+        )
+        + b"\r\n\r\n"
+        + request_header
+        + b"5\r\nhello\r\n0\r\n\r\n"
+    )
+
+    response = _placeholder_raw_exchange(runner, request)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"invalid REQMOD encapsulated req-hdr boundary" in response
+    assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
+
+
+def test_fail_open_placeholder_rejects_surplus_bytes_inside_respmod_header_section() -> None:
+    runner = _load_runner()
+    response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nSMUGGLED\r\n\r\n"
+    request = (
+        b"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Allow: 204\r\n"
+        + f"Encapsulated: res-hdr=0, res-body={len(response_header)}".encode(
+            "ascii"
+        )
+        + b"\r\n\r\n"
+        + response_header
+        + b"5\r\nhello\r\n0\r\n\r\n"
+    )
+
+    response = _placeholder_raw_exchange(runner, request)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"invalid RESPMOD encapsulated res-hdr boundary" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" not in response
+
+
 def test_split_headers_rejects_duplicate_consumed_singletons_case_insensitive() -> None:
     runner = _load_runner()
     cases = (
