@@ -24,22 +24,33 @@ def _is_ambiguous_ipv4_host(value: str) -> bool:
     return True
 
 
-def _valid_public_dns_host(value: str, *, allow_single_label: bool = False) -> bool:
+def _canonical_public_dns_host(
+    value: str,
+    *,
+    allow_single_label: bool = False,
+) -> str:
     candidate = value.rstrip(".").lower()
+    if not candidate:
+        return ""
+    try:
+        candidate = candidate.encode("idna").decode("ascii")
+    except Exception:
+        return ""
     if not candidate or len(candidate) > 253:
-        return False
+        return ""
     labels = candidate.split(".")
     if len(labels) < 2 and not allow_single_label:
-        return False
-    return not any(
+        return ""
+    if any(
         not label
         or len(label) > 63
-        or not label.isascii()
         or not label[0].isalnum()
         or not label[-1].isalnum()
         or any(not (ch.isalnum() or ch == "-") for ch in label)
         for label in labels
-    )
+    ):
+        return ""
+    return candidate
 
 
 def _has_empty_explicit_authority_port(netloc: str) -> bool:
@@ -126,15 +137,17 @@ def normalize_public_host(
         if parsed_ip.is_multicast or not parsed_ip.is_global:
             return fallback
         return str(parsed_ip)
-    if _is_ambiguous_ipv4_host(host):
-        return fallback
-    if _is_reserved_public_dns_host(host):
-        return fallback
-    return (
-        host.rstrip(".").lower()
-        if _valid_public_dns_host(host, allow_single_label=allow_single_label)
-        else fallback
+    dns_host = _canonical_public_dns_host(
+        host,
+        allow_single_label=allow_single_label,
     )
+    if not dns_host:
+        return fallback
+    if _is_ambiguous_ipv4_host(dns_host):
+        return fallback
+    if _is_reserved_public_dns_host(dns_host):
+        return fallback
+    return dns_host
 
 
 def normalize_public_scheme(value: object | None) -> str:

@@ -21,11 +21,13 @@ def _add_web_to_path() -> None:
         "api.localhost",
         "printer.local",
         "proxy.internal",
+        "proxy。internal",
         "ip6-localhost",
         "ip6-loopback",
         "gateway.home.arpa",
         "http://localhost:8080/proxy.pac",
         "https://proxy.internal/wpad.dat",
+        "https://proxy。internal/wpad.dat",
     ],
 )
 def test_normalize_public_host_rejects_internal_reserved_dns_names(value: str) -> None:
@@ -96,6 +98,10 @@ def test_normalize_public_host_rejects_non_public_ip_literals(value: str) -> Non
     [
         ("Proxy-Edge.Example.COM.", "proxy-edge.example.com"),
         ("https://Proxy-Edge.Example.COM:8443/proxy.pac", "proxy-edge.example.com"),
+        ("bücher.example", "xn--bcher-kva.example"),
+        ("https://BÜCHER.example:8443/proxy.pac", "xn--bcher-kva.example"),
+        ("proxy。example", "proxy.example"),
+        ("https://bücher．example/proxy.pac", "xn--bcher-kva.example"),
         ("93.184.216.34", "93.184.216.34"),
         ("[2001:4860:4860::8888]:8080", "2001:4860:4860::8888"),
     ],
@@ -120,6 +126,24 @@ def test_normalize_public_host_accepts_public_endpoint_hosts(
     ],
 )
 def test_normalize_public_host_rejects_stray_authority_brackets(value: str) -> None:
+    _add_web_to_path()
+    from services.public_endpoint import normalize_public_host  # type: ignore
+
+    assert normalize_public_host(value) == ""
+    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "１２７.０.０.１",
+        "１２７。０。０。１",
+        "http://１２７。０。０。１/proxy.pac",
+    ],
+)
+def test_normalize_public_host_rejects_idna_folded_ambiguous_ipv4_forms(
+    value: str,
+) -> None:
     _add_web_to_path()
     from services.public_endpoint import normalize_public_host  # type: ignore
 
