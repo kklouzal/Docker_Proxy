@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import NoReturn
 
 
@@ -350,6 +351,141 @@ def test_proxy_management_api_status_codes_and_payload_mapping(monkeypatch) -> N
     assert cache.status_code == 500
     assert eicar.status_code == 503
     assert icap.status_code == 503
+
+
+def test_proxy_management_sync_operation_id_records_current_config_apply(
+    monkeypatch,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = runtime_module.ProxyRuntime.__new__(runtime_module.ProxyRuntime)
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    operation = SimpleNamespace(
+        operation_id=42,
+        operation_type="config_apply",
+        target_kind="config_revision",
+        target_ref="9",
+        force=True,
+        claim_token="claim-0",
+    )
+    marked: list[tuple[int, str, str, str | None]] = []
+    recorded: list[tuple[object, int, bool, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, proxy_id):
+            assert proxy_id == "edge-a"
+
+        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+            assert proxy_id == "edge-a"
+            assert limit == 100
+            assert operation_id == 42
+            return [operation]
+
+        def mark_status(
+            self,
+            operation_id,
+            *,
+            status,
+            detail,
+            expected_status=None,
+            expected_claim_token=None,
+        ):
+            marked.append((operation_id, status, detail, expected_claim_token))
+
+    class Controller:
+        def normalize_config_text(self, text):
+            return text
+
+        def apply_config_text(self, _text):
+            msg = "current config operation should not reapply active config"
+            raise AssertionError(msg)
+
+        def set_adblock_icap_revision_token(self, _token):
+            return None
+
+        def materialize_clamav_runtime_files(self, _config_text, **_kwargs):
+            return True, "ClamAV runtime files already current."
+
+        def get_current_config(self):
+            return "http_port 3128\n"
+
+    class Revisions:
+        def get_active_revision_metadata(self, _proxy_id):
+            return SimpleNamespace(revision_id=9, config_sha256="current-sha")
+
+        def latest_apply(self, _proxy_id):
+            return None
+
+        def record_apply_result(
+            self,
+            proxy_id,
+            revision_id,
+            *,
+            ok,
+            detail,
+            applied_by,
+        ):
+            recorded.append((proxy_id, revision_id, ok, applied_by))
+            assert detail.endswith("Proxy is already using the active config revision.")
+            return SimpleNamespace(application_id=77)
+
+        def get_active_revision(self, _proxy_id):
+            msg = "current config operation should not load active config text"
+            raise AssertionError(msg)
+
+    runtime.controller = Controller()
+    runtime.revisions = Revisions()
+    runtime.registry = SimpleNamespace(mark_apply_result=lambda *_args, **_kwargs: None)
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "artifact_sha256": "adblock-sha",
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime._current_adblock_artifact_sha = lambda: "adblock-sha"
+    runtime._current_adblock_enabled = lambda: True
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime._reload_for_policy_update = lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("current config operation should not reload policy includes"),
+    )
+    ledger = Ledger()
+
+    def get_ledger():
+        return ledger
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", get_ledger)
+    proxy_app.runtime = runtime
+
+    response = _management_post(
+        proxy_app.app.test_client(),
+        "/api/manage/sync",
+        json={"operation_id": 42},
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["application_id"] == 77
+    assert recorded == [("edge-a", 9, True, "proxy")]
+    assert marked == [
+        (
+            42,
+            "applied",
+            "Proxy is already using the active config revision.",
+            "claim-0",
+        ),
+    ]
 
 
 def test_proxy_runtime_clamav_icap_preserves_degraded_transport_detail(

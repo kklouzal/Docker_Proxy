@@ -1578,10 +1578,10 @@ def test_sync_from_db_records_noop_apply_for_claimed_current_config_operation() 
     ]
 
 
-def test_sync_from_db_does_not_duplicate_noop_apply_when_current_revision_recorded() -> (
-    None
-):
+def test_sync_from_db_records_noop_apply_for_each_current_config_operation() -> None:
     runtime = _runtime_shell()
+    recorded: list[tuple[object, int, bool, str]] = []
+    registry_marks: list[tuple[object, bool, str, str]] = []
     op = SimpleNamespace(
         operation_id=5,
         operation_type="config_apply",
@@ -1614,18 +1614,26 @@ def test_sync_from_db_does_not_duplicate_noop_apply_when_current_revision_record
         def latest_apply(self, _proxy_id):
             return SimpleNamespace(revision_id=9, ok=True, application_id=44)
 
-        def record_apply_result(self, *_args, **_kwargs):
-            msg = "already recorded current revision should not duplicate apply evidence"
-            raise AssertionError(msg)
+        def record_apply_result(
+            self,
+            proxy_id,
+            revision_id,
+            *,
+            ok,
+            detail,
+            applied_by,
+        ):
+            recorded.append((proxy_id, revision_id, ok, applied_by))
+            assert detail.endswith("Proxy is already using the active config revision.")
+            return SimpleNamespace(application_id=78)
 
         def get_active_revision(self, _proxy_id):
             msg = "current config operation should not load active config text"
             raise AssertionError(msg)
 
     class Registry:
-        def mark_apply_result(self, *_args, **_kwargs):
-            msg = "already recorded current revision should not mark registry"
-            raise AssertionError(msg)
+        def mark_apply_result(self, proxy_id, *, ok, detail, current_config_sha):
+            registry_marks.append((proxy_id, ok, detail, current_config_sha))
 
     runtime.controller = Controller()
     runtime.revisions = Revisions()
@@ -1658,7 +1666,16 @@ def test_sync_from_db_does_not_duplicate_noop_apply_when_current_revision_record
 
     assert result["ok"] is True
     assert result["revision_id"] == 9
-    assert "application_id" not in result
+    assert result["application_id"] == 78
+    assert recorded == [("default", 9, True, "proxy")]
+    assert registry_marks == [
+        (
+            "default",
+            True,
+            "Proxy is already using the active config revision.",
+            "current-sha",
+        ),
+    ]
 
 
 def test_sync_from_db_noop_materializes_adblock_setting_state() -> None:

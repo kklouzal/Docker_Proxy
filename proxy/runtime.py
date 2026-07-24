@@ -245,6 +245,17 @@ def _latest_apply_matches_config_revision(
     )
 
 
+def _should_record_noop_config_apply(
+    *,
+    operations: list[Any] | None,
+    revision_id: object,
+) -> bool:
+    # Claimed config-apply operations are operator-visible apply attempts, so
+    # record fresh no-op evidence even if an older apply row already matches the
+    # same revision. Bare/manual sync no-ops remain status checks, not applies.
+    return _operations_target_config_revision(operations, revision_id)
+
+
 def _mark_claimed_operation_status(
     ledger: Any,
     operation: Any,
@@ -4066,11 +4077,6 @@ class ProxyRuntime:
             latest_apply = self.revisions.latest_apply(self.proxy_id)
         except Exception:
             latest_apply = None
-        active_config_operation_claimed = _operations_target_config_revision(
-            operations,
-            revision_meta.revision_id,
-        )
-
         if normalized_config_current:
             reload_ok = True
             if reload_required_after_runtime_materialization():
@@ -4085,10 +4091,9 @@ class ProxyRuntime:
                 detail = "\n".join(detail_parts).strip()
             should_record_noop_apply = bool(
                 reload_ok
-                and active_config_operation_claimed
-                and not _latest_apply_matches_config_revision(
-                    latest_apply,
-                    revision_meta.revision_id,
+                and _should_record_noop_config_apply(
+                    operations=operations,
+                    revision_id=revision_meta.revision_id,
                 )
             )
             applied = None
@@ -4196,10 +4201,9 @@ class ProxyRuntime:
                 detail = "\n".join(detail_parts).strip()
             should_record_noop_apply = bool(
                 reload_ok
-                and active_config_operation_claimed
-                and not _latest_apply_matches_config_revision(
-                    latest_apply,
-                    revision_meta.revision_id,
+                and _should_record_noop_config_apply(
+                    operations=operations,
+                    revision_id=revision_meta.revision_id,
                 )
             )
             applied = None
