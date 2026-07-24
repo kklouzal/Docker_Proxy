@@ -44,6 +44,33 @@ def _is_ambiguous_ipv4_host(raw: str) -> bool:
     return True
 
 
+def _is_valid_port(raw: str) -> bool:
+    return raw.isdigit() and 1 <= int(raw) <= 65535
+
+
+def _strip_bare_userinfo_authority(raw: str) -> str:
+    """Accept legacy user@host:port authority tokens without raw credentials."""
+    if "@" not in raw:
+        return raw
+    userinfo, authority = raw.rsplit("@", 1)
+    if not userinfo or not authority:
+        return ""
+    if any(ch in userinfo for ch in (":", ".", "[", "]")):
+        return ""
+    if authority.startswith("["):
+        closing = authority.find("]")
+        if closing < 0:
+            return ""
+        suffix = authority[closing + 1 :]
+        if not suffix.startswith(":") or not _is_valid_port(suffix[1:]):
+            return ""
+        return authority
+    if authority.count(":") != 1:
+        return ""
+    host, port = authority.rsplit(":", 1)
+    return authority if host and _is_valid_port(port) else ""
+
+
 def normalize_domain(value: object) -> str:
     """Normalize host/domain strings shared by webcat builders and ACL helpers."""
     raw = str(value or "").strip().lower().rstrip(".")
@@ -64,7 +91,8 @@ def normalize_domain(value: object) -> str:
     raw = raw.removeprefix(".")
     if any(ch in raw for ch in ("/", "?", "#")):
         return ""
-    if "@" in raw:
+    raw = _strip_bare_userinfo_authority(raw)
+    if not raw:
         return ""
     if raw.startswith("[") and "]" in raw:
         suffix = raw[raw.index("]") + 1 :].strip()

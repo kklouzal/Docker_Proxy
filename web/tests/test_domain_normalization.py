@@ -49,6 +49,22 @@ def test_normalize_domain_preserves_explicit_url_userinfo_hostname() -> None:
     assert normalize_domain("https://user:pass@Example.COM:443/path") == "example.com"
 
 
+def test_normalize_domain_preserves_legacy_bare_userinfo_authority_tokens() -> None:
+    assert normalize_domain("user@Example.COM:443") == "example.com"
+    assert normalize_domain("user@[2001:db8::1]:443") == "2001:db8::1"
+
+
+def test_normalize_domain_rejects_ambiguous_raw_userinfo_without_port() -> None:
+    for value in (
+        "user@example.com",
+        "operator:secret@example.com:443",
+        "example.com@evil.test:443",
+        "user@example.com:notaport",
+    ):
+        assert normalize_domain(value) == ""
+        assert looks_like_domain(value) is False
+
+
 def test_normalize_domain_rejects_malformed_dns_labels_and_wildcards() -> None:
     for value in (
         "bad domain.example",
