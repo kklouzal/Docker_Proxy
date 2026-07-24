@@ -456,6 +456,99 @@ class _FakeMetadataResponse:
         return self._body
 
 
+def _use_fake_metadata_opener(monkeypatch, response: _FakeMetadataResponse):
+    opened_requests = []
+
+    class FakeOpener:
+        def open(self, request, *, timeout):
+            opened_requests.append((request, timeout))
+            return response
+
+    monkeypatch.setattr(saml_auth, "build_opener", lambda *_handlers: FakeOpener())
+    return opened_requests
+
+
+def test_saml_fetch_rejects_https_metadata_redirect_before_unsafe_fetch(
+    monkeypatch,
+) -> None:
+    store = MemorySamlAuthStore()
+    profile = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            "require_https": "1",
+        }
+    )
+    opened_urls = []
+
+    def fake_urlopen(request, *, timeout, context):
+        opened_urls.append(request.full_url)
+        opened_urls.append("http://evil.example/FederationMetadata.xml")
+        return _FakeMetadataResponse(
+            SAMPLE_METADATA.encode(),
+            "http://evil.example/FederationMetadata.xml",
+        )
+
+    monkeypatch.setattr(saml_auth, "urlopen", fake_urlopen, raising=False)
+
+    def fake_build_opener(*handlers):
+        redirect_handler = next(
+            handler
+            for handler in handlers
+            if handler.__class__.__name__ == "_SamlMetadataRedirectHandler"
+        )
+
+        class FakeOpener:
+            def open(self, request, *, timeout):
+                opened_urls.append(request.full_url)
+                assert request.get_header("Accept") == (
+                    "application/samlmetadata+xml, application/xml, text/xml"
+                )
+                assert timeout == profile.timeout_seconds
+                redirect_handler.redirect_request(
+                    request,
+                    None,
+                    302,
+                    "Found",
+                    {},
+                    "http://evil.example/FederationMetadata.xml",
+                )
+                opened_urls.append("http://evil.example/FederationMetadata.xml")
+                return _FakeMetadataResponse(SAMPLE_METADATA.encode(), profile.metadata_url)
+
+        return FakeOpener()
+
+    monkeypatch.setattr(saml_auth, "build_opener", fake_build_opener)
+
+    with pytest.raises(ValueError, match="metadata redirect URL must use https://"):
+        store.fetch_metadata(profile)
+
+    assert opened_urls == [profile.metadata_url]
+
+
+def test_saml_fetch_preserves_accept_header_on_https_redirect() -> None:
+    request = saml_auth.Request(
+        "https://adfs.example.local/FederationMetadata.xml",
+        headers={"Accept": "application/samlmetadata+xml, application/xml, text/xml"},
+    )
+
+    redirected = saml_auth._SamlMetadataRedirectHandler(
+        require_https=True,
+    ).redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "https://login.example.local/FederationMetadata.xml",
+    )
+
+    assert redirected is not None
+    assert redirected.full_url == "https://login.example.local/FederationMetadata.xml"
+    assert redirected.get_header("Accept") == (
+        "application/samlmetadata+xml, application/xml, text/xml"
+    )
+
+
 def test_saml_fetch_rejects_https_metadata_redirect_to_http(monkeypatch) -> None:
     store = MemorySamlAuthStore()
     profile = store.save_profile(
@@ -465,13 +558,13 @@ def test_saml_fetch_rejects_https_metadata_redirect_to_http(monkeypatch) -> None
         }
     )
 
-    def fake_urlopen(_request, *, timeout, context):
-        return _FakeMetadataResponse(
+    _use_fake_metadata_opener(
+        monkeypatch,
+        _FakeMetadataResponse(
             SAMPLE_METADATA.encode(),
             "http://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
-        )
-
-    monkeypatch.setattr(saml_auth, "urlopen", fake_urlopen)
+        ),
+    )
 
     with pytest.raises(ValueError, match="must use https://"):
         store.fetch_metadata(profile)
@@ -497,10 +590,10 @@ def test_saml_fetch_rejects_parser_ambiguous_https_metadata_redirects(
         }
     )
 
-    def fake_urlopen(_request, *, timeout, context):
-        return _FakeMetadataResponse(SAMPLE_METADATA.encode(), final_url)
-
-    monkeypatch.setattr(saml_auth, "urlopen", fake_urlopen)
+    _use_fake_metadata_opener(
+        monkeypatch,
+        _FakeMetadataResponse(SAMPLE_METADATA.encode(), final_url),
+    )
 
     with pytest.raises(
         ValueError,
@@ -518,13 +611,13 @@ def test_saml_fetch_rejects_zero_port_https_metadata_redirect(monkeypatch) -> No
         }
     )
 
-    def fake_urlopen(_request, *, timeout, context):
-        return _FakeMetadataResponse(
+    _use_fake_metadata_opener(
+        monkeypatch,
+        _FakeMetadataResponse(
             SAMPLE_METADATA.encode(),
             "https://login.example.local:0/FederationMetadata.xml",
-        )
-
-    monkeypatch.setattr(saml_auth, "urlopen", fake_urlopen)
+        ),
+    )
 
     with pytest.raises(
         ValueError,
@@ -542,13 +635,13 @@ def test_saml_fetch_accepts_https_metadata_redirect_to_https(monkeypatch) -> Non
         }
     )
 
-    def fake_urlopen(_request, *, timeout, context):
-        return _FakeMetadataResponse(
+    _use_fake_metadata_opener(
+        monkeypatch,
+        _FakeMetadataResponse(
             SAMPLE_METADATA.encode(),
             "https://login.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
-        )
-
-    monkeypatch.setattr(saml_auth, "urlopen", fake_urlopen)
+        ),
+    )
 
     assert store.fetch_metadata(profile) == SAMPLE_METADATA
 

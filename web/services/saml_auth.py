@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import unquote, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 from xml.sax.saxutils import escape as xml_escape
 
 try:
@@ -35,6 +35,9 @@ DEFAULT_METADATA_MAX_BYTES = 2 * 1024 * 1024
 _MD_NS = "urn:oasis:names:tc:SAML:2.0:metadata"
 _DS_NS = "http://www.w3.org/2000/09/xmldsig#"
 _NS = {"md": _MD_NS, "ds": _DS_NS}
+_SAML_METADATA_REQUEST_HEADERS = {
+    "Accept": "application/samlmetadata+xml, application/xml, text/xml",
+}
 
 
 def _has_unsafe_url_text(value: str) -> bool:
@@ -89,6 +92,33 @@ def _normalize_saml_url(value: Any, *, label: str) -> str:
         msg = f"SAML {label} URL must not include encoded whitespace, control characters, or backslashes, or encoded authority delimiters."
         raise ValueError(msg)
     return parsed.geturl()
+
+
+def _validate_saml_fetch_url(value: Any, *, label: str, require_https: bool) -> str:
+    url = _normalize_saml_url(value, label=label)
+    if require_https and urlsplit(url).scheme.lower() != "https":
+        msg = f"SAML {label} URL must use https://."
+        raise ValueError(msg)
+    return url
+
+
+class _SamlMetadataRedirectHandler(HTTPRedirectHandler):
+    def __init__(self, *, require_https: bool) -> None:
+        super().__init__()
+        self._require_https = require_https
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_saml_fetch_url(
+            newurl,
+            label="metadata redirect",
+            require_https=self._require_https,
+        )
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None:
+            for header, value in _SAML_METADATA_REQUEST_HEADERS.items():
+                if not redirected.has_header(header):
+                    redirected.add_header(header, value)
+        return redirected
 
 
 @dataclass(frozen=True)
@@ -438,29 +468,30 @@ class SamlAuthStore:
             return SamlMetadataRefreshResult(False, profile.provider, detail)
 
     def fetch_metadata(self, profile: SamlProviderProfile) -> str:
-        if profile.require_https and not profile.metadata_url.lower().startswith(
-            "https://"
-        ):
-            msg = "SAML metadata URL must use https://."
-            raise ValueError(msg)
+        metadata_url = _validate_saml_fetch_url(
+            profile.metadata_url,
+            label="metadata",
+            require_https=profile.require_https,
+        )
         context = ssl.create_default_context(cadata=profile.ca_bundle or None)
         if not profile.verify_tls:
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
         request = Request(  # noqa: S310 - scheme is validated before fetch.
-            profile.metadata_url,
-            headers={"Accept": "application/samlmetadata+xml, application/xml, text/xml"},
+            metadata_url,
+            headers=_SAML_METADATA_REQUEST_HEADERS,
         )
-        with urlopen(  # noqa: S310 - scheme is validated before fetch.
-            request,
-            timeout=profile.timeout_seconds,
-            context=context,
-        ) as resp:
+        opener = build_opener(
+            HTTPSHandler(context=context),
+            _SamlMetadataRedirectHandler(require_https=profile.require_https),
+        )
+        with opener.open(request, timeout=profile.timeout_seconds) as resp:
             final_url = resp.geturl()
-            if profile.require_https and urlsplit(final_url).scheme.lower() != "https":
-                msg = "SAML metadata final response URL must use https://."
-                raise ValueError(msg)
-            _normalize_saml_url(final_url, label="metadata final response")
+            _validate_saml_fetch_url(
+                final_url,
+                label="metadata final response",
+                require_https=profile.require_https,
+            )
             chunks: list[bytes] = []
             total = 0
             while True:
