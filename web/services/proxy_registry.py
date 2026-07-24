@@ -230,7 +230,7 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
         return "", "http", 80, "/proxy.pac"
     if parsed.username is not None or parsed.password is not None:
         return "", "http", 80, "/proxy.pac"
-    host = _normalize_public_host(parsed.hostname)
+    host = _normalize_public_host(parsed.hostname, allow_single_label=True)
     if not host:
         return "", "http", 80, "/proxy.pac"
     scheme = _normalize_public_scheme(raw_scheme)
@@ -247,7 +247,13 @@ def resolve_local_proxy_public_fields() -> dict[str, object]:
     url_host, url_scheme, url_port, url_path = _parse_public_pac_url(
         os.environ.get("PROXY_PUBLIC_PAC_URL"),
     )
-    public_host = _normalize_public_host(os.environ.get("PROXY_PUBLIC_HOST")) or url_host
+    public_host = (
+        _normalize_public_host(
+            os.environ.get("PROXY_PUBLIC_HOST"),
+            allow_single_label=True,
+        )
+        or url_host
+    )
     public_pac_scheme = _normalize_public_scheme(
         os.environ.get("PROXY_PUBLIC_PAC_SCHEME") or url_scheme or "http",
     )
@@ -442,7 +448,10 @@ class ProxyRegistry:
             display_name=str(row["display_name"] or row["proxy_id"]),
             hostname=str(row["hostname"] or ""),
             management_url=normalize_management_url(row["management_url"]),
-            public_host=_normalize_public_host(row["public_host"]),
+            public_host=_normalize_public_host(
+                row["public_host"],
+                allow_single_label=True,
+            ),
             public_pac_scheme=_normalize_public_scheme(row["public_pac_scheme"]),
             public_pac_port=_coerce_port(row["public_pac_port"], 80),
             public_pac_path=normalize_public_pac_path(
@@ -500,7 +509,10 @@ class ProxyRegistry:
                         (display_name or proxy_key).strip() or proxy_key,
                         (hostname or "").strip(),
                         normalize_management_url(management_url),
-                        _normalize_public_host(public_host),
+                        _normalize_public_host(
+                            public_host,
+                            allow_single_label=True,
+                        ),
                         _normalize_public_scheme(public_pac_scheme),
                         _coerce_port(public_pac_port, 80),
                         normalize_public_pac_path(public_pac_path),
@@ -520,7 +532,10 @@ class ProxyRegistry:
                     "display_name": (display_name or proxy_key).strip() or proxy_key,
                     "hostname": (hostname or "").strip(),
                     "management_url": normalize_management_url(management_url),
-                    "public_host": _normalize_public_host(public_host),
+                    "public_host": _normalize_public_host(
+                        public_host,
+                        allow_single_label=True,
+                    ),
                     "public_pac_scheme": _normalize_public_scheme(public_pac_scheme),
                     "public_pac_port": _coerce_port(public_pac_port, 80),
                     "public_pac_path": normalize_public_pac_path(public_pac_path),
@@ -548,7 +563,8 @@ class ProxyRegistry:
                     else row["management_url"],
                 )
                 next_public_host = _normalize_public_host(
-                    public_host if public_host is not None else row["public_host"] or ""
+                    public_host if public_host is not None else row["public_host"] or "",
+                    allow_single_label=True,
                 )
                 next_public_pac_scheme = _normalize_public_scheme(
                     public_pac_scheme
@@ -957,7 +973,7 @@ class ProxyRegistry:
         if management_url:
             match_clauses.append("management_url = %s")
             params.append(management_url)
-        public_host = _normalize_public_host(public_host)
+        public_host = _normalize_public_host(public_host, allow_single_label=True)
         if public_host:
             match_clauses.append("public_host = %s")
             params.append(public_host)
@@ -1060,7 +1076,8 @@ class ProxyRegistry:
                         management_url or instance.management_url,
                     ),
                     _normalize_public_host(
-                        public_host if public_host is not None else instance.public_host
+                        public_host if public_host is not None else instance.public_host,
+                        allow_single_label=True,
                     ),
                     _normalize_public_scheme(
                         public_pac_scheme

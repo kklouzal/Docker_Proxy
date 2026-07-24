@@ -24,12 +24,12 @@ def _is_ambiguous_ipv4_host(value: str) -> bool:
     return True
 
 
-def _valid_public_dns_host(value: str) -> bool:
+def _valid_public_dns_host(value: str, *, allow_single_label: bool = False) -> bool:
     candidate = value.rstrip(".").lower()
     if not candidate or len(candidate) > 253:
         return False
     labels = candidate.split(".")
-    if len(labels) < 2:
+    if len(labels) < 2 and not allow_single_label:
         return False
     return not any(
         not label
@@ -68,7 +68,12 @@ def _is_reserved_public_dns_host(value: str) -> bool:
     )
 
 
-def normalize_public_host(value: object | None, default: str = "") -> str:
+def normalize_public_host(
+    value: object | None,
+    default: str = "",
+    *,
+    allow_single_label: bool = False,
+) -> str:
     candidate = str(value or "").strip()
     fallback = str(default or "").strip()
     if not candidate:
@@ -125,7 +130,11 @@ def normalize_public_host(value: object | None, default: str = "") -> str:
         return fallback
     if _is_reserved_public_dns_host(host):
         return fallback
-    return host.rstrip(".").lower() if _valid_public_dns_host(host) else fallback
+    return (
+        host.rstrip(".").lower()
+        if _valid_public_dns_host(host, allow_single_label=allow_single_label)
+        else fallback
+    )
 
 
 def normalize_public_scheme(value: object | None) -> str:

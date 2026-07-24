@@ -257,6 +257,23 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
         "PROXY_MANAGEMENT_URL: ${LIVE_TEST_PROXY_MANAGEMENT_URL:-http://proxy:5000}"
         in primary_proxy_block
     )
+    assert "PROXY_PUBLIC_HOST: ${LIVE_TEST_PROXY_PUBLIC_HOST:-proxy}" in primary_proxy_block
+    assert (
+        "PROXY_PUBLIC_PAC_URL: ${LIVE_TEST_PROXY_PUBLIC_PAC_URL:-http://proxy/proxy.pac}"
+        in primary_proxy_block
+    )
+    remote_proxy_block = live_compose.split("\n  proxy-edge-2:\n", 1)[1].split(
+        "\n  live-tests:\n",
+        1,
+    )[0]
+    assert (
+        "PROXY_PUBLIC_HOST: ${LIVE_TEST_REMOTE_PROXY_PUBLIC_HOST:-proxy-edge-2}"
+        in remote_proxy_block
+    )
+    assert (
+        "PROXY_PUBLIC_PAC_URL: ${LIVE_TEST_REMOTE_PAC_URL:-http://proxy-edge-2/proxy.pac}"
+        in remote_proxy_block
+    )
     assert (
         "--max-allowed-packet=${LIVE_TEST_MYSQL_MAX_ALLOWED_PACKET:-256M}"
         in live_compose

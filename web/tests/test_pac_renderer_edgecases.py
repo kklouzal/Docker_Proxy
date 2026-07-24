@@ -384,6 +384,33 @@ def test_resolve_proxy_pac_target_uses_env_endpoint_when_registry_has_no_public_
     assert target.pac_url == "https://edge.example/proxy.pac"
 
 
+def test_resolve_proxy_pac_target_preserves_registered_compose_public_endpoint(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services import pac_renderer  # type: ignore
+
+    class _RegistryWithComposePublicHost:
+        def get_proxy(self, _proxy_id):
+            return _proxy_record("proxy-edge-2")
+
+    monkeypatch.setattr(
+        pac_renderer,
+        "get_proxy_registry",
+        _RegistryWithComposePublicHost,
+    )
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", "https://env.example/proxy.pac")
+    monkeypatch.setenv("PROXY_PUBLIC_HTTP_PROXY_PORT", "8080")
+
+    target = pac_renderer.resolve_proxy_pac_target("edge-2")
+
+    assert target.public_host == "proxy-edge-2"
+    assert target.pac_url == "http://proxy-edge-2/proxy.pac"
+    assert target.proxy_chain_display == "PROXY proxy-edge-2:3128; DIRECT"
+
+
 def test_build_proxy_pac_state_manifest_preserves_configured_public_pac_path(
     monkeypatch,
 ) -> None:

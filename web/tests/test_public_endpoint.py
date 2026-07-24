@@ -53,6 +53,24 @@ def test_normalize_public_host_rejects_single_label_dns_names(value: str) -> Non
 
 
 @pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("proxy", "proxy"),
+        ("Proxy-Edge-2.", "proxy-edge-2"),
+        ("http://proxy:8080/proxy.pac", "proxy"),
+    ],
+)
+def test_normalize_public_host_allows_explicit_single_label_dns_names(
+    value: str,
+    expected: str,
+) -> None:
+    _add_web_to_path()
+    from services.public_endpoint import normalize_public_host  # type: ignore
+
+    assert normalize_public_host(value, allow_single_label=True) == expected
+
+
+@pytest.mark.parametrize(
     "value",
     [
         "127.0.0.1",

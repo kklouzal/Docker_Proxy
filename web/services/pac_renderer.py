@@ -259,9 +259,16 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
         os.environ.get("PROXY_PUBLIC_PAC_URL"),
     )
     env_public_host = (
-        _normalize_public_host(os.environ.get("PROXY_PUBLIC_HOST")) or url_public_host
+        _normalize_public_host(
+            os.environ.get("PROXY_PUBLIC_HOST"),
+            allow_single_label=True,
+        )
+        or url_public_host
     )
-    proxy_public_host = _normalize_public_host(getattr(proxy, "public_host", ""))
+    proxy_public_host = _normalize_public_host(
+        getattr(proxy, "public_host", ""),
+        allow_single_label=True,
+    )
     public_host = proxy_public_host or env_public_host
 
     env_pac_scheme = _normalize_pac_scheme(

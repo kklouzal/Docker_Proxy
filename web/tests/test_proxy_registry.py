@@ -259,6 +259,37 @@ def test_resolve_local_proxy_public_fields_falls_back_to_public_pac_url_and_port
     }
 
 
+def test_resolve_local_proxy_public_fields_preserves_compose_dns_public_pac_url(
+    monkeypatch,
+) -> None:
+    proxy_registry = _proxy_registry()
+
+    monkeypatch.setenv("PROXY_PUBLIC_HOST", "proxy-edge-2")
+    monkeypatch.setenv("PROXY_PUBLIC_PAC_URL", "http://proxy-edge-2/proxy.pac")
+    monkeypatch.setenv("PROXY_PUBLIC_PAC_SCHEME", "http")
+    monkeypatch.setenv("PROXY_PUBLIC_PAC_PORT", "80")
+    monkeypatch.setenv("PROXY_PUBLIC_HTTP_PROXY_PORT", "3128")
+
+    assert proxy_registry.resolve_local_proxy_public_fields() == {
+        "public_host": "proxy-edge-2",
+        "public_pac_scheme": "http",
+        "public_pac_port": 80,
+        "public_pac_path": "/proxy.pac",
+        "public_http_proxy_port": 3128,
+    }
+
+
+def test_parse_public_pac_url_preserves_compose_dns_public_host() -> None:
+    proxy_registry = _proxy_registry()
+
+    assert proxy_registry._parse_public_pac_url("http://proxy-edge-2/proxy.pac") == (
+        "proxy-edge-2",
+        "http",
+        80,
+        "/proxy.pac",
+    )
+
+
 def test_resolve_local_proxy_public_fields_rejects_userinfo_public_pac_url(
     monkeypatch,
 ) -> None:
