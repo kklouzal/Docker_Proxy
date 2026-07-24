@@ -80,7 +80,7 @@ def normalize_public_host(value: object | None, default: str = "") -> str:
     if "://" in candidate:
         try:
             parsed = urlsplit(candidate)
-            _port = parsed.port
+            port = parsed.port
         except Exception:
             return fallback
         if parsed.scheme.lower() not in {"http", "https"}:
@@ -89,20 +89,20 @@ def normalize_public_host(value: object | None, default: str = "") -> str:
             return fallback
         if _has_empty_explicit_authority_port(parsed.netloc):
             return fallback
-        if _port == 0:
+        if port == 0:
             return fallback
         host = parsed.hostname or ""
     elif candidate.startswith("[") or candidate.count(":") == 1:
         try:
             parsed = urlsplit(f"//{candidate}")
-            _port = parsed.port
+            port = parsed.port
         except Exception:
             return fallback
         if parsed.username is not None or parsed.password is not None:
             return fallback
         if _has_empty_explicit_authority_port(parsed.netloc):
             return fallback
-        if _port == 0:
+        if port == 0:
             return fallback
         host = parsed.hostname or ""
     elif candidate.count(":") > 1:

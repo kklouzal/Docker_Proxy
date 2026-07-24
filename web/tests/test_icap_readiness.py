@@ -132,14 +132,10 @@ def test_icap_readiness_skips_malformed_icap_service_ports(tmp_path) -> None:
 
     config = tmp_path / "20-icap.conf"
     config.write_text(
-        "\n".join(
-            [
-                "icap_service good_req reqmod_precache icap://127.0.0.1:1344/adblockreq bypass=on",
-                "icap_service bad_text reqmod_precache icap://127.0.0.1:notaport/adblockreq bypass=on",
-                "icap_service bad_range reqmod_precache icap://127.0.0.1:70000/adblockreq bypass=on",
-                "icap_service bad_empty reqmod_precache icap://127.0.0.1:/adblockreq bypass=on",
-            ]
-        ),
+        "icap_service good_req reqmod_precache icap://127.0.0.1:1344/adblockreq bypass=on\n"
+        "icap_service bad_text reqmod_precache icap://127.0.0.1:notaport/adblockreq bypass=on\n"
+        "icap_service bad_range reqmod_precache icap://127.0.0.1:70000/adblockreq bypass=on\n"
+        "icap_service bad_empty reqmod_precache icap://127.0.0.1:/adblockreq bypass=on",
         encoding="utf-8",
     )
 

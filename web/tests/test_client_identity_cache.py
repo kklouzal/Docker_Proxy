@@ -107,7 +107,8 @@ def test_client_identity_cache_treats_dns_lookup_errors_as_unresolved(
     cache = ClientIdentityCache(failure_ttl_seconds=10.0)
 
     def fail_lookup(_ip: str) -> tuple[str, list[str], list[str]]:
-        raise socket.herror("no PTR")
+        msg = "no PTR"
+        raise socket.herror(msg)
 
     monkeypatch.setattr(
         "services.client_identity_cache.socket.gethostbyaddr",

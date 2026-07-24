@@ -210,7 +210,7 @@ def _validate_proxy_host_identity(value: str, field_name: str) -> None:
             raise WinHttpBuilderError(msg)
         return
 
-    dns_host = host[:-1] if host.endswith(".") else host
+    dns_host = host.removesuffix(".")
     labels = dns_host.split(".")
     if _is_ambiguous_ipv4_like_host(host):
         msg = f"{field_name} must not use ambiguous or invalid IPv4 forms."

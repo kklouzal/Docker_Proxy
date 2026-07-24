@@ -1891,7 +1891,7 @@ def test_adblock_icap_parse_args_falls_back_for_malformed_numeric_env(
     assert args.rule_cache_max == 50000
     assert args.max_request_bytes == 262144
     assert args.max_body_drain_bytes == 8388608
-    assert args.request_timeout == 5.0
+    assert args.request_timeout == pytest.approx(5.0)
     assert args.max_keepalive_requests == 1000
 
 
@@ -1925,7 +1925,7 @@ def test_adblock_icap_parse_args_reads_valid_numeric_env(
     args = _parse_args([])
 
     assert args.cache_ttl == 1800
-    assert args.request_timeout == 2.5
+    assert args.request_timeout == pytest.approx(2.5)
 
 
 def test_proxy_payload_includes_sqlite_adblock_runtime() -> None:

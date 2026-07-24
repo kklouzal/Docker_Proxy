@@ -267,9 +267,11 @@ def test_reg_export_normalizer_stops_before_following_values() -> None:
     "payload",
     [
         '"OtherValue"=hex:ff',
-        "Windows Registry Editor Version 5.00\n\n"
-        "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Example]\n"
-        '"OtherValue"=hex:ff\n',
+        (
+            "Windows Registry Editor Version 5.00\n\n"
+            "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Example]\n"
+            '"OtherValue"=hex:ff\n'
+        ),
         "arbitrary words",
         "---",
     ],
@@ -299,7 +301,7 @@ def test_decode_round_trip_rejects_non_ascii_strings() -> None:
 def test_decode_round_trip_rejects_trailing_binary_payload() -> None:
     normalized = generate_basic_winhttp_binary("http=proxy.example:3128", "<local>")
 
-    with pytest.raises(WinHttpBuilderError, match="trailing|unexpected"):
+    with pytest.raises(WinHttpBuilderError, match=r"trailing|unexpected"):
         decode_basic_winhttp_settings_hex(normalized + "ff00aa")
 
 

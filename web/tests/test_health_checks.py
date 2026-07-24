@@ -682,14 +682,16 @@ def test_check_http_proxy_forwarding_rejects_conflicting_content_lengths(
 ) -> None:
     health_checks = _health_checks_module()
     body = b'{"ok":true}\n'
-    response = (
-        b"HTTP/1.1 200 OK\r\n"
-        b"Content-Type: application/json\r\n"
-        b"Content-Length: 999\r\n"
-        + b"Content-Length: "
-        + str(len(body)).encode("ascii")
-        + b"\r\n\r\n"
-        + body
+    response = b"".join(
+        (
+            b"HTTP/1.1 200 OK\r\n",
+            b"Content-Type: application/json\r\n",
+            b"Content-Length: 999\r\n",
+            b"Content-Length: ",
+            str(len(body)).encode("ascii"),
+            b"\r\n\r\n",
+            body,
+        )
     )
 
     monkeypatch.setattr(

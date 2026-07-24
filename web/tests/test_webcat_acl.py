@@ -195,7 +195,8 @@ def test_webcat_acl_ignores_invalid_log_max_rows_env_for_argparse_help(
     except SystemExit as exc:
         assert exc.code == 0
     else:  # pragma: no cover - argparse --help should exit
-        raise AssertionError("expected argparse --help to exit")
+        msg = "expected argparse --help to exit"
+        raise AssertionError(msg)
 
     assert "--log-max-rows" in capsys.readouterr().out
 
