@@ -280,6 +280,56 @@ def test_validate_download_url_rejects_percent_encoded_authority_before_dns(
 @pytest.mark.parametrize(
     "source_url",
     [
+        "https://public.example/feed.csv%0d%0aHost:evil",
+        "https://public.example/feed%5c.csv",
+        "https://public.example/feed.csv?next=%0d%0aHost:evil",
+        "https://public.example/feed.csv?name=%5Csecret",
+    ],
+)
+def test_validate_download_url_rejects_percent_encoded_unsafe_path_query_before_dns(
+    source_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unsafe percent-encoded URL components should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="valid absolute HTTP/HTTPS"):
+        download_safety.validate_download_url(source_url)
+
+
+def test_validate_download_url_accepts_ordinary_percent_encoded_path_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda host, *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0))
+        ]
+        if host == "public.example"
+        else (_ for _ in ()).throw(AssertionError(f"unexpected host: {host}")),
+    )
+
+    parsed = download_safety.validate_download_url(
+        "https://public.example/feeds/%E2%9C%93%20report.csv?name=caf%C3%A9&literal=%25"
+    )
+
+    assert parsed.path == "/feeds/%E2%9C%93%20report.csv"
+    assert parsed.query == "name=caf%C3%A9&literal=%25"
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
         "http://example.com\t/feed.csv",
         "http://example.com\n.evil/feed.csv",
         "https://public.example:bad/feed.csv",
@@ -891,6 +941,58 @@ def test_open_download_url_rejects_malformed_redirect_location_before_dns(
 
     redirect_headers = Message()
     redirect_headers["Location"] = "\nhttps://mirror.example/feed.csv"
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            raise download_safety.urllib.error.HTTPError(
+                req.full_url,
+                302,
+                "Found",
+                redirect_headers,
+                None,
+            )
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(ValueError, match="valid HTTP URI reference"):
+        download_safety.open_download_url(
+            "https://public.example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+        )
+
+    assert lookups == ["public.example", "public.example"]
+
+
+def test_open_download_url_rejects_percent_encoded_unsafe_redirect_location_before_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    lookups: list[str] = []
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        lookups.append(host)
+        if host != "public.example":
+            msg = "unsafe percent-encoded redirect location should not reach DNS"
+            raise AssertionError(msg)
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                ("93.184.216.34", 0),
+            ),
+        ]
+
+    redirect_headers = Message()
+    redirect_headers["Location"] = "/feed.csv%0d%0aHost:evil"
 
     class _Opener:
         def open(self, req, **_kwargs):

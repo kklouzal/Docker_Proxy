@@ -7,7 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote_to_bytes, urljoin, urlparse
 
 _ALLOWED_DOWNLOAD_REQUEST_HEADERS = {
     "if-modified-since": "If-Modified-Since",
@@ -262,6 +262,11 @@ def _has_http_header_control_chars(value: str) -> bool:
     return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
 
 
+def _has_percent_decoded_download_unsafe_chars(value: str) -> bool:
+    decoded = unquote_to_bytes(value)
+    return any(byte < 32 or byte == 127 or byte == ord("\\") for byte in decoded)
+
+
 def _safe_extra_download_headers(headers: dict[str, str] | None) -> dict[str, str]:
     if not headers:
         return {}
@@ -297,6 +302,7 @@ def _validate_download_redirect_location(location: str) -> None:
         not location
         or "\\" in location
         or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in location)
+        or _has_percent_decoded_download_unsafe_chars(location)
     ):
         msg = "Download redirect Location must be a valid HTTP URI reference."
         raise ValueError(msg)
@@ -331,6 +337,11 @@ def validate_download_url(
     if port is not None and port < 1:
         raise ValueError(invalid_url_msg)
     if not parsed.netloc or not hostname or parsed.fragment:
+        raise ValueError(invalid_url_msg)
+    if any(
+        _has_percent_decoded_download_unsafe_chars(component)
+        for component in (parsed.path, parsed.params, parsed.query)
+    ):
         raise ValueError(invalid_url_msg)
     if parsed.username or parsed.password:
         msg = "Download URLs must not include embedded credentials."
