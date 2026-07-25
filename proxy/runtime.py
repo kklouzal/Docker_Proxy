@@ -1527,12 +1527,39 @@ class ProxyRuntime:
         stop_on_failure: bool = False,
     ) -> tuple[bool, str]:
         with _exclusive_runtime_lock("supervisor", _SUPERVISOR_CONTROL_LOCK):
+            prefix = self._logical_supervisor_program_prefix(program_name)
+            if prefix:
+                configured = list(_icap_supervisor_programs(program_name))
+                scaled_programs = [
+                    program for program in configured if program != program_name
+                ]
+                if scaled_programs:
+                    _ok, resolve_detail, _lines = self._supervisor_status_lines(
+                        timeout_seconds=timeout_seconds
+                    )
+                    results = [
+                        self._restart_supervisor_program_unlocked(
+                            program,
+                            timeout_seconds=timeout_seconds,
+                            stop_on_failure=stop_on_failure,
+                        )
+                        for program in scaled_programs
+                    ]
+                    detail_parts = [str(resolve_detail or "").strip()]
+                    detail_parts.extend(
+                        str(result_detail or "").strip()
+                        for _ok, result_detail in results
+                    )
+                    return all(result_ok for result_ok, _detail in results), "\n".join(
+                        part for part in detail_parts if part
+                    )
+
             ok, detail = self._restart_supervisor_program_unlocked(
                 program_name,
                 timeout_seconds=timeout_seconds,
                 stop_on_failure=stop_on_failure,
             )
-            if ok or self._logical_supervisor_program_prefix(program_name) == "":
+            if ok or not prefix:
                 return ok, detail
             if "no such process" not in str(detail or "").lower():
                 return ok, detail
@@ -1725,6 +1752,30 @@ class ProxyRuntime:
         ).strip() or f"Failed to restart {program_name}."
 
     def _restart_adblock_service(self) -> tuple[bool, str]:
+        def wait_for_health(detail: str) -> tuple[bool, str]:
+            deadline = time.time() + 15.0
+            last_health: dict[str, Any] = {}
+            while time.time() < deadline:
+                last_health = _check_icap_adblock(timeout=1.0, error_formatter=str)
+                if bool(last_health.get("ok")):
+                    health_detail = str(
+                        last_health.get("detail")
+                        or "adblock ICAP health check passed.",
+                    )
+                    return True, "\n".join(
+                        part
+                        for part in (detail, health_detail)
+                        if str(part or "").strip()
+                    ).strip()
+                time.sleep(0.5)
+            health_detail = str(
+                last_health.get("detail")
+                or "adblock ICAP health check did not pass after refresh.",
+            )
+            return False, "\n".join(
+                part for part in (detail, health_detail) if str(part or "").strip()
+            ).strip()
+
         if self.services.adblock_service_restarter is not None:
             return self.services.adblock_service_restarter()
         ok, detail = self._restart_supervisor_program(
@@ -1733,25 +1784,7 @@ class ProxyRuntime:
         )
         if not ok:
             return ok, detail
-        deadline = time.time() + 15.0
-        last_health: dict[str, Any] = {}
-        while time.time() < deadline:
-            last_health = _check_icap_adblock(timeout=1.0, error_formatter=str)
-            if bool(last_health.get("ok")):
-                health_detail = str(
-                    last_health.get("detail") or "adblock ICAP health check passed.",
-                )
-                return True, "\n".join(
-                    part for part in (detail, health_detail) if str(part or "").strip()
-                ).strip()
-            time.sleep(0.5)
-        health_detail = str(
-            last_health.get("detail")
-            or "adblock ICAP health check did not pass after restart.",
-        )
-        return False, "\n".join(
-            part for part in (detail, health_detail) if str(part or "").strip()
-        ).strip()
+        return wait_for_health(detail)
 
     def _snapshot_adblock_compiled_dir(self) -> str:
         snapshot_root = tempfile.mkdtemp(prefix="adblock-compiled-snapshot-")
@@ -1814,88 +1847,23 @@ class ProxyRuntime:
             False,
         )
 
-    def _restart_adblock_service_with_squid_paused(self) -> tuple[bool, str]:
-        controller = getattr(self, "controller", None)
-        controller_run = getattr(controller, "_run", None)
-        locked_restart = getattr(controller, "_restart_squid_locked", None)
-        if not callable(controller_run) or not callable(locked_restart):
-            return self._restart_adblock_service()
+    def _refresh_adblock_service_without_squid_restart(self) -> tuple[bool, str]:
+        """Refresh adblock ICAP helpers without touching Squid listeners.
+
+        Squid is configured to bypass unavailable ICAP helpers, so changed adblock
+        artifacts and explicit cache flushes can restart/roll helpers under the
+        Squid lifecycle lock while keeping existing client tunnels and listener
+        sockets intact.
+        """
         with _exclusive_squid_lifecycle_lock():
-            detail_parts: list[str] = []
-            squid_was_running = False
             try:
-                status_running = getattr(
-                    controller, "_supervisor_program_running", None
-                )
-                squid_was_running = bool(
-                    status_running("squid") if callable(status_running) else True
-                )
-            except Exception:
-                squid_was_running = True
-
-            if squid_was_running:
-                try:
-                    stop = controller_run(
-                        [
-                            "supervisorctl",
-                            "-c",
-                            "/etc/supervisord.conf",
-                            "stop",
-                            "squid",
-                        ],
-                        capture_output=True,
-                        timeout=25,
-                    )
-                    decoder = getattr(
-                        controller, "_decode_completed", _decode_completed
-                    )
-                    detail = decoder(stop)
-                    if detail:
-                        detail_parts.append(detail)
-                except Exception as exc:
-                    return False, public_error_message(
-                        exc,
-                        default="Failed to pause Squid before adblock ICAP restart.",
-                    )
-
-                absent = getattr(controller, "_wait_for_http_listener_absent", None)
-                if callable(absent) and not absent(timeout=30.0):
-                    return (
-                        False,
-                        "Squid HTTP listener did not release before adblock ICAP restart.",
-                    )
-
-            helper_restart_ok = False
-            try:
-                helper_restart_ok, restart_detail = self._restart_adblock_service()
-                if restart_detail:
-                    detail_parts.append(restart_detail)
+                ok, detail = self._restart_adblock_service()
             except Exception as exc:
-                detail_parts.append(
-                    public_error_message(
-                        exc,
-                        default="Failed during adblock ICAP restart gate.",
-                    ),
+                return False, public_error_message(
+                    exc,
+                    default="Failed during adblock ICAP refresh gate.",
                 )
-
-            # If this method paused an already-running Squid, it owns the whole
-            # transactional lifecycle: helper restart first, then Squid start under
-            # the same lifecycle lock.  The supervised Squid command is
-            # squid_ready_start.sh, so the start itself is the authoritative ICAP
-            # readiness gate; do not wait here long enough to leave Squid STOPPED
-            # until live readiness probes time out.
-            squid_restart_ok = not squid_was_running
-            if squid_was_running:
-                squid_restart_ok, squid_detail = locked_restart(ready_timeout=75.0)
-                if squid_detail:
-                    detail_parts.append(squid_detail)
-                if not squid_restart_ok:
-                    return False, "\n".join(
-                        part for part in detail_parts if part
-                    ).strip()
-            if not helper_restart_ok:
-                return False, "\n".join(part for part in detail_parts if part).strip()
-            return True, "\n".join(part for part in detail_parts if part).strip()
+            return bool(ok), str(detail or "").strip()
 
     def _reload_for_policy_update(
         self,
@@ -2518,7 +2486,7 @@ class ProxyRuntime:
                 }
 
             ok_restart, restart_detail = (
-                self._restart_adblock_service_with_squid_paused()
+                self._refresh_adblock_service_without_squid_restart()
             )
             if ok_restart:
                 try:
@@ -2699,7 +2667,9 @@ class ProxyRuntime:
             apply_artifact_sha256 = revision_meta.artifact_sha256
             snapshot_root = ""
 
-        ok_restart, restart_detail = self._restart_adblock_service_with_squid_paused()
+        ok_restart, restart_detail = (
+            self._refresh_adblock_service_without_squid_restart()
+        )
         if not ok_restart and artifact_changed and snapshot_root:
             rollback_detail_parts = [
                 restart_detail.strip()
@@ -2710,7 +2680,9 @@ class ProxyRuntime:
                 rollback_detail_parts.append(
                     "Restored previous adblock compiled artifact.",
                 )
-                rollback_ok, rollback_restart_detail = self._restart_adblock_service()
+                rollback_ok, rollback_restart_detail = (
+                    self._refresh_adblock_service_without_squid_restart()
+                )
                 if rollback_restart_detail.strip():
                     rollback_detail_parts.append(rollback_restart_detail.strip())
                 if not rollback_ok:

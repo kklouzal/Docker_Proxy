@@ -730,6 +730,67 @@ def test_restart_adblock_service_stops_program_after_restart_loop(monkeypatch) -
     ]
 
 
+def test_restart_adblock_service_reports_scaled_worker_failure_without_squid(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    calls: list[list[str]] = []
+    started: set[str] = set()
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setenv("SQUID_WORKERS", "2")
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        action = args[3]
+        program = args[4] if len(args) > 4 else None
+        assert program != "squid"
+        if action == "status" and program is None:
+            return _cp(
+                0,
+                stdout=(
+                    "cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
+                    "cicap_adblock_2 RUNNING pid 11, uptime 0:00:10\n"
+                ),
+            )
+        if program == "cicap_adblock":
+            return _cp(2, stdout="cicap_adblock: ERROR (no such process)\n")
+        if action == "stop":
+            started.discard(str(program))
+            return _cp(0, stdout=f"{program}: stopped")
+        if action == "status":
+            if program == "cicap_adblock_2" and str(program) in started:
+                return _cp(3, stdout="cicap_adblock_2 BACKOFF exited too quickly")
+            state = (
+                "RUNNING pid 42, uptime 0:00:01"
+                if str(program) in started
+                else "STOPPED Jul 03 09:42 PM"
+            )
+            return _cp(0, stdout=f"{program} {state}\n")
+        if action == "start" and program:
+            started.add(str(program))
+            if program == "cicap_adblock_2":
+                return _cp(1, stderr="cicap_adblock_2: ERROR (abnormal termination)")
+        return _cp(0, stdout=f"{program}: {action}ped\n")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(adblock_service_restarter=None)
+
+    ok, detail = runtime._restart_adblock_service()
+
+    assert ok is False
+    assert "cicap_adblock_1" in detail
+    assert "cicap_adblock_2 BACKOFF" in detail
+    assert not any(call[3:] == ["stop", "squid"] for call in calls)
+    assert any(call[3:] == ["stop", "cicap_adblock_1"] for call in calls)
+    assert any(call[3:] == ["start", "cicap_adblock_1"] for call in calls)
+    assert any(call[3:] == ["stop", "cicap_adblock_2"] for call in calls)
+    assert any(call[3:] == ["start", "cicap_adblock_2"] for call in calls)
+
+
 def test_heartbeat_uses_derived_management_url_when_override_unset(monkeypatch) -> None:
     runtime = _runtime_shell()
     monkeypatch.setenv("PROXY_INSTANCE_ID", "Proxy-IT")
@@ -2894,6 +2955,231 @@ def test_sync_adblock_state_reapplies_when_marker_matches_but_lookup_missing_wit
     assert recorded[-1]["ok"] is True
 
 
+def test_sync_adblock_state_changed_artifact_refreshes_helpers_without_squid_stop(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    (compiled / ".artifact-sha256").write_text("old-sha", encoding="utf-8")
+    _write_adblock_lookup_metadata(compiled / "request_lookup.sqlite", count_rules=0)
+    recorded: list[dict[str, object]] = []
+    supervisor_calls: list[list[str]] = []
+    started: set[str] = set()
+    monkeypatch.delenv("SQUID_WORKERS", raising=False)
+    monkeypatch.delenv("WORKERS", raising=False)
+
+    class Artifacts:
+        compiled_dir = str(compiled)
+
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=43, artifact_sha256="new-sha")
+
+        def get_active_artifact_summary(self):
+            return SimpleNamespace(report={})
+
+        def get_active_artifact(self):
+            return SimpleNamespace(
+                revision_id=43,
+                artifact_sha256="new-sha",
+                archive_blob=b"archive",
+            )
+
+        def record_apply_result(self, proxy_id, revision_id, **kwargs):
+            recorded.append(
+                {"proxy_id": proxy_id, "revision_id": revision_id, **kwargs}
+            )
+            return SimpleNamespace(application_id=43)
+
+    class Store:
+        def init_db(self) -> None:
+            pass
+
+        def get_cache_flush_requested(self) -> bool:
+            return False
+
+    class Controller:
+        def restart_squid(self, **_kwargs) -> NoReturn:
+            msg = "changed adblock artifact must not restart Squid"
+            raise AssertionError(msg)
+
+        def _restart_squid_locked(self, **_kwargs) -> NoReturn:
+            msg = "changed adblock artifact must not restart Squid"
+            raise AssertionError(msg)
+
+        def _run(self, args, **_kwargs) -> NoReturn:
+            msg = f"changed adblock artifact must not stop Squid: {args}"
+            raise AssertionError(msg)
+
+    def fake_materialize(directory, *, archive_blob, artifact_sha256) -> None:
+        root = Path(directory)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".artifact-sha256").write_text(artifact_sha256, encoding="utf-8")
+        (root / "request_lookup.sqlite").unlink(missing_ok=True)
+        _write_adblock_lookup_metadata(root / "request_lookup.sqlite", count_rules=0)
+
+    def fake_run(args, **_kwargs):
+        supervisor_calls.append(list(args))
+        action = args[3]
+        program = args[4] if len(args) > 4 else None
+        assert program != "squid"
+        if action == "status" and program is None:
+            return _cp(0, stdout="")
+        if action == "stop":
+            started.discard(program)
+            return _cp(0, stdout=f"{program}: stopped")
+        if action == "status":
+            state = (
+                "RUNNING pid 42, uptime 0:00:01"
+                if program in started
+                else "STOPPED Jul 25 10:25 PM"
+            )
+            return _cp(0, stdout=f"{program} {state}\n")
+        if action == "start":
+            started.add(program)
+            return _cp(0, stdout=f"{program}: started")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        runtime_module,
+        "materialize_archive_to_directory",
+        fake_materialize,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_check_icap_adblock",
+        lambda **_kwargs: {"ok": True, "detail": "adblock ICAP healthy"},
+    )
+
+    runtime = _runtime_shell()
+    runtime.controller = Controller()
+    runtime.services = SimpleNamespace(
+        current_adblock_sha_reader=lambda: "old-sha",
+        adblock_service_restarter=None,
+    )
+    runtime.adblock_artifacts = Artifacts()
+    runtime.adblock_store = Store()
+    runtime.adblock_compiled_dir = str(compiled)
+
+    result = runtime.sync_adblock_state(force=True)
+
+    assert result["ok"] is True
+    assert result["artifact_changed"] is True
+    assert result["current_adblock_artifact_sha256"] == "new-sha"
+    assert recorded[-1]["ok"] is True
+    assert not any(call[3:] == ["stop", "squid"] for call in supervisor_calls)
+    assert not any("squid" in call for call in supervisor_calls)
+    assert [call[3:] for call in supervisor_calls] == [
+        ["stop", "cicap_adblock"],
+        ["status", "cicap_adblock"],
+        ["start", "cicap_adblock"],
+        ["status", "cicap_adblock"],
+    ]
+
+
+def test_sync_adblock_state_cache_flush_refreshes_helpers_without_squid_stop(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    recorded: list[dict[str, object]] = []
+    supervisor_calls: list[list[str]] = []
+    started: set[str] = set()
+    monkeypatch.delenv("SQUID_WORKERS", raising=False)
+    monkeypatch.delenv("WORKERS", raising=False)
+
+    class Artifacts:
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=44, artifact_sha256="same-sha")
+
+        def get_active_artifact(self) -> NoReturn:
+            msg = "cache flush should not fetch the active artifact archive"
+            raise AssertionError(msg)
+
+        def record_apply_result(self, proxy_id, revision_id, **kwargs):
+            recorded.append(
+                {"proxy_id": proxy_id, "revision_id": revision_id, **kwargs}
+            )
+            return SimpleNamespace(application_id=44)
+
+    class Store:
+        def init_db(self) -> None:
+            pass
+
+        def get_cache_flush_requested(self) -> bool:
+            return True
+
+        def mark_cache_flushed(self, *, size=0) -> None:
+            recorded.append({"cache_flushed_size": size})
+
+    class Controller:
+        def restart_squid(self, **_kwargs) -> NoReturn:
+            msg = "adblock cache flush must not restart Squid"
+            raise AssertionError(msg)
+
+        def _restart_squid_locked(self, **_kwargs) -> NoReturn:
+            msg = "adblock cache flush must not restart Squid"
+            raise AssertionError(msg)
+
+        def _run(self, args, **_kwargs) -> NoReturn:
+            msg = f"adblock cache flush must not stop Squid: {args}"
+            raise AssertionError(msg)
+
+    def fake_run(args, **_kwargs):
+        supervisor_calls.append(list(args))
+        action = args[3]
+        program = args[4] if len(args) > 4 else None
+        assert program != "squid"
+        if action == "status" and program is None:
+            return _cp(0, stdout="")
+        if action == "stop":
+            started.discard(program)
+            return _cp(0, stdout=f"{program}: stopped")
+        if action == "status":
+            state = (
+                "RUNNING pid 42, uptime 0:00:01"
+                if program in started
+                else "STOPPED Jul 25 10:25 PM"
+            )
+            return _cp(0, stdout=f"{program} {state}\n")
+        if action == "start":
+            started.add(program)
+            return _cp(0, stdout=f"{program}: started")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        runtime_module,
+        "_check_icap_adblock",
+        lambda **_kwargs: {"ok": True, "detail": "adblock ICAP healthy"},
+    )
+
+    runtime = _runtime_shell()
+    runtime.controller = Controller()
+    runtime.services = SimpleNamespace(
+        current_adblock_sha_reader=lambda: "same-sha",
+        adblock_service_restarter=None,
+    )
+    runtime.adblock_artifacts = Artifacts()
+    runtime.adblock_store = Store()
+
+    result = runtime.sync_adblock_state(force=False)
+
+    assert result["ok"] is True
+    assert result["artifact_changed"] is False
+    assert result["cache_flushed"] is True
+    assert recorded[-1]["ok"] is True
+    assert not any(call[3:] == ["stop", "squid"] for call in supervisor_calls)
+    assert not any("squid" in call for call in supervisor_calls)
+
+
 def test_adblock_materialization_integrity_rejects_corrupt_lookup_without_rule_count(
     tmp_path,
 ) -> None:
@@ -3888,60 +4174,51 @@ def test_squid_restart_waits_for_icap_readiness_before_accepting_success() -> No
     assert ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"] in calls
 
 
-def test_adblock_artifact_restart_pauses_squid_until_icap_ready() -> None:
+def test_adblock_artifact_refresh_keeps_squid_listener_running() -> None:
     runtime = _runtime_shell()
     calls: list[object] = []
 
     class Controller:
         def _supervisor_program_running(self, program):
-            assert program == "squid"
-            return True
+            msg = f"adblock refresh should not inspect {program} supervisor state"
+            raise AssertionError(msg)
 
         def _run(self, args, **_kwargs):
-            calls.append(list(args))
-            return _cp(0, stdout="squid: stopped")
+            msg = f"adblock refresh should not run Squid command: {args}"
+            raise AssertionError(msg)
 
         def _decode_completed(self, proc):
             return (proc.stdout or b"").decode().strip()
 
         def _wait_for_http_listener_absent(self, *, timeout):
-            calls.append(("absent", timeout))
-            return True
+            msg = "adblock refresh should not wait for the Squid listener to close"
+            raise AssertionError(msg)
 
         def _wait_for_icap_readiness(self, *, timeout):
-            calls.append(("icap", timeout))
-            return True, "ICAP ready"
+            msg = "helper refresh performs its own adblock ICAP health gate"
+            raise AssertionError(msg)
 
         def restart_squid(self, *, ready_timeout):
-            msg = "public restart_squid must not be called while lifecycle lock is held"
+            msg = "adblock refresh must not call public Squid restart"
             raise AssertionError(msg)
 
         def _restart_squid_locked(self, *, ready_timeout):
-            calls.append(("restart_squid_locked", ready_timeout))
-            return (
-                True,
-                "Squid HTTP listener is responding and ICAP readiness is green.",
-            )
+            msg = "adblock refresh must not call locked Squid restart"
+            raise AssertionError(msg)
 
     runtime.controller = Controller()
     runtime._restart_adblock_service = lambda: (
         calls.append("adblock_restart") or (True, "adblock restarted")
     )
 
-    ok, detail = runtime._restart_adblock_service_with_squid_paused()
+    ok, detail = runtime._refresh_adblock_service_without_squid_restart()
 
     assert ok is True
-    assert calls == [
-        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
-        ("absent", 30.0),
-        "adblock_restart",
-        ("restart_squid_locked", 75.0),
-    ]
+    assert calls == ["adblock_restart"]
     assert "adblock restarted" in detail
-    assert "Squid HTTP listener is responding" in detail
 
 
-def test_adblock_restart_under_lifecycle_lock_uses_locked_squid_restart_without_deadlock(
+def test_adblock_refresh_uses_lifecycle_lock_without_squid_restart(
     monkeypatch,
 ) -> None:
     _add_repo_paths()
@@ -3952,12 +4229,14 @@ def test_adblock_restart_under_lifecycle_lock_uses_locked_squid_restart_without_
     @contextlib.contextmanager
     def detecting_lifecycle_lock():
         if lock_state["held"]:
-            msg = "recursive public Squid lifecycle lock acquisition would deadlock"
+            msg = "recursive Squid lifecycle lock acquisition would deadlock"
             raise AssertionError(msg)
         lock_state["held"] = True
+        calls.append("lifecycle_enter")
         try:
             yield
         finally:
+            calls.append("lifecycle_exit")
             lock_state["held"] = False
 
     monkeypatch.setattr(
@@ -3972,41 +4251,39 @@ def test_adblock_restart_under_lifecycle_lock_uses_locked_squid_restart_without_
 
     class Controller:
         def _supervisor_program_running(self, program):
-            assert program == "squid"
-            return True
+            msg = f"adblock refresh should not inspect {program} supervisor state"
+            raise AssertionError(msg)
 
         def _run(self, args, **_kwargs):
-            calls.append(list(args))
-            return _cp(0, stdout="squid: stopped")
+            msg = f"adblock refresh should not run Squid command: {args}"
+            raise AssertionError(msg)
 
         def _decode_completed(self, proc):
             return (proc.stdout or b"").decode().strip()
 
         def _wait_for_http_listener_absent(self, *, timeout):
-            calls.append(("absent", timeout))
-            return True
+            msg = "adblock refresh should not wait for the Squid listener to close"
+            raise AssertionError(msg)
 
         def restart_squid(self, *, ready_timeout):
-            # The pre-fix path called this public API while already holding the
-            # lifecycle lock, which recursively acquired the flock and left Squid
-            # stopped.  The detecting lock raises here instead of hanging the
-            # regression test.
-            calls.append(("public_restart_squid", ready_timeout))
-            with runtime_module._exclusive_squid_lifecycle_lock():
-                return True, "unexpected public restart"
+            msg = "adblock refresh must not call public Squid restart"
+            raise AssertionError(msg)
 
         def _restart_squid_locked(self, *, ready_timeout):
-            assert lock_state["held"] is True
-            calls.append(("locked_restart_squid", ready_timeout))
-            return True, "Squid HTTP listener returned after locked restart."
+            msg = "adblock refresh must not call locked Squid restart"
+            raise AssertionError(msg)
 
     runtime.controller = Controller()
-    runtime._restart_adblock_service = lambda: (
-        calls.append("adblock_restart") or (True, "adblock restarted")
-    )
+
+    def refresh_helper() -> tuple[bool, str]:
+        assert lock_state["held"] is True
+        calls.append("adblock_restart")
+        return True, "adblock restarted"
+
+    runtime._restart_adblock_service = refresh_helper
 
     def invoke_restart() -> None:
-        ok, detail = runtime._restart_adblock_service_with_squid_paused()
+        ok, detail = runtime._refresh_adblock_service_without_squid_restart()
         result["ok"] = ok
         result["detail"] = detail
 
@@ -4017,10 +4294,9 @@ def test_adblock_restart_under_lifecycle_lock_uses_locked_squid_restart_without_
     assert not thread.is_alive()
     assert result == {
         "ok": True,
-        "detail": "squid: stopped\nadblock restarted\nSquid HTTP listener returned after locked restart.",
+        "detail": "adblock restarted",
     }
-    assert ("public_restart_squid", 75.0) not in calls
-    assert ("locked_restart_squid", 75.0) in calls
+    assert calls == ["lifecycle_enter", "adblock_restart", "lifecycle_exit"]
 
 
 def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync() -> (
@@ -4050,19 +4326,19 @@ def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync(
             return text
 
         def _supervisor_program_running(self, program):
-            calls.append(("status", program))
-            return True
+            msg = f"adblock refresh should not inspect {program} supervisor state"
+            raise AssertionError(msg)
 
         def _run(self, args, **_kwargs):
-            calls.append(list(args))
-            return _cp(0, stdout="squid: stopped")
+            msg = f"adblock refresh should not run Squid command: {args}"
+            raise AssertionError(msg)
 
         def _decode_completed(self, proc):
             return (proc.stdout or b"").decode().strip()
 
         def _wait_for_http_listener_absent(self, *, timeout):
-            calls.append(("absent", timeout))
-            return True
+            msg = "adblock refresh should not wait for the Squid listener to close"
+            raise AssertionError(msg)
 
         def _wait_for_icap_readiness(self, *, timeout):
             msg = "Squid restart wrapper should own the ICAP readiness gate"
@@ -4073,11 +4349,8 @@ def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync(
             raise AssertionError(msg)
 
         def _restart_squid_locked(self, *, ready_timeout):
-            calls.append(("restart_squid_locked", ready_timeout))
-            return (
-                True,
-                "Squid HTTP listener is responding and ICAP readiness is green.",
-            )
+            msg = "adblock refresh must not call locked Squid restart"
+            raise AssertionError(msg)
 
     class Revisions:
         def get_active_revision_metadata(self, _proxy_id):
@@ -4119,12 +4392,14 @@ def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync(
         result = next(adblock_results)
         if result["changed"]:
             ok_restart, restart_detail = (
-                runtime._restart_adblock_service_with_squid_paused()
+                runtime._refresh_adblock_service_without_squid_restart()
             )
             result = {**result, "ok": ok_restart, "detail": restart_detail}
         return result
 
-    runtime._restart_adblock_service = lambda: (True, "adblock restarted")
+    runtime._restart_adblock_service = lambda: (
+        calls.append("adblock_restart") or (True, "adblock restarted")
+    )
     runtime.sync_adblock_state = sync_adblock
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._current_config_sha = lambda: "current-sha"
@@ -4144,10 +4419,7 @@ def test_sync_from_db_initial_helper_restart_restores_squid_and_noops_next_sync(
     assert second["ok"] is True
     assert second["changed"] is False
     assert calls == [
-        ("status", "squid"),
-        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
-        ("absent", 30.0),
-        ("restart_squid_locked", 75.0),
+        "adblock_restart",
         ("materialize", "workers 1\nhttp_port 3128\n"),
         ("reload", True),
         ("materialize", "workers 1\nhttp_port 3128\n"),
