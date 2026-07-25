@@ -795,6 +795,153 @@ def test_write_managed_text_files_restores_previous_file_mode_on_rollback(
     assert second.stat().st_mode & 0o777 == 0o640
 
 
+def test_write_managed_text_files_fsyncs_parent_directories_after_publish(
+    tmp_path, monkeypatch
+) -> None:
+    materialized_files = _import_materialized_files_module()
+
+    first = tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"
+    second = tmp_path / "var" / "lib" / "webfilter_whitelist.txt"
+    real_open = materialized_files.os.open
+    real_close = materialized_files.os.close
+    fake_fds: dict[int, str] = {}
+    dir_fsyncs: list[str] = []
+    next_fd = 50_000
+
+    def fake_open(path, flags, *args, **kwargs):
+        nonlocal next_fd
+        if flags & getattr(materialized_files.os, "O_DIRECTORY", 0):
+            fd = next_fd
+            next_fd += 1
+            fake_fds[fd] = str(Path(path))
+            return fd
+        return real_open(path, flags, *args, **kwargs)
+
+    def fake_fsync(fd: int) -> None:
+        if fd in fake_fds:
+            dir_fsyncs.append(fake_fds[fd])
+
+    def fake_close(fd: int) -> None:
+        if fd in fake_fds:
+            fake_fds.pop(fd)
+            return
+        real_close(fd)
+
+    monkeypatch.setattr(materialized_files.os, "open", fake_open)
+    monkeypatch.setattr(materialized_files.os, "fsync", fake_fsync)
+    monkeypatch.setattr(materialized_files.os, "close", fake_close)
+
+    materialized_files.write_managed_text_files(
+        (str(first), "include text\n"),
+        (str(second), "example.com\n"),
+    )
+
+    assert dir_fsyncs == [
+        str(first.parent),
+        str(second.parent),
+        str(first.parent),
+        str(second.parent),
+    ]
+    assert fake_fds == {}
+    assert first.read_text(encoding="utf-8") == "include text\n"
+    assert second.read_text(encoding="utf-8") == "example.com\n"
+
+
+def test_write_managed_text_files_fsyncs_parent_directories_during_rollback(
+    tmp_path, monkeypatch
+) -> None:
+    materialized_files = _import_materialized_files_module()
+
+    first = tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"
+    second = tmp_path / "var" / "lib" / "webfilter_whitelist.txt"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text("old include\n", encoding="utf-8")
+    second.write_text("old list\n", encoding="utf-8")
+    real_open = materialized_files.os.open
+    real_close = materialized_files.os.close
+    real_replace = materialized_files.os.replace
+    fake_fds: dict[int, str] = {}
+    dir_fsyncs: list[str] = []
+    next_fd = 60_000
+
+    def fake_open(path, flags, *args, **kwargs):
+        nonlocal next_fd
+        if flags & getattr(materialized_files.os, "O_DIRECTORY", 0):
+            fd = next_fd
+            next_fd += 1
+            fake_fds[fd] = str(Path(path))
+            return fd
+        return real_open(path, flags, *args, **kwargs)
+
+    def fake_fsync(fd: int) -> None:
+        if fd in fake_fds:
+            dir_fsyncs.append(fake_fds[fd])
+
+    def fake_close(fd: int) -> None:
+        if fd in fake_fds:
+            fake_fds.pop(fd)
+            return
+        real_close(fd)
+
+    def flaky_replace(src, dst):
+        if str(dst) == str(second):
+            msg = "disk full"
+            raise OSError(msg)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(materialized_files.os, "open", fake_open)
+    monkeypatch.setattr(materialized_files.os, "fsync", fake_fsync)
+    monkeypatch.setattr(materialized_files.os, "close", fake_close)
+    monkeypatch.setattr(materialized_files.os, "replace", flaky_replace)
+
+    try:
+        materialized_files.write_managed_text_files(
+            (str(first), "new include\n"),
+            (str(second), "new list\n"),
+        )
+    except OSError as exc:
+        assert "disk full" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        msg = "expected second replace failure"
+        raise AssertionError(msg)
+
+    assert dir_fsyncs == [
+        str(first.parent),
+        str(second.parent),
+        str(first.parent),
+        str(first.parent),
+        str(first.parent),
+        str(second.parent),
+    ]
+    assert fake_fds == {}
+    assert first.read_text(encoding="utf-8") == "old include\n"
+    assert second.read_text(encoding="utf-8") == "old list\n"
+
+
+def test_write_managed_text_files_tolerates_unsupported_directory_fsync(
+    tmp_path, monkeypatch
+) -> None:
+    materialized_files = _import_materialized_files_module()
+
+    include_path = tmp_path / "conf.d" / "30-webfilter.conf"
+    real_open = materialized_files.os.open
+
+    def reject_directory_open(path, flags, *args, **kwargs):
+        if flags & getattr(materialized_files.os, "O_DIRECTORY", 0):
+            msg = "directory fsync is unsupported"
+            raise OSError(msg)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(materialized_files.os, "open", reject_directory_open)
+
+    materialized_files.write_managed_text_files(
+        (str(include_path), "include text\n"),
+    )
+
+    assert include_path.read_text(encoding="utf-8") == "include text\n"
+
+
 def test_write_managed_text_files_keeps_runtime_files_world_readable(tmp_path) -> None:
     materialized_files = _import_materialized_files_module()
 

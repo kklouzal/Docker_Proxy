@@ -9,6 +9,25 @@ from dataclasses import dataclass
 _RUNTIME_FILE_MODE = 0o644
 
 
+def _fsync_parent_dir(path: str) -> None:
+    """Best-effort fsync for directory entries created/replaced near path."""
+    directory = pathlib.Path(path).parent or pathlib.Path()
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    fd: int | None = None
+    try:
+        fd = os.open(directory, flags)
+        os.fsync(fd)
+    except OSError:
+        # Some platforms/filesystems do not support opening or fsyncing dirs.
+        return
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
 @dataclass(frozen=True)
 class _FileBackup:
     existed: bool
@@ -46,10 +65,15 @@ def _write_staged_file(
         if owner is not None:
             with contextlib.suppress(Exception):
                 os.chown(temp_path, owner[0], owner[1])
+        _fsync_parent_dir(temp_path)
         return temp_path
     except Exception:
+        unlinked = False
         with contextlib.suppress(FileNotFoundError):
             pathlib.Path(temp_path).unlink()
+            unlinked = True
+        if unlinked:
+            _fsync_parent_dir(temp_path)
         raise
 
 
@@ -76,6 +100,7 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
 
         for (path, _content), temp_path in zip(files, temp_paths, strict=False):
             os.replace(temp_path, path)  # noqa: PTH105
+            _fsync_parent_dir(path)
             replaced_paths.append(path)
     except Exception:
         for path in reversed(replaced_paths):
@@ -89,14 +114,20 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
                 )
                 temp_paths.append(temp_path)
                 os.replace(temp_path, path)  # noqa: PTH105
+                _fsync_parent_dir(path)
             else:
+                unlinked = False
                 with contextlib.suppress(FileNotFoundError):
                     pathlib.Path(path).unlink()
+                    unlinked = True
+                if unlinked:
+                    _fsync_parent_dir(path)
         raise
     finally:
         for temp_path in temp_paths:
             try:
                 if pathlib.Path(temp_path).exists():
                     pathlib.Path(temp_path).unlink()
+                    _fsync_parent_dir(temp_path)
             except Exception:
                 pass
