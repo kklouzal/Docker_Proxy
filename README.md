@@ -20,15 +20,15 @@ Squid is powerful, but day-two operation usually becomes a mix of hand-edited co
 
 ## Admin UI preview
 
-The images below are deterministic public-safe demo renderings using generic sample data. They were produced from the repository's Admin UI visual language, not from a live deployment, so they contain no production hostnames, IP addresses, usernames, credentials, LDAP/SAML details, customer/device data, or telemetry.
+The screenshots and animated tour below were captured from an authorized live Docker Proxy deployment; no credentials, secrets, private keys, or tokens are shown.
 
 <p align="center">
-  <img src="docs/assets/admin-operator-workflow.gif" alt="Short Docker Proxy admin workflow demo: observe traffic, validate policy, track an operation, and verify status" width="720">
+  <img src="docs/assets/admin-operator-workflow.gif" alt="Short Docker Proxy Admin UI live workflow showing status, observability, ClamAV, ad blocking, proxy fleet, SSL filtering, and the operations ledger" width="720">
 </p>
 
-| Status and observability | Policy validation workflow | Fleet and operations |
+| Status and observability dashboard | SSL/cache policy workflow | Registered proxy fleet and operations |
 | --- | --- | --- |
-| ![Docker Proxy Admin UI status dashboard with sanitized demo observability and health cards](docs/assets/admin-dashboard.png) | ![Docker Proxy Admin UI policy workflow with sanitized demo Squid configuration controls and validation steps](docs/assets/admin-policy-workflow.png) | ![Docker Proxy Admin UI fleet operations screen with sanitized demo proxy inventory and operation ledger](docs/assets/admin-fleet-operations.png) |
+| ![Docker Proxy Admin UI live status and observability dashboard for a selected proxy runtime](docs/assets/admin-dashboard.png) | ![Docker Proxy Admin UI live SSL filtering and cache-bypass policy workflow with runtime apply evidence](docs/assets/admin-policy-workflow.png) | ![Docker Proxy Admin UI live registered proxy fleet and operations view with mixed proxy health](docs/assets/admin-fleet-operations.png) |
 
 ## 5-minute quick start with prebuilt images
 
