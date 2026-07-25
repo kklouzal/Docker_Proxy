@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 import sys
 from pathlib import Path
 
@@ -38,6 +39,51 @@ def test_auth_store_connect_uses_shared_db_connector(tmp_path, monkeypatch) -> N
     assert store._connect() is sentinel
     assert captured["args"] == ()
     assert captured["kwargs"] == {}
+
+
+def test_auth_store_repairs_existing_secret_permissions(tmp_path) -> None:
+    auth_store = _auth_store_module()
+    secret_path = tmp_path / "secret.key"
+    secret_path.write_text("existing-secret\n", encoding="utf-8")
+    secret_path.chmod(0o644)
+
+    store = auth_store.AuthStore(secret_path=str(secret_path))
+
+    assert store.get_or_create_secret_key() == "existing-secret"
+    assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
+
+
+def test_auth_store_creates_secret_with_owner_only_permissions(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    auth_store = _auth_store_module()
+    monkeypatch.setattr(auth_store.secrets, "token_urlsafe", lambda size: "new-secret")
+    secret_path = tmp_path / "nested" / "secret.key"
+
+    store = auth_store.AuthStore(secret_path=str(secret_path))
+
+    assert store.get_or_create_secret_key() == "new-secret"
+    assert secret_path.read_text(encoding="utf-8") == "new-secret\n"
+    assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
+
+
+def test_auth_store_does_not_use_predictable_shared_tmp_path(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    auth_store = _auth_store_module()
+    monkeypatch.setattr(auth_store.secrets, "token_urlsafe", lambda size: "new-secret")
+    secret_path = tmp_path / "secret.key"
+    predictable_tmp_path = tmp_path / "secret.key.tmp"
+    predictable_tmp_path.write_text("do-not-clobber\n", encoding="utf-8")
+
+    store = auth_store.AuthStore(secret_path=str(secret_path))
+
+    assert store.get_or_create_secret_key() == "new-secret"
+    assert secret_path.read_text(encoding="utf-8") == "new-secret\n"
+    assert predictable_tmp_path.read_text(encoding="utf-8") == "do-not-clobber\n"
+    assert list(tmp_path.glob(".secret.key.*.tmp")) == []
 
 
 def test_auth_store_username_and_password_validation(tmp_path) -> None:

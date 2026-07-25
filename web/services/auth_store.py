@@ -3,6 +3,7 @@ import os
 import pathlib
 import re
 import secrets
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -73,25 +74,53 @@ class AuthStore:
         self.add_user("admin", "admin")
 
     def get_or_create_secret_key(self) -> str:
-        secret_dir = pathlib.Path(self.secret_path).parent
+        secret_path = pathlib.Path(self.secret_path)
+        secret_dir = secret_path.parent
         if secret_dir:
-            pathlib.Path(secret_dir).mkdir(exist_ok=True, parents=True)
+            secret_dir.mkdir(exist_ok=True, parents=True)
         try:
-            with pathlib.Path(self.secret_path).open(encoding="utf-8") as f:
+            with secret_path.open(encoding="utf-8") as f:
                 val = f.read().strip()
                 if val:
+                    self._chmod_secret_file(secret_path)
                     return val
         except FileNotFoundError:
             pass
 
         secret = secrets.token_urlsafe(48)
-        tmp_path = self.secret_path + ".tmp"
-        with pathlib.Path(tmp_path).open("w", encoding="utf-8") as f:
-            f.write(secret)
-            f.write("\n")
-        pathlib.Path(tmp_path).replace(self.secret_path)
+        tmp_path: pathlib.Path | None = None
+        replaced = False
         try:
-            pathlib.Path(self.secret_path).chmod(0o600)
+            fd, raw_tmp_path = tempfile.mkstemp(
+                dir=secret_dir,
+                prefix=f".{secret_path.name}.",
+                suffix=".tmp",
+                text=True,
+            )
+            tmp_path = pathlib.Path(raw_tmp_path)
+            tmp_path.chmod(0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(secret)
+                f.write("\n")
+            tmp_path.replace(secret_path)
+            replaced = True
+        finally:
+            if tmp_path is not None and not replaced:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    log_exception_throttled(
+                        logger,
+                        "auth_store.secret_tmp_cleanup",
+                        interval_seconds=300.0,
+                        message="Failed to clean up temporary Flask secret key file",
+                    )
+        return secret
+
+    @staticmethod
+    def _chmod_secret_file(secret_path: pathlib.Path) -> None:
+        try:
+            secret_path.chmod(0o600)
         except Exception:
             log_exception_throttled(
                 logger,
@@ -99,7 +128,6 @@ class AuthStore:
                 interval_seconds=300.0,
                 message="Failed to chmod Flask secret key file",
             )
-        return secret
 
     def any_users(self) -> bool:
         self.ensure_schema()
