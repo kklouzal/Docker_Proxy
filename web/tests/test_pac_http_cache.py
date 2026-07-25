@@ -302,9 +302,13 @@ def test_local_pac_cache_exposes_configured_public_pac_path(tmp_path, pac_http) 
     )
     (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
 
-    assert pac_http.LocalPacCache(str(pac_dir)).public_paths() == frozenset(
-        {"/proxy.pac", "/wpad.dat", "/download/wpad.dat"}
+    cache = pac_http.LocalPacCache(str(pac_dir))
+
+    assert cache.public_paths() == frozenset(
+        {"/proxy.pac", "/wpad.dat", "/download/wpad.dat?site=lab"}
     )
+    assert cache.public_request_allowed("/download/wpad.dat", "site=lab") is True
+    assert cache.public_request_allowed("/download/wpad.dat") is False
 
 
 def test_local_pac_cache_matches_percent_encoded_public_pac_path(
@@ -321,7 +325,28 @@ def test_local_pac_cache_matches_percent_encoded_public_pac_path(
 
     cache = pac_http.LocalPacCache(str(pac_dir))
 
-    assert "/download/wpad.dat" in cache.public_paths()
+    assert "/download/wpad.dat?site=lab" in cache.public_paths()
+    assert "/download/wpad.dat" not in cache.public_paths()
+    assert cache.public_request_allowed("/download/wpad.dat", "site=lab") is True
+
+
+def test_local_pac_cache_exposes_configured_public_pac_url_target(
+    tmp_path,
+    pac_http,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        """{"fallback_file":"fallback.pac","public_pac_url":"https://pac.example/download/wpad.dat?site=lab"}""",
+        encoding="utf-8",
+    )
+    (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
+
+    cache = pac_http.LocalPacCache(str(pac_dir))
+
+    assert "/download/wpad.dat?site=lab" in cache.public_paths()
+    assert "/download/wpad.dat" not in cache.public_paths()
     assert cache.public_request_allowed("/download/wpad.dat", "site=lab") is True
 
 

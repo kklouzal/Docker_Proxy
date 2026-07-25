@@ -222,9 +222,8 @@ def _public_target_from_manifest(value: object) -> tuple[str, str | None]:
     return path, query if separator else None
 
 
-def _public_path_from_manifest(value: object) -> str:
-    path, _query = _public_target_from_manifest(value)
-    return path
+def _public_target_text(path: str, query: str | None) -> str:
+    return f"{path}?{query}" if query is not None else path
 
 
 def _request_query_text(query_string: object | None) -> str:
@@ -500,9 +499,9 @@ class LocalPacCache:
             paths = set(DEFAULT_PUBLIC_PAC_PATHS)
             if not self._load_locked():
                 return frozenset(paths)
-            for path, _query in self._public_request_targets_locked():
+            for path, query in self._public_request_targets_locked():
                 if path:
-                    paths.add(path)
+                    paths.add(_public_target_text(path, query))
             return frozenset(paths)
 
     def _public_request_targets_locked(self) -> frozenset[tuple[str, str | None]]:
