@@ -82,38 +82,14 @@ def _is_hit(result_code: str) -> bool:
 
 def _split_access_log_tsv(line: str) -> list[str]:
     # In Squid logformat, "\t" may be emitted literally, so support both actual
-    # tabs and the two-character sequence "\\t". Only escaped tabs outside CSV
-    # quotes are delimiters; quoted escaped tabs are literal field content.
+    # tabs and the two-character sequence "\\t". Normalize escaped tabs before
+    # CSV parsing so quoted escaped tabs become field content while unquoted
+    # escaped tabs remain delimiters.
     s = (line or "").strip("\r\n")
     if not s or ("\t" not in s and "\\t" not in s):
         return []
     if "\\t" in s:
-        normalized = []
-        in_quotes = False
-        i = 0
-        while i < len(s):
-            ch = s[i]
-            if ch == '"':
-                normalized.append(ch)
-                if in_quotes and i + 1 < len(s) and s[i + 1] == '"':
-                    normalized.append(s[i + 1])
-                    i += 2
-                    continue
-                in_quotes = not in_quotes
-                i += 1
-                continue
-            if (
-                not in_quotes
-                and ch == "\\"
-                and i + 1 < len(s)
-                and s[i + 1] == "t"
-            ):
-                normalized.append("\t")
-                i += 2
-                continue
-            normalized.append(ch)
-            i += 1
-        s = "".join(normalized)
+        s = s.replace("\\t", "\t")
     if '"' not in s:
         return s.split("\t")
     try:
