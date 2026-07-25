@@ -198,6 +198,7 @@ def test_resolve_proxy_pac_target_preserves_unbracketed_ipv6_public_pac_url(
         "ftp://proxy.example:9000/proxy.pac",
         "https:///proxy.pac",
         "https://user:secret@proxy.example/proxy.pac",
+        "https://proxy.example/custom/proxy.pac#not-sent",
     ],
 )
 def test_resolve_proxy_pac_target_ignores_invalid_absolute_public_pac_url(
@@ -504,6 +505,35 @@ def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
     assert target.http_proxy_port == 3128
     assert target.pac_path == "/registered/wpad.dat?site=a"
     assert target.pac_url == "http://registry.example:8080/registered/wpad.dat?site=a"
+
+
+def test_resolve_proxy_pac_target_rejects_registry_public_pac_path_fragment(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services import pac_renderer  # type: ignore
+
+    class _RegistryWithFragmentPublicPath:
+        def get_proxy(self, _proxy_id):
+            return _proxy_record(
+                "registry.example",
+                public_pac_path="/registered/wpad.dat#not-sent",
+            )
+
+    monkeypatch.setattr(
+        pac_renderer,
+        "get_proxy_registry",
+        _RegistryWithFragmentPublicPath,
+    )
+    monkeypatch.setattr(pac_renderer, "get_pac_profiles_store", _EmptyPacProfilesStore)
+    monkeypatch.delenv("PROXY_PUBLIC_PAC_URL", raising=False)
+
+    target = pac_renderer.resolve_proxy_pac_target("default")
+
+    assert target.public_host == "registry.example"
+    assert target.pac_path == "/proxy.pac"
+    assert target.pac_url == "http://registry.example/proxy.pac"
 
 
 def test_build_proxy_pac_state_uses_active_proxy_context_when_unspecified(

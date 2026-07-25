@@ -107,6 +107,8 @@ def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac")
         return fallback
     if parsed.username is not None or parsed.password is not None:
         return fallback
+    if parsed.fragment:
+        return fallback
     if parsed.netloc and not parsed.scheme:
         return fallback
     if parsed.scheme and parsed.scheme.lower() not in {"http", "https"}:
@@ -229,6 +231,8 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
     if has_absolute_scheme and raw_scheme not in {"http", "https"}:
         return "", "http", 80, "/proxy.pac"
     if parsed.username is not None or parsed.password is not None:
+        return "", "http", 80, "/proxy.pac"
+    if parsed.fragment:
         return "", "http", 80, "/proxy.pac"
     host = _normalize_public_host(parsed.hostname, allow_single_label=True)
     if not host:
