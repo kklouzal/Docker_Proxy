@@ -48,6 +48,7 @@ from services.certificate_bundles import (
 )
 from services.certificate_core import (
     materialize_admin_ui_server_certificate,
+    normalize_admin_ui_certificate_san_token,
     normalize_admin_ui_certificate_sans,
     sanitize_admin_ui_certificate_san_token,
     validate_tls_material_paths,
@@ -3935,24 +3936,17 @@ def _admin_ui_https_configured_san_tokens(value: object) -> tuple[str, ...]:
     tokens: list[str] = []
     seen: set[str] = set()
     for token in raw_tokens:
-        clean = sanitize_admin_ui_certificate_san_token(token)
-        if not clean:
+        normalized = normalize_admin_ui_certificate_san_token(token)
+        if not normalized:
             msg = (
                 "Admin UI HTTPS SAN entries must be DNS names or IP addresses "
                 "without paths, credentials, or wildcards."
             )
             raise ValueError(msg)
-        normalized = normalize_admin_ui_certificate_sans([clean])
-        key = clean.lower()
-        if key not in normalized:
-            msg = (
-                "Admin UI HTTPS SAN entries must be DNS names or IP addresses "
-                "without paths, credentials, or wildcards."
-            )
-            raise ValueError(msg)
+        key = normalized.lower()
         if key not in seen:
             seen.add(key)
-            tokens.append(clean)
+            tokens.append(normalized)
     return tuple(tokens)
 
 

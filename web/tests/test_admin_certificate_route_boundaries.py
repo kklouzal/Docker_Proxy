@@ -617,19 +617,38 @@ def test_admin_ui_https_preference_persists_configured_sans_in_leaf(
         data={
             "csrf_token": token,
             "enabled": "1",
-            "san_tokens": "proxyadmin.example.com, 192.0.2.10",
+            "san_tokens": (
+                "proxyadmin.example.com, 192.0.2.10\n"
+                "[2001:0db8:0000:0000:0000:0000:0000:0001]"
+            ),
         },
         follow_redirects=False,
     )
 
     assert response.status_code == 200
     assert bundles.admin_ui_https_settings.san_tokens == (
-        "proxyadmin.example.com\n192.0.2.10"
+        "proxyadmin.example.com\n192.0.2.10\n2001:db8::1"
     )
     leaf = x509.load_pem_x509_certificate(Path(certfile).read_bytes())
     sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     assert "proxyadmin.example.com" in sans.get_values_for_type(x509.DNSName)
-    assert "192.0.2.10" in [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
+    ip_sans = [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
+    assert "192.0.2.10" in ip_sans
+    assert "2001:db8::1" in ip_sans
+
+
+def test_admin_ui_https_configured_sans_canonicalize_ipv6_and_dedupe(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    tokens = loaded.module._admin_ui_https_configured_san_tokens(
+        "2001:0db8:0000:0000:0000:0000:0000:0001\n"
+        "[2001:0db8:0000:0000:0000:0000:0000:0001]\n"
+        "ProxyAdmin.EXAMPLE.COM."
+    )
+
+    assert tokens == ("2001:db8::1", "proxyadmin.example.com")
 
 
 def test_admin_ui_https_request_sans_parse_bracketed_ipv6_request_host(

@@ -586,17 +586,9 @@ def normalize_admin_ui_certificate_sans(
         clean = sanitize_admin_ui_certificate_san_token(value)
         if not clean:
             return
-        try:
-            ip = ipaddress.ip_address(clean)
-        except ValueError:
-            dns = clean.lower()
-            if not _dns_san_valid(dns):
-                return
-            key = f"dns:{dns}"
-            display = dns
-        else:
-            key = f"ip:{ip.compressed}"
-            display = ip.compressed
+        key, display = _canonical_admin_ui_certificate_san(clean) or ("", "")
+        if not key:
+            return
         if key not in seen:
             seen.add(key)
             sans.append(display)
@@ -610,6 +602,26 @@ def normalize_admin_ui_certificate_sans(
     for token in (socket.gethostname(), socket.getfqdn()):
         add(token)
     return tuple(sans)
+
+
+def _canonical_admin_ui_certificate_san(clean: str) -> tuple[str, str] | None:
+    try:
+        ip = ipaddress.ip_address(clean)
+    except ValueError:
+        dns = clean.lower()
+        if not _dns_san_valid(dns):
+            return None
+        return f"dns:{dns}", dns
+    return f"ip:{ip.compressed}", ip.compressed
+
+
+def normalize_admin_ui_certificate_san_token(token: object) -> str:
+    """Return the certificate-core canonical SAN for one configured token."""
+    clean = sanitize_admin_ui_certificate_san_token(token)
+    if not clean:
+        return ""
+    canonical = _canonical_admin_ui_certificate_san(clean)
+    return canonical[1] if canonical else ""
 
 
 def _general_names_for_sans(sans: Iterable[str]) -> list[x509.GeneralName]:
