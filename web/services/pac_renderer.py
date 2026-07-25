@@ -78,12 +78,13 @@ def _normalize_domain_rule(domain: str) -> str:
 
 def _domain_match_expression(domain: str) -> str:
     normalized = _normalize_domain_rule(domain)
-    normalized = normalized.removeprefix("*.")
-    normalized = normalized.lstrip(".")
+    wildcard = normalized.startswith("*.")
+    normalized = normalized[2:] if wildcard else normalized.lstrip(".")
     if not normalized:
         return ""
-    suffix = f".{normalized}"
-    return f"(host === {json.dumps(normalized)} || dnsDomainIs(host, {json.dumps(suffix)}))"
+    if wildcard:
+        return f"dnsDomainIs(host, {json.dumps(f'.{normalized}')})"
+    return f"host === {json.dumps(normalized)}"
 
 
 def _normalize_backup_proxy_entry(
@@ -405,11 +406,9 @@ def _render_pac(
     seen_domains: set[str] = set()
     for domain in direct_domains:
         d = _normalize_domain_rule(domain)
-        canonical = d.removeprefix("*.")
-        canonical = canonical.lstrip(".")
-        if not canonical or canonical in seen_domains:
+        if not d or d in seen_domains:
             continue
-        seen_domains.add(canonical)
+        seen_domains.add(d)
         match_expression = _domain_match_expression(d)
         if match_expression:
             lines.append(f"  if {match_expression} return 'DIRECT';")

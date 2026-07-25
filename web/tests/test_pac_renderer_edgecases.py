@@ -680,7 +680,7 @@ def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> 
     rendered = pac_renderer._render_pac(
         "PROXY proxy.example:3128; DIRECT",
         proxy_host="proxy.example",
-        direct_domains=["Example.COM", "*.example.com", "", "example.com"],
+        direct_domains=["Example.COM", "*.media.example", "", "example.com"],
         direct_dst_nets=[
             "10.20.0.0/16",
             "10.20.1.7/16",
@@ -693,10 +693,33 @@ def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> 
     assert "host === 'localhost'" in rendered
     assert 'dnsDomainIs(host, ".local")' in rendered
     assert rendered.count('host === "example.com"') == 1
+    assert rendered.count('dnsDomainIs(host, ".media.example")') == 1
     assert rendered.count("isInNet(ip, '10.20.0.0', '255.255.0.0')") == 1
     assert "isInNet(ip, '192.168.0.0', '255.255.0.0')" in rendered
     assert "2001:db8" not in rendered
     assert 'return "PROXY proxy.example:3128; DIRECT";' in rendered
+
+
+def test_rendered_pac_preserves_exact_and_wildcard_direct_domain_semantics() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_pac(
+        "PROXY proxy.example:3128; DIRECT",
+        proxy_host="proxy.example",
+        direct_domains=[
+            "Example.COM",
+            "example.com",
+            "*.Example.COM",
+            "*.example.com",
+        ],
+        direct_dst_nets=[],
+        include_private=False,
+    )
+
+    assert rendered.count('if host === "example.com" return \'DIRECT\';') == 1
+    assert rendered.count('if dnsDomainIs(host, ".example.com") return \'DIRECT\';') == 1
+    assert 'host === "example.com" || dnsDomainIs(host, ".example.com")' not in rendered
 
 
 def test_rendered_pac_normalizes_stale_direct_domain_inputs() -> None:
