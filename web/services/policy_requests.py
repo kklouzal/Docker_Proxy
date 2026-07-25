@@ -409,6 +409,21 @@ class PolicyRequestStore:
                 raise ValueError(msg)
             with guarded_proxy_write(c, req.proxy_id) as guard:
                 canonical_proxy_id = guard.proxy_id
+                claim = c.execute(
+                    f"UPDATE {self.REQUEST_TABLE} SET status='approved',admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s,exception_id=NULL,proxy_id=%s WHERE id=%s AND status='pending' AND proxy_id=%s",
+                    (
+                        note,
+                        now,
+                        now,
+                        reviewer_s,
+                        canonical_proxy_id,
+                        req.id,
+                        req.proxy_id,
+                    ),
+                )
+                if max(0, int(getattr(claim, "rowcount", 0) or 0)) == 0:
+                    msg = "Only pending requests can be approved."
+                    raise ValueError(msg)
                 r = c.execute(
                     f"INSERT INTO {self.EXCEPTION_TABLE}(proxy_id,status,block_type,client_ip,domain,category,created_ts,updated_ts,created_by,admin_note,expires_ts,revoked_ts,revoked_by,source_request_id) VALUES(%s,'active',%s,%s,%s,%s,%s,%s,%s,%s,%s,0,'',%s)",
                     (
@@ -427,8 +442,8 @@ class PolicyRequestStore:
                 )
                 exid = int(r.lastrowid or 0)
                 c.execute(
-                    f"UPDATE {self.REQUEST_TABLE} SET status='approved',admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s,exception_id=%s,proxy_id=%s WHERE id=%s",
-                    (note, now, now, reviewer_s, exid, canonical_proxy_id, req.id),
+                    f"UPDATE {self.REQUEST_TABLE} SET exception_id=%s WHERE id=%s AND status='approved' AND exception_id IS NULL",
+                    (exid, req.id),
                 )
                 exrow = c.execute(self._esql("WHERE id=%s"), (exid,)).fetchone()
         return _exc(exrow)

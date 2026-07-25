@@ -26,9 +26,10 @@ class _PolicyApproveResult:
 
 
 class _PolicyApproveConn:
-    def __init__(self):
+    def __init__(self, *, claim_rowcount: int = 1):
         self.calls: list[tuple[str, tuple[object, ...]]] = []
         self.inserted_expires_ts: int | None = None
+        self.claim_rowcount = claim_rowcount
 
     def __enter__(self):
         return self
@@ -62,6 +63,11 @@ class _PolicyApproveConn:
                     "exception_id": None,
                 },
             )
+        if (
+            "UPDATE policy_requests SET status='approved'" in text
+            and "AND status='pending'" in text
+        ):
+            return _PolicyApproveResult(rowcount=self.claim_rowcount)
         if "INSERT INTO policy_exceptions" in text:
             self.inserted_expires_ts = int(params_t[9])
             return _PolicyApproveResult(lastrowid=11)
@@ -124,6 +130,36 @@ def test_policy_request_store_approval_indefinite_flag_keeps_no_expiry(
     exception = store.approve_request(7, reviewer="admin", indefinite=True)
 
     assert exception.expires_ts == 0
+
+
+def test_policy_request_store_approval_stale_pending_claim_does_not_insert(
+    monkeypatch,
+) -> None:
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    conn = _PolicyApproveConn(claim_rowcount=0)
+    store = module.PolicyRequestStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(module, "now_ts", lambda: 1000)
+
+    try:
+        store.approve_request(7, reviewer="admin", admin_note="late")
+    except ValueError as exc:
+        assert "Only pending" in str(exc)
+    else:
+        msg = "stale approval should fail before creating an exception"
+        raise AssertionError(msg)
+
+    executed_sql = [sql for sql, _params in conn.calls]
+    assert any(
+        "UPDATE policy_requests SET status='approved'" in sql
+        and "AND status='pending'" in sql
+        for sql in executed_sql
+    )
+    assert not any("INSERT INTO policy_exceptions" in sql for sql in executed_sql)
 
 
 def test_policy_request_store_normalizes_approves_lists_and_revokes(tmp_path) -> None:
