@@ -4,9 +4,87 @@
 [![Container Registry](https://img.shields.io/badge/GHCR-admin--ui%20%7C%20proxy-blue)](https://github.com/kklouzal/Docker_Proxy/pkgs/container/docker_proxy-admin-ui)
 [![License](https://img.shields.io/badge/license-see%20LICENSE-informational)](LICENSE)
 
-Docker Proxy is a production-oriented Squid proxy appliance with a web control plane, policy automation, PAC/WPAD publishing, observability, and optional ICAP-based security services. It packages a modern Squid runtime and a Flask/Gunicorn administration UI into split containers that share an external MySQL 8+ state backend.
+Docker Proxy turns Squid into a browser-operated proxy appliance: policy editing, PAC/WPAD publishing, TLS-inspection controls, web filtering, ad blocking, ClamAV ICAP scanning, fleet operations, audit history, and observability live behind one MySQL-backed admin UI instead of scattered config files and shell-only runbooks.
 
-The project is designed for home labs, small offices, schools, managed LANs, and advanced operators who want a transparent, auditable proxy stack without hand-editing Squid configuration for every policy change.
+It is built for home-lab operators, schools, small offices, MSP-style managed LANs, and advanced network admins who need an auditable proxy stack they can run from containers without pretending that interception, certificates, database backups, and client routing are magic. It is not a VPN, DNS sinkhole, desktop privacy add-on, or turnkey firewall.
+
+## What problem it solves
+
+Squid is powerful, but day-two operation usually becomes a mix of hand-edited config, one-off scripts, fragile PAC files, untracked certificate changes, and log spelunking. Docker Proxy packages the runtime and control plane so an operator can:
+
+- edit policy in a web UI and validate candidate Squid config on the selected runtime before applying it;
+- publish PAC/WPAD and proxy health endpoints from the proxy container while keeping the admin UI separate;
+- keep configuration, users, policy revisions, telemetry, block logs, and operation history in MySQL 8+;
+- manage one or more proxy runtimes from a scoped admin UI without mixing fleet operations; and
+- review traffic, cache behavior, ICAP activity, SSL/TLS diagnostics, block events, exports, and remediation cues from the same console.
+
+## Admin UI preview
+
+The images below are deterministic public-safe demo renderings using generic sample data. They were produced from the repository's Admin UI visual language, not from a live deployment, so they contain no production hostnames, IP addresses, usernames, credentials, LDAP/SAML details, customer/device data, or telemetry.
+
+<p align="center">
+  <img src="docs/assets/admin-operator-workflow.gif" alt="Short Docker Proxy admin workflow demo: observe traffic, validate policy, track an operation, and verify status" width="720">
+</p>
+
+| Status and observability | Policy validation workflow | Fleet and operations |
+| --- | --- | --- |
+| ![Docker Proxy Admin UI status dashboard with sanitized demo observability and health cards](docs/assets/admin-dashboard.png) | ![Docker Proxy Admin UI policy workflow with sanitized demo Squid configuration controls and validation steps](docs/assets/admin-policy-workflow.png) | ![Docker Proxy Admin UI fleet operations screen with sanitized demo proxy inventory and operation ledger](docs/assets/admin-fleet-operations.png) |
+
+## 5-minute quick start with prebuilt images
+
+This path uses the published GHCR images and the committed `docker-compose.ghcr.yml` plus `docker-compose.common.yml` files. It assumes you already have Docker Compose v2 and a reachable MySQL 8+ database. For production, create the database and least-privilege runtime user before starting the containers; only use `MYSQL_CREATE_DATABASE=1` for a disposable first look with a database account that is allowed to create the schema.
+
+1. Clone the repository and create a local launch environment:
+
+   ```bash
+   git clone https://github.com/kklouzal/Docker_Proxy.git
+   cd Docker_Proxy
+   cat > .env <<'ENV'
+   MYSQL_HOST=mysql.example.com
+   MYSQL_PORT=3306
+   MYSQL_USER=docker_proxy
+   MYSQL_PASSWORD=replace_with_the_database_password
+   MYSQL_DATABASE=squid_proxy
+   MYSQL_CREATE_DATABASE=0
+   PROXY_MANAGEMENT_TOKEN=replace_with_a_long_random_shared_token
+   FLASK_SECRET_KEY=replace_with_a_long_random_flask_secret
+   DOCKER_LOG_DRIVER=json-file
+   DOCKER_LOG_MAX_SIZE=10m
+   DOCKER_LOG_MAX_FILE=3
+   ENV
+   ```
+
+2. Pull and start the split containers:
+
+   ```bash
+   docker compose -f docker-compose.ghcr.yml pull
+   docker compose -f docker-compose.ghcr.yml up -d
+   docker compose -f docker-compose.ghcr.yml ps
+   ```
+
+3. Smoke-check the public proxy endpoints from the Docker host:
+
+   ```bash
+   curl -fsS http://localhost/health
+   curl -fsS http://localhost/proxy.pac | head
+   ```
+
+4. Open the admin UI at `http://localhost:5000`, sign in with the first-run local account, and immediately change the password:
+
+   - Username: `admin`
+   - Password: `admin`
+
+5. Before routing real clients, review the generated proxy record, PAC/WPAD URLs, certificate authority trust plan, no-bump policy, and management-plane exposure. Do not expose the admin UI directly to the internet, and do not enable TLS inspection for unmanaged clients or clients that do not trust the proxy CA.
+
+Default local endpoints after the Compose stack starts:
+
+- Admin UI: `http://localhost:5000`
+- Explicit HTTP proxy: `http://localhost:3128`
+- HTTP NAT intercept listener: `localhost:3129` when enabled and routed by your network
+- HTTPS NAT intercept listener: `localhost:3130` when enabled and routed by your network
+- Proxy public health: `http://localhost/health`
+- PAC file: `http://localhost/proxy.pac`
+- WPAD: `http://localhost/wpad.dat`
 
 ## Highlights
 
@@ -56,57 +134,7 @@ It is not a DNS sinkhole, a personal VPN, a desktop privacy add-on, or a turnkey
 - A remote `clamd` service when ClamAV response scanning is enabled.
 - Managed clients must trust the proxy CA before TLS inspection is enabled for them.
 
-## Quick start
-
-Put database and management-token settings in a root `.env` file or your launch environment:
-
-```dotenv
-MYSQL_HOST=mysql.example.internal
-MYSQL_PORT=3306
-MYSQL_USER=docker_proxy
-MYSQL_PASSWORD=replace_with_the_database_password
-MYSQL_DATABASE=squid_proxy
-MYSQL_CREATE_DATABASE=0
-PROXY_MANAGEMENT_TOKEN=replace_with_a_shared_internal_token
-DOCKER_LOG_DRIVER=json-file
-DOCKER_LOG_MAX_SIZE=10m
-DOCKER_LOG_MAX_FILE=3
-```
-
-For production, create the database and runtime user before starting remote proxy
-containers. Keep `MYSQL_CREATE_DATABASE=0` on proxy/admin containers unless that
-specific container is allowed to create databases during provisioning.
-
-Build and run from source:
-
-```powershell
-docker compose up -d --build
-```
-
-Or run the prebuilt GHCR images:
-
-```powershell
-docker compose -f docker-compose.ghcr.yml up -d
-```
-
-Default endpoints:
-
-- Admin UI: `http://localhost:5000`
-- Explicit HTTP proxy: `http://localhost:3128`
-- HTTP NAT intercept listener: `localhost:3129` when enabled and routed by your network
-- HTTPS NAT intercept listener: `localhost:3130` when enabled and routed by your network
-- Proxy public health: `http://localhost/health`
-- PAC file: `http://localhost/proxy.pac`
-- WPAD: `http://localhost/wpad.dat`
-
-Default first-run login:
-
-- Username: `admin`
-- Password: `admin`
-
-Change the administrator password after first login. The admin UI stores a persistent session secret in MySQL when available; set `FLASK_SECRET_KEY` explicitly when you want host-managed secret rotation.
-
-### Admin authentication
+## Admin authentication
 
 The admin UI can use local users, one LDAP or Active Directory provider, or one metadata-backed SAML provider. Local users remain available as break-glass access even when external authentication is active.
 
@@ -122,7 +150,7 @@ Configure LDAP or Active Directory from `Administration -> LDAP` or `Administrat
 
 Configure SAML from `Administration -> SAML`:
 
-1. Set the IdP metadata URL. For AD FS this is usually `https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml`.
+1. Set the IdP metadata URL. For AD FS this is usually `https://idp.example.com/FederationMetadata/2007-06/FederationMetadata.xml`.
 2. Keep `Require HTTPS metadata URL` and `Verify TLS certificate` enabled for normal deployments. Add a PEM CA bundle only when the AD FS TLS certificate chains to an internal CA that is not in system trust.
 3. Set `Public admin base URL` to the externally visible admin UI origin when the UI is behind a reverse proxy. The generated service-provider metadata is available at `/auth/saml/metadata`, and the assertion consumer service is `/auth/saml/acs`.
 4. Add the SP metadata URL to AD FS as a relying party trust, or enter the SP entity ID and ACS URL shown on the SAML tab.
@@ -179,9 +207,9 @@ container must have a stable, unique identity and public coordinates:
 ```dotenv
 PROXY_INSTANCE_ID=site-a-proxy-1
 PROXY_DISPLAY_NAME=Site A Proxy 1
-PROXY_PUBLIC_HOST=site-a-proxy-1.example.internal
-PROXY_PUBLIC_PAC_URL=http://site-a-proxy-1.example.internal/proxy.pac
-PROXY_MANAGEMENT_URL=http://site-a-proxy-1.example.internal:5000
+PROXY_PUBLIC_HOST=site-a-proxy-1.example.com
+PROXY_PUBLIC_PAC_URL=http://site-a-proxy-1.example.com/proxy.pac
+PROXY_MANAGEMENT_URL=http://site-a-proxy-1.example.com:5000
 ```
 
 Set `DEFAULT_PROXY_ID` only on the admin UI host to choose the initial UI
