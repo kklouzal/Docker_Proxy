@@ -5,6 +5,12 @@ from pathlib import Path
 
 import pytest
 
+# Escaped compatibility characters keep IDNA/fullwidth regression inputs explicit
+# without tripping Ruff's ambiguous-unicode-character lint.
+FULLWIDTH_FULL_STOP = "\uff0e"
+FULLWIDTH_LOOPBACK_IPV4 = "\uff11\uff12\uff17.\uff10.\uff10.\uff11"
+FULLWIDTH_LOOPBACK_IPV4_IDNA_DOTS = "\uff11\uff12\uff17\u3002\uff10\u3002\uff10\u3002\uff11"
+
 
 def _add_web_to_path() -> None:
     web_dir = Path(__file__).resolve().parents[1]
@@ -101,7 +107,10 @@ def test_normalize_public_host_rejects_non_public_ip_literals(value: str) -> Non
         ("bücher.example", "xn--bcher-kva.example"),
         ("https://BÜCHER.example:8443/proxy.pac", "xn--bcher-kva.example"),
         ("proxy。example", "proxy.example"),
-        ("https://bücher．example/proxy.pac", "xn--bcher-kva.example"),
+        (
+            f"https://bücher{FULLWIDTH_FULL_STOP}example/proxy.pac",
+            "xn--bcher-kva.example",
+        ),
         ("93.184.216.34", "93.184.216.34"),
         ("[2001:4860:4860::8888]:8080", "2001:4860:4860::8888"),
     ],
@@ -136,9 +145,9 @@ def test_normalize_public_host_rejects_stray_authority_brackets(value: str) -> N
 @pytest.mark.parametrize(
     "value",
     [
-        "１２７.０.０.１",
-        "１２７。０。０。１",
-        "http://１２７。０。０。１/proxy.pac",
+        FULLWIDTH_LOOPBACK_IPV4,
+        FULLWIDTH_LOOPBACK_IPV4_IDNA_DOTS,
+        f"http://{FULLWIDTH_LOOPBACK_IPV4_IDNA_DOTS}/proxy.pac",
     ],
 )
 def test_normalize_public_host_rejects_idna_folded_ambiguous_ipv4_forms(
