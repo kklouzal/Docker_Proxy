@@ -1528,32 +1528,6 @@ class ProxyRuntime:
     ) -> tuple[bool, str]:
         with _exclusive_runtime_lock("supervisor", _SUPERVISOR_CONTROL_LOCK):
             prefix = self._logical_supervisor_program_prefix(program_name)
-            if prefix:
-                configured = list(_icap_supervisor_programs(program_name))
-                scaled_programs = [
-                    program for program in configured if program != program_name
-                ]
-                if scaled_programs:
-                    _ok, resolve_detail, _lines = self._supervisor_status_lines(
-                        timeout_seconds=timeout_seconds
-                    )
-                    results = [
-                        self._restart_supervisor_program_unlocked(
-                            program,
-                            timeout_seconds=timeout_seconds,
-                            stop_on_failure=stop_on_failure,
-                        )
-                        for program in scaled_programs
-                    ]
-                    detail_parts = [str(resolve_detail or "").strip()]
-                    detail_parts.extend(
-                        str(result_detail or "").strip()
-                        for _ok, result_detail in results
-                    )
-                    return all(result_ok for result_ok, _detail in results), "\n".join(
-                        part for part in detail_parts if part
-                    )
-
             ok, detail = self._restart_supervisor_program_unlocked(
                 program_name,
                 timeout_seconds=timeout_seconds,
