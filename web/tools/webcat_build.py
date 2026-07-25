@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -56,6 +57,44 @@ def _read_lines(path: Path) -> Iterable[str]:
         return
 
 
+def _is_ip_literal(value: str) -> bool:
+    try:
+        ipaddress.ip_address(_norm_domain(value))
+    except ValueError:
+        return False
+    return True
+
+
+def _domain_from_feed_line(
+    line: str,
+    *,
+    comment_prefixes: tuple[str, ...],
+    inline_comment_markers: tuple[str, ...] = ("#",),
+) -> str:
+    """Extract one normalized domain from a feed line, including hosts records."""
+    t = (line or "").strip()
+    if not t or t.startswith(comment_prefixes):
+        return ""
+
+    for marker in inline_comment_markers:
+        t = t.split(marker, 1)[0].strip()
+    if not t:
+        return ""
+
+    tokens = t.split()
+    if len(tokens) == 2 and _is_ip_literal(tokens[0]):
+        t = tokens[1]
+        if "://" in t or any(ch in t for ch in ("/", "?", "#")):
+            return ""
+    elif len(tokens) != 1:
+        return ""
+
+    d = _norm_domain(t)
+    if not d or _is_ip_literal(d):
+        return ""
+    return d if _looks_like_host(d) else ""
+
+
 def _collect_from_category_dir(root: Path) -> list[tuple[str, str]]:
     """Accepts a directory of per-category text files.
 
@@ -77,17 +116,13 @@ def _collect_from_category_dir(root: Path) -> list[tuple[str, str]]:
         if not cat:
             continue
         for ln in _read_lines(p):
-            t = (ln or "").strip()
-            if not t or t.startswith(("#", "//", "!")):
-                continue
-            # Remove inline comments
-            t = t.split("#", 1)[0].strip()
-            t = t.split(";", 1)[0].strip()
-            if not t:
-                continue
-            if not _looks_like_host(t):
-                continue
-            pairs.append((_norm_domain(t), cat))
+            d = _domain_from_feed_line(
+                ln,
+                comment_prefixes=("#", "//", "!"),
+                inline_comment_markers=("#", ";"),
+            )
+            if d:
+                pairs.append((d, cat))
     return pairs
 
 
@@ -941,15 +976,9 @@ def _collect_from_ut1_blacklists_dedup(
         # Build a unique set for fingerprinting and for emitting pairs.
         doms: set[str] = set()
         for ln in _read_lines(domains_file):
-            t = (ln or "").strip()
-            if not t or t.startswith("#"):
-                continue
-            t = t.split("#", 1)[0].strip()
-            if not t:
-                continue
-            if not _looks_like_host(t):
-                continue
-            doms.add(_norm_domain(t))
+            d = _domain_from_feed_line(ln, comment_prefixes=("#",))
+            if d:
+                doms.add(d)
 
         if not doms:
             continue

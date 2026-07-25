@@ -79,6 +79,115 @@ def test_ut1_tar_gz_lowercase_blacklists_detected() -> None:
         assert aliases == {}
 
 
+def test_category_dir_accepts_hosts_file_records_without_broadening() -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_category_hosts_") as td:
+        root = Path(td) / "payload"
+        root.mkdir()
+        zero_addr = ".".join(str(part) for part in (0, 0, 0, 0))
+        (root / "ads.txt").write_text(
+            "\n".join(
+                [
+                    "# full-line comment",
+                    f"{zero_addr} ads.example",
+                    "127.0.0.1 tracker.example # inline comment",
+                    "::1 bad.example; inline semicolon comment",
+                    zero_addr,
+                    "127.0.0.1",
+                    "// another comment",
+                    "! adblock-style comment",
+                    f"{zero_addr} *.wild.example",
+                    f"{zero_addr} http://path.example/list",
+                    f"{zero_addr} too many.example tokens",
+                    "plain.example",
+                ],
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        pairs, source, aliases = webcat_build._collect(root, provider="category-dir")
+
+        assert pairs == [
+            ("ads.example", "ads"),
+            ("tracker.example", "ads"),
+            ("bad.example", "ads"),
+            ("plain.example", "ads"),
+        ]
+        assert source.startswith("dir:")
+        assert aliases == {}
+
+
+def test_ut1_directory_accepts_hosts_file_records_without_broadening() -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_ut1_hosts_dir_") as td:
+        domains_dir = Path(td) / "blacklists" / "ads"
+        domains_dir.mkdir(parents=True)
+        zero_addr = ".".join(str(part) for part in (0, 0, 0, 0))
+        (domains_dir / "domains").write_text(
+            "\n".join(
+                [
+                    "# full-line comment",
+                    f"{zero_addr} ads.example",
+                    "127.0.0.1 tracker.example # inline comment",
+                    "::1 bad.example",
+                    zero_addr,
+                    "::1",
+                    f"{zero_addr} *.wild.example",
+                    f"{zero_addr} http://path.example/list",
+                    f"{zero_addr} too many.example tokens",
+                    "plain.example",
+                ],
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        pairs, source, aliases = webcat_build._collect(Path(td), provider="ut1")
+
+        assert sorted(pairs) == [
+            ("ads.example", "ads"),
+            ("bad.example", "ads"),
+            ("plain.example", "ads"),
+            ("tracker.example", "ads"),
+        ]
+        assert source.startswith("ut1:")
+        assert aliases == {}
+
+
+def test_ut1_archive_accepts_hosts_file_records_without_broadening() -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_ut1_hosts_tar_") as td:
+        root = Path(td) / "payload"
+        domains_dir = root / "blacklists" / "ads"
+        domains_dir.mkdir(parents=True)
+        zero_addr = ".".join(str(part) for part in (0, 0, 0, 0))
+        (domains_dir / "domains").write_text(
+            f"{zero_addr} ads.example\n"
+            "127.0.0.1 tracker.example # inline comment\n"
+            "::1 bad.example\n"
+            f"{zero_addr}\n"
+            "# comment only\n",
+            encoding="utf-8",
+        )
+        tar_path = Path(td) / "ut1.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as archive:
+            archive.add(root, arcname="")
+
+        pairs, source, aliases = webcat_build._collect(tar_path, provider="ut1")
+
+        assert sorted(pairs) == [
+            ("ads.example", "ads"),
+            ("bad.example", "ads"),
+            ("tracker.example", "ads"),
+        ]
+        assert source.startswith("ut1tar:")
+        assert aliases == {}
+
+
 def test_ut1_dedup_identical_category_lists() -> None:
     webcat_build = _import_webcat_build()
 
