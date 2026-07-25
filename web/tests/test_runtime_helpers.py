@@ -117,6 +117,17 @@ def test_normalize_hostish_rejects_percent_encoded_authority_delimiters() -> Non
         assert extract_domain(value) == ""
 
 
+def test_normalize_hostish_rejects_raw_backslash_delimiters() -> None:
+    for value in (
+        r"http://safe.example\@evil.test/path",
+        r"http://safe.example\evil.test/path",
+        r"//safe.example\@evil.test/path",
+        r"safe.example\evil.test",
+    ):
+        assert normalize_hostish(value) == ""
+        assert extract_domain(value) == ""
+
+
 def test_extract_domain_prefers_sni_host_then_url() -> None:
     assert (
         extract_domain("https://fallback.example/path", sni="api.example")

@@ -44,7 +44,7 @@ def normalize_hostish(value: object | None) -> str:
     host = str(value or "").strip().lower().lstrip(".")
     if not host or host in {"-", "(nil)", "none", "null"}:
         return ""
-    if _decoded_hostish_has_delimiters(host):
+    if "\\" in host or _decoded_hostish_has_delimiters(host):
         return ""
 
     try:
@@ -99,7 +99,7 @@ def extract_domain(
             return normalized
 
     raw = str(value or "").strip()
-    if not raw:
+    if not raw or "\\" in raw:
         return ""
 
     try:
