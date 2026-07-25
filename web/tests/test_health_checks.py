@@ -854,6 +854,41 @@ def test_check_http_proxy_forwarding_refuses_request_line_injection(monkeypatch)
     assert "unsafe forwarding probe target URL" in result["detail"]
 
 
+@pytest.mark.parametrize(
+    "target_url",
+    [
+        "http://example.com/health",
+        "http://127.0.0.1.evil.test/health",
+    ],
+)
+def test_check_http_proxy_forwarding_refuses_non_local_targets_before_connect(
+    monkeypatch,
+    target_url,
+) -> None:
+    health_checks = _health_checks_module()
+
+    def fail_connect(*_args, **_kwargs):
+        msg = "non-local forwarding probe target should not open a socket"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(health_checks.socket, "create_connection", fail_connect)
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url=target_url,
+        timeout=0.1,
+    )
+
+    assert result == {
+        "ok": False,
+        "detail": (
+            "unsafe forwarding probe target URL: expected localhost or "
+            "loopback IP host"
+        ),
+        "probe_url": target_url,
+    }
+
+
 def test_proxy_health_icap_uses_protocol_probe_for_local_targets(monkeypatch) -> None:
     proxy_health = _proxy_health_module()
 

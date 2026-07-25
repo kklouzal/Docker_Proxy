@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import pathlib
@@ -433,6 +434,16 @@ def _forwarding_canary_probe_token(target_url: str) -> str:
     return (parse_qs(parsed.query, keep_blank_values=True).get("probe") or [""])[-1]
 
 
+def _is_local_forwarding_probe_host(host: str) -> bool:
+    normalized = str(host or "").strip().lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
 def _safe_forwarding_probe_url(target_url: str) -> tuple[str, str]:
     raw = str(target_url or "").strip()
     if not raw:
@@ -452,6 +463,11 @@ def _safe_forwarding_probe_url(target_url: str) -> tuple[str, str]:
         return "", "unsafe forwarding probe target URL: embedded credentials"
     if parsed.fragment:
         return "", "unsafe forwarding probe target URL: fragment"
+    if not _is_local_forwarding_probe_host(parsed.hostname):
+        return (
+            "",
+            "unsafe forwarding probe target URL: expected localhost or loopback IP host",
+        )
     return urlunsplit(("http", parsed.netloc, parsed.path or "/", parsed.query, "")), ""
 
 
