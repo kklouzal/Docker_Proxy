@@ -288,6 +288,23 @@ def test_reg_export_normalizer_preserves_raw_hex_input() -> None:
     assert normalize_reg_binary_export(grouped) == original
 
 
+def test_reg_export_normalizer_rejects_continuation_garbage() -> None:
+    original = generate_basic_winhttp_binary("http=proxy.example:3128", "<local>")
+    exported = generate_reg_file_from_hex(original)
+    corrupted = exported.replace(",\\\r\n ", ",not-hex-garbage\\\r\n ", 1)
+
+    with pytest.raises(WinHttpBuilderError, match="Invalid WinHttpSettings hex data"):
+        normalize_reg_binary_export(corrupted)
+
+
+def test_reg_export_normalizer_rejects_raw_hex_garbage() -> None:
+    original = generate_basic_winhttp_binary("http=proxy.example:3128", "<local>")
+    grouped = " ".join(original[index : index + 2] for index in range(0, len(original), 2))
+
+    with pytest.raises(WinHttpBuilderError, match="No WinHttpSettings REG_BINARY value was found"):
+        normalize_reg_binary_export(f"{grouped} not-hex-garbage")
+
+
 def test_decode_round_trip_rejects_non_ascii_strings() -> None:
     with pytest.raises(WinHttpBuilderError):
         generate_basic_winhttp_binary("http=proxy.example:3128", "cafe\u0301")

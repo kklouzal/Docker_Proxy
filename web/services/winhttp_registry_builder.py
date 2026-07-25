@@ -137,6 +137,20 @@ def normalize_hex_only(value: str) -> str:
     return re.sub(r"[^0-9a-fA-F]", "", value or "").lower()
 
 
+def _normalize_winhttp_hex_data(
+    value: str,
+    *,
+    error_prefix: str,
+    allow_raw_separators: bool = False,
+) -> str:
+    allowed_separators = r",\s\\-" if allow_raw_separators else r",\s"
+    invalid = re.search(rf"[^0-9a-fA-F{allowed_separators}]", value or "")
+    if invalid:
+        msg = f"{error_prefix}: unexpected character {invalid.group(0)!r}."
+        raise WinHttpBuilderError(msg)
+    return normalize_hex_only(value)
+
+
 def hex_to_bytes(hex_value: str) -> list[int]:
     clean = normalize_hex_only(hex_value)
     if len(clean) % 2:
@@ -634,7 +648,11 @@ def normalize_reg_binary_export(value: str) -> str:
             )
             raise WinHttpBuilderError(msg)
         body = text
-    clean = normalize_hex_only(body)
+    clean = _normalize_winhttp_hex_data(
+        body,
+        error_prefix="Invalid WinHttpSettings hex data",
+        allow_raw_separators=not chunks,
+    )
     if not chunks and text.strip() and not clean:
         msg = (
             f'No {VALUE_NAME} {VALUE_TYPE} value was found; paste a registry export '
