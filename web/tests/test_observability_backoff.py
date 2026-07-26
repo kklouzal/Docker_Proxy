@@ -42,6 +42,20 @@ def test_database_write_backoff_defers_immediate_retries() -> None:
     assert backoff.failures == 0
 
 
+def test_database_write_backoff_jitter_keeps_delay_within_configured_max() -> None:
+    backoff = DatabaseWriteBackoff(
+        base_seconds=5.0,
+        max_seconds=20.0,
+        jitter_ratio=0.5,
+        _rand=lambda: 1.0,
+    )
+
+    assert backoff.record_failure(10.0) == pytest.approx(7.5)
+    assert backoff.record_failure(20.0) == pytest.approx(15.0)
+    assert backoff.record_failure(40.0) == pytest.approx(20.0)
+    assert backoff.next_attempt_at == pytest.approx(60.0)
+
+
 def test_stagger_delay_uses_env_span_and_random(monkeypatch) -> None:
     monkeypatch.setenv("TIMESERIES_STARTUP_JITTER_SECONDS", "12")
     monkeypatch.setattr("services.observability_backoff.random.uniform", lambda a, b: (a, b, 7.0)[2])

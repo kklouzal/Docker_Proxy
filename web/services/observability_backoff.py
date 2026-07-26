@@ -72,9 +72,9 @@ class DatabaseWriteBackoff:
                 rand_value = float(self._rand())  # type: ignore[misc]
             except Exception:
                 rand_value = 0.5
-            # Apply symmetric jitter and clamp at zero.
+            # Apply symmetric jitter without violating the configured maximum.
             jitter = (rand_value * 2.0 - 1.0) * self.jitter_ratio * delay
-            delay = max(0.0, delay + jitter)
+            delay = min(self.max_seconds, max(0.0, delay + jitter))
         self._next_attempt_at = now_f + delay
         return delay
 
