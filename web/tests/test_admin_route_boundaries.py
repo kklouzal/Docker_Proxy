@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import json
+from io import StringIO
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -1791,6 +1794,74 @@ def test_observability_accepts_search_alias_for_page_and_export(
     )
     assert response.status_code == 200
     assert observability_queries.destination_calls[-1]["search"] == "canonical.example"
+
+
+def test_observability_cache_export_contract_aligns_csv_and_json(
+    monkeypatch, tmp_path
+) -> None:
+    class CacheExportObservabilityQueries:
+        def top_cache_reasons(self, **_kwargs):
+            return [
+                {
+                    "reason": "TCP_MISS",
+                    "requests": 7,
+                    "pct": 87.5,
+                    "domains": 3,
+                    "clients": 2,
+                    "last_seen": 123456,
+                },
+            ]
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=CacheExportObservabilityQueries(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    csv_export = client.get("/observability/export?pane=cache&limit=10")
+
+    assert csv_export.status_code == 200
+    assert csv_export.headers.get("Content-Type", "").startswith("text/csv")
+    csv_reader = csv.DictReader(
+        StringIO(csv_export.get_data(as_text=True)), delimiter=";"
+    )
+    csv_rows = list(csv_reader)
+    assert csv_reader.fieldnames == [
+        "reason",
+        "requests",
+        "percent_of_misses",
+        "domains",
+        "clients",
+        "last_seen",
+    ]
+    assert csv_rows == [
+        {
+            "reason": "TCP_MISS",
+            "requests": "7",
+            "percent_of_misses": "87.5",
+            "domains": "3",
+            "clients": "2",
+            "last_seen": "123456",
+        },
+    ]
+    assert None not in csv_rows[0]
+
+    json_export = client.get("/observability/export?pane=cache&limit=10&format=json")
+
+    assert json_export.status_code == 200
+    assert json_export.headers.get("Content-Type", "").startswith("application/json")
+    assert json.loads(json_export.get_data(as_text=True)) == [
+        {
+            "reason": "TCP_MISS",
+            "requests": 7,
+            "percent_of_misses": 87.5,
+            "domains": 3,
+            "clients": 2,
+            "last_seen": 123456,
+        },
+    ]
 
 
 def test_observability_export_reuses_summary_cache_for_same_window(
