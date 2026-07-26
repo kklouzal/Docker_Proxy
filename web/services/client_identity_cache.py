@@ -73,6 +73,17 @@ class ClientIdentityCache:
             return False
         return all(label.isdecimal() for label in labels if label)
 
+    def _is_ambiguous_ipv4_hostname(self, hostname: str) -> bool:
+        candidate = hostname.strip("[]").lower()
+        labels = candidate.split(".")
+        if not 1 <= len(labels) <= 4:
+            return False
+        return all(
+            label.isdecimal()
+            or bool(re.fullmatch(r"0x[0-9a-f]+", label))
+            for label in labels
+        )
+
     def _normalize_rdns_hostname(self, hostname: object) -> str:
         cleaned = str(hostname or "").strip().rstrip(".").lower()
         if not cleaned:
@@ -82,6 +93,8 @@ class ClientIdentityCache:
         if cleaned in _RESERVED_RDNS_HOSTNAMES or cleaned.endswith(".localhost"):
             return ""
         if self._is_ip_literal_hostname(cleaned):
+            return ""
+        if self._is_ambiguous_ipv4_hostname(cleaned):
             return ""
         if len(cleaned) > 253:
             return ""

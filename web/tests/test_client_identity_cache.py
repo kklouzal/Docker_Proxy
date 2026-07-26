@@ -101,6 +101,67 @@ def test_client_identity_cache_rejects_malformed_rdns_hostnames(monkeypatch) -> 
         }
 
 
+def test_client_identity_cache_rejects_ambiguous_numeric_rdns_hostnames(
+    monkeypatch,
+) -> None:
+    cache = ClientIdentityCache(failure_ttl_seconds=10.0)
+    responses = iter(
+        [
+            ("0x7f.1", [], []),
+            ("0177.0.0.1", [], []),
+            ("127.1", [], []),
+            ("1.2.3.999", [], []),
+            ("0x7f.999", [], []),
+        ]
+    )
+
+    monkeypatch.setattr(
+        "services.client_identity_cache.socket.gethostbyaddr",
+        lambda _ip: next(responses),
+    )
+
+    for ip in [
+        "192.0.2.20",
+        "192.0.2.21",
+        "192.0.2.22",
+        "192.0.2.23",
+        "192.0.2.24",
+    ]:
+        assert cache.resolve(ip) == {
+            "hostname": "",
+            "hostname_source": "",
+            "hostname_status": "unresolved",
+        }
+
+
+def test_client_identity_cache_accepts_valid_dns_rdns_hostnames_with_digits(
+    monkeypatch,
+) -> None:
+    cache = ClientIdentityCache(success_ttl_seconds=30.0)
+    responses = iter(
+        [
+            ("proxy-0177.example.", [], []),
+            ("edge-0x7f.example", [], []),
+        ]
+    )
+
+    monkeypatch.setattr(
+        "services.client_identity_cache.socket.gethostbyaddr",
+        lambda _ip: next(responses),
+    )
+
+    assert cache.resolve("192.0.2.30") == {
+        "hostname": "proxy-0177.example",
+        "hostname_source": "rdns",
+        "hostname_status": "resolved",
+    }
+    assert cache.resolve("192.0.2.31") == {
+        "hostname": "edge-0x7f.example",
+        "hostname_source": "rdns",
+        "hostname_status": "resolved",
+    }
+
+
 def test_client_identity_cache_treats_dns_lookup_errors_as_unresolved(
     monkeypatch,
 ) -> None:
