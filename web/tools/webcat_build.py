@@ -524,8 +524,8 @@ def _extract_tar_into(tar_path: Path, out_dir: Path) -> None:
     # Supports .tar, .tar.gz, .tgz
     max_bytes = _extract_max_bytes()
     total = 0
-    with tarfile.open(tar_path, "r:*") as t:
-        for m in t.getmembers():
+    with tarfile.open(tar_path, "r|*") as t:
+        for m in t:
             # Preserve data-filter behavior: only directories and regular files are extracted.
             if not (m.isdir() or m.isfile()):
                 continue

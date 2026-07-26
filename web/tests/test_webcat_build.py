@@ -616,6 +616,56 @@ def test_tar_extraction_skips_windows_drive_and_unc_members() -> None:
         assert not (out_dir / "server").exists()
 
 
+def test_tar_extraction_streams_members_without_materializing_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    webcat_build = _import_webcat_build()
+    original_open = tarfile.open
+    opened_modes: list[str] = []
+
+    def open_spy(*args, **kwargs):
+        mode = kwargs.get("mode") if "mode" in kwargs else args[1]
+        opened_modes.append(mode)
+        return original_open(*args, **kwargs)
+
+    def fail_getmembers(_self):
+        msg = "tar extraction must stream members instead of materializing them"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(webcat_build.tarfile, "open", open_spy)
+    monkeypatch.setattr(tarfile.TarFile, "getmembers", fail_getmembers)
+
+    with tempfile.TemporaryDirectory(prefix="webcat_tar_stream_") as td:
+        tar_path = Path(td) / "payload.tar"
+        out_dir = Path(td) / "out"
+        with original_open(tar_path, "w") as archive:
+            safe_dir = tarfile.TarInfo("blacklists/adult")
+            safe_dir.type = tarfile.DIRTYPE
+            archive.addfile(safe_dir)
+
+            unsafe = tarfile.TarInfo("../pwned.txt")
+            unsafe_data = b"you should not see this"
+            unsafe.size = len(unsafe_data)
+            archive.addfile(unsafe, io.BytesIO(unsafe_data))
+
+            link = tarfile.TarInfo("blacklists/adult/link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "domains"
+            archive.addfile(link)
+
+            safe = tarfile.TarInfo("blacklists/adult/domains")
+            safe_data = b"example.com\n"
+            safe.size = len(safe_data)
+            archive.addfile(safe, io.BytesIO(safe_data))
+
+        webcat_build._extract_tar(tar_path, out_dir)
+
+        assert opened_modes == ["r|*"]
+        assert (out_dir / "blacklists/adult/domains").read_text() == "example.com\n"
+        assert not (Path(td) / "pwned.txt").exists()
+        assert not (out_dir / "blacklists/adult/link").exists()
+
+
 def test_download_rejects_hostname_resolving_private(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
