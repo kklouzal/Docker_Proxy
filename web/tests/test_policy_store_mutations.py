@@ -214,6 +214,60 @@ def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) 
         reset_proxy_id(token)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "192.168.1.10",
+        "https://192.168.1.10:443/path",
+        "[2001:db8::1]",
+        "https://[2001:db8::1]:443/path",
+    ],
+)
+def test_sslfilter_domain_rule_rejects_ip_literals(value) -> None:
+    from services.sslfilter_store import validate_domain_rule  # type: ignore
+
+    ok, detail, canonical = validate_domain_rule(value)
+
+    assert ok is False
+    assert canonical == ""
+    assert "ip literals" in detail.lower()
+    assert "cidr/source policy" in detail.lower()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("example.com", "example.com"),
+        ("*.Example.COM", "*.example.com"),
+        (".Example.COM", "*.example.com"),
+        ("https://Bücher.Example:443/path", "xn--bcher-kva.example"),
+    ],
+)
+def test_sslfilter_domain_rule_preserves_domain_normalization(value, expected) -> None:
+    from services.sslfilter_store import validate_domain_rule  # type: ignore
+
+    assert validate_domain_rule(value) == (True, "", expected)
+
+
+def test_sslfilter_store_rejects_ip_literal_domain_rule_before_persistence(
+    monkeypatch,
+) -> None:
+    from services.sslfilter_store import SslFilterStore  # type: ignore
+
+    store = SslFilterStore()
+    monkeypatch.setattr(
+        store,
+        "init_db",
+        lambda: pytest.fail("invalid domain rules must not reach persistence"),
+    )
+
+    ok, detail, canonical = store.add_domain("nobump", "192.168.1.10")
+
+    assert ok is False
+    assert canonical == ""
+    assert "ip literals" in detail.lower()
+
+
 def test_sslfilter_store_canonicalizes_dedupes_removes_and_materializes(
     tmp_path,
 ) -> None:

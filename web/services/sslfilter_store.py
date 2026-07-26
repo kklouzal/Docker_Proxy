@@ -21,6 +21,9 @@ from services.ssl_compatibility_presets import (
 _DOMAIN_LABEL_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$")
 _DOMAIN_POLICIES = {"nobump", "nocache"}
 _SRC_POLICIES = {"nobump", "nocache"}
+_IP_LITERAL_DOMAIN_RULE_ERROR = (
+    "IP literals are not valid domain rules; use CIDR/source policy where appropriate."
+)
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,12 @@ def _normalize_domain_rule(domain: str) -> tuple[bool, str, str]:
         core = raw
         is_wildcard = False
     core = _shared_normalize_domain(core)
+    try:
+        ipaddress.ip_address(core)
+    except ValueError:
+        pass
+    else:
+        return False, _IP_LITERAL_DOMAIN_RULE_ERROR, ""
     if not core or len(core) > 253:
         return False, "Invalid domain length.", ""
     labels = core.split(".")
