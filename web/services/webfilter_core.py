@@ -24,6 +24,7 @@ from services.domain_normalization import (
 )
 from services.errors import public_error_message
 from services.materialized_files import write_managed_text_files
+from services.policy_requests import normalize_client_ip as _normalize_client_ip
 from services.proxy_context import get_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import env_int as _env_int
@@ -683,7 +684,7 @@ class WebFilterStoreBase:
 
         for ex in exceptions:
             domain = _norm_domain(getattr(ex, "domain", ""))
-            client_ip = str(getattr(ex, "client_ip", "") or "").strip()
+            client_ip = _normalize_client_ip(getattr(ex, "client_ip", ""))
             if not client_ip or not domain:
                 continue
             suffix = f"{getattr(ex, 'id', 0)}"

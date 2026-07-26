@@ -574,6 +574,78 @@ def test_webfilter_materialized_categories_are_canonicalized_before_acl_render(
     assert "MALWARE<script>" not in rendered
 
 
+def test_webfilter_policy_exception_materialization_skips_malformed_client_ips(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_webfilter_core_module()
+    store = module.ProxyWebFilterStore(
+        squid_include_path=str(
+            tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"
+        ),
+        whitelist_path=str(tmp_path / "var" / "lib" / "webfilter_whitelist.txt"),
+    )
+    settings = module.WebFilterSettings(
+        enabled=True,
+        source_url="",
+        blocked_categories=["adult"],
+        whitelist_domains=[],
+        last_success=0,
+        last_attempt=0,
+        last_error="",
+        next_run_ts=0,
+    )
+    exceptions = [
+        SimpleNamespace(
+            id=101,
+            domain="Example.COM",
+            client_ip=" 192.0.2.10 ",
+        ),
+        SimpleNamespace(
+            id=102,
+            domain="ipv6.example.test",
+            client_ip="2001:db8::5",
+        ),
+        SimpleNamespace(
+            id=103,
+            domain="bad.example.test",
+            client_ip="not an ip",
+        ),
+        SimpleNamespace(
+            id=104,
+            domain="newline.example.test",
+            client_ip="198.51.100.7\nacl injected src all",
+        ),
+        SimpleNamespace(
+            id=105,
+            domain="cidr.example.test",
+            client_ip="192.0.2.0/24",
+        ),
+    ]
+    policy_store = SimpleNamespace(
+        active_webfilter_exceptions=lambda *, proxy_id: exceptions,
+    )
+    monkeypatch.setattr(module, "get_policy_request_store", lambda: policy_store)
+    monkeypatch.setattr(module, "get_proxy_id", lambda: "default")
+    monkeypatch.setattr(store, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        store, "_resolve_category_aliases", lambda categories: categories
+    )
+    monkeypatch.setattr(store, "_webcat_built_ts", lambda: 0)
+
+    rendered = store.render_materialized_state().include_text
+
+    assert "acl webfilter_exception_src_101 src 192.0.2.10" in rendered
+    assert "acl webfilter_exception_dst_101 dstdomain example.com .example.com" in rendered
+    assert "acl webfilter_exception_src_102 src 2001:db8::5" in rendered
+    assert "acl webfilter_exception_dst_102 dstdomain ipv6.example.test .ipv6.example.test" in rendered
+    assert "webfilter_exception_src_103" not in rendered
+    assert "webfilter_exception_src_104" not in rendered
+    assert "webfilter_exception_src_105" not in rendered
+    assert "not an ip" not in rendered
+    assert "acl injected" not in rendered
+    assert "192.0.2.0/24" not in rendered
+
+
 def test_webfilter_materialized_helpers_honor_fail_mode_env(
     tmp_path, monkeypatch
 ) -> None:
