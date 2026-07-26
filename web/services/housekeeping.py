@@ -322,21 +322,10 @@ def _run_due_scheduled_housekeeping(
     weekly_weekday: int,
     weekly_hour: int,
 ) -> tuple[datetime, datetime]:
-    if now >= next_daily:
-        try:
-            run_housekeeping_once(
-                retention_days=current_retention_days(retention_days),
-            )
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "housekeeping.loop",
-                interval_seconds=300,
-                message="Housekeeping run failed",
-            )
-        finally:
-            next_daily = _next_local_run(hour=daily_hour, now=now)
-    if now >= next_weekly:
+    daily_due = now >= next_daily
+    weekly_due = now >= next_weekly
+
+    if weekly_due:
         try:
             run_housekeeping_once(
                 retention_days=current_retention_days(retention_days),
@@ -351,11 +340,27 @@ def _run_due_scheduled_housekeeping(
                 message="Housekeeping run failed",
             )
         finally:
+            if daily_due:
+                next_daily = _next_local_run(hour=daily_hour, now=now)
             next_weekly = _next_local_run(
                 hour=weekly_hour,
                 weekday=weekly_weekday,
                 now=now,
             )
+    elif daily_due:
+        try:
+            run_housekeeping_once(
+                retention_days=current_retention_days(retention_days),
+            )
+        except Exception:
+            log_exception_throttled(
+                logger,
+                "housekeeping.loop",
+                interval_seconds=300,
+                message="Housekeeping run failed",
+            )
+        finally:
+            next_daily = _next_local_run(hour=daily_hour, now=now)
     return next_daily, next_weekly
 
 

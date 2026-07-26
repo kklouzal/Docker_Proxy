@@ -446,7 +446,7 @@ def test_housekeeping_schedules_next_daily_and_weekly_runs(housekeeping) -> None
     assert weekly == datetime(2026, 5, 24, 3, 0, tzinfo=UTC)
 
 
-def test_housekeeping_scheduled_due_runs_advance_after_failures(
+def test_housekeeping_scheduled_due_runs_coalesce_daily_into_weekly(
     monkeypatch, housekeeping
 ) -> None:
     calls: list[tuple[int, bool, bool]] = []
@@ -459,8 +459,8 @@ def test_housekeeping_scheduled_due_runs_advance_after_failures(
         **_kwargs,
     ) -> None:
         calls.append((retention_days, analyze, optimize))
-        if not analyze:
-            msg = "daily prune failed"
+        if analyze:
+            msg = "weekly housekeeping failed"
             raise RuntimeError(msg)
 
     monkeypatch.setattr(housekeeping, "current_retention_days", lambda default: default)
@@ -482,6 +482,74 @@ def test_housekeeping_scheduled_due_runs_advance_after_failures(
         weekly_hour=3,
     )
 
-    assert calls == [(45, False, False), (45, True, True)]
+    assert calls == [(45, True, True)]
     assert next_daily == datetime(2026, 5, 25, 2, 0, tzinfo=UTC)
+    assert next_weekly == datetime(2026, 5, 31, 3, 0, tzinfo=UTC)
+
+
+def test_housekeeping_scheduled_due_daily_only_preserved(
+    monkeypatch, housekeeping
+) -> None:
+    calls: list[tuple[int, bool, bool]] = []
+
+    def run_once(
+        *,
+        retention_days: int,
+        analyze: bool = False,
+        optimize: bool = False,
+        **_kwargs,
+    ) -> None:
+        calls.append((retention_days, analyze, optimize))
+
+    monkeypatch.setattr(housekeeping, "current_retention_days", lambda default: default)
+    monkeypatch.setattr(housekeeping, "run_housekeeping_once", run_once)
+
+    now = datetime(2026, 5, 25, 2, 30, tzinfo=UTC)
+    weekly_due = datetime(2026, 5, 31, 3, 0, tzinfo=UTC)
+    next_daily, next_weekly = housekeeping._run_due_scheduled_housekeeping(
+        now=now,
+        next_daily=datetime(2026, 5, 25, 2, 0, tzinfo=UTC),
+        next_weekly=weekly_due,
+        retention_days=45,
+        daily_hour=2,
+        weekly_weekday=6,
+        weekly_hour=3,
+    )
+
+    assert calls == [(45, False, False)]
+    assert next_daily == datetime(2026, 5, 26, 2, 0, tzinfo=UTC)
+    assert next_weekly == weekly_due
+
+
+def test_housekeeping_scheduled_due_weekly_only_preserved(
+    monkeypatch, housekeeping
+) -> None:
+    calls: list[tuple[int, bool, bool]] = []
+
+    def run_once(
+        *,
+        retention_days: int,
+        analyze: bool = False,
+        optimize: bool = False,
+        **_kwargs,
+    ) -> None:
+        calls.append((retention_days, analyze, optimize))
+
+    monkeypatch.setattr(housekeeping, "current_retention_days", lambda default: default)
+    monkeypatch.setattr(housekeeping, "run_housekeeping_once", run_once)
+
+    now = datetime(2026, 5, 24, 3, 30, tzinfo=UTC)
+    daily_due = datetime(2026, 5, 25, 2, 0, tzinfo=UTC)
+    next_daily, next_weekly = housekeeping._run_due_scheduled_housekeeping(
+        now=now,
+        next_daily=daily_due,
+        next_weekly=datetime(2026, 5, 24, 3, 0, tzinfo=UTC),
+        retention_days=45,
+        daily_hour=2,
+        weekly_weekday=6,
+        weekly_hour=3,
+    )
+
+    assert calls == [(45, True, True)]
+    assert next_daily == daily_due
     assert next_weekly == datetime(2026, 5, 31, 3, 0, tzinfo=UTC)
