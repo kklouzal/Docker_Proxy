@@ -621,6 +621,21 @@ def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
         reset_proxy_id(token)
 
 
+def _safe_pac_state_relative_path(value: object) -> str:
+    candidate = str(value or "").strip().replace("\\", "/")
+    if not candidate or candidate.startswith("/"):
+        return ""
+    parts = candidate.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return ""
+    if ":" in parts[0]:
+        return ""
+    rel_path = os.path.normpath(candidate).replace("\\", "/")
+    if not rel_path or rel_path in {".", ".."} or rel_path.startswith("../"):
+        return ""
+    return rel_path
+
+
 def materialize_proxy_pac_state(
     target_dir: str | os.PathLike[str],
     *,
@@ -637,9 +652,8 @@ def materialize_proxy_pac_state(
 
     try:
         for item in state.files:
-            raw_rel = str(item.relative_path or "").replace("\\", "/")
-            rel = os.path.normpath(raw_rel).replace("\\", "/")
-            if not rel or rel.startswith(("../", "/")) or rel in {".", ".."}:
+            rel = _safe_pac_state_relative_path(item.relative_path)
+            if not rel:
                 msg = f"Unsafe PAC materialization path: {item.relative_path}"
                 raise ValueError(msg)
             dest = payload_dir / rel
@@ -676,18 +690,7 @@ def read_materialized_pac_state_sha(
 
 
 def _safe_manifest_relative_path(value: object) -> str:
-    candidate = str(value or "").strip().replace("\\", "/")
-    if not candidate or candidate.startswith("/"):
-        return ""
-    parts = candidate.split("/")
-    if any(part in {"", ".", ".."} for part in parts):
-        return ""
-    if ":" in parts[0]:
-        return ""
-    rel_path = os.path.normpath(candidate).replace("\\", "/")
-    if not rel_path or rel_path in {".", ".."} or rel_path.startswith("../"):
-        return ""
-    return rel_path
+    return _safe_pac_state_relative_path(value)
 
 
 def _manifest_fallback_file(manifest: dict[str, object]) -> str:
