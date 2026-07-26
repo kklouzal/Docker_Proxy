@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 _LOCK_FD: int | None = None
+_LOCK_PID: int | None = None
 
 
 def _close_lock_fd(fd: int, *, log_key: str, message: str) -> None:
@@ -37,7 +38,12 @@ def acquire_background_lock() -> bool:
       - BACKGROUND_FORCE=1: always start background tasks (no locking)
       - BACKGROUND_LOCK_PATH: lock file path (default: /var/lib/squid-flask-proxy/background.lock)
     """
+    global _LOCK_FD, _LOCK_PID
+
     if (os.environ.get("BACKGROUND_FORCE") or "").strip() == "1":
+        return True
+
+    if _LOCK_FD is not None and _LOCK_PID == os.getpid():
         return True
 
     lock_path = (
@@ -90,6 +96,6 @@ def acquire_background_lock() -> bool:
         )
         return True
 
-    global _LOCK_FD
     _LOCK_FD = fd
+    _LOCK_PID = os.getpid()
     return True

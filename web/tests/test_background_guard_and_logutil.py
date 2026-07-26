@@ -62,6 +62,38 @@ def test_acquire_background_lock_non_posix_allows_and_closes_fd(monkeypatch) -> 
     assert closed == [42]
 
 
+def test_acquire_background_lock_is_idempotent_for_current_process(monkeypatch, tmp_path) -> None:
+    import fcntl
+
+    opened: list[str] = []
+    flocked: list[int] = []
+    fds = iter([101, 102])
+    lock_path = tmp_path / "background.lock"
+
+    monkeypatch.delenv("BACKGROUND_FORCE", raising=False)
+    monkeypatch.setenv("BACKGROUND_LOCK_PATH", str(lock_path))
+    monkeypatch.setattr(background_guard, "_LOCK_FD", None)
+    monkeypatch.setattr(background_guard, "_LOCK_PID", None)
+
+    def fake_open(path, *_args, **_kwargs):
+        opened.append(path)
+        return next(fds)
+
+    def fake_flock(fd, flags):
+        flocked.append(fd)
+
+    monkeypatch.setattr(background_guard.os, "open", fake_open)
+    monkeypatch.setattr(fcntl, "flock", fake_flock)
+
+    assert background_guard.acquire_background_lock() is True
+    assert background_guard.acquire_background_lock() is True
+
+    assert opened == [str(lock_path)]
+    assert flocked == [101]
+    assert background_guard._LOCK_FD == 101
+    assert background_guard._LOCK_PID == background_guard.os.getpid()
+
+
 def test_should_log_throttles_by_key_and_interval(monkeypatch) -> None:
     logutil._last_log.clear()
     current = {"value": 100.0}
