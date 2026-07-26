@@ -717,8 +717,10 @@ def test_rendered_pac_preserves_exact_and_wildcard_direct_domain_semantics() -> 
         include_private=False,
     )
 
-    assert rendered.count('if host === "example.com" return \'DIRECT\';') == 1
-    assert rendered.count('if dnsDomainIs(host, ".example.com") return \'DIRECT\';') == 1
+    assert rendered.count('if (host === "example.com") return \'DIRECT\';') == 1
+    assert rendered.count('if (dnsDomainIs(host, ".example.com")) return \'DIRECT\';') == 1
+    assert 'if host === "example.com" return \'DIRECT\';' not in rendered
+    assert 'if dnsDomainIs(host, ".example.com") return \'DIRECT\';' not in rendered
     assert 'host === "example.com" || dnsDomainIs(host, ".example.com")' not in rendered
 
 

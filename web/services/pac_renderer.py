@@ -455,7 +455,7 @@ def _render_pac(
         seen_domains.add(d)
         match_expression = _domain_match_expression(d)
         if match_expression:
-            lines.append(f"  if {match_expression} return 'DIRECT';")
+            lines.append(f"  if ({match_expression}) return 'DIRECT';")
 
     needs_ip_lookup = bool(direct_dst_nets or include_private)
     if needs_ip_lookup:
