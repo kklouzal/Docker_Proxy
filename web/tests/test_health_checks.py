@@ -831,6 +831,59 @@ def test_check_http_proxy_forwarding_refuses_self_proxy_loop(monkeypatch) -> Non
     assert "points back at the explicit proxy listener" in result["detail"]
 
 
+@pytest.mark.parametrize(
+    ("target_url", "expected_detail"),
+    [
+        (
+            "http://127.0.0.1:18080/%0d%0aX-Injected:yes",
+            "encoded unsafe character",
+        ),
+        (
+            "http://127.0.0.1:18080/health?next=%0AInjected",
+            "encoded unsafe character",
+        ),
+        (
+            "http://127.0.0.1:18080/%01control",
+            "encoded unsafe character",
+        ),
+        (
+            "http://127.0.0.1:18080/%5cpath",
+            "encoded unsafe character",
+        ),
+        (
+            "http://127.0.0.1:18080/health?next=%5Cpath",
+            "encoded unsafe character",
+        ),
+        ("http://127.0.0.1:/health", "empty explicit port"),
+        ("http://localhost:/health", "empty explicit port"),
+        ("http://[::1]:/health", "empty explicit port"),
+    ],
+)
+def test_check_http_proxy_forwarding_refuses_encoded_unsafe_targets_before_connect(
+    monkeypatch,
+    target_url,
+    expected_detail,
+) -> None:
+    health_checks = _health_checks_module()
+
+    def fail_connect(*_args, **_kwargs):
+        msg = "unsafe forwarding probe target should not open a socket"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(health_checks.socket, "create_connection", fail_connect)
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url=target_url,
+        timeout=0.1,
+    )
+
+    assert result["ok"] is False
+    assert "unsafe forwarding probe target URL" in result["detail"]
+    assert expected_detail in result["detail"]
+    assert result["probe_url"] == target_url
+
+
 def test_check_http_proxy_forwarding_refuses_request_line_injection(monkeypatch) -> None:
     health_checks = _health_checks_module()
 

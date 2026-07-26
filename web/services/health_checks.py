@@ -8,7 +8,7 @@ import re
 import socket
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import parse_qs, urlsplit, urlunsplit
+from urllib.parse import parse_qs, unquote_to_bytes, urlsplit, urlunsplit
 
 from services.errors import public_error_message
 
@@ -444,6 +444,19 @@ def _is_local_forwarding_probe_host(host: str) -> bool:
         return False
 
 
+def _has_empty_explicit_authority_port(netloc: str) -> bool:
+    authority = str(netloc or "").rsplit("@", 1)[-1]
+    if authority.startswith("["):
+        bracket_end = authority.find("]")
+        return bracket_end >= 0 and authority[bracket_end + 1 :] == ":"
+    return authority.endswith(":") and ":" in authority
+
+
+def _has_percent_decoded_forwarding_probe_unsafe_chars(value: str) -> bool:
+    decoded = unquote_to_bytes(value)
+    return any(byte < 32 or byte == 127 or byte == ord("\\") for byte in decoded)
+
+
 def _safe_forwarding_probe_url(target_url: str) -> tuple[str, str]:
     raw = str(target_url or "").strip()
     if not raw:
@@ -459,6 +472,8 @@ def _safe_forwarding_probe_url(target_url: str) -> tuple[str, str]:
         return "", "unsafe forwarding probe target URL: malformed"
     if parsed.scheme.lower() != "http" or not parsed.netloc or not parsed.hostname:
         return "", "unsafe forwarding probe target URL: expected absolute http URL"
+    if _has_empty_explicit_authority_port(parsed.netloc):
+        return "", "unsafe forwarding probe target URL: empty explicit port"
     if parsed.username is not None or parsed.password is not None:
         return "", "unsafe forwarding probe target URL: embedded credentials"
     if parsed.fragment:
@@ -468,6 +483,11 @@ def _safe_forwarding_probe_url(target_url: str) -> tuple[str, str]:
             "",
             "unsafe forwarding probe target URL: expected localhost or loopback IP host",
         )
+    if any(
+        _has_percent_decoded_forwarding_probe_unsafe_chars(component)
+        for component in (parsed.path, parsed.query)
+    ):
+        return "", "unsafe forwarding probe target URL: encoded unsafe character"
     return urlunsplit(("http", parsed.netloc, parsed.path or "/", parsed.query, "")), ""
 
 
