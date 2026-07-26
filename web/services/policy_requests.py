@@ -18,6 +18,7 @@ REJECTED = "rejected"
 CLOSED = "closed"
 ACTIVE = "active"
 REVOKED = "revoked"
+EXPIRED = "expired"
 REQ_STATUS = {PENDING, APPROVED, REJECTED, CLOSED}
 BLOCK_TYPES = {"webfilter", "adblock", "clamav", "download", "mime"}
 POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS = 24 * 60 * 60
@@ -93,6 +94,18 @@ class PolicyException:
     revoked_ts: int
     revoked_by: str
     source_request_id: int | None
+
+    def is_expired(self, *, at_ts: int | None = None) -> bool:
+        now = int(at_ts if at_ts is not None else now_ts())
+        return self.status == ACTIVE and self.expires_ts > 0 and self.expires_ts <= now
+
+    @property
+    def effective_status(self) -> str:
+        return EXPIRED if self.is_expired() else self.status
+
+    @property
+    def can_revoke(self) -> bool:
+        return self.effective_status == ACTIVE
 
 
 def _text(v: object, max_len: int, multiline: bool = False) -> str:
@@ -359,7 +372,8 @@ class PolicyRequestStore:
             clauses.append("proxy_id=%s")
             params.append(normalize_proxy_id(proxy_id).lower())
         if not include_inactive:
-            clauses.append("status='active'")
+            clauses.extend(("status='active'", "(expires_ts=0 OR expires_ts>%s)"))
+            params.append(now_ts())
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         with self._connect() as c:
             rows = c.execute(

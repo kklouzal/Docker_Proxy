@@ -71,14 +71,14 @@
       <tbody>
       {% for e in exceptions %}
       <tr>
-        <td>{{ e.status }}</td>
+        <td>{{ e.effective_status }}</td>
         <td>{{ e.proxy_id }}</td>
         <td><code>{{ e.client_ip }}</code></td>
         <td><code>{{ e.domain }}</code></td>
         <td>{% if e.expires_ts %}{{ fmt_ts(e.expires_ts) }}{% else %}Indefinite{% endif %}</td>
         <td>{{ e.admin_note }}</td>
         <td>
-          {% if e.status == 'active' %}
+          {% if e.can_revoke %}
           <form method="post" class="stack-sm" aria-label="Revoke exception {{ e.id }} for {{ e.domain }}">
             {{ csrf_field() }}
             <input type="hidden" name="proxy_id" value="{{ active_proxy_id }}">

@@ -94,6 +94,55 @@ class _PolicyApproveConn:
         return _PolicyApproveResult(rowcount=1)
 
 
+def test_policy_exception_exposes_effective_expired_status(monkeypatch) -> None:
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    monkeypatch.setattr(module, "now_ts", lambda: 2000)
+
+    expired = module.PolicyException(
+        9,
+        "default",
+        "active",
+        "webfilter",
+        "192.168.1.55",
+        "expired.example",
+        "adult",
+        1000,
+        1000,
+        "admin",
+        "expired",
+        1999,
+        0,
+        "",
+        1,
+    )
+    active = module.PolicyException(
+        10,
+        "default",
+        "active",
+        "webfilter",
+        "192.168.1.56",
+        "active.example",
+        "adult",
+        1000,
+        1000,
+        "admin",
+        "active",
+        2001,
+        0,
+        "",
+        2,
+    )
+
+    assert expired.status == "active"
+    assert expired.effective_status == "expired"
+    assert expired.can_revoke is False
+    assert active.effective_status == "active"
+    assert active.can_revoke is True
+
+
 def test_policy_request_store_approval_omitted_duration_defaults_not_indefinite(
     monkeypatch,
 ) -> None:
@@ -465,7 +514,24 @@ def test_admin_policy_requests_route_and_link_smoke(monkeypatch, tmp_path) -> No
                     0,
                     "",
                     1,
-                )
+                ),
+                PolicyException(
+                    3,
+                    "default",
+                    "active",
+                    "webfilter",
+                    "192.168.1.56",
+                    "expired.example",
+                    "",
+                    1,
+                    1,
+                    "admin",
+                    "expired",
+                    1,
+                    0,
+                    "",
+                    2,
+                ),
             ]
             if proxy_id is not None:
                 rows = [r for r in rows if r.proxy_id == proxy_id]
@@ -494,6 +560,10 @@ def test_admin_policy_requests_route_and_link_smoke(monkeypatch, tmp_path) -> No
     assert "Policy exception requests" in text
     assert "bad.example" in text
     assert "Requests</a>" in text
+    assert "expired.example" in text
+    assert "<td>expired</td>" in text
+    assert 'aria-label="Revoke exception 2 for ok.example"' in text
+    assert 'aria-label="Revoke exception 3 for expired.example"' not in text
     token = text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
     res = client.post(
         "/requests",
