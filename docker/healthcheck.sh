@@ -140,6 +140,20 @@ check_icap_readiness() {
         --probe-timeout "${SQUID_ICAP_READY_HEALTH_PROBE_TIMEOUT_SECONDS:-0.35}"
 }
 
+forwarding_canary_port() {
+    python3 - <<'PY'
+import os
+
+try:
+    port = int((os.environ.get('FORWARDING_CANARY_PORT') or '18080').strip() or '18080')
+except Exception:
+    port = 18080
+if port < 1 or port > 65535:
+    port = 18080
+print(port)
+PY
+}
+
 check_squid_forwarding_path() {
     SQUID_CONFIG_PATH="${SQUID_CONFIG_PATH:-/etc/squid/squid.conf}" python3 - <<'PY'
 import ipaddress
@@ -439,7 +453,7 @@ if ! supervisor_program_running forwarding_canary; then
     exit 1
 fi
 
-if ! has_listen_socket "${FORWARDING_CANARY_PORT:-18080}" >/dev/null 2>&1; then
+if ! has_listen_socket "$(forwarding_canary_port)" >/dev/null 2>&1; then
     echo "forwarding_canary is not accepting loopback connections"
     exit 1
 fi

@@ -46,6 +46,31 @@ def _healthcheck_forwarding_canary_url(**env_overrides: str) -> str:
     return result.stdout.strip()
 
 
+def _healthcheck_forwarding_canary_port_script() -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(
+        encoding="utf-8",
+    )
+    match = re.search(
+        r"^forwarding_canary_port\(\) \{\n(?P<body>.*?)^\}\n\ncheck_squid_forwarding_path\(\)",
+        healthcheck,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None
+    return match.group("body")
+
+
+def _healthcheck_forwarding_canary_port(**env_overrides: str) -> str:
+    result = subprocess.run(
+        ["sh", "-c", _healthcheck_forwarding_canary_port_script()],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **env_overrides},
+    )
+    return result.stdout.strip()
+
+
 def _add_repo_paths() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     web_root = repo_root / "web"
@@ -4505,6 +4530,26 @@ def test_packaged_proxy_healthcheck_normalizes_forwarding_canary_path_like_runti
     assert (
         _healthcheck_forwarding_canary_url(FORWARDING_CANARY_PATH="/custom-canary")
         == "http://127.0.0.1:18080/custom-canary?probe=squid-respmod"
+    )
+
+
+def test_packaged_proxy_healthcheck_normalizes_forwarding_canary_listener_port() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(
+        encoding="utf-8",
+    )
+
+    assert 'has_listen_socket "$(forwarding_canary_port)"' in healthcheck
+    assert (
+        _healthcheck_forwarding_canary_port(FORWARDING_CANARY_PORT="18081") == "18081"
+    )
+    assert (
+        _healthcheck_forwarding_canary_port(FORWARDING_CANARY_PORT="not-a-port")
+        == "18080"
+    )
+    assert _healthcheck_forwarding_canary_port(FORWARDING_CANARY_PORT="0") == "18080"
+    assert (
+        _healthcheck_forwarding_canary_port(FORWARDING_CANARY_PORT="65536") == "18080"
     )
 
 
