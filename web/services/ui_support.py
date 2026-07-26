@@ -689,6 +689,8 @@ def safe_local_return_url(value: str | None) -> str | None:
         return None
     if decoded_parsed.scheme or decoded_parsed.netloc:
         return None
+    if any(segment in {".", ".."} for segment in decoded_parsed.path.split("/")):
+        return None
     if decoded.count("/") > raw.count("/"):
         return None
 

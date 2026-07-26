@@ -31,8 +31,33 @@ def test_safe_local_return_url_rejects_absolute_or_malformed(value: str) -> None
     assert safe_local_return_url(value) is None
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/../admin",
+        "/./admin",
+        "/admin/../login",
+        "/admin/./login",
+        "/%2e%2e/admin",
+        "/%2e/admin",
+        "/admin/%2e%2e/login",
+        "/admin/%2e/login",
+        "/%252e%252e/admin",
+        "/admin/%252e/login",
+    ],
+)
+def test_safe_local_return_url_rejects_raw_or_encoded_dot_segments(
+    value: str,
+) -> None:
+    assert safe_local_return_url(value) is None
+
+
 def test_safe_local_return_url_preserves_valid_local_return() -> None:
     assert safe_local_return_url(" /admin?pane=ssl#top ") == "/admin?pane=ssl#top"
+    assert (
+        safe_local_return_url("/admin/v1.2/login?next=..#section.1")
+        == "/admin/v1.2/login?next=..#section.1"
+    )
 
 
 def test_append_query_to_local_return_fails_closed_for_malformed_return() -> None:
