@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -43,13 +44,19 @@ class MemoryDirectoryAuthStore(DirectoryAuthStore):
                 return False
 
             def execute(self, sql, params=()):
-                if "UPDATE directory_auth_profiles SET enabled = 0 WHERE provider <>" in sql:
+                if (
+                    "UPDATE directory_auth_profiles SET enabled = 0 WHERE provider <>"
+                    in sql
+                ):
                     active_provider = params[0]
                     for key, profile in list(store.rows.items()):
                         if key != active_provider:
                             store.rows[key] = replace(profile, enabled=False)
                     return self
-                if "UPDATE directory_auth_profiles" in sql and "WHERE provider =" in sql:
+                if (
+                    "UPDATE directory_auth_profiles" in sql
+                    and "WHERE provider =" in sql
+                ):
                     provider = params[-1]
                     store.rows[provider] = replace(
                         store.rows.get(provider) or store.default_profile(provider),
@@ -587,6 +594,137 @@ def test_filter_presets_replace_raw_filter_fields() -> None:
     )
 
 
+def _valid_profile_payload(**overrides):
+    payload = {
+        "server_urls": "ldaps://ldap.example.org:636",
+        "bind_dn": "cn=bind,dc=example,dc=org",
+        "bind_password": "secret",
+        "base_dn": "dc=example,dc=org",
+        "user_filter": "(uid={username})",
+        "user_attribute": "uid",
+        "group_filter": "(member={user_dn})",
+        "required_admin_group": "cn=admins,dc=example,dc=org",
+        "timeout_seconds": "5",
+        "verify_tls": "1",
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("provider", "overrides"),
+    [
+        ("ldap", {}),
+        (
+            "active_directory",
+            {
+                "server_urls": "ldaps://dc.example.local:636",
+                "bind_dn": "svc@example.local",
+                "base_dn": "DC=example,DC=local",
+                "user_filter_preset": (
+                    "(|(sAMAccountName={username})(userPrincipalName={username}))"
+                ),
+                "user_filter": "ignored-raw-user-filter",
+                "user_attribute": "sAMAccountName",
+                "group_filter_preset": "(member={user_dn})",
+                "group_filter": "ignored-raw-group-filter",
+                "required_admin_group": "CN=Admins,DC=example,DC=local",
+            },
+        ),
+        (
+            "ldap",
+            {
+                "user_filter_preset": "custom",
+                "user_filter": "(|(uid={username})(mail={username}))",
+                "group_filter_preset": "custom",
+                "group_filter": "(|(member={user_dn})(memberUid={username}))",
+            },
+        ),
+        (
+            "ldap",
+            {
+                "group_filter_preset": "custom",
+                "group_filter": "(memberUid={username})",
+            },
+        ),
+    ],
+)
+def test_profile_save_accepts_valid_filter_templates(provider, overrides) -> None:
+    store = MemoryDirectoryAuthStore()
+
+    profile = store.save_profile(provider, _valid_profile_payload(**overrides))
+
+    assert profile.user_filter != "ignored-raw-user-filter"
+    assert profile.group_filter != "ignored-raw-group-filter"
+    assert "{username}" in profile.user_filter
+    assert "{user_dn}" in profile.group_filter or "{username}" in profile.group_filter
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "user_filter",
+            "(uid={account})",
+            "User filter contains unsupported placeholder {account}",
+        ),
+        (
+            "user_filter",
+            "(uid={username)",
+            "User filter has invalid placeholder syntax",
+        ),
+        (
+            "user_filter",
+            "(objectClass=person)",
+            "User filter must include {username}",
+        ),
+        (
+            "user_filter",
+            "(uid={{username}})",
+            "User filter must include {username}",
+        ),
+        (
+            "user_filter",
+            "(uid={username!r})",
+            "User filter placeholder {username} must not use conversion",
+        ),
+        (
+            "group_filter",
+            "(member={dn})",
+            "Group filter contains unsupported placeholder {dn}",
+        ),
+        (
+            "group_filter",
+            "(member={user_dn)",
+            "Group filter has invalid placeholder syntax",
+        ),
+        (
+            "group_filter",
+            "(objectClass=groupOfNames)",
+            "Group filter must include at least one of {user_dn} or {username}",
+        ),
+        (
+            "group_filter",
+            "(member={{user_dn}})",
+            "Group filter must include at least one of {user_dn} or {username}",
+        ),
+        (
+            "group_filter",
+            "(member={user_dn:.10})",
+            "Group filter placeholder {user_dn} must not use conversion",
+        ),
+    ],
+)
+def test_profile_save_rejects_invalid_filter_templates(
+    field: str, value: str, message: str
+) -> None:
+    store = MemoryDirectoryAuthStore()
+    payload = _valid_profile_payload(**{field: value})
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        store.save_profile("ldap", payload)
+
+
 def test_scan_directory_returns_ou_and_group_choices(monkeypatch) -> None:
     store = DirectoryAuthStore(lambda: "stable-secret")
     profile = replace(
@@ -693,8 +831,7 @@ def test_active_directory_auth_uses_normalized_lookup_username(
     assert result.ok is True
     assert result.username == login_username
     assert searches[0][1] == (
-        f"(|(sAMAccountName={lookup_username})"
-        f"(userPrincipalName={lookup_username}))"
+        f"(|(sAMAccountName={lookup_username})(userPrincipalName={lookup_username}))"
     )
     assert searches[1][1] == f"(memberUid={lookup_username})"
 
@@ -719,9 +856,7 @@ def test_ldap_auth_preserves_domain_qualified_username_lookup(monkeypatch) -> No
             if search_filter == "(uid=AD\\kklouzal)":
                 self.entries = [SimpleNamespace(entry_dn="uid=AD\\kklouzal,ou=people")]
             elif search_filter == "(memberUid=AD\\kklouzal)":
-                self.entries = [
-                    SimpleNamespace(entry_dn="cn=admins,dc=example,dc=org")
-                ]
+                self.entries = [SimpleNamespace(entry_dn="cn=admins,dc=example,dc=org")]
             else:
                 self.entries = []
             return bool(self.entries)

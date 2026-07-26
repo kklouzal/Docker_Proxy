@@ -8,6 +8,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from string import Formatter
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -350,6 +351,12 @@ class DirectoryAuthStore:
             payload.get("user_filter"),
             "User filter",
         )
+        user_filter = self._validate_filter_template(
+            user_filter,
+            label="User filter",
+            supported_placeholders=("username",),
+            required_placeholders=("username",),
+        )
         user_attribute = self._preset_or_required(
             provider,
             "user_attribute",
@@ -364,6 +371,13 @@ class DirectoryAuthStore:
             payload.get("group_filter_preset"),
             payload.get("group_filter"),
             "Group filter",
+        )
+        group_filter = self._validate_filter_template(
+            group_filter,
+            label="Group filter",
+            supported_placeholders=("user_dn", "username"),
+            required_placeholders=("user_dn", "username"),
+            require_any=True,
         )
         required_admin_group = self._clean_required(
             payload.get("required_admin_group"),
@@ -924,6 +938,65 @@ class DirectoryAuthStore:
                 raise ValueError(msg)
             return selected_value
         return self._clean_required(fallback, label)
+
+    def _validate_filter_template(
+        self,
+        template: str,
+        *,
+        label: str,
+        supported_placeholders: tuple[str, ...],
+        required_placeholders: tuple[str, ...],
+        require_any: bool = False,
+    ) -> str:
+        supported = set(supported_placeholders)
+        found: set[str] = set()
+        try:
+            parsed = tuple(Formatter().parse(template))
+        except ValueError as exc:
+            msg = (
+                f"{label} has invalid placeholder syntax: {exc}. "
+                f"Supported placeholders: {self._placeholder_list(supported_placeholders)}."
+            )
+            raise ValueError(msg) from exc
+        for _literal, field_name, format_spec, conversion in parsed:
+            if field_name is None:
+                continue
+            if not field_name:
+                msg = (
+                    f"{label} contains an empty placeholder. "
+                    f"Supported placeholders: {self._placeholder_list(supported_placeholders)}."
+                )
+                raise ValueError(msg)
+            if field_name not in supported:
+                msg = (
+                    f"{label} contains unsupported placeholder {{{field_name}}}. "
+                    f"Supported placeholders: {self._placeholder_list(supported_placeholders)}."
+                )
+                raise ValueError(msg)
+            if conversion or format_spec:
+                msg = (
+                    f"{label} placeholder {{{field_name}}} must not use conversion "
+                    f"or format specifiers; use {{{field_name}}}."
+                )
+                raise ValueError(msg)
+            found.add(field_name)
+        required = set(required_placeholders)
+        if require_any:
+            if not found.intersection(required):
+                msg = (
+                    f"{label} must include at least one of "
+                    f"{self._placeholder_list(required_placeholders)}."
+                )
+                raise ValueError(msg)
+        else:
+            missing = tuple(item for item in required_placeholders if item not in found)
+            if missing:
+                msg = f"{label} must include {self._placeholder_list(missing)}."
+                raise ValueError(msg)
+        return template
+
+    def _placeholder_list(self, placeholders: tuple[str, ...]) -> str:
+        return " or ".join(f"{{{name}}}" for name in placeholders)
 
     def _scan_dns(
         self,
