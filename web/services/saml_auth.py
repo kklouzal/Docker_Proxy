@@ -1030,12 +1030,10 @@ def resolve_saml_login(auth: Any, profile: SamlProviderProfile) -> SamlAuthResul
 
     required_group = (profile.required_group or "").strip()
     if required_group:
-        groups = {
-            item.casefold()
+        if not any(
+            _saml_group_matches_required(required_group, item)
             for item in _attribute_values(attributes, profile.groups_attribute)
-            if item
-        }
-        if required_group.casefold() not in groups:
+        ):
             return SamlAuthResult(
                 False,
                 username=username,
@@ -1052,6 +1050,95 @@ def resolve_saml_login(auth: Any, profile: SamlProviderProfile) -> SamlAuthResul
         session_index=str(auth.get_session_index() or ""),
         name_id=name_id,
     )
+
+
+def _saml_group_matches_required(required_group: str, candidate_group: str) -> bool:
+    required = _required_saml_group_match_tokens(required_group)
+    candidate = _candidate_saml_group_match_tokens(candidate_group)
+    return bool(required and candidate and required.intersection(candidate))
+
+
+def _required_saml_group_match_tokens(value: Any) -> set[str]:
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    return {_normalize_saml_group_token(text)}
+
+
+def _candidate_saml_group_match_tokens(value: Any) -> set[str]:
+    text = str(value or "").strip()
+    if not text:
+        return set()
+
+    tokens = {_normalize_saml_group_token(text)}
+    rdn_value = _first_ldap_rdn_value(text)
+    if rdn_value:
+        tokens.add(_normalize_saml_group_token(rdn_value))
+
+    if "\\" in text:
+        local_name = text.rsplit("\\", 1)[1].strip()
+        if local_name:
+            tokens.add(_normalize_saml_group_token(local_name))
+
+    if "@" in text:
+        local_name, domain = text.rsplit("@", 1)
+        if local_name.strip() and domain.strip():
+            tokens.add(_normalize_saml_group_token(local_name))
+
+    return {token for token in tokens if token}
+
+
+def _normalize_saml_group_token(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _first_ldap_rdn_value(value: str) -> str:
+    first_rdn = _split_ldap_escaped(value, ",", maxsplit=1)[0].strip()
+    if "=" not in first_rdn:
+        return ""
+    attribute, raw = _split_ldap_escaped(first_rdn, "=", maxsplit=1)
+    if attribute.strip().casefold() not in {"cn", "name"}:
+        return ""
+    return _unescape_ldap_rdn_value(raw.strip()).strip()
+
+
+def _split_ldap_escaped(value: str, delimiter: str, *, maxsplit: int) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    splits = 0
+    escaped = False
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == delimiter and splits < maxsplit:
+            parts.append(value[start:index])
+            start = index + 1
+            splits += 1
+    parts.append(value[start:])
+    return parts
+
+
+def _unescape_ldap_rdn_value(value: str) -> str:
+    result: list[str] = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char != "\\" or index + 1 >= len(value):
+            result.append(char)
+            index += 1
+            continue
+        escaped = value[index + 1 : index + 3]
+        if len(escaped) == 2 and re.fullmatch(r"[0-9A-Fa-f]{2}", escaped):
+            result.append(chr(int(escaped, 16)))
+            index += 3
+        else:
+            result.append(value[index + 1])
+            index += 2
+    return "".join(result)
 
 
 def _attribute_values(attributes: dict[str, Any], key: str) -> list[str]:

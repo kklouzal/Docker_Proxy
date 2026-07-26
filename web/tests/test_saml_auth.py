@@ -12,6 +12,7 @@ from services.saml_auth import (
     build_saml_settings,
     parse_saml_metadata,
     prepare_flask_request,
+    resolve_saml_login,
 )
 
 SIGNING_CERT = "MIICsigningCERTvalue"
@@ -167,6 +168,37 @@ def _saml_request(url: str, *, scheme: str = "https", server_port: str = ""):
     )
 
 
+class FakeSamlToolkit:
+    def __init__(
+        self,
+        *,
+        ok: bool = True,
+        groups: list[str] | None = None,
+        username: str = "saml-user@example.test",
+    ) -> None:
+        self.ok = ok
+        self.groups = groups or ["AdminGroup"]
+        self.username = username
+
+    def get_errors(self):
+        return [] if self.ok else ["invalid_response"]
+
+    def get_last_error_reason(self):
+        return "signature validation failed" if not self.ok else ""
+
+    def is_authenticated(self) -> bool:
+        return self.ok
+
+    def get_attributes(self):
+        return {"email": [self.username], "groups": self.groups}
+
+    def get_nameid(self):
+        return "nameid@example.test"
+
+    def get_session_index(self):
+        return "SESSION-1"
+
+
 def test_prepare_flask_request_uses_default_https_port_when_url_omits_port() -> None:
     request_data = prepare_flask_request(
         _saml_request("https://admin.example.test/auth/saml/login")
@@ -256,6 +288,60 @@ def test_parse_saml_metadata_rejects_dtd_entities_safely() -> None:
     assert "injected" not in message
     assert "evil.example" not in message
     assert "EntityDescriptor [" not in message
+
+
+@pytest.mark.parametrize(
+    "group_claim",
+    [
+        "Domain Admins",
+        "EXAMPLE\\Domain Admins",
+        "Domain Admins@example.local",
+        "CN=Domain Admins,CN=Users,DC=example,DC=local",
+        "cn=Domain Admins,ou=Groups,dc=example,dc=local",
+        r"CN=Domain\20Admins,CN=Users,DC=example,DC=local",
+    ],
+)
+def test_resolve_saml_login_allows_safe_adfs_and_ldap_group_forms(
+    group_claim: str,
+) -> None:
+    profile = replace(
+        MemorySamlAuthStore().default_profile(),
+        username_attribute="email",
+        groups_attribute="groups",
+        required_group="Domain Admins",
+    )
+
+    result = resolve_saml_login(FakeSamlToolkit(groups=[group_claim]), profile)
+
+    assert result.ok is True
+    assert result.username == "saml-user@example.test"
+
+
+@pytest.mark.parametrize(
+    "group_claim",
+    [
+        "Not Domain Admins",
+        "EXAMPLE\\Not Domain Admins",
+        "Not Domain Admins@example.local",
+        "CN=Not Domain Admins,CN=Users,DC=example,DC=local",
+        "CN=Domain Admins Backup,CN=Users,DC=example,DC=local",
+        "prefix-Domain Admins-suffix",
+    ],
+)
+def test_resolve_saml_login_rejects_confusing_required_group_near_matches(
+    group_claim: str,
+) -> None:
+    profile = replace(
+        MemorySamlAuthStore().default_profile(),
+        username_attribute="email",
+        groups_attribute="groups",
+        required_group="Domain Admins",
+    )
+
+    result = resolve_saml_login(FakeSamlToolkit(groups=[group_claim]), profile)
+
+    assert result.ok is False
+    assert result.detail == "SAML user is missing the required admin group."
 
 
 def test_saml_profile_requires_successful_metadata_refresh_before_enable() -> None:
