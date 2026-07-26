@@ -4,9 +4,43 @@ import contextlib
 import os
 import pathlib
 import tempfile
+import threading
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _RUNTIME_FILE_MODE = 0o644
+_MANAGED_PATH_LOCKS_GUARD = threading.Lock()
+_MANAGED_PATH_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _managed_path_key(path: str) -> str:
+    return str(pathlib.Path(path).resolve(strict=False))
+
+
+def _locks_for_paths(paths: list[str]) -> list[threading.Lock]:
+    path_keys = sorted({_managed_path_key(path) for path in paths})
+    with _MANAGED_PATH_LOCKS_GUARD:
+        return [
+            _MANAGED_PATH_LOCKS.setdefault(path_key, threading.Lock())
+            for path_key in path_keys
+        ]
+
+
+@contextlib.contextmanager
+def _locked_materialized_paths(paths: list[str]) -> Iterator[None]:
+    locks = _locks_for_paths(paths)
+    acquired: list[threading.Lock] = []
+    try:
+        for lock in locks:
+            lock.acquire()
+            acquired.append(lock)
+        yield
+    finally:
+        for lock in reversed(acquired):
+            lock.release()
 
 
 def _fsync_parent_dir(path: str) -> None:
@@ -85,44 +119,46 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
         for path, content in files:
             temp_paths.append(_write_staged_file(path, content))
 
-        for path, _content in files:
+        with _locked_materialized_paths([path for path, _content in files]):
             try:
-                stat = pathlib.Path(path).stat()
-                with pathlib.Path(path).open("rb") as existing:
-                    backups[path] = _FileBackup(
-                        existed=True,
-                        content=existing.read(),
-                        mode=stat.st_mode & 0o777,
-                        owner=(stat.st_uid, stat.st_gid),
-                    )
-            except FileNotFoundError:
-                backups[path] = _FileBackup(existed=False)
+                for path, _content in files:
+                    try:
+                        stat = pathlib.Path(path).stat()
+                        with pathlib.Path(path).open("rb") as existing:
+                            backups[path] = _FileBackup(
+                                existed=True,
+                                content=existing.read(),
+                                mode=stat.st_mode & 0o777,
+                                owner=(stat.st_uid, stat.st_gid),
+                            )
+                    except FileNotFoundError:
+                        backups[path] = _FileBackup(existed=False)
 
-        for (path, _content), temp_path in zip(files, temp_paths, strict=False):
-            os.replace(temp_path, path)  # noqa: PTH105
-            _fsync_parent_dir(path)
-            replaced_paths.append(path)
-    except Exception:
-        for path in reversed(replaced_paths):
-            backup = backups.get(path, _FileBackup(existed=False))
-            if backup.existed:
-                temp_path = _write_staged_file(
-                    path,
-                    backup.content,
-                    mode=backup.mode,
-                    owner=backup.owner,
-                )
-                temp_paths.append(temp_path)
-                os.replace(temp_path, path)  # noqa: PTH105
-                _fsync_parent_dir(path)
-            else:
-                unlinked = False
-                with contextlib.suppress(FileNotFoundError):
-                    pathlib.Path(path).unlink()
-                    unlinked = True
-                if unlinked:
+                for (path, _content), temp_path in zip(files, temp_paths, strict=False):
+                    os.replace(temp_path, path)  # noqa: PTH105
                     _fsync_parent_dir(path)
-        raise
+                    replaced_paths.append(path)
+            except Exception:
+                for path in reversed(replaced_paths):
+                    backup = backups.get(path, _FileBackup(existed=False))
+                    if backup.existed:
+                        temp_path = _write_staged_file(
+                            path,
+                            backup.content,
+                            mode=backup.mode,
+                            owner=backup.owner,
+                        )
+                        temp_paths.append(temp_path)
+                        os.replace(temp_path, path)  # noqa: PTH105
+                        _fsync_parent_dir(path)
+                    else:
+                        unlinked = False
+                        with contextlib.suppress(FileNotFoundError):
+                            pathlib.Path(path).unlink()
+                            unlinked = True
+                        if unlinked:
+                            _fsync_parent_dir(path)
+                raise
     finally:
         for temp_path in temp_paths:
             try:

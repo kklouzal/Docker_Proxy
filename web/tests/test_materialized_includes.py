@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
@@ -793,6 +794,81 @@ def test_write_managed_text_files_restores_previous_file_mode_on_rollback(
     assert second.read_text(encoding="utf-8") == "old second\n"
     assert first.stat().st_mode & 0o777 == 0o600
     assert second.stat().st_mode & 0o777 == 0o640
+
+
+def test_write_managed_text_files_serializes_overlapping_rollback(
+    tmp_path, monkeypatch
+) -> None:
+    materialized_files = _import_materialized_files_module()
+
+    shared = tmp_path / "shared.conf"
+    second = tmp_path / "second.conf"
+    shared.write_text("old shared\n", encoding="utf-8")
+    second.write_text("old second\n", encoding="utf-8")
+    real_replace = materialized_files.os.replace
+    first_shared_replaced = threading.Event()
+    second_writer_finished = threading.Event()
+    errors: list[BaseException] = []
+
+    def replacement_text(src) -> str:
+        return Path(src).read_text(encoding="utf-8")
+
+    def interleaving_replace(src, dst):
+        dst_path = Path(dst)
+        text = replacement_text(src)
+        if dst_path == shared and text == "writer-a shared\n":
+            result = real_replace(src, dst)
+            first_shared_replaced.set()
+            second_writer_finished.wait(timeout=1)
+            return result
+        if dst_path == second and text == "writer-a second\n":
+            msg = "disk full"
+            raise OSError(msg)
+        result = real_replace(src, dst)
+        if dst_path == shared and text == "writer-b shared\n":
+            second_writer_finished.set()
+        return result
+
+    monkeypatch.setattr(materialized_files.os, "replace", interleaving_replace)
+
+    def first_writer() -> None:
+        try:
+            materialized_files.write_managed_text_files(
+                (str(shared), "writer-a shared\n"),
+                (str(second), "writer-a second\n"),
+            )
+        except OSError as exc:
+            assert "disk full" in str(exc)
+        except BaseException as exc:  # pragma: no cover - thread diagnostics
+            errors.append(exc)
+        else:  # pragma: no cover - defensive assertion
+            errors.append(AssertionError("expected first writer failure"))
+
+    def second_writer() -> None:
+        if not first_shared_replaced.wait(timeout=5):
+            errors.append(AssertionError("first writer did not publish shared file"))
+            return
+        try:
+            materialized_files.write_managed_text_files(
+                (str(shared), "writer-b shared\n"),
+            )
+        except BaseException as exc:  # pragma: no cover - thread diagnostics
+            errors.append(exc)
+
+    second_thread = threading.Thread(target=second_writer)
+    first_thread = threading.Thread(target=first_writer)
+
+    second_thread.start()
+    first_thread.start()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert errors == []
+    assert second_writer_finished.is_set()
+    assert shared.read_text(encoding="utf-8") == "writer-b shared\n"
+    assert second.read_text(encoding="utf-8") == "old second\n"
 
 
 def test_write_managed_text_files_fsyncs_parent_directories_after_publish(
