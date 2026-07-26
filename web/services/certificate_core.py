@@ -29,6 +29,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _fsync_parent_dir(path: str | os.PathLike[str]) -> None:
+    """Best-effort fsync for directory entries created/replaced near path."""
+    directory = pathlib.Path(path).parent or pathlib.Path()
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    fd: int | None = None
+    try:
+        fd = os.open(directory, flags)
+        os.fsync(fd)
+    except OSError:
+        # Some platforms/filesystems do not support opening or fsyncing dirs.
+        return
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def _unlink_with_parent_fsync(path: str | os.PathLike[str]) -> None:
+    path_obj = pathlib.Path(path)
+    path_obj.unlink()
+    _fsync_parent_dir(path_obj)
+
+
 @dataclass(frozen=True)
 class CertificateBundle:
     cert_pem: str
@@ -264,12 +289,14 @@ def _write_certificate_material_marker(
             marker_file.flush()
             os.fsync(marker_file.fileno())
             tmp_path = marker_file.name
+        _fsync_parent_dir(tmp_path)
         pathlib.Path(tmp_path).replace(marker_path)
+        _fsync_parent_dir(marker_path)
         tmp_path = ""
     finally:
         if tmp_path:
             with contextlib.suppress(OSError):
-                pathlib.Path(tmp_path).unlink()
+                _unlink_with_parent_fsync(tmp_path)
 
 
 def _ensure_existing_certificate_material_marker(
@@ -739,9 +766,13 @@ def materialize_admin_ui_server_certificate(
                 cert_name=ADMIN_UI_CERT_FILENAME,
                 key_name=ADMIN_UI_KEY_FILENAME,
             )
+            _fsync_parent_dir(tmp_cert_path)
+            _fsync_parent_dir(tmp_key_path)
             pathlib.Path(tmp_cert_path).replace(certfile)
+            _fsync_parent_dir(certfile)
             tmp_cert_path = ""
             pathlib.Path(tmp_key_path).replace(keyfile)
+            _fsync_parent_dir(keyfile)
             tmp_key_path = ""
             _set_best_effort_permissions(certfile, keyfile)
             _write_certificate_material_marker(
@@ -753,7 +784,7 @@ def materialize_admin_ui_server_certificate(
         for path in (tmp_cert_path, tmp_key_path):
             if path:
                 with contextlib.suppress(OSError):
-                    pathlib.Path(path).unlink()
+                    _unlink_with_parent_fsync(path)
     return AdminUiCertificateMaterial(certfile=certfile, keyfile=keyfile, sans=sans)
 
 
@@ -890,7 +921,7 @@ def restore_certificate_material_snapshot(
             path_obj = pathlib.Path(path)
             if content is None:
                 if path_obj.exists():
-                    path_obj.unlink()
+                    _unlink_with_parent_fsync(path_obj)
                 continue
             tmp_path = ""
             try:
@@ -903,12 +934,14 @@ def restore_certificate_material_snapshot(
                     tmp_file.flush()
                     os.fsync(tmp_file.fileno())
                     tmp_path = tmp_file.name
+                _fsync_parent_dir(tmp_path)
                 pathlib.Path(tmp_path).replace(path_obj)
+                _fsync_parent_dir(path_obj)
                 tmp_path = ""
             finally:
                 if tmp_path:
                     with contextlib.suppress(OSError):
-                        pathlib.Path(tmp_path).unlink()
+                        _unlink_with_parent_fsync(tmp_path)
 
 
 def materialize_certificate_bundle(
@@ -970,15 +1003,22 @@ def materialize_certificate_bundle(
                 key_name="ca.key",
                 pfx_name="uploaded_ca.pfx",
             )
+            _fsync_parent_dir(tmp_cert_path)
+            _fsync_parent_dir(tmp_key_path)
+            if tmp_pfx_path:
+                _fsync_parent_dir(tmp_pfx_path)
             pathlib.Path(tmp_cert_path).replace(dest_cert)
+            _fsync_parent_dir(dest_cert)
             tmp_cert_path = ""
             pathlib.Path(tmp_key_path).replace(dest_key)
+            _fsync_parent_dir(dest_key)
             tmp_key_path = ""
             if tmp_pfx_path:
                 pathlib.Path(tmp_pfx_path).replace(dest_pfx)
+                _fsync_parent_dir(dest_pfx)
                 tmp_pfx_path = ""
             elif pathlib.Path(dest_pfx).exists():
-                pathlib.Path(dest_pfx).unlink()
+                _unlink_with_parent_fsync(dest_pfx)
 
             _set_best_effort_permissions(dest_cert, dest_key)
             _write_certificate_material_marker(
@@ -991,7 +1031,7 @@ def materialize_certificate_bundle(
         for path in (tmp_cert_path, tmp_key_path, tmp_pfx_path):
             if path:
                 with contextlib.suppress(OSError):
-                    pathlib.Path(path).unlink()
+                    _unlink_with_parent_fsync(path)
 
 
 def load_local_certificate_bundle(ca_dir: str) -> CertificateBundle | None:

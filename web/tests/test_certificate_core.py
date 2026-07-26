@@ -214,6 +214,70 @@ def test_snapshot_certificate_material_waits_for_inflight_materialize(
     assert snapshot[str(tmp_path / ".ca-material.json")] is not None
 
 
+def test_materialize_certificate_bundle_fsyncs_parent_directories_after_publish(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        certificate_core, "_extract_certificate_metadata", lambda _cert: ("", "", "")
+    )
+    bundle = certificate_core.build_certificate_bundle(
+        CERT_A,
+        KEY_A,
+        source_kind="uploaded_pfx",
+        original_pfx_bytes=b"pfx-bytes",
+    )
+    parent_fsyncs: list[str] = []
+    monkeypatch.setattr(
+        certificate_core,
+        "_fsync_parent_dir",
+        lambda path: parent_fsyncs.append(Path(path).parent.name),
+    )
+
+    certificate_core.materialize_certificate_bundle(tmp_path, bundle)
+
+    assert parent_fsyncs == [tmp_path.name] * 8
+    assert (tmp_path / "ca.crt").read_text(encoding="utf-8") == CERT_A
+    assert (tmp_path / "ca.key").read_text(encoding="utf-8") == KEY_A
+    assert (tmp_path / "uploaded_ca.pfx").read_bytes() == b"pfx-bytes"
+    assert (tmp_path / ".ca-material.json").exists()
+
+
+def test_restore_certificate_material_snapshot_fsyncs_rollback_replaces_and_unlinks(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    snapshot = {
+        str(tmp_path / "ca.crt"): b"restored-cert",
+        str(tmp_path / "ca.key"): b"restored-key",
+        str(tmp_path / "uploaded_ca.pfx"): None,
+        str(tmp_path / ".ca-material.json"): b"{}\n",
+    }
+    (tmp_path / "uploaded_ca.pfx").write_bytes(b"stale-pfx")
+    parent_fsyncs: list[str] = []
+    monkeypatch.setattr(
+        certificate_core,
+        "_fsync_parent_dir",
+        lambda path: parent_fsyncs.append(Path(path).parent.name),
+    )
+
+    certificate_core.restore_certificate_material_snapshot(tmp_path, snapshot)
+
+    assert parent_fsyncs == [
+        tmp_path.name,
+        tmp_path.name,
+        tmp_path.name,
+        tmp_path.name,
+        tmp_path.name,
+        tmp_path.name,
+        tmp_path.name,
+    ]
+    assert (tmp_path / "ca.crt").read_bytes() == b"restored-cert"
+    assert (tmp_path / "ca.key").read_bytes() == b"restored-key"
+    assert not (tmp_path / "uploaded_ca.pfx").exists()
+    assert (tmp_path / ".ca-material.json").read_bytes() == b"{}\n"
+
+
 def test_materialize_and_load_certificate_bundle_round_trip_and_manage_pfx_file(
     tmp_path, monkeypatch
 ) -> None:

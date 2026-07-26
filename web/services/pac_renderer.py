@@ -54,6 +54,50 @@ PAC_RENDER_DIR = "/var/lib/squid-flask-proxy/pac"
 LOCAL_DOMAIN_SUFFIXES = (".local", ".localdomain", ".home.arpa", ".localhost")
 
 
+def _fsync_parent_dir(path: str | os.PathLike[str]) -> None:
+    """Best-effort fsync for directory entries created/replaced near path."""
+    directory = Path(path).parent or Path()
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    fd: int | None = None
+    try:
+        fd = os.open(directory, flags)
+        os.fsync(fd)
+    except OSError:
+        # Some platforms/filesystems do not support opening or fsyncing dirs.
+        return
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def _fsync_dir(path: str | os.PathLike[str]) -> None:
+    """Best-effort fsync for a directory's own metadata entries."""
+    directory = Path(path)
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    fd: int | None = None
+    try:
+        fd = os.open(directory, flags)
+        os.fsync(fd)
+    except OSError:
+        return
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def _write_pac_text_file(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
+    _fsync_parent_dir(path)
+
+
 def _build_pac_url(
     *,
     scheme: str,
@@ -658,24 +702,31 @@ def materialize_proxy_pac_state(
                 raise ValueError(msg)
             dest = payload_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(str(item.content or ""), encoding="utf-8")
+            _write_pac_text_file(dest, str(item.content or ""))
+        _fsync_dir(payload_dir)
 
         if target.exists():
             backup_dir = parent / f".pac-backup-{os.getpid()}-{int(time.time() * 1000)}"
             if backup_dir.exists():
                 shutil.rmtree(backup_dir, ignore_errors=True)
+                _fsync_parent_dir(backup_dir)
             Path(str(target)).replace(str(backup_dir))
+            _fsync_parent_dir(target)
 
         Path(str(payload_dir)).replace(str(target))
+        _fsync_parent_dir(target)
         if backup_dir is not None:
             shutil.rmtree(backup_dir, ignore_errors=True)
+            _fsync_parent_dir(backup_dir)
     except Exception:
         if backup_dir is not None and backup_dir.exists() and not target.exists():
             with contextlib.suppress(Exception):
                 Path(str(backup_dir)).replace(str(target))
+                _fsync_parent_dir(target)
         raise
     finally:
         shutil.rmtree(stage_root, ignore_errors=True)
+        _fsync_parent_dir(stage_root)
 
 
 def read_materialized_pac_state_sha(

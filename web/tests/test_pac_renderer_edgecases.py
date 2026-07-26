@@ -1025,6 +1025,84 @@ def test_select_manifest_file_ignores_malformed_profile_file_paths() -> None:
     )
 
 
+def test_materialize_proxy_pac_state_fsyncs_parent_directories_after_publish(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    target = tmp_path / "pac"
+    state = pac_renderer.ProxyPacState(
+        proxy_id="live",
+        state_sha256="sha",
+        files=(
+            pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="A"),
+            pac_renderer.RenderedPacFile(relative_path="profiles/corp.pac", content="B"),
+        ),
+    )
+    parent_fsyncs: list[str] = []
+    dir_fsyncs: list[str] = []
+    monkeypatch.setattr(
+        pac_renderer,
+        "_fsync_parent_dir",
+        lambda path: parent_fsyncs.append(Path(path).parent.name),
+    )
+    monkeypatch.setattr(
+        pac_renderer,
+        "_fsync_dir",
+        lambda path: dir_fsyncs.append(Path(path).name),
+    )
+
+    pac_renderer.materialize_proxy_pac_state(target, state=state)
+
+    assert parent_fsyncs == ["payload", "profiles", tmp_path.name, tmp_path.name]
+    assert dir_fsyncs == ["payload"]
+    assert (target / "fallback.pac").read_text(encoding="utf-8") == "A"
+    assert (target / "profiles" / "corp.pac").read_text(encoding="utf-8") == "B"
+
+
+def test_materialize_proxy_pac_state_fsyncs_parent_directories_during_rollback(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    target = tmp_path / "pac"
+    target.mkdir()
+    (target / "fallback.pac").write_text("original\n", encoding="utf-8")
+    state = pac_renderer.ProxyPacState(
+        proxy_id="live",
+        state_sha256="sha",
+        files=(pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="A"),),
+    )
+    parent_fsyncs: list[str] = []
+    monkeypatch.setattr(
+        pac_renderer,
+        "_fsync_parent_dir",
+        lambda path: parent_fsyncs.append(Path(path).parent.name),
+    )
+    real_replace = pac_renderer.Path.replace
+    publish_failed = False
+
+    def flaky_replace(self: Path, target_path: object) -> Path:
+        nonlocal publish_failed
+        if Path(target_path) == target and not publish_failed:
+            publish_failed = True
+            msg = "simulated publish failure"
+            raise OSError(msg)
+        return real_replace(self, target_path)
+
+    monkeypatch.setattr(pac_renderer.Path, "replace", flaky_replace)
+
+    with pytest.raises(OSError, match="simulated publish failure"):
+        pac_renderer.materialize_proxy_pac_state(target, state=state)
+
+    assert parent_fsyncs == ["payload", tmp_path.name, tmp_path.name, tmp_path.name]
+    assert (target / "fallback.pac").read_text(encoding="utf-8") == "original\n"
+
+
 def test_materialize_proxy_pac_state_rejects_unsafe_paths_and_preserves_existing_payload(
     tmp_path,
 ) -> None:
