@@ -170,6 +170,8 @@ from services.sslfilter_store import get_sslfilter_store as _default_get_sslfilt
 from services.sslfilter_store import normalize_src_net_rule, validate_domain_rule
 from services.timeseries_store import (
     canonicalize_resolution_name as _canonicalize_timeseries_resolution_name,
+)
+from services.timeseries_store import (
     get_timeseries_store as _default_get_timeseries_store,
 )
 from services.ui_support import (
