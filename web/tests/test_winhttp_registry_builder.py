@@ -8,6 +8,7 @@ from services.winhttp_registry_builder import (
     build_advproxy_command,
     build_advproxy_settings_json,
     build_contract_output,
+    build_legacy_set_proxy_command,
     build_tracing_command,
     decode_basic_winhttp_settings_hex,
     generate_basic_winhttp_binary,
@@ -384,6 +385,23 @@ def test_advproxy_command_wraps_escaped_json_as_single_settings_argument() -> No
     )
 
 
+def test_advproxy_command_preserves_json_quotes_as_one_settings_argument() -> None:
+    settings = build_advproxy_settings_json(
+        proxy_string="http=proxy.example:3128;https=proxy.example:3128",
+        bypass_string=r"C:\ProxyBypass\;<local>",
+    )
+
+    command = build_advproxy_command(scope="machine", settings_json=settings)
+
+    assert command.startswith(
+        "netsh winhttp set advproxy setting-scope=machine settings=\"",
+    )
+    assert command.endswith('"')
+    assert command.count(' settings=') == 1
+    assert '\\"Proxy\\":\\"http=proxy.example:3128;https=proxy.example:3128\\"' in command
+    assert r'\"ProxyBypass\":\"C:\\ProxyBypass\\;<local>\"' in command
+
+
 def test_pac_or_autodetect_disables_basic_registry_binary() -> None:
     result = build_contract_output(
         {
@@ -495,6 +513,43 @@ def test_tracing_command_validates_documented_values() -> None:
 
     with pytest.raises(WinHttpBuilderError):
         build_tracing_command(state="enabled", output="syslog")
+
+
+def test_tracing_command_quotes_trailing_backslash_prefix_safely() -> None:
+    command = build_tracing_command(
+        state="enabled",
+        output="file",
+        trace_file_prefix="C:\\Temp\\winhttp\\",
+    )
+
+    assert command == (
+        'netsh winhttp set tracing output=file '
+        'trace-file-prefix="C:\\Temp\\winhttp\\\\" state=enabled'
+    )
+
+
+def test_legacy_proxy_command_quotes_backslashes_without_malformed_closing_quotes() -> None:
+    command = build_legacy_set_proxy_command(
+        "http=proxy.example:3128\\",
+        r"C:\ProxyBypass\;<local>",
+    )
+
+    assert command == (
+        'netsh winhttp set proxy proxy-server="http=proxy.example:3128\\\\" '
+        'bypass-list="C:\\ProxyBypass\\;<local>"'
+    )
+
+
+def test_contract_output_rejects_custom_proxy_map_with_backslash() -> None:
+    with pytest.raises(WinHttpBuilderError, match="Custom proxy map target"):
+        build_contract_output(
+            {
+                "use_custom_proxy_map": True,
+                "custom_proxy_map": r"http=proxy\share:3128",
+                "proxy_port": 3128,
+                "destination_schemes": ["http"],
+            },
+        )
 
 
 @pytest.mark.parametrize(

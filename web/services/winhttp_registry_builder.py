@@ -89,8 +89,34 @@ class WinHttpContractOutput:
     warnings: tuple[str, ...]
 
 
-def _quote_cmd(value: str) -> str:
-    return '"' + str(value or "").replace('"', r"\"") + '"'
+def _quote_windows_command_argument(value: str) -> str:
+    r"""Quote one Windows argv argument for the generated netsh snippets.
+
+    Windows command-line parsing treats backslashes specially only when they
+    appear before a double quote or at the end of a quoted argument.  Always
+    wrapping generated values preserves the existing copy/paste contract while
+    doubling those backslash runs prevents paths such as ``C:\\Logs\\`` and JSON
+    string values ending in ``\\`` from escaping the closing quote.
+    """
+    text = str(value or "")
+    quoted = ['"']
+    backslashes = 0
+    for char in text:
+        if char == "\\":
+            backslashes += 1
+            continue
+        if char == '"':
+            quoted.extend(("\\" * ((backslashes * 2) + 1), '"'))
+            backslashes = 0
+            continue
+        if backslashes:
+            quoted.append("\\" * backslashes)
+            backslashes = 0
+        quoted.append(char)
+    if backslashes:
+        quoted.append("\\" * (backslashes * 2))
+    quoted.append('"')
+    return "".join(quoted)
 
 
 def _validate_command_value(value: str, field_name: str) -> None:
@@ -689,13 +715,13 @@ def build_advproxy_command(
     settings_json: str,
 ) -> str:
     chosen_scope = scope if scope in ADVPROXY_SCOPES else "machine"
-    return f"netsh winhttp set advproxy setting-scope={chosen_scope} settings={_quote_cmd(settings_json)}"
+    return f"netsh winhttp set advproxy setting-scope={chosen_scope} settings={_quote_windows_command_argument(settings_json)}"
 
 
 def build_legacy_set_proxy_command(proxy_string: str, bypass_string: str) -> str:
-    command = f"netsh winhttp set proxy proxy-server={_quote_cmd(proxy_string)}"
+    command = f"netsh winhttp set proxy proxy-server={_quote_windows_command_argument(proxy_string)}"
     if bypass_string:
-        command += f" bypass-list={_quote_cmd(bypass_string)}"
+        command += f" bypass-list={_quote_windows_command_argument(bypass_string)}"
     return command
 
 
@@ -721,7 +747,7 @@ def build_tracing_command(
         parts.append(f"output={output_value}")
     if trace_file_prefix:
         _validate_command_value(trace_file_prefix, "Trace file prefix")
-        parts.append(f"trace-file-prefix={_quote_cmd(trace_file_prefix)}")
+        parts.append(f"trace-file-prefix={_quote_windows_command_argument(trace_file_prefix)}")
     level_value = (level or "").strip().lower()
     if level_value:
         if level_value not in TRACING_LEVELS:
