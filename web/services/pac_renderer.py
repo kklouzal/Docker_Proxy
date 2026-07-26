@@ -421,6 +421,7 @@ def _render_pac(
             f"  var proxyHost = {json.dumps(str(proxy_host or PAC_HOST_PLACEHOLDER))};",
             "  var normalizedProxyHost = proxyHost.replace(/^\\[/, '').replace(/\\]$/, '').toLowerCase().replace(/\\.+$/, '');",
             "  var isIpv6Literal = host.indexOf(':') >= 0;",
+            "  var ipv6FirstHextet = isIpv6Literal ? host.split(':', 1)[0] : '';",
             "  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'DIRECT';",
             "  if (/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(host) && isInNet(host, '127.0.0.0', '255.0.0.0')) return 'DIRECT';",
             "  if (!isIpv6Literal && isPlainHostName(host)) return 'DIRECT';",
@@ -483,6 +484,10 @@ def _render_pac(
     if include_private:
         lines.extend(
             (
+                "  if (isIpv6Literal && /^[0-9a-f]{1,4}$/.test(ipv6FirstHextet)) {",
+                "    var ipv6FirstHextetValue = parseInt(ipv6FirstHextet, 16);",
+                "    if ((ipv6FirstHextetValue >= 0xfc00 && ipv6FirstHextetValue <= 0xfdff) || (ipv6FirstHextetValue >= 0xfe80 && ipv6FirstHextetValue <= 0xfebf)) return 'DIRECT';",
+                "  }",
                 "  if (ip && isInNet(ip, '10.0.0.0', '255.0.0.0')) return 'DIRECT';",
                 "  if (ip && isInNet(ip, '172.16.0.0', '255.240.0.0')) return 'DIRECT';",
                 "  if (ip && isInNet(ip, '192.168.0.0', '255.255.0.0')) return 'DIRECT';",

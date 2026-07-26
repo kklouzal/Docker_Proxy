@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +43,27 @@ class _EmptyPacProfilesStore:
 class _EmptySslFilterStore:
     def list_all(self):
         return None
+
+
+def _evaluate_pac(rendered: str, host: str) -> str:
+    script = "\n".join(
+        (
+            "function dnsDomainIs(host, domain) { return host.endsWith(domain); }",
+            "function isPlainHostName(host) { return host.indexOf('.') < 0; }",
+            "function dnsResolve(host) { return ''; }",
+            "function isInNet(ip, pattern, mask) {",
+            "  function toInt(value) {",
+            "    return value.split('.').reduce(function(acc, octet) {",
+            "      return ((acc << 8) | (parseInt(octet, 10) & 255)) >>> 0;",
+            "    }, 0);",
+            "  }",
+            "  return (toInt(ip) & toInt(mask)) === (toInt(pattern) & toInt(mask));",
+            "}",
+            rendered,
+            f"process.stdout.write(FindProxyForURL('', {json.dumps(host)}));",
+        ),
+    )
+    return subprocess.check_output(["node", "-e", script], text=True)
 
 
 def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() -> None:
@@ -979,6 +1001,67 @@ def test_rendered_pac_always_bypasses_loopback_ipv4_literals() -> None:
 
     assert loopback_rule in rendered
     assert "var ip = hostIp();" not in rendered
+
+
+def test_rendered_pac_bypasses_private_ipv6_literals_only_when_enabled() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    target = pac_renderer.ProxyPacTarget(
+        proxy_id="default",
+        public_host="proxy.example",
+        pac_scheme="http",
+        pac_port=80,
+        http_proxy_port=3128,
+        direct_enabled=False,
+    )
+    private_rendered = pac_renderer._render_fallback_pac(target, include_private=True)
+    public_only_rendered = pac_renderer._render_fallback_pac(
+        target,
+        include_private=False,
+    )
+
+    assert (
+        "var ipv6FirstHextet = isIpv6Literal ? host.split(':', 1)[0] : '';"
+        in private_rendered
+    )
+    assert "ipv6FirstHextetValue >= 0xfc00" in private_rendered
+    assert "ipv6FirstHextetValue <= 0xfdff" in private_rendered
+    assert "ipv6FirstHextetValue >= 0xfe80" in private_rendered
+    assert "ipv6FirstHextetValue <= 0xfebf" in private_rendered
+    assert _evaluate_pac(private_rendered, "fc00::1") == "DIRECT"
+    assert _evaluate_pac(private_rendered, "fd12:3456::1") == "DIRECT"
+    assert _evaluate_pac(private_rendered, "[fe80::1]") == "DIRECT"
+    assert _evaluate_pac(private_rendered, "febf::1") == "DIRECT"
+    assert (
+        _evaluate_pac(private_rendered, "2001:4860:4860::8888")
+        == "PROXY proxy.example:3128"
+    )
+    assert _evaluate_pac(private_rendered, "fec0::1") == "PROXY proxy.example:3128"
+
+    assert _evaluate_pac(public_only_rendered, "fc00::1") == "PROXY proxy.example:3128"
+    assert _evaluate_pac(public_only_rendered, "fe80::1") == "PROXY proxy.example:3128"
+
+
+def test_rendered_pac_keeps_existing_ipv4_private_and_domain_direct_behavior() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_pac(
+        "PROXY proxy.example:3128; DIRECT",
+        proxy_host="proxy.example",
+        direct_domains=["example.com", "*.media.example"],
+        direct_dst_nets=["10.20.0.0/16"],
+        include_private=True,
+    )
+
+    assert _evaluate_pac(rendered, "example.com") == "DIRECT"
+    assert _evaluate_pac(rendered, "video.media.example") == "DIRECT"
+    assert _evaluate_pac(rendered, "10.20.3.4") == "DIRECT"
+    assert _evaluate_pac(rendered, "192.168.10.20") == "DIRECT"
+    assert _evaluate_pac(rendered, "203.0.113.7") == (
+        "PROXY proxy.example:3128; DIRECT"
+    )
 
 
 def test_select_manifest_file_prefers_most_specific_overlapping_cidr() -> None:
