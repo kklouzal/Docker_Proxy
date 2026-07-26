@@ -138,6 +138,18 @@ def test_safe_browsing_rice_decoder_handles_single_value() -> None:
     ]
 
 
+def test_safe_browsing_rice_decoder_rejects_truncated_payload() -> None:
+    with pytest.raises(ValueError, match="compressed Rice data is truncated"):
+        decode_rice_delta_32(
+            {
+                "firstValue": 7,
+                "entriesCount": 1,
+                "riceParameter": 3,
+                "encodedData": "",
+            }
+        )
+
+
 def test_safe_browsing_checker_does_not_call_remote_without_local_prefix(
     monkeypatch,
 ) -> None:
@@ -959,6 +971,59 @@ def test_safe_browsing_apply_hash_list_accepts_matching_checksum() -> None:
     assert len(conn.inserted) == 1
     assert conn.inserted[0][:2] == ("mw-4b", prefix)
     assert isinstance(conn.inserted[0][2], int)
+
+
+def test_safe_browsing_apply_hash_list_rejects_truncated_additions() -> None:
+    class Result:
+        def __init__(self, rows=()) -> None:
+            self.rows = list(rows)
+
+        def fetchall(self):
+            return self.rows
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.executed = []
+            self.inserted = []
+
+        def execute(self, sql, params=None):
+            self.executed.append((sql, params))
+            if sql.startswith("SELECT prefix"):
+                return Result([])
+            return Result([])
+
+        def executemany(self, sql, params):
+            self.inserted.extend(params)
+            return Result([])
+
+    conn = FakeConn()
+    with pytest.raises(ValueError, match="compressed Rice data is truncated"):
+        SafeBrowsingStore()._apply_hash_list(
+            conn,
+            {
+                "name": "mw-4b",
+                "version": "AA",
+                "partialUpdate": False,
+                "additionsFourBytes": {
+                    "firstValue": 1,
+                    "entriesCount": 1,
+                    "riceParameter": 3,
+                    "encodedData": "",
+                },
+            },
+        )
+
+    assert conn.inserted == []
+    assert not any(
+        "INSERT INTO safe_browsing_hash_lists" in sql for sql, _params in conn.executed
+    )
+    assert not any(
+        sql.startswith("DELETE FROM safe_browsing_hash_prefixes")
+        for sql, _params in conn.executed
+    )
 
 
 def test_safe_browsing_ignores_canary_full_hash_detail(monkeypatch) -> None:

@@ -387,7 +387,8 @@ class _BitReader:
 
     def read_bit(self) -> int:
         if self.bit >= len(self.data) * 8:
-            return 0
+            msg = "Google Safe Browsing compressed Rice data is truncated"
+            raise ValueError(msg)
         value = (self.data[self.bit // 8] >> (self.bit % 8)) & 1
         self.bit += 1
         return value
@@ -405,6 +406,9 @@ def decode_rice_delta_32(payload: dict[str, object] | None) -> list[int]:
     first = int(payload.get("firstValue") or 0)
     count = int(payload.get("entriesCount") or 0)
     rice = int(payload.get("riceParameter") or 0)
+    if count < 0 or rice < 0 or rice > 31:
+        msg = "Google Safe Browsing compressed Rice parameters are invalid"
+        raise ValueError(msg)
     if count <= 0:
         return [first]
     reader = _BitReader(_decode_b64(payload.get("encodedData")))
