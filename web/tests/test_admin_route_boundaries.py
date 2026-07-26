@@ -2202,10 +2202,10 @@ class RemediationRowsObservability:
     def remediation_overview(self, **_kwargs):
         return {
             "summary": {
-                "suggestions": 4,
+                "suggestions": 5,
                 "high_confidence": 1,
-                "observations": 4,
-                "domains": 3,
+                "observations": 5,
+                "domains": 4,
                 "runtime_subjects": 1,
                 "latest": 1,
                 "http3_candidates": 1,
@@ -2238,6 +2238,20 @@ class RemediationRowsObservability:
                     "confidence": "medium",
                     "evidence": 'Alt-Svc advertises h3; sample=h3=":443"',
                     "recommended_action": "Block or steer UDP/443.",
+                },
+                {
+                    "kind": "aborted_media_segments",
+                    "component": "SSL inspection / media streaming",
+                    "severity": "medium",
+                    "title": "Repeated aborted media segment downloads",
+                    "subject": "Media.Example/segment.m4s",
+                    "subject_type": "domain",
+                    "count": 3,
+                    "clients": 1,
+                    "last_seen": 1,
+                    "confidence": "medium",
+                    "evidence": "Repeated TCP_MISS_ABORTED media responses",
+                    "recommended_action": "Consider no-bump/splice and cache-bypass for this media/CDN domain.",
                 },
                 {
                     "kind": "slow_icap",
@@ -2431,10 +2445,14 @@ def test_observability_remediation_scopes_row_actions_by_subject_and_kind(
     assert "/observability?pane=destinations&amp;q=scan.example" in text
     assert "/observability?pane=ssl&amp;q=scan.example" in text
     assert 'action="/observability/remediation/no-bump-domain' in text
-    assert text.count('action="/observability/remediation/no-bump-domain') == 1
+    assert text.count('action="/observability/remediation/no-bump-domain') == 2
     assert 'name="domain" value="challenge.example"' in text
+    assert 'name="domain" value="media.example"' in text
     assert 'name="domain" value="Challenge.Example/path"' not in text
     assert ">No-bump domain<" in text
+    assert 'action="/observability/remediation/no-cache-domain' in text
+    assert text.count('action="/observability/remediation/no-cache-domain') == 1
+    assert ">No-cache domain<" in text
     assert 'name="domain" value="bad domain"' not in text
     assert 'name="domain" value="video.example"' not in text
     assert 'name="domain" value="scan.example"' not in text
@@ -2484,6 +2502,53 @@ def test_observability_remediation_no_bump_domain_adds_sslfilter_rule(
     assert loaded.operation_ledger.operations[-1].status == "pending"
     assert any(
         record["kind"] == "observability_remediation_no_bump_domain" and record["ok"]
+        for record in loaded.audit_store.records
+    )
+
+
+def test_observability_remediation_no_cache_domain_adds_sslfilter_rule(
+    monkeypatch, tmp_path
+) -> None:
+    sslfilter_store = FakeSslfilterStore()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=RemediationRowsObservability(),
+        sslfilter_store=sslfilter_store,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/observability?pane=remediation")
+
+    response = client.post(
+        "/observability/remediation/no-cache-domain",
+        data={
+            "csrf_token": token,
+            "domain": "https://Media.Example/segment.m4s",
+            "window": "900",
+            "limit": "20",
+            "sort": "count",
+            "q": "media",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert sslfilter_store.no_bump_domains == []
+    assert "media.example" in sslfilter_store.no_cache_domains
+    location = response.headers["Location"]
+    params = parse_qs(urlparse(location).query)
+    assert params["pane"] == ["remediation"]
+    assert params["window"] == ["900"]
+    assert params["limit"] == ["20"]
+    assert params["sort"] == ["count"]
+    assert params["q"] == ["media"]
+    assert params["remediation_ok"] == ["1"]
+    assert params["remediation_domain"] == ["media.example"]
+    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
+    assert loaded.operation_ledger.operations[-1].status == "pending"
+    assert any(
+        record["kind"] == "observability_remediation_no_cache_domain" and record["ok"]
         for record in loaded.audit_store.records
     )
 
@@ -2587,6 +2652,51 @@ def test_observability_remediation_no_bump_domain_rejects_invalid_subject(
     assert "remediation_error=1" in location
     assert any(
         record["kind"] == "observability_remediation_no_bump_domain"
+        and not record["ok"]
+        for record in loaded.audit_store.records
+    )
+
+
+def test_observability_remediation_no_cache_domain_rejects_invalid_subject(
+    monkeypatch, tmp_path
+) -> None:
+    sslfilter_store = FakeSslfilterStore()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=RemediationRowsObservability(),
+        sslfilter_store=sslfilter_store,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/observability?pane=remediation")
+
+    response = client.post(
+        "/observability/remediation/no-cache-domain",
+        data={
+            "csrf_token": token,
+            "domain": "bad domain",
+            "window": "900",
+            "limit": "20",
+            "sort": "recent",
+            "q": "media",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert sslfilter_store.no_bump_domains == []
+    assert sslfilter_store.no_cache_domains == []
+    assert loaded.operation_ledger.operations == []
+    location = response.headers["Location"]
+    assert "pane=remediation" in location
+    assert "window=900" in location
+    assert "limit=20" in location
+    assert "sort=recent" in location
+    assert "q=media" in location
+    assert "remediation_error=1" in location
+    assert any(
+        record["kind"] == "observability_remediation_no_cache_domain"
         and not record["ok"]
         for record in loaded.audit_store.records
     )

@@ -6802,6 +6802,7 @@ _OBSERVABILITY_NO_BUMP_DOMAIN_REMEDIATION_KINDS = {
     "cloudflare_challenge",
     "ssl_exclusion_candidate",
 }
+_OBSERVABILITY_NO_CACHE_DOMAIN_REMEDIATION_KINDS = {"aborted_media_segments"}
 
 
 def _annotate_observability_remediation_actions(payload: dict[str, Any]) -> None:
@@ -6818,6 +6819,13 @@ def _annotate_observability_remediation_actions(payload: dict[str, Any]) -> None
             bool(row.get("subject"))
             and (row.get("subject_type") or "domain") == "domain"
             and row.get("kind") in _OBSERVABILITY_NO_BUMP_DOMAIN_REMEDIATION_KINDS
+            and ok
+        )
+        row["no_cache_domain"] = canonical if ok else ""
+        row["no_cache_domain_action"] = (
+            bool(row.get("subject"))
+            and (row.get("subject_type") or "domain") == "domain"
+            and row.get("kind") in _OBSERVABILITY_NO_CACHE_DOMAIN_REMEDIATION_KINDS
             and ok
         )
 
@@ -7003,10 +7011,8 @@ def ssl_errors_exclude():
     )
 
 
-@app.route("/observability/remediation/no-bump-domain", methods=["POST"])
-def observability_remediation_no_bump_domain():
-    domain = _extract_domain(request.form.get("domain"))
-    redirect_params = {
+def _observability_remediation_domain_redirect_params() -> dict[str, Any]:
+    return {
         "pane": "remediation",
         "window": _bounded_int(
             request.form.get("window"),
@@ -7027,34 +7033,41 @@ def observability_remediation_no_bump_domain():
         ),
         "q": ((request.form.get("q") or "").strip() or None),
     }
+
+
+def _observability_remediation_add_domain(
+    *,
+    policy: str,
+    audit_kind: str,
+    label: str,
+    success_message: Callable[[str], str],
+):
+    domain = _extract_domain(request.form.get("domain"))
+    redirect_params = _observability_remediation_domain_redirect_params()
     if not domain:
-        _record_audit_event(
-            "observability_remediation_no_bump_domain",
-            ok=False,
-            detail="domain=",
-        )
+        _record_audit_event(audit_kind, ok=False, detail="domain=")
         return _redirect_to(
             "observability",
             **redirect_params,
             remediation_error="1",
-            remediation_msg="A valid domain is required for no-bump remediation.",
+            remediation_msg=f"A valid domain is required for {label.lower()} remediation.",
         )
 
     store = get_sslfilter_store()
     try:
-        ok, detail, canonical = store.add_domain("nobump", domain)
+        ok, detail, canonical = store.add_domain(policy, domain)
     except Exception as exc:
-        detail = public_error_message(exc, default="No-bump domain was not saved.")
+        detail = public_error_message(exc, default=f"{label} domain was not saved.")
         _record_audit_event(
-            "observability_remediation_no_bump_domain",
+            audit_kind,
             ok=False,
             detail=_audit_safe_detail(f"domain={domain} detail={detail}"),
         )
         log_exception_throttled(
             app.logger,
-            "web.app.observability_remediation_no_bump_domain",
+            f"web.app.{audit_kind}",
             interval_seconds=30.0,
-            message="Failed to add remediation no-bump domain",
+            message=f"Failed to add remediation {label.lower()} domain",
         )
         return _redirect_to(
             "observability",
@@ -7068,12 +7081,12 @@ def observability_remediation_no_bump_domain():
         refresh_ok, refresh_detail = _trigger_policy_sync(force=True)
         if not refresh_ok:
             partial_detail = (
-                "No-bump domain was saved, but proxy reconciliation was not queued."
+                f"{label} domain was saved, but proxy reconciliation was not queued."
             )
             if refresh_detail:
                 partial_detail = f"{partial_detail} {refresh_detail}"
             _record_audit_event(
-                "observability_remediation_no_bump_domain",
+                audit_kind,
                 ok=False,
                 detail=_audit_safe_detail(
                     f"domain={saved_domain} detail={partial_detail}",
@@ -7087,7 +7100,7 @@ def observability_remediation_no_bump_domain():
                 remediation_msg=partial_detail,
             )
         _record_audit_event(
-            "observability_remediation_no_bump_domain",
+            audit_kind,
             ok=True,
             detail=_audit_safe_detail(
                 f"domain={saved_domain} detail={detail or 'saved'}",
@@ -7098,10 +7111,10 @@ def observability_remediation_no_bump_domain():
             **redirect_params,
             remediation_ok="1",
             remediation_domain=saved_domain,
-            remediation_msg=f"No-bump SSL exclusion saved for {saved_domain}.",
+            remediation_msg=success_message(saved_domain),
         )
     _record_audit_event(
-        "observability_remediation_no_bump_domain",
+        audit_kind,
         ok=False,
         detail=_audit_safe_detail(
             f"domain={saved_domain} detail={detail or 'not saved'}",
@@ -7111,7 +7124,27 @@ def observability_remediation_no_bump_domain():
         "observability",
         **redirect_params,
         remediation_error="1",
-        remediation_msg=detail or "No-bump domain was not saved.",
+        remediation_msg=detail or f"{label} domain was not saved.",
+    )
+
+
+@app.route("/observability/remediation/no-bump-domain", methods=["POST"])
+def observability_remediation_no_bump_domain():
+    return _observability_remediation_add_domain(
+        policy="nobump",
+        audit_kind="observability_remediation_no_bump_domain",
+        label="No-bump",
+        success_message=lambda domain: f"No-bump SSL exclusion saved for {domain}.",
+    )
+
+
+@app.route("/observability/remediation/no-cache-domain", methods=["POST"])
+def observability_remediation_no_cache_domain():
+    return _observability_remediation_add_domain(
+        policy="nocache",
+        audit_kind="observability_remediation_no_cache_domain",
+        label="No-cache",
+        success_message=lambda domain: f"No-cache SSL filter rule saved for {domain}.",
     )
 
 
