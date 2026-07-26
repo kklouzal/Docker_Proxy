@@ -114,6 +114,8 @@ def normalize_public_host(
             port = parsed.port
         except Exception:
             return fallback
+        if parsed.path or parsed.query or parsed.fragment:
+            return fallback
         if parsed.username is not None or parsed.password is not None:
             return fallback
         if _has_empty_explicit_authority_port(parsed.netloc):

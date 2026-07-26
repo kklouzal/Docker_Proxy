@@ -128,6 +128,27 @@ def test_normalize_public_host_accepts_public_endpoint_hosts(
 @pytest.mark.parametrize(
     "value",
     [
+        "proxy.example:443/proxy.pac",
+        "proxy.example:443?download=1",
+        "proxy.example:443#section",
+        "[2001:4860:4860::8888]:443/proxy.pac",
+        "[2001:4860:4860::8888]:443?download=1",
+        "[2001:4860:4860::8888]:443#section",
+    ],
+)
+def test_normalize_public_host_rejects_schemeless_authority_suffixes(
+    value: str,
+) -> None:
+    _add_web_to_path()
+    from services.public_endpoint import normalize_public_host  # type: ignore
+
+    assert normalize_public_host(value) == ""
+    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "proxy.example]",
         "proxy.example[",
         "93.184.216.34]",
