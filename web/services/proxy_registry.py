@@ -140,8 +140,10 @@ def normalize_management_url(value: object | None) -> str:
         parsed = urlsplit(candidate)
         if _has_empty_explicit_authority_port(parsed.netloc):
             return ""
-        _port = parsed.port
+        parsed_port = parsed.port
     except Exception:
+        return ""
+    if parsed_port == 0:
         return ""
     scheme = str(parsed.scheme or "").lower()
     if scheme not in {"http", "https"}:
@@ -242,6 +244,8 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
     try:
         parsed_port = parsed.port
     except ValueError:
+        return "", "http", 80, "/proxy.pac"
+    if parsed_port == 0:
         return "", "http", 80, "/proxy.pac"
     path = normalize_public_pac_path(candidate)
     return host, scheme, int(parsed_port or default_port), path

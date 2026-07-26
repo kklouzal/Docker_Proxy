@@ -228,6 +228,19 @@ def test_parse_public_pac_url_rejects_fragment_public_pac_url() -> None:
     )
 
 
+def test_parse_public_pac_url_rejects_zero_explicit_authority_port() -> None:
+    proxy_registry = _proxy_registry()
+
+    assert proxy_registry._parse_public_pac_url(
+        "https://pac.example:0/custom/proxy.pac?site=lab"
+    ) == (
+        "",
+        "http",
+        80,
+        "/proxy.pac",
+    )
+
+
 def test_resolve_local_proxy_public_fields_prefers_explicit_env_over_public_pac_url(
     monkeypatch,
 ) -> None:
@@ -391,6 +404,8 @@ def test_management_url_normalization_rejects_unsafe_shapes() -> None:
     assert proxy_registry.normalize_management_url("ftp://proxy-mgmt:5000") == ""
     assert proxy_registry.normalize_management_url("http://user:pass@proxy:5000") == ""
     assert proxy_registry.normalize_management_url("http://proxy:bad/api/manage") == ""
+    assert proxy_registry.normalize_management_url("http://proxy:0/api/manage") == ""
+    assert proxy_registry.normalize_management_url("proxy:0") == ""
     assert proxy_registry.normalize_management_url("http://proxy:") == ""
     assert proxy_registry.normalize_management_url("http://proxy:/api/manage") == ""
     assert proxy_registry.normalize_management_url("proxy:") == ""
