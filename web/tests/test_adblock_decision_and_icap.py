@@ -352,6 +352,31 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
     )
 
 
+def test_adblock_decision_treats_escaped_abp_metacharacters_as_literals(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            r"escaped\*token",
+            r"escaped\^token",
+            r"escaped\|",
+        ],
+    )
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+
+    assert engine.decide("https://static.example/escaped*token.js").blocked is True
+    assert engine.decide("https://static.example/escapedXYZtoken.js").blocked is False
+    assert engine.decide("https://static.example/escaped^token.js").blocked is True
+    assert engine.decide("https://static.example/escaped/token.js").blocked is False
+    assert engine.decide("https://static.example/escaped|").blocked is True
+    assert engine.decide("https://static.example/escaped").blocked is False
+
+
 @pytest.mark.parametrize(
     "url",
     [

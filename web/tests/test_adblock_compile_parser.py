@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import subprocess
 import sys
@@ -226,6 +227,27 @@ def test_abp_options_split_ignores_escaped_literal_dollars() -> None:
         r"||shop.example/path\\",
         "script",
     )
+
+
+def test_abp_regex_compilation_honors_escaped_pattern_metacharacters() -> None:
+    _add_web_to_path()
+    from services.adblock_patterns import abp_to_regex
+
+    wildcard_regex = abp_to_regex(r"ad\*token")
+    assert re.search(wildcard_regex, "https://static.example/ad*token.js")
+    assert not re.search(wildcard_regex, "https://static.example/adXYZtoken.js")
+
+    separator_regex = abp_to_regex(r"ad\^token")
+    assert re.search(separator_regex, "https://static.example/ad^token.js")
+    assert not re.search(separator_regex, "https://static.example/ad/token.js")
+
+    right_anchor_regex = abp_to_regex(r"ad\|")
+    assert re.search(right_anchor_regex, "https://static.example/ad|")
+    assert not re.search(right_anchor_regex, "https://static.example/ad")
+
+    assert re.search(abp_to_regex("ad*token"), "https://static.example/adXYZtoken.js")
+    assert re.search(abp_to_regex("ad^token"), "https://static.example/ad/token.js")
+    assert re.search(abp_to_regex("ad|"), "https://static.example/ad")
 
 
 def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
