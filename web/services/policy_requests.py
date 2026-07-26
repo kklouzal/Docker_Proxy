@@ -438,8 +438,10 @@ class PolicyRequestStore:
                 if max(0, int(getattr(claim, "rowcount", 0) or 0)) == 0:
                     msg = "Only pending requests can be approved."
                     raise ValueError(msg)
-                r = c.execute(
-                    f"INSERT INTO {self.EXCEPTION_TABLE}(proxy_id,status,block_type,client_ip,domain,category,created_ts,updated_ts,created_by,admin_note,expires_ts,revoked_ts,revoked_by,source_request_id) VALUES(%s,'active',%s,%s,%s,%s,%s,%s,%s,%s,%s,0,'',%s)",
+                existing = c.execute(
+                    self._esql(
+                        "WHERE proxy_id=%s AND status='active' AND block_type=%s AND client_ip=%s AND domain=%s AND category=%s AND (expires_ts=0 OR expires_ts>%s) ORDER BY CASE WHEN expires_ts=0 THEN 1 ELSE 0 END DESC, expires_ts DESC,id ASC LIMIT 1 FOR UPDATE",
+                    ),
                     (
                         canonical_proxy_id,
                         req.block_type,
@@ -447,14 +449,32 @@ class PolicyRequestStore:
                         req.domain,
                         req.category,
                         now,
-                        now,
-                        reviewer_s,
-                        note,
-                        exp,
-                        req.id,
                     ),
-                )
-                exid = int(r.lastrowid or 0)
+                ).fetchone()
+                if existing:
+                    exid = _exc(existing).id
+                    c.execute(
+                        f"UPDATE {self.EXCEPTION_TABLE} SET updated_ts=%s,admin_note=CASE WHEN %s='' THEN admin_note ELSE %s END,expires_ts=CASE WHEN expires_ts=0 OR %s=0 THEN 0 WHEN expires_ts>%s THEN expires_ts ELSE %s END,source_request_id=%s WHERE id=%s AND status='active' AND (expires_ts=0 OR expires_ts>%s)",
+                        (now, note, note, exp, exp, exp, req.id, exid, now),
+                    )
+                else:
+                    r = c.execute(
+                        f"INSERT INTO {self.EXCEPTION_TABLE}(proxy_id,status,block_type,client_ip,domain,category,created_ts,updated_ts,created_by,admin_note,expires_ts,revoked_ts,revoked_by,source_request_id) VALUES(%s,'active',%s,%s,%s,%s,%s,%s,%s,%s,%s,0,'',%s)",
+                        (
+                            canonical_proxy_id,
+                            req.block_type,
+                            req.client_ip,
+                            req.domain,
+                            req.category,
+                            now,
+                            now,
+                            reviewer_s,
+                            note,
+                            exp,
+                            req.id,
+                        ),
+                    )
+                    exid = int(r.lastrowid or 0)
                 c.execute(
                     f"UPDATE {self.REQUEST_TABLE} SET exception_id=%s WHERE id=%s AND status='approved' AND exception_id IS NULL",
                     (exid, req.id),

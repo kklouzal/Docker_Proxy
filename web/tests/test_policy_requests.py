@@ -209,6 +209,7 @@ def test_policy_request_store_approval_stale_pending_claim_does_not_insert(
         for sql in executed_sql
     )
     assert not any("INSERT INTO policy_exceptions" in sql for sql in executed_sql)
+    assert not any("UPDATE policy_exceptions" in sql for sql in executed_sql)
 
 
 def test_policy_request_store_normalizes_approves_lists_and_revokes(tmp_path) -> None:
@@ -241,6 +242,83 @@ def test_policy_request_store_normalizes_approves_lists_and_revokes(tmp_path) ->
     assert store.active_webfilter_exceptions(proxy_id="edge-a")[0].id == ex.id
     store.revoke_exception(ex.id, revoked_by="admin", admin_note="done")
     assert store.active_webfilter_exceptions(proxy_id="edge-a") == []
+
+
+def test_policy_request_store_reuses_unexpired_duplicate_approval_scope(
+    monkeypatch, tmp_path
+) -> None:
+    configure_test_mysql_env(tmp_path / "policy-request-dedupe")
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    now = 1000
+    monkeypatch.setattr(module, "now_ts", lambda: now)
+    store = module.PolicyRequestStore()
+    store.init_db()
+
+    def create_duplicate_request():
+        return store.create_request(
+            proxy_id="edge-a",
+            client_ip="192.168.1.55",
+            request_url="https://duplicate.example/path",
+            domain="duplicate.example",
+            category="adult",
+        )
+
+    first_req = create_duplicate_request()
+    first = store.approve_request(
+        first_req.id,
+        reviewer="admin",
+        admin_note="first approval",
+        duration_seconds=600,
+    )
+
+    now = 1100
+    duplicate_req = create_duplicate_request()
+    duplicate = store.approve_request(
+        duplicate_req.id,
+        reviewer="operator",
+        admin_note="extend existing approval",
+        duration_seconds=3600,
+    )
+
+    assert duplicate.id == first.id
+    assert duplicate.source_request_id == duplicate_req.id
+    assert duplicate.admin_note == "extend existing approval"
+    assert duplicate.expires_ts == 4700
+    assert [ex.id for ex in store.active_webfilter_exceptions(proxy_id="edge-a")] == [
+        first.id
+    ]
+    approved_requests = store.list_requests(statuses=["approved"], proxy_id="edge-a")
+    assert {req.id: req.exception_id for req in approved_requests} == {
+        first_req.id: first.id,
+        duplicate_req.id: first.id,
+    }
+
+    now = 5000
+    expired_equivalent_req = create_duplicate_request()
+    after_expiry = store.approve_request(
+        expired_equivalent_req.id,
+        reviewer="admin",
+        indefinite=True,
+    )
+    assert after_expiry.id != first.id
+    assert [ex.id for ex in store.active_webfilter_exceptions(proxy_id="edge-a")] == [
+        after_expiry.id
+    ]
+
+    store.revoke_exception(after_expiry.id, revoked_by="admin")
+    revoked_equivalent_req = create_duplicate_request()
+    after_revoke = store.approve_request(
+        revoked_equivalent_req.id,
+        reviewer="admin",
+        indefinite=True,
+    )
+    assert after_revoke.id not in {first.id, after_expiry.id}
+    assert [ex.id for ex in store.active_webfilter_exceptions(proxy_id="edge-a")] == [
+        after_revoke.id
+    ]
 
 
 def test_policy_request_store_bounds_direct_approval_durations(tmp_path) -> None:
