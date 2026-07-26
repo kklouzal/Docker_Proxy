@@ -184,7 +184,8 @@ class WebFilterStore(WebFilterStoreBase):
                 override_enabled=enabled,
                 override_blocked_categories=categories_csv,
             )
-            if source and category_build_needed:
+            source_changed = source != (previous_source or "").strip()
+            if source and (source_changed or category_build_needed):
                 source = validate_source_url(source)
             self._set(conn, "enabled", "1" if enabled else "0")
             self._set(conn, "source_url", source)
