@@ -6956,9 +6956,19 @@ def ssl_errors():
 
 @app.route("/ssl-errors/exclude", methods=["POST"])
 def ssl_errors_exclude():
-    domain = _extract_domain(request.form.get("domain"))
-    if not domain:
-        return _redirect_to("observability", pane="ssl", q=domain)
+    raw_domain = request.form.get("domain") or ""
+    ok, detail, domain = validate_domain_rule(raw_domain)
+    if not ok:
+        extracted_domain = _extract_domain(raw_domain)
+        ok, detail, domain = validate_domain_rule(extracted_domain)
+    if not ok:
+        return _redirect_to(
+            "observability",
+            pane="ssl",
+            q="",
+            error="1",
+            msg=detail or "Invalid domain.",
+        )
     store = get_sslfilter_store()
     try:
         ok, detail, canonical = store.add_domain("nobump", domain)
