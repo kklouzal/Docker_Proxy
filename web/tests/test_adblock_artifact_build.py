@@ -1056,6 +1056,214 @@ def test_build_active_artifact_preserves_previous_and_pending_on_compile_failure
     assert recorded["artifact_sha256"] == previous_revision.artifact_sha256
 
 
+def test_adblock_store_default_update_interval_is_twelve_hours(tmp_path) -> None:
+    store_module, _artifacts_module = _import_artifact_modules(tmp_path)
+
+    store = store_module.AdblockStore(lists_dir=str(tmp_path / "lists"))
+
+    assert store.get_update_interval_seconds() == 12 * 60 * 60
+    assert (
+        store.get_update_interval_seconds()
+        == store_module.ADBLOCK_DEFAULT_UPDATE_INTERVAL_SECONDS
+    )
+
+
+def test_get_adblock_store_env_override_keeps_existing_interval_name(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ADBLOCK_UPDATE_INTERVAL", "90000")
+    store_module, _artifacts_module = _import_artifact_modules(tmp_path)
+
+    assert store_module.get_adblock_store().get_update_interval_seconds() == 90000
+
+
+def test_should_update_uses_twelve_hour_success_cadence_by_default(tmp_path) -> None:
+    store_module, _artifacts_module = _import_artifact_modules(tmp_path)
+    store = store_module.AdblockStore(lists_dir=str(tmp_path / "lists"))
+    status = store_module.ListStatus(
+        key="easylist",
+        url="https://example.invalid/easylist.txt",
+        enabled=True,
+        last_success=1_000,
+        last_attempt=900,
+        last_error="",
+        bytes=100,
+        rules=2,
+    )
+
+    assert store.should_update(status, 1_000 + (12 * 60 * 60) - 1, False) is False
+    assert store.should_update(status, 1_000 + (12 * 60 * 60), False) is True
+    assert store.should_update(status, 1_001, True) is True
+
+    missing_success = store_module.ListStatus(
+        key="easylist",
+        url="https://example.invalid/easylist.txt",
+        enabled=True,
+        last_success=0,
+        last_attempt=0,
+        last_error="",
+        bytes=0,
+        rules=0,
+    )
+    assert store.should_update(missing_success, 1_001, False) is True
+
+    disabled = store_module.ListStatus(
+        key="easylist",
+        url="https://example.invalid/easylist.txt",
+        enabled=False,
+        last_success=0,
+        last_attempt=0,
+        last_error="",
+        bytes=0,
+        rules=0,
+    )
+    assert store.should_update(disabled, 1_001, True) is False
+
+
+def _run_background_loop_due_check(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    now_ts: int,
+):
+    store_module, artifacts_module = _import_artifact_modules(tmp_path)
+
+    lists_dir = tmp_path / "lists"
+    lists_dir.mkdir(parents=True, exist_ok=True)
+    list_path = lists_dir / "easylist.txt"
+    list_path.write_text("||cached.example^\n", encoding="utf-8")
+    build_calls: list[dict[str, object]] = []
+    sleeps: list[float] = []
+
+    class StopLoopError(Exception):
+        pass
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.status = store_module.ListStatus(
+                key="easylist",
+                url="https://example.invalid/easylist.txt",
+                enabled=True,
+                last_success=1_000,
+                last_attempt=900,
+                last_error="",
+                bytes=100,
+                rules=2,
+            )
+            self.cleared = 0
+            self.update_interval_seconds = 12 * 60 * 60
+
+        def init_db(self) -> None:
+            return None
+
+        def get_settings(self) -> dict[str, object]:
+            return {"enabled": True}
+
+        def list_statuses(self) -> list[object]:
+            return [self.status]
+
+        def get_refresh_requested(self) -> int:
+            return 0
+
+        def get_settings_version(self) -> int:
+            return 7
+
+        def list_path(self, key: str) -> str:
+            assert key == "easylist"
+            return str(list_path)
+
+        def should_update(self, status, current_ts: int, force: bool) -> bool:
+            assert force is False
+            return (int(current_ts) - int(status.last_success)) >= int(
+                self.update_interval_seconds
+            )
+
+        def clear_refresh_requested(self) -> None:
+            self.cleared += 1
+
+    fake_store = FakeStore()
+    monkeypatch.setattr(store_module, "get_adblock_store", lambda: fake_store)
+    monkeypatch.setattr(artifacts_module, "_now", lambda: now_ts)
+    monkeypatch.setattr(
+        artifacts_module,
+        "nudge_registered_proxies",
+        lambda *, force=False: (_ for _ in ()).throw(
+            AssertionError("unchanged build should not nudge proxies")
+        ),
+    )
+
+    def sleep_once(seconds: float) -> None:
+        sleeps.append(seconds)
+        raise StopLoopError
+
+    monkeypatch.setattr(artifacts_module.time, "sleep", sleep_once)
+
+    artifact_store = artifacts_module.AdblockArtifactStore(
+        compiled_dir=str(tmp_path / "compiled"),
+    )
+    monkeypatch.setattr(artifact_store, "init_db", lambda: None)
+    monkeypatch.setattr(
+        artifact_store,
+        "get_active_artifact",
+        lambda: SimpleNamespace(
+            revision_id=4,
+            settings_version=7,
+            enabled_lists=["easylist"],
+            source_kind="background",
+        ),
+    )
+
+    def build_active_artifact(**kwargs):
+        build_calls.append(kwargs)
+        return {"ok": True, "changed": False, "download_pending": False}
+
+    monkeypatch.setattr(artifact_store, "build_active_artifact", build_active_artifact)
+
+    try:
+        artifact_store._loop()
+    except StopLoopError:
+        pass
+    else:
+        msg = "background loop did not reach its sleep boundary"
+        raise AssertionError(msg)
+
+    return build_calls, fake_store.cleared, sleeps
+
+
+def test_background_loop_poll_checks_due_without_downloading_before_twelve_hours(
+    tmp_path, monkeypatch
+) -> None:
+    build_calls, cleared, sleeps = _run_background_loop_due_check(
+        tmp_path,
+        monkeypatch,
+        now_ts=1_000 + (12 * 60 * 60) - 1,
+    )
+
+    assert build_calls == []
+    assert cleared == 0
+    assert sleeps == [30.0]
+
+
+def test_background_loop_builds_when_twelve_hour_download_is_due(
+    tmp_path, monkeypatch
+) -> None:
+    build_calls, cleared, sleeps = _run_background_loop_due_check(
+        tmp_path,
+        monkeypatch,
+        now_ts=1_000 + (12 * 60 * 60),
+    )
+
+    assert build_calls == [
+        {
+            "refresh_lists": False,
+            "created_by": "system",
+            "source_kind": "background",
+        }
+    ]
+    assert cleared == 1
+    assert sleeps == [30.0]
+
+
 def test_adblock_download_rejects_hostname_resolving_private(
     tmp_path, monkeypatch
 ) -> None:

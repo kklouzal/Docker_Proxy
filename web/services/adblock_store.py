@@ -34,6 +34,8 @@ from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
 
+ADBLOCK_DEFAULT_UPDATE_INTERVAL_SECONDS = 12 * 60 * 60
+
 
 def _is_duplicate_key_error(exc: BaseException) -> bool:
     return mysql_error_code(exc) == 1062
@@ -100,7 +102,7 @@ class AdblockStore:
     def __init__(
         self,
         lists_dir: str = "/var/lib/squid-flask-proxy/adblock/lists",
-        update_interval_seconds: int = 6 * 60 * 60,
+        update_interval_seconds: int = ADBLOCK_DEFAULT_UPDATE_INTERVAL_SECONDS,
         cicap_access_log_path: str = "/var/log/cicap-access.log",
         blocklog_retention_days: int = 30,
     ) -> None:
@@ -1251,7 +1253,7 @@ def get_adblock_store() -> AdblockStore:
                 ),
                 update_interval_seconds=_env_int(
                     "ADBLOCK_UPDATE_INTERVAL",
-                    6 * 60 * 60,
+                    ADBLOCK_DEFAULT_UPDATE_INTERVAL_SECONDS,
                 ),
                 cicap_access_log_path=os.environ.get(
                     "CICAP_ACCESS_LOG",
