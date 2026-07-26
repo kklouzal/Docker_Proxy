@@ -66,6 +66,50 @@ def test_normalize_hostish_handles_placeholders_and_ports() -> None:
     assert normalize_hostish("[2001:db8::1]:8443") == "2001:db8::1"
 
 
+def test_normalize_hostish_preserves_canonical_ip_literals() -> None:
+    assert normalize_hostish("192.168.1.10") == "192.168.1.10"
+    assert normalize_hostish("https://203.0.113.10:8443/path") == "203.0.113.10"
+    assert normalize_hostish("2001:db8::1") == "2001:db8::1"
+    assert extract_domain("https://[2001:db8::1]:8443/path") == "2001:db8::1"
+
+
+def test_normalize_hostish_rejects_ambiguous_ipv4_host_forms() -> None:
+    for value in (
+        "127.1",
+        "0177.0.0.1",
+        "0x7f000001",
+        "2130706433",
+        "https://0177.0.0.1/path",
+        "https://2130706433:443/path",
+    ):
+        assert normalize_hostish(value) == ""
+        assert extract_domain(value) == ""
+
+
+def test_normalize_hostish_rejects_malformed_dns_labels_and_wildcards() -> None:
+    for value in (
+        "bad_domain.example",
+        "*.example.com",
+        "bad..example",
+        "-bad.example",
+        "bad-.example",
+        "bad.-example",
+        "bad.example-",
+    ):
+        assert normalize_hostish(value) == ""
+        assert extract_domain(value) == ""
+
+
+def test_normalize_hostish_rejects_bracketed_ipv4_authorities() -> None:
+    for value in (
+        "[127.0.0.1]:443",
+        "[203.0.113.10]:8443",
+        "https://[127.0.0.1]:443/path",
+    ):
+        assert normalize_hostish(value) == ""
+        assert extract_domain(value) == ""
+
+
 def test_normalize_hostish_rejects_malformed_authority_ports() -> None:
     for value in (
         "example.com:notaport",

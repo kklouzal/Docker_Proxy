@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import math
 import os
 import time
@@ -30,6 +31,61 @@ def _decoded_hostish_has_delimiters(value: str) -> bool:
 
 def _is_valid_port(value: str) -> bool:
     return value.isdigit() and 1 <= int(value) <= 65535
+
+
+def _is_ambiguous_ipv4_host(value: str) -> bool:
+    candidate = value.rstrip(".").lower()
+    if not candidate:
+        return False
+    labels = candidate.split(".")
+    if not 1 <= len(labels) <= 4:
+        return False
+    for label in labels:
+        if not label:
+            return False
+        if label.isdecimal():
+            continue
+        if label.startswith("0x"):
+            digits = label.removeprefix("0x")
+            if digits and all(ch in "0123456789abcdef" for ch in digits):
+                continue
+        return False
+    return True
+
+
+def _valid_dns_hostname(value: str) -> bool:
+    candidate = value.rstrip(".")
+    if not candidate or len(candidate) > 253:
+        return False
+    labels = candidate.split(".")
+    if not labels or any(not label for label in labels):
+        return False
+    for label in labels:
+        if len(label) > 63 or not label[0].isalnum() or not label[-1].isalnum():
+            return False
+        if any(not (ch.isalnum() or ch == "-") for ch in label):
+            return False
+    return True
+
+
+def _normalize_host_token(host: str) -> str:
+    candidate = host.strip().strip(".")
+    if not candidate:
+        return ""
+    try:
+        parsed_ip = ipaddress.ip_address(candidate)
+    except ValueError:
+        if ":" in candidate or _is_ambiguous_ipv4_host(candidate):
+            return ""
+    else:
+        return str(parsed_ip)
+    try:
+        candidate = candidate.encode("idna").decode("ascii").lower()
+    except Exception:
+        return ""
+    if _is_ambiguous_ipv4_host(candidate):
+        return ""
+    return candidate if _valid_dns_hostname(candidate) else ""
 
 
 def _parsed_netloc_has_empty_port(netloc: str) -> bool:
@@ -70,6 +126,7 @@ def normalize_hostish(value: object | None) -> str:
         host = host.split("#", 1)[0]
     if "@" in host:
         return ""
+    bracketed_authority = False
     if host.startswith("["):
         closing_bracket = host.find("]")
         if closing_bracket < 0:
@@ -79,12 +136,16 @@ def normalize_hostish(value: object | None) -> str:
             if not remainder.startswith(":") or not _is_valid_port(remainder[1:]):
                 return ""
         host = host[1:closing_bracket]
+        bracketed_authority = True
     elif ":" in host and host.count(":") == 1:
         host_part, port = host.rsplit(":", 1)
         if not _is_valid_port(port):
             return ""
         host = host_part
-    return host.strip().strip(".")
+    normalized = _normalize_host_token(host)
+    if bracketed_authority and normalized and ":" not in normalized:
+        return ""
+    return normalized
 
 
 def extract_domain(
