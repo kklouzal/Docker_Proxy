@@ -6830,6 +6830,59 @@ def _annotate_observability_remediation_actions(payload: dict[str, Any]) -> None
         )
 
 
+def _observability_remediation_allowed_domains(
+    *,
+    kind_set: set[str] | None,
+) -> set[str]:
+    queries = get_observability_queries()
+    window_i = _bounded_int(
+        request.form.get("window"),
+        default=OBSERVABILITY_DEFAULT_WINDOW,
+        minimum=300,
+        maximum=7 * 24 * 3600,
+    )
+    limit = _bounded_int(
+        request.form.get("limit"),
+        default=50,
+        minimum=10,
+        maximum=200,
+    )
+    sort = _normalize_choice(
+        request.form.get("sort"),
+        _OBSERVABILITY_SORT_OPTIONS["remediation"],
+        _OBSERVABILITY_SORT_DEFAULTS["remediation"],
+    )
+    search = ((request.form.get("q") or "").strip() or "")
+    runtime_health = _cached_proxy_health(
+        get_proxy_id(),
+        timeout_seconds=max(3.0, _proxy_health_timeout_seconds()),
+        full=True,
+    )
+    payload = queries.remediation_overview(
+        since=int(time.time()) - window_i,
+        search=search,
+        limit=limit,
+        sort=sort,
+        summary=None,
+        runtime_health=runtime_health,
+    )
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    allowed: set[str] = set()
+    if not isinstance(rows, list):
+        return allowed
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if (row.get("subject_type") or "domain") != "domain":
+            continue
+        if kind_set is not None and row.get("kind") not in kind_set:
+            continue
+        ok, _detail, canonical = validate_domain_rule(_extract_domain(row.get("subject")))
+        if ok and canonical:
+            allowed.add(canonical)
+    return allowed
+
+
 @app.route("/requests", methods=["GET", "POST"])
 def policy_requests():
     store = get_policy_request_store()
@@ -7041,16 +7094,68 @@ def _observability_remediation_add_domain(
     audit_kind: str,
     label: str,
     success_message: Callable[[str], str],
+    allowed_kinds: set[str] | None,
 ):
-    domain = _extract_domain(request.form.get("domain"))
+    raw_domain = request.form.get("domain")
+    domain = _extract_domain(raw_domain)
     redirect_params = _observability_remediation_domain_redirect_params()
-    if not domain:
-        _record_audit_event(audit_kind, ok=False, detail="domain=")
+    ok, detail, domain = validate_domain_rule(domain)
+    if not ok:
+        _record_audit_event(
+            audit_kind,
+            ok=False,
+            detail=_audit_safe_detail(f"domain={raw_domain} detail={detail}"),
+        )
         return _redirect_to(
             "observability",
             **redirect_params,
             remediation_error="1",
             remediation_msg=f"A valid domain is required for {label.lower()} remediation.",
+        )
+
+    try:
+        allowed_domains = _observability_remediation_allowed_domains(
+            kind_set=allowed_kinds,
+        )
+    except Exception as exc:
+        detail = public_error_message(
+            exc,
+            default="Current remediation observations could not be verified.",
+        )
+        _record_audit_event(
+            audit_kind,
+            ok=False,
+            detail=_audit_safe_detail(f"domain={domain} detail={detail}"),
+        )
+        log_exception_throttled(
+            app.logger,
+            f"web.app.{audit_kind}.verify_observation",
+            interval_seconds=30.0,
+            message=f"Failed to verify remediation {label.lower()} observation",
+        )
+        return _redirect_to(
+            "observability",
+            **redirect_params,
+            remediation_error="1",
+            remediation_domain=domain,
+            remediation_msg=detail,
+        )
+    if domain not in allowed_domains:
+        detail = (
+            f"{label} domain {domain} no longer matches the current remediation "
+            "observations for this view; refresh and retry from an active row."
+        )
+        _record_audit_event(
+            audit_kind,
+            ok=False,
+            detail=_audit_safe_detail(f"domain={domain} detail={detail}"),
+        )
+        return _redirect_to(
+            "observability",
+            **redirect_params,
+            remediation_error="1",
+            remediation_domain=domain,
+            remediation_msg=detail,
         )
 
     store = get_sslfilter_store()
@@ -7135,6 +7240,7 @@ def observability_remediation_no_bump_domain():
         audit_kind="observability_remediation_no_bump_domain",
         label="No-bump",
         success_message=lambda domain: f"No-bump SSL exclusion saved for {domain}.",
+        allowed_kinds=None,
     )
 
 
@@ -7145,6 +7251,7 @@ def observability_remediation_no_cache_domain():
         audit_kind="observability_remediation_no_cache_domain",
         label="No-cache",
         success_message=lambda domain: f"No-cache SSL filter rule saved for {domain}.",
+        allowed_kinds=_OBSERVABILITY_NO_CACHE_DOMAIN_REMEDIATION_KINDS,
     )
 
 
