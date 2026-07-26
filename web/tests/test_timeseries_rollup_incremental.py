@@ -3,9 +3,29 @@ from __future__ import annotations
 import threading
 
 import pytest
-from services.timeseries_store import TimeSeriesStore
+from services.timeseries_store import TimeSeriesStore, canonicalize_resolution_name
 
 from .mysql_test_utils import configure_test_mysql_env
+
+
+class _QueryConn:
+    def __init__(self, calls: list[tuple[str, object]]) -> None:
+        self.calls = calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.calls.append((str(sql), params))
+        return _QueryResult()
+
+
+class _QueryResult:
+    def fetchall(self):
+        return [(123, 1, 2.0, 3.0, 4.0)]
 
 
 class _SummaryConn:
@@ -54,6 +74,27 @@ def _insert_hourly(
                 0.0,
             ),
         )
+
+
+def test_query_resolution_canonicalization_preserves_valid_and_falls_back_unknown(
+    monkeypatch,
+) -> None:
+    store = TimeSeriesStore.__new__(TimeSeriesStore)
+    store._db_initialized = True
+    store._db_init_lock = threading.Lock()
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(store, "_connect", lambda: _QueryConn(calls))
+
+    valid_points = store.query(resolution="1m", since=100, limit=25)
+    unknown_points = store.query(resolution="bogus", since=100, limit=25)
+
+    assert canonicalize_resolution_name("1m") == "1m"
+    assert canonicalize_resolution_name("bogus") == "1s"
+    assert "FROM ts_1m" in calls[0][0]
+    assert "FROM ts_1s" in calls[1][0]
+    assert valid_points == unknown_points == [
+        {"ts": 123, "count": 1, "cpu": 2.0, "mem": 3.0, "hit_rate": 4.0}
+    ]
 
 
 def test_daily_rollup_processes_bounded_oldest_buckets_and_is_idempotent(tmp_path) -> None:

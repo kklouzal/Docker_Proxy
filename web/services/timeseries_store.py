@@ -34,6 +34,16 @@ RESOLUTIONS: list[Resolution] = [
     Resolution("1y", "ts_1y", 60 * 60 * 24 * 365),
 ]
 RESOLUTION_BY_NAME = {resolution.name: resolution for resolution in RESOLUTIONS}
+DEFAULT_RESOLUTION = RESOLUTIONS[0]
+
+
+def resolve_resolution(resolution: str | None) -> Resolution:
+    name = (resolution or DEFAULT_RESOLUTION.name).strip()
+    return RESOLUTION_BY_NAME.get(name) or DEFAULT_RESOLUTION
+
+
+def canonicalize_resolution_name(resolution: str | None) -> str:
+    return resolve_resolution(resolution).name
 
 
 def _get_metric(stats: dict[str, Any], path: str) -> float | None:
@@ -309,7 +319,7 @@ class TimeSeriesStore:
         since: int,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
-        res = RESOLUTION_BY_NAME.get(resolution) or RESOLUTIONS[0]
+        res = resolve_resolution(resolution)
 
         lim = max(10, min(2000, int(limit)))
         proxy_id = get_proxy_id()

@@ -16,6 +16,18 @@ from .admin_route_test_utils import (
 )
 
 
+class RecordingTimeseriesStore:
+    def __init__(self) -> None:
+        self.queries: list[dict[str, object]] = []
+
+    def summary(self) -> dict[str, object]:
+        return {}
+
+    def query(self, **kwargs: object) -> list[object]:
+        self.queries.append(kwargs)
+        return []
+
+
 class RecordingProxyClient:
     def __init__(self) -> None:
         self.health_calls: list[tuple[str, float | None]] = []
@@ -1047,7 +1059,8 @@ def test_remove_proxy_requires_exact_confirmation(monkeypatch, tmp_path) -> None
 
 
 def test_api_timeseries_bounds_and_content_type(monkeypatch, tmp_path) -> None:
-    loaded = load_admin_app(monkeypatch, tmp_path)
+    store = RecordingTimeseriesStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, timeseries_store=store)
     client = loaded.module.app.test_client()
     login_client(client)
     response = client.get("/api/timeseries?resolution=1m&window=1&limit=bad")
@@ -1055,7 +1068,24 @@ def test_api_timeseries_bounds_and_content_type(monkeypatch, tmp_path) -> None:
     assert response.headers.get("Content-Type", "").startswith("application/json")
     assert response.json["resolution"] == "1m"
     assert isinstance(response.json["points"], list)
+    assert store.queries[-1]["resolution"] == "1m"
     assert "Content-Security-Policy" not in response.headers
+
+
+def test_api_timeseries_reports_canonical_resolution_for_unknown_name(
+    monkeypatch, tmp_path
+) -> None:
+    store = RecordingTimeseriesStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, timeseries_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/timeseries?resolution=bogus&window=60&limit=25")
+
+    assert response.status_code == 200
+    assert response.json["resolution"] == "1s"
+    assert store.queries[-1]["resolution"] == "1s"
+    assert isinstance(response.json["points"], list)
 
 
 def test_winhttp_registry_builder_renders_and_generates_static_binary(

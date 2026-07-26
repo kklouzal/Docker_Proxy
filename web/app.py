@@ -169,6 +169,7 @@ from services.ssl_errors_store import (
 from services.sslfilter_store import get_sslfilter_store as _default_get_sslfilter_store
 from services.sslfilter_store import normalize_src_net_rule, validate_domain_rule
 from services.timeseries_store import (
+    canonicalize_resolution_name as _canonicalize_timeseries_resolution_name,
     get_timeseries_store as _default_get_timeseries_store,
 )
 from services.ui_support import (
@@ -8003,7 +8004,7 @@ def winhttp_registry_builder():
 
 @app.route("/api/timeseries", methods=["GET"])
 def api_timeseries():
-    res = (request.args.get("resolution") or "1s").strip()
+    res = _canonicalize_timeseries_resolution_name(request.args.get("resolution"))
     window_i = _query_int_arg("window", default=60, minimum=10, maximum=365 * 24 * 3600)
     limit_i = _query_int_arg("limit", default=500)
 
