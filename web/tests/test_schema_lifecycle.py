@@ -241,6 +241,87 @@ class _CurrentSchemaConn:
         return _Result()
 
 
+def _split_top_level_sql_defs(definitions: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    for index, char in enumerate(definitions):
+        if char == "(":
+            depth += 1
+        elif char == ")" and depth:
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(definitions[start:index].strip())
+            start = index + 1
+    tail = definitions[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _column_names_from_create_table(sql: str) -> list[str]:
+    body = sql[sql.index("(") + 1 : sql.rindex(")")]
+    names: list[str] = []
+    for definition in _split_top_level_sql_defs(body):
+        first = definition.split(maxsplit=1)[0].strip("`").lower()
+        if first in {
+            "primary",
+            "key",
+            "index",
+            "unique",
+            "constraint",
+            "foreign",
+        }:
+            continue
+        names.append(first)
+    return names
+
+
+class _FreshLazySchemaConn:
+    def __init__(self) -> None:
+        self.ops: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql: str, params=()):
+        text = " ".join(str(sql).split())
+        self.ops.append(text)
+        if text.startswith("SELECT version, name, checksum, status, error FROM schema_migrations"):
+            return _Result()
+        if text.startswith("CREATE TABLE IF NOT EXISTS "):
+            columns = _column_names_from_create_table(text)
+            assert len(columns) == len(set(columns))
+            return _Result()
+        msg = f"unexpected SQL: {text}"
+        raise AssertionError(msg)
+
+
+def test_sslfilter_lazy_fresh_schema_has_unique_columns(monkeypatch) -> None:
+    from services.sslfilter_store import SslFilterStore
+
+    conn = _FreshLazySchemaConn()
+    store = SslFilterStore()
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+
+    store.init_db()
+
+    sslfilter_domains_ddl = next(
+        op
+        for op in conn.ops
+        if op.startswith("CREATE TABLE IF NOT EXISTS sslfilter_domains(")
+    )
+    assert _column_names_from_create_table(sslfilter_domains_ddl) == [
+        "proxy_id",
+        "policy",
+        "domain",
+        "added_ts",
+    ]
+
+
 def test_lazy_store_init_db_skips_hot_path_ddl_when_schema_current(tmp_path, monkeypatch) -> None:
     from services.adblock_artifacts import AdblockArtifactStore
     from services.adblock_store import AdblockStore
