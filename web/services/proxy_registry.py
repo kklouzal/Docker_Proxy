@@ -123,7 +123,7 @@ def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac")
     query = parsed.query
     if query:
         decoded_query = unquote(query)
-        if _has_unsafe_query_text(decoded_query):
+        if "\\" in decoded_query or _has_unsafe_query_text(decoded_query):
             return fallback
     return f"{path}?{query}" if query else path
 
