@@ -208,7 +208,7 @@ def _ensure_registered(conn: Any, proxy_key: str) -> None:
             f"Proxy {proxy_key!r} is not registered; proxy-scoped writes are blocked.",
         )
     status = str(_row_value(row, "status") or "unknown")
-    if status in {"renaming", "rename_pending", "removing", "remove_pending"}:
+    if status in {"renaming", "rename_pending", "removing", "remove_pending", "removed"}:
         raise ProxyLifecycleWriteError(
             f"Proxy {proxy_key!r} is in lifecycle status {status!r}; proxy-scoped writes are blocked.",
         )

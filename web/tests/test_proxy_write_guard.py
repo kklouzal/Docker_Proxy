@@ -113,6 +113,15 @@ def test_proxy_write_guard_cache_invalidates_and_expires(monkeypatch) -> None:
         guard.resolve_proxy_write_id(conn, "edge-a", use_cache=True)
 
 
+def test_proxy_write_guard_fails_closed_for_removed_registry_status(monkeypatch) -> None:
+    guard = _guard_module(monkeypatch)
+    conn = _GuardConn()
+    conn.instances["edge-a"] = "removed"
+
+    with pytest.raises(guard.ProxyLifecycleWriteError, match="lifecycle status 'removed'"):
+        guard.resolve_proxy_write_id(conn, "edge-a")
+
+
 def test_proxy_write_guard_fails_closed_for_metadata_errors(monkeypatch) -> None:
     guard = _guard_module(monkeypatch)
     conn = _GuardConn()
