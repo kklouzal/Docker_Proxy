@@ -165,6 +165,49 @@ def test_request_host_rejects_single_label_dns_authority(pac_http) -> None:
     assert pac_http.request_host_from_headers({"Host": "Proxy:3128"}) == "127.0.0.1"
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "localhost.localdomain",
+        "api.localhost:8080",
+        "printer.local",
+        "proxy.internal:3128",
+        "gateway.home.arpa",
+    ],
+)
+def test_request_host_rejects_reserved_internal_dns_authorities(
+    pac_http, host: str
+) -> None:
+    assert pac_http.request_host_from_headers({"Host": host}) == "127.0.0.1"
+
+
+def test_request_host_falls_back_to_host_when_trusted_forwarded_host_is_reserved(
+    monkeypatch, pac_http
+) -> None:
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
+
+    assert (
+        pac_http.request_host_from_headers(
+            {
+                "Host": "public-proxy.example:5000",
+                "X-Forwarded-Host": "api.localhost:8080",
+            },
+            "198.51.100.10",
+        )
+        == "public-proxy.example:5000"
+    )
+    assert (
+        pac_http.request_host_from_headers(
+            {
+                "Host": "public-proxy.example:5000",
+                "X-Forwarded-Host": "proxy.internal, public-proxy.example:5000",
+            },
+            "198.51.100.10",
+        )
+        == "public-proxy.example:5000"
+    )
+
+
 def test_request_host_lowercases_trusted_forwarded_dns_authority(
     monkeypatch, pac_http
 ) -> None:

@@ -22,7 +22,10 @@ from services.proxy_registry import (
     _safe_decoded_path_segments,
     normalize_public_pac_path,
 )
-from services.public_endpoint import _is_ambiguous_ipv4_host
+from services.public_endpoint import (
+    _is_ambiguous_ipv4_host,
+    _is_reserved_public_dns_host,
+)
 
 PAC_CONTENT_TYPE = "application/x-ns-proxy-autoconfig"
 DEFAULT_PUBLIC_PAC_PATHS = frozenset({"/proxy.pac", "/wpad.dat"})
@@ -108,7 +111,11 @@ def _normalize_request_authority_host(value: str) -> str:
     try:
         parsed_ip = ipaddress.ip_address(value)
     except ValueError:
-        if _is_ambiguous_ipv4_host(value) or not _valid_dns_host(value):
+        if (
+            _is_ambiguous_ipv4_host(value)
+            or not _valid_dns_host(value)
+            or _is_reserved_public_dns_host(value)
+        ):
             return ""
         return value.lower()
     return str(parsed_ip)
