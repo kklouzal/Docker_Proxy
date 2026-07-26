@@ -400,6 +400,20 @@
       main.appendChild(detail);
     }
 
+    if (operation.is_global_certificate_revert) {
+      const warning = document.createElement('div');
+      warning.className = 'inline-warning certificate-global-revert-warning';
+      const warningTitle = document.createElement('strong');
+      warningTitle.textContent = 'Global/shared CA rollback.';
+      const proxyLabel = document.body.dataset.activeProxyId || operation.proxy_id || 'the selected proxy';
+      const context = document.createTextNode(` This revert changes the active certificate bundle desired state for every registered proxy, not just ${proxyLabel}.`);
+      const evidence = document.createElement('span');
+      evidence.className = 'small';
+      evidence.textContent = ` Failed target revision ${operation.global_revert_target_revision || 'unknown'} (requested hash ${operation.global_revert_target_short_sha || 'unknown'}); current active revision ${operation.global_revert_current_revision || 'unknown'} (current hash ${operation.global_revert_current_short_sha || 'unknown'}); rollback target revision ${operation.global_revert_rollback_revision || 'unknown'} (target hash ${operation.global_revert_rollback_short_sha || 'unknown'}).`;
+      warning.append(warningTitle, context, evidence);
+      main.appendChild(warning);
+    }
+
     const actions = document.createElement('div');
     actions.className = 'operation-actions';
     if (operation.can_revert && status === 'failed' && operation.operation_id) {
@@ -427,10 +441,34 @@
       const button = document.createElement('button');
       button.className = 'btn danger';
       button.type = 'submit';
-      button.textContent = 'Revert';
-      button.dataset.confirmMessage = `Revert failed operation #${operation.operation_id || 0}?`;
       button.dataset.pendingLabel = 'Reverting...';
-      form.appendChild(button);
+      if (operation.is_global_certificate_revert) {
+        const label = document.createElement('label');
+        label.className = 'checkbox-row small';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.name = 'confirm_global_certificate_revert';
+        checkbox.value = '1';
+        checkbox.required = true;
+        label.append(checkbox, document.createTextNode(' Confirm global CA rollback for all registered proxies'));
+        form.appendChild(label);
+        button.textContent = 'Revert global CA';
+        button.dataset.confirmMessage = `Revert global CA from failed operation #${operation.operation_id || 0} for all registered proxies?`;
+        if (!operation.global_revert_target_matches_active) {
+          button.disabled = true;
+        }
+        form.appendChild(button);
+        if (!operation.global_revert_target_matches_active) {
+          const staleNote = document.createElement('span');
+          staleNote.className = 'small muted';
+          staleNote.textContent = 'Disabled because the current active certificate bundle no longer matches this failed operation target.';
+          form.appendChild(staleNote);
+        }
+      } else {
+        button.textContent = 'Revert';
+        button.dataset.confirmMessage = `Revert failed operation #${operation.operation_id || 0}?`;
+        form.appendChild(button);
+      }
       actions.appendChild(form);
     } else if (operation.can_revert) {
       const note = document.createElement('span');

@@ -1729,6 +1729,78 @@ def test_operations_page_labels_certificate_revert_as_global_with_hash_evidence(
     assert "Confirm global CA rollback for all registered proxies" in body
 
 
+def test_operations_api_marks_stale_certificate_revert_for_spa(
+    monkeypatch, tmp_path
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="OLD CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    failed_target = SimpleNamespace(
+        revision_id=12,
+        fullchain_pem="FAILED CERT\n",
+        bundle_sha256="failed-sha",
+        original_pfx_bytes=None,
+    )
+    newer = SimpleNamespace(
+        revision_id=15,
+        fullchain_pem="NEWER CERT\n",
+        bundle_sha256="newer-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=newer)
+    bundles._revisions[previous.revision_id] = previous
+    bundles._revisions[failed_target.revision_id] = failed_target
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    operation = loaded.operation_ledger.create_operation(
+        "edge-a",
+        operation_type="certificate_apply",
+        subject="Certificate bundle",
+        summary="Certificate revision 12 failed on edge-a.",
+        target_kind="certificate_revision",
+        target_ref=failed_target.revision_id,
+        rollback_kind="certificate_revision",
+        rollback_ref=previous.revision_id,
+        request_hash=failed_target.bundle_sha256,
+    )
+    operation.status = "failed"
+    monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "edge-a")
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/operations?proxy_id=edge-a")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    [row] = payload["operations"]
+    assert row["operation_id"] == operation.operation_id
+    assert row["is_global_certificate_revert"] is True
+    assert row["global_revert_target_revision"] == "12"
+    assert row["global_revert_target_short_sha"] == "failed-sha"
+    assert row["global_revert_current_revision"] == 15
+    assert row["global_revert_current_short_sha"] == "newer-sha"
+    assert row["global_revert_rollback_revision"] == "9"
+    assert row["global_revert_rollback_short_sha"] == "previous-sha"
+    assert row["global_revert_target_matches_active"] is False
+    assert "global_revert_current_sha" not in row
+    assert "global_revert_rollback_sha" not in row
+
+
+def test_operation_spa_renderer_preserves_global_certificate_revert_gate() -> None:
+    spa_js = (Path(__file__).resolve().parents[1] / "static" / "spa.js").read_text()
+
+    assert "operation.is_global_certificate_revert" in spa_js
+    assert "Global/shared CA rollback" in spa_js
+    assert "confirm_global_certificate_revert" in spa_js
+    assert "Confirm global CA rollback for all registered proxies" in spa_js
+    assert "Revert global CA" in spa_js
+    assert "global_revert_target_matches_active" in spa_js
+    assert "current active certificate bundle no longer matches" in spa_js
+
+
 def test_operations_page_surfaces_revert_success(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()

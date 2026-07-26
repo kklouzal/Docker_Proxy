@@ -785,6 +785,17 @@ def _certificate_global_revert_context(
     }
 
 
+def _operation_global_certificate_context(
+    operation: Any,
+    bundle_store: Any | None = None,
+) -> dict[str, Any]:
+    if str(getattr(operation, "rollback_kind", "") or "") != "certificate_revision":
+        return {"is_global_certificate_revert": False}
+    if bundle_store is None:
+        bundle_store = get_certificate_bundles()
+    return _certificate_global_revert_context(operation, bundle_store)
+
+
 def _operation_template_rows(operations: list[Any]) -> list[Any]:
     bundle_store = None
     rows = []
@@ -796,7 +807,7 @@ def _operation_template_rows(operations: list[Any]) -> list[Any]:
         if str(getattr(row, "rollback_kind", "") or "") == "certificate_revision":
             if bundle_store is None:
                 bundle_store = get_certificate_bundles()
-            context = _certificate_global_revert_context(row, bundle_store)
+            context = _operation_global_certificate_context(row, bundle_store)
             for key, value in context.items():
                 try:
                     setattr(row, key, value)
@@ -807,6 +818,47 @@ def _operation_template_rows(operations: list[Any]) -> list[Any]:
                 row.is_global_certificate_revert = False
             except Exception:
                 pass
+        rows.append(row)
+    return rows
+
+
+_OPERATION_API_GLOBAL_CERTIFICATE_CONTEXT_FIELDS = {
+    "is_global_certificate_revert",
+    "global_revert_current_revision",
+    "global_revert_current_short_sha",
+    "global_revert_target_revision",
+    "global_revert_target_short_sha",
+    "global_revert_rollback_revision",
+    "global_revert_rollback_short_sha",
+    "global_revert_target_matches_active",
+}
+
+
+def _operation_api_rows(operations: list[Any]) -> list[dict[str, Any]]:
+    bundle_store = None
+    rows: list[dict[str, Any]] = []
+    for operation in operations:
+        if callable(getattr(operation, "to_dict", None)):
+            payload = operation.to_dict()
+        else:
+            payload = dict(getattr(operation, "__dict__", {}))
+        if not isinstance(payload, dict):
+            payload = {}
+        row = {key: value for key, value in payload.items() if not callable(value)}
+        if str(row.get("rollback_kind") or "") == "certificate_revision":
+            if bundle_store is None:
+                bundle_store = get_certificate_bundles()
+            context = _operation_global_certificate_context(
+                SimpleNamespace(**row),
+                bundle_store,
+            )
+            row.update(
+                {
+                    key: value
+                    for key, value in context.items()
+                    if key in _OPERATION_API_GLOBAL_CERTIFICATE_CONTEXT_FIELDS
+                },
+            )
         rows.append(row)
     return rows
 
@@ -5204,7 +5256,7 @@ def api_operations():
             {
                 "ok": True,
                 "proxy_id": proxy_id,
-                "operations": [op.to_dict() for op in operations],
+                "operations": _operation_api_rows(operations),
                 "counts": counts,
             },
         ), 200
