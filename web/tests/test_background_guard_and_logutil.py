@@ -91,7 +91,7 @@ def test_acquire_background_lock_is_idempotent_for_current_process(monkeypatch, 
     assert opened == [str(lock_path)]
     assert flocked == [101]
     assert background_guard._LOCK_FD == 101
-    assert background_guard._LOCK_PID == background_guard.os.getpid()
+    assert background_guard.os.getpid() == background_guard._LOCK_PID
 
 
 def test_should_log_throttles_by_key_and_interval(monkeypatch) -> None:

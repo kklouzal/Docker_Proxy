@@ -43,7 +43,7 @@ def acquire_background_lock() -> bool:
     if (os.environ.get("BACKGROUND_FORCE") or "").strip() == "1":
         return True
 
-    if _LOCK_FD is not None and _LOCK_PID == os.getpid():
+    if _LOCK_FD is not None and os.getpid() == _LOCK_PID:
         return True
 
     lock_path = (
