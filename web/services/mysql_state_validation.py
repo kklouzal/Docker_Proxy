@@ -180,12 +180,33 @@ def _index_names(conn: Any) -> set[tuple[str, str]]:
     }
 
 
-def _count_row(conn: Any, sql: str) -> int:
-    row = conn.execute(sql).fetchone()
+class MysqlStateInvariantQueryError(RuntimeError):
+    def __init__(self, context: str, reason: str) -> None:
+        super().__init__(f"failed MySQL state validation invariant query ({context}): {reason}")
+        self.context = context
+        self.reason = reason
+
+    @classmethod
+    def from_exception(cls, context: str, exc: Exception) -> MysqlStateInvariantQueryError:
+        return cls(context, f"{type(exc).__name__}: {exc}")
+
+
+def _count_row(conn: Any, sql: str, *, context: str) -> int:
     try:
-        return int(_row_value(row, "n") or _row_value(row, "COUNT(*)") or _row_value(row, "n", 0) or 0)
-    except Exception:
-        return 0
+        row = conn.execute(sql).fetchone()
+        value = _row_value(row, "n")
+        if value is None:
+            value = _row_value(row, "COUNT(*)")
+        if value is None:
+            value = _row_value(row, "n", 0)
+        if value is None:
+            reason = "COUNT query returned no count value"
+            raise MysqlStateInvariantQueryError(context, reason)
+        return int(value)
+    except MysqlStateInvariantQueryError:
+        raise
+    except Exception as exc:
+        raise MysqlStateInvariantQueryError.from_exception(context, exc) from exc
 
 
 def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore") -> MysqlStateValidationResult:
@@ -246,147 +267,162 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
         if missing_indexes:
             result.error("missing generated/idempotency indexes: " + ", ".join(missing_indexes))
 
-        duplicate_active_config = _count_row(
-            active_conn,
-            """
-            SELECT COUNT(*) AS n
-            FROM (
-                SELECT proxy_id
-                FROM proxy_config_revisions
-                WHERE is_active=1
-                GROUP BY proxy_id
-                HAVING COUNT(*) > 1
-            ) duplicates
-            """,
-        )
-        if duplicate_active_config:
-            result.error(f"proxy_config_revisions has {duplicate_active_config} proxy scopes with multiple active rows")
+        try:
+            duplicate_active_config = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM (
+                    SELECT proxy_id
+                    FROM proxy_config_revisions
+                    WHERE is_active=1
+                    GROUP BY proxy_id
+                    HAVING COUNT(*) > 1
+                ) duplicates
+                """,
+                context="proxy_config_revisions duplicate active proxy scopes",
+            )
+            if duplicate_active_config:
+                result.error(f"proxy_config_revisions has {duplicate_active_config} proxy scopes with multiple active rows")
 
-        active_certificate = _count_row(
-            active_conn,
-            "SELECT COUNT(*) AS n FROM certificate_bundle_revisions WHERE is_active=1",
-        )
-        if active_certificate > 1:
-            result.error("certificate_bundle_revisions has multiple active rows")
+            active_certificate = _count_row(
+                active_conn,
+                "SELECT COUNT(*) AS n FROM certificate_bundle_revisions WHERE is_active=1",
+                context="certificate_bundle_revisions active rows",
+            )
+            if active_certificate > 1:
+                result.error("certificate_bundle_revisions has multiple active rows")
 
-        active_adblock = _count_row(
-            active_conn,
-            "SELECT COUNT(*) AS n FROM adblock_artifact_revisions WHERE is_active=1",
-        )
-        if active_adblock > 1:
-            result.error("adblock_artifact_revisions has multiple active rows")
+            active_adblock = _count_row(
+                active_conn,
+                "SELECT COUNT(*) AS n FROM adblock_artifact_revisions WHERE is_active=1",
+                context="adblock_artifact_revisions active rows",
+            )
+            if active_adblock > 1:
+                result.error("adblock_artifact_revisions has multiple active rows")
 
-        duplicate_active_ops = _count_row(
-            active_conn,
-            """
-            SELECT COUNT(*) AS n
-            FROM (
-                SELECT proxy_id, request_key
+            duplicate_active_ops = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM (
+                    SELECT proxy_id, request_key
+                    FROM proxy_operations
+                    WHERE status IN ('pending','applying') AND request_key IS NOT NULL
+                    GROUP BY proxy_id, request_key
+                    HAVING COUNT(*) > 1
+                ) duplicates
+                """,
+                context="proxy_operations duplicate active idempotency keys",
+            )
+            if duplicate_active_ops:
+                result.error(f"proxy_operations has {duplicate_active_ops} duplicate active idempotency keys")
+
+            orphan_aliases = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM proxy_id_aliases alias
+                LEFT JOIN proxy_instances proxy ON proxy.proxy_id=alias.proxy_id
+                WHERE proxy.proxy_id IS NULL
+                """,
+                context="proxy_id_aliases orphan targets",
+            )
+            if orphan_aliases:
+                result.error(f"proxy_id_aliases has {orphan_aliases} aliases targeting missing proxy_instances rows")
+
+            tombstone_conflicts = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM proxy_lifecycle_tombstones tombstone
+                JOIN proxy_instances proxy ON proxy.proxy_id=tombstone.proxy_id
+                WHERE tombstone.action IN ('removed','renamed')
+                """,
+                context="proxy_lifecycle_tombstones terminal live conflicts",
+            )
+            if tombstone_conflicts:
+                result.error(f"proxy_lifecycle_tombstones has {tombstone_conflicts} terminal tombstone(s) that still have live proxy_instances rows")
+
+            alias_tombstone_conflicts = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM proxy_id_aliases alias
+                JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=alias.alias_proxy_id
+                WHERE tombstone.action NOT IN ('renamed')
+                """,
+                context="proxy_id_aliases lifecycle tombstone consistency",
+            )
+            if alias_tombstone_conflicts:
+                result.error(f"proxy_id_aliases has {alias_tombstone_conflicts} aliases inconsistent with lifecycle tombstones")
+
+            orphan_config_revisions = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM proxy_config_revisions revision
+                LEFT JOIN proxy_instances proxy ON proxy.proxy_id=revision.proxy_id
+                LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=revision.proxy_id
+                WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
+                """,
+                context="proxy_config_revisions orphan ownership",
+            )
+            if orphan_config_revisions:
+                result.error(f"proxy_config_revisions has {orphan_config_revisions} row(s) owned by missing proxies without tombstones")
+
+            orphan_operations = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM proxy_operations op
+                LEFT JOIN proxy_instances proxy ON proxy.proxy_id=op.proxy_id
+                LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=op.proxy_id
+                WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
+                """,
+                context="proxy_operations orphan ownership",
+            )
+            if orphan_operations:
+                result.error(f"proxy_operations has {orphan_operations} row(s) owned by missing proxies without tombstones")
+
+            invalid_operation_states = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
                 FROM proxy_operations
-                WHERE status IN ('pending','applying') AND request_key IS NOT NULL
-                GROUP BY proxy_id, request_key
-                HAVING COUNT(*) > 1
-            ) duplicates
-            """,
-        )
-        if duplicate_active_ops:
-            result.error(f"proxy_operations has {duplicate_active_ops} duplicate active idempotency keys")
+                WHERE status NOT IN ('pending','applying','applied','superseded','failed')
+                """,
+                context="proxy_operations invalid status values",
+            )
+            if invalid_operation_states:
+                result.error(f"proxy_operations has {invalid_operation_states} row(s) with invalid status values")
 
-        orphan_aliases = _count_row(
-            active_conn,
-            """
-            SELECT COUNT(*) AS n
-            FROM proxy_id_aliases alias
-            LEFT JOIN proxy_instances proxy ON proxy.proxy_id=alias.proxy_id
-            WHERE proxy.proxy_id IS NULL
-            """,
-        )
-        if orphan_aliases:
-            result.error(f"proxy_id_aliases has {orphan_aliases} aliases targeting missing proxy_instances rows")
+            stale_claim_tokens = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM proxy_operations
+                WHERE status NOT IN ('pending','applying')
+                  AND (request_key IS NOT NULL OR claim_token IS NOT NULL)
+                """,
+                context="proxy_operations terminal active request/claim state",
+            )
+            if stale_claim_tokens:
+                result.error(f"proxy_operations has {stale_claim_tokens} terminal row(s) retaining active request/claim state")
 
-        tombstone_conflicts = _count_row(
-            active_conn,
-            """
-            SELECT COUNT(*) AS n
-            FROM proxy_lifecycle_tombstones tombstone
-            JOIN proxy_instances proxy ON proxy.proxy_id=tombstone.proxy_id
-            WHERE tombstone.action IN ('removed','renamed')
-            """,
-        )
-        if tombstone_conflicts:
-            result.error(f"proxy_lifecycle_tombstones has {tombstone_conflicts} terminal tombstone(s) that still have live proxy_instances rows")
-
-        alias_tombstone_conflicts = _count_row(
-            active_conn,
-            """
-            SELECT COUNT(*) AS n
-            FROM proxy_id_aliases alias
-            JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=alias.alias_proxy_id
-            WHERE tombstone.action NOT IN ('renamed')
-            """,
-        )
-        if alias_tombstone_conflicts:
-            result.error(f"proxy_id_aliases has {alias_tombstone_conflicts} aliases inconsistent with lifecycle tombstones")
-
-        orphan_config_revisions = _count_row(
-            active_conn,
-            """
-            SELECT COUNT(*) AS n
-            FROM proxy_config_revisions revision
-            LEFT JOIN proxy_instances proxy ON proxy.proxy_id=revision.proxy_id
-            LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=revision.proxy_id
-            WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
-            """,
-        )
-        if orphan_config_revisions:
-            result.error(f"proxy_config_revisions has {orphan_config_revisions} row(s) owned by missing proxies without tombstones")
-
-        orphan_operations = _count_row(
-            active_conn,
-            """
-            SELECT COUNT(*) AS n
-            FROM proxy_operations op
-            LEFT JOIN proxy_instances proxy ON proxy.proxy_id=op.proxy_id
-            LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=op.proxy_id
-            WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
-            """,
-        )
-        if orphan_operations:
-            result.error(f"proxy_operations has {orphan_operations} row(s) owned by missing proxies without tombstones")
-
-        invalid_operation_states = _count_row(
-            active_conn,
-            """
-            SELECT COUNT(*) AS n
-            FROM proxy_operations
-            WHERE status NOT IN ('pending','applying','applied','superseded','failed')
-            """,
-        )
-        if invalid_operation_states:
-            result.error(f"proxy_operations has {invalid_operation_states} row(s) with invalid status values")
-
-        stale_claim_tokens = _count_row(
-            active_conn,
-            """
-            SELECT COUNT(*) AS n
-            FROM proxy_operations
-            WHERE status NOT IN ('pending','applying')
-              AND (request_key IS NOT NULL OR claim_token IS NOT NULL)
-            """,
-        )
-        if stale_claim_tokens:
-            result.error(f"proxy_operations has {stale_claim_tokens} terminal row(s) retaining active request/claim state")
-
-        active_lifecycle = _count_row(
-            active_conn,
-            """
-            SELECT COUNT(*) AS n
-            FROM proxy_instances
-            WHERE status IN ('renaming','rename_pending','removing','remove_pending')
-            """,
-        )
-        if active_lifecycle:
-            result.warning(f"{active_lifecycle} proxy lifecycle transition(s) are in progress or paused")
+            active_lifecycle = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM proxy_instances
+                WHERE status IN ('renaming','rename_pending','removing','remove_pending')
+                """,
+                context="proxy_instances active lifecycle transitions",
+            )
+            if active_lifecycle:
+                result.warning(f"{active_lifecycle} proxy lifecycle transition(s) are in progress or paused")
+        except MysqlStateInvariantQueryError as exc:
+            result.error(str(exc))
     finally:
         if owns_connection:
             active_conn.close()

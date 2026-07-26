@@ -33,6 +33,7 @@ class _ValidationConn:
         schema_checksum: str | None = None,
         terminal_claims: int = 0,
         orphan_operations: int = 0,
+        count_query_error_contains: str | None = None,
     ) -> None:
         self.tables = set(module._REQUIRED_TABLES) - set(missing_tables)
         self.columns = set(module._REQUIRED_COLUMNS) - set(missing_columns)
@@ -41,6 +42,7 @@ class _ValidationConn:
         self.schema_checksum = schema_checksum or module.latest_schema_checksum()
         self.terminal_claims = terminal_claims
         self.orphan_operations = orphan_operations
+        self.count_query_error_contains = count_query_error_contains
 
     def execute(self, sql, params=()):
         text = " ".join(str(sql).lower().split())
@@ -62,6 +64,9 @@ class _ValidationConn:
             )
         if "from schema_migrations" in text:
             return _Result([{"status": "applied", "checksum": self.schema_checksum, "error": ""}])
+        if self.count_query_error_contains and self.count_query_error_contains in text:
+            message = "simulated invariant query failure"
+            raise RuntimeError(message)
         if "from proxy_operations" in text and "having count(*) > 1" in text:
             return _Result([{"n": self.duplicate_ops}])
         if "from proxy_operations" in text and "request_key is not null" in text:
@@ -112,6 +117,27 @@ def test_mysql_state_validation_fails_duplicate_active_operation_keys() -> None:
 
     assert result.ok is False
     assert any("duplicate active idempotency keys" in error for error in result.errors)
+
+
+def test_mysql_state_validation_fails_invariant_query_errors() -> None:
+    _add_web_to_path()
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(
+            mysql_state_validation,
+            count_query_error_contains="select proxy_id, request_key",
+        ),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert any(
+        "failed MySQL state validation invariant query" in error
+        and "proxy_operations duplicate active idempotency keys" in error
+        and "simulated invariant query failure" in error
+        for error in result.errors
+    )
 
 
 def test_mysql_state_validation_fails_missing_operation_status_before_invariants() -> None:
