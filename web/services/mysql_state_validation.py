@@ -385,6 +385,74 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
             if orphan_operations:
                 result.error(f"proxy_operations has {orphan_operations} row(s) owned by missing proxies without tombstones")
 
+            orphan_pac_profiles = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM pac_profiles pac_profile
+                LEFT JOIN proxy_instances proxy ON proxy.proxy_id=pac_profile.proxy_id
+                LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=pac_profile.proxy_id
+                WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
+                """,
+                context="pac_profiles orphan ownership",
+            )
+            if orphan_pac_profiles:
+                result.error(f"pac_profiles has {orphan_pac_profiles} row(s) owned by missing proxies without tombstones")
+
+            orphan_pac_direct_domains = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM pac_direct_domains direct_domain
+                LEFT JOIN pac_profiles pac_profile ON pac_profile.id=direct_domain.profile_id
+                WHERE pac_profile.id IS NULL
+                """,
+                context="pac_direct_domains orphan profile ownership",
+            )
+            if orphan_pac_direct_domains:
+                result.error(f"pac_direct_domains has {orphan_pac_direct_domains} row(s) with missing pac_profiles parents")
+
+            orphan_pac_direct_dst_nets = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM pac_direct_dst_nets direct_net
+                LEFT JOIN pac_profiles pac_profile ON pac_profile.id=direct_net.profile_id
+                WHERE pac_profile.id IS NULL
+                """,
+                context="pac_direct_dst_nets orphan profile ownership",
+            )
+            if orphan_pac_direct_dst_nets:
+                result.error(f"pac_direct_dst_nets has {orphan_pac_direct_dst_nets} row(s) with missing pac_profiles parents")
+
+            orphan_pac_backup_proxies = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM pac_backup_proxies backup_proxy
+                LEFT JOIN proxy_instances proxy ON proxy.proxy_id=backup_proxy.proxy_id
+                LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=backup_proxy.proxy_id
+                WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
+                """,
+                context="pac_backup_proxies orphan ownership",
+            )
+            if orphan_pac_backup_proxies:
+                result.error(f"pac_backup_proxies has {orphan_pac_backup_proxies} row(s) owned by missing proxies without tombstones")
+
+            orphan_pac_chain_settings = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM pac_proxy_chain_settings chain_settings
+                LEFT JOIN proxy_instances proxy ON proxy.proxy_id=chain_settings.proxy_id
+                LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=chain_settings.proxy_id
+                WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
+                """,
+                context="pac_proxy_chain_settings orphan ownership",
+            )
+            if orphan_pac_chain_settings:
+                result.error(f"pac_proxy_chain_settings has {orphan_pac_chain_settings} row(s) owned by missing proxies without tombstones")
+
             invalid_operation_states = _count_row(
                 active_conn,
                 """

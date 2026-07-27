@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def _add_web_to_path() -> None:
     web_dir = Path(__file__).resolve().parents[1]
@@ -33,6 +35,11 @@ class _ValidationConn:
         schema_checksum: str | None = None,
         terminal_claims: int = 0,
         orphan_operations: int = 0,
+        orphan_pac_profiles: int = 0,
+        orphan_pac_direct_domains: int = 0,
+        orphan_pac_direct_dst_nets: int = 0,
+        orphan_pac_backup_proxies: int = 0,
+        orphan_pac_chain_settings: int = 0,
         count_query_error_contains: str | None = None,
     ) -> None:
         self.tables = set(module._REQUIRED_TABLES) - set(missing_tables)
@@ -42,6 +49,11 @@ class _ValidationConn:
         self.schema_checksum = schema_checksum or module.latest_schema_checksum()
         self.terminal_claims = terminal_claims
         self.orphan_operations = orphan_operations
+        self.orphan_pac_profiles = orphan_pac_profiles
+        self.orphan_pac_direct_domains = orphan_pac_direct_domains
+        self.orphan_pac_direct_dst_nets = orphan_pac_direct_dst_nets
+        self.orphan_pac_backup_proxies = orphan_pac_backup_proxies
+        self.orphan_pac_chain_settings = orphan_pac_chain_settings
         self.count_query_error_contains = count_query_error_contains
 
     def execute(self, sql, params=()):
@@ -73,6 +85,16 @@ class _ValidationConn:
             return _Result([{"n": self.terminal_claims}])
         if "from proxy_operations op" in text and "proxy.proxy_id is null" in text:
             return _Result([{"n": self.orphan_operations}])
+        if "from pac_profiles pac_profile" in text and "proxy.proxy_id is null" in text:
+            return _Result([{"n": self.orphan_pac_profiles}])
+        if "from pac_direct_domains direct_domain" in text and "pac_profile.id is null" in text:
+            return _Result([{"n": self.orphan_pac_direct_domains}])
+        if "from pac_direct_dst_nets direct_net" in text and "pac_profile.id is null" in text:
+            return _Result([{"n": self.orphan_pac_direct_dst_nets}])
+        if "from pac_backup_proxies backup_proxy" in text and "proxy.proxy_id is null" in text:
+            return _Result([{"n": self.orphan_pac_backup_proxies}])
+        if "from pac_proxy_chain_settings chain_settings" in text and "proxy.proxy_id is null" in text:
+            return _Result([{"n": self.orphan_pac_chain_settings}])
         return _Result([{"n": 0}])
 
     def close(self):
@@ -211,6 +233,44 @@ def test_mysql_state_validation_fails_orphan_operation_ownership() -> None:
 
     assert result.ok is False
     assert any("owned by missing proxies" in error for error in result.errors)
+
+
+@pytest.mark.parametrize(
+    ("conn_kwargs", "expected_error"),
+    [
+        (
+            {"orphan_pac_profiles": 1},
+            "pac_profiles has 1 row(s) owned by missing proxies without tombstones",
+        ),
+        (
+            {"orphan_pac_direct_domains": 2},
+            "pac_direct_domains has 2 row(s) with missing pac_profiles parents",
+        ),
+        (
+            {"orphan_pac_direct_dst_nets": 3},
+            "pac_direct_dst_nets has 3 row(s) with missing pac_profiles parents",
+        ),
+        (
+            {"orphan_pac_backup_proxies": 4},
+            "pac_backup_proxies has 4 row(s) owned by missing proxies without tombstones",
+        ),
+        (
+            {"orphan_pac_chain_settings": 5},
+            "pac_proxy_chain_settings has 5 row(s) owned by missing proxies without tombstones",
+        ),
+    ],
+)
+def test_mysql_state_validation_fails_pac_persistence_orphans(conn_kwargs, expected_error) -> None:
+    _add_web_to_path()
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(mysql_state_validation, **conn_kwargs),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert expected_error in result.errors
 
 
 def test_mysql_state_validation_cli_returns_failure_for_invalid_state(monkeypatch, capsys) -> None:
