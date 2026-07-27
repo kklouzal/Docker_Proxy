@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 from flask import Flask, Response, abort, jsonify, make_response, request
 from markupsafe import escape
-from werkzeug.exceptions import BadRequest
 from services.errors import public_error_message
 from services.http_optimizations import install_http_optimizations
 from services.pac_http import (
@@ -28,6 +27,7 @@ from services.policy_requests import get_policy_request_store, normalize_client_
 from services.proxy_context import get_proxy_id
 from services.proxy_logs import proxy_log_status_code, read_proxy_log
 from services.version_status import current_component_metadata
+from werkzeug.exceptions import BadRequest
 
 from proxy.agent import start_agent
 from proxy.runtime import get_runtime
