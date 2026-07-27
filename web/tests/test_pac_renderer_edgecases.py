@@ -740,10 +740,14 @@ def test_rendered_pac_preserves_exact_and_wildcard_direct_domain_semantics() -> 
     )
 
     assert rendered.count('if (host === "example.com") return \'DIRECT\';') == 1
-    assert rendered.count('if (dnsDomainIs(host, ".example.com")) return \'DIRECT\';') == 1
+    assert (
+        rendered.count(
+            'if (host === "example.com" || dnsDomainIs(host, ".example.com")) return \'DIRECT\';'
+        )
+        == 1
+    )
     assert 'if host === "example.com" return \'DIRECT\';' not in rendered
     assert 'if dnsDomainIs(host, ".example.com") return \'DIRECT\';' not in rendered
-    assert 'host === "example.com" || dnsDomainIs(host, ".example.com")' not in rendered
 
 
 def test_rendered_pac_normalizes_stale_direct_domain_inputs() -> None:
@@ -1389,6 +1393,32 @@ def test_profile_pac_keeps_explicit_direct_rules_and_adds_private_when_enabled(
     assert "intranet.example" in rendered
     assert "isInNet(ip, '10.20.0.0', '255.255.0.0')" in rendered
     assert "isInNet(ip, '192.168.0.0', '255.255.0.0')" in rendered
+
+
+def test_profile_pac_wildcard_direct_domain_matches_apex_and_subdomains() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+    from services.pac_profiles_store import PacProfile  # type: ignore
+
+    rendered = pac_renderer._render_profile_pac(
+        PacProfile(
+            id=1,
+            name="Wildcard",
+            client_cidr="",
+            direct_domains=["*.Example.COM"],
+            direct_dst_nets=[],
+            created_ts=0,
+        ),
+        _default_proxy_pac_target(pac_renderer),
+        include_private=False,
+    )
+
+    assert 'host === "example.com" || dnsDomainIs(host, ".example.com")' in rendered
+    assert _evaluate_pac(rendered, "example.com") == "DIRECT"
+    assert _evaluate_pac(rendered, "www.example.com") == "DIRECT"
+    assert _evaluate_pac(rendered, "other.example.net") == (
+        "PROXY proxy.example:3128; DIRECT"
+    )
 
 
 def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:

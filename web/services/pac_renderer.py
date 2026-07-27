@@ -127,7 +127,10 @@ def _domain_match_expression(domain: str) -> str:
     if not normalized:
         return ""
     if wildcard:
-        return f"dnsDomainIs(host, {json.dumps(f'.{normalized}')})"
+        return (
+            f"host === {json.dumps(normalized)} || "
+            f"dnsDomainIs(host, {json.dumps(f'.{normalized}')})"
+        )
     return f"host === {json.dumps(normalized)}"
 
 
