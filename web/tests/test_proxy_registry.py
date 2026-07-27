@@ -199,6 +199,12 @@ def test_public_pac_path_normalization_rejects_unsafe_route_shapes() -> None:
         == "/proxy.pac"
     )
     assert (
+        proxy_registry.normalize_public_pac_path(
+            "/download/wpad.dat?site=lab%255Cevil"
+        )
+        == "/proxy.pac"
+    )
+    assert (
         proxy_registry.normalize_public_pac_path("/download/wpad.dat?site=%0alab")
         == "/proxy.pac"
     )
@@ -213,6 +219,25 @@ def test_public_pac_path_normalization_rejects_unsafe_route_shapes() -> None:
         )
         == ""
     )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/download/%252e%252e/secret.pac",
+        "/download/%252fwpad.dat",
+        "/download/%255cwpad.dat",
+        "https://proxy.example/%252e%252e/secret.pac",
+        "https://proxy.example/download/%252fwpad.dat",
+        "https://proxy.example/download/%255cwpad.dat",
+    ],
+)
+def test_public_pac_path_normalization_rejects_double_encoded_route_shapes(
+    value: str,
+) -> None:
+    proxy_registry = _proxy_registry()
+
+    assert proxy_registry.normalize_public_pac_path(value) == "/proxy.pac"
 
 
 def test_parse_public_pac_url_rejects_fragment_public_pac_url() -> None:
@@ -442,6 +467,23 @@ def test_management_url_normalization_rejects_unsafe_shapes() -> None:
         proxy_registry.normalize_management_url("http://proxy:5000/root#status") == ""
     )
     assert proxy_registry.normalize_management_url("http://proxy:5000/root\nx") == ""
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://proxy.example/%252e%252e/admin",
+        "http://proxy.example/root/%252e%252e/admin",
+        "http://proxy.example/%252fapi/manage",
+        "http://proxy.example/root/%255cadmin",
+    ],
+)
+def test_management_url_normalization_rejects_double_encoded_route_shapes(
+    value: str,
+) -> None:
+    proxy_registry = _proxy_registry()
+
+    assert proxy_registry.normalize_management_url(value) == ""
 
 
 def test_management_url_normalization_rejects_ambiguous_ipv4_hosts() -> None:

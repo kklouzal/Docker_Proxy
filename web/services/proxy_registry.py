@@ -60,6 +60,19 @@ def _has_empty_explicit_authority_port(netloc: str) -> bool:
     return authority.endswith(":") and ":" in authority
 
 
+_MAX_PERCENT_DECODE_PASSES = 8
+
+
+def _bounded_repeated_unquote(value: str) -> str | None:
+    decoded = value
+    for _ in range(_MAX_PERCENT_DECODE_PASSES):
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            return decoded
+        decoded = next_decoded
+    return decoded if unquote(decoded) == decoded else None
+
+
 def _valid_management_dns_host(value: str) -> bool:
     candidate = value.rstrip(".").lower()
     if not candidate or len(candidate) > 253:
@@ -78,18 +91,33 @@ def _valid_management_dns_host(value: str) -> bool:
 
 def _safe_decoded_path_segments(path: str) -> list[str] | None:
     raw_segments = path.split("/")
-    decoded_segments = [unquote(segment) for segment in raw_segments]
+    decoded_segments = []
+    repeatedly_decoded_segments = []
+    for segment in raw_segments:
+        decoded_segment = unquote(segment)
+        repeatedly_decoded_segment = _bounded_repeated_unquote(segment)
+        if repeatedly_decoded_segment is None:
+            return None
+        decoded_segments.append(decoded_segment)
+        repeatedly_decoded_segments.append(repeatedly_decoded_segment)
     if any(
         "/" in segment
         or "\\" in segment
         or _has_unsafe_url_text(segment)
-        for segment in decoded_segments
+        for segment in repeatedly_decoded_segments
     ):
         return None
-    segments = [segment for segment in decoded_segments if segment]
+    segments = [segment for segment in repeatedly_decoded_segments if segment]
     if any(segment in {".", ".."} for segment in segments):
         return None
     return decoded_segments
+
+
+def _safe_repeatedly_decoded_query(query: str) -> bool:
+    decoded_query = _bounded_repeated_unquote(query)
+    if decoded_query is None:
+        return False
+    return "\\" not in decoded_query and not _has_unsafe_query_text(decoded_query)
 
 
 def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac") -> str:
@@ -122,8 +150,7 @@ def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac")
         return fallback
     query = parsed.query
     if query:
-        decoded_query = unquote(query)
-        if "\\" in decoded_query or _has_unsafe_query_text(decoded_query):
+        if not _safe_repeatedly_decoded_query(query):
             return fallback
     return f"{path}?{query}" if query else path
 
