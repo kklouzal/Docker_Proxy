@@ -342,9 +342,15 @@ def test_validate_download_url_rejects_percent_encoded_authority_before_dns(
         "https://public.example/feed%5c.csv",
         "https://public.example/feed.csv?next=%0d%0aHost:evil",
         "https://public.example/feed.csv?name=%5Csecret",
+        "https://public.example/feed.csv%250d%250aHost:evil",
+        "https://public.example/feed%255c.csv",
+        "https://public.example/feed.csv;next=%250d%250aHost:evil",
+        "https://public.example/feed.csv;name=%255Csecret",
+        "https://public.example/feed.csv?next=%250d%250aHost:evil",
+        "https://public.example/feed.csv?name=%255Csecret",
     ],
 )
-def test_validate_download_url_rejects_percent_encoded_unsafe_path_query_before_dns(
+def test_validate_download_url_rejects_percent_encoded_unsafe_path_params_query_before_dns(
     source_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -362,7 +368,26 @@ def test_validate_download_url_rejects_percent_encoded_unsafe_path_query_before_
         download_safety.validate_download_url(source_url)
 
 
-def test_validate_download_url_accepts_ordinary_percent_encoded_path_query(
+def test_validate_download_url_rejects_overly_deep_percent_encoding_before_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("overly deep percent encoding should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="valid absolute HTTP/HTTPS"):
+        download_safety.validate_download_url(
+            "https://public.example/feed%2525252520report.csv",
+        )
+
+
+def test_validate_download_url_accepts_ordinary_percent_encoded_path_params_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     download_safety = _import_download_safety()
@@ -378,10 +403,11 @@ def test_validate_download_url_accepts_ordinary_percent_encoded_path_query(
     )
 
     parsed = download_safety.validate_download_url(
-        "https://public.example/feeds/%E2%9C%93%20report.csv?name=caf%C3%A9&literal=%25"
+        "https://public.example/feeds/%E2%9C%93%20report.csv;v=%E2%9C%93?name=caf%C3%A9&literal=%25"
     )
 
     assert parsed.path == "/feeds/%E2%9C%93%20report.csv"
+    assert parsed.params == "v=%E2%9C%93"
     assert parsed.query == "name=caf%C3%A9&literal=%25"
 
 

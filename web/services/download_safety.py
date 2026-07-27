@@ -278,9 +278,19 @@ def _has_http_header_control_chars(value: str) -> bool:
     return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
 
 
+_DOWNLOAD_PERCENT_DECODE_LIMIT = 4
+
+
 def _has_percent_decoded_download_unsafe_chars(value: str) -> bool:
-    decoded = unquote_to_bytes(value)
-    return any(byte < 32 or byte == 127 or byte == ord("\\") for byte in decoded)
+    decoded = value.encode("utf-8")
+    for _ in range(_DOWNLOAD_PERCENT_DECODE_LIMIT):
+        next_decoded = unquote_to_bytes(decoded)
+        if any(byte < 32 or byte == 127 or byte == ord("\\") for byte in next_decoded):
+            return True
+        if next_decoded == decoded:
+            return False
+        decoded = next_decoded
+    return b"%" in decoded
 
 
 def _safe_extra_download_headers(headers: dict[str, str] | None) -> dict[str, str]:
