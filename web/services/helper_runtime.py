@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
+
+_MAX_HELPER_EVENT_COLLECTION_ITEMS = 25
+_MAX_HELPER_EVENT_DEPTH = 4
 
 
 def _monotonic_now() -> float:
@@ -44,14 +49,74 @@ def helper_event(helper: str, event: str, **fields: Any) -> None:
     for key, value in fields.items():
         if value is None:
             continue
-        payload[str(key)] = value
+        payload[str(key)] = _json_safe_event_value(value)
     try:
         sys.stderr.write(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+            json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":"))
+            + "\n"
         )
         sys.stderr.flush()
     except Exception:
         pass
+
+
+def _unserializable_event_value(value: object) -> str:
+    type_name = _safe_event_text(type(value).__name__, max_len=80) or "value"
+    return f"<non-json-serializable:{type_name}>"
+
+
+def _json_safe_event_key(value: object) -> str:
+    if not isinstance(value, str | bool | int | float | None):
+        return _unserializable_event_value(value)
+    try:
+        return _safe_event_text(value, max_len=80) or "key"
+    except Exception:
+        return _unserializable_event_value(value)
+
+
+def _json_safe_event_value(value: object, *, depth: int = 0) -> object:
+    if value is None or isinstance(value, str | bool | int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else _unserializable_event_value(value)
+
+    if depth >= _MAX_HELPER_EVENT_DEPTH:
+        return _unserializable_event_value(value)
+
+    if isinstance(value, Mapping):
+        sanitized: dict[str, object] = {}
+        for index, (item_key, item_value) in enumerate(value.items()):
+            if index >= _MAX_HELPER_EVENT_COLLECTION_ITEMS:
+                sanitized["..."] = "truncated"
+                break
+            sanitized[_json_safe_event_key(item_key)] = _json_safe_event_value(
+                item_value,
+                depth=depth + 1,
+            )
+        return sanitized
+
+    if isinstance(value, list | tuple):
+        sanitized_items = [
+            _json_safe_event_value(item, depth=depth + 1)
+            for item in value[:_MAX_HELPER_EVENT_COLLECTION_ITEMS]
+        ]
+        if len(value) > _MAX_HELPER_EVENT_COLLECTION_ITEMS:
+            sanitized_items.append("<truncated>")
+        return sanitized_items
+
+    try:
+        json.dumps(
+            value,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        pass
+    else:
+        return value
+
+    return _unserializable_event_value(value)
 
 
 def _safe_event_text(value: object, *, max_len: int = 160) -> str:
