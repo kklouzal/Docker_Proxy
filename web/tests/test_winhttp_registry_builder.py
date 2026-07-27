@@ -562,6 +562,31 @@ def test_advproxy_contract_rejects_invalid_autoconfig_urls(
         )
 
 
+@pytest.mark.parametrize(
+    "autoconfig_url",
+    [
+        r"https://pac.example.local/winhttp\proxy.pac",
+        r"https://pac.example.local/proxy.pac?site=main\backup",
+    ],
+)
+def test_advproxy_contract_rejects_autoconfig_url_backslashes(
+    autoconfig_url: str,
+) -> None:
+    with pytest.raises(
+        WinHttpBuilderError,
+        match="Autoconfig URL must not contain backslashes",
+    ):
+        build_contract_output(
+            {
+                "proxy_host": "",
+                "proxy_port": "",
+                "destination_schemes": [],
+                "autoconfig_url": autoconfig_url,
+                "advproxy_scope": "machine",
+            },
+        )
+
+
 def test_tracing_command_validates_documented_values() -> None:
     assert (
         build_tracing_command(

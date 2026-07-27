@@ -453,6 +453,9 @@ def _normalize_autoconfig_url(value: object) -> str:
     if not autoconfig_url:
         return ""
     _validate_command_value(autoconfig_url, "Autoconfig URL")
+    if "\\" in autoconfig_url:
+        msg = "Autoconfig URL must not contain backslashes."
+        raise WinHttpBuilderError(msg)
     try:
         parsed = urlsplit(autoconfig_url)
         port = parsed.port
