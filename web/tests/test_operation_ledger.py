@@ -643,6 +643,150 @@ def test_duplicate_active_request_preserves_original_rollback_metadata(
     assert conn.committed is True
 
 
+def test_duplicate_active_request_fills_missing_rollback_metadata(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _StatefulCreateConnection:
+        def __init__(self) -> None:
+            self.queries = []
+            self.committed = False
+            self.rows: dict[int, dict[str, object]] = {}
+            self.active_by_key: dict[tuple[str, str], int] = {}
+            self.next_id = 11
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("INSERT INTO proxy_operations"):
+                (
+                    proxy_id,
+                    operation_type,
+                    subject,
+                    summary,
+                    target_kind,
+                    target_ref,
+                    rollback_kind,
+                    rollback_ref,
+                    request_hash,
+                    request_key,
+                    detail,
+                    created_by,
+                    created_ts,
+                    updated_ts,
+                    force_sync,
+                ) = params
+                key = (str(proxy_id), str(request_key))
+                result = _Result()
+                existing_id = self.active_by_key.get(key)
+                if existing_id is None:
+                    row_id = self.next_id
+                    self.next_id += 1
+                    self.active_by_key[key] = row_id
+                    self.rows[row_id] = _operation_row(
+                        id=row_id,
+                        proxy_id=proxy_id,
+                        operation_type=operation_type,
+                        subject=subject,
+                        summary=summary,
+                        target_kind=target_kind,
+                        target_ref=target_ref,
+                        rollback_kind=rollback_kind,
+                        rollback_ref=rollback_ref,
+                        request_hash=request_hash,
+                        request_key=request_key,
+                        detail=detail,
+                        created_by=created_by,
+                        created_ts=created_ts,
+                        updated_ts=updated_ts,
+                        force_sync=force_sync,
+                    )
+                else:
+                    row_id = existing_id
+                    row = self.rows[row_id]
+                    row["summary"] = summary
+                    row["detail"] = detail
+                    row["created_by"] = created_by
+                    row["updated_ts"] = updated_ts
+                    row["force_sync"] = max(int(row["force_sync"]), int(force_sync))
+                result.lastrowid = row_id
+                return result
+            if compact.startswith("UPDATE proxy_operations SET rollback_kind=%s"):
+                rollback_kind, rollback_ref, row_id = params
+                row = self.rows[int(row_id)]
+                if not row.get("rollback_kind") or not row.get("rollback_ref"):
+                    row["rollback_kind"] = rollback_kind
+                    row["rollback_ref"] = rollback_ref
+                return _Result()
+            if compact.startswith("SELECT id, proxy_id, status"):
+                row_id = int(params[0])
+                return _Result([self.rows[row_id]])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            if exc_type is None:
+                self.committed = True
+            return False
+
+    conn = _StatefulCreateConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    now = iter([100, 101])
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: next(now))
+
+    first = ledger.create_operation(
+        "edge-a",
+        operation_type="config_apply",
+        subject="Squid config",
+        summary="Initial apply without rollback",
+        target_kind="config_revision",
+        target_ref=17,
+        request_hash="abc123",
+        detail="initial detail",
+        created_by="operator-a",
+    )
+    duplicate = ledger.create_operation(
+        "edge-a",
+        operation_type="config_apply",
+        subject="Squid config",
+        summary="Duplicate apply with rollback",
+        target_kind="config_revision",
+        target_ref=17,
+        rollback_kind="config_revision",
+        rollback_ref=3,
+        request_hash="abc123",
+        detail="duplicate detail",
+        created_by="operator-b",
+        force=True,
+    )
+
+    assert first.operation_id == duplicate.operation_id
+    assert first.can_revert is False
+    assert duplicate.rollback_kind == "config_revision"
+    assert duplicate.rollback_ref == "3"
+    assert duplicate.can_revert is True
+    assert duplicate.summary == "Duplicate apply with rollback"
+    assert duplicate.detail == "duplicate detail"
+    assert duplicate.created_by == "operator-b"
+    assert duplicate.force is True
+    rollback_updates = [
+        query
+        for query, _params in conn.queries
+        if query.startswith("UPDATE proxy_operations SET rollback_kind=%s")
+    ]
+    assert rollback_updates == [
+        "UPDATE proxy_operations SET rollback_kind=%s, rollback_ref=%s WHERE id=%s AND (rollback_kind='' OR rollback_ref='')",
+    ]
+    assert conn.committed is True
+
+
 def test_duplicate_requests_refresh_mutable_fields_without_replacing_rollback(
     monkeypatch,
 ) -> None:

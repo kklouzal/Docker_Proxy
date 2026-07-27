@@ -395,6 +395,19 @@ class OperationLedger:
                         1 if force_requested else 0,
                     ),
                 )
+                if rollback_kind_text and rollback_ref_text:
+                    conn.execute(
+                        """
+                        UPDATE proxy_operations
+                        SET rollback_kind=%s, rollback_ref=%s
+                        WHERE id=%s AND (rollback_kind='' OR rollback_ref='')
+                        """,
+                        (
+                            rollback_kind_text,
+                            rollback_ref_text,
+                            int(cur.lastrowid or 0),
+                        ),
+                    )
                 row = conn.execute(
                     f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1",
                     (int(cur.lastrowid or 0),),
