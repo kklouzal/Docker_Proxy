@@ -757,6 +757,7 @@ def read_clamav_options_from_form(
         form.get("file_security_preset", current_values.get("file_security_preset")),
     )
     preset_changed = requested_preset != current_values.get("file_security_preset")
+    submitted_field_keys = {field.key for field in CLAMAV_FIELDS if field.key in form}
     for field in CLAMAV_FIELDS:
         if field.input_type == "checkbox":
             if field.key in form:
@@ -771,7 +772,7 @@ def read_clamav_options_from_form(
             {"file_security_preset": selected_preset},
         )
         for key in _PRESET_MANAGED_FIELDS:
-            if values.get(key) == current_values.get(key):
+            if key not in submitted_field_keys and values.get(key) == current_values.get(key):
                 values[key] = preset_values[key]
     return normalize_clamav_options(values)
 

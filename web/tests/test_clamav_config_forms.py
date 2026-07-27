@@ -215,6 +215,57 @@ def test_clamav_monitor_preset_relaxes_untouched_blocking_controls() -> None:
     assert options["file_security_block_executable_content"] is False
 
 
+def test_clamav_preset_change_preserves_explicit_checked_matching_current_value() -> (
+    None
+):
+    _add_web_path()
+    from services.clamav_config_forms import read_clamav_options_from_form
+
+    current = {
+        "file_security_preset": "balanced",
+        "file_security_scan_downloads": True,
+        "file_security_scan_uploads": True,
+        "file_security_block_risky_extensions": True,
+        "file_security_block_archives": True,
+        "file_security_block_nested_archives": True,
+        "file_security_block_executable_content": True,
+    }
+
+    options = read_clamav_options_from_form(
+        {
+            "file_security_preset": "monitor",
+            "file_security_block_archives": "on",
+        },
+        current,
+    )
+
+    assert options["file_security_preset"] == "monitor"
+    assert options["file_security_block_archives"] is True
+    assert options["file_security_block_risky_extensions"] is False
+    assert options["file_security_block_nested_archives"] is False
+    assert options["file_security_block_executable_content"] is False
+
+
+def test_clamav_unchecked_checkbox_absence_still_clears_when_preset_unchanged() -> (
+    None
+):
+    _add_web_path()
+    from services.clamav_config_forms import read_clamav_options_from_form
+
+    current = {
+        "file_security_preset": "balanced",
+        "file_security_block_archives": True,
+    }
+
+    options = read_clamav_options_from_form(
+        {"file_security_preset": "balanced"},
+        current,
+    )
+
+    assert options["file_security_preset"] == "balanced"
+    assert options["file_security_block_archives"] is False
+
+
 def test_packaged_virus_scan_config_matches_schema_streaming_defaults() -> None:
     _add_web_path()
     from services.clamav_config_forms import render_virus_scan_config

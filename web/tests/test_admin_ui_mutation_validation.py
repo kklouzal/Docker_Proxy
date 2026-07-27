@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from .admin_route_test_utils import (
+    FakeConfigRevisions,
     FakeController,
     FakeRegistry,
     FakeSslfilterStore,
@@ -415,6 +416,72 @@ def test_clamav_settings_preserves_selected_proxy_with_unchecked_policy_boxes(
     assert "# file_security_scan_downloads: on" in config_text
     assert "# file_security_scan_uploads: off" in config_text
     assert "# file_security_block_risky_extensions: off" in config_text
+    assert "# file_security_block_executable_content: off" in config_text
+
+
+def test_clamav_settings_preset_change_preserves_explicit_checked_policy_box(
+    monkeypatch, tmp_path
+) -> None:
+    current_config = """http_port 3128
+ssl_bump splice all
+# BEGIN SQUID-UI CLAMAV SETTINGS
+# Managed by the ClamAV page. These comment values are materialized by the selected proxy runtime.
+# clamav_fail_mode: open
+# file_security_preset: balanced
+# file_security_scan_downloads: on
+# file_security_scan_uploads: on
+# file_security_block_risky_extensions: on
+# file_security_risky_extensions: exe dll msi
+# file_security_block_archives: on
+# file_security_archive_extensions: zip 7z
+# file_security_block_nested_archives: on
+# file_security_block_executable_content: on
+# file_security_executable_extensions: exe dll
+# file_security_blocked_mime_types: application/x-msdownload
+# file_security_max_download_size: 0
+# file_security_max_upload_size: 0
+# file_security_quarantine_metadata: on
+# virus_scan_scan_file_types: TEXT DATA BINARY
+# virus_scan_send_percent_data: 5
+# virus_scan_start_send_percent_after: 2M
+# virus_scan_allow_204_on: on
+# virus_scan_max_object_size: 128M
+# virus_scan_default_engine:
+# END SQUID-UI CLAMAV SETTINGS
+adaptation_access av_resp_set allow icap_av_scanable
+"""
+    controller = FakeController(config_text=current_config)
+    loaded, client = _loaded(
+        monkeypatch,
+        tmp_path,
+        controller=controller,
+        config_revisions=FakeConfigRevisions(current_config),
+    )
+
+    response = _post(
+        client,
+        "/clamav/settings",
+        {
+            "clamav_fail_mode": "open",
+            "file_security_preset": "monitor",
+            "file_security_block_archives": "on",
+            "file_security_archive_extensions": "zip 7z",
+            "file_security_executable_extensions": "exe dll",
+            "file_security_blocked_mime_types": "application/x-msdownload",
+            "virus_scan_scan_file_types": "TEXT DATA BINARY",
+            "virus_scan_send_percent_data": "5",
+            "virus_scan_start_send_percent_after": "2M",
+            "virus_scan_max_object_size": "128M",
+        },
+        csrf_path="/clamav",
+    )
+
+    _assert_redirect_success(response)
+    config_text = str(loaded.config_revisions.created[-1]["config_text"])
+    assert "# file_security_preset: monitor" in config_text
+    assert "# file_security_block_archives: on" in config_text
+    assert "# file_security_block_risky_extensions: off" in config_text
+    assert "# file_security_block_nested_archives: off" in config_text
     assert "# file_security_block_executable_content: off" in config_text
 
 
