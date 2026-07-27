@@ -43,6 +43,7 @@ CLAMD_INSTREAM_COMMAND = b"zINSTREAM\0"
 CLAMD_REPLY_TERMINATOR = b"\0"
 ICAP_METHOD_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\Z")
 _ICAP_HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
+_ICAP_ALLOW_TOKEN_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
 _SINGLETON_ICAP_HEADERS = {
     "allow": "Allow",
     "encapsulated": "Encapsulated",
@@ -171,7 +172,14 @@ def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
 def _icap_allows_204(value: str | None) -> bool:
     if value is None:
         return False
-    return any(part.strip() == "204" for part in value.split(","))
+    allow_204 = False
+    for raw_part in value.split(","):
+        part = raw_part.strip(" \t")
+        if not part or not _ICAP_ALLOW_TOKEN_RE.fullmatch(part):
+            return False
+        if part == "204":
+            allow_204 = True
+    return allow_204
 
 
 def _parse_start_line(start_line: str) -> str:

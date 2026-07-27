@@ -3292,8 +3292,9 @@ def test_allow_204_parsing_accepts_exact_comma_tokens_only() -> None:
     server = _load_server()
 
     assert server._icap_allows_204("204") is True
+    assert server._icap_allows_204(" 204\t") is True
     assert server._icap_allows_204("206, 204") is True
-    assert server._icap_allows_204(" , 206,, 204 ,") is True
+    assert server._icap_allows_204("foo, 206\t, 204") is True
     assert server._icap_allows_204(None) is False
     assert server._icap_allows_204("") is False
     assert server._icap_allows_204("206") is False
@@ -3301,6 +3302,64 @@ def test_allow_204_parsing_accepts_exact_comma_tokens_only() -> None:
     assert server._icap_allows_204("+204") is False
     assert server._icap_allows_204("-204") is False
     assert server._icap_allows_204("2 04") is False
+    assert server._icap_allows_204("0204") is False
+
+    malformed_values = (
+        ", 204",
+        "204,",
+        "206,, 204",
+        " , 206,, 204 ,",
+        "204;foo",
+        "204; q=1",
+        "2\t04",
+        "20 4",
+        "204, two words",
+        "204, café",
+    )
+    for value in malformed_values:
+        assert server._icap_allows_204(value) is False, value
+
+
+def test_malformed_allow_204_does_not_fail_open_with_204(monkeypatch) -> None:
+    server = _load_server()
+    scan_attempts = 0
+
+    def create_connection(*_args, **_kwargs):
+        message = "connection refused"
+        raise ConnectionRefusedError(message)
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            nonlocal scan_attempts
+            scan_attempts += 1
+            return super().open_scan()
+
+    monkeypatch.setattr(server.socket, "create_connection", create_connection)
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request = _sample_respmod_request(port).replace(
+            b"Allow: 204\r\n", b"Allow: , 204\r\n"
+        )
+        response = _recv_icap_exchange(port, request, timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scan_attempts == 1
+    assert not response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 200 OK" in response
+    assert b"hello" in response
 
 
 def test_malformed_preview_header_rejected_before_scanning_or_continue() -> None:
