@@ -885,6 +885,107 @@ def test_rename_proxy_is_idempotent_and_tombstones_old_identity(tmp_path):
         raise AssertionError(msg)
 
 
+def test_rename_proxy_rejects_conflicting_in_progress_target_without_mysql(monkeypatch):
+    proxy_registry = _proxy_registry()
+
+    class Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class Conn:
+        def execute(self, sql, params=None):
+            statement = str(sql)
+            if "FROM proxy_instances" in statement and "FOR UPDATE" in statement:
+                return Result({"proxy_id": "edge-old", "display_name": "Edge"})
+            if "FROM proxy_lifecycle_tombstones" in statement:
+                return Result(
+                    {
+                        "action": "renaming",
+                        "target_proxy_id": "edge-new-a",
+                    },
+                )
+            return Result()
+
+    class Context:
+        def __enter__(self):
+            return Conn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class Lock:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.init_db = lambda: None  # type: ignore[method-assign]
+    registry._connect = Context  # type: ignore[method-assign]
+    monkeypatch.setattr(proxy_registry, "mysql_advisory_lock", lambda *args: Lock())
+
+    try:
+        registry.rename_proxy("edge-old", "edge-new-b", display_name="Edge B")
+    except ValueError as exc:
+        assert "rename in progress to 'edge-new-a'" in str(exc)
+    else:
+        msg = "paused rename must not resume toward a different target"
+        raise AssertionError(msg)
+
+
+def test_rename_proxy_rejects_conflicting_retry_target_after_pause(monkeypatch, tmp_path):
+    configure_test_mysql_env(tmp_path / "proxy-rename-conflicting-retry")
+    proxy_registry = _proxy_registry()
+    from services.proxy_lifecycle import ProxyLifecycleIncompleteError  # type: ignore
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-old", display_name="Edge")
+    with registry._connect() as conn:
+        conn.execute(
+            "CREATE TABLE proxy_rename_conflict_rows (id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL, value VARCHAR(32) NOT NULL)",
+        )
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO proxy_rename_conflict_rows(proxy_id, value) VALUES(%s,%s)",
+                ("edge-old", f"row-{i}"),
+            )
+
+    monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_CHUNK_SIZE", "2")
+    monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_MAX_ROWS_PER_TABLE", "2")
+    try:
+        registry.rename_proxy("edge-old", "edge-new-a", display_name="Edge A")
+    except ProxyLifecycleIncompleteError as exc:
+        assert exc.result.truncated_tables == ("proxy_rename_conflict_rows",)
+        assert exc.result.table_counts["proxy_rename_conflict_rows"] == 2
+    else:
+        msg = "rename should pause at bounded table limit"
+        raise AssertionError(msg)
+
+    monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_MAX_ROWS_PER_TABLE", "100")
+    try:
+        registry.rename_proxy("edge-old", "edge-new-b", display_name="Edge B")
+    except ValueError as exc:
+        assert "rename in progress to 'edge-new-a'" in str(exc)
+    else:
+        msg = "paused rename must not resume toward a different target"
+        raise AssertionError(msg)
+
+    resumed = registry.rename_proxy("edge-old", "edge-new-a", display_name="Edge A")
+
+    assert resumed.proxy_id == "edge-new-a"
+    with registry._connect() as conn:
+        rows = conn.execute(
+            "SELECT proxy_id, COUNT(*) AS c FROM proxy_rename_conflict_rows GROUP BY proxy_id ORDER BY proxy_id",
+        ).fetchall()
+    assert [(row["proxy_id"], int(row["c"] or 0)) for row in rows] == [
+        ("edge-new-a", 5),
+    ]
+
+
 def test_remove_proxy_cleans_pac_profile_children_and_tombstones_identity(tmp_path):
     configure_test_mysql_env(tmp_path / "proxy-remove-pac-children")
     proxy_registry = _proxy_registry()

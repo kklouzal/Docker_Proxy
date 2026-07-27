@@ -774,6 +774,20 @@ class ProxyRegistry:
                             return
                         msg = f"Proxy {old_key!r} is not registered."
                         raise ValueError(msg)
+                    lifecycle_state = conn.execute(
+                        "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones WHERE proxy_id=%s LIMIT 1",
+                        (old_key,),
+                    ).fetchone()
+                    if lifecycle_state is not None:
+                        action = str(lifecycle_state["action"] or "")
+                        raw_target = str(lifecycle_state["target_proxy_id"] or "").strip()
+                        target_key = normalize_proxy_id(raw_target) if raw_target else ""
+                        if action == "renaming" and target_key and target_key != new_key:
+                            msg = (
+                                f"Proxy {old_key!r} already has a rename in progress "
+                                f"to {target_key!r}; retry with that target to resume."
+                            )
+                            raise ValueError(msg)
                     self._ensure_not_tombstoned(
                         conn,
                         old_key,
