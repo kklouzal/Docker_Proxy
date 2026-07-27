@@ -291,6 +291,12 @@ def parse_access_log_hit_rate(
             # count that partial leading line as a real access-log event. Keep
             # it when the tail starts at byte 0 or exactly after a newline.
             lines = lines[1:]
+        if chunk and not chunk.endswith(("\n", "\r")) and lines:
+            # A concurrent reader can catch Squid after fields for the next
+            # event have been appended but before the record newline is durable.
+            # Treat that trailing fragment like the leading byte-tail fragment so
+            # a partial row cannot skew hit/byte ratios.
+            lines = lines[:-1]
         lines = lines[-max_lines:]
 
         for line in lines:

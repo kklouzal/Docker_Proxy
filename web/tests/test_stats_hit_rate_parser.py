@@ -64,6 +64,21 @@ def test_parse_access_log_hit_rate_counts_real_first_full_row_when_tail_starts_a
     assert result == {"request_hit_ratio": 50.0, "byte_hit_ratio": 50.0}
 
 
+def test_parse_access_log_hit_rate_drops_partially_written_trailing_row(
+    tmp_path,
+) -> None:
+    log = tmp_path / "access-observe.log"
+    log.write_text(
+        "1710000007	0.0	10.0.0.13	GET	http://example.com/miss	TCP_MISS/200	1000\n"
+        "1710000008	0.0	10.0.0.14	GET	http://example.com/hit	TCP_HIT/200	1",
+        encoding="utf-8",
+    )
+
+    result = parse_access_log_hit_rate(str(log), max_lines=10)
+
+    assert result == {"request_hit_ratio": 0.0, "byte_hit_ratio": 0.0}
+
+
 def test_parse_access_log_hit_rate_keeps_full_row_when_byte_tail_starts_on_line_boundary(
     tmp_path,
 ) -> None:
