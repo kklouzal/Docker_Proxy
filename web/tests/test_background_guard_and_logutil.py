@@ -17,6 +17,12 @@ _add_web_to_path()
 from services import background_guard, logutil  # type: ignore  # noqa: E402
 
 
+def _reset_logutil_state() -> None:
+    logutil._last_log.clear()
+    logutil._last_log_interval.clear()
+    logutil._last_prune = 0.0
+
+
 def test_acquire_background_lock_force_skips_filesystem(monkeypatch) -> None:
     monkeypatch.setenv("BACKGROUND_FORCE", "1")
     monkeypatch.setattr(
@@ -95,7 +101,7 @@ def test_acquire_background_lock_is_idempotent_for_current_process(monkeypatch, 
 
 
 def test_should_log_throttles_by_key_and_interval(monkeypatch) -> None:
-    logutil._last_log.clear()
+    _reset_logutil_state()
     current = {"value": 100.0}
     monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
 
@@ -109,7 +115,7 @@ def test_should_log_throttles_by_key_and_interval(monkeypatch) -> None:
 def test_log_exception_throttled_never_raises_and_respects_interval(
     monkeypatch,
 ) -> None:
-    logutil._last_log.clear()
+    _reset_logutil_state()
     current = {"value": 200.0}
     calls: list[str] = []
     logger = SimpleNamespace(
@@ -140,3 +146,52 @@ def test_log_exception_throttled_never_raises_and_respects_interval(
     logutil.log_exception_throttled(
         bad_logger, "bad", interval_seconds=0.0, message="ignored"
     )
+
+
+def test_should_log_prunes_stale_dynamic_keys_after_safe_window(monkeypatch) -> None:
+    _reset_logutil_state()
+    current = {"value": 1000.0}
+    monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
+
+    assert logutil.should_log("dynamic.old", interval_seconds=10.0) is True
+    current["value"] += logutil._THROTTLE_KEY_PRUNE_INTERVAL_SECONDS
+    assert logutil.should_log("dynamic.recent", interval_seconds=10.0) is True
+
+    current["value"] = 4899.0
+    assert logutil.should_log("trigger.after", interval_seconds=10.0) is True
+
+    assert "dynamic.old" not in logutil._last_log
+    assert "dynamic.old" not in logutil._last_log_interval
+    assert "dynamic.recent" in logutil._last_log
+
+
+def test_should_log_keeps_keys_within_throttle_interval_when_pruning(monkeypatch) -> None:
+    _reset_logutil_state()
+    current = {"value": 10000.0}
+    monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
+
+    assert logutil.should_log("long.active", interval_seconds=7200.0) is True
+    current["value"] += logutil._THROTTLE_KEY_MIN_RETENTION_SECONDS + 1.0
+    assert logutil.should_log("trigger", interval_seconds=10.0) is True
+
+    assert "long.active" in logutil._last_log
+    assert logutil.should_log("long.active", interval_seconds=7200.0) is False
+
+
+def test_should_log_malformed_intervals_do_not_break_logging_loop(monkeypatch) -> None:
+    _reset_logutil_state()
+    current = {"value": 1000.0}
+    monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
+
+    assert logutil.should_log(  # type: ignore[arg-type]
+        "bad.none", interval_seconds=None
+    ) is True
+    assert logutil.should_log(  # type: ignore[arg-type]
+        "bad.text", interval_seconds="oops"
+    ) is True
+    assert logutil.should_log("bad.negative", interval_seconds=-10.0) is True
+
+    current["value"] += 1.0
+    assert logutil.should_log(  # type: ignore[arg-type]
+        "bad.none", interval_seconds=None
+    ) is True
