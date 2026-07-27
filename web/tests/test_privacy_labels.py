@@ -42,3 +42,29 @@ def test_pseudonymize_casefolds_identifier_values(monkeypatch) -> None:
     assert privacy_labels.pseudonymize("GROUP-A", namespace="group") == (
         privacy_labels.pseudonymize("group-a", namespace="group")
     )
+
+
+def test_is_pseudonymized_label_requires_exact_digest_shape() -> None:
+    _add_web_to_path()
+    from services import privacy_labels  # type: ignore
+
+    assert privacy_labels.is_pseudonymized_label(
+        "user-0123456789",
+        namespace="user",
+    )
+    assert privacy_labels.is_pseudonymized_label(
+        " group-abcdef1234 ",
+        namespace="group",
+    )
+    assert not privacy_labels.is_pseudonymized_label(
+        "user-alice@example.com",
+        namespace="user",
+    )
+    assert not privacy_labels.is_pseudonymized_label(
+        "group-domain-admins",
+        namespace="group",
+    )
+    assert not privacy_labels.is_pseudonymized_label(
+        "group-abcdef1234",
+        namespace="user",
+    )

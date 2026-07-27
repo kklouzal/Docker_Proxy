@@ -119,7 +119,7 @@ from services.policy_requests import (
 from services.policy_requests import (
     get_policy_request_store as _default_get_policy_request_store,
 )
-from services.privacy_labels import pseudonymize
+from services.privacy_labels import is_pseudonymized_label, pseudonymize
 from services.proxy_client import ProxyClientError
 from services.proxy_client import get_proxy_client as _default_get_proxy_client
 from services.proxy_context import (
@@ -2086,7 +2086,7 @@ def _observability_privacy_label(
     text = str(value or "").strip()
     if not text:
         return ""
-    if text.startswith(f"{namespace}-"):
+    if is_pseudonymized_label(text, namespace=namespace):
         return text
     return pseudonymize(text, namespace=namespace)
 
