@@ -514,6 +514,98 @@ def test_proxy_public_policy_request_route_records(monkeypatch) -> None:
     assert "Request submitted" in res.get_data(as_text=True)
 
 
+def test_proxy_public_policy_request_rejects_oversized_form_before_store(
+    monkeypatch,
+) -> None:
+    ensure_proxy_runtime_import_path()
+    monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    monkeypatch.setenv("POLICY_REQUEST_MAX_CONTENT_LENGTH", "128")
+    import proxy.app as proxy_app
+
+    proxy_app = importlib.reload(proxy_app)
+    store_requested = False
+
+    def get_store():
+        nonlocal store_requested
+        store_requested = True
+
+        class Store:
+            def create_request(self, **kwargs):
+                return None
+
+        return Store()
+
+    monkeypatch.setattr(proxy_app, "get_policy_request_store", get_store)
+    res = proxy_app.app.test_client().post(
+        "/policy-request",
+        base_url="http://localhost:80",
+        data={
+            "request_url": "https://bad.example/",
+            "domain": "bad.example",
+            "user_note": "x" * 300,
+        },
+    )
+
+    assert res.status_code == 413
+    assert "Policy request submissions are limited to 128 bytes" in res.get_data(
+        as_text=True,
+    )
+    assert store_requested is False
+
+
+def test_proxy_public_policy_request_invalid_size_limit_env_falls_back(
+    monkeypatch,
+) -> None:
+    ensure_proxy_runtime_import_path()
+    monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    monkeypatch.setenv("POLICY_REQUEST_MAX_CONTENT_LENGTH", "not-a-number")
+    import proxy.app as proxy_app
+
+    proxy_app = importlib.reload(proxy_app)
+    recorded = {}
+
+    class Store:
+        def create_request(self, **kwargs):
+            recorded.update(kwargs)
+            from services.policy_requests import PolicyRequest
+
+            return PolicyRequest(
+                124,
+                kwargs.get("proxy_id") or "default",
+                "pending",
+                "webfilter",
+                kwargs["client_ip"],
+                kwargs["request_url"],
+                kwargs["domain"],
+                "",
+                "",
+                "",
+                "",
+                "",
+                1,
+                1,
+                0,
+                "",
+                None,
+            )
+
+    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    res = proxy_app.app.test_client().post(
+        "/policy-request",
+        base_url="http://localhost:80",
+        data={
+            "request_url": "https://bad.example/",
+            "domain": "bad.example",
+            "user_note": "needed",
+        },
+    )
+
+    assert res.status_code == 200
+    assert recorded["domain"] == "bad.example"
+
+
 def test_proxy_public_policy_request_get_does_not_fall_through_to_pac(
     monkeypatch,
 ) -> None:

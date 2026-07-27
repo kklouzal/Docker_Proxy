@@ -39,6 +39,38 @@ app = Flask(__name__)
 install_http_optimizations(app, default_dynamic_max_age_seconds=0)
 runtime: Any | None = None
 _PUBLIC_LISTENER_NON_PAC_PATHS = frozenset({"/", "/health", "/policy-request"})
+_POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH = 16 * 1024
+
+
+def _policy_request_max_content_length() -> int:
+    raw = (os.environ.get("POLICY_REQUEST_MAX_CONTENT_LENGTH") or "").strip()
+    if not raw:
+        return _POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH
+    try:
+        limit = int(raw)
+    except Exception:
+        return _POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH
+    if limit < 1:
+        return _POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH
+    return limit
+
+
+def _policy_request_too_large_response(max_content_length: int) -> Response:
+    return Response(
+        "<!doctype html><title>Request too large</title><h1>Request too large</h1>"
+        f"<p>Policy request submissions are limited to {max_content_length} bytes.</p>",
+        status=413,
+        mimetype="text/html; charset=utf-8",
+    )
+
+
+def _reject_oversized_policy_request_body() -> Response | None:
+    max_content_length = _policy_request_max_content_length()
+    request.max_content_length = max_content_length
+    content_length = request.content_length
+    if content_length is not None and content_length > max_content_length:
+        return _policy_request_too_large_response(max_content_length)
+    return None
 
 
 def _runtime() -> Any:
@@ -260,6 +292,9 @@ def public_policy_request_get() -> Any:
 def public_policy_request() -> Any:
     if not _is_public_listener_request():
         abort(404)
+    oversized_response = _reject_oversized_policy_request_body()
+    if oversized_response is not None:
+        return oversized_response
     form = request.form
     client_ip = _policy_request_client_ip()
     try:
