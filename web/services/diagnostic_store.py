@@ -407,6 +407,24 @@ def _strip_trailing_sort_id(row: Any) -> tuple[Any, ...]:
         return tuple(row)
 
 
+def _nearest_row_sort_key(
+    row: Any, *, center: int, id_index: int
+) -> tuple[int, int, int]:
+    row_ts = int(row[0] or 0)
+    row_id = _row_sort_id(row, id_index)
+    # Walk outward from the target timestamp. Exact/past rows use newest-first ids
+    # (matching DESC index scans); future rows use oldest-first ids (matching ASC
+    # index scans) so SQL branch limits and final in-memory ordering agree for
+    # equal-timestamp ties.
+    center_i = int(center)
+    id_sort = row_id if row_ts > center_i else -row_id
+    return (
+        abs(row_ts - center_i),
+        -row_ts,
+        id_sort,
+    )
+
+
 def _nearest_rows(
     rows: list[Any],
     *,
@@ -418,10 +436,10 @@ def _nearest_rows(
         _strip_trailing_sort_id(row)
         for row in sorted(
             rows,
-            key=lambda row: (
-                abs(int(row[0] or 0) - int(center)),
-                -int(row[0] or 0),
-                -_row_sort_id(row, id_index),
+            key=lambda row: _nearest_row_sort_key(
+                row,
+                center=center,
+                id_index=id_index,
             ),
         )[: max(1, int(limit))]
     ]
@@ -1736,14 +1754,14 @@ class DiagnosticStore:
             before_rows = conn.execute(
                 select_sql.format(
                     window_predicate="ts BETWEEN %s AND %s",
-                    order_by="ts DESC",
+                    order_by="ts DESC, id DESC",
                 ),
                 (proxy_id, normalized_domain, center - window_i, center, branch_lim),
             ).fetchall()
             after_rows = conn.execute(
                 select_sql.format(
                     window_predicate="ts > %s AND ts <= %s",
-                    order_by="ts ASC",
+                    order_by="ts ASC, id ASC",
                 ),
                 (proxy_id, normalized_domain, center, center + window_i, branch_lim),
             ).fetchall()
@@ -1834,14 +1852,14 @@ class DiagnosticStore:
             before_rows = conn.execute(
                 select_sql.format(
                     window_predicate="ts BETWEEN %s AND %s",
-                    order_by="ts DESC",
+                    order_by="ts DESC, id DESC",
                 ),
                 (*base_params, center - window_i, center, branch_lim),
             ).fetchall()
             after_rows = conn.execute(
                 select_sql.format(
                     window_predicate="ts > %s AND ts <= %s",
-                    order_by="ts ASC",
+                    order_by="ts ASC, id ASC",
                 ),
                 (*base_params, center, center + window_i, branch_lim),
             ).fetchall()
@@ -1915,14 +1933,14 @@ class DiagnosticStore:
             before_rows = conn.execute(
                 select_sql.format(
                     window_predicate="ts BETWEEN %s AND %s",
-                    order_by="ts DESC",
+                    order_by="ts DESC, id DESC",
                 ),
                 (*base_params, center - window_i, center, branch_lim),
             ).fetchall()
             after_rows = conn.execute(
                 select_sql.format(
                     window_predicate="ts > %s AND ts <= %s",
-                    order_by="ts ASC",
+                    order_by="ts ASC, id ASC",
                 ),
                 (*base_params, center, center + window_i, branch_lim),
             ).fetchall()

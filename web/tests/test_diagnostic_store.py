@@ -2,12 +2,304 @@ import ipaddress
 
 from services.diagnostic_store import (
     DiagnosticStore,
+    _nearest_rows,
     _normalize_icap_row,
     _normalize_request_row,
     _split_tsv,
 )
 
 from .mysql_test_utils import configure_test_mysql_env
+
+
+def _candidate_request_row(
+    *,
+    ts: int,
+    master_xaction: str,
+    row_id: int,
+    url_path: str = "request",
+) -> tuple[object, ...]:
+    return (
+        ts,
+        10 + row_id,
+        "192.0.2.10",
+        "GET",
+        f"https://example.test/{url_path}",
+        "example.test",
+        "TCP_MISS/200",
+        200,
+        100 + row_id,
+        master_xaction,
+        "DIRECT",
+        "bump",
+        "example.test",
+        "TLSv1.3",
+        "TLS_AES_256_GCM_SHA384",
+        "TLSv1.3",
+        "TLS_AES_128_GCM_SHA256",
+        "example.test",
+        "pytest/1.0",
+        "-",
+        "",
+        "",
+        "",
+        "",
+        "text/html",
+        "origin",
+        "",
+        "",
+        row_id,
+    )
+
+
+def _candidate_icap_row(
+    *,
+    ts: int,
+    master_xaction: str,
+    row_id: int,
+    url_path: str = "icap",
+) -> tuple[object, ...]:
+    return (
+        ts,
+        master_xaction,
+        "192.0.2.10",
+        "GET",
+        f"https://example.test/{url_path}",
+        "example.test",
+        20 + row_id,
+        "avrespmod / virus_scan allow",
+        "clamd clean",
+        "example.test",
+        "pytest/1.0",
+        "example.test",
+        "",
+        "",
+        "",
+        "",
+        "av",
+        row_id,
+    )
+
+
+def test_nearest_rows_has_deterministic_equal_timestamp_tie_ordering() -> None:
+    rows = [
+        (1000, "older-center", 1),
+        (1000, "newer-center", 9),
+        (999, "before", 4),
+        (1001, "after-older", 3),
+        (1001, "after-newer", 5),
+        (998, "far-before", 8),
+        (1002, "far-after", 7),
+    ]
+
+    nearest = _nearest_rows(rows, center=1000, limit=7, id_index=2)
+
+    assert nearest == [
+        (1000, "newer-center"),
+        (1000, "older-center"),
+        (1001, "after-older"),
+        (1001, "after-newer"),
+        (999, "before"),
+        (1002, "far-after"),
+        (998, "far-before"),
+    ]
+
+
+def test_domain_time_candidate_queries_order_ties_by_id(monkeypatch) -> None:
+    captured_orders: list[str] = []
+    captured_sql: list[str] = []
+    before_rows = [
+        _candidate_request_row(ts=1000, master_xaction="tx-old", row_id=10),
+        _candidate_request_row(ts=1000, master_xaction="tx-new", row_id=11),
+    ]
+    after_rows = [
+        _candidate_request_row(ts=1001, master_xaction="tx-after-old", row_id=12),
+        _candidate_request_row(ts=1001, master_xaction="tx-after-new", row_id=13),
+    ]
+
+    class FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, _params):
+            sql_text = str(sql)
+            captured_sql.append(sql_text)
+            if "ORDER BY ts DESC" in sql_text:
+                captured_orders.append("before")
+                return FakeCursor(before_rows)
+            if "ORDER BY ts ASC" in sql_text:
+                captured_orders.append("after")
+                return FakeCursor(after_rows)
+            raise AssertionError(sql_text)
+
+    store = DiagnosticStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", FakeConnection)
+    monkeypatch.setattr(
+        store, "_batch_list_icap_by_master_xactions", lambda *_args, **_kwargs: {}
+    )
+
+    candidates = store.list_request_candidates_for_domain_near_ts(
+        domain="example.test",
+        around_ts=1000,
+        window_seconds=30,
+        limit=4,
+    )
+
+    assert captured_orders == ["before", "after"]
+    assert "ORDER BY ts DESC, id DESC" in captured_sql[0]
+    assert "ORDER BY ts ASC, id ASC" in captured_sql[1]
+    assert [row["master_xaction"] for row in candidates] == [
+        "tx-new",
+        "tx-old",
+        "tx-after-old",
+        "tx-after-new",
+    ]
+    assert [row["time_delta_seconds"] for row in candidates] == [0, 0, 1, 1]
+    assert [row["correlation_kind"] for row in candidates] == ["domain_time"] * 4
+
+
+def test_policy_and_icap_candidate_queries_order_ties_by_id(monkeypatch) -> None:
+    request_sql: list[str] = []
+    icap_sql: list[str] = []
+
+    class FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class RequestConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, _params):
+            sql_text = str(sql)
+            request_sql.append(sql_text)
+            if "ORDER BY ts DESC" in sql_text:
+                return FakeCursor(
+                    [
+                        _candidate_request_row(
+                            ts=1000,
+                            master_xaction="tx-policy-old",
+                            row_id=20,
+                        ),
+                        _candidate_request_row(
+                            ts=1000,
+                            master_xaction="tx-policy-new",
+                            row_id=21,
+                        ),
+                    ]
+                )
+            if "ORDER BY ts ASC" in sql_text:
+                return FakeCursor(
+                    [
+                        _candidate_request_row(
+                            ts=1001,
+                            master_xaction="tx-policy-after",
+                            row_id=22,
+                        )
+                    ]
+                )
+            raise AssertionError(sql_text)
+
+    request_store = DiagnosticStore()
+    monkeypatch.setattr(request_store, "init_db", lambda: None)
+    monkeypatch.setattr(request_store, "_connect", RequestConnection)
+    monkeypatch.setattr(
+        request_store,
+        "_batch_list_icap_by_master_xactions",
+        lambda *_args, **_kwargs: {},
+    )
+
+    policy_candidates = request_store.list_request_candidates_for_policy_event(
+        around_ts=1000,
+        url="https://example.test/policy",
+        client_ip="192.0.2.10",
+        domain="example.test",
+        window_seconds=30,
+        limit=3,
+    )
+
+    assert "ORDER BY ts DESC, id DESC" in request_sql[0]
+    assert "ORDER BY ts ASC, id ASC" in request_sql[1]
+    assert [row["master_xaction"] for row in policy_candidates] == [
+        "tx-policy-new",
+        "tx-policy-old",
+        "tx-policy-after",
+    ]
+    assert [row["correlation_kind"] for row in policy_candidates] == ["domain_time"] * 3
+
+    class IcapConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, _params):
+            sql_text = str(sql)
+            icap_sql.append(sql_text)
+            if "ORDER BY ts DESC" in sql_text:
+                return FakeCursor(
+                    [
+                        _candidate_icap_row(
+                            ts=1000,
+                            master_xaction="tx-icap-old",
+                            row_id=30,
+                        ),
+                        _candidate_icap_row(
+                            ts=1000,
+                            master_xaction="tx-icap-new",
+                            row_id=31,
+                        ),
+                    ]
+                )
+            if "ORDER BY ts ASC" in sql_text:
+                return FakeCursor(
+                    [
+                        _candidate_icap_row(
+                            ts=1001,
+                            master_xaction="tx-icap-after",
+                            row_id=32,
+                        )
+                    ]
+                )
+            raise AssertionError(sql_text)
+
+    icap_store = DiagnosticStore()
+    monkeypatch.setattr(icap_store, "init_db", lambda: None)
+    monkeypatch.setattr(icap_store, "_connect", IcapConnection)
+
+    icap_candidates = icap_store.list_icap_candidates_for_domain_near_ts(
+        domain="example.test",
+        around_ts=1000,
+        window_seconds=30,
+        service="av",
+        limit=3,
+    )
+
+    assert "ORDER BY ts DESC, id DESC" in icap_sql[0]
+    assert "ORDER BY ts ASC, id ASC" in icap_sql[1]
+    assert [row["master_xaction"] for row in icap_candidates] == [
+        "tx-icap-new",
+        "tx-icap-old",
+        "tx-icap-after",
+    ]
+    assert [row["correlation_kind"] for row in icap_candidates] == ["domain_time"] * 3
 
 
 def test_parse_request_log_line_extracts_tls_and_policy_fields() -> None:
