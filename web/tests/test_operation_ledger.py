@@ -421,6 +421,39 @@ def test_mark_status_can_guard_applying_claim_token(monkeypatch) -> None:
     )
 
 
+def test_mark_status_empty_expected_claim_token_adds_claim_guard(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    conn = _Connection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 456)
+
+    ledger.mark_status(
+        7,
+        status="applied",
+        detail="done",
+        expected_status="applying",
+        expected_claim_token="",
+    )
+
+    update_sql, update_params = conn.queries[0]
+    assert "WHERE id=%s AND status=%s AND claim_token=%s" in update_sql
+    assert update_params == (
+        "applied",
+        "done",
+        456,
+        456,
+        True,
+        True,
+        7,
+        "applying",
+        "",
+    )
+
+
 def test_stale_claim_completion_does_not_overwrite_reclaimed_operation_detail(
     monkeypatch,
 ) -> None:
@@ -492,6 +525,84 @@ def test_stale_claim_completion_does_not_overwrite_reclaimed_operation_detail(
     update_sql, update_params = conn.queries[0]
     assert "WHERE id=%s AND status=%s AND claim_token=%s" in update_sql
     assert update_params[-3:] == (11, "applying", "old-claim")
+
+
+def test_empty_stale_claim_completion_does_not_overwrite_reclaimed_operation_detail(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _GuardedConnection:
+        def __init__(self) -> None:
+            self.row = _operation_row(
+                status="applying",
+                detail="new claim is still running",
+                claim_token="new-claim",
+            )
+            self.queries = []
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("UPDATE proxy_operations SET status=%s"):
+                expected_status = params[7] if "AND status=%s" in compact else None
+                expected_token = params[8] if "AND claim_token=%s" in compact else None
+                status_matches = (
+                    "AND status=%s" not in compact
+                    or self.row["status"] == expected_status
+                )
+                token_matches = (
+                    "AND claim_token=%s" not in compact
+                    or self.row["claim_token"] == expected_token
+                )
+                if status_matches and token_matches:
+                    self.row["status"] = params[0]
+                    self.row["detail"] = params[1]
+                    self.row["completed_ts"] = params[2]
+                    self.row["updated_ts"] = params[3]
+                    if params[4]:
+                        self.row["request_key"] = None
+                    if params[5]:
+                        self.row["claim_token"] = None
+                    result = _Result()
+                    result.rowcount = 1
+                    return result
+                result = _Result()
+                result.rowcount = 0
+                return result
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.row])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _GuardedConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 500)
+
+    current = ledger.mark_status(
+        11,
+        status="failed",
+        detail="stale worker with empty claim failed after recovery",
+        expected_status="applying",
+        expected_claim_token="",
+    )
+
+    assert current is not None
+    assert current.status == "applying"
+    assert current.detail == "new claim is still running"
+    assert current.claim_token == "new-claim"
+    update_sql, update_params = conn.queries[0]
+    assert "WHERE id=%s AND status=%s AND claim_token=%s" in update_sql
+    assert update_params[-3:] == (11, "applying", "")
 
 
 def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:

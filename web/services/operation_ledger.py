@@ -673,7 +673,7 @@ class OperationLedger:
                 raise ValueError(msg)
             where += " AND status=%s"
             where_params.append(expected_status_text)
-        if expected_claim_token:
+        if expected_claim_token is not None:
             where += " AND claim_token=%s"
             where_params.append(str(expected_claim_token))
         with self._connect() as conn:
