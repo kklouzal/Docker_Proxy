@@ -445,6 +445,8 @@ def test_proxy_client_builds_management_url_with_query_under_registered_base(
         "/api/manage/health ",
         "/api\\manage/health",
         "/api/manage/%0ahealth",
+        "/api/manage/%ZZhealth",
+        "/api/manage/%ffhealth",
     ],
 )
 def test_proxy_client_rejects_unsafe_management_paths_before_urlopen(
