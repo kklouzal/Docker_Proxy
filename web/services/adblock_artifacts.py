@@ -54,6 +54,9 @@ _ARTIFACT_PRUNE_MAX_BATCHES = 4
 _ARTIFACT_PRUNE_LOCK_NAME = "docker_proxy:adblock_artifact_prune"
 _ARTIFACT_PRUNE_LOCK_TIMEOUT_SECONDS = 0
 
+_ARTIFACT_EXTRACT_MAX_BYTES = 256 * 1024 * 1024
+_ARTIFACT_EXTRACT_MAX_MEMBERS = 256
+
 
 def _is_builder_retryable_mysql_error(exc: BaseException) -> bool:
     return mysql_error_code(exc) in _BUILDER_RETRYABLE_MYSQL_CODES
@@ -1458,6 +1461,35 @@ def read_materialized_artifact_sha(
         return ""
 
 
+def _adblock_artifact_extract_max_bytes() -> int:
+    return _env_int(
+        "ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES",
+        _ARTIFACT_EXTRACT_MAX_BYTES,
+        minimum=1,
+        maximum=4 * 1024 * 1024 * 1024,
+    )
+
+
+def _adblock_artifact_extract_max_members() -> int:
+    return _env_int(
+        "ADBLOCK_ARTIFACT_EXTRACT_MAX_MEMBERS",
+        _ARTIFACT_EXTRACT_MAX_MEMBERS,
+        minimum=1,
+        maximum=100_000,
+    )
+
+
+def _safe_adblock_archive_member_name(name: str) -> str | None:
+    normalized = (name or "").replace("\\", "/")
+    if not normalized or normalized.endswith("/"):
+        return None
+    norm = os.path.normpath(normalized).replace("\\", "/")
+    if norm.startswith(("../", "/")) or norm == "..":
+        msg = f"Refusing to extract unsafe archive member: {normalized}"
+        raise ValueError(msg)
+    return norm
+
+
 def materialize_archive_to_directory(
     target_dir: str | os.PathLike[str],
     *,
@@ -1474,19 +1506,42 @@ def materialize_archive_to_directory(
     backup_dir: Path | None = None
 
     try:
+        max_bytes = _adblock_artifact_extract_max_bytes()
+        max_members = _adblock_artifact_extract_max_members()
+        total_declared_bytes = 0
+        total_written_bytes = 0
+        member_count = 0
         with zipfile.ZipFile(io.BytesIO(bytes(archive_blob or b""))) as zf:
             for info in zf.infolist():
-                name = (info.filename or "").replace("\\", "/")
-                if not name or name.endswith("/"):
+                norm = _safe_adblock_archive_member_name(info.filename or "")
+                if norm is None:
                     continue
-                norm = os.path.normpath(name).replace("\\", "/")
-                if norm.startswith(("../", "/")) or norm == "..":
-                    msg = f"Refusing to extract unsafe archive member: {name}"
+                member_count += 1
+                if member_count > max_members:
+                    msg = f"Adblock artifact archive exceeded member limit ({max_members})."
                     raise ValueError(msg)
+
+                declared_size = int(getattr(info, "file_size", 0) or 0)
+                total_declared_bytes += declared_size
+                if total_declared_bytes > max_bytes:
+                    msg = f"Adblock artifact archive exceeded extract limit ({max_bytes} bytes)."
+                    raise ValueError(msg)
+
                 dest = payload_dir / norm
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info, "r") as src, Path(dest).open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
+                    while True:
+                        chunk = src.read(512 * 1024)
+                        if not chunk:
+                            break
+                        total_written_bytes += len(chunk)
+                        if total_written_bytes > max_bytes:
+                            msg = (
+                                "Adblock artifact archive exceeded extract limit "
+                                f"({max_bytes} bytes)."
+                            )
+                            raise ValueError(msg)
+                        dst.write(chunk)
 
         if artifact_sha256:
             (payload_dir / _ARTIFACT_SHA_FILENAME).write_text(

@@ -135,6 +135,15 @@ class _FakeAdblockRevisionConn:
         raise AssertionError(msg)
 
 
+def _zip_blob(entries: dict[str, bytes | str]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, content in entries.items():
+            payload = content.encode("utf-8") if isinstance(content, str) else content
+            zf.writestr(name, payload)
+    return buffer.getvalue()
+
+
 def _read_zipped_sqlite(
     zf: zipfile.ZipFile, name: str, tmp_path: Path
 ) -> sqlite3.Connection:
@@ -227,6 +236,74 @@ def test_materialize_archive_to_directory_replaces_target_and_writes_marker(
         '{"rule": "||ads.example^"}\n'
     )
     assert artifacts_module.read_materialized_artifact_sha(target) == "abc123"
+
+
+def test_materialize_archive_to_directory_rejects_unsafe_member_without_replace(
+    tmp_path: Path,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    target = tmp_path / "compiled"
+    target.mkdir()
+    (target / "settings.json").write_text("existing", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsafe archive member"):
+        artifacts_module.materialize_archive_to_directory(
+            target,
+            archive_blob=_zip_blob({"../escape.txt": "nope"}),
+            artifact_sha256="new",
+        )
+
+    assert (target / "settings.json").read_text(encoding="utf-8") == "existing"
+    assert not (tmp_path / "escape.txt").exists()
+    assert artifacts_module.read_materialized_artifact_sha(target) == ""
+
+
+def test_materialize_archive_to_directory_rejects_oversized_payload_without_replace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    monkeypatch.setenv("ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES", "8")
+    target = tmp_path / "compiled"
+    target.mkdir()
+    (target / "settings.json").write_text("existing", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="extract limit"):
+        artifacts_module.materialize_archive_to_directory(
+            target,
+            archive_blob=_zip_blob({"rules.jsonl": "123456789"}),
+            artifact_sha256="new",
+        )
+
+    assert (target / "settings.json").read_text(encoding="utf-8") == "existing"
+    assert artifacts_module.read_materialized_artifact_sha(target) == ""
+
+
+def test_materialize_archive_to_directory_rejects_excess_members_without_replace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    monkeypatch.setenv("ADBLOCK_ARTIFACT_EXTRACT_MAX_MEMBERS", "2")
+    target = tmp_path / "compiled"
+    target.mkdir()
+    (target / "settings.json").write_text("existing", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="member limit"):
+        artifacts_module.materialize_archive_to_directory(
+            target,
+            archive_blob=_zip_blob(
+                {
+                    "settings.json": "{}",
+                    "report.json": "{}",
+                    "request_index_domain.jsonl": "",
+                },
+            ),
+            artifact_sha256="new",
+        )
+
+    assert (target / "settings.json").read_text(encoding="utf-8") == "existing"
+    assert artifacts_module.read_materialized_artifact_sha(target) == ""
 
 
 def test_build_active_artifact_packages_compiled_lists_and_settings(
