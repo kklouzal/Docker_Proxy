@@ -118,6 +118,37 @@ def _settings_san_tokens(settings: object | None) -> tuple[str, ...]:
     return tuple(token.strip() for token in re.split(r"[\n,]+", raw) if token.strip())
 
 
+def _persistent_san_tokens(
+    saved_tokens: tuple[str, ...],
+    env_tokens: tuple[str, ...],
+) -> tuple[str, ...]:
+    from services.certificate_core import (
+        normalize_admin_ui_certificate_san_token,
+        normalize_admin_ui_certificate_sans,
+    )
+
+    saved: list[str] = []
+    seen: set[str] = set()
+    implicit = {token.lower() for token in normalize_admin_ui_certificate_sans(())}
+
+    def add(token: str, *, skip_implicit: bool = False) -> None:
+        normalized = normalize_admin_ui_certificate_san_token(token)
+        if not normalized:
+            return
+        if skip_implicit and normalized.lower() in implicit:
+            return
+        key = normalized.lower()
+        if key not in seen:
+            seen.add(key)
+            saved.append(normalized)
+
+    for token in saved_tokens:
+        add(token)
+    for token in env_tokens:
+        add(token, skip_implicit=True)
+    return tuple(saved)
+
+
 def _try_materialize_saved_admin_ui_leaf(
     environ: Mapping[str, str],
 ) -> AdminUiHttpsRuntimeConfig | None:
@@ -130,16 +161,21 @@ def _try_materialize_saved_admin_ui_leaf(
         bundle = store.get_active_bundle()
         if bundle is None:
             return None
+        saved_san_tokens = _settings_san_tokens(settings)
+        env_san_tokens = _env_san_tokens(environ)
+        san_tokens = (*saved_san_tokens, *env_san_tokens)
         material = materialize_admin_ui_server_certificate(
             str(Path(DEFAULT_CERTFILE).parent),
             bundle,
-            san_tokens=(*_settings_san_tokens(settings), *_env_san_tokens(environ)),
+            san_tokens=san_tokens,
         )
         store.set_admin_ui_https_settings(
             enabled=True,
             certfile=material.certfile,
             keyfile=material.keyfile,
-            san_tokens=getattr(settings, "san_tokens", ""),
+            san_tokens="\n".join(
+                _persistent_san_tokens(saved_san_tokens, env_san_tokens),
+            ),
             updated_by=getattr(settings, "updated_by", ""),
         )
         return AdminUiHttpsRuntimeConfig(

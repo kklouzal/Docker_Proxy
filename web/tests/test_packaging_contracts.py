@@ -606,7 +606,60 @@ def test_admin_ui_startup_materializes_missing_db_leaf_from_active_bundle(
     assert recovered.keyfile == "/etc/squid/ssl/certs/admin-ui.key"
     assert saved["certfile"] == "/etc/squid/ssl/certs/admin-ui.crt"
     assert saved["keyfile"] == "/etc/squid/ssl/certs/admin-ui.key"
-    assert saved["san_tokens"] == settings.san_tokens
+    assert saved["san_tokens"] == (
+        "proxyadmin.example.com\n192.0.2.10\nadmin-public.example.test"
+    )
+
+
+def test_admin_ui_startup_recovery_reuses_saved_request_derived_host(
+    monkeypatch,
+) -> None:
+    module = _load_start_admin_ui_module()
+    settings = SimpleNamespace(
+        enabled=True,
+        certfile="/etc/squid/ssl/certs/admin-ui.crt",
+        keyfile="/etc/squid/ssl/certs/admin-ui.key",
+        san_tokens="Admin.Example.TEST:8443\nadmin.example.test",
+        updated_by="admin",
+    )
+    saved: dict[str, object] = {}
+
+    class _Store:
+        def get_admin_ui_https_settings(self):
+            return settings
+
+        def get_active_bundle(self):
+            return SimpleNamespace(cert_pem="CERT", key_pem="KEY")
+
+        def set_admin_ui_https_settings(self, **kwargs):
+            saved.update(kwargs)
+
+    def _materialize(_ca_dir, _bundle, *, san_tokens):
+        assert san_tokens == ("Admin.Example.TEST:8443", "admin.example.test")
+        return SimpleNamespace(
+            certfile="/etc/squid/ssl/certs/admin-ui.crt",
+            keyfile="/etc/squid/ssl/certs/admin-ui.key",
+        )
+
+    from services import certificate_bundles, certificate_core
+
+    store = _Store()
+
+    def _get_store():
+        return store
+
+    monkeypatch.setattr(certificate_bundles, "get_certificate_bundles", _get_store)
+    monkeypatch.setattr(
+        certificate_core,
+        "materialize_admin_ui_server_certificate",
+        _materialize,
+    )
+
+    recovered = module._try_materialize_saved_admin_ui_leaf({})
+
+    assert recovered is not None
+    assert recovered.enabled is True
+    assert saved["san_tokens"] == "admin.example.test"
 
 
 def test_admin_ui_startup_db_https_missing_material_falls_back_to_http(

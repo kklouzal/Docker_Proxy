@@ -3988,16 +3988,26 @@ def _admin_ui_https_configured_san_tokens(value: object) -> tuple[str, ...]:
         for token in re.split(r"[\n,]+", str(value or ""))
         if token.strip()
     ]
+    return _admin_ui_https_normalize_san_tokens(raw_tokens, reject_invalid=True)
+
+
+def _admin_ui_https_normalize_san_tokens(
+    values: Iterable[object],
+    *,
+    reject_invalid: bool = False,
+) -> tuple[str, ...]:
     tokens: list[str] = []
     seen: set[str] = set()
-    for token in raw_tokens:
+    for token in values:
         normalized = normalize_admin_ui_certificate_san_token(token)
         if not normalized:
-            msg = (
-                "Admin UI HTTPS SAN entries must be DNS names or IP addresses "
-                "without paths, credentials, or wildcards."
-            )
-            raise ValueError(msg)
+            if reject_invalid:
+                msg = (
+                    "Admin UI HTTPS SAN entries must be DNS names or IP addresses "
+                    "without paths, credentials, or wildcards."
+                )
+                raise ValueError(msg)
+            continue
         key = normalized.lower()
         if key not in seen:
             seen.add(key)
@@ -4011,6 +4021,25 @@ def _admin_ui_https_format_san_tokens(tokens: Iterable[object]) -> str:
 
 def _admin_ui_https_saved_san_tokens(settings: Any | None) -> tuple[str, ...]:
     return _admin_ui_https_configured_san_tokens(getattr(settings, "san_tokens", ""))
+
+
+def _admin_ui_https_implicit_san_token_keys() -> set[str]:
+    return {token.lower() for token in normalize_admin_ui_certificate_sans(())}
+
+
+def _admin_ui_https_persistent_san_tokens(settings: Any | None = None) -> tuple[str, ...]:
+    saved_tokens = _admin_ui_https_saved_san_tokens(settings)
+    implicit_tokens = _admin_ui_https_implicit_san_token_keys()
+    request_tokens = [
+        token
+        for token in _admin_ui_https_normalize_san_tokens(
+            _admin_ui_https_request_san_tokens(),
+        )
+        if token.lower() not in implicit_tokens
+    ]
+    return _admin_ui_https_normalize_san_tokens(
+        (*saved_tokens, *request_tokens),
+    )
 
 
 def _admin_ui_https_leaf_san_tokens(settings: Any | None = None) -> tuple[str, ...]:
@@ -8414,11 +8443,18 @@ def update_admin_ui_https():
             msg="Generate or upload an SSL inspection CA bundle before enabling Admin UI HTTPS.",
         )
     material = None
+    persistent_san_tokens: tuple[str, ...] = ()
     if enabled:
         try:
+            leaf_settings = SimpleNamespace(
+                san_tokens=_admin_ui_https_format_san_tokens(configured_san_tokens),
+            )
             material = _materialize_admin_ui_https_leaf(
                 bundle,
-                SimpleNamespace(san_tokens=_admin_ui_https_format_san_tokens(configured_san_tokens)),
+                leaf_settings,
+            )
+            persistent_san_tokens = _admin_ui_https_persistent_san_tokens(
+                leaf_settings,
             )
         except Exception as exc:
             return _redirect_with_message(
@@ -8454,7 +8490,9 @@ def update_admin_ui_https():
             enabled=enabled,
             certfile=certfile,
             keyfile=keyfile,
-            san_tokens=_admin_ui_https_format_san_tokens(configured_san_tokens),
+            san_tokens=_admin_ui_https_format_san_tokens(
+                persistent_san_tokens if enabled else configured_san_tokens,
+            ),
             updated_by=str(session.get("user") or ""),
         )
         restart_ok, restart_detail = _restart_admin_ui_web_process()
@@ -8504,7 +8542,9 @@ def regenerate_admin_ui_https_certificate():
             enabled=bool(getattr(settings, "enabled", False)),
             certfile=material.certfile,
             keyfile=material.keyfile,
-            san_tokens=getattr(settings, "san_tokens", ""),
+            san_tokens=_admin_ui_https_format_san_tokens(
+                _admin_ui_https_persistent_san_tokens(settings),
+            ),
             updated_by=str(session.get("user") or ""),
         )
         detail = (

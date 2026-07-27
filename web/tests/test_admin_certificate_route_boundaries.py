@@ -571,7 +571,9 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
     assert bundles.admin_ui_https_settings.enabled is True
     assert bundles.admin_ui_https_settings.certfile == certfile
     assert bundles.admin_ui_https_settings.keyfile == keyfile
-    assert bundles.admin_ui_https_settings.san_tokens == ""
+    assert bundles.admin_ui_https_settings.san_tokens == (
+        "admin-request.example.test\nadmin-public.example.test"
+    )
     assert bundles.admin_ui_https_settings.updated_by == "admin"
     assert restart_calls == [True]
     assert (
@@ -1081,6 +1083,37 @@ def test_admin_ui_https_ignores_posted_custom_paths_for_active_bundle(
     assert bundles.admin_ui_https_settings.enabled is True
     assert bundles.admin_ui_https_settings.certfile == certfile
     assert bundles.admin_ui_https_settings.keyfile == keyfile
+
+
+def test_admin_ui_https_enable_persists_request_derived_sans_canonicalized(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    monkeypatch.setenv("ADMIN_UI_PUBLIC_HOST", "ADMIN.EXAMPLE.TEST.")
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: (True, "restart requested"),
+    )
+    loaded.module.app.config["SERVER_NAME"] = "admin.example.test:8443"
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        headers={"X-Forwarded-Host": "admin.example.test:443"},
+        data={"csrf_token": token, "enabled": "1", "san_tokens": ""},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    saved_sans = bundles.admin_ui_https_settings.san_tokens.splitlines()
+    assert saved_sans.count("admin.example.test") == 1
+    assert bundles.admin_ui_https_settings.san_tokens == "admin.example.test"
 
 
 def test_certificate_publish_restores_previous_bundle_when_no_reconcile_queued(
