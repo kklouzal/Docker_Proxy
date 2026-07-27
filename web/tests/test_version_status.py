@@ -158,6 +158,49 @@ def test_compare_revision_rejects_path_like_repository_without_github_call() -> 
     assert "repository" in status.detail
 
 
+def test_compare_revision_rejects_unsafe_branch_config_without_github_call(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("VERSION_STATUS_GITHUB_BRANCH", "refs/heads/main\nother")
+
+    def urlopen(request, *, timeout):
+        msg = f"unexpected GitHub call to {request.full_url}"
+        raise AssertionError(msg)
+
+    client = VersionStatusClient(
+        repository="owner/repo",
+        urlopen=urlopen,
+    )
+
+    status = client.compare_revision("abc123")
+
+    assert status.state == "unknown"
+    assert status.commits_behind is None
+    assert "GitHub version check disabled" in status.detail
+    assert "branch" in status.detail
+
+
+def test_compare_revision_preserves_safe_configured_branch_in_compare_url() -> None:
+    seen_urls: list[str] = []
+
+    def urlopen(request, *, timeout):
+        seen_urls.append(request.full_url)
+        return _json_response({"status": "identical"})
+
+    client = VersionStatusClient(
+        repository="owner/repo",
+        branch="release/2026.07",
+        urlopen=urlopen,
+    )
+
+    status = client.compare_revision("abc123")
+
+    assert status.state == "ok"
+    assert seen_urls == [
+        "https://api.github.com/repos/owner/repo/compare/abc123...release%2F2026.07"
+    ]
+
+
 def test_compare_cache_survives_later_github_failure() -> None:
     calls = {"count": 0}
 

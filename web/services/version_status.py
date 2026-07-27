@@ -16,6 +16,7 @@ UNKNOWN_VALUE = "unknown"
 DEFAULT_GITHUB_REPOSITORY = "kklouzal/Docker_Proxy"
 _GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 _GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+_GITHUB_BRANCH_FORBIDDEN_CHARS = frozenset(" ~^:?*[\\")
 
 
 def _clean(value: object | None) -> str:
@@ -57,6 +58,31 @@ def _normalize_github_repository(value: object | None) -> tuple[str, str]:
     if name in {".", ".."}:
         return repository, "GitHub repository name is not valid."
     return repository, ""
+
+
+def _normalize_github_branch(value: object | None) -> tuple[str, str]:
+    branch = _clean(value)
+    if not branch:
+        return "main", ""
+    if len(branch) > 250:
+        return branch, "GitHub branch contains too many characters."
+    if any(ord(char) < 32 or ord(char) == 127 for char in branch):
+        return branch, "GitHub branch contains control characters."
+    if any(char in _GITHUB_BRANCH_FORBIDDEN_CHARS for char in branch):
+        return branch, "GitHub branch contains unsupported characters."
+    if branch in {"@", "HEAD"} or branch.startswith("refs/"):
+        return branch, "GitHub branch is an ambiguous ref form."
+    if branch.startswith("/") or branch.endswith("/") or "//" in branch:
+        return branch, "GitHub branch contains unsafe path separators."
+    if branch.endswith(".") or ".." in branch or "@{" in branch:
+        return branch, "GitHub branch is not a safe branch name."
+    parts = branch.split("/")
+    if any(
+        part in {"", ".", ".."} or part.startswith(".") or part.endswith(".lock")
+        for part in parts
+    ):
+        return branch, "GitHub branch contains an unsafe path component."
+    return branch, ""
 
 
 def current_component_metadata(component: str) -> dict[str, str]:
@@ -120,9 +146,12 @@ class VersionStatusClient:
         self.repository, self.repository_error = _normalize_github_repository(
             repository_value
         )
-        self.branch = (
-            branch or _clean(os.environ.get("VERSION_STATUS_GITHUB_BRANCH")) or "main"
+        branch_value = (
+            branch
+            if branch is not None
+            else os.environ.get("VERSION_STATUS_GITHUB_BRANCH")
         )
+        self.branch, self.branch_error = _normalize_github_branch(branch_value)
         self.token = (
             token if token is not None else _clean(os.environ.get("GITHUB_TOKEN"))
         )
@@ -174,6 +203,13 @@ class VersionStatusClient:
                 "",
                 f"GitHub version check disabled: {self.repository_error}",
             )
+        if self.branch_error:
+            return CompareResult(
+                "unknown",
+                None,
+                "",
+                f"GitHub version check disabled: {self.branch_error}",
+            )
 
         ttl = (
             float(ttl_seconds)
@@ -212,27 +248,29 @@ class VersionStatusClient:
             main_commits_ahead = _int_or_zero(ahead_by or total_commits)
             running_commits_ahead = _int_or_zero(behind_by)
             if status == "identical":
-                result = CompareResult("ok", 0, current, "Running commit matches main.")
+                result = CompareResult(
+                    "ok", 0, current, f"Running commit matches {self.branch}."
+                )
             elif status == "ahead":
                 result = CompareResult(
                     "outdated",
                     main_commits_ahead,
                     latest_revision,
-                    f"Running commit is {main_commits_ahead} commit(s) behind main.",
+                    f"Running commit is {main_commits_ahead} commit(s) behind {self.branch}.",
                 )
             elif status == "diverged":
                 result = CompareResult(
                     "warn",
                     main_commits_ahead,
                     latest_revision,
-                    f"Running commit has diverged from main ({main_commits_ahead} behind, {running_commits_ahead} ahead).",
+                    f"Running commit has diverged from {self.branch} ({main_commits_ahead} behind, {running_commits_ahead} ahead).",
                 )
             elif status == "behind":
                 result = CompareResult(
                     "warn",
                     0,
                     latest_revision,
-                    f"Running commit is ahead of main ({running_commits_ahead} commit(s) ahead).",
+                    f"Running commit is ahead of {self.branch} ({running_commits_ahead} commit(s) ahead).",
                 )
             else:
                 result = CompareResult(
