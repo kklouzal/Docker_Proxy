@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import re
 
-
 _SENSITIVE_KEY_RE = re.compile(
     r"""
     (?P<prefix>
