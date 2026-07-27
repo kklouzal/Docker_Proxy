@@ -849,13 +849,17 @@ def test_safe_browsing_status_counts_prefixes_and_cache(monkeypatch) -> None:
                 assert params == ("mw-4b", "se-4b")
                 return Result(42)
             if "safe_browsing_full_hash_cache" in sql:
+                assert "list_name IN (%s,%s)" in sql
+                assert params == (1000, "mw-4b", "se-4b")
                 return Result(3)
             if "safe_browsing_negative_cache" in sql:
+                assert params == (1000,)
                 return Result(5)
             raise AssertionError(sql)
 
     store = SafeBrowsingStore()
     monkeypatch.setattr(store, "_connect", FakeConn)
+    monkeypatch.setattr("services.safe_browsing_v5._now", lambda: 1000)
     settings = SafeBrowsingSettings(
         enabled=True,
         api_key="key",
@@ -875,6 +879,85 @@ def test_safe_browsing_status_counts_prefixes_and_cache(monkeypatch) -> None:
     assert status.positive_cache_entries == 3
     assert status.negative_cache_entries == 5
     assert status.cache_entries == 8
+
+
+def test_safe_browsing_status_filters_positive_cache_to_selected_lists(
+    monkeypatch,
+) -> None:
+    rows = [
+        {"list_name": "mw-4b", "expires_ts": 1000},
+        {"list_name": "se-4b", "expires_ts": 1000},
+        {"list_name": "uwsa-4b", "expires_ts": 1000},
+        {"list_name": "mw-4b", "expires_ts": 999},
+        {"list_name": "uws-4b", "expires_ts": 1000},
+    ]
+
+    class Result:
+        def __init__(self, value) -> None:
+            self.value = value
+
+        def fetchone(self):
+            if isinstance(self.value, dict):
+                return self.value
+            return (self.value,)
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params=None):
+            if "GET_LOCK" in sql:
+                return Result({"acquired": 1})
+            if "RELEASE_LOCK" in sql:
+                return Result({"released": 1})
+            if sql.startswith("CREATE TABLE"):
+                return Result(0)
+            if "information_schema.statistics" in sql:
+                return Result(1)
+            if "information_schema.columns" in sql:
+                return Result(1)
+            if "safe_browsing_hash_lists" in sql:
+                assert params == ("mw-4b", "se-4b")
+                return Result(2)
+            if "safe_browsing_hash_prefixes" in sql:
+                assert params == ("mw-4b", "se-4b")
+                return Result(42)
+            if "safe_browsing_full_hash_cache" in sql:
+                assert "list_name IN (%s,%s)" in sql
+                assert params == (1000, "mw-4b", "se-4b")
+                selected = set(params[1:])
+                count = sum(
+                    1
+                    for row in rows
+                    if row["expires_ts"] >= params[0] and row["list_name"] in selected
+                )
+                return Result(count)
+            if "safe_browsing_negative_cache" in sql:
+                assert params == (1000,)
+                return Result(5)
+            raise AssertionError(sql)
+
+    store = SafeBrowsingStore()
+    monkeypatch.setattr(store, "_connect", FakeConn)
+    monkeypatch.setattr("services.safe_browsing_v5._now", lambda: 1000)
+    settings = SafeBrowsingSettings(
+        enabled=True,
+        api_key="key",
+        lists=("mw-4b", "se-4b"),
+        last_success=10,
+        last_attempt=9,
+        last_error="",
+        next_run_ts=20,
+    )
+
+    status = store.status(settings)
+
+    assert status.positive_cache_entries == 2
+    assert status.negative_cache_entries == 5
+    assert status.cache_entries == 7
 
 
 def test_safe_browsing_apply_hash_list_rejects_checksum_mismatch() -> None:

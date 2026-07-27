@@ -780,8 +780,9 @@ class SafeBrowsingStore:
                 )
                 positive_cache = int(
                     conn.execute(
-                        "SELECT COUNT(*) FROM safe_browsing_full_hash_cache WHERE expires_ts >= %s",
-                        (now,),
+                        "SELECT COUNT(*) FROM safe_browsing_full_hash_cache "
+                        f"WHERE expires_ts >= %s AND list_name IN ({placeholders})",
+                        (now, *selected),
                     ).fetchone()[0]
                     or 0,
                 )
