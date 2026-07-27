@@ -54,17 +54,15 @@ _MASTER_XACTION_PATTERN = re.compile(
 )
 
 # Best-effort extraction of a destination domain from cache.log lines.
+_AUTHORITY_VALUE_PATTERN = r"(\"[^\"]+\"|'[^']+'|\[[^\]\s]+\](?::\d+)?|[^,\s;]+)"
 _DOMAIN_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bCONNECT\s+([A-Za-z0-9.-]+):\d+\b", re.IGNORECASE),
     re.compile(r"\bhttps?://([A-Za-z0-9.-]+)\b", re.IGNORECASE),
-    re.compile(r"\bhost=([A-Za-z0-9.-]+)\b", re.IGNORECASE),
-    re.compile(
-        r"\bpeer=(\"[^\"]+\"|'[^']+'|\[[^\]\s]+\](?::\d+)?|[^,\s;]+)",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\bserver_name=([A-Za-z0-9.-]+)\b", re.IGNORECASE),
-    re.compile(r"\bsni=([A-Za-z0-9.-]+)\b", re.IGNORECASE),
-    re.compile(r"\bSNI\s*[:=]\s*([A-Za-z0-9.-]+)\b", re.IGNORECASE),
+    re.compile(rf"\bhost\s*=\s*{_AUTHORITY_VALUE_PATTERN}", re.IGNORECASE),
+    re.compile(rf"\bpeer\s*=\s*{_AUTHORITY_VALUE_PATTERN}", re.IGNORECASE),
+    re.compile(rf"\bserver_name\s*=\s*{_AUTHORITY_VALUE_PATTERN}", re.IGNORECASE),
+    re.compile(rf"\bsni\s*=\s*{_AUTHORITY_VALUE_PATTERN}", re.IGNORECASE),
+    re.compile(rf"\bSNI\s*(?::\s*=|[:=])\s*{_AUTHORITY_VALUE_PATTERN}", re.IGNORECASE),
 ]
 
 

@@ -33,6 +33,26 @@ def test_ssl_error_domain_extraction_accepts_server_name_token() -> None:
     assert _extract_domain(line) == "api.steampowered.com"
 
 
+def test_ssl_error_domain_extraction_accepts_quoted_server_name_with_port() -> None:
+    line = 'kid1| Error negotiating TLS on FD 42: SQUID_TLS_ERR_ACCEPT server_name="api.steampowered.com:443"'
+    assert _extract_domain(line) == "api.steampowered.com"
+
+
+def test_ssl_error_domain_extraction_accepts_bracketed_ipv6_sni_with_port() -> None:
+    line = "kid1| Error negotiating TLS on FD 42: SQUID_TLS_ERR_ACCEPT sni=[2001:db8::1]:443"
+    assert _extract_domain(line) == "2001:db8::1"
+
+
+def test_ssl_error_domain_extraction_accepts_quoted_host_with_port() -> None:
+    line = "kid1| Error negotiating TLS on FD 42: SQUID_TLS_ERR_ACCEPT host='cdn.steampowered.com:443'"
+    assert _extract_domain(line) == "cdn.steampowered.com"
+
+
+def test_ssl_error_domain_extraction_accepts_sni_colon_equals_form() -> None:
+    line = "kid1| Error negotiating TLS on FD 42: SQUID_TLS_ERR_ACCEPT SNI := api.steampowered.com:443"
+    assert _extract_domain(line) == "api.steampowered.com"
+
+
 def test_ssl_errors_filtered_where_reuses_proxy_since_search_and_domain_filters(
     monkeypatch,
 ) -> None:
