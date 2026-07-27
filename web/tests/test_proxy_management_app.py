@@ -44,6 +44,10 @@ class _Runtime:
         self.sync_operation_id = None
         self.validation_text = None
         self.rollback_reason = None
+        self.cache_clear_called = False
+        self.eicar_test_called = False
+        self.icap_test_called = False
+        self.supervisor_calls: list[tuple[str, str]] = []
 
     def collect_health(self, *, force=False):
         return {
@@ -79,15 +83,19 @@ class _Runtime:
         return {"ok": False, "detail": "rollback failed"}
 
     def clear_cache(self):
+        self.cache_clear_called = True
         return {"ok": False, "detail": "cache clear failed"}
 
     def test_clamav_eicar(self):
+        self.eicar_test_called = True
         return {"ok": False, "detail": "clamd unavailable"}
 
     def test_clamav_icap(self):
+        self.icap_test_called = True
         return {"ok": False, "detail": "icap unavailable"}
 
     def test_control_supervisor_program(self, program_name: str, *, action: str):
+        self.supervisor_calls.append((program_name, action))
         if program_name != "cicap_adblock":
             return {
                 "ok": False,
@@ -278,6 +286,50 @@ def test_proxy_management_json_payloads_reject_non_objects(monkeypatch) -> None:
     assert runtime.sync_force is None
     assert runtime.validation_text is None
     assert runtime.rollback_reason is None
+
+
+def test_proxy_management_json_payloads_reject_malformed_json_without_runtime_calls(
+    monkeypatch,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    runtime = _Runtime()
+    proxy_app.runtime = runtime
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret", "Content-Type": "application/json"}
+
+    monkeypatch.setenv("ENABLE_TEST_MODE", "1")
+    cases = [
+        "/api/manage/sync",
+        "/api/manage/config/validate",
+        "/api/manage/config/rollback",
+        "/api/manage/cache/clear",
+        "/api/manage/clamav/test-eicar",
+        "/api/manage/clamav/test-icap",
+        "/api/manage/test/supervisor/cicap_adblock/restart",
+    ]
+    for path in cases:
+        response = _management_post(
+            client,
+            path,
+            data="{bad json",
+            headers=headers,
+        )
+
+        assert response.status_code == 400, path
+        assert response.is_json, path
+        assert response.get_json() == {
+            "ok": False,
+            "detail": "Management JSON payload is malformed.",
+        }
+
+    assert runtime.sync_force is None
+    assert runtime.validation_text is None
+    assert runtime.rollback_reason is None
+    assert runtime.cache_clear_called is False
+    assert runtime.eicar_test_called is False
+    assert runtime.icap_test_called is False
+    assert runtime.supervisor_calls == []
 
 
 def test_proxy_management_json_payloads_preserve_missing_body_defaults(

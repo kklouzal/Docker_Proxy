@@ -6,10 +6,11 @@ import os
 import time
 from collections.abc import Callable
 from functools import wraps
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 from flask import Flask, Response, abort, jsonify, make_response, request
 from markupsafe import escape
+from werkzeug.exceptions import BadRequest
 from services.errors import public_error_message
 from services.http_optimizations import install_http_optimizations
 from services.pac_http import (
@@ -113,22 +114,40 @@ def _test_mode_enabled() -> bool:
     }
 
 
+def _abort_management_json_payload(detail: str) -> NoReturn:
+    abort(
+        make_response(
+            jsonify(
+                {
+                    "ok": False,
+                    "detail": detail,
+                },
+            ),
+            400,
+        ),
+    )
+
+
+def _management_request_has_body() -> bool:
+    content_length = request.content_length
+    if content_length is not None:
+        return content_length > 0
+    return bool(request.get_data(cache=True))
+
+
 def _management_json_payload() -> dict[str, Any]:
-    payload = request.get_json(silent=True)
+    if not _management_request_has_body():
+        return {}
+    if not request.is_json:
+        return {}
+    try:
+        payload = request.get_json(silent=False)
+    except BadRequest:
+        _abort_management_json_payload("Management JSON payload is malformed.")
     if payload is None:
         return {}
     if not isinstance(payload, dict):
-        abort(
-            make_response(
-                jsonify(
-                    {
-                        "ok": False,
-                        "detail": "Management JSON payload must be an object.",
-                    },
-                ),
-                400,
-            ),
-        )
+        _abort_management_json_payload("Management JSON payload must be an object.")
     return payload
 
 
@@ -443,6 +462,7 @@ def manage_config_rollback() -> Any:
 @app.route("/api/manage/cache/clear", methods=["POST"])
 @_require_management_auth
 def manage_cache_clear() -> Any:
+    _management_json_payload()
     result = _runtime().clear_cache()
     return jsonify(result), (200 if result.get("ok") else 500)
 
@@ -450,6 +470,7 @@ def manage_cache_clear() -> Any:
 @app.route("/api/manage/clamav/test-eicar", methods=["POST"])
 @_require_management_auth
 def manage_clamav_test_eicar() -> Any:
+    _management_json_payload()
     result = _runtime().test_clamav_eicar()
     return jsonify(result), (200 if result.get("ok") else 503)
 
@@ -457,6 +478,7 @@ def manage_clamav_test_eicar() -> Any:
 @app.route("/api/manage/clamav/test-icap", methods=["POST"])
 @_require_management_auth
 def manage_clamav_test_icap() -> Any:
+    _management_json_payload()
     result = _runtime().test_clamav_icap()
     return jsonify(result), (200 if result.get("ok") else 503)
 
@@ -466,6 +488,7 @@ def manage_clamav_test_icap() -> Any:
 def manage_test_supervisor(program_name: str, action: str) -> Any:
     if not _test_mode_enabled():
         abort(404)
+    _management_json_payload()
     result = _runtime().test_control_supervisor_program(program_name, action=action)
     return jsonify(result), (200 if result.get("ok") else 409)
 
