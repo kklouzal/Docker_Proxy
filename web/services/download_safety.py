@@ -62,6 +62,20 @@ def _canonical_download_hostname(hostname: str) -> str:
         raise ValueError(msg) from exc
 
 
+def _is_valid_download_dns_hostname(hostname: str) -> bool:
+    if not hostname or len(hostname) > 253:
+        return False
+    labels = hostname.split(".")
+    return all(
+        label
+        and len(label) <= 63
+        and label[0].isalnum()
+        and label[-1].isalnum()
+        and all(ch.isalnum() or ch == "-" for ch in label)
+        for label in labels
+    )
+
+
 def _is_ambiguous_ipv4_download_host(hostname: str) -> bool:
     candidate = hostname.rstrip(".").lower()
     if not candidate:
@@ -108,6 +122,8 @@ def is_internal_host(hostname: str) -> bool:
     if h.endswith(_RESERVED_DOWNLOAD_SUFFIXES):
         return True
     if "." not in h:
+        return True
+    if not _is_valid_download_dns_hostname(h):
         return True
 
     try:

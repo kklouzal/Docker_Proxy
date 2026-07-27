@@ -44,6 +44,64 @@ def test_validate_download_url_accepts_public_absolute_url(
     assert parsed.hostname == "public.example"
 
 
+def test_validate_download_url_accepts_public_idna_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+    seen_hosts: list[str] = []
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        seen_hosts.append(host)
+        assert host == "xn--bcher-kva.example"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                ("93.184.216.34", 0),
+            ),
+        ]
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+
+    parsed = download_safety.validate_download_url(
+        "https://bücher.example/feed.csv",
+    )
+
+    assert parsed.hostname == "bücher.example"
+    assert seen_hosts == ["xn--bcher-kva.example"]
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "https://bad_host.example/feed.csv",
+        "https://-bad.example/feed.csv",
+        "https://bad-.example/feed.csv",
+        "https://public..example/feed.csv",
+        f"https://{'a' * 64}.example/feed.csv",
+        f"https://{'.'.join(['a' * 63] * 4)}.example/feed.csv",
+    ],
+)
+def test_validate_download_url_rejects_invalid_dns_labels_before_dns(
+    source_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("invalid DNS labels should not reach DNS")
+        ),
+    )
+
+    with pytest.raises(ValueError, match=r"internal/localhost|valid absolute"):
+        download_safety.validate_download_url(source_url)
+
+
 @pytest.mark.parametrize(
     "source_url",
     [
