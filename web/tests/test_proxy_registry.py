@@ -253,6 +253,28 @@ def test_parse_public_pac_url_rejects_fragment_public_pac_url() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://pa\tc.example/proxy.pac",
+        "https://pac.example/custom/proxy.pac\nInjected: yes",
+        "https://pac.example/custom/proxy.pac\x7f",
+        "proxy.example/custom\rproxy.pac",
+    ],
+)
+def test_parse_public_pac_url_rejects_control_character_public_pac_urls(
+    value: str,
+) -> None:
+    proxy_registry = _proxy_registry()
+
+    assert proxy_registry._parse_public_pac_url(value) == (
+        "",
+        "http",
+        80,
+        "/proxy.pac",
+    )
+
+
 def test_parse_public_pac_url_rejects_zero_explicit_authority_port() -> None:
     proxy_registry = _proxy_registry()
 

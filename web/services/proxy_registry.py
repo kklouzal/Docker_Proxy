@@ -221,6 +221,8 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
     candidate = str(raw_url or "").strip()
     if not candidate:
         return "", "http", 80, "/proxy.pac"
+    if _has_unsafe_url_text(candidate):
+        return "", "http", 80, "/proxy.pac"
     has_absolute_scheme = "://" in candidate
     if "://" not in candidate:
         match = re.match(r"([^/?#]+)(.*)", candidate)
