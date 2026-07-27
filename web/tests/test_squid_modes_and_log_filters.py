@@ -1462,10 +1462,15 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
 
     store = get_sslfilter_store()
     added, attempted, error = store.install_compatibility_preset("all")
+    status_by_id = {preset["id"]: preset for preset in store.list_compatibility_presets()}
+    effective_total = sum(preset["total"] for preset in status_by_id.values())
 
-    assert attempted == sum(len(preset.domains) for preset in COMPATIBILITY_PRESETS)
-    assert added > 200
+    assert effective_total < sum(len(preset.domains) for preset in COMPATIBILITY_PRESETS)
+    assert attempted == effective_total
+    assert added == effective_total
+    assert added > 100
     assert error == ""
+    assert all(preset["complete"] for preset in status_by_id.values())
 
 
 def test_github_compatibility_presets_cover_githubassets_domain() -> None:

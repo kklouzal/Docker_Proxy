@@ -53,6 +53,12 @@ class SslFilterMaterializedState:
         return self.nobump_src_list_text
 
 
+@dataclass(frozen=True)
+class _EffectivePresetDomains:
+    domains: list[str]
+    invalid: list[tuple[str, str]]
+
+
 def _canonical_policy(policy: str) -> str:
     value = (policy or "").strip().lower().replace("-", "_")
     if value in {"no_bump", "nobump", "splice"}:
@@ -150,6 +156,30 @@ def _dedupe_squid_domains(values: list[str]) -> list[str]:
         seen.add(value)
         out.append(value)
     return out
+
+
+def _domain_rule_from_squid_domain(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized.startswith("."):
+        return f"*.{normalized[1:]}" if normalized[1:] else ""
+    return normalized
+
+
+def _effective_preset_domains(preset: CompatibilityPreset) -> _EffectivePresetDomains:
+    canonical_domains: list[str] = []
+    invalid: list[tuple[str, str]] = []
+    for domain in preset.domains:
+        ok, err, canonical = _normalize_domain_rule(domain)
+        if ok and canonical:
+            canonical_domains.append(canonical)
+        else:
+            invalid.append((domain, err or "Invalid domain."))
+    effective_domains = [
+        rule
+        for squid_domain in _dedupe_squid_domains(canonical_domains)
+        if (rule := _domain_rule_from_squid_domain(squid_domain))
+    ]
+    return _EffectivePresetDomains(domains=effective_domains, invalid=invalid)
 
 
 def _squid_domain_is_covered_by_wildcard(value: str, wildcard: str) -> bool:
@@ -471,14 +501,15 @@ class SslFilterStore:
         current = _dedupe_squid_domains(self.list_all().no_bump_domains)
         presets: list[dict[str, Any]] = []
         for preset in COMPATIBILITY_PRESETS:
+            effective = _effective_preset_domains(preset)
             installed = [
                 domain
-                for domain in preset.domains
+                for domain in effective.domains
                 if _squid_domain_is_effectively_configured(domain, current)
             ]
             missing = [
                 domain
-                for domain in preset.domains
+                for domain in effective.domains
                 if not _squid_domain_is_effectively_configured(domain, current)
             ]
             presets.append(
@@ -487,10 +518,15 @@ class SslFilterStore:
                     "title": preset.title,
                     "description": preset.description,
                     "domains": list(preset.domains),
+                    "effective_domains": list(effective.domains),
+                    "catalog_errors": [
+                        {"domain": domain, "error": err}
+                        for domain, err in effective.invalid
+                    ],
                     "installed": len(installed),
                     "missing": len(missing),
-                    "total": len(preset.domains),
-                    "complete": len(missing) == 0,
+                    "total": len(effective.domains),
+                    "complete": len(missing) == 0 and not effective.invalid,
                 },
             )
         return presets
@@ -504,17 +540,27 @@ class SslFilterStore:
         )
         if not presets:
             return 0, 0, "Unknown compatibility preset."
-        before = set(self.list_all().no_bump_domains)
+        current = _dedupe_squid_domains(self.list_all().no_bump_domains)
+        added = 0
         attempted = 0
         errors: list[str] = []
         for preset in presets:
-            for domain in preset.domains:
+            effective = _effective_preset_domains(preset)
+            errors.extend(f"{domain}: {err}" for domain, err in effective.invalid)
+            for domain in effective.domains:
+                if _squid_domain_is_effectively_configured(domain, current):
+                    continue
                 attempted += 1
-                ok, err, _canonical = self.add_domain("nobump", domain)
-                if not ok and err:
-                    errors.append(f"{domain}: {err}")
-        after = set(self.list_all().no_bump_domains)
-        return len(after - before), attempted, "; ".join(errors[:3])
+                ok, err, canonical = self.add_domain("nobump", domain)
+                if not ok:
+                    if err:
+                        errors.append(f"{domain}: {err}")
+                    continue
+                added += 1
+                squid_domain = _normalize_domain_for_squid(canonical)
+                if squid_domain:
+                    current = _dedupe_squid_domains([*current, squid_domain])
+        return added, attempted, "; ".join(errors[:3])
 
     def render_materialized_state(self) -> SslFilterMaterializedState:
         rules = self.list_all()

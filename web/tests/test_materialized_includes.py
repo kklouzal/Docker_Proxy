@@ -119,6 +119,121 @@ def test_sslfilter_apply_squid_include_writes_materialized_files(
     )
 
 
+def test_sslfilter_preset_status_counts_effective_materialized_domains(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_sslfilter_store_module()
+    store = module.SslFilterStore(
+        squid_include_path=str(tmp_path / "10-sslfilter.conf"),
+        nobump_list_path=str(tmp_path / "nobump.txt"),
+        nocache_src_list_path=str(tmp_path / "nocache-src.txt"),
+    )
+    monkeypatch.setattr(
+        module,
+        "COMPATIBILITY_PRESETS",
+        (
+            module.CompatibilityPreset(
+                id="overlap",
+                title="Overlap",
+                description="Exact and wildcard overlap",
+                domains=(
+                    "Example.COM",
+                    "*.example.com",
+                    "api.example.com",
+                    "*.cdn.example.com",
+                    "cdn.example.com",
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        store,
+        "list_all",
+        lambda: SimpleNamespace(
+            no_bump_domains=["*.example.com"],
+            no_cache_domains=[],
+            no_bump_src_nets=[],
+            no_cache_src_nets=[],
+            exclude_private_nets=True,
+            inspection_enabled=True,
+        ),
+    )
+
+    preset = store.list_compatibility_presets()[0]
+
+    assert preset["domains"] == [
+        "Example.COM",
+        "*.example.com",
+        "api.example.com",
+        "*.cdn.example.com",
+        "cdn.example.com",
+    ]
+    assert preset["effective_domains"] == ["*.example.com"]
+    assert preset["installed"] == 1
+    assert preset["missing"] == 0
+    assert preset["total"] == 1
+    assert preset["complete"] is True
+
+
+def test_sslfilter_preset_install_attempts_only_missing_effective_domains(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_sslfilter_store_module()
+    store = module.SslFilterStore(
+        squid_include_path=str(tmp_path / "10-sslfilter.conf"),
+        nobump_list_path=str(tmp_path / "nobump.txt"),
+        nocache_src_list_path=str(tmp_path / "nocache-src.txt"),
+    )
+    monkeypatch.setattr(
+        module,
+        "COMPATIBILITY_PRESETS",
+        (
+            module.CompatibilityPreset(
+                id="overlap",
+                title="Overlap",
+                description="Exact and wildcard overlap",
+                domains=(
+                    "example.com",
+                    "*.example.com",
+                    "api.example.com",
+                    "other.example.net",
+                    "*.other.example.net",
+                ),
+            ),
+        ),
+    )
+    current_domains = ["*.example.com"]
+    added_domains: list[str] = []
+
+    monkeypatch.setattr(
+        store,
+        "list_all",
+        lambda: SimpleNamespace(
+            no_bump_domains=list(current_domains),
+            no_cache_domains=[],
+            no_bump_src_nets=[],
+            no_cache_src_nets=[],
+            exclude_private_nets=True,
+            inspection_enabled=True,
+        ),
+    )
+
+    def fake_add_domain(policy: str, domain: str) -> tuple[bool, str, str]:
+        assert policy == "nobump"
+        added_domains.append(domain)
+        current_domains.append(domain)
+        return True, "", domain
+
+    monkeypatch.setattr(store, "add_domain", fake_add_domain)
+
+    added, attempted, error = store.install_compatibility_preset("overlap")
+
+    assert added == 1
+    assert attempted == 1
+    assert error == ""
+    assert added_domains == ["*.other.example.net"]
+
+
 def test_sslfilter_wildcard_domains_match_squid_suffix_semantics(
     tmp_path, monkeypatch
 ) -> None:
@@ -163,8 +278,9 @@ def test_sslfilter_wildcard_domains_match_squid_suffix_semantics(
     discord_preset = next(
         preset for preset in store.list_compatibility_presets() if preset["id"] == "discord"
     )
-    assert discord_preset["installed"] == 2
-    assert discord_preset["missing"] == 6
+    assert discord_preset["installed"] == 1
+    assert discord_preset["missing"] == 3
+    assert discord_preset["total"] == 4
     assert discord_preset["complete"] is False
 
 
