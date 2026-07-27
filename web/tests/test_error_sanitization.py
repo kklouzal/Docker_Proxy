@@ -25,8 +25,67 @@ def test_public_error_message_shows_valueerror_message(monkeypatch) -> None:
     assert "Bad input" in msg
 
 
+def test_public_error_message_redacts_valueerror_credentials(monkeypatch) -> None:
+    monkeypatch.delenv("EXPOSE_INTERNAL_ERRORS", raising=False)
+
+    msg = public_error_message(
+        ValueError(
+            "Bad proxy config: password=supersecret token: abc "
+            "api_key=key123 apikey: altkey client_secret='quoted secret' "
+            "Authorization Bearer bearer-token Basic basic-token "
+            "url=https://user:pass@example.com/path"
+        ),
+        max_len=500,
+    )
+
+    assert "Bad proxy config" in msg
+    for secret in (
+        "supersecret",
+        "abc",
+        "key123",
+        "altkey",
+        "quoted secret",
+        "bearer-token",
+        "basic-token",
+        "user:pass",
+    ):
+        assert secret not in msg
+    assert "password=[redacted]" in msg
+    assert "token: [redacted]" in msg
+    assert "api_key=[redacted]" in msg
+    assert "apikey: [redacted]" in msg
+    assert "client_secret='[redacted]'" in msg
+    assert "Bearer [redacted]" in msg
+    assert "Basic [redacted]" in msg
+    assert "https://[redacted]@example.com/path" in msg
+
+
+def test_public_error_message_keeps_ordinary_valueerror_context(monkeypatch) -> None:
+    monkeypatch.delenv("EXPOSE_INTERNAL_ERRORS", raising=False)
+    msg = public_error_message(
+        ValueError("Proxy domain example.com is invalid for upstream proxy group")
+    )
+    assert msg == "Proxy domain example.com is invalid for upstream proxy group"
+
+
 def test_public_error_message_can_expose_details(monkeypatch) -> None:
     monkeypatch.setenv("EXPOSE_INTERNAL_ERRORS", "1")
     msg = public_error_message(RuntimeError("detail"))
     assert "RuntimeError" in msg
     assert "detail" in msg
+
+
+def test_public_error_message_redacts_exposed_internal_details(monkeypatch) -> None:
+    monkeypatch.setenv("EXPOSE_INTERNAL_ERRORS", "1")
+    msg = public_error_message(
+        RuntimeError(
+            "connection failed for https://admin:p4ss@example.com with token=secret-token"
+        )
+    )
+
+    assert "RuntimeError" in msg
+    assert "connection failed" in msg
+    assert "admin:p4ss" not in msg
+    assert "secret-token" not in msg
+    assert "https://[redacted]@example.com" in msg
+    assert "token=[redacted]" in msg
