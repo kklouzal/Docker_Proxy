@@ -5,20 +5,26 @@ import re
 from contextvars import ContextVar, Token
 
 _PROXY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,62}$")
+_PROXY_ID_UNSAFE_RUN_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
+_PROXY_ID_TRAVERSAL_TOKEN_RE = re.compile(r"\.\.")
 _ACTIVE_PROXY_ID: ContextVar[str | None] = ContextVar("active_proxy_id", default=None)
 _DEFAULT_PROXY_ID = "default"
 
 
 def normalize_proxy_id(value: object | None) -> str:
     raw = "" if value is None else str(value).strip()
-    if not raw:
+    if not raw or _PROXY_ID_TRAVERSAL_TOKEN_RE.search(raw):
         return _DEFAULT_PROXY_ID
-    if len(raw) > 63:
-        raw = raw[:63]
-    if not _PROXY_ID_RE.match(raw):
-        cleaned = re.sub(r"[^A-Za-z0-9_.:-]+", "-", raw).strip("-._:")
-        raw = cleaned or _DEFAULT_PROXY_ID
-    return raw
+
+    cleaned = _PROXY_ID_UNSAFE_RUN_RE.sub("-", raw)
+    if len(cleaned) > 63:
+        cleaned = cleaned[:63]
+    cleaned = cleaned.strip("-._:")
+    if not cleaned or _PROXY_ID_TRAVERSAL_TOKEN_RE.search(cleaned):
+        return _DEFAULT_PROXY_ID
+    if not _PROXY_ID_RE.match(cleaned):
+        return _DEFAULT_PROXY_ID
+    return cleaned
 
 
 def get_default_proxy_id() -> str:
