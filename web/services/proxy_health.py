@@ -559,21 +559,19 @@ def _normalize_av_icap_health(result: Any) -> dict[str, Any]:
 
 
 def build_remote_clamav_view(health_payload: dict[str, Any]) -> dict[str, Any]:
-    services = health_payload.get("services") or {}
-    aggregate = (
-        services.get("clamav") if isinstance(services.get("clamav"), dict) else {}
-    )
-    components = aggregate.get("components") if isinstance(aggregate, dict) else {}
+    raw_services = health_payload.get("services")
+    services = raw_services if isinstance(raw_services, dict) else {}
+    raw_aggregate = services.get("clamav")
+    aggregate = raw_aggregate if isinstance(raw_aggregate, dict) else {}
+    raw_components = aggregate.get("components")
+    components = raw_components if isinstance(raw_components, dict) else {}
     clamd_health = normalize_service_health(
-        services.get("clamd")
-        or (components.get("clamd") if isinstance(components, dict) else None)
-        or aggregate,
+        services.get("clamd") or components.get("clamd") or aggregate,
     )
     av_icap_health = _normalize_av_icap_health(
-        services.get("av_icap")
-        or (components.get("av_icap") if isinstance(components, dict) else None),
+        services.get("av_icap") or components.get("av_icap"),
     )
-    health = dict(aggregate) if isinstance(aggregate, dict) else {}
+    health = dict(aggregate)
     if not health:
         health = build_clamav_health(clamd_health, av_icap_health)
     else:

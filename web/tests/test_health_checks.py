@@ -1089,6 +1089,53 @@ def test_remote_clamav_view_surfaces_unavailable_cached_health_source() -> None:
     assert view["health_source"] == "offline (Proxy management request timed out)"
 
 
+@pytest.mark.parametrize(
+    "services",
+    [
+        "not-a-service-map",
+        ["not", "a", "service", "map"],
+        {"clamav": "not-an-aggregate-map"},
+        {"clamav": {"components": "not-a-component-map"}},
+        {"clamav": {"components": ["not", "a", "component", "map"]}},
+        {"clamav": {"components": {"clamd": "bad", "av_icap": ["bad"]}}},
+    ],
+)
+def test_remote_clamav_view_malformed_payload_shapes_degrade_to_unavailable(
+    services,
+) -> None:
+    proxy_health = _proxy_health_module()
+
+    view = proxy_health.build_remote_clamav_view(
+        {
+            "ok": False,
+            "proxy_status": "malformed remote health payload",
+            "services": services,
+        }
+    )
+
+    assert view["health"]["ok"] is False
+    assert view["clamd_health"] == {
+        "ok": False,
+        "detail": "unavailable",
+        "host": "",
+        "port": 0,
+        "target": "unavailable",
+    }
+    assert view["av_icap_health"] == {
+        "ok": False,
+        "detail": "unavailable",
+        "host": "",
+        "port": 0,
+        "target": "unavailable",
+        "service": "/avrespmod",
+    }
+    assert view["health"]["components"] == {
+        "clamd": view["clamd_health"],
+        "av_icap": view["av_icap_health"],
+    }
+    assert view["health_source"] == "malformed remote health payload"
+
+
 def test_remote_clamav_view_preserves_split_av_icap_components() -> None:
     proxy_health = _proxy_health_module()
 
