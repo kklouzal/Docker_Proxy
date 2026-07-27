@@ -38,27 +38,44 @@ _NS = {"md": _MD_NS, "ds": _DS_NS}
 _SAML_METADATA_REQUEST_HEADERS = {
     "Accept": "application/samlmetadata+xml, application/xml, text/xml",
 }
+_MAX_URL_PERCENT_DECODE_PASSES = 8
+_PERCENT_ENCODED_OCTET_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 
 
 def _has_unsafe_url_text(value: str) -> bool:
     return any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value)
 
 
+def _repeatedly_decode_url_component(value: str) -> tuple[list[str], bool]:
+    decoded_values = [str(value or "")]
+    current = decoded_values[0]
+    for _ in range(_MAX_URL_PERCENT_DECODE_PASSES):
+        try:
+            decoded = unquote(current)
+        except Exception:
+            return decoded_values, False
+        if decoded == current:
+            return decoded_values, False
+        decoded_values.append(decoded)
+        current = decoded
+    return decoded_values, bool(_PERCENT_ENCODED_OCTET_RE.search(current))
+
+
 def _decoded_url_component_is_unsafe(value: str) -> bool:
-    try:
-        decoded = unquote(value or "")
-    except Exception:
-        decoded = str(value or "")
-    return _has_unsafe_url_text(decoded) or "\\" in decoded
+    decoded_values, is_excessively_nested = _repeatedly_decode_url_component(value)
+    return is_excessively_nested or any(
+        _has_unsafe_url_text(decoded) or "\\" in decoded
+        for decoded in decoded_values
+    )
 
 
 def _decoded_authority_component_is_unsafe(value: str) -> bool:
-    try:
-        decoded = unquote(value or "")
-    except Exception:
-        decoded = str(value or "")
-    return _decoded_url_component_is_unsafe(value) or any(
-        delimiter in decoded for delimiter in ("/", "?", "#", "@")
+    decoded_values, is_excessively_nested = _repeatedly_decode_url_component(value)
+    return is_excessively_nested or any(
+        _has_unsafe_url_text(decoded)
+        or "\\" in decoded
+        or any(delimiter in decoded for delimiter in ("/", "?", "#", "@"))
+        for decoded in decoded_values
     )
 
 

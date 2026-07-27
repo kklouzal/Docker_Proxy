@@ -433,6 +433,26 @@ def test_saml_profile_https_is_required_by_default() -> None:
 @pytest.mark.parametrize(
     "metadata_url",
     [
+        "https://adfs.example.local/adfs/%255cls",
+        "https://adfs.example.local/adfs/ls?Relay=%250aInjected",
+        "https://adfs.example.local%252f.evil/adfs/ls",
+    ],
+)
+def test_saml_profile_rejects_double_encoded_unsafe_metadata_urls(
+    metadata_url: str,
+) -> None:
+    store = MemorySamlAuthStore()
+
+    with pytest.raises(
+        ValueError,
+        match="encoded whitespace, control characters, or backslashes",
+    ):
+        store.save_profile({"metadata_url": metadata_url})
+
+
+@pytest.mark.parametrize(
+    "metadata_url",
+    [
         "https://adfs.example.local\\@evil.example/metadata.xml",
         "https://adfs.example.local%2fevil.example/metadata.xml",
         "https://adfs.example.local/%5cmetadata.xml",
@@ -470,6 +490,21 @@ def test_saml_profile_accepts_valid_public_base_url_port() -> None:
     )
 
     assert profile.public_base_url == "https://admin.example.test:8443"
+
+
+def test_saml_profile_rejects_double_encoded_unsafe_public_base_url_path() -> None:
+    store = MemorySamlAuthStore()
+
+    with pytest.raises(
+        ValueError,
+        match="encoded whitespace, control characters, or backslashes",
+    ):
+        store.save_profile(
+            {
+                "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+                "public_base_url": "https://admin.example.test/app/%255cadmin",
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -786,6 +821,29 @@ def test_build_saml_settings_revalidates_cached_idp_endpoint_locations() -> None
     )
 
     with pytest.raises(ValueError, match=r"SingleSignOnService.*must use https://"):
+        build_saml_settings(
+            profile,
+            _saml_request("https://admin.example.test/auth/saml/login"),
+        )
+
+
+def test_build_saml_settings_rejects_double_encoded_cached_idp_endpoint_locations() -> None:
+    parsed = parse_saml_metadata(
+        _metadata_with_service_locations(
+            sso_location="https://adfs.example.local/adfs/%255cls"
+        )
+    )
+    profile = replace(
+        MemorySamlAuthStore().default_profile(),
+        require_https=True,
+        raw_metadata_xml="cached",
+        parsed_metadata_json=json.dumps(parsed, sort_keys=True),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="encoded whitespace, control characters, or backslashes",
+    ):
         build_saml_settings(
             profile,
             _saml_request("https://admin.example.test/auth/saml/login"),
