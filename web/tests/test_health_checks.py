@@ -77,6 +77,20 @@ def _forwarding_canary_response(
     return _http_response(status=status, body=body)
 
 
+def _chunked_http_response(chunks: list[bytes]) -> bytes:
+    body = b"".join(
+        f"{len(chunk):x}\r\n".encode("ascii") + chunk + b"\r\n"
+        for chunk in chunks
+    )
+    return (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n"
+        + body
+        + b"0\r\n\r\n"
+    )
+
+
 def test_health_check_local_host_listener_and_target_helpers(
     tmp_path, monkeypatch
 ) -> None:
@@ -650,14 +664,7 @@ def test_check_http_proxy_forwarding_accepts_complete_chunked_local_health(
 ) -> None:
     health_checks = _health_checks_module()
     body = b'{"ok":true}\n'
-    response = (
-        b"HTTP/1.1 200 OK\r\n"
-        b"Content-Type: application/json\r\n"
-        b"Transfer-Encoding: chunked\r\n\r\n"
-        + f"{len(body):x}\r\n".encode("ascii")
-        + body
-        + b"\r\n0\r\n\r\n"
-    )
+    response = _chunked_http_response([body])
 
     monkeypatch.setattr(
         health_checks.socket,
@@ -675,6 +682,69 @@ def test_check_http_proxy_forwarding_accepts_complete_chunked_local_health(
     assert result["body_complete"] is True
     assert result["local_health_ok"] is True
     assert "local health ok" in result["detail"]
+
+
+@pytest.mark.parametrize(
+    ("response_body", "expected_decoded"),
+    [
+        (b'c\r\n{"ok":true}\n0\r\n\r\n', b'{"ok":true}\n'),
+        (b'c\r\n{"ok":true}\r0\r\n\r\n', b'{"ok":true}\r'),
+    ],
+)
+def test_decode_chunked_body_requires_chunk_data_terminator(
+    response_body,
+    expected_decoded,
+) -> None:
+    health_checks = _health_checks_module()
+
+    decoded, complete = health_checks._decode_chunked_body(response_body)
+
+    assert decoded == expected_decoded
+    assert complete is False
+
+
+def test_check_http_proxy_forwarding_rejects_chunk_without_data_terminator(
+    monkeypatch,
+) -> None:
+    health_checks = _health_checks_module()
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n"
+        b'c\r\n{"ok":true}\n0\r\n\r\n'
+    )
+
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: _FakeSocket([response]),
+    )
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url="http://127.0.0.1:80/health",
+        timeout=0.1,
+    )
+
+    assert result["ok"] is False
+    assert result["body_complete"] is False
+    assert result["local_health_ok"] is False
+    assert "incomplete local health response body" in result["detail"]
+
+
+@pytest.mark.parametrize(
+    "response_body",
+    [
+        b"not-hex\r\nignored\r\n0\r\n\r\n",
+        b"2\r\na",
+    ],
+)
+def test_decode_chunked_body_malformed_syntax_fails_closed(response_body) -> None:
+    health_checks = _health_checks_module()
+
+    _decoded, complete = health_checks._decode_chunked_body(response_body)
+
+    assert complete is False
 
 
 def test_check_http_proxy_forwarding_rejects_conflicting_content_lengths(

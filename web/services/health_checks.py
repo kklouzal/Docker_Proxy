@@ -343,6 +343,8 @@ def _decode_chunked_body(data: bytes) -> tuple[bytes, bool]:
             index += 2
         elif data[index : index + 1] == b"\n":
             index += 1
+        else:
+            return bytes(body), False
     return bytes(body), False
 
 
