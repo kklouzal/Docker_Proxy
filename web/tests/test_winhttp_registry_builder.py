@@ -249,6 +249,70 @@ def test_bypass_list_normalizes_lines_semicolons_dedupes_and_local() -> None:
     )
 
 
+def test_bypass_list_accepts_practical_winhttp_bypass_patterns() -> None:
+    bypass = normalize_bypass_list(
+        [
+            "localhost",
+            "example.com",
+            "*.example.com",
+            "legacy-*",
+            "192.168.*",
+            "10.*",
+            "127.0.0.1",
+            "2001:db8::10",
+            "<local>",
+        ],
+        include_local=True,
+    )
+
+    assert bypass == (
+        "localhost;example.com;*.example.com;legacy-*;192.168.*;10.*;"
+        "127.0.0.1;2001:db8::10;<local>"
+    )
+
+
+def test_contract_output_uses_validated_bypass_list_in_generated_outputs() -> None:
+    result = build_contract_output(
+        {
+            "proxy_host": "proxy.example",
+            "proxy_port": 3128,
+            "destination_schemes": ["http", "https"],
+            "bypass_list": "localhost *.example.com 192.168.* <local>",
+        },
+    )
+
+    expected = "localhost;*.example.com;192.168.*;<local>"
+    assert result.bypass_string == expected
+    assert result.decoded is not None
+    assert result.decoded.bypass_string == expected
+    assert f'bypass-list="{expected}"' in result.legacy_set_proxy_command
+    assert json.loads(result.advproxy_json)["ProxyBypass"] == expected
+
+
+@pytest.mark.parametrize(
+    "bypass_entry",
+    [
+        "https://proxyadmin.example.com/admin",
+        "proxyadmin.example.com/path",
+        r"proxyadmin.example.com\share",
+        "proxyadmin.example.com?admin=true",
+        "proxyadmin.example.com#admin",
+        "operator:secret@proxyadmin.example.com",
+        "proxyadmin.example.com:443",
+        "bad..example.com",
+        "-bad.example.com",
+        "bad-.example.com",
+        "010.000.000.001",
+        "[2001:db8::10]",
+    ],
+)
+def test_bypass_list_rejects_url_path_credential_and_malformed_entries(
+    bypass_entry: str,
+) -> None:
+    with pytest.raises(WinHttpBuilderError, match="Bypass list entry"):
+        normalize_bypass_list(bypass_entry, include_local=False)
+
+
 def test_reg_export_normalizer_strips_export_formatting() -> None:
     original = generate_basic_winhttp_binary("http=192.168.5.45:3128", "<local>")
     exported = generate_reg_file_from_hex(original)

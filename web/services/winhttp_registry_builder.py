@@ -223,6 +223,7 @@ def normalize_bypass_list(
         if "," in cleaned:
             msg = "Bypass entries must not contain commas."
             raise WinHttpBuilderError(msg)
+        _validate_bypass_entry(cleaned)
         key = cleaned.lower()
         if key in seen:
             continue
@@ -233,6 +234,56 @@ def normalize_bypass_list(
     bypass = ";".join(normalized)
     _validate_command_value(bypass, "Bypass list")
     return bypass
+
+
+def _validate_bypass_entry(value: str) -> None:
+    entry = (value or "").strip()
+    field_name = "Bypass list entry"
+    if not entry:
+        return
+    if entry.lower() == "<local>":
+        return
+    if "://" in entry:
+        msg = (
+            f"{field_name} must be a host, domain, IP, or wildcard pattern, "
+            "not a URL."
+        )
+        raise WinHttpBuilderError(msg)
+    if any(separator in entry for separator in ("/", "\\")):
+        msg = f"{field_name} must not contain URL or filesystem path separators."
+        raise WinHttpBuilderError(msg)
+    if any(component in entry for component in ("?", "#")):
+        msg = f"{field_name} must not contain URL query or fragment components."
+        raise WinHttpBuilderError(msg)
+    if "@" in entry:
+        msg = f"{field_name} must not contain credentials or user-info."
+        raise WinHttpBuilderError(msg)
+    _validate_command_value(entry, field_name)
+
+    if "*" not in entry:
+        _validate_proxy_host_identity(entry, field_name)
+        return
+
+    if ":" in entry:
+        msg = f"{field_name} must not combine IPv6 literals with wildcards."
+        raise WinHttpBuilderError(msg)
+
+    dns_pattern = entry.removesuffix(".")
+    labels = dns_pattern.split(".")
+    if not dns_pattern or len(dns_pattern) > 253:
+        msg = f"{field_name} must be a valid host, domain, IP, or wildcard pattern."
+        raise WinHttpBuilderError(msg)
+    for label in labels:
+        if (
+            not label
+            or len(label) > 63
+            or not label.isascii()
+            or label[0] == "-"
+            or label[-1] == "-"
+            or not all(ch.isascii() and (ch.isalnum() or ch in "-*") for ch in label)
+        ):
+            msg = f"{field_name} must be a valid host, domain, IP, or wildcard pattern."
+            raise WinHttpBuilderError(msg)
 
 
 def _validate_proxy_host_identity(value: str, field_name: str) -> None:
