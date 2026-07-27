@@ -16,6 +16,27 @@ def normalize_proxy_id(value: object | None) -> str:
     if not raw or _PROXY_ID_TRAVERSAL_TOKEN_RE.search(raw):
         return _DEFAULT_PROXY_ID
 
+    return _sanitize_proxy_id(raw)
+
+
+def normalize_route_proxy_id(value: object | None) -> str:
+    """Normalize a proxy selector from a URL route/query parameter.
+
+    Route links historically tolerated pasted/display proxy labels with spaces or
+    other delimiters and canonicalized them before matching the registered proxy
+    inventory.  Keep the generic proxy-id normalizer strict for raw IDs used in
+    stateful or destructive contexts, but allow URL selection to resolve only to
+    a syntactically safe canonical ID.
+    """
+    raw = "" if value is None else str(value).strip()
+    if not raw:
+        return _DEFAULT_PROXY_ID
+
+    return _sanitize_proxy_id(raw)
+
+
+def _sanitize_proxy_id(raw: str) -> str:
+    """Return a safe canonical proxy id from an already stripped value."""
     cleaned = _PROXY_ID_UNSAFE_RUN_RE.sub("-", raw)
     if len(cleaned) > 63:
         cleaned = cleaned[:63]

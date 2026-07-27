@@ -126,6 +126,7 @@ from services.proxy_context import (
     get_default_proxy_id,
     get_proxy_id,
     normalize_proxy_id,
+    normalize_route_proxy_id,
     reset_proxy_id,
     set_proxy_id,
 )
@@ -2685,9 +2686,13 @@ def _resolve_proxy_from_inventory(
 
 
 def _resolve_selected_proxy_context() -> tuple[str, Any, list[Any]]:
-    requested_proxy = request.form.get("proxy_id") or request.args.get("proxy_id")
-    if requested_proxy is not None:
-        session["active_proxy_id"] = normalize_proxy_id(requested_proxy)
+    requested_form_proxy = request.form.get("proxy_id")
+    if requested_form_proxy is not None:
+        session["active_proxy_id"] = normalize_proxy_id(requested_form_proxy)
+    else:
+        requested_proxy = request.args.get("proxy_id")
+        if requested_proxy is not None:
+            session["active_proxy_id"] = normalize_route_proxy_id(requested_proxy)
 
     preferred = normalize_proxy_id(
         session.get("active_proxy_id") or get_default_proxy_id()
@@ -2732,9 +2737,13 @@ def _inject_proxy_context():
     active_proxy = getattr(g, "_active_proxy", None)
     proxies = getattr(g, "_proxy_inventory", None)
     if request.endpoint in _FLEET_MANAGEMENT_ENDPOINTS:
-        requested_proxy = request.form.get("proxy_id") or request.args.get("proxy_id")
-        if requested_proxy is not None:
-            session["active_proxy_id"] = normalize_proxy_id(requested_proxy)
+        requested_form_proxy = request.form.get("proxy_id")
+        if requested_form_proxy is not None:
+            session["active_proxy_id"] = normalize_proxy_id(requested_form_proxy)
+        else:
+            requested_proxy = request.args.get("proxy_id")
+            if requested_proxy is not None:
+                session["active_proxy_id"] = normalize_route_proxy_id(requested_proxy)
         registry = get_proxy_registry()
         proxies = _proxy_inventory_or_default(registry)
         preferred = normalize_proxy_id(
