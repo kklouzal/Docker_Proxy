@@ -436,14 +436,26 @@ def _forwarding_canary_probe_token(target_url: str) -> str:
     return (parse_qs(parsed.query, keep_blank_values=True).get("probe") or [""])[-1]
 
 
+def _forwarding_probe_host_has_ipv6_scope_id(host: str) -> bool:
+    normalized = str(host or "").strip().lower()
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    return isinstance(address, ipaddress.IPv6Address) and address.scope_id is not None
+
+
 def _is_local_forwarding_probe_host(host: str) -> bool:
     normalized = str(host or "").strip().lower()
     if normalized == "localhost":
         return True
     try:
-        return ipaddress.ip_address(normalized).is_loopback
+        address = ipaddress.ip_address(normalized)
     except ValueError:
         return False
+    if isinstance(address, ipaddress.IPv6Address) and address.scope_id is not None:
+        return False
+    return address.is_loopback
 
 
 def _has_empty_explicit_authority_port(netloc: str) -> bool:
@@ -480,6 +492,8 @@ def _safe_forwarding_probe_url(target_url: str) -> tuple[str, str]:
         return "", "unsafe forwarding probe target URL: embedded credentials"
     if parsed.fragment:
         return "", "unsafe forwarding probe target URL: fragment"
+    if _forwarding_probe_host_has_ipv6_scope_id(parsed.hostname):
+        return "", "unsafe forwarding probe target URL: IPv6 zone identifier"
     if not _is_local_forwarding_probe_host(parsed.hostname):
         return (
             "",

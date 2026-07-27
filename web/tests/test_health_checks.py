@@ -556,6 +556,40 @@ def test_check_http_proxy_forwarding_uses_absolute_form_local_probe(
     assert b"User-Agent: squid-flask-proxy-forwarding-health" in sock.sent[0]
 
 
+@pytest.mark.parametrize(
+    ("target_url", "expected_host_header"),
+    [
+        ("http://localhost:18080/health", b"Host: localhost:18080"),
+        ("http://127.0.0.1:18080/health", b"Host: 127.0.0.1:18080"),
+        ("http://[::1]:18080/health", b"Host: [::1]:18080"),
+    ],
+)
+def test_check_http_proxy_forwarding_accepts_local_unscoped_probe_hosts(
+    monkeypatch,
+    target_url,
+    expected_host_header,
+) -> None:
+    health_checks = _health_checks_module()
+
+    sock = _FakeSocket([_http_response()])
+    monkeypatch.setattr(
+        health_checks.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: sock,
+    )
+
+    result = health_checks.check_http_proxy_forwarding(
+        proxy_port=3128,
+        target_url=target_url,
+        timeout=0.4,
+    )
+
+    assert result["ok"] is True
+    assert result["probe_url"] == target_url
+    assert f"GET {target_url} HTTP/1.1".encode("ascii") in sock.sent[0]
+    assert expected_host_header in sock.sent[0]
+
+
 def test_check_http_proxy_forwarding_uses_dedicated_canary_and_requires_marker(
     monkeypatch,
 ) -> None:
@@ -927,6 +961,8 @@ def test_check_http_proxy_forwarding_refuses_self_proxy_loop(monkeypatch) -> Non
         ("http://127.0.0.1:/health", "empty explicit port"),
         ("http://localhost:/health", "empty explicit port"),
         ("http://[::1]:/health", "empty explicit port"),
+        ("http://[::1%25lo]:18080/health", "IPv6 zone identifier"),
+        ("http://[::1%lo]:18080/health", "IPv6 zone identifier"),
     ],
 )
 def test_check_http_proxy_forwarding_refuses_encoded_unsafe_targets_before_connect(
