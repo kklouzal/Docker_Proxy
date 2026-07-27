@@ -1783,6 +1783,117 @@ def test_save_report_schedule_returns_inserted_row_instead_of_sorted_first(
     )
 
 
+def test_save_report_schedule_normalizes_and_deduplicates_recipients(monkeypatch) -> None:
+    _add_web_to_path()
+
+    from services import observability_queries  # type: ignore
+
+    class InsertResult:
+        lastrowid = 31
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.insert_params: tuple[object, ...] | None = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def execute(self, sql: str, params=()):
+            text = " ".join(str(sql).split())
+            params_t = tuple(params or ())
+            if "INSERT INTO observability_report_schedules" in text:
+                self.insert_params = params_t
+                return InsertResult()
+            if "WHERE proxy_id = %s AND id = %s" in text:
+                assert self.insert_params is not None
+                return SelectResult(self.insert_params)
+            message = f"unexpected SQL: {text}"
+            raise AssertionError(message)
+
+    class SelectResult:
+        def __init__(self, insert_params: tuple[object, ...]) -> None:
+            self.insert_params = insert_params
+
+        def fetchone(self):
+            return (
+                31,
+                self.insert_params[1],
+                self.insert_params[2],
+                self.insert_params[3],
+                self.insert_params[4],
+                self.insert_params[5],
+                self.insert_params[6],
+                self.insert_params[7],
+                self.insert_params[8],
+                self.insert_params[11],
+                0,
+                "configured",
+                self.insert_params[10],
+            )
+
+    conn = FakeConnection()
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_ensure_report_schedule_db", lambda: None)
+    monkeypatch.setattr(queries, "_connect", lambda: conn)
+
+    saved = queries.save_report_schedule(
+        name="Daily ops report",
+        cadence="daily",
+        recipients=(
+            " Ops@example.com; alerts@example.com "
+            "ops@example.com reports+daily@example.co.uk "
+        ),
+        report_format="json",
+    )
+
+    assert saved["recipients"] == (
+        "Ops@example.com, alerts@example.com, reports+daily@example.co.uk"
+    )
+    assert conn.insert_params is not None
+    assert conn.insert_params[4] == saved["recipients"]
+
+
+@pytest.mark.parametrize(
+    "recipients",
+    [
+        "ops@example.com,,alerts@example.com",
+        "ops@example.com, ;alerts@example.com",
+        "not-an-email",
+        "ops@example.com\r\nBcc: attacker@example.com",
+        "ops@example.com, alerts@",
+        ",ops@example.com",
+        "ops@example.com;",
+        ", ".join(f"recipient{idx:02d}@example.com" for idx in range(40)),
+    ],
+)
+def test_save_report_schedule_rejects_invalid_recipient_text(
+    monkeypatch, recipients: str
+) -> None:
+    _add_web_to_path()
+
+    from services import observability_queries  # type: ignore
+
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_ensure_report_schedule_db", lambda: None)
+    monkeypatch.setattr(
+        queries,
+        "_connect",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("invalid recipients should not be persisted"),
+        ),
+    )
+
+    with pytest.raises(ValueError):
+        queries.save_report_schedule(
+            name="Bad report",
+            cadence="daily",
+            recipients=recipients,
+        )
+
+
 def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_privacy(
     tmp_path, monkeypatch
 ) -> None:
