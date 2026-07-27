@@ -21,6 +21,7 @@ REVOKED = "revoked"
 EXPIRED = "expired"
 REQ_STATUS = {PENDING, APPROVED, REJECTED, CLOSED}
 BLOCK_TYPES = {"webfilter", "adblock", "clamav", "download", "mime"}
+APPROVABLE_BLOCK_TYPES = {"webfilter"}
 POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS = 24 * 60 * 60
 POLICY_EXCEPTION_MIN_DURATION_SECONDS = 60
 POLICY_EXCEPTION_MAX_DURATION_SECONDS = 30 * 24 * 60 * 60
@@ -420,6 +421,12 @@ class PolicyRequestStore:
             req = _req(row)
             if req.status != PENDING:
                 msg = "Only pending requests can be approved."
+                raise ValueError(msg)
+            if req.block_type not in APPROVABLE_BLOCK_TYPES:
+                msg = (
+                    "Only webfilter requests can be approved into enforced policy "
+                    "exceptions. Use reject or close for this request type."
+                )
                 raise ValueError(msg)
             with guarded_proxy_write(c, req.proxy_id) as guard:
                 canonical_proxy_id = guard.proxy_id

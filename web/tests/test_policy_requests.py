@@ -26,10 +26,11 @@ class _PolicyApproveResult:
 
 
 class _PolicyApproveConn:
-    def __init__(self, *, claim_rowcount: int = 1):
+    def __init__(self, *, claim_rowcount: int = 1, block_type: str = "webfilter"):
         self.calls: list[tuple[str, tuple[object, ...]]] = []
         self.inserted_expires_ts: int | None = None
         self.claim_rowcount = claim_rowcount
+        self.block_type = block_type
 
     def __enter__(self):
         return self
@@ -47,7 +48,7 @@ class _PolicyApproveConn:
                     "id": 7,
                     "proxy_id": "edge-a",
                     "status": "pending",
-                    "block_type": "webfilter",
+                    "block_type": self.block_type,
                     "client_ip": "192.168.1.55",
                     "request_url": "https://example.com/path",
                     "domain": "example.com",
@@ -77,7 +78,7 @@ class _PolicyApproveConn:
                     "id": 11,
                     "proxy_id": "edge-a",
                     "status": "active",
-                    "block_type": "webfilter",
+                    "block_type": self.block_type,
                     "client_ip": "192.168.1.55",
                     "domain": "example.com",
                     "category": "adult",
@@ -207,6 +208,36 @@ def test_policy_request_store_approval_stale_pending_claim_does_not_insert(
         "UPDATE policy_requests SET status='approved'" in sql
         and "AND status='pending'" in sql
         for sql in executed_sql
+    )
+    assert not any("INSERT INTO policy_exceptions" in sql for sql in executed_sql)
+    assert not any("UPDATE policy_exceptions" in sql for sql in executed_sql)
+
+
+def test_policy_request_store_rejects_unsupported_approval_before_exception_write(
+    monkeypatch,
+) -> None:
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    conn = _PolicyApproveConn(block_type="adblock")
+    store = module.PolicyRequestStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(module, "now_ts", lambda: 1000)
+
+    try:
+        store.approve_request(7, reviewer="admin", admin_note="ok")
+    except ValueError as exc:
+        assert "Only webfilter requests can be approved" in str(exc)
+    else:
+        msg = "unsupported request types should not create policy exceptions"
+        raise AssertionError(msg)
+
+    executed_sql = [sql for sql, _params in conn.calls]
+    assert any("FROM policy_requests WHERE id=%s" in sql for sql in executed_sql)
+    assert not any(
+        "UPDATE policy_requests SET status='approved'" in sql for sql in executed_sql
     )
     assert not any("INSERT INTO policy_exceptions" in sql for sql in executed_sql)
     assert not any("UPDATE policy_exceptions" in sql for sql in executed_sql)
@@ -837,8 +868,7 @@ def test_admin_policy_requests_approval_and_revocation_disclose_queued_operation
     approve_text = approve_page.get_data(as_text=True)
     assert (
         "Action completed: approved; Policy reconciliation queued operation #1 "
-        "for policy aaaaaaaaaaaa."
-        in approve_text
+        "for policy aaaaaaaaaaaa." in approve_text
     )
 
     revoke_response = client.post(
@@ -868,6 +898,111 @@ def test_admin_policy_requests_approval_and_revocation_disclose_queued_operation
     assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
     assert loaded.operation_ledger.operations[-1].target_ref == desired_policy_sha
     assert loaded.operation_ledger.operations[-1].status == "pending"
+
+
+def test_admin_policy_requests_unsupported_approval_reports_error_without_queue(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services.policy_requests import PolicyRequest
+
+    from .admin_route_test_utils import load_admin_app, login_client
+
+    class Store:
+        def __init__(self) -> None:
+            self.approved: list[tuple[int, dict[str, object]]] = []
+            self.closed: list[tuple[int, dict[str, object]]] = []
+
+        def init_db(self) -> None:
+            pass
+
+        def list_requests(self, *, statuses=None, limit=200, proxy_id=None):
+            rows = [
+                PolicyRequest(
+                    7,
+                    "default",
+                    "pending",
+                    "adblock",
+                    "192.168.1.55",
+                    "https://ads.example/",
+                    "ads.example",
+                    "",
+                    "GET",
+                    "ERR_ACCESS_DENIED",
+                    "review me",
+                    "",
+                    1,
+                    1,
+                    0,
+                    "",
+                    None,
+                )
+            ]
+            if statuses:
+                rows = [r for r in rows if r.status in statuses]
+            if proxy_id is not None:
+                rows = [r for r in rows if r.proxy_id == proxy_id]
+            return rows
+
+        def list_exceptions(self, *, include_inactive=True, limit=200, proxy_id=None):
+            return []
+
+        def approve_request(self, request_id, **kwargs):
+            self.approved.append((request_id, kwargs))
+            msg = (
+                "Only webfilter requests can be approved into enforced policy "
+                "exceptions. Use reject or close for this request type."
+            )
+            raise ValueError(msg)
+
+        def close_request(self, request_id, **kwargs) -> None:
+            self.closed.append((request_id, kwargs))
+
+    store = Store()
+    monkeypatch.setenv("DISABLE_CSRF", "1")
+    loaded = load_admin_app(monkeypatch, tmp_path, policy_request_store=store)
+    queued = False
+
+    def unexpected_refresh(*_args, **_kwargs):
+        nonlocal queued
+        queued = True
+        return True, "queued"
+
+    monkeypatch.setattr(
+        loaded.module, "_best_effort_refresh_managed_policy", unexpected_refresh
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    page = client.get("/requests")
+    text = page.get_data(as_text=True)
+    assert page.status_code == 200
+    assert "Only webfilter approvals create enforced" in text
+    assert "Approval is unavailable for adblock requests" in text
+    assert 'name="action" value="approve"' not in text
+    assert 'name="action" value="reject"' in text
+
+    response = client.post(
+        "/requests",
+        data={
+            "action": "approve",
+            "request_id": "7",
+            "duration_seconds": "3600",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    params = urllib.parse.parse_qs(
+        urllib.parse.urlsplit(response.headers.get("Location", "")).query,
+    )
+    assert params.get("error") == [
+        "Only webfilter requests can be approved into enforced policy exceptions. Use reject or close for this request type."
+    ]
+    assert "ok" not in params
+    assert len(store.approved) == 1
+    assert queued is False
+    assert loaded.operation_ledger.operations == []
 
 
 def test_admin_policy_requests_queue_failure_reports_error_without_success(
@@ -1200,7 +1335,9 @@ def test_admin_policy_requests_invalid_mutation_ids_report_controlled_errors(
     assert store.revoked == []
 
 
-def test_policy_request_domain_normalization_rejects_raw_userinfo_or_email_like_hosts() -> None:
+def test_policy_request_domain_normalization_rejects_raw_userinfo_or_email_like_hosts() -> (
+    None
+):
     ensure_web_import_path()
     from services.policy_requests import normalize_domain
 
@@ -1279,13 +1416,22 @@ def test_policy_request_store_rejects_invalid_scope_and_filters_active_exception
     expired = store.approve_request(
         remote_req.id, reviewer="admin", duration_seconds=60
     )
-    non_webfilter = store.approve_request(
-        adblock_req.id, reviewer="admin", indefinite=True
-    )
+    try:
+        store.approve_request(adblock_req.id, reviewer="admin", indefinite=True)
+    except ValueError as exc:
+        assert "Only webfilter requests can be approved" in str(exc)
+    else:
+        msg = "adblock request should remain review-only and not create an exception"
+        raise AssertionError(msg)
     assert active.expires_ts == 0
-    assert non_webfilter.block_type == "adblock"
+    assert [
+        req.id for req in store.list_requests(statuses=["pending"], proxy_id="edge-a")
+    ] == [adblock_req.id]
     assert [ex.id for ex in store.active_webfilter_exceptions(proxy_id="edge-a")] == [
         active.id
+    ]
+    assert [ex.block_type for ex in store.list_exceptions(proxy_id="edge-a")] == [
+        "webfilter"
     ]
     assert (
         store.active_webfilter_exceptions(

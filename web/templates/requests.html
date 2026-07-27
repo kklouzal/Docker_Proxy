@@ -5,7 +5,7 @@
   <div class="page-hero-copy">
     <span class="page-eyebrow">Policy workflow</span>
     <h1 class="page-title">Policy exception requests</h1>
-    <p class="page-subtitle">Review block-page submissions for {{ active_proxy.display_name }}. Webfilter approvals create a client-IP + domain exception on the selected proxy only.</p>
+    <p class="page-subtitle">Review block-page submissions for {{ active_proxy.display_name }}. Only webfilter approvals create enforced client-IP + domain exceptions on the selected proxy. Adblock, ClamAV, download, and MIME requests are review items only; reject or close them instead of approving.</p>
   </div>
 </section>
 
@@ -37,6 +37,7 @@
             <input type="hidden" name="request_id" value="{{ r.id }}">
             <label for="admin-note-{{ r.id }}" class="small">Admin note</label>
             <textarea id="admin-note-{{ r.id }}" name="admin_note" rows="2" placeholder="Admin note"></textarea>
+            {% if r.block_type == 'webfilter' %}
             <label for="duration-seconds-{{ r.id }}" class="small">Approval duration</label>
             <select id="duration-seconds-{{ r.id }}" name="duration_seconds">
               <option value="3600">1 hour</option>
@@ -45,8 +46,11 @@
               <option value="2592000">30 days</option>
             </select>
             <label class="checkbox-inline"><input type="checkbox" name="duration_mode" value="indefinite"> Indefinite</label>
+            {% else %}
+            <p class="small">Approval is unavailable for {{ r.block_type }} requests because this request type does not materialize into enforced runtime policy. Reject or close it after review.</p>
+            {% endif %}
             <div class="button-row">
-              <button class="btn" name="action" value="approve">Approve</button>
+              {% if r.block_type == 'webfilter' %}<button class="btn" name="action" value="approve">Approve</button>{% endif %}
               <button class="btn ghost" name="action" value="reject">Reject</button>
             </div>
           </form>
