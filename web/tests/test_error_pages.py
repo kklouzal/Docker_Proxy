@@ -62,6 +62,29 @@ def test_managed_error_page_manifest_has_complete_squid_template_coverage() -> N
         assert "100%" not in text
 
 
+def test_missing_template_names_reports_custom_templates_by_default(
+    monkeypatch, tmp_path
+) -> None:
+    from services.error_pages import (
+        SQUID_ERROR_TEMPLATE_NAMES,
+        error_page_directory,
+        missing_template_names,
+    )
+
+    error_page_directory.cache_clear()
+    missing_template_names.cache_clear()
+    monkeypatch.setattr(error_pages, "error_page_directory", lambda: tmp_path)
+    for name in SQUID_ERROR_TEMPLATE_NAMES:
+        (tmp_path / name).write_text("placeholder", encoding="utf-8")
+
+    try:
+        assert missing_template_names() == ["ERR_WEBFILTER_BLOCKED"]
+        assert missing_template_names(include_custom=False) == []
+    finally:
+        missing_template_names.cache_clear()
+        error_page_directory.cache_clear()
+
+
 def test_access_denied_page_explains_block_reason() -> None:
     from services.error_pages import read_template, render_preview
 

@@ -547,9 +547,12 @@ def template_tokens(text: str) -> tuple[str, ...]:
 
 
 @lru_cache(maxsize=2)
-def missing_template_names() -> list[str]:
+def missing_template_names(*, include_custom: bool = True) -> list[str]:
     base = error_page_directory()
-    return [name for name in SQUID_ERROR_TEMPLATE_NAMES if not (base / name).is_file()]
+    names: Iterable[str] = SQUID_ERROR_TEMPLATE_NAMES + (
+        CUSTOM_ERROR_TEMPLATE_NAMES if include_custom else ()
+    )
+    return [name for name in names if not (base / name).is_file()]
 
 
 @lru_cache(maxsize=128)
