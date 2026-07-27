@@ -626,6 +626,64 @@ def test_proxy_management_logs_endpoint_reads_allowlisted_log_tail(
     assert rejected.get_json()["status"] == "not_found"
 
 
+def test_proxy_management_logs_endpoint_accepts_bounded_max_bytes(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "access.log").write_text("alpha\nbeta\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+    proxy_app.runtime = _Runtime()
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret"}
+
+    response = _management_get(
+        client,
+        "/api/manage/logs?log=access&max_bytes=5",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["ok"] is True
+    assert response.get_json()["content"] == "beta\n"
+    assert response.get_json()["max_bytes"] == 5
+    assert response.get_json()["truncated"] is True
+
+
+def test_proxy_management_logs_endpoint_clamps_unsafe_max_bytes(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "access.log").write_text("alpha\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+    proxy_app.runtime = _Runtime()
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret"}
+
+    tiny = _management_get(
+        client,
+        "/api/manage/logs?log=access&max_bytes=0",
+        headers=headers,
+    )
+    oversized = _management_get(
+        client,
+        "/api/manage/logs?log=access&max_bytes=999999999",
+        headers=headers,
+    )
+
+    assert tiny.status_code == 200
+    assert tiny.get_json()["max_bytes"] == 1
+    assert oversized.status_code == 200
+    assert oversized.get_json()["max_bytes"] == 256 * 1024
+
+
 def test_proxy_management_logs_endpoint_reports_unreadable_log_as_server_error(
     monkeypatch,
 ) -> None:
@@ -635,7 +693,7 @@ def test_proxy_management_logs_endpoint_reports_unreadable_log_as_server_error(
     monkeypatch.setattr(
         proxy_app,
         "read_proxy_log",
-        lambda _key: {
+        lambda _key, **_kwargs: {
             "ok": False,
             "status": "unavailable",
             "detail": "Squid access log could not be read: permission denied",

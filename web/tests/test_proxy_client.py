@@ -207,14 +207,36 @@ def test_proxy_client_get_logs_uses_management_logs_endpoint(
     payload = proxy_client.ProxyClient().get_logs(
         "live",
         log_key="../../etc/passwd",
+        max_bytes=4096,
         timeout_seconds=4.0,
     )
 
     assert payload["ok"] is True
     assert captured["url"] == (
-        "http://proxy-mgmt:5000/api/manage/logs?log=..%2F..%2Fetc%2Fpasswd"
+        "http://proxy-mgmt:5000/api/manage/logs"
+        "?log=..%2F..%2Fetc%2Fpasswd&max_bytes=4096"
     )
     assert captured["timeout"] == pytest.approx(4.0)
+
+
+def test_proxy_client_get_logs_omits_max_bytes_when_not_provided(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return _Response({"ok": True, "content": "line\n"})
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    proxy_client.ProxyClient().get_logs("live", log_key="access")
+
+    assert captured["url"] == "http://proxy-mgmt:5000/api/manage/logs?log=access"
 
 
 def test_proxy_client_http_error_uses_json_detail(

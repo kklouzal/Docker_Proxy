@@ -308,11 +308,15 @@ class ProxyClient:
         proxy_id: object | None,
         *,
         log_key: object | None = None,
+        max_bytes: object | None = None,
         timeout_seconds: float = 5.0,
     ) -> dict[str, Any]:
-        query = ""
+        query_params: dict[str, str] = {}
         if log_key is not None:
-            query = "?" + urllib.parse.urlencode({"log": str(log_key)})
+            query_params["log"] = str(log_key)
+        if max_bytes is not None:
+            query_params["max_bytes"] = str(max_bytes)
+        query = "?" + urllib.parse.urlencode(query_params) if query_params else ""
         return self._request(
             proxy_id,
             method="GET",

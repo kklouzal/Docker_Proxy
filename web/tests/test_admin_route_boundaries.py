@@ -697,6 +697,69 @@ def test_logs_api_uses_active_proxy_and_rejects_non_allowlisted_log(
     assert proxy_client.log_calls[-1] == ("edge-2", "../../etc/passwd")
 
 
+def test_logs_api_forwards_bounded_max_bytes_to_proxy_client(
+    monkeypatch, tmp_path
+) -> None:
+    class MaxBytesRecordingProxyClient(RecordingProxyClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.max_byte_calls: list[object | None] = []
+
+        def get_logs(
+            self,
+            proxy_id: object,
+            *,
+            log_key: object | None = None,
+            max_bytes: object | None = None,
+            **kwargs,
+        ) -> dict[str, object]:
+            self.max_byte_calls.append(max_bytes)
+            return super().get_logs(proxy_id, log_key=log_key, **kwargs)
+
+    proxy_client = MaxBytesRecordingProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/logs?log=access&max_bytes=64")
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "ok"
+    assert proxy_client.log_calls[-1] == ("default", "access")
+    assert proxy_client.max_byte_calls[-1] == 64
+
+
+def test_logs_api_clamps_invalid_max_bytes_before_forwarding(
+    monkeypatch, tmp_path
+) -> None:
+    class MaxBytesRecordingProxyClient(RecordingProxyClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.max_byte_calls: list[object | None] = []
+
+        def get_logs(
+            self,
+            proxy_id: object,
+            *,
+            log_key: object | None = None,
+            max_bytes: object | None = None,
+            **kwargs,
+        ) -> dict[str, object]:
+            self.max_byte_calls.append(max_bytes)
+            return super().get_logs(proxy_id, log_key=log_key, **kwargs)
+
+    proxy_client = MaxBytesRecordingProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/logs?log=access&max_bytes=not-an-int")
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "ok"
+    assert proxy_client.max_byte_calls[-1] == 256 * 1024
+
+
 def test_logs_api_without_explicit_log_falls_back_to_first_advertised_runtime_log(
     monkeypatch, tmp_path
 ) -> None:

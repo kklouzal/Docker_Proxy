@@ -25,7 +25,11 @@ from services.pac_http import (
 )
 from services.policy_requests import get_policy_request_store, normalize_client_ip
 from services.proxy_context import get_proxy_id
-from services.proxy_logs import proxy_log_status_code, read_proxy_log
+from services.proxy_logs import (
+    parse_proxy_log_max_bytes,
+    proxy_log_status_code,
+    read_proxy_log,
+)
 from services.version_status import current_component_metadata
 from werkzeug.exceptions import BadRequest
 
@@ -410,7 +414,11 @@ def manage_clamav_health() -> Any:
 @app.route("/api/manage/logs", methods=["GET"])
 @_require_management_auth
 def manage_logs() -> Any:
-    result = read_proxy_log(request.args.get("log"))
+    max_bytes = parse_proxy_log_max_bytes(request.args.get("max_bytes"))
+    if max_bytes is None:
+        result = read_proxy_log(request.args.get("log"))
+    else:
+        result = read_proxy_log(request.args.get("log"), max_bytes=max_bytes)
     return jsonify(result), proxy_log_status_code(result)
 
 

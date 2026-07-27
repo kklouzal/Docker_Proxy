@@ -47,6 +47,20 @@ def _safe_log_path(base: Path, relative_path: str) -> Path | None:
     return path
 
 
+def parse_proxy_log_max_bytes(value: object | None) -> int | None:
+    """Normalize optional log-tail request input to a safe byte cap."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        requested = int(text)
+    except (TypeError, ValueError):
+        return DEFAULT_LOG_TAIL_BYTES
+    return max(1, min(requested, DEFAULT_LOG_TAIL_BYTES))
+
+
 def list_proxy_logs() -> list[dict[str, Any]]:
     base = _log_dir().resolve()
     logs: list[dict[str, Any]] = []
@@ -78,7 +92,7 @@ def read_proxy_log(
             "logs": list_proxy_logs(),
         }
 
-    cap = max(1, min(int(max_bytes or DEFAULT_LOG_TAIL_BYTES), DEFAULT_LOG_TAIL_BYTES))
+    cap = parse_proxy_log_max_bytes(max_bytes) or DEFAULT_LOG_TAIL_BYTES
     base = _log_dir().resolve()
     path = _safe_log_path(base, spec.path)
     if path is None:

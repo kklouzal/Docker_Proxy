@@ -49,6 +49,37 @@ def test_proxy_log_tail_bounds_match_file_opened_after_log_grows(
     assert payload["truncated"] is True
 
 
+def test_proxy_log_max_bytes_parser_bounds_operator_input() -> None:
+    assert proxy_logs.parse_proxy_log_max_bytes(None) is None
+    assert proxy_logs.parse_proxy_log_max_bytes("") is None
+    assert proxy_logs.parse_proxy_log_max_bytes("7") == 7
+    assert proxy_logs.parse_proxy_log_max_bytes("0") == 1
+    assert proxy_logs.parse_proxy_log_max_bytes("-9") == 1
+    assert proxy_logs.parse_proxy_log_max_bytes("not-an-int") == (
+        proxy_logs.DEFAULT_LOG_TAIL_BYTES
+    )
+    assert proxy_logs.parse_proxy_log_max_bytes(
+        str(proxy_logs.DEFAULT_LOG_TAIL_BYTES + 1)
+    ) == proxy_logs.DEFAULT_LOG_TAIL_BYTES
+
+
+def test_proxy_logs_clamps_unsafe_max_bytes_values(monkeypatch, tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "access.log").write_text("abc\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+
+    tiny_payload = proxy_logs.read_proxy_log("access", max_bytes=0)
+    invalid_payload = proxy_logs.read_proxy_log("access", max_bytes="not-an-int")
+
+    assert tiny_payload["ok"] is True
+    assert tiny_payload["max_bytes"] == 1
+    assert tiny_payload["content"] == "\n"
+    assert invalid_payload["ok"] is True
+    assert invalid_payload["max_bytes"] == proxy_logs.DEFAULT_LOG_TAIL_BYTES
+    assert invalid_payload["content"] == "abc\n"
+
+
 def test_proxy_logs_rejects_arbitrary_path_input(monkeypatch, tmp_path) -> None:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()

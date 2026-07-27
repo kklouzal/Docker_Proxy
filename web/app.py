@@ -139,7 +139,7 @@ from services.proxy_health import (
 )
 from services.proxy_health import send_sample_av_icap as _shared_send_sample_av_icap
 from services.proxy_health import test_eicar as _shared_test_eicar
-from services.proxy_logs import proxy_log_status_code
+from services.proxy_logs import parse_proxy_log_max_bytes, proxy_log_status_code
 from services.proxy_registry import get_proxy_registry as _default_get_proxy_registry
 from services.proxy_sync import request_proxy_reconcile
 from services.runtime_helpers import env_float as _env_float
@@ -5216,11 +5216,16 @@ def logs_status():
 def _get_selected_log_payload(
     proxy_id: str,
     requested_log: str | None,
+    max_bytes: int | None = None,
 ) -> tuple[dict[str, Any], list[Any], bool]:
     selected_log = (requested_log or "access").strip() or "access"
     proxy_error = False
     try:
-        payload = get_proxy_client().get_logs(proxy_id, log_key=selected_log)
+        payload = get_proxy_client().get_logs(
+            proxy_id,
+            log_key=selected_log,
+            max_bytes=max_bytes,
+        )
     except ProxyClientError as exc:
         proxy_error = True
         payload = {
@@ -5251,6 +5256,7 @@ def _get_selected_log_payload(
                 payload = get_proxy_client().get_logs(
                     proxy_id,
                     log_key=first_log.get("key"),
+                    max_bytes=max_bytes,
                 )
                 logs = (
                     payload.get("logs")
@@ -5266,7 +5272,12 @@ def _get_selected_log_payload(
 def api_logs_status():
     proxy_id = get_proxy_id()
     requested_log = request.args.get("log")
-    payload, _logs, proxy_error = _get_selected_log_payload(proxy_id, requested_log)
+    max_bytes = parse_proxy_log_max_bytes(request.args.get("max_bytes"))
+    payload, _logs, proxy_error = _get_selected_log_payload(
+        proxy_id,
+        requested_log,
+        max_bytes=max_bytes,
+    )
     if proxy_error:
         return jsonify(payload), 503
     return jsonify(payload), proxy_log_status_code(payload)
