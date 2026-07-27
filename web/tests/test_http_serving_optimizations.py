@@ -263,6 +263,50 @@ def test_admin_html_responses_respect_gzip_quality_zero(
     assert b"Squid" in response.get_data()
 
 
+def test_admin_html_responses_accept_gzip_via_wildcard_encoding(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/squid/config", headers={"Accept-Encoding": "*"})
+
+    assert response.status_code == 200
+    assert response.headers.get("Content-Encoding") == "gzip"
+    assert b"Squid" in gzip.decompress(response.get_data())
+
+
+def test_admin_html_responses_explicit_gzip_zero_overrides_wildcard(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get(
+        "/squid/config", headers={"Accept-Encoding": "br;q=1, *;q=0.5, gzip;q=0"}
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("Content-Encoding") is None
+    assert b"Squid" in response.get_data()
+
+
+def test_admin_html_responses_respect_wildcard_quality_zero(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/squid/config", headers={"Accept-Encoding": "*;q=0"})
+
+    assert response.status_code == 200
+    assert response.headers.get("Content-Encoding") is None
+    assert b"Squid" in response.get_data()
+
+
 def test_partial_content_responses_are_not_gzip_transformed() -> None:
     app = Flask(__name__)
 

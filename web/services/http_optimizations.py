@@ -35,9 +35,11 @@ def _bool_env(value: str | None, *, default: bool) -> bool:
 
 def _client_accepts_gzip() -> bool:
     header = request.headers.get("Accept-Encoding", "")
+    gzip_quality: float | None = None
+    wildcard_quality: float | None = None
     for part in header.split(","):
         bits = [bit.strip().lower() for bit in part.split(";")]
-        if not bits or bits[0] != "gzip":
+        if not bits or bits[0] not in {"gzip", "*"}:
             continue
         quality = 1.0
         for parameter in bits[1:]:
@@ -48,8 +50,15 @@ def _client_accepts_gzip() -> bool:
             except ValueError:
                 quality = 0.0
             break
-        return quality > 0.0
-    return False
+        if bits[0] == "gzip":
+            if quality <= 0.0:
+                return False
+            gzip_quality = quality
+        else:
+            wildcard_quality = quality
+    if gzip_quality is not None:
+        return gzip_quality > 0.0
+    return wildcard_quality is not None and wildcard_quality > 0.0
 
 
 def _compressed_body_candidate(response: Any, *, min_size: int) -> bytes | None:
