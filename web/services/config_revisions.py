@@ -91,76 +91,76 @@ class ConfigRevisionStore:
         with self._schema_lock:
             if self._schema_ready:
                 return
-        with self._connect() as conn:
-            try:
-                from services.schema_lifecycle import (
-                    runtime_schema_ready_for_lazy_store,
+            with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._schema_ready = True
+                        return
+                except Exception:
+                    pass
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS proxy_config_revisions (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL,
+                        config_sha256 CHAR(64) NOT NULL,
+                        config_text LONGTEXT NOT NULL,
+                        source_kind VARCHAR(64) NOT NULL DEFAULT 'manual',
+                        created_by VARCHAR(255) NOT NULL DEFAULT '',
+                        created_ts BIGINT NOT NULL,
+                        is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        active_proxy_id VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN proxy_id ELSE NULL END) STORED,
+                        UNIQUE KEY uniq_proxy_config_revisions_active_proxy (active_proxy_id),
+                        KEY idx_proxy_config_revisions_proxy_active (proxy_id, is_active, created_ts),
+                        KEY idx_proxy_config_revisions_proxy_sha (proxy_id, config_sha256)
+                    )
+                    """,
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS proxy_config_applications (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL,
+                        revision_id BIGINT NOT NULL,
+                        ok TINYINT(1) NOT NULL,
+                        detail TEXT,
+                        applied_by VARCHAR(255) NOT NULL DEFAULT '',
+                        applied_ts BIGINT NOT NULL,
+                        KEY idx_proxy_config_applications_proxy_ts (proxy_id, applied_ts)
+                    )
+                    """,
+                )
+                repair_duplicate_active_rows(
+                    conn,
+                    table_name="proxy_config_revisions",
+                    scope_column="proxy_id",
+                )
+                ensure_generated_column(
+                    conn,
+                    table_name="proxy_config_revisions",
+                    column_name="active_proxy_id",
+                    ddl=(
+                        "ALTER TABLE proxy_config_revisions "
+                        "ADD COLUMN active_proxy_id VARCHAR(64) "
+                        "GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN proxy_id ELSE NULL END) STORED"
+                    ),
+                )
+                ensure_index(
+                    conn,
+                    table_name="proxy_config_revisions",
+                    index_name="uniq_proxy_config_revisions_active_proxy",
+                    ddl=(
+                        "ALTER TABLE proxy_config_revisions "
+                        "ADD UNIQUE KEY uniq_proxy_config_revisions_active_proxy (active_proxy_id)"
+                    ),
                 )
 
-                if runtime_schema_ready_for_lazy_store(conn):
-                    self._schema_ready = True
-                    return
-            except Exception:
-                pass
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS proxy_config_revisions (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL,
-                    config_sha256 CHAR(64) NOT NULL,
-                    config_text LONGTEXT NOT NULL,
-                    source_kind VARCHAR(64) NOT NULL DEFAULT 'manual',
-                    created_by VARCHAR(255) NOT NULL DEFAULT '',
-                    created_ts BIGINT NOT NULL,
-                    is_active TINYINT(1) NOT NULL DEFAULT 1,
-                    active_proxy_id VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN proxy_id ELSE NULL END) STORED,
-                    UNIQUE KEY uniq_proxy_config_revisions_active_proxy (active_proxy_id),
-                    KEY idx_proxy_config_revisions_proxy_active (proxy_id, is_active, created_ts),
-                    KEY idx_proxy_config_revisions_proxy_sha (proxy_id, config_sha256)
-                )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS proxy_config_applications (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL,
-                    revision_id BIGINT NOT NULL,
-                    ok TINYINT(1) NOT NULL,
-                    detail TEXT,
-                    applied_by VARCHAR(255) NOT NULL DEFAULT '',
-                    applied_ts BIGINT NOT NULL,
-                    KEY idx_proxy_config_applications_proxy_ts (proxy_id, applied_ts)
-                )
-                """,
-            )
-            repair_duplicate_active_rows(
-                conn,
-                table_name="proxy_config_revisions",
-                scope_column="proxy_id",
-            )
-            ensure_generated_column(
-                conn,
-                table_name="proxy_config_revisions",
-                column_name="active_proxy_id",
-                ddl=(
-                    "ALTER TABLE proxy_config_revisions "
-                    "ADD COLUMN active_proxy_id VARCHAR(64) "
-                    "GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN proxy_id ELSE NULL END) STORED"
-                ),
-            )
-            ensure_index(
-                conn,
-                table_name="proxy_config_revisions",
-                index_name="uniq_proxy_config_revisions_active_proxy",
-                ddl=(
-                    "ALTER TABLE proxy_config_revisions "
-                    "ADD UNIQUE KEY uniq_proxy_config_revisions_active_proxy (active_proxy_id)"
-                ),
-            )
-
-        self._schema_ready = True
+            self._schema_ready = True
 
     def _row_to_revision(self, row: object | None) -> ConfigRevision | None:
         if not row:

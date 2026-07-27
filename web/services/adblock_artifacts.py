@@ -225,111 +225,111 @@ class AdblockArtifactStore:
         with self._schema_lock:
             if self._schema_ready:
                 return
-        with self._connect() as conn:
-            try:
-                from services.schema_lifecycle import (
-                    runtime_schema_ready_for_lazy_store,
-                )
+            with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
 
-                if runtime_schema_ready_for_lazy_store(conn):
-                    self._schema_ready = True
-                    return
-            except Exception:
-                pass
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS adblock_artifact_revisions (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    artifact_sha256 CHAR(64) NOT NULL,
-                    archive_blob LONGBLOB NOT NULL,
-                    report_json LONGTEXT NOT NULL,
-                    settings_version BIGINT NOT NULL DEFAULT 0,
-                    source_kind VARCHAR(64) NOT NULL DEFAULT 'compile',
-                    enabled_lists_json LONGTEXT NOT NULL,
-                    created_by VARCHAR(255) NOT NULL DEFAULT '',
-                    created_ts BIGINT NOT NULL,
-                    is_active TINYINT(1) NOT NULL DEFAULT 1,
-                    active_global_slot TINYINT GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN 1 ELSE NULL END) STORED,
-                    UNIQUE KEY uniq_adblock_artifact_revisions_active (active_global_slot),
-                    KEY idx_adblock_artifact_revisions_active (is_active, created_ts, id),
-                    KEY idx_adblock_artifact_revisions_sha (artifact_sha256, created_ts, id)
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._schema_ready = True
+                        return
+                except Exception:
+                    pass
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adblock_artifact_revisions (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        artifact_sha256 CHAR(64) NOT NULL,
+                        archive_blob LONGBLOB NOT NULL,
+                        report_json LONGTEXT NOT NULL,
+                        settings_version BIGINT NOT NULL DEFAULT 0,
+                        source_kind VARCHAR(64) NOT NULL DEFAULT 'compile',
+                        enabled_lists_json LONGTEXT NOT NULL,
+                        created_by VARCHAR(255) NOT NULL DEFAULT '',
+                        created_ts BIGINT NOT NULL,
+                        is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        active_global_slot TINYINT GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN 1 ELSE NULL END) STORED,
+                        UNIQUE KEY uniq_adblock_artifact_revisions_active (active_global_slot),
+                        KEY idx_adblock_artifact_revisions_active (is_active, created_ts, id),
+                        KEY idx_adblock_artifact_revisions_sha (artifact_sha256, created_ts, id)
+                    )
+                    """,
                 )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS proxy_adblock_artifact_applications (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL,
-                    revision_id BIGINT NOT NULL,
-                    ok TINYINT(1) NOT NULL,
-                    detail TEXT,
-                    applied_by VARCHAR(255) NOT NULL DEFAULT '',
-                    applied_ts BIGINT NOT NULL,
-                    artifact_sha256 CHAR(64) NOT NULL DEFAULT '',
-                    KEY idx_proxy_adblock_artifact_apply_proxy_ts (proxy_id, applied_ts),
-                    KEY idx_proxy_adblock_artifact_apply_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS proxy_adblock_artifact_applications (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL,
+                        revision_id BIGINT NOT NULL,
+                        ok TINYINT(1) NOT NULL,
+                        detail TEXT,
+                        applied_by VARCHAR(255) NOT NULL DEFAULT '',
+                        applied_ts BIGINT NOT NULL,
+                        artifact_sha256 CHAR(64) NOT NULL DEFAULT '',
+                        KEY idx_proxy_adblock_artifact_apply_proxy_ts (proxy_id, applied_ts),
+                        KEY idx_proxy_adblock_artifact_apply_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)
+                    )
+                    """,
                 )
-                """,
-            )
-            ensure_generated_column(
-                conn,
-                table_name="proxy_adblock_artifact_applications",
-                column_name="artifact_sha256",
-                ddl=(
-                    "ALTER TABLE proxy_adblock_artifact_applications "
-                    "ADD COLUMN artifact_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts"
-                ),
-            )
-            repair_duplicate_active_rows(
-                conn,
-                table_name="adblock_artifact_revisions",
-            )
-            ensure_generated_column(
-                conn,
-                table_name="adblock_artifact_revisions",
-                column_name="active_global_slot",
-                ddl=(
-                    "ALTER TABLE adblock_artifact_revisions "
-                    "ADD COLUMN active_global_slot TINYINT "
-                    "GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN 1 ELSE NULL END) STORED"
-                ),
-            )
-            ensure_index(
-                conn,
-                table_name="adblock_artifact_revisions",
-                index_name="uniq_adblock_artifact_revisions_active",
-                ddl=(
-                    "ALTER TABLE adblock_artifact_revisions "
-                    "ADD UNIQUE KEY uniq_adblock_artifact_revisions_active (active_global_slot)"
-                ),
-            )
-            for table, index_name, ddl in (
-                (
-                    "adblock_artifact_revisions",
-                    "idx_adblock_artifact_revisions_active",
-                    "ALTER TABLE adblock_artifact_revisions ADD INDEX idx_adblock_artifact_revisions_active (is_active, created_ts, id)",
-                ),
-                (
-                    "adblock_artifact_revisions",
-                    "idx_adblock_artifact_revisions_sha",
-                    "ALTER TABLE adblock_artifact_revisions ADD INDEX idx_adblock_artifact_revisions_sha (artifact_sha256, created_ts, id)",
-                ),
-                (
-                    "proxy_adblock_artifact_applications",
-                    "idx_proxy_adblock_artifact_apply_proxy_ts",
-                    "ALTER TABLE proxy_adblock_artifact_applications ADD INDEX idx_proxy_adblock_artifact_apply_proxy_ts (proxy_id, applied_ts)",
-                ),
-                (
-                    "proxy_adblock_artifact_applications",
-                    "idx_proxy_adblock_artifact_apply_proxy_revision_ts",
-                    "ALTER TABLE proxy_adblock_artifact_applications ADD INDEX idx_proxy_adblock_artifact_apply_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)",
-                ),
-            ):
-                ensure_index(conn, table_name=table, index_name=index_name, ddl=ddl)
+                ensure_generated_column(
+                    conn,
+                    table_name="proxy_adblock_artifact_applications",
+                    column_name="artifact_sha256",
+                    ddl=(
+                        "ALTER TABLE proxy_adblock_artifact_applications "
+                        "ADD COLUMN artifact_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts"
+                    ),
+                )
+                repair_duplicate_active_rows(
+                    conn,
+                    table_name="adblock_artifact_revisions",
+                )
+                ensure_generated_column(
+                    conn,
+                    table_name="adblock_artifact_revisions",
+                    column_name="active_global_slot",
+                    ddl=(
+                        "ALTER TABLE adblock_artifact_revisions "
+                        "ADD COLUMN active_global_slot TINYINT "
+                        "GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN 1 ELSE NULL END) STORED"
+                    ),
+                )
+                ensure_index(
+                    conn,
+                    table_name="adblock_artifact_revisions",
+                    index_name="uniq_adblock_artifact_revisions_active",
+                    ddl=(
+                        "ALTER TABLE adblock_artifact_revisions "
+                        "ADD UNIQUE KEY uniq_adblock_artifact_revisions_active (active_global_slot)"
+                    ),
+                )
+                for table, index_name, ddl in (
+                    (
+                        "adblock_artifact_revisions",
+                        "idx_adblock_artifact_revisions_active",
+                        "ALTER TABLE adblock_artifact_revisions ADD INDEX idx_adblock_artifact_revisions_active (is_active, created_ts, id)",
+                    ),
+                    (
+                        "adblock_artifact_revisions",
+                        "idx_adblock_artifact_revisions_sha",
+                        "ALTER TABLE adblock_artifact_revisions ADD INDEX idx_adblock_artifact_revisions_sha (artifact_sha256, created_ts, id)",
+                    ),
+                    (
+                        "proxy_adblock_artifact_applications",
+                        "idx_proxy_adblock_artifact_apply_proxy_ts",
+                        "ALTER TABLE proxy_adblock_artifact_applications ADD INDEX idx_proxy_adblock_artifact_apply_proxy_ts (proxy_id, applied_ts)",
+                    ),
+                    (
+                        "proxy_adblock_artifact_applications",
+                        "idx_proxy_adblock_artifact_apply_proxy_revision_ts",
+                        "ALTER TABLE proxy_adblock_artifact_applications ADD INDEX idx_proxy_adblock_artifact_apply_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)",
+                    ),
+                ):
+                    ensure_index(conn, table_name=table, index_name=index_name, ddl=ddl)
 
-        self._schema_ready = True
+            self._schema_ready = True
 
     def _row_to_revision(self, row: object | None) -> AdblockArtifactRevision | None:
         if not row:

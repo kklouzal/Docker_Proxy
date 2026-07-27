@@ -130,121 +130,121 @@ class CertificateBundleStore:
         with self._schema_lock:
             if self._schema_ready:
                 return
-        with self._connect() as conn:
-            try:
-                from services.schema_lifecycle import (
-                    runtime_schema_ready_for_lazy_store,
+            with self._connect() as conn:
+                try:
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
+
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        self._schema_ready = True
+                        return
+                except Exception:
+                    pass
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS certificate_bundle_revisions (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        bundle_sha256 CHAR(64) NOT NULL,
+                        cert_sha256 CHAR(64) NOT NULL,
+                        cert_pem LONGTEXT NOT NULL,
+                        key_pem LONGTEXT NOT NULL,
+                        chain_pem LONGTEXT NOT NULL,
+                        source_kind VARCHAR(64) NOT NULL DEFAULT 'manual',
+                        subject_dn TEXT,
+                        not_before VARCHAR(255) NOT NULL DEFAULT '',
+                        not_after VARCHAR(255) NOT NULL DEFAULT '',
+                        original_filename VARCHAR(255) NOT NULL DEFAULT '',
+                        original_pfx_blob LONGBLOB NULL,
+                        created_by VARCHAR(255) NOT NULL DEFAULT '',
+                        created_ts BIGINT NOT NULL,
+                        is_active TINYINT(1) NOT NULL DEFAULT 1,
+                        active_global_slot TINYINT GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN 1 ELSE NULL END) STORED,
+                        UNIQUE KEY uniq_certificate_bundle_revisions_active (active_global_slot),
+                        KEY idx_certificate_bundle_revisions_active (is_active, created_ts),
+                        KEY idx_certificate_bundle_revisions_sha (bundle_sha256, created_ts)
+                    )
+                    """,
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS proxy_certificate_applications (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL,
+                        revision_id BIGINT NOT NULL,
+                        ok TINYINT(1) NOT NULL,
+                        detail TEXT,
+                        applied_by VARCHAR(255) NOT NULL DEFAULT '',
+                        applied_ts BIGINT NOT NULL,
+                        bundle_sha256 CHAR(64) NOT NULL DEFAULT '',
+                        KEY idx_proxy_certificate_applications_proxy_ts (proxy_id, applied_ts),
+                        KEY idx_proxy_certificate_applications_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)
+                    )
+                    """,
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS admin_ui_https_settings (
+                        id TINYINT PRIMARY KEY,
+                        enabled TINYINT(1) NOT NULL DEFAULT 0,
+                        certfile VARCHAR(1024) NOT NULL DEFAULT '',
+                        keyfile VARCHAR(1024) NOT NULL DEFAULT '',
+                        san_tokens TEXT,
+                        updated_by VARCHAR(255) NOT NULL DEFAULT '',
+                        updated_ts BIGINT NOT NULL DEFAULT 0
+                    )
+                    """,
+                )
+                ensure_index(
+                    conn,
+                    table_name="proxy_certificate_applications",
+                    index_name="idx_proxy_certificate_applications_proxy_revision_ts",
+                    ddl=(
+                        "ALTER TABLE proxy_certificate_applications "
+                        "ADD INDEX idx_proxy_certificate_applications_proxy_revision_ts "
+                        "(proxy_id, revision_id, applied_ts, id)"
+                    ),
+                )
+                repair_duplicate_active_rows(
+                    conn,
+                    table_name="certificate_bundle_revisions",
+                )
+                ensure_generated_column(
+                    conn,
+                    table_name="certificate_bundle_revisions",
+                    column_name="active_global_slot",
+                    ddl=(
+                        "ALTER TABLE certificate_bundle_revisions "
+                        "ADD COLUMN active_global_slot TINYINT "
+                        "GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN 1 ELSE NULL END) STORED"
+                    ),
+                )
+                ensure_index(
+                    conn,
+                    table_name="certificate_bundle_revisions",
+                    index_name="uniq_certificate_bundle_revisions_active",
+                    ddl=(
+                        "ALTER TABLE certificate_bundle_revisions "
+                        "ADD UNIQUE KEY uniq_certificate_bundle_revisions_active (active_global_slot)"
+                    ),
+                )
+                ensure_generated_column(
+                    conn,
+                    table_name="admin_ui_https_settings",
+                    column_name="san_tokens",
+                    ddl="ALTER TABLE admin_ui_https_settings ADD COLUMN san_tokens TEXT",
+                )
+                conn.execute(
+                    """
+                    INSERT IGNORE INTO admin_ui_https_settings(
+                        id, enabled, certfile, keyfile, san_tokens, updated_by, updated_ts
+                    )
+                    VALUES(1,0,'','','','',0)
+                    """,
                 )
 
-                if runtime_schema_ready_for_lazy_store(conn):
-                    self._schema_ready = True
-                    return
-            except Exception:
-                pass
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS certificate_bundle_revisions (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    bundle_sha256 CHAR(64) NOT NULL,
-                    cert_sha256 CHAR(64) NOT NULL,
-                    cert_pem LONGTEXT NOT NULL,
-                    key_pem LONGTEXT NOT NULL,
-                    chain_pem LONGTEXT NOT NULL,
-                    source_kind VARCHAR(64) NOT NULL DEFAULT 'manual',
-                    subject_dn TEXT,
-                    not_before VARCHAR(255) NOT NULL DEFAULT '',
-                    not_after VARCHAR(255) NOT NULL DEFAULT '',
-                    original_filename VARCHAR(255) NOT NULL DEFAULT '',
-                    original_pfx_blob LONGBLOB NULL,
-                    created_by VARCHAR(255) NOT NULL DEFAULT '',
-                    created_ts BIGINT NOT NULL,
-                    is_active TINYINT(1) NOT NULL DEFAULT 1,
-                    active_global_slot TINYINT GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN 1 ELSE NULL END) STORED,
-                    UNIQUE KEY uniq_certificate_bundle_revisions_active (active_global_slot),
-                    KEY idx_certificate_bundle_revisions_active (is_active, created_ts),
-                    KEY idx_certificate_bundle_revisions_sha (bundle_sha256, created_ts)
-                )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS proxy_certificate_applications (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    proxy_id VARCHAR(64) NOT NULL,
-                    revision_id BIGINT NOT NULL,
-                    ok TINYINT(1) NOT NULL,
-                    detail TEXT,
-                    applied_by VARCHAR(255) NOT NULL DEFAULT '',
-                    applied_ts BIGINT NOT NULL,
-                    bundle_sha256 CHAR(64) NOT NULL DEFAULT '',
-                    KEY idx_proxy_certificate_applications_proxy_ts (proxy_id, applied_ts),
-                    KEY idx_proxy_certificate_applications_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)
-                )
-                """,
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS admin_ui_https_settings (
-                    id TINYINT PRIMARY KEY,
-                    enabled TINYINT(1) NOT NULL DEFAULT 0,
-                    certfile VARCHAR(1024) NOT NULL DEFAULT '',
-                    keyfile VARCHAR(1024) NOT NULL DEFAULT '',
-                    san_tokens TEXT,
-                    updated_by VARCHAR(255) NOT NULL DEFAULT '',
-                    updated_ts BIGINT NOT NULL DEFAULT 0
-                )
-                """,
-            )
-            ensure_index(
-                conn,
-                table_name="proxy_certificate_applications",
-                index_name="idx_proxy_certificate_applications_proxy_revision_ts",
-                ddl=(
-                    "ALTER TABLE proxy_certificate_applications "
-                    "ADD INDEX idx_proxy_certificate_applications_proxy_revision_ts "
-                    "(proxy_id, revision_id, applied_ts, id)"
-                ),
-            )
-            repair_duplicate_active_rows(
-                conn,
-                table_name="certificate_bundle_revisions",
-            )
-            ensure_generated_column(
-                conn,
-                table_name="certificate_bundle_revisions",
-                column_name="active_global_slot",
-                ddl=(
-                    "ALTER TABLE certificate_bundle_revisions "
-                    "ADD COLUMN active_global_slot TINYINT "
-                    "GENERATED ALWAYS AS (CASE WHEN is_active=1 THEN 1 ELSE NULL END) STORED"
-                ),
-            )
-            ensure_index(
-                conn,
-                table_name="certificate_bundle_revisions",
-                index_name="uniq_certificate_bundle_revisions_active",
-                ddl=(
-                    "ALTER TABLE certificate_bundle_revisions "
-                    "ADD UNIQUE KEY uniq_certificate_bundle_revisions_active (active_global_slot)"
-                ),
-            )
-            ensure_generated_column(
-                conn,
-                table_name="admin_ui_https_settings",
-                column_name="san_tokens",
-                ddl="ALTER TABLE admin_ui_https_settings ADD COLUMN san_tokens TEXT",
-            )
-            conn.execute(
-                """
-                INSERT IGNORE INTO admin_ui_https_settings(
-                    id, enabled, certfile, keyfile, san_tokens, updated_by, updated_ts
-                )
-                VALUES(1,0,'','','','',0)
-                """,
-            )
-
-        self._schema_ready = True
+            self._schema_ready = True
 
     def _row_to_revision(self, row: object | None) -> CertificateBundleRevision | None:
         if not row:
