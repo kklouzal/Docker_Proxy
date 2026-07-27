@@ -7278,7 +7278,7 @@ def observability_remediation_no_bump_domain():
         audit_kind="observability_remediation_no_bump_domain",
         label="No-bump",
         success_message=lambda domain: f"No-bump SSL exclusion saved for {domain}.",
-        allowed_kinds=None,
+        allowed_kinds=_OBSERVABILITY_NO_BUMP_DOMAIN_REMEDIATION_KINDS,
     )
 
 

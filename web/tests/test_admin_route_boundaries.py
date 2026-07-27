@@ -2480,7 +2480,7 @@ def test_observability_remediation_no_bump_domain_adds_sslfilter_rule(
         "/observability/remediation/no-bump-domain",
         data={
             "csrf_token": token,
-            "domain": "https://Video.Example/path",
+            "domain": "https://Challenge.Example/path",
             "window": "900",
             "limit": "20",
             "sort": "count",
@@ -2490,7 +2490,7 @@ def test_observability_remediation_no_bump_domain_adds_sslfilter_rule(
     )
 
     assert response.status_code == 302
-    assert "video.example" in sslfilter_store.no_bump_domains
+    assert "challenge.example" in sslfilter_store.no_bump_domains
     location = response.headers["Location"]
     assert "pane=remediation" in location
     assert "window=900" in location
@@ -2545,6 +2545,49 @@ def test_observability_remediation_no_bump_domain_rejects_tampered_action_subjec
         record["kind"] == "observability_remediation_no_bump_domain"
         and not record["ok"]
         and "forged.example" in record["detail"]
+        for record in loaded.audit_store.records
+    )
+
+
+def test_observability_remediation_no_bump_domain_rejects_non_actionable_kind(
+    monkeypatch, tmp_path
+) -> None:
+    sslfilter_store = FakeSslfilterStore()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=RemediationRowsObservability(),
+        sslfilter_store=sslfilter_store,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/observability?pane=remediation")
+
+    response = client.post(
+        "/observability/remediation/no-bump-domain",
+        data={
+            "csrf_token": token,
+            "domain": "video.example",
+            "window": "900",
+            "limit": "20",
+            "sort": "recent",
+            "q": "video",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert sslfilter_store.no_bump_domains == []
+    assert loaded.operation_ledger.operations == []
+    location = response.headers["Location"]
+    params = parse_qs(urlparse(location).query)
+    assert params["pane"] == ["remediation"]
+    assert params["remediation_error"] == ["1"]
+    assert "no longer matches" in params["remediation_msg"][0]
+    assert any(
+        record["kind"] == "observability_remediation_no_bump_domain"
+        and not record["ok"]
+        and "video.example" in record["detail"]
         for record in loaded.audit_store.records
     )
 
