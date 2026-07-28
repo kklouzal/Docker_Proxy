@@ -55,12 +55,18 @@
           <td>
             <div class="stack-sm">
               <strong class="mono">{{ page.name }}</strong>
-              <span>{% if page.custom %}<span class="badge success">Docker Proxy</span>{% endif %}{% if page.high_priority %}<span class="badge">High visibility</span>{% endif %}</span>
+              <span>{% if page.custom %}<span class="badge success">Docker Proxy</span>{% endif %}{% if page.high_priority %}<span class="badge">High visibility</span>{% endif %}{% if unavailable_templates.get(page.name) %}<span class="badge danger">Missing/unavailable</span>{% endif %}</span>
             </div>
           </td>
           <td>{{ page.family }}</td>
           <td><div class="stack-sm"><span>{{ page.description }}</span><span class="small">Admin: {{ page.admin_guidance }}</span></div></td>
-          <td><span class="small text-break">{{ token_summary[page.name] }}</span></td>
+          <td>
+            {% if unavailable_templates.get(page.name) %}
+            <span class="small text-break">{{ unavailable_templates[page.name] }}</span>
+            {% else %}
+            <span class="small text-break">{{ token_summary[page.name] }}</span>
+            {% endif %}
+          </td>
           <td class="num"><a class="btn" href="{{ url_for('error_page_preview', name=page.name) }}" target="_blank" rel="noopener">Open in new tab</a></td>
         </tr>
         {% endfor %}

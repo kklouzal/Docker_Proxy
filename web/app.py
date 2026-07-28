@@ -70,6 +70,7 @@ from services.diagnostic_store import (
 from services.directory_auth import get_directory_auth_store
 from services.error_pages import (
     list_error_pages,
+    missing_template_names,
     read_template,
     render_preview,
     template_tokens,
@@ -7672,14 +7673,25 @@ def _test_eicar() -> dict[str, Any]:
 @app.route("/error-pages", methods=["GET"])
 def error_pages():
     pages = list_error_pages()
-    token_summary = {
-        page.name: ", ".join(template_tokens(read_template(page.name)))
-        for page in pages
-    }
+    unavailable_message = "Template file is missing or unreadable."
+    unavailable_templates = dict.fromkeys(missing_template_names(), unavailable_message)
+    token_summary = {}
+    for page in pages:
+        if page.name in unavailable_templates:
+            token_summary[page.name] = "Unavailable"
+            continue
+        try:
+            token_summary[page.name] = ", ".join(
+                template_tokens(read_template(page.name))
+            )
+        except (OSError, UnicodeError):
+            unavailable_templates[page.name] = unavailable_message
+            token_summary[page.name] = "Unavailable"
     return render_template(
         "error_pages.html",
         pages=pages,
         token_summary=token_summary,
+        unavailable_templates=unavailable_templates,
     )
 
 
@@ -7687,7 +7699,7 @@ def error_pages():
 def error_page_preview(name: str):
     try:
         html = render_preview(name)
-    except KeyError:
+    except (KeyError, OSError, UnicodeError):
         abort(404)
     response = Response(html, mimetype="text/html")
     response.headers["X-Robots-Tag"] = "noindex, nofollow"
