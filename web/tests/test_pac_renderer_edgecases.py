@@ -72,8 +72,12 @@ def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() 
     from services import pac_renderer  # type: ignore
 
     assert pac_renderer.format_proxy_host("proxy.example:3128") == "proxy.example"
-    assert pac_renderer.format_proxy_host("2001:db8::10") == "[2001:db8::10]"
-    assert pac_renderer.format_proxy_host("[2001:db8::10]:3128") == "[2001:db8::10]"
+    assert pac_renderer.format_proxy_host("93.184.216.34") == "93.184.216.34"
+    assert pac_renderer.format_proxy_host("2001:4860:4860::8888") == "[2001:4860:4860::8888]"
+    assert (
+        pac_renderer.format_proxy_host("[2001:4860:4860::8888]:3128")
+        == "[2001:4860:4860::8888]"
+    )
     assert pac_renderer.format_proxy_host('bad"; alert(1); //') == "127.0.0.1"
 
     assert (
@@ -89,9 +93,40 @@ def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() 
         == "http://proxy.example:8080/proxy.pac"
     )
     assert (
-        pac_renderer._build_pac_url(scheme="http", host="2001:db8::10", port=8080)
-        == "http://[2001:db8::10]:8080/proxy.pac"
+        pac_renderer._build_pac_url(
+            scheme="http", host="2001:4860:4860::8888", port=8080
+        )
+        == "http://[2001:4860:4860::8888]:8080/proxy.pac"
     )
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "localhost",
+        "api.localhost",
+        "localhost.localdomain",
+        "printer.local",
+        "proxy.internal",
+        "gateway.home.arpa",
+        "010.000.000.001",
+        "999.999.999.999",
+        "0x7f000001",
+        "127.0.0.1",
+        "10.0.0.1",
+        "169.254.1.1",
+        "224.0.0.1",
+        "::1",
+        "[::1]:3128",
+    ],
+)
+def test_format_proxy_host_fails_closed_for_request_host_fallback_authorities(
+    host: str,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    assert pac_renderer.format_proxy_host(host) == "127.0.0.1"
 
 
 def test_pac_host_normalization_strips_url_schemes_before_ipv6_detection() -> None:
@@ -103,8 +138,10 @@ def test_pac_host_normalization_strips_url_schemes_before_ipv6_detection() -> No
         == "proxy.example"
     )
     assert (
-        pac_renderer.format_proxy_host("https://[2001:db8::10]:8443/proxy.pac")
-        == "[2001:db8::10]"
+        pac_renderer.format_proxy_host(
+            "https://[2001:4860:4860::8888]:8443/proxy.pac"
+        )
+        == "[2001:4860:4860::8888]"
     )
     assert (
         pac_renderer._build_pac_url(
@@ -1458,8 +1495,8 @@ def test_substitute_request_host_replaces_placeholder_with_normalized_host() -> 
     from services import pac_renderer  # type: ignore
 
     content = json.dumps({"proxy": pac_renderer.PAC_HOST_PLACEHOLDER})
-    assert "[2001:db8::20]" in pac_renderer.substitute_request_host(
-        content, "[2001:db8::20]:3128"
+    assert "[2001:4860:4860::8888]" in pac_renderer.substitute_request_host(
+        content, "[2001:4860:4860::8888]:3128"
     )
 
 
@@ -1478,6 +1515,49 @@ def test_substitute_request_host_replaces_invalid_host_with_loopback() -> None:
     assert 'bad"; alert(1);' not in rendered
     assert 'var proxyHost = "127.0.0.1";' in rendered
     assert 'return "PROXY 127.0.0.1:3128; DIRECT";' in rendered
+
+
+@pytest.mark.parametrize(
+    "request_host",
+    [
+        "localhost",
+        "api.localhost",
+        "printer.local",
+        "proxy.internal:3128",
+        "010.000.000.001",
+        "999.999.999.999",
+        "0x7f000001",
+    ],
+)
+def test_substitute_request_host_replaces_internal_or_ambiguous_fallback_with_loopback(
+    request_host: str,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    content = f'return "PROXY {pac_renderer.PAC_HOST_PLACEHOLDER}:3128; DIRECT";'
+
+    rendered = pac_renderer.substitute_request_host(content, request_host)
+
+    assert rendered == 'return "PROXY 127.0.0.1:3128; DIRECT";'
+    assert request_host.split(":", 1)[0] not in rendered
+
+
+def test_substitute_request_host_preserves_valid_public_fallback_hosts() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    content = f'return "PROXY {pac_renderer.PAC_HOST_PLACEHOLDER}:3128; DIRECT";'
+
+    assert pac_renderer.substitute_request_host(content, "proxy.example:8080") == (
+        'return "PROXY proxy.example:3128; DIRECT";'
+    )
+    assert pac_renderer.substitute_request_host(content, "93.184.216.34") == (
+        'return "PROXY 93.184.216.34:3128; DIRECT";'
+    )
+    assert pac_renderer.substitute_request_host(content, "[2001:4860:4860::8888]") == (
+        'return "PROXY [2001:4860:4860::8888]:3128; DIRECT";'
+    )
 
 
 def test_render_proxy_pac_for_request_replaces_invalid_request_host() -> None:

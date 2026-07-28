@@ -40,6 +40,10 @@ from services.proxy_registry import (
     normalize_public_pac_path,
 )
 from services.public_endpoint import (
+    _is_ambiguous_ipv4_host,
+    _is_reserved_public_dns_host,
+)
+from services.public_endpoint import (
     coerce_public_port as _coerce_port,
 )
 from services.public_endpoint import (
@@ -305,9 +309,21 @@ def _normalize_proxy_host_only(host: str) -> str:
     if not candidate:
         return "127.0.0.1"
     try:
-        return str(ipaddress.ip_address(candidate))
+        parsed_ip = ipaddress.ip_address(candidate)
     except ValueError:
-        return candidate if _valid_proxy_dns_host(candidate) else "127.0.0.1"
+        normalized_dns = candidate.rstrip(".").lower()
+        if (
+            _is_ambiguous_ipv4_host(normalized_dns)
+            or not _valid_proxy_dns_host(normalized_dns)
+            or _is_reserved_public_dns_host(normalized_dns)
+        ):
+            return "127.0.0.1"
+        return normalized_dns
+    if getattr(parsed_ip, "scope_id", None):
+        return "127.0.0.1"
+    if parsed_ip.is_multicast or not parsed_ip.is_global:
+        return "127.0.0.1"
+    return str(parsed_ip)
 
 
 def format_proxy_host(raw_host: str) -> str:
