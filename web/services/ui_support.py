@@ -372,16 +372,20 @@ def present_transaction_rows(
         event["tls_details"] = _build_tls_details(event)
         event["header_details"] = _build_header_details(event)
         event["bytes_human"] = _bytes_human(event.get("bytes"))
-        event["result_summary"] = str(event.get("result_code") or "")
+        result_summary_parts = []
+        result_code = str(event.get("result_code") or "")
+        if result_code.strip():
+            result_summary_parts.append(result_code)
         try:
             http_status = int(event.get("http_status") or 0)
         except Exception:
             http_status = 0
         if http_status > 0:
-            event["result_summary"] = f"{event['result_summary']} · HTTP {http_status}"
+            result_summary_parts.append(f"HTTP {http_status}")
         hierarchy = str(event.get("hierarchy_status") or "").strip()
         if hierarchy:
-            event["result_summary"] = f"{event['result_summary']} · {hierarchy}"
+            result_summary_parts.append(hierarchy)
+        event["result_summary"] = " · ".join(result_summary_parts)
         related_icap = present_icap_events(
             list(event.get("related_icap") or []),
             limit=icap_limit,

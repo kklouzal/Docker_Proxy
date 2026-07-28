@@ -5,6 +5,7 @@ from services.ui_support import (
     append_query_to_local_return,
     present_top_tag_rows,
     present_top_value_rows,
+    present_transaction_rows,
     safe_local_return_url,
 )
 
@@ -107,3 +108,45 @@ def test_present_top_tag_rows_uses_tag_key_and_tag_label_default() -> None:
             "last_seen": 0,
         },
     ]
+
+
+def test_present_transaction_rows_omits_leading_separator_without_result_code() -> None:
+    rows = [
+        {
+            "result_code": "",
+            "http_status": 200,
+            "hierarchy_status": "HIER_DIRECT/203.0.113.10",
+        },
+    ]
+
+    presented = present_transaction_rows(rows)
+
+    assert presented[0]["result_summary"] == "HTTP 200 · HIER_DIRECT/203.0.113.10"
+
+
+def test_present_transaction_rows_treats_whitespace_result_code_as_blank() -> None:
+    rows = [
+        {
+            "result_code": "   ",
+            "http_status": "204",
+            "hierarchy_status": "HIER_NONE/-",
+        },
+    ]
+
+    presented = present_transaction_rows(rows)
+
+    assert presented[0]["result_summary"] == "HTTP 204 · HIER_NONE/-"
+
+
+def test_present_transaction_rows_preserves_summary_when_result_code_exists() -> None:
+    rows = [
+        {
+            "result_code": "TCP_MISS",
+            "http_status": 200,
+            "hierarchy_status": "HIER_DIRECT/203.0.113.10",
+        },
+    ]
+
+    presented = present_transaction_rows(rows)
+
+    assert presented[0]["result_summary"] == "TCP_MISS · HTTP 200 · HIER_DIRECT/203.0.113.10"
