@@ -14,7 +14,10 @@ from services.runtime_helpers import env_int as _env_int
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-_TIMEOUT_LOCK = threading.Lock()
+_REVERSE_DNS_LOOKUP_THREAD_LIMIT = 4
+_REVERSE_DNS_LOOKUP_SLOTS = threading.BoundedSemaphore(
+    _REVERSE_DNS_LOOKUP_THREAD_LIMIT
+)
 _DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 _IDNA_DOT_TRANSLATION = str.maketrans(
     {
@@ -37,6 +40,53 @@ class _CacheEntry:
     source: str
     status: str
     expires_at: float
+
+
+def _gethostbyaddr_with_timeout(
+    ip: str,
+    *,
+    timeout_seconds: float,
+) -> tuple[str, list[str], list[str]] | None:
+    """Run reverse DNS with bounded caller latency and bounded stuck workers.
+
+    socket.gethostbyaddr does not accept a per-call timeout. Avoid using
+    socket.setdefaulttimeout here: that mutates process-global socket defaults and
+    can leak the temporary DNS timeout into unrelated socket creation in other
+    Admin UI threads. If libc/NSS blocks past the deadline, return ``None`` and
+    let the daemon lookup thread release its slot if it eventually finishes.
+    """
+    if not _REVERSE_DNS_LOOKUP_SLOTS.acquire(blocking=False):
+        return None
+
+    completed = threading.Event()
+    result: list[tuple[str, list[str], list[str]]] = []
+    errors: list[Exception] = []
+
+    def lookup() -> None:
+        try:
+            result.append(socket.gethostbyaddr(ip))
+        except Exception as exc:  # propagate synchronous failures below
+            errors.append(exc)
+        finally:
+            completed.set()
+            _REVERSE_DNS_LOOKUP_SLOTS.release()
+
+    worker = threading.Thread(
+        target=lookup,
+        name=f"client-rdns-lookup-{ip}",
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except Exception:
+        _REVERSE_DNS_LOOKUP_SLOTS.release()
+        raise
+
+    if not completed.wait(timeout=max(0.001, timeout_seconds)):
+        return None
+    if errors:
+        raise errors[0]
+    return result[0]
 
 
 class ClientIdentityCache:
@@ -129,16 +179,17 @@ class ClientIdentityCache:
         return normalized
 
     def _lookup_hostname(self, ip: str) -> tuple[str, str, str]:
-        with _TIMEOUT_LOCK:
-            previous_timeout = socket.getdefaulttimeout()
-            try:
-                socket.setdefaulttimeout(self.lookup_timeout_seconds)
-                hostname, _aliases, _addresses = socket.gethostbyaddr(ip)
-            except (socket.herror, socket.gaierror, TimeoutError, OSError):
-                return "", "", "unresolved"
-            finally:
-                socket.setdefaulttimeout(previous_timeout)
+        try:
+            lookup_result = _gethostbyaddr_with_timeout(
+                ip,
+                timeout_seconds=self.lookup_timeout_seconds,
+            )
+        except (socket.herror, socket.gaierror, TimeoutError, OSError):
+            return "", "", "unresolved"
+        if lookup_result is None:
+            return "", "", "unresolved"
 
+        hostname, _aliases, _addresses = lookup_result
         cleaned = self._normalize_rdns_hostname(hostname)
         if not cleaned:
             return "", "", "unresolved"

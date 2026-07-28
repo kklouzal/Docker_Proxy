@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import sys
+import threading
 from pathlib import Path
 
 
@@ -214,6 +215,100 @@ def test_client_identity_cache_treats_dns_lookup_errors_as_unresolved(
         "hostname": "",
         "hostname_source": "",
         "hostname_status": "unresolved",
+    }
+
+
+def test_client_identity_cache_reverse_dns_timeout_returns_unresolved(
+    monkeypatch,
+) -> None:
+    cache = ClientIdentityCache(failure_ttl_seconds=10.0, lookup_timeout_seconds=0.05)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def slow_lookup(_ip: str) -> tuple[str, list[str], list[str]]:
+        try:
+            started.set()
+            release.wait(timeout=1.0)
+            return "late.example", [], []
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(
+        "services.client_identity_cache.socket.gethostbyaddr",
+        slow_lookup,
+    )
+
+    try:
+        assert cache.resolve("192.0.2.10") == {
+            "hostname": "",
+            "hostname_source": "",
+            "hostname_status": "unresolved",
+        }
+        assert started.wait(timeout=0.5)
+    finally:
+        release.set()
+        assert finished.wait(timeout=0.5)
+
+
+def test_client_identity_cache_resolve_does_not_mutate_global_socket_timeout(
+    monkeypatch,
+) -> None:
+    cache = ClientIdentityCache(success_ttl_seconds=30.0)
+
+    def fail_setdefaulttimeout(_timeout: object) -> None:
+        msg = "socket.setdefaulttimeout must not be called"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(
+        "services.client_identity_cache.socket.setdefaulttimeout",
+        fail_setdefaulttimeout,
+    )
+    monkeypatch.setattr(
+        "services.client_identity_cache.socket.gethostbyaddr",
+        lambda _ip: ("WorkStation.Example.", [], []),
+    )
+
+    assert cache.resolve("192.0.2.10") == {
+        "hostname": "workstation.example",
+        "hostname_source": "rdns",
+        "hostname_status": "resolved",
+    }
+
+
+def test_client_identity_cache_resolve_many_does_not_mutate_global_socket_timeout(
+    monkeypatch,
+) -> None:
+    cache = ClientIdentityCache(success_ttl_seconds=30.0)
+
+    def fail_setdefaulttimeout(_timeout: object) -> None:
+        msg = "socket.setdefaulttimeout must not be called"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(
+        "services.client_identity_cache.socket.setdefaulttimeout",
+        fail_setdefaulttimeout,
+    )
+    responses = {
+        "192.0.2.10": "host-a.example",
+        "2001:db8::1": "host-b.example",
+    }
+    monkeypatch.setattr(
+        "services.client_identity_cache.socket.gethostbyaddr",
+        lambda ip: (responses[ip], [], []),
+    )
+
+    resolved = cache.resolve_many(["192.0.2.10", "2001:db8::1"])
+
+    assert resolved["192.0.2.10"] == {
+        "hostname": "host-a.example",
+        "hostname_source": "rdns",
+        "hostname_status": "resolved",
+    }
+    assert resolved["2001:db8::1"] == {
+        "hostname": "host-b.example",
+        "hostname_source": "rdns",
+        "hostname_status": "resolved",
     }
 
 
