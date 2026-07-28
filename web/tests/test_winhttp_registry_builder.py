@@ -803,6 +803,57 @@ def test_custom_proxy_map_allows_bracketed_ipv6_targets() -> None:
 
 
 @pytest.mark.parametrize(
+    "custom_proxy_map",
+    [
+        "http=proxy-a.example:3128;http=proxy-b.example:3128",
+        "HTTP=proxy-a.example:3128;http=proxy-b.example:3128",
+    ],
+)
+def test_custom_proxy_map_rejects_duplicate_scheme_mappings(
+    custom_proxy_map: str,
+) -> None:
+    with pytest.raises(WinHttpBuilderError, match="duplicate scheme mapping: http"):
+        build_contract_output(
+            {
+                "use_custom_proxy_map": True,
+                "custom_proxy_map": custom_proxy_map,
+                "proxy_port": 3128,
+                "destination_schemes": ["http"],
+            },
+        )
+
+
+def test_custom_proxy_map_allows_single_bare_proxy_target() -> None:
+    result = build_contract_output(
+        {
+            "use_custom_proxy_map": True,
+            "custom_proxy_map": "proxy.example:3128",
+            "proxy_port": 3128,
+            "destination_schemes": ["http"],
+        },
+    )
+
+    assert result.proxy_string == "proxy.example:3128"
+
+
+def test_custom_proxy_map_preserves_nonstandard_scheme_warning() -> None:
+    result = build_contract_output(
+        {
+            "use_custom_proxy_map": True,
+            "custom_proxy_map": "gopher=proxy.example:3128",
+            "proxy_port": 3128,
+            "destination_schemes": ["http"],
+        },
+    )
+
+    assert result.proxy_string == "gopher=proxy.example:3128"
+    assert any(
+        "nonstandard WinHTTP scheme mapping: gopher" in warning
+        for warning in result.warnings
+    )
+
+
+@pytest.mark.parametrize(
     ("proxy_host", "expected"),
     [
         ("127.0.0.1", "http=127.0.0.1:3128"),

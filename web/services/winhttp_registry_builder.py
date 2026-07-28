@@ -549,6 +549,7 @@ def _validate_custom_proxy_map(proxy_string: str) -> tuple[str, tuple[str, ...]]
         raise WinHttpBuilderError(msg)
     has_mapping = any("=" in entry for entry in entries)
     warnings: list[str] = []
+    seen_mapping_schemes: set[str] = set()
     for entry in entries:
         if any(ch.isspace() for ch in entry):
             msg = "Custom proxy map entries must be separated with semicolons and contain no whitespace."
@@ -564,6 +565,10 @@ def _validate_custom_proxy_map(proxy_string: str) -> tuple[str, tuple[str, ...]]
         if not scheme or not CUSTOM_PROXY_SCHEME_RE.fullmatch(scheme):
             msg = "Custom proxy map contains an invalid scheme mapping."
             raise WinHttpBuilderError(msg)
+        if scheme in seen_mapping_schemes:
+            msg = f"Custom proxy map contains duplicate scheme mapping: {scheme}."
+            raise WinHttpBuilderError(msg)
+        seen_mapping_schemes.add(scheme)
         _validate_custom_proxy_target(target)
         if scheme not in DESTINATION_SCHEMES:
             warnings.append(
