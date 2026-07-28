@@ -177,6 +177,8 @@ def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac")
         return fallback
     if parsed.scheme and parsed.scheme.lower() not in {"http", "https"}:
         return fallback
+    if parsed.scheme and not parsed.netloc:
+        return fallback
     path = parsed.path or fallback
     if path.startswith("//") or "\\" in path:
         return fallback
