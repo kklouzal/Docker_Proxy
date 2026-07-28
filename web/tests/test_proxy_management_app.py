@@ -332,6 +332,39 @@ def test_proxy_management_json_payloads_reject_malformed_json_without_runtime_ca
     assert runtime.supervisor_calls == []
 
 
+def test_proxy_management_json_payloads_reject_non_json_bodies_without_runtime_calls(
+    monkeypatch,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    runtime = _Runtime()
+    proxy_app.runtime = runtime
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret", "Content-Type": "text/plain"}
+
+    cases = [
+        "/api/manage/sync",
+        "/api/manage/cache/clear",
+    ]
+    for path in cases:
+        response = _management_post(
+            client,
+            path,
+            data="not json but non-empty",
+            headers=headers,
+        )
+
+        assert response.status_code == 400, path
+        assert response.is_json, path
+        assert response.get_json() == {
+            "ok": False,
+            "detail": "Management JSON payload must use Content-Type application/json.",
+        }
+
+    assert runtime.sync_force is None
+    assert runtime.cache_clear_called is False
+
+
 def test_proxy_management_json_payloads_preserve_missing_body_defaults(
     monkeypatch,
 ) -> None:

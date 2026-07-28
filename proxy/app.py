@@ -143,7 +143,9 @@ def _management_json_payload() -> dict[str, Any]:
     if not _management_request_has_body():
         return {}
     if not request.is_json:
-        return {}
+        _abort_management_json_payload(
+            "Management JSON payload must use Content-Type application/json.",
+        )
     try:
         payload = request.get_json(silent=False)
     except BadRequest:
