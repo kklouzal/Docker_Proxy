@@ -984,6 +984,33 @@ def test_write_managed_text_files_restores_previous_file_mode_on_rollback(
     assert second.stat().st_mode & 0o777 == 0o640
 
 
+def test_write_managed_text_files_preserves_existing_mode_on_rewrite(
+    tmp_path, monkeypatch
+) -> None:
+    materialized_files = _import_materialized_files_module()
+
+    include_path = tmp_path / "conf.d" / "30-webfilter.conf"
+    include_path.parent.mkdir(parents=True)
+    include_path.write_text("old include\n", encoding="utf-8")
+    include_path.chmod(0o600)
+    original_stat = include_path.stat()
+    chown_calls: list[tuple[str, int, int]] = []
+
+    def record_chown(path, uid, gid):
+        chown_calls.append((str(path), uid, gid))
+
+    monkeypatch.setattr(materialized_files.os, "chown", record_chown)
+
+    materialized_files.write_managed_text_files(
+        (str(include_path), "new include\n"),
+    )
+
+    assert include_path.read_text(encoding="utf-8") == "new include\n"
+    assert include_path.stat().st_mode & 0o777 == 0o600
+    assert len(chown_calls) == 1
+    assert chown_calls[0][1:] == (original_stat.st_uid, original_stat.st_gid)
+
+
 def test_write_managed_text_files_serializes_overlapping_rollback(
     tmp_path, monkeypatch
 ) -> None:

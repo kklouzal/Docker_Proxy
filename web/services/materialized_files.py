@@ -116,9 +116,6 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
     backups: dict[str, _FileBackup] = {}
     replaced_paths: list[str] = []
     try:
-        for path, content in files:
-            temp_paths.append(_write_staged_file(path, content))
-
         with _locked_materialized_paths([path for path, _content in files]):
             try:
                 for path, _content in files:
@@ -133,6 +130,17 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
                             )
                     except FileNotFoundError:
                         backups[path] = _FileBackup(existed=False)
+
+                for path, content in files:
+                    backup = backups[path]
+                    temp_paths.append(
+                        _write_staged_file(
+                            path,
+                            content,
+                            mode=backup.mode,
+                            owner=backup.owner,
+                        )
+                    )
 
                 for (path, _content), temp_path in zip(files, temp_paths, strict=False):
                     os.replace(temp_path, path)  # noqa: PTH105
