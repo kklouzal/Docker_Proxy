@@ -317,6 +317,102 @@ def test_webfilter_source_url_validation_reports_malformed_urls(
         m.validate_source_url(source_url)
 
 
+def test_webfilter_source_url_validation_preserves_exact_default_without_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    m = _import_webfilter_store_module()
+    download_safety = m.validate_source_url.__globals__["download_safety"]
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("default source preservation should not require DNS")
+        ),
+    )
+
+    assert m.validate_source_url(m._DEFAULT_SOURCE_URL) == m._DEFAULT_SOURCE_URL
+
+
+def test_webfilter_source_url_validation_still_rejects_default_host_edits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    m = _import_webfilter_store_module()
+    download_safety = m.validate_source_url.__globals__["download_safety"]
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(socket.gaierror("dns blocked")),
+    )
+
+    with pytest.raises(ValueError, match="internal or localhost"):
+        m.validate_source_url(f"{m._DEFAULT_SOURCE_URL}?operator-edit=1")
+
+
+def test_webfilter_store_restores_exact_default_source_without_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    m = _import_webfilter_store_module()
+    store = m.WebFilterStore()
+    download_safety = m.validate_source_url.__globals__["download_safety"]
+    values = {
+        "enabled": "1",
+        "source_url": m._DEFAULT_SOURCE_URL,
+        "source_provider": "auto",
+        "blocked_categories": "adult",
+        "safe_browsing_enabled": "0",
+        "safe_browsing_api_key": "",
+        "safe_browsing_lists": "",
+        "safe_browsing_next_run_ts": "0",
+    }
+    writes: list[tuple[str, str]] = []
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", FakeConn)
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("default restore should not require DNS")
+        ),
+    )
+    monkeypatch.setattr(
+        store, "_get", lambda _conn, key, default="": values.get(key, default)
+    )
+    monkeypatch.setattr(
+        store,
+        "_get_global_setting_conn",
+        lambda _conn, key, default="": values.get(key, default),
+    )
+
+    def record_set(_conn, key: str, value: str) -> None:
+        writes.append((key, value))
+        values[key] = value
+
+    monkeypatch.setattr(store, "_set", record_set)
+    monkeypatch.setattr(
+        store, "_category_build_needed_conn", lambda _conn, **_kwargs: False
+    )
+    monkeypatch.setattr(store, "_clear_refresh_requested_conn", lambda _conn: None)
+
+    store.set_settings(
+        enabled=False,
+        source_url=m._DEFAULT_SOURCE_URL,
+        blocked_categories=[],
+    )
+
+    assert ("enabled", "0") in writes
+    assert ("source_url", m._DEFAULT_SOURCE_URL) in writes
+
+
 @pytest.mark.parametrize(
     "source_url",
     [

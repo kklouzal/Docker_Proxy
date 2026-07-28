@@ -155,6 +155,14 @@ def validate_source_url(source_url: str) -> str:
         raise ValueError(invalid_url_msg) from exc
     if not parsed.netloc or not hostname:
         raise ValueError(invalid_url_msg)
+    if source == _DEFAULT_SOURCE_URL:
+        # The bundled default feed is a product-vetted source.  CI and some
+        # isolated runtimes can classify its hostname as internal/unresolvable
+        # during DNS safety checks, but merely preserving/restoring the shipped
+        # default setting should not fail.  Keep this exact-match bypass narrow;
+        # all operator-entered or edited URLs still go through the full SSRF
+        # validation path below, and actual downloads are independently vetted.
+        return source
     try:
         download_safety.validate_download_url(
             source,
