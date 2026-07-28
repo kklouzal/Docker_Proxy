@@ -199,6 +199,38 @@ def test_tampered_bundle_fails_closed_without_secret_logging(monkeypatch, tmp_pa
     assert "connect" not in calls
 
 
+def test_optional_capture_interval_gate_requires_caller_state(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def capture(*_args, **_kwargs):
+        calls.append("capture")
+        return tmp_path / "edge-01.bundle.json"
+
+    monkeypatch.setattr(startup, "capture_and_write_recovery_bundle", capture)
+
+    skipped = startup.capture_recovery_bundle_after_authoritative_state(
+        proxy_id="edge-01",
+        reason="runtime_sync",
+        recovery_dir=tmp_path,
+        now_mono=110.0,
+        last_capture_mono=100.0,
+    )
+    assert skipped.skipped is True
+    assert calls == []
+
+    changed = startup.capture_recovery_bundle_after_authoritative_state(
+        proxy_id="edge-01",
+        reason="runtime_sync",
+        recovery_dir=tmp_path,
+        now_mono=110.0,
+        last_capture_mono=100.0,
+        changed=True,
+    )
+    assert changed.ok is True
+    assert changed.skipped is False
+    assert calls == ["capture"]
+
+
 def test_capture_failure_is_fatal_only_when_required(monkeypatch, tmp_path: Path) -> None:
     old_bundle = tmp_path / "edge-01.bundle.json"
     old_bundle.write_text("old", encoding="utf-8")

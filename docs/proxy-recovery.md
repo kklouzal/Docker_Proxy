@@ -1,6 +1,6 @@
 # Proxy-local recovery adoption
 
-Each proxy writes a signed recovery bundle plus a private HMAC key under `PROXY_RECOVERY_DIR` (default: `/var/lib/squid-flask-proxy/recovery`). That directory must live on the proxy's durable volume (`/var/lib/squid-flask-proxy` in the compose files), not on Admin UI/MySQL-only storage. Do not expose or copy the key through environment variables, UI fields, logs, or shared backup bundles.
+Each proxy writes a signed recovery bundle plus a private HMAC key under `PROXY_RECOVERY_DIR` (default: `/var/lib/squid-flask-proxy/recovery`). That directory must live on the proxy's durable volume (`/var/lib/squid-flask-proxy` in the compose files), not on Admin UI/MySQL-only storage. For RB5009/RouterOS-adjacent deployments, keep the persisted host/NAS path mapped into the proxy container at this durable path; do not place the bundle/key on ephemeral router flash, Admin UI exports, or shared backup bundles. Do not expose or copy the key through environment variables, UI fields, logs, or shared backup bundles.
 
 ## First connection to a replacement control plane
 

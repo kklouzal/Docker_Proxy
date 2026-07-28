@@ -69,8 +69,27 @@ def _run_once_logged(key: str, message: str, func) -> tuple[bool, object | None]
 
 
 def _sync_loop(runtime, *, force: bool = False):
+    if bool(getattr(runtime, "recovery_initial_capture_required", False)):
+        ensure_startup_schema = getattr(runtime, "ensure_startup_schema", None)
+        if callable(ensure_startup_schema):
+            ensure_startup_schema()
     runtime.start_background_tasks()
-    return runtime.sync_from_db(force=force)
+    result = runtime.sync_from_db(force=force)
+    capture_recovery_bundle = getattr(runtime, "capture_recovery_bundle", None)
+    if callable(capture_recovery_bundle) and bool(
+        getattr(runtime, "recovery_initial_capture_required", False),
+    ):
+        capture_recovery_bundle(
+            reason="startup_initial",
+            required=True,
+            changed=bool(
+                getattr(result, "get", lambda _key, _default=None: _default)(
+                    "changed",
+                    False,
+                ),
+            ),
+        )
+    return result
 
 
 def start_agent() -> None:
@@ -82,34 +101,52 @@ def start_agent() -> None:
 
         runtime = get_runtime()
         startup_recovery = None
+        startup_schema_ok = True
+        ensure_startup_schema = getattr(runtime, "ensure_startup_schema", None)
         run_startup_recovery = getattr(runtime, "run_startup_recovery", None)
         if callable(run_startup_recovery):
             startup_recovery = run_startup_recovery()
+        if callable(ensure_startup_schema) and (
+            startup_recovery is None
+            or bool(getattr(startup_recovery, "capture_required", False))
+        ):
+            # A present bundle path runs schema inside recovery before adoption.
+            # For brand-new/no-bundle proxies, migrate explicitly here before
+            # normal registration/default refresh/apply can write DB state.
+            startup_schema_ok, _schema = _run_once_logged(
+                "proxy.agent.startup_schema",
+                "Initial startup schema migration failed",
+                ensure_startup_schema,
+            )
 
         # MySQL/control-plane outages must not kill the local proxy agent.  The
         # proxy data plane, public PAC/WPAD listener, and supervisor health are
         # local services and should remain alive while control-plane DB work is
         # retried by the regular loops below.
-        registered_ok, _registered = _run_once_logged(
-            "proxy.agent.initial_register",
-            "Initial proxy registration failed",
-            runtime.ensure_registered,
-        )
-        bootstrap_ok, _bootstrap = _run_once_logged(
-            "proxy.agent.initial_bootstrap",
-            "Initial proxy revision bootstrap failed",
-            runtime.bootstrap_revision_if_missing,
-        )
-        background_ok, _background = _run_once_logged(
-            "proxy.agent.initial_background",
-            "Initial proxy background task startup failed",
-            runtime.start_background_tasks,
-        )
-        sync_ok, sync_result = _run_once_logged(
-            "proxy.agent.initial_sync",
-            "Initial proxy sync failed",
-            lambda: runtime.sync_from_db(force=False),
-        )
+        if startup_schema_ok:
+            registered_ok, _registered = _run_once_logged(
+                "proxy.agent.initial_register",
+                "Initial proxy registration failed",
+                runtime.ensure_registered,
+            )
+            bootstrap_ok, _bootstrap = _run_once_logged(
+                "proxy.agent.initial_bootstrap",
+                "Initial proxy revision bootstrap failed",
+                runtime.bootstrap_revision_if_missing,
+            )
+            background_ok, _background = _run_once_logged(
+                "proxy.agent.initial_background",
+                "Initial proxy background task startup failed",
+                runtime.start_background_tasks,
+            )
+            sync_ok, sync_result = _run_once_logged(
+                "proxy.agent.initial_sync",
+                "Initial proxy sync failed",
+                lambda: runtime.sync_from_db(force=False),
+            )
+        else:
+            registered_ok = bootstrap_ok = background_ok = sync_ok = False
+            sync_result = None
         capture_recovery_bundle = getattr(runtime, "capture_recovery_bundle", None)
         if (
             callable(capture_recovery_bundle)

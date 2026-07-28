@@ -77,6 +77,103 @@ def test_proxy_agent_startup_does_not_exit_when_initial_control_plane_db_calls_f
     assert [name for name, _target in threads] == ["proxy-heartbeat", "proxy-sync-loop"]
 
 
+def test_proxy_agent_runs_schema_when_runtime_has_no_recovery_hook(monkeypatch) -> None:
+    from proxy import agent  # type: ignore
+
+    calls: list[str] = []
+
+    class Runtime:
+        def ensure_startup_schema(self) -> None:
+            calls.append("schema")
+
+        def ensure_registered(self) -> None:
+            calls.append("ensure_registered")
+
+        def bootstrap_revision_if_missing(self) -> None:
+            calls.append("bootstrap")
+
+        def start_background_tasks(self) -> None:
+            calls.append("background")
+
+        def sync_from_db(self, *, force=False):
+            calls.append(f"sync:{force}")
+            return {"ok": True, "changed": False}
+
+        def heartbeat(self):  # pragma: no cover - thread target is not run here
+            msg = "thread target should not run synchronously"
+            raise AssertionError(msg)
+
+    class FakeThread:
+        def __init__(self, *, target, args=(), name, daemon) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(agent, "_started", False)
+    monkeypatch.setattr(agent, "get_runtime", Runtime)
+    monkeypatch.setattr(agent.threading, "Thread", FakeThread)
+    monkeypatch.setattr(agent, "_env_float", lambda *_args, **_kwargs: 1.0)
+
+    agent.start_agent()
+
+    assert calls == ["schema", "ensure_registered", "bootstrap", "background", "sync:False"]
+
+
+def test_proxy_agent_skips_initial_db_mutation_when_missing_bundle_schema_deferred(
+    monkeypatch,
+) -> None:
+    from proxy import agent  # type: ignore
+
+    calls: list[str] = []
+    threads: list[str] = []
+
+    class Runtime:
+        def run_startup_recovery(self):
+            calls.append("recovery")
+            return SimpleNamespace(proxy_id="edge-01", capture_required=True)
+
+        def ensure_startup_schema(self) -> None:
+            calls.append("schema")
+            msg = "mysql unavailable"
+            raise RuntimeError(msg)
+
+        def ensure_registered(self) -> None:
+            calls.append("ensure_registered")
+
+        def bootstrap_revision_if_missing(self) -> None:
+            calls.append("bootstrap")
+
+        def start_background_tasks(self) -> None:
+            calls.append("background")
+
+        def sync_from_db(self, *, force=False):
+            calls.append(f"sync:{force}")
+            return {"ok": True}
+
+        def heartbeat(self):  # pragma: no cover - thread target is not run here
+            msg = "thread target should not run synchronously"
+            raise AssertionError(msg)
+
+    class FakeThread:
+        def __init__(self, *, target, args=(), name, daemon) -> None:
+            threads.append(name)
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(agent, "_started", False)
+    monkeypatch.setattr(agent, "get_runtime", Runtime)
+    monkeypatch.setattr(agent.threading, "Thread", FakeThread)
+    monkeypatch.setattr(agent, "log_exception_throttled", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent, "_env_float", lambda *_args, **_kwargs: 1.0)
+
+    agent.start_agent()
+
+    assert calls == ["recovery", "schema"]
+    assert threads == ["proxy-heartbeat", "proxy-sync-loop"]
+
+
 def test_proxy_agent_runs_recovery_before_initial_registration_and_required_capture(
     monkeypatch,
 ) -> None:
@@ -88,6 +185,9 @@ def test_proxy_agent_runs_recovery_before_initial_registration_and_required_capt
         def run_startup_recovery(self):
             calls.append("recovery")
             return SimpleNamespace(proxy_id="edge-01", capture_required=True)
+
+        def ensure_startup_schema(self) -> None:
+            calls.append("schema")
 
         def ensure_registered(self) -> None:
             calls.append("ensure_registered")
@@ -126,12 +226,38 @@ def test_proxy_agent_runs_recovery_before_initial_registration_and_required_capt
 
     assert calls == [
         "recovery",
+        "schema",
         "ensure_registered",
         "bootstrap",
         "background",
         "sync:False",
         "capture:startup_initial:True:True",
     ]
+
+
+def test_proxy_agent_retries_deferred_required_initial_capture_in_sync_loop() -> None:
+    from proxy import agent  # type: ignore
+
+    calls: list[str] = []
+
+    class Runtime:
+        recovery_initial_capture_required = True
+
+        def start_background_tasks(self) -> None:
+            calls.append("background")
+
+        def sync_from_db(self, *, force=False):
+            calls.append(f"sync:{force}")
+            return {"ok": True, "changed": True}
+
+        def capture_recovery_bundle(self, *, reason, required=False, changed=False):
+            calls.append(f"capture:{reason}:{required}:{changed}")
+            return {"ok": True}
+
+    result = agent._sync_loop(Runtime(), force=False)
+
+    assert result == {"ok": True, "changed": True}
+    assert calls == ["background", "sync:False", "capture:startup_initial:True:True"]
 
 
 def test_proxy_agent_sync_loop_retries_background_tasks_before_sync() -> None:
@@ -253,6 +379,83 @@ def test_proxy_runtime_construction_does_not_initialize_database_backed_stores(
     assert runtime.adblock_store is not None
     assert runtime.diagnostic_store is not None
     assert runtime.ssl_errors_store is not None
+
+
+def test_proxy_runtime_required_initial_capture_suppresses_optional_sync_capture(
+    monkeypatch,
+) -> None:
+    from proxy.runtime import ProxyRuntime  # type: ignore
+
+    runtime = ProxyRuntime.__new__(ProxyRuntime)
+    runtime._recovery_initial_capture_required = True
+    captures: list[str] = []
+
+    monkeypatch.setattr(
+        runtime,
+        "capture_recovery_bundle",
+        lambda **kwargs: captures.append(str(kwargs.get("reason"))) or {"ok": True},
+    )
+
+    runtime._capture_recovery_bundle_after_sync({"ok": True, "changed": True})
+
+    assert captures == []
+
+
+def test_proxy_runtime_successful_required_capture_clears_initial_guard(monkeypatch) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = runtime_module.ProxyRuntime.__new__(runtime_module.ProxyRuntime)
+    runtime._recovery_capture_lock = runtime_module.threading.Lock()
+    runtime._last_recovery_capture_mono = 0.0
+    runtime._recovery_initial_capture_required = True
+    monkeypatch.setattr(
+        runtime_module.ProxyRuntime,
+        "proxy_id",
+        property(lambda _self: "edge-01"),
+    )
+
+    def capture(**kwargs):
+        return SimpleNamespace(
+            ok=True,
+            skipped=False,
+            proxy_id=str(kwargs["proxy_id"]),
+            path="",
+            reason=str(kwargs["reason"]),
+            required=bool(kwargs["required"]),
+            detail="",
+        )
+
+    monkeypatch.setattr(runtime_module, "capture_recovery_bundle_after_authoritative_state", capture)
+
+    result = runtime.capture_recovery_bundle(reason="startup_initial", required=True)
+
+    assert result["ok"] is True
+    assert runtime.recovery_initial_capture_required is False
+
+
+def test_proxy_runtime_successful_rollback_captures_authoritative_state(monkeypatch) -> None:
+    from proxy.runtime import ProxyRuntime  # type: ignore
+
+    runtime = ProxyRuntime.__new__(ProxyRuntime)
+    runtime.controller = SimpleNamespace(
+        restore_last_known_good_config=lambda *, reason: (True, "rolled back"),
+    )
+    runtime.registry = SimpleNamespace(mark_apply_result=lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ProxyRuntime, "proxy_id", property(lambda _self: "edge-01"))
+    captures: list[dict[str, object]] = []
+
+    monkeypatch.setattr(runtime, "_invalidate_health_cache", lambda: None)
+    monkeypatch.setattr(runtime, "_current_config_sha", lambda: "abc123")
+    monkeypatch.setattr(
+        runtime,
+        "_capture_recovery_bundle_after_sync",
+        lambda result: captures.append(dict(result)),
+    )
+
+    result = runtime.rollback_last_known_good_config(reason="test")
+
+    assert result["ok"] is True
+    assert captures == [result]
 
 
 def test_proxy_runtime_background_task_startup_is_isolated_and_retryable(

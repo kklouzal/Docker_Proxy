@@ -72,6 +72,7 @@ from services.proxy_registry import (
     resolve_local_proxy_public_fields,
 )
 from services.runtime_helpers import decode_bytes as _decode_bytes
+from services.schema_lifecycle import ensure_startup_schema_if_configured
 from services.squid_core import SquidController, _exclusive_squid_lifecycle_lock
 from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
@@ -925,6 +926,7 @@ class ProxyRuntime:
         self._adblock_icap_last_restart_ts = 0.0
         self._recovery_capture_lock = threading.Lock()
         self._last_recovery_capture_mono = 0.0
+        self._recovery_initial_capture_required = False
 
     @property
     def proxy_id(self) -> str:
@@ -933,8 +935,17 @@ class ProxyRuntime:
     def ensure_registered(self) -> None:
         self.registry.register_local_proxy()
 
+    def ensure_startup_schema(self) -> list[Any]:
+        return ensure_startup_schema_if_configured()
+
     def run_startup_recovery(self) -> StartupRecoveryResult:
-        return run_startup_recovery(proxy_id=self.proxy_id, registry=self.registry)
+        result = run_startup_recovery(proxy_id=self.proxy_id, registry=self.registry)
+        self._recovery_initial_capture_required = bool(result.capture_required)
+        return result
+
+    @property
+    def recovery_initial_capture_required(self) -> bool:
+        return bool(getattr(self, "_recovery_initial_capture_required", False))
 
     def capture_recovery_bundle(
         self,
@@ -957,6 +968,8 @@ class ProxyRuntime:
             )
             if result.ok and not result.skipped:
                 self._last_recovery_capture_mono = time.monotonic()
+                if required and reason == "startup_initial":
+                    self._recovery_initial_capture_required = False
             return {
                 "ok": result.ok,
                 "proxy_id": result.proxy_id,
@@ -968,7 +981,7 @@ class ProxyRuntime:
             }
 
     def _capture_recovery_bundle_after_sync(self, result: dict[str, Any]) -> None:
-        if not bool(result.get("ok", True)):
+        if not bool(result.get("ok", True)) or self.recovery_initial_capture_required:
             return
         with suppress(ProxyRecoveryCaptureError):
             self.capture_recovery_bundle(
@@ -1993,7 +2006,7 @@ class ProxyRuntime:
                 detail=detail,
                 current_config_sha=current_sha,
             )
-        return {
+        result = {
             "ok": bool(ok),
             "proxy_id": self.proxy_id,
             "changed": bool(ok),
@@ -2001,6 +2014,9 @@ class ProxyRuntime:
             "current_config_sha": current_sha,
             "detail": detail,
         }
+        if ok:
+            self._capture_recovery_bundle_after_sync(result)
+        return result
 
     def self_heal_config_if_needed(
         self,
