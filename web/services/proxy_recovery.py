@@ -23,7 +23,7 @@ from typing import Any, Final
 # token, and avoids SQL/runtime integration so later slices can add DB export and
 # import behind this small data-contract boundary.
 
-FORMAT_VERSION: Final = 1
+FORMAT_VERSION: Final = 2
 DATA_SCHEMA_VERSION: Final = 1
 DEFAULT_MAX_BUNDLE_BYTES: Final = 8 * 1024 * 1024
 RECOVERY_DIR_ENV: Final = "PROXY_RECOVERY_DIR"
@@ -32,11 +32,21 @@ MAC_ALGORITHM: Final = "HMAC-SHA256"
 KEY_BYTES: Final = 32
 
 _PROXY_ID_RE: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_CONTROL_PLANE_ID_RE: Final = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+)
 _TABLE_NAME_RE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _RESERVED_ENCODING_KEY: Final = "__proxy_recovery_type__"
 _BYTES_ENCODING: Final = "bytes/base64"
 _UNSIGNED_KEYS: Final = frozenset(
-    {"format_version", "proxy_id", "created_ts", "schema_version", "tables"}
+    {
+        "format_version",
+        "proxy_id",
+        "source_control_plane_id",
+        "created_ts",
+        "schema_version",
+        "tables",
+    }
 )
 _ENVELOPE_KEYS: Final = _UNSIGNED_KEYS | frozenset({"integrity"})
 _INTEGRITY_KEYS: Final = frozenset({"content_sha256", "mac_alg", "mac"})
@@ -78,6 +88,7 @@ class IntegrityMetadata:
 class RecoveryBundle:
     format_version: int
     proxy_id: str
+    source_control_plane_id: str
     created_ts: str
     schema_version: int
     tables: tuple[RecoveryTablePayload, ...]
@@ -255,6 +266,14 @@ def normalize_proxy_id(proxy_id: str) -> str:
     return normalized
 
 
+def normalize_control_plane_identity(source_control_plane_id: str) -> str:
+    normalized = str(source_control_plane_id or "").strip().lower()
+    if not _CONTROL_PLANE_ID_RE.fullmatch(normalized):
+        msg = "invalid recovery source control plane identity"
+        raise _recovery_error(msg)
+    return normalized
+
+
 def bundle_path_for_proxy(
     proxy_id: str, recovery_dir: Path | str | None = None
 ) -> Path:
@@ -280,6 +299,7 @@ def create_recovery_bundle(
     proxy_id: str,
     tables: Mapping[str, Iterable[Mapping[str, Any]]] | Iterable[RecoveryTablePayload],
     *,
+    source_control_plane_id: str,
     schema_version: int = DATA_SCHEMA_VERSION,
     created_ts: str | None = None,
     recovery_dir: Path | str | None = None,
@@ -288,6 +308,7 @@ def create_recovery_bundle(
     unsigned = _unsigned_payload(
         proxy_id,
         tables,
+        source_control_plane_id=source_control_plane_id,
         schema_version=schema_version,
         created_ts=created_ts,
     )
@@ -303,6 +324,7 @@ def write_recovery_bundle(
     proxy_id: str,
     tables: Mapping[str, Iterable[Mapping[str, Any]]] | Iterable[RecoveryTablePayload],
     *,
+    source_control_plane_id: str,
     schema_version: int = DATA_SCHEMA_VERSION,
     created_ts: str | None = None,
     recovery_dir: Path | str | None = None,
@@ -311,6 +333,7 @@ def write_recovery_bundle(
     unsigned = _unsigned_payload(
         proxy_id,
         tables,
+        source_control_plane_id=source_control_plane_id,
         schema_version=schema_version,
         created_ts=created_ts,
     )
@@ -324,6 +347,7 @@ def write_recovery_bundle(
 def read_recovery_bundle(
     proxy_id: str,
     *,
+    expected_source_control_plane_id: str | None = None,
     recovery_dir: Path | str | None = None,
     max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
 ) -> RecoveryBundle:
@@ -331,13 +355,19 @@ def read_recovery_bundle(
     path = bundle_path_for_proxy(normalized, recovery_dir)
     raw = _read_private_regular_file(path, max_bytes=max_bundle_bytes)
     key = read_signing_key(normalized, recovery_dir)
-    return parse_recovery_bundle(raw, expected_proxy_id=normalized, key=key)
+    return parse_recovery_bundle(
+        raw,
+        expected_proxy_id=normalized,
+        expected_source_control_plane_id=expected_source_control_plane_id,
+        key=key,
+    )
 
 
 def serialize_recovery_bundle(bundle: RecoveryBundle) -> bytes:
     envelope = {
         "format_version": bundle.format_version,
         "proxy_id": bundle.proxy_id,
+        "source_control_plane_id": bundle.source_control_plane_id,
         "created_ts": bundle.created_ts,
         "schema_version": bundle.schema_version,
         "tables": [_table_to_encoded_json(table) for table in bundle.tables],
@@ -354,6 +384,7 @@ def parse_recovery_bundle(
     raw: bytes,
     *,
     expected_proxy_id: str,
+    expected_source_control_plane_id: str | None = None,
     key: bytes,
     max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
 ) -> RecoveryBundle:
@@ -361,7 +392,11 @@ def parse_recovery_bundle(
         msg = "recovery bundle exceeds maximum size"
         raise _recovery_error(msg)
     envelope = _json_loads_no_duplicates(raw)
-    _validate_envelope_shape(envelope, expected_proxy_id=expected_proxy_id)
+    _validate_envelope_shape(
+        envelope,
+        expected_proxy_id=expected_proxy_id,
+        expected_source_control_plane_id=expected_source_control_plane_id,
+    )
     unsigned = {name: envelope[name] for name in sorted(_UNSIGNED_KEYS)}
     canonical_unsigned = _canonical_json_bytes(unsigned)
     integrity = envelope["integrity"]
@@ -425,6 +460,7 @@ def _unsigned_payload(
     proxy_id: str,
     tables: Mapping[str, Iterable[Mapping[str, Any]]] | Iterable[RecoveryTablePayload],
     *,
+    source_control_plane_id: str,
     schema_version: int,
     created_ts: str | None,
 ) -> dict[str, Any]:
@@ -438,6 +474,9 @@ def _unsigned_payload(
     return {
         "format_version": FORMAT_VERSION,
         "proxy_id": normalize_proxy_id(proxy_id),
+        "source_control_plane_id": normalize_control_plane_identity(
+            source_control_plane_id,
+        ),
         "created_ts": timestamp,
         "schema_version": schema_version,
         "tables": [
@@ -598,7 +637,12 @@ def _decode_json_value(value: Any) -> Any:
     raise _recovery_error(msg)
 
 
-def _validate_envelope_shape(envelope: Any, *, expected_proxy_id: str) -> None:
+def _validate_envelope_shape(
+    envelope: Any,
+    *,
+    expected_proxy_id: str,
+    expected_source_control_plane_id: str | None = None,
+) -> None:
     if not isinstance(envelope, dict) or set(envelope) != _ENVELOPE_KEYS:
         msg = "invalid recovery bundle envelope"
         raise _recovery_error(msg)
@@ -615,6 +659,17 @@ def _validate_envelope_shape(envelope: Any, *, expected_proxy_id: str) -> None:
     proxy_id = envelope["proxy_id"]
     if normalize_proxy_id(proxy_id) != normalize_proxy_id(expected_proxy_id):
         msg = "recovery bundle proxy id does not match target proxy"
+        raise _recovery_error(msg)
+    source_control_plane_id = normalize_control_plane_identity(
+        envelope["source_control_plane_id"],
+    )
+    expected_identity = (
+        normalize_control_plane_identity(expected_source_control_plane_id)
+        if expected_source_control_plane_id is not None
+        else None
+    )
+    if expected_identity is not None and source_control_plane_id != expected_identity:
+        msg = "recovery bundle source control plane identity does not match"
         raise _recovery_error(msg)
     schema_version = envelope["schema_version"]
     if not isinstance(schema_version, int) or schema_version < 1:
@@ -683,6 +738,7 @@ def _bundle_from_envelope(envelope: Mapping[str, Any]) -> RecoveryBundle:
     return RecoveryBundle(
         format_version=envelope["format_version"],
         proxy_id=envelope["proxy_id"],
+        source_control_plane_id=envelope["source_control_plane_id"],
         created_ts=envelope["created_ts"],
         schema_version=envelope["schema_version"],
         tables=tuple(_table_from_encoded_json(table) for table in envelope["tables"]),

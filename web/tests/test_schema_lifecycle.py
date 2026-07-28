@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -210,7 +212,57 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "control_plane_retention_indexes",
         "schema_lifecycle_complete_runtime_assertions",
         "auth_provider_profile_tables",
+        "control_plane_identity",
     } <= names
+    assert schema_lifecycle.latest_schema_version() == 16
+    assert specs[-1].version == 16
+    assert specs[-1].name == "control_plane_identity"
+    assert schema_lifecycle.latest_schema_checksum() == specs[-1].checksum
+    assert specs[-1].tables[0].table == "control_plane_identity"
+    assert "control_plane_id CHAR(36) NOT NULL" in specs[-1].tables[0].create_sql
+
+
+class _IdentityConn:
+    def __init__(self) -> None:
+        self.identity: str | None = None
+        self.lock = threading.Lock()
+        self.insert_candidates: list[str] = []
+
+    def execute(self, sql: str, params=()):
+        text = " ".join(str(sql).split())
+        params = tuple(params or ())
+        if text.startswith("INSERT IGNORE INTO control_plane_identity"):
+            candidate = str(params[0])
+            with self.lock:
+                self.insert_candidates.append(candidate)
+                if self.identity is None:
+                    self.identity = candidate
+            return _Result(rowcount=1)
+        if text.startswith("SELECT control_plane_id FROM control_plane_identity"):
+            with self.lock:
+                row = {"control_plane_id": self.identity} if self.identity else None
+            return _Result([row] if row else [])
+        msg = f"unexpected SQL: {text}"
+        raise AssertionError(msg)
+
+
+def test_control_plane_identity_is_stable_idempotent_and_concurrency_safe() -> None:
+    conn = _IdentityConn()
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        identities = list(
+            executor.map(lambda _i: schema_lifecycle.ensure_control_plane_identity(conn), range(24)),
+        )
+
+    assert len(set(identities)) == 1
+    assert schema_lifecycle.read_control_plane_identity(conn) == identities[0]
+    assert schema_lifecycle.ensure_control_plane_identity(conn) == identities[0]
+    assert schema_lifecycle.normalize_control_plane_identity(identities[0].upper()) == identities[0]
+    assert len(conn.insert_candidates) == 25
+    assert identities[0] in conn.insert_candidates
+
+    with pytest.raises(ValueError, match="invalid control plane identity"):
+        schema_lifecycle.normalize_control_plane_identity("not-a-stable-id")
 
 
 class _CurrentSchemaConn:

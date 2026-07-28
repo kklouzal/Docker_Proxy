@@ -13,6 +13,26 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+_SOURCE_CONTROL_PLANE_ID = "123e4567-e89b-42d3-a456-426614174000"
+_OTHER_CONTROL_PLANE_ID = "123e4567-e89b-42d3-a456-426614174001"
+
+
+def _write_recovery_bundle(*args, **kwargs):
+    return recovery.write_recovery_bundle(
+        *args,
+        source_control_plane_id=_SOURCE_CONTROL_PLANE_ID,
+        **kwargs,
+    )
+
+
+def _create_recovery_bundle(*args, **kwargs):
+    return recovery.create_recovery_bundle(
+        *args,
+        source_control_plane_id=_SOURCE_CONTROL_PLANE_ID,
+        **kwargs,
+    )
+
+
 def _rows() -> dict[str, list[dict[str, object]]]:
     return {
         "adblock_settings": [
@@ -92,7 +112,7 @@ def test_registry_is_immutable_ordered_and_documents_exclusions() -> None:
 def test_canonical_json_round_trip_includes_bytes_base64_and_hmac(
     tmp_path: Path,
 ) -> None:
-    bundle_path = recovery.write_recovery_bundle(
+    bundle_path = _write_recovery_bundle(
         " Edge-01 ",
         _rows(),
         created_ts="2026-07-28T19:27:00Z",
@@ -113,6 +133,8 @@ def test_canonical_json_round_trip_includes_bytes_base64_and_hmac(
 
     envelope = json.loads(raw)
     assert list(envelope) == sorted(envelope)
+    assert envelope["format_version"] == 2
+    assert envelope["source_control_plane_id"] == _SOURCE_CONTROL_PLANE_ID
     marker = envelope["tables"][0]["rows"][0]["marker"]
     assert marker == {
         "__proxy_recovery_type__": "bytes/base64",
@@ -127,12 +149,20 @@ def test_canonical_json_round_trip_includes_bytes_base64_and_hmac(
     ]
     assert bundle.tables[0].rows[0]["marker"] == b"\x00proxy-bytes\xff"
     assert bundle.tables[0].rows[0]["nested"] == {"payload": b"nested"}
+    assert bundle.source_control_plane_id == _SOURCE_CONTROL_PLANE_ID
+
+    with pytest.raises(recovery.ProxyRecoveryError, match="control plane identity"):
+        recovery.read_recovery_bundle(
+            "edge-01",
+            recovery_dir=tmp_path,
+            expected_source_control_plane_id=_OTHER_CONTROL_PLANE_ID,
+        )
 
 
 def test_bundle_validation_rejects_tamper_wrong_proxy_duplicates_and_reserved_keys(
     tmp_path: Path,
 ) -> None:
-    path = recovery.write_recovery_bundle(
+    path = _write_recovery_bundle(
         "edge-01",
         _rows(),
         created_ts="2026-07-28T19:27:00Z",
@@ -157,6 +187,49 @@ def test_bundle_validation_rejects_tamper_wrong_proxy_duplicates_and_reserved_ke
             key=recovery.read_signing_key("edge-01", tmp_path),
         )
 
+    wrong_source = json.loads(raw)
+    wrong_source["source_control_plane_id"] = _OTHER_CONTROL_PLANE_ID
+    wrong_source_raw = json.dumps(
+        wrong_source,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    with pytest.raises(recovery.ProxyRecoveryError, match="control plane identity"):
+        recovery.parse_recovery_bundle(
+            wrong_source_raw,
+            expected_proxy_id="edge-01",
+            expected_source_control_plane_id=_SOURCE_CONTROL_PLANE_ID,
+            key=recovery.read_signing_key("edge-01", tmp_path),
+        )
+
+    malformed_source = json.loads(raw)
+    malformed_source["source_control_plane_id"] = "not-a-control-plane-id"
+    malformed_source_raw = json.dumps(
+        malformed_source,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    with pytest.raises(recovery.ProxyRecoveryError, match="control plane identity"):
+        recovery.parse_recovery_bundle(
+            malformed_source_raw,
+            expected_proxy_id="edge-01",
+            key=recovery.read_signing_key("edge-01", tmp_path),
+        )
+
+    missing_source = json.loads(raw)
+    del missing_source["source_control_plane_id"]
+    missing_source_raw = json.dumps(
+        missing_source,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    with pytest.raises(recovery.ProxyRecoveryError, match="envelope"):
+        recovery.parse_recovery_bundle(
+            missing_source_raw,
+            expected_proxy_id="edge-01",
+            key=recovery.read_signing_key("edge-01", tmp_path),
+        )
+
     duplicate_json = b'{"format_version":1,"format_version":1}'
     with pytest.raises(recovery.ProxyRecoveryError, match="duplicate JSON key"):
         recovery.parse_recovery_bundle(
@@ -168,7 +241,7 @@ def test_bundle_validation_rejects_tamper_wrong_proxy_duplicates_and_reserved_ke
     with pytest.raises(
         recovery.ProxyRecoveryError, match="reserved recovery encoding key"
     ):
-        recovery.create_recovery_bundle(
+        _create_recovery_bundle(
             "edge-01",
             {"adblock_settings": [{"__proxy_recovery_type__": "bytes/base64"}]},
             recovery_dir=tmp_path,
@@ -178,7 +251,7 @@ def test_bundle_validation_rejects_tamper_wrong_proxy_duplicates_and_reserved_ke
 def test_future_version_malformed_encoding_and_oversized_write_rejected(
     tmp_path: Path,
 ) -> None:
-    path = recovery.write_recovery_bundle(
+    path = _write_recovery_bundle(
         "edge-01",
         _rows(),
         created_ts="2026-07-28T19:27:00Z",
@@ -208,7 +281,7 @@ def test_future_version_malformed_encoding_and_oversized_write_rejected(
         )
 
     with pytest.raises(recovery.ProxyRecoveryError, match="exceeds maximum size"):
-        recovery.write_recovery_bundle(
+        _write_recovery_bundle(
             "edge-01",
             {"adblock_settings": [{"large": "x" * 200}]},
             recovery_dir=tmp_path,
@@ -218,15 +291,15 @@ def test_future_version_malformed_encoding_and_oversized_write_rejected(
 
 def test_scope_and_value_validation_errors(tmp_path: Path) -> None:
     with pytest.raises(recovery.ProxyRecoveryError, match="invalid proxy id"):
-        recovery.create_recovery_bundle("../bad", {}, recovery_dir=tmp_path)
+        _create_recovery_bundle("../bad", {}, recovery_dir=tmp_path)
     with pytest.raises(recovery.ProxyRecoveryError, match="not in recovery scope"):
-        recovery.create_recovery_bundle(
+        _create_recovery_bundle(
             "edge-01",
             {"audit_log": []},
             recovery_dir=tmp_path,
         )
     with pytest.raises(recovery.ProxyRecoveryError, match="duplicate recovery table"):
-        recovery.create_recovery_bundle(
+        _create_recovery_bundle(
             "edge-01",
             [
                 recovery.RecoveryTablePayload("adblock_settings", ()),
@@ -237,7 +310,7 @@ def test_scope_and_value_validation_errors(tmp_path: Path) -> None:
     with pytest.raises(
         recovery.ProxyRecoveryError, match="unsupported recovery value type"
     ):
-        recovery.create_recovery_bundle(
+        _create_recovery_bundle(
             "edge-01",
             {"adblock_settings": [{"bad": object()}]},
             recovery_dir=tmp_path,
@@ -250,10 +323,10 @@ def test_private_storage_refuses_symlinks_non_regular_and_bound_reads(
     key_path = recovery.key_path_for_proxy("edge-01", tmp_path)
     key_path.symlink_to(tmp_path / "elsewhere")
     with pytest.raises(recovery.ProxyRecoveryError, match="symlink"):
-        recovery.write_recovery_bundle("edge-01", _rows(), recovery_dir=tmp_path)
+        _write_recovery_bundle("edge-01", _rows(), recovery_dir=tmp_path)
     key_path.unlink()
 
-    recovery.write_recovery_bundle("edge-01", _rows(), recovery_dir=tmp_path)
+    _write_recovery_bundle("edge-01", _rows(), recovery_dir=tmp_path)
     bundle_path = recovery.bundle_path_for_proxy("edge-01", tmp_path)
     key_path = recovery.key_path_for_proxy("edge-01", tmp_path)
 
@@ -278,7 +351,7 @@ def test_private_storage_refuses_symlinks_non_regular_and_bound_reads(
 def test_atomic_replacement_preserves_previous_bundle_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = recovery.write_recovery_bundle(
+    path = _write_recovery_bundle(
         "edge-01",
         {"adblock_settings": [{"enabled": True}]},
         recovery_dir=tmp_path,
@@ -291,7 +364,7 @@ def test_atomic_replacement_preserves_previous_bundle_on_failure(
 
     monkeypatch.setattr(recovery.Path, "replace", fail_replace)
     with pytest.raises(OSError, match="simulated replace failure"):
-        recovery.write_recovery_bundle(
+        _write_recovery_bundle(
             "edge-01",
             {"adblock_settings": [{"enabled": False}]},
             recovery_dir=tmp_path,
@@ -307,7 +380,7 @@ def test_recovery_dir_env_and_private_dir_symlink_refusal(
 ) -> None:
     configured = tmp_path / "configured"
     monkeypatch.setenv(recovery.RECOVERY_DIR_ENV, str(configured))
-    recovery.write_recovery_bundle("edge-01", {"adblock_settings": []})
+    _write_recovery_bundle("edge-01", {"adblock_settings": []})
     assert (configured / "edge-01.bundle.json").is_file()
 
     target = tmp_path / "target"
@@ -315,7 +388,7 @@ def test_recovery_dir_env_and_private_dir_symlink_refusal(
     symlink_root = tmp_path / "symlink-root"
     symlink_root.symlink_to(target, target_is_directory=True)
     with pytest.raises(recovery.ProxyRecoveryError, match="private directory"):
-        recovery.write_recovery_bundle(
+        _write_recovery_bundle(
             "edge-01",
             {"adblock_settings": []},
             recovery_dir=symlink_root,

@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -26,11 +27,14 @@ from services.db import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 15
+_SCHEMA_VERSION = 16
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CONTROL_PLANE_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+)
 _HOT_PATH_ENSURE_LOCK = threading.Lock()
 _HOT_PATH_ENSURED = False
 _MIGRATION_CONTEXT = threading.local()
@@ -110,6 +114,14 @@ def _safe_identifier(identifier: str) -> str:
         msg = f"Unsafe MySQL identifier: {identifier!r}"
         raise ValueError(msg)
     return value
+
+
+def normalize_control_plane_identity(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if not _CONTROL_PLANE_ID_RE.fullmatch(normalized):
+        msg = "invalid control plane identity"
+        raise ValueError(msg)
+    return normalized
 
 
 def _row_value(row: Any, key: str, index: int = 0) -> Any:
@@ -263,6 +275,40 @@ def require_migration_privileges(conn: Any) -> None:
             )
             raise PermissionError(msg) from exc
         raise
+
+
+def read_control_plane_identity(conn: Any) -> str | None:
+    row = conn.execute(
+        """
+        SELECT control_plane_id
+        FROM control_plane_identity
+        WHERE id=1
+        LIMIT 1
+        """,
+    ).fetchone()
+    if row is None:
+        return None
+    return normalize_control_plane_identity(str(_row_value(row, "control_plane_id", 0) or ""))
+
+
+def ensure_control_plane_identity(conn: Any) -> str:
+    candidate = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT IGNORE INTO control_plane_identity(id, control_plane_id, created_ts)
+        VALUES(1, %s, %s)
+        """,
+        (candidate, int(time.time())),
+    )
+    identity = read_control_plane_identity(conn)
+    if identity is None:
+        msg = "control plane identity was not created"
+        raise RuntimeError(msg)
+    return identity
+
+
+def _init_control_plane_identity(conn: Any) -> None:
+    ensure_control_plane_identity(conn)
 
 
 def _ensure_migration_tables(conn: Any) -> None:
@@ -650,6 +696,26 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
             data_steps=(
                 SchemaDataStep("directory_auth_profiles", _init_directory_auth_schema),
                 SchemaDataStep("saml_auth_profiles", _init_saml_auth_schema),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=16,
+            name="control_plane_identity",
+            tables=(
+                SchemaObjectSpec(
+                    "control_plane_identity",
+                    """
+                    CREATE TABLE IF NOT EXISTS control_plane_identity (
+                        id TINYINT PRIMARY KEY,
+                        control_plane_id CHAR(36) NOT NULL,
+                        created_ts BIGINT NOT NULL,
+                        UNIQUE KEY uniq_control_plane_identity (control_plane_id)
+                    )
+                    """,
+                ),
+            ),
+            data_steps=(
+                SchemaDataStep("ensure_control_plane_identity", _init_control_plane_identity),
             ),
         ),
     )
