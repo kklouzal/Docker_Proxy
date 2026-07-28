@@ -234,14 +234,20 @@ def test_public_pac_path_normalization_rejects_unsafe_route_shapes() -> None:
         "/download/root%",
         "/download/root%A.pac",
         "/download/%E0%A4%A.pac",
+        "/download/%25ZZ.pac",
+        "/download/%25.pac",
+        "/download/%2525ZZ.pac",
         "https://proxy.example/download/root%ZZ.pac",
         "https://proxy.example/download/%E0%A4%A.pac",
+        "https://proxy.example/download/%25ZZ.pac",
         "/download/wpad.dat?site=lab%ZZ",
         "/download/wpad.dat?site=lab%",
         "/download/wpad.dat?site=lab%A",
         "/download/wpad.dat?site=%E0%A4%A",
+        "/download/wpad.dat?site=%25ZZ",
         "https://proxy.example/download/wpad.dat?site=lab%ZZ",
         "https://proxy.example/download/wpad.dat?site=%E0%A4%A",
+        "https://proxy.example/download/wpad.dat?site=%25ZZ",
     ],
 )
 def test_public_pac_path_normalization_rejects_malformed_percent_encoding(
@@ -315,6 +321,26 @@ def test_parse_public_pac_url_rejects_zero_explicit_authority_port() -> None:
         "",
         "http",
         80,
+        "/proxy.pac",
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://pac.example/download/%25ZZ.pac",
+        "https://pac.example/download/wpad.dat?site=%25ZZ",
+    ],
+)
+def test_parse_public_pac_url_falls_back_from_reencoded_malformed_percent_path(
+    value: str,
+) -> None:
+    proxy_registry = _proxy_registry()
+
+    assert proxy_registry._parse_public_pac_url(value) == (
+        "pac.example",
+        "https",
+        443,
         "/proxy.pac",
     )
 
@@ -529,8 +555,11 @@ def test_management_url_normalization_rejects_unsafe_shapes() -> None:
         "http://proxy:5000/root%",
         "http://proxy:5000/root%A",
         "http://proxy:5000/%E0%A4%A",
+        "http://proxy:5000/root%25ZZ",
+        "http://proxy:5000/root%25",
         "http://proxy:5000/root?debug=%ZZ",
         "http://proxy:5000/root?debug=%E0%A4%A",
+        "http://proxy:5000/root?debug=%25ZZ",
     ],
 )
 def test_management_url_normalization_rejects_malformed_percent_encoding(

@@ -94,6 +94,8 @@ def _bounded_repeated_unquote(value: str) -> str | None:
     if decoded is None:
         return None
     for _ in range(_MAX_PERCENT_DECODE_PASSES):
+        if _has_malformed_percent_encoding(decoded):
+            return None
         try:
             next_decoded = unquote(decoded, errors="strict")
         except UnicodeDecodeError:
@@ -101,6 +103,8 @@ def _bounded_repeated_unquote(value: str) -> str | None:
         if next_decoded == decoded:
             return decoded
         decoded = next_decoded
+    if _has_malformed_percent_encoding(decoded):
+        return None
     try:
         return decoded if unquote(decoded, errors="strict") == decoded else None
     except UnicodeDecodeError:
