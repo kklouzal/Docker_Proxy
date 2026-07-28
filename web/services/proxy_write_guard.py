@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 # ruff: noqa: EM101,EM102,TRY003,TC003,DOC402
+import hashlib
 import os
 import threading
 import time
@@ -57,7 +58,14 @@ _decision_cache: dict[tuple[str, bool, bool], _CacheEntry] = {}
 
 
 def proxy_lifecycle_lock_name(proxy_id: object | None) -> str:
-    return f"docker_proxy:proxy_lifecycle:{normalize_proxy_id(proxy_id)}"[:64]
+    prefix = "docker_proxy:proxy_lifecycle:"
+    proxy_key = normalize_proxy_id(proxy_id)
+    if len(prefix) + len(proxy_key) <= 64:
+        return f"{prefix}{proxy_key}"
+
+    digest = hashlib.sha256(proxy_key.encode("utf-8")).hexdigest()[:16]
+    readable_prefix_size = 64 - len(prefix) - len(digest) - 1
+    return f"{prefix}{proxy_key[:readable_prefix_size]}-{digest}"
 
 
 def clear_proxy_write_guard_cache(proxy_id: object | None = None) -> None:

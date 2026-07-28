@@ -132,6 +132,38 @@ def test_proxy_write_guard_fails_closed_for_metadata_errors(monkeypatch) -> None
         guard.resolve_proxy_write_id(conn, "edge-a")
 
 
+def test_proxy_lifecycle_lock_name_keeps_short_ids_readable_and_stable(monkeypatch) -> None:
+    guard = _guard_module(monkeypatch)
+
+    first = guard.proxy_lifecycle_lock_name("edge-a")
+    second = guard.proxy_lifecycle_lock_name("edge-a")
+
+    assert first == "docker_proxy:proxy_lifecycle:edge-a"
+    assert second == first
+    assert len(first) <= 64
+
+
+def test_proxy_lifecycle_lock_name_avoids_long_id_truncation_collisions(monkeypatch) -> None:
+    guard = _guard_module(monkeypatch)
+    shared_prefix = "edge-" + ("a" * 35)
+    first_proxy_id = f"{shared_prefix}11111111111111111111111"
+    second_proxy_id = f"{shared_prefix}22222222222222222222222"
+    assert len(first_proxy_id) == 63
+    assert len(second_proxy_id) == 63
+    assert first_proxy_id[:35] == second_proxy_id[:35]
+
+    first = guard.proxy_lifecycle_lock_name(first_proxy_id)
+    second = guard.proxy_lifecycle_lock_name(second_proxy_id)
+
+    assert len(first) <= 64
+    assert len(second) <= 64
+    assert first != second
+    assert first.startswith("docker_proxy:proxy_lifecycle:edge-")
+    assert second.startswith("docker_proxy:proxy_lifecycle:edge-")
+    assert shared_prefix[:18] in first
+    assert shared_prefix[:18] in second
+
+
 def test_guarded_proxy_write_rechecks_after_lifecycle_lock(monkeypatch) -> None:
     guard = _guard_module(monkeypatch)
     conn = _GuardConn()
