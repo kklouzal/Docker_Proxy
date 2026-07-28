@@ -16,6 +16,13 @@ if TYPE_CHECKING:
 
 _TIMEOUT_LOCK = threading.Lock()
 _DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
+_IDNA_DOT_TRANSLATION = str.maketrans(
+    {
+        "\u3002": ".",
+        "\uff0e": ".",
+        "\uff61": ".",
+    }
+)
 _RESERVED_RDNS_HOSTNAMES = {
     "localhost",
     "localhost.localdomain",
@@ -85,26 +92,41 @@ class ClientIdentityCache:
         )
 
     def _normalize_rdns_hostname(self, hostname: object) -> str:
-        cleaned = str(hostname or "").strip().rstrip(".").lower()
+        cleaned = (
+            str(hostname or "")
+            .strip()
+            .translate(_IDNA_DOT_TRANSLATION)
+            .rstrip(".")
+            .lower()
+        )
         if not cleaned:
             return ""
         if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in cleaned):
             return ""
-        if cleaned in _RESERVED_RDNS_HOSTNAMES or cleaned.endswith(".localhost"):
+        labels = cleaned.split(".")
+        if not labels or any(not label for label in labels):
             return ""
-        if self._is_ip_literal_hostname(cleaned):
+        try:
+            normalized = ".".join(
+                label.encode("idna").decode("ascii").lower() for label in labels
+            )
+        except Exception:
             return ""
-        if self._is_ambiguous_ipv4_hostname(cleaned):
+        if normalized in _RESERVED_RDNS_HOSTNAMES or normalized.endswith(".localhost"):
             return ""
-        if len(cleaned) > 253:
+        if self._is_ip_literal_hostname(normalized):
+            return ""
+        if self._is_ambiguous_ipv4_hostname(normalized):
+            return ""
+        if len(normalized) > 253:
             return ""
 
-        labels = cleaned.split(".")
+        labels = normalized.split(".")
         if not labels or any(not label for label in labels):
             return ""
         if any(_DNS_LABEL_RE.fullmatch(label) is None for label in labels):
             return ""
-        return cleaned
+        return normalized
 
     def _lookup_hostname(self, ip: str) -> tuple[str, str, str]:
         with _TIMEOUT_LOCK:

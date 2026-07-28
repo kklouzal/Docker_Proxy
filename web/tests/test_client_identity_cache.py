@@ -64,6 +64,38 @@ def test_client_identity_cache_normalizes_valid_rdns_hostname(monkeypatch) -> No
     }
 
 
+def test_client_identity_cache_canonicalizes_idn_rdns_hostname(monkeypatch) -> None:
+    cache = ClientIdentityCache(success_ttl_seconds=30.0)
+
+    monkeypatch.setattr(
+        "services.client_identity_cache.socket.gethostbyaddr",
+        lambda _ip: ("M\u00fcnchen.Example.", [], []),
+    )
+
+    assert cache.resolve("192.0.2.10") == {
+        "hostname": "xn--mnchen-3ya.example",
+        "hostname_source": "rdns",
+        "hostname_status": "resolved",
+    }
+
+
+def test_client_identity_cache_canonicalizes_idna_dot_rdns_hostname(
+    monkeypatch,
+) -> None:
+    cache = ClientIdentityCache(success_ttl_seconds=30.0)
+
+    monkeypatch.setattr(
+        "services.client_identity_cache.socket.gethostbyaddr",
+        lambda _ip: ("B\u00fccher\uff0eExample\uff61", [], []),
+    )
+
+    assert cache.resolve("192.0.2.10") == {
+        "hostname": "xn--bcher-kva.example",
+        "hostname_source": "rdns",
+        "hostname_status": "resolved",
+    }
+
+
 def test_client_identity_cache_rejects_malformed_rdns_hostnames(monkeypatch) -> None:
     cache = ClientIdentityCache(failure_ttl_seconds=10.0)
     responses = iter(
@@ -76,6 +108,7 @@ def test_client_identity_cache_rejects_malformed_rdns_hostnames(monkeypatch) -> 
             ("192.0.2.44", [], []),
             ("::1", [], []),
             ("localhost.localdomain", [], []),
+            ("\uff11\uff12\uff17\uff0e\uff10\uff0e\uff10\uff0e\uff11", [], []),
         ]
     )
 
@@ -93,6 +126,7 @@ def test_client_identity_cache_rejects_malformed_rdns_hostnames(monkeypatch) -> 
         "192.0.2.15",
         "192.0.2.16",
         "192.0.2.17",
+        "192.0.2.18",
     ]:
         assert cache.resolve(ip) == {
             "hostname": "",
