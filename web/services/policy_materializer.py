@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import pathlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -44,6 +45,38 @@ def calculate_policy_sha(
     return digest.hexdigest()
 
 
+def _materialized_policy_path_key(path: str) -> str:
+    return str(pathlib.Path(path).resolve(strict=False))
+
+
+def _validated_materialized_policy_files(
+    files: Sequence[MaterializedPolicyFile] | Iterable[MaterializedPolicyFile],
+) -> tuple[MaterializedPolicyFile, ...]:
+    validated: list[MaterializedPolicyFile] = []
+    by_target: dict[str, MaterializedPolicyFile] = {}
+    for raw_file in files:
+        item = MaterializedPolicyFile(
+            path=str(raw_file.path),
+            content=str(raw_file.content or ""),
+        )
+        if not item.path.strip():
+            msg = "Materialized policy file target path is empty"
+            raise ValueError(msg)
+        target_key = _materialized_policy_path_key(item.path)
+        existing = by_target.get(target_key)
+        if existing is None:
+            by_target[target_key] = item
+            validated.append(item)
+            continue
+        if existing.content != item.content:
+            msg = (
+                "Materialized policy file target renders conflicting content: "
+                f"{existing.path!r} and {item.path!r}"
+            )
+            raise ValueError(msg)
+    return tuple(validated)
+
+
 def build_proxy_policy_state_from_stores(
     proxy_id: object | None = None,
     *,
@@ -55,26 +88,28 @@ def build_proxy_policy_state_from_stores(
     try:
         webfilter_state = webfilter_store.render_materialized_state()
         sslfilter_state = sslfilter_store.render_materialized_state()
-        files = (
-            MaterializedPolicyFile(
-                path=str(sslfilter_store.squid_include_path),
-                content=str(sslfilter_state.include_text or ""),
-            ),
-            MaterializedPolicyFile(
-                path=str(sslfilter_store.nobump_list_path),
-                content=str(sslfilter_state.nobump_src_list_text or ""),
-            ),
-            MaterializedPolicyFile(
-                path=str(sslfilter_store.nocache_src_list_path),
-                content=str(sslfilter_state.nocache_src_list_text or ""),
-            ),
-            MaterializedPolicyFile(
-                path=str(webfilter_store.squid_include_path),
-                content=str(webfilter_state.include_text or ""),
-            ),
-            MaterializedPolicyFile(
-                path=str(webfilter_store.whitelist_path),
-                content=str(webfilter_state.whitelist_text or ""),
+        files = _validated_materialized_policy_files(
+            (
+                MaterializedPolicyFile(
+                    path=str(sslfilter_store.squid_include_path),
+                    content=str(sslfilter_state.include_text or ""),
+                ),
+                MaterializedPolicyFile(
+                    path=str(sslfilter_store.nobump_list_path),
+                    content=str(sslfilter_state.nobump_src_list_text or ""),
+                ),
+                MaterializedPolicyFile(
+                    path=str(sslfilter_store.nocache_src_list_path),
+                    content=str(sslfilter_state.nocache_src_list_text or ""),
+                ),
+                MaterializedPolicyFile(
+                    path=str(webfilter_store.squid_include_path),
+                    content=str(webfilter_state.include_text or ""),
+                ),
+                MaterializedPolicyFile(
+                    path=str(webfilter_store.whitelist_path),
+                    content=str(webfilter_state.whitelist_text or ""),
+                ),
             ),
         )
         return ProxyPolicyState(
