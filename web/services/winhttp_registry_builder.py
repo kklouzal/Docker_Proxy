@@ -338,6 +338,9 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
         warning = "Normal proxy host should not include http:// or https://; destination scheme mappings are generated separately."
         try:
             parsed = urlsplit(value)
+            if (parsed.scheme or "").lower() not in {"http", "https"}:
+                msg = "Proxy host/IP URL scheme must be http:// or https:// when supplied."
+                raise WinHttpBuilderError(msg)
             inline_port = parsed.port
             if parsed.netloc.endswith(":"):
                 raise ValueError

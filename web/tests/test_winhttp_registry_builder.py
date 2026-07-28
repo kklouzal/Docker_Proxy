@@ -84,6 +84,9 @@ def test_url_shaped_proxy_host_strips_inline_port_before_mapping_generation() ->
 @pytest.mark.parametrize(
     "proxy_host",
     [
+        "ftp://proxy.example",
+        "socks://proxy.example",
+        "file://proxy.example",
         "http://proxy.example/proxy.pac",
         "http://proxy.example?target=winhttp",
         "http://proxy.example#primary",
