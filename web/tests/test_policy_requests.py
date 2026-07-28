@@ -669,7 +669,15 @@ def test_admin_policy_requests_route_and_link_smoke(monkeypatch, tmp_path) -> No
         def init_db(self) -> None:
             pass
 
-        def list_requests(self, *, statuses=None, limit=200, proxy_id=None):
+        def list_requests(
+            self,
+            *,
+            statuses=None,
+            limit=200,
+            proxy_id=None,
+            order_by="created",
+        ):
+            assert order_by in {"created", "updated"}
             rows = [
                 PolicyRequest(
                     1,
@@ -916,7 +924,15 @@ def test_admin_policy_requests_unsupported_approval_reports_error_without_queue(
         def init_db(self) -> None:
             pass
 
-        def list_requests(self, *, statuses=None, limit=200, proxy_id=None):
+        def list_requests(
+            self,
+            *,
+            statuses=None,
+            limit=200,
+            proxy_id=None,
+            order_by="created",
+        ):
+            assert order_by in {"created", "updated"}
             rows = [
                 PolicyRequest(
                     7,
@@ -1115,14 +1131,22 @@ def test_admin_policy_requests_route_scopes_selected_proxy(
         def __init__(self) -> None:
             self.approved: list[tuple[int, dict[str, object]]] = []
             self.revoked: list[tuple[int, dict[str, object]]] = []
-            self.listed_requests: list[str | None] = []
+            self.listed_requests: list[tuple[str | None, tuple[str, ...], str]] = []
             self.listed_exceptions: list[str | None] = []
 
         def init_db(self) -> None:
             pass
 
-        def list_requests(self, *, statuses=None, limit=200, proxy_id=None):
-            self.listed_requests.append(proxy_id)
+        def list_requests(
+            self,
+            *,
+            statuses=None,
+            limit=200,
+            proxy_id=None,
+            order_by="created",
+        ):
+            assert order_by in {"created", "updated"}
+            self.listed_requests.append((proxy_id, tuple(statuses or ()), order_by))
             rows = [
                 PolicyRequest(
                     10,
@@ -1239,7 +1263,10 @@ def test_admin_policy_requests_route_scopes_selected_proxy(
     assert page.status_code == 200
     assert "edge-b.example" in text
     assert "edge-a.example" not in text
-    assert store.listed_requests == ["edge-b", "edge-b"]
+    assert store.listed_requests == [
+        ("edge-b", ("pending",), "created"),
+        ("edge-b", (), "updated"),
+    ]
     assert store.listed_exceptions == ["edge-b"]
 
     token = text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
@@ -1439,6 +1466,64 @@ def test_policy_request_store_rejects_invalid_scope_and_filters_active_exception
         )
         == []
     )
+
+
+def test_policy_request_store_can_order_recent_admin_list_by_updated_ts(
+    monkeypatch, tmp_path
+) -> None:
+    configure_test_mysql_env(tmp_path / "policy-request-updated-order")
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    now = 1000
+    monkeypatch.setattr(module, "now_ts", lambda: now)
+    store = module.PolicyRequestStore()
+    store.init_db()
+
+    older = store.create_request(
+        proxy_id="edge-a",
+        client_ip="192.168.1.55",
+        request_url="https://older.example/",
+        domain="older.example",
+    )
+    now = 2000
+    newer = store.create_request(
+        proxy_id="edge-a",
+        client_ip="192.168.1.56",
+        request_url="https://newer.example/",
+        domain="newer.example",
+    )
+    now = 3000
+    store.close_request(
+        older.id,
+        reviewer="admin",
+        status="rejected",
+        admin_note="reviewed after newer request was created",
+        proxy_id="edge-a",
+    )
+
+    assert [req.id for req in store.list_requests(limit=2, proxy_id="edge-a")] == [
+        newer.id,
+        older.id,
+    ]
+    assert [
+        req.id
+        for req in store.list_requests(
+            limit=2,
+            proxy_id="edge-a",
+            order_by="updated",
+        )
+    ] == [older.id, newer.id]
+    assert [
+        req.id
+        for req in store.list_requests(
+            statuses=["pending"],
+            limit=2,
+            proxy_id="edge-a",
+            order_by="updated",
+        )
+    ] == [newer.id]
 
 
 def test_policy_request_store_can_scope_admin_lists_and_mutations(tmp_path) -> None:

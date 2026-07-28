@@ -20,6 +20,10 @@ ACTIVE = "active"
 REVOKED = "revoked"
 EXPIRED = "expired"
 REQ_STATUS = {PENDING, APPROVED, REJECTED, CLOSED}
+REQUEST_LIST_ORDER_COLUMNS = {
+    "created": "created_ts",
+    "updated": "updated_ts",
+}
 BLOCK_TYPES = {"webfilter", "adblock", "clamav", "download", "mime"}
 APPROVABLE_BLOCK_TYPES = {"webfilter"}
 POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS = 24 * 60 * 60
@@ -337,10 +341,12 @@ class PolicyRequestStore:
         statuses: list[str] | None = None,
         limit: int = 200,
         proxy_id: str | None = None,
+        order_by: str = "created",
     ) -> list[PolicyRequest]:
         self.init_db()
         limit = max(1, min(int(limit), 1000))
         statuses = [s for s in (statuses or []) if s in REQ_STATUS]
+        order_column = REQUEST_LIST_ORDER_COLUMNS.get(order_by, "created_ts")
         clauses: list[str] = []
         params: list[object] = []
         if proxy_id is not None:
@@ -353,7 +359,7 @@ class PolicyRequestStore:
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         with self._connect() as c:
             rows = c.execute(
-                self._rsql(f"{where}ORDER BY created_ts DESC,id DESC LIMIT %s"),
+                self._rsql(f"{where}ORDER BY {order_column} DESC,id DESC LIMIT %s"),
                 (*params, limit),
             ).fetchall()
         return [_req(x) for x in rows]

@@ -7033,7 +7033,11 @@ def policy_requests():
             limit=200,
             proxy_id=proxy_id,
         )
-        recent_requests = store.list_requests(limit=200, proxy_id=proxy_id)
+        recent_requests = store.list_requests(
+            limit=200,
+            proxy_id=proxy_id,
+            order_by="updated",
+        )
         exceptions = store.list_exceptions(
             include_inactive=True,
             limit=200,
