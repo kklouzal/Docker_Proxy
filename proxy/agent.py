@@ -54,9 +54,9 @@ def _log_recoverable_or_unexpected(
     )
 
 
-def _run_once_logged(key: str, message: str, func) -> None:
+def _run_once_logged(key: str, message: str, func) -> tuple[bool, object | None]:
     try:
-        func()
+        return True, func()
     except Exception as exc:
         _log_recoverable_or_unexpected(
             key,
@@ -65,6 +65,7 @@ def _run_once_logged(key: str, message: str, func) -> None:
             unexpected_message=message,
             exc=exc,
         )
+        return False, None
 
 
 def _sync_loop(runtime, *, force: bool = False):
@@ -80,31 +81,57 @@ def start_agent() -> None:
         _started = True
 
         runtime = get_runtime()
+        startup_recovery = None
+        run_startup_recovery = getattr(runtime, "run_startup_recovery", None)
+        if callable(run_startup_recovery):
+            startup_recovery = run_startup_recovery()
 
         # MySQL/control-plane outages must not kill the local proxy agent.  The
         # proxy data plane, public PAC/WPAD listener, and supervisor health are
         # local services and should remain alive while control-plane DB work is
         # retried by the regular loops below.
-        _run_once_logged(
+        registered_ok, _registered = _run_once_logged(
             "proxy.agent.initial_register",
             "Initial proxy registration failed",
             runtime.ensure_registered,
         )
-        _run_once_logged(
+        bootstrap_ok, _bootstrap = _run_once_logged(
             "proxy.agent.initial_bootstrap",
             "Initial proxy revision bootstrap failed",
             runtime.bootstrap_revision_if_missing,
         )
-        _run_once_logged(
+        background_ok, _background = _run_once_logged(
             "proxy.agent.initial_background",
             "Initial proxy background task startup failed",
             runtime.start_background_tasks,
         )
-        _run_once_logged(
+        sync_ok, sync_result = _run_once_logged(
             "proxy.agent.initial_sync",
             "Initial proxy sync failed",
             lambda: runtime.sync_from_db(force=False),
         )
+        capture_recovery_bundle = getattr(runtime, "capture_recovery_bundle", None)
+        if (
+            callable(capture_recovery_bundle)
+            and startup_recovery is not None
+            and bool(getattr(startup_recovery, "capture_required", False))
+        ):
+            if registered_ok and bootstrap_ok and background_ok and sync_ok:
+                capture_recovery_bundle(
+                    reason="startup_initial",
+                    required=True,
+                    changed=bool(
+                        getattr(sync_result, "get", lambda _key, _default=None: _default)(
+                            "changed",
+                            False,
+                        ),
+                    ),
+                )
+            else:
+                logger.warning(
+                    "Proxy recovery initial capture deferred for proxy_id=%s because initial DB startup did not complete",
+                    getattr(startup_recovery, "proxy_id", ""),
+                )
 
         heartbeat_interval = _env_float(
             "PROXY_HEARTBEAT_INTERVAL_SECONDS",

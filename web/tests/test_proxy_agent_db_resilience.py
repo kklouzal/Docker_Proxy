@@ -77,6 +77,63 @@ def test_proxy_agent_startup_does_not_exit_when_initial_control_plane_db_calls_f
     assert [name for name, _target in threads] == ["proxy-heartbeat", "proxy-sync-loop"]
 
 
+def test_proxy_agent_runs_recovery_before_initial_registration_and_required_capture(
+    monkeypatch,
+) -> None:
+    from proxy import agent  # type: ignore
+
+    calls: list[str] = []
+
+    class Runtime:
+        def run_startup_recovery(self):
+            calls.append("recovery")
+            return SimpleNamespace(proxy_id="edge-01", capture_required=True)
+
+        def ensure_registered(self) -> None:
+            calls.append("ensure_registered")
+
+        def bootstrap_revision_if_missing(self) -> None:
+            calls.append("bootstrap")
+
+        def start_background_tasks(self) -> None:
+            calls.append("background")
+
+        def sync_from_db(self, *, force=False):
+            calls.append(f"sync:{force}")
+            return {"ok": True, "changed": True}
+
+        def capture_recovery_bundle(self, *, reason, required=False, changed=False):
+            calls.append(f"capture:{reason}:{required}:{changed}")
+            return {"ok": True}
+
+        def heartbeat(self):  # pragma: no cover - thread target is not run here
+            msg = "thread target should not run synchronously"
+            raise AssertionError(msg)
+
+    class FakeThread:
+        def __init__(self, *, target, args=(), name, daemon) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(agent, "_started", False)
+    monkeypatch.setattr(agent, "get_runtime", Runtime)
+    monkeypatch.setattr(agent.threading, "Thread", FakeThread)
+    monkeypatch.setattr(agent, "_env_float", lambda *_args, **_kwargs: 1.0)
+
+    agent.start_agent()
+
+    assert calls == [
+        "recovery",
+        "ensure_registered",
+        "bootstrap",
+        "background",
+        "sync:False",
+        "capture:startup_initial:True:True",
+    ]
+
+
 def test_proxy_agent_sync_loop_retries_background_tasks_before_sync() -> None:
     from proxy import agent  # type: ignore
 

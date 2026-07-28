@@ -141,6 +141,10 @@ COPY web/services/adblock_artifacts.py \
     web/services/proxy_health.py \
     web/services/proxy_lifecycle.py \
     web/services/proxy_logs.py \
+    web/services/proxy_recovery.py \
+    web/services/proxy_recovery_db.py \
+    web/services/proxy_recovery_restore.py \
+    web/services/proxy_recovery_startup.py \
     web/services/proxy_registry.py \
     web/services/proxy_sync.py \
     web/services/proxy_write_guard.py \

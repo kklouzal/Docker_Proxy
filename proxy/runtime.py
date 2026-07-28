@@ -60,6 +60,12 @@ from services.proxy_health import check_clamd_health as _check_clamd
 from services.proxy_health import check_forwarding_path_health as _check_forwarding
 from services.proxy_health import send_sample_av_icap as _shared_send_sample_av_icap
 from services.proxy_health import test_eicar as _shared_test_eicar
+from services.proxy_recovery_startup import (
+    ProxyRecoveryCaptureError,
+    StartupRecoveryResult,
+    capture_recovery_bundle_after_authoritative_state,
+    run_startup_recovery,
+)
 from services.proxy_registry import (
     get_proxy_registry,
     resolve_local_proxy_management_url,
@@ -917,6 +923,8 @@ class ProxyRuntime:
         self._navigation_health_cache_value: dict[str, Any] | None = None
         self._adblock_icap_health_failures = 0
         self._adblock_icap_last_restart_ts = 0.0
+        self._recovery_capture_lock = threading.Lock()
+        self._last_recovery_capture_mono = 0.0
 
     @property
     def proxy_id(self) -> str:
@@ -924,6 +932,50 @@ class ProxyRuntime:
 
     def ensure_registered(self) -> None:
         self.registry.register_local_proxy()
+
+    def run_startup_recovery(self) -> StartupRecoveryResult:
+        return run_startup_recovery(proxy_id=self.proxy_id, registry=self.registry)
+
+    def capture_recovery_bundle(
+        self,
+        *,
+        reason: str,
+        required: bool = False,
+        changed: bool = False,
+    ) -> dict[str, Any]:
+        if not hasattr(self, "_recovery_capture_lock"):
+            self._recovery_capture_lock = threading.Lock()
+        if not hasattr(self, "_last_recovery_capture_mono"):
+            self._last_recovery_capture_mono = 0.0
+        with self._recovery_capture_lock:
+            result = capture_recovery_bundle_after_authoritative_state(
+                proxy_id=self.proxy_id,
+                reason=reason,
+                required=required,
+                changed=changed,
+                last_capture_mono=self._last_recovery_capture_mono,
+            )
+            if result.ok and not result.skipped:
+                self._last_recovery_capture_mono = time.monotonic()
+            return {
+                "ok": result.ok,
+                "proxy_id": result.proxy_id,
+                "path": result.path,
+                "reason": result.reason,
+                "required": result.required,
+                "skipped": result.skipped,
+                "detail": result.detail,
+            }
+
+    def _capture_recovery_bundle_after_sync(self, result: dict[str, Any]) -> None:
+        if not bool(result.get("ok", True)):
+            return
+        with suppress(ProxyRecoveryCaptureError):
+            self.capture_recovery_bundle(
+                reason="runtime_sync",
+                required=False,
+                changed=bool(result.get("changed")),
+            )
 
     def _invalidate_health_cache(self) -> None:
         with self._health_cache_lock:
@@ -3582,6 +3634,7 @@ class ProxyRuntime:
             if ledger is not None and claimed_operations:
                 with suppress(Exception):
                     self._mark_claimed_operations(ledger, claimed_operations, result)
+            self._capture_recovery_bundle_after_sync(result)
             return result
 
     def _mark_claimed_operations(

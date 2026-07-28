@@ -407,6 +407,7 @@ Operational guidance:
 - Use `SESSION_COOKIE_SECURE=1` when the UI is served over HTTPS by a reverse proxy.
 - Treat SSL-bump as managed-device infrastructure: clients must trust the proxy CA, and applications with certificate pinning should be spliced.
 - HTTP and HTTPS NAT intercept modes require external router or host firewall rules; the container listens on the intercept ports but does not install topology-specific redirect rules.
+- Keep the proxy recovery directory on the proxy durable volume; see `docs/proxy-recovery.md` for first-connection adoption and fail-closed recovery behavior.
 - Interception only covers TCP flows. If proxy enforcement matters for managed clients, block or reject UDP/443 at the network edge so HTTP/3/QUIC-capable applications fall back to TCP.
 
 ## Current boundaries
