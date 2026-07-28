@@ -325,8 +325,18 @@ def test_webfilter_source_url_validation_reports_malformed_urls(
         r"https://example.test\path/feed.csv",
     ],
 )
-def test_webfilter_store_rejects_disabled_unsafe_source_before_persistence(
-    source_url: str, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("enabled", "blocked_categories"),
+    [
+        (False, ["adult"]),
+        (True, []),
+    ],
+)
+def test_webfilter_store_rejects_inactive_unsafe_source_before_persistence(
+    source_url: str,
+    enabled: bool,
+    blocked_categories: list[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     m = _import_webfilter_store_module()
     store = m.WebFilterStore()
@@ -350,10 +360,87 @@ def test_webfilter_store_rejects_disabled_unsafe_source_before_persistence(
 
     with pytest.raises(ValueError):
         store.set_settings(
-            enabled=True,
+            enabled=enabled,
             source_url=source_url,
-            blocked_categories=["adult"],
+            blocked_categories=blocked_categories,
         )
+
+
+def test_webfilter_store_saves_inactive_safe_source_with_external_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    m = _import_webfilter_store_module()
+    store = m.WebFilterStore()
+    download_safety = m.validate_source_url.__globals__["download_safety"]
+    values = {
+        "enabled": "0",
+        "source_url": "https://example.test/old-feed.csv",
+        "source_provider": "auto",
+        "blocked_categories": "adult",
+        "safe_browsing_enabled": "0",
+        "safe_browsing_api_key": "",
+        "safe_browsing_lists": "",
+        "safe_browsing_next_run_ts": "0",
+        "next_run_ts": "0",
+    }
+    writes: list[tuple[str, str]] = []
+    meta_writes: list[tuple[str, str]] = []
+
+    class FakeRows:
+        def fetchall(self):
+            return []
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, *_args, **_kwargs):
+            return FakeRows()
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", FakeConn)
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
+    monkeypatch.setattr(
+        store, "_get", lambda _conn, key, default="": values.get(key, default)
+    )
+    monkeypatch.setattr(
+        store,
+        "_get_global_setting_conn",
+        lambda _conn, key, default="": values.get(key, default),
+    )
+
+    def record_set(_conn, key: str, value: str) -> None:
+        writes.append((key, value))
+        values[key] = value
+
+    def record_meta(_conn, key: str, value: str) -> None:
+        meta_writes.append((key, value))
+
+    monkeypatch.setattr(store, "_set", record_set)
+    monkeypatch.setattr(store, "_set_meta", record_meta)
+
+    store.set_settings(
+        enabled=False,
+        source_url=" https://example.test/feed.csv ",
+        blocked_categories=[],
+        source_provider="csv",
+    )
+
+    assert values["enabled"] == "0"
+    assert values["source_url"] == "https://example.test/feed.csv"
+    assert values["source_provider"] == "csv"
+    assert values["blocked_categories"] == ""
+    assert ("source_url", "https://example.test/feed.csv") in writes
+    assert meta_writes == [("refresh_requested", "0")]
 
 
 def test_webfilter_source_url_validation_rejects_unverifiable_dns(monkeypatch) -> None:

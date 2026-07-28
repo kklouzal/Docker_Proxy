@@ -141,7 +141,7 @@ class WebFilterStore(WebFilterStoreBase):
             item.strip() for item in (blocked_categories or []) if (item or "").strip()
         ]
         categories = self._resolve_category_aliases(categories)
-        if source and enabled and categories:
+        if source:
             source = validate_source_url(source)
         categories_csv = ",".join(sorted(set(categories)))
         if safe_browsing_lists is None:
@@ -184,9 +184,6 @@ class WebFilterStore(WebFilterStoreBase):
                 override_enabled=enabled,
                 override_blocked_categories=categories_csv,
             )
-            source_changed = source != (previous_source or "").strip()
-            if source and (source_changed or category_build_needed):
-                source = validate_source_url(source)
             self._set(conn, "enabled", "1" if enabled else "0")
             self._set(conn, "source_url", source)
             self._set(conn, "source_provider", provider)

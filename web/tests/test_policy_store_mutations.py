@@ -507,7 +507,7 @@ def test_webfilter_domain_test_checks_safe_browsing_when_no_categories(
     assert result["safe_browsing"]["threat_type"] == "SOCIAL_ENGINEERING"
 
 
-def test_webfilter_restoring_disabled_settings_does_not_revalidate_old_global_source(
+def test_webfilter_restoring_disabled_settings_rejects_unsafe_global_source(
     monkeypatch,
 ) -> None:
     from services import webfilter_store  # type: ignore
@@ -520,31 +520,21 @@ def test_webfilter_restoring_disabled_settings_does_not_revalidate_old_global_so
         "blocked_categories": "adult",
     }
 
-    class FakeRows:
-        def fetchall(self):
-            return [
-                ("default", "enabled", "1"),
-                ("default", "blocked_categories", "adult"),
-            ]
-
-    class FakeConn:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def execute(self, *_args, **_kwargs):
-            return FakeRows()
-
     store = WebFilterStore()
+    download_safety = webfilter_store.validate_source_url.__globals__["download_safety"]
     monkeypatch.setattr(store, "init_db", lambda: None)
-    monkeypatch.setattr(store, "_connect", FakeConn)
     monkeypatch.setattr(
-        webfilter_store,
-        "validate_source_url",
-        lambda _source: (_ for _ in ()).throw(
-            AssertionError("unchanged legacy source should not be revalidated")
+        store,
+        "_connect",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("unsafe source should not reach persistence")
+        ),
+    )
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("literal localhost source should not reach DNS")
         ),
     )
     monkeypatch.setattr(
@@ -555,20 +545,16 @@ def test_webfilter_restoring_disabled_settings_does_not_revalidate_old_global_so
         "_get_global_setting_conn",
         lambda _conn, key, default="": values.get(key, default),
     )
-    monkeypatch.setattr(
-        store, "_set", lambda _conn, key, value: values.__setitem__(key, value)
-    )
-    monkeypatch.setattr(store, "_clear_refresh_requested_conn", lambda _conn: None)
+    with pytest.raises(ValueError, match="internal or localhost"):
+        store.set_settings(
+            enabled=False,
+            source_url="http://127.0.0.1/private-feed.tar.gz",
+            blocked_categories=[],
+        )
 
-    store.set_settings(
-        enabled=False,
-        source_url="http://127.0.0.1/private-feed.tar.gz",
-        blocked_categories=[],
-    )
-
-    assert values["enabled"] == "0"
+    assert values["enabled"] == "1"
     assert values["source_url"] == "http://127.0.0.1/private-feed.tar.gz"
-    assert values["blocked_categories"] == ""
+    assert values["blocked_categories"] == "adult"
 
 
 def test_webfilter_changed_disabled_source_is_validated_before_persistence(
