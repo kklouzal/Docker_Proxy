@@ -710,6 +710,12 @@ def test_regenerate_admin_ui_https_certificate_preserves_ca_and_uses_saved_sans(
     )
     loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
     certfile, keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    restart_calls = []
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: restart_calls.append(True) or (True, "restart requested"),
+    )
     ca_cert = tmp_path / "ca.crt"
     ca_key = tmp_path / "ca.key"
     ca_cert.write_text(bundles.bundle.cert_pem, encoding="utf-8")
@@ -727,7 +733,10 @@ def test_regenerate_admin_ui_https_certificate_preserves_ca_and_uses_saved_sans(
     )
 
     assert response.status_code in {301, 302, 303}
-    assert _location_params(response)["ok"] == ["1"]
+    params = _location_params(response)
+    assert params["ok"] == ["1"]
+    assert "restart requested" in params["msg"][0]
+    assert restart_calls == [True]
     assert Path(certfile).is_file()
     assert Path(keyfile).is_file()
     assert ca_cert.read_text(encoding="utf-8") == ca_cert_before
@@ -738,6 +747,53 @@ def test_regenerate_admin_ui_https_certificate_preserves_ca_and_uses_saved_sans(
     sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     assert "proxyadmin.example.com" in sans.get_values_for_type(x509.DNSName)
     assert "192.0.2.10" in [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
+
+
+def test_regenerate_admin_ui_https_certificate_reports_restart_failure(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    bundles.admin_ui_https_settings = SimpleNamespace(
+        enabled=True,
+        certfile="",
+        keyfile="",
+        san_tokens="proxyadmin.example.com",
+        updated_by="admin",
+        updated_ts=1,
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile, keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    restart_calls = []
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: restart_calls.append(True)
+        or (False, "supervisorctl is not available in this runtime."),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https/regenerate",
+        data={"csrf_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    params = _location_params(response)
+    assert params["ok"] == ["0"]
+    assert "supervisorctl is not available" in params["msg"][0]
+    assert "before relying on the regenerated certificate" in params["msg"][0]
+    assert restart_calls == [True]
+    assert Path(certfile).is_file()
+    assert Path(keyfile).is_file()
+    assert bundles.admin_ui_https_settings.certfile == certfile
+    assert bundles.admin_ui_https_settings.keyfile == keyfile
+    assert loaded.audit_store.records[-1]["kind"] == (
+        "admin_ui_https_certificate_regenerate"
+    )
+    assert loaded.audit_store.records[-1]["ok"] is False
 
 
 def test_admin_ui_https_preference_accepts_hidden_fallback_before_checkbox(

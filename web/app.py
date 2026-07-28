@@ -8569,12 +8569,23 @@ def regenerate_admin_ui_https_certificate():
             ),
             updated_by=str(session.get("user") or ""),
         )
+        restart_ok, restart_detail = _restart_admin_ui_web_process()
         detail = (
             "Regenerated Admin UI HTTPS certificate without changing the active CA. "
-            f"SANs: {', '.join(material.sans)}"
+            f"SANs: {', '.join(material.sans)}. "
         )
-        _record_audit_event("admin_ui_https_certificate_regenerate", ok=True, detail=detail)
-        return _redirect_with_message("certs", ok=True, msg=detail)
+        detail += (
+            restart_detail
+            if restart_ok
+            else (
+                f"{restart_detail} Restart the admin-ui web process or container "
+                "before relying on the regenerated certificate."
+            )
+        )
+        _record_audit_event(
+            "admin_ui_https_certificate_regenerate", ok=restart_ok, detail=detail
+        )
+        return _redirect_with_message("certs", ok=restart_ok, msg=detail)
     except Exception as exc:
         app.logger.exception("Failed to regenerate Admin UI HTTPS certificate")
         detail = public_error_message(
