@@ -224,6 +224,31 @@ def test_public_pac_path_normalization_rejects_unsafe_route_shapes() -> None:
 @pytest.mark.parametrize(
     "value",
     [
+        "/download/root%ZZ.pac",
+        "/download/root%",
+        "/download/root%A.pac",
+        "/download/%E0%A4%A.pac",
+        "https://proxy.example/download/root%ZZ.pac",
+        "https://proxy.example/download/%E0%A4%A.pac",
+        "/download/wpad.dat?site=lab%ZZ",
+        "/download/wpad.dat?site=lab%",
+        "/download/wpad.dat?site=lab%A",
+        "/download/wpad.dat?site=%E0%A4%A",
+        "https://proxy.example/download/wpad.dat?site=lab%ZZ",
+        "https://proxy.example/download/wpad.dat?site=%E0%A4%A",
+    ],
+)
+def test_public_pac_path_normalization_rejects_malformed_percent_encoding(
+    value: str,
+) -> None:
+    proxy_registry = _proxy_registry()
+
+    assert proxy_registry.normalize_public_pac_path(value) == "/proxy.pac"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "/download/%252e%252e/secret.pac",
         "/download/%252fwpad.dat",
         "/download/%255cwpad.dat",
@@ -489,6 +514,25 @@ def test_management_url_normalization_rejects_unsafe_shapes() -> None:
         proxy_registry.normalize_management_url("http://proxy:5000/root#status") == ""
     )
     assert proxy_registry.normalize_management_url("http://proxy:5000/root\nx") == ""
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://proxy:5000/root%ZZ",
+        "http://proxy:5000/root%",
+        "http://proxy:5000/root%A",
+        "http://proxy:5000/%E0%A4%A",
+        "http://proxy:5000/root?debug=%ZZ",
+        "http://proxy:5000/root?debug=%E0%A4%A",
+    ],
+)
+def test_management_url_normalization_rejects_malformed_percent_encoding(
+    value: str,
+) -> None:
+    proxy_registry = _proxy_registry()
+
+    assert proxy_registry.normalize_management_url(value) == ""
 
 
 @pytest.mark.parametrize(

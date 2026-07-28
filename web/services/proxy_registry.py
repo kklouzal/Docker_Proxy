@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import socket
+import string
 import threading
 import time
 from dataclasses import dataclass
@@ -61,16 +62,49 @@ def _has_empty_explicit_authority_port(netloc: str) -> bool:
 
 
 _MAX_PERCENT_DECODE_PASSES = 8
+_PERCENT_HEX_DIGITS = frozenset(string.hexdigits)
+
+
+def _has_malformed_percent_encoding(value: str) -> bool:
+    start = 0
+    while True:
+        index = value.find("%", start)
+        if index == -1:
+            return False
+        if (
+            index + 2 >= len(value)
+            or value[index + 1] not in _PERCENT_HEX_DIGITS
+            or value[index + 2] not in _PERCENT_HEX_DIGITS
+        ):
+            return True
+        start = index + 3
+
+
+def _strict_percent_unquote(value: str) -> str | None:
+    if _has_malformed_percent_encoding(value):
+        return None
+    try:
+        return unquote(value, errors="strict")
+    except UnicodeDecodeError:
+        return None
 
 
 def _bounded_repeated_unquote(value: str) -> str | None:
-    decoded = value
+    decoded = _strict_percent_unquote(value)
+    if decoded is None:
+        return None
     for _ in range(_MAX_PERCENT_DECODE_PASSES):
-        next_decoded = unquote(decoded)
+        try:
+            next_decoded = unquote(decoded, errors="strict")
+        except UnicodeDecodeError:
+            return None
         if next_decoded == decoded:
             return decoded
         decoded = next_decoded
-    return decoded if unquote(decoded) == decoded else None
+    try:
+        return decoded if unquote(decoded, errors="strict") == decoded else None
+    except UnicodeDecodeError:
+        return None
 
 
 def _valid_management_dns_host(value: str) -> bool:
@@ -94,7 +128,9 @@ def _safe_decoded_path_segments(path: str) -> list[str] | None:
     decoded_segments = []
     repeatedly_decoded_segments = []
     for segment in raw_segments:
-        decoded_segment = unquote(segment)
+        decoded_segment = _strict_percent_unquote(segment)
+        if decoded_segment is None:
+            return None
         repeatedly_decoded_segment = _bounded_repeated_unquote(segment)
         if repeatedly_decoded_segment is None:
             return None
