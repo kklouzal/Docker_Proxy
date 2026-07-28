@@ -114,7 +114,6 @@ class CountingObservabilityQueries:
 class ReportsPrivacyLeakQueries(CountingObservabilityQueries):
     def reporting_overview(self, **kwargs):
         self.reporting_calls += 1
-        assert kwargs["privacy"] is True
         return {
             "summary": {},
             "cache_savings": {"estimated_saved_bytes": 0, "byte_hit_pct": 0.0},
@@ -458,6 +457,37 @@ def test_observability_reports_pane_json_export_and_metrics_routes_render(
     assert b'"mode":"pseudonymized"' in export.data
     assert metrics.status_code == 200
     assert b"docker_proxy_observability_requests" in metrics.data
+
+
+def test_observability_reports_privacy_ui_scrubs_saved_preset_recipients(
+    monkeypatch, tmp_path
+) -> None:
+    queries = ReportsPrivacyLeakQueries()
+    loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability?pane=reports&window=3600&privacy=1")
+
+    assert response.status_code == 200
+    assert b"Daily report" in response.data
+    assert b"Recipients hidden in privacy mode" in response.data
+    assert b"ops@example.com" not in response.data
+
+
+def test_observability_reports_raw_ui_preserves_saved_preset_recipients(
+    monkeypatch, tmp_path
+) -> None:
+    queries = ReportsPrivacyLeakQueries()
+    loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability?pane=reports&window=3600&privacy=0")
+
+    assert response.status_code == 200
+    assert b"Daily report" in response.data
+    assert b"ops@example.com" in response.data
 
 
 def test_observability_reports_privacy_export_scrubs_user_identifiers_across_formats(

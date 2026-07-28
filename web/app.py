@@ -5821,6 +5821,8 @@ def observability():
         pane_payload,
         summary=summary,
     )
+    if pane == "reports" and privacy:
+        pane_payload = _observability_reports_privacy_payload(pane_payload)
     if pane == "remediation":
         _annotate_observability_remediation_actions(pane_payload)
 
