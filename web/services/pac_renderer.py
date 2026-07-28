@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
+from services.pac_private_local import (
+    LOCAL_DOMAIN_SUFFIXES,
+    PAC_PRIVATE_LOCAL_IPV4_NETS,
+    PAC_PRIVATE_LOCAL_IPV6_HEXTET_RANGES,
+)
 from services.pac_profiles_store import (
     PacProfile,
     _normalize_pac_dst_v4_cidr,
@@ -52,7 +57,6 @@ PAC_HOST_PLACEHOLDER = "__PAC_PROXY_HOST__"
 PAC_MANIFEST_FILENAME = "manifest.json"
 PAC_STATE_SHA_FILENAME = ".state-sha256"
 PAC_RENDER_DIR = "/var/lib/squid-flask-proxy/pac"
-LOCAL_DOMAIN_SUFFIXES = (".local", ".localdomain", ".home.arpa", ".localhost")
 _PAC_MATERIALIZATION_TARGET_LOCKS_GUARD = threading.Lock()
 _PAC_MATERIALIZATION_TARGET_LOCKS: dict[str, threading.Lock] = {}
 
@@ -513,18 +517,24 @@ def _render_pac(
         )
 
     if include_private:
+        ipv6_private_conditions = " || ".join(
+            f"(ipv6FirstHextetValue >= 0x{first:04x} && "
+            f"ipv6FirstHextetValue <= 0x{last:04x})"
+            for _cidr, first, last in PAC_PRIVATE_LOCAL_IPV6_HEXTET_RANGES
+        )
         lines.extend(
             (
                 "  if (isIpv6Literal && /^[0-9a-f]{1,4}$/.test(ipv6FirstHextet)) {",
                 "    var ipv6FirstHextetValue = parseInt(ipv6FirstHextet, 16);",
-                "    if ((ipv6FirstHextetValue >= 0xfc00 && ipv6FirstHextetValue <= 0xfdff) || (ipv6FirstHextetValue >= 0xfe80 && ipv6FirstHextetValue <= 0xfebf)) return 'DIRECT';",
+                f"    if ({ipv6_private_conditions}) return 'DIRECT';",
                 "  }",
-                "  if (ip && isInNet(ip, '10.0.0.0', '255.0.0.0')) return 'DIRECT';",
-                "  if (ip && isInNet(ip, '172.16.0.0', '255.240.0.0')) return 'DIRECT';",
-                "  if (ip && isInNet(ip, '192.168.0.0', '255.255.0.0')) return 'DIRECT';",
-                "  if (ip && isInNet(ip, '169.254.0.0', '255.255.0.0')) return 'DIRECT';",
             ),
         )
+        for cidr in PAC_PRIVATE_LOCAL_IPV4_NETS:
+            net = ipaddress.ip_network(cidr, strict=False)
+            lines.append(
+                f"  if (ip && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(cidr)}')) return 'DIRECT';",
+            )
 
     lines.extend((f"  return {json.dumps(str(proxy_chain or ''))};", "}"))
     return "\n".join(lines) + "\n"

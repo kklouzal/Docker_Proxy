@@ -119,6 +119,11 @@ def test_sslfilter_private_network_toggle_syncs_managed_policy(
         in text
     )
     assert "Policy change saved; proxy reconciliation is queued" in text
+    assert "fc00::/7" in text
+    assert "fe80::/10" in text
+    assert "127.0.0.0/8" in text
+    assert "plain hostnames" in text
+    assert "Private PAC toggle enabled" in text
 
 
 def test_sslfilter_mutation_reports_reconcile_queue_failure_without_success(

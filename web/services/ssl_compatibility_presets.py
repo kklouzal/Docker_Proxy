@@ -3,17 +3,20 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from services.pac_private_local import (
+    PAC_IPV4_LOOPBACK_CIDR,
+    PAC_PRIVATE_LOCAL_IPV4_NETS,
+)
+
 # Domain validation pattern: allows labels with alphanumeric and hyphens,
 # must start/end with alphanumeric, max 63 chars per label, max 253 chars total.
 # Also allows wildcard prefix (*.example.com) for subdomain matching.
 _DOMAIN_LABEL_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$")
 
 PRIVATE_NETS_V4 = [
-    "10.0.0.0/8",
-    "172.16.0.0/12",
-    "192.168.0.0/16",
-    "127.0.0.0/8",
-    "169.254.0.0/16",
+    *PAC_PRIVATE_LOCAL_IPV4_NETS[:3],
+    PAC_IPV4_LOOPBACK_CIDR,
+    PAC_PRIVATE_LOCAL_IPV4_NETS[3],
 ]
 
 

@@ -699,6 +699,7 @@ def test_resolve_proxy_pac_target_filters_stale_invalid_backup_proxy_ports(
 def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
+    from services.pac_private_local import LOCAL_DOMAIN_SUFFIXES
 
     rendered = pac_renderer._render_pac(
         "PROXY proxy.example:3128; DIRECT",
@@ -714,7 +715,8 @@ def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> 
     )
 
     assert "host === 'localhost'" in rendered
-    assert 'dnsDomainIs(host, ".local")' in rendered
+    for suffix in LOCAL_DOMAIN_SUFFIXES:
+        assert f'dnsDomainIs(host, "{suffix}")' in rendered
     assert rendered.count('host === "example.com"') == 1
     assert rendered.count('dnsDomainIs(host, ".media.example")') == 1
     assert rendered.count("isInNet(ip, '10.20.0.0', '255.255.0.0')") == 1
@@ -1006,6 +1008,73 @@ def test_rendered_pac_always_bypasses_loopback_ipv4_literals() -> None:
 
     assert loopback_rule in rendered
     assert "var ip = hostIp();" not in rendered
+
+
+def test_private_local_destination_metadata_tracks_rendered_pac_direct_rules() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+    from services.pac_private_local import (
+        PAC_PRIVATE_LOCAL_DESTINATION_CLASSES,
+        pac_private_local_destination_values,
+    )
+    from services.sslfilter_store import get_sslfilter_store  # type: ignore
+
+    rendered_private = pac_renderer._render_pac(
+        "PROXY proxy.example:3128",
+        proxy_host="proxy.example",
+        direct_domains=[],
+        direct_dst_nets=[],
+        include_private=True,
+    )
+    rendered_public_only = pac_renderer._render_pac(
+        "PROXY proxy.example:3128",
+        proxy_host="proxy.example",
+        direct_domains=[],
+        direct_dst_nets=[],
+        include_private=False,
+    )
+
+    assert get_sslfilter_store().private_dst_nets == pac_private_local_destination_values()
+    for group in PAC_PRIVATE_LOCAL_DESTINATION_CLASSES:
+        for value in group.values:
+            if value == "plain hostnames":
+                assert "isPlainHostName(host)" in rendered_private
+            elif value == "localhost":
+                assert "host === 'localhost'" in rendered_private
+            elif value == "::1/128":
+                assert "host === '::1'" in rendered_private
+            elif value == "fc00::/7":
+                assert "ipv6FirstHextetValue >= 0xfc00" in rendered_private
+                assert "ipv6FirstHextetValue <= 0xfdff" in rendered_private
+                assert "ipv6FirstHextetValue >= 0xfc00" not in rendered_public_only
+            elif value == "fe80::/10":
+                assert "ipv6FirstHextetValue >= 0xfe80" in rendered_private
+                assert "ipv6FirstHextetValue <= 0xfebf" in rendered_private
+                assert "ipv6FirstHextetValue >= 0xfe80" not in rendered_public_only
+            elif value.startswith("."):
+                assert f'dnsDomainIs(host, "{value}")' in rendered_private
+            else:
+                net, prefix = value.split("/", 1)
+                if value == "127.0.0.0/8":
+                    assert f"isInNet(host, '{net}', '255.0.0.0')" in rendered_private
+                    assert f"isInNet(ip, '{net}', '255.0.0.0')" in rendered_private
+                elif prefix == "8":
+                    assert f"isInNet(ip, '{net}', '255.0.0.0')" in rendered_private
+                    assert f"isInNet(ip, '{net}', '255.0.0.0')" not in rendered_public_only
+                elif prefix == "12":
+                    assert f"isInNet(ip, '{net}', '255.240.0.0')" in rendered_private
+                    assert f"isInNet(ip, '{net}', '255.240.0.0')" not in rendered_public_only
+                elif prefix == "16":
+                    assert f"isInNet(ip, '{net}', '255.255.0.0')" in rendered_private
+                    assert f"isInNet(ip, '{net}', '255.255.0.0')" not in rendered_public_only
+
+        for sample in group.sample_hosts:
+            assert _evaluate_pac(rendered_private, sample) == "DIRECT"
+            if group.requires_private_toggle:
+                assert (
+                    _evaluate_pac(rendered_public_only, sample)
+                    == "PROXY proxy.example:3128"
+                )
 
 
 def test_rendered_pac_bypasses_private_ipv6_literals_only_when_enabled() -> None:

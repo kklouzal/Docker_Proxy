@@ -103,6 +103,7 @@ from services.observability_queries import (
     normalize_runtime_health_state_errors,
 )
 from services.operation_ledger import get_operation_ledger
+from services.pac_private_local import pac_private_local_destination_metadata
 from services.pac_profiles_store import (
     get_pac_profiles_store as _default_get_pac_profiles_store,
 )
@@ -7573,6 +7574,7 @@ def sslfilter():
         pac_url=pac_url,
         pac_warning=pac_warning,
         private_dst_nets=store.private_dst_nets,
+        private_dst_metadata=pac_private_local_destination_metadata(),
         compatibility_presets=store.list_compatibility_presets(),
         ok=(request.args.get("ok") == "1"),
         err=(request.args.get("err") or ""),

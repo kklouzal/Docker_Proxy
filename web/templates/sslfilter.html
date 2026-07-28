@@ -237,7 +237,20 @@
           <span>Send common private/local destination ranges DIRECT in generated PAC files</span>
         </label>
         <div class="actions"><button class="btn primary" type="submit">Save</button></div>
-        <div class="surface-note small">This is client-side routing, not a Squid no-bump/no-cache rule. Current ranges: <span class="mono">{{ private_dst_nets|join(', ') }}</span>.</div>
+        <div class="surface-note small">This is client-side routing, not a Squid no-bump/no-cache rule. Always DIRECT: loopback, localhost/plain hostnames, and local DNS suffixes. When enabled, the generated PAC also sends private/link-local IPv4 and IPv6 literals DIRECT.</div>
+        <div class="table-note">PAC DIRECT destination classes:</div>
+        <div class="table-wrap"><table class="table">
+          <thead><tr><th>Class</th><th>Values</th><th>When</th></tr></thead>
+          <tbody>
+            {% for group in private_dst_metadata %}
+              <tr>
+                <td>{{ group.label }}</td>
+                <td class="mono">{{ group.values|join(', ') }}</td>
+                <td>{{ 'Private PAC toggle enabled' if group.requires_private_toggle else 'Always' }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table></div>
       </form>
       {% if pac_url %}
         <div class="actions"><a class="btn" href="{{ pac_url }}" target="_blank" rel="noopener">Open proxy.pac</a></div>

@@ -912,7 +912,9 @@ class FakeSslfilterStore:
 
     @property
     def private_dst_nets(self) -> list[str]:
-        return ["10.0.0.0/8", "192.168.0.0/16"]
+        from services.pac_private_local import pac_private_local_destination_values
+
+        return pac_private_local_destination_values()
 
     def init_db(self) -> None:
         return None

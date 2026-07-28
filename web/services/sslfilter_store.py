@@ -9,12 +9,12 @@ from typing import Any
 from services.db import connect
 from services.domain_normalization import normalize_domain as _shared_normalize_domain
 from services.materialized_files import write_managed_text_files
+from services.pac_private_local import pac_private_local_destination_values
 from services.proxy_context import get_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import now_ts as _now
 from services.ssl_compatibility_presets import (
     COMPATIBILITY_PRESETS,
-    PRIVATE_NETS_V4,
     CompatibilityPreset,
 )
 
@@ -495,7 +495,7 @@ class SslFilterStore:
 
     @property
     def private_dst_nets(self) -> list[str]:
-        return list(PRIVATE_NETS_V4)
+        return pac_private_local_destination_values()
 
     def list_compatibility_presets(self) -> list[dict[str, Any]]:
         current = _dedupe_squid_domains(self.list_all().no_bump_domains)
