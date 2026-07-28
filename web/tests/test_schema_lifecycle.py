@@ -213,13 +213,18 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "schema_lifecycle_complete_runtime_assertions",
         "auth_provider_profile_tables",
         "control_plane_identity",
+        "proxy_recovery_adoptions",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 16
-    assert specs[-1].version == 16
-    assert specs[-1].name == "control_plane_identity"
+    assert schema_lifecycle.latest_schema_version() == 17
+    assert specs[-2].version == 16
+    assert specs[-2].name == "control_plane_identity"
+    assert specs[-1].version == 17
+    assert specs[-1].name == "proxy_recovery_adoptions"
     assert schema_lifecycle.latest_schema_checksum() == specs[-1].checksum
-    assert specs[-1].tables[0].table == "control_plane_identity"
-    assert "control_plane_id CHAR(36) NOT NULL" in specs[-1].tables[0].create_sql
+    assert specs[-2].tables[0].table == "control_plane_identity"
+    assert "control_plane_id CHAR(36) NOT NULL" in specs[-2].tables[0].create_sql
+    assert specs[-1].tables[0].table == "proxy_recovery_adoptions"
+    assert "PRIMARY KEY(proxy_id, target_control_plane_id)" in specs[-1].tables[0].create_sql
 
 
 class _IdentityConn:

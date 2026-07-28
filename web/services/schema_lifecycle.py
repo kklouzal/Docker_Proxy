@@ -27,7 +27,7 @@ from services.db import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 16
+_SCHEMA_VERSION = 17
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -716,6 +716,29 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
             ),
             data_steps=(
                 SchemaDataStep("ensure_control_plane_identity", _init_control_plane_identity),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=17,
+            name="proxy_recovery_adoptions",
+            tables=(
+                SchemaObjectSpec(
+                    "proxy_recovery_adoptions",
+                    """
+                    CREATE TABLE IF NOT EXISTS proxy_recovery_adoptions (
+                        proxy_id VARCHAR(64) NOT NULL,
+                        target_control_plane_id CHAR(36) NOT NULL,
+                        source_control_plane_id CHAR(36) NOT NULL,
+                        bundle_content_sha256 CHAR(64) NOT NULL,
+                        status VARCHAR(16) NOT NULL,
+                        adopted_ts BIGINT NOT NULL,
+                        detail VARCHAR(512) NOT NULL DEFAULT '',
+                        PRIMARY KEY(proxy_id, target_control_plane_id),
+                        KEY idx_proxy_recovery_adoptions_source (source_control_plane_id, adopted_ts),
+                        KEY idx_proxy_recovery_adoptions_bundle (bundle_content_sha256, adopted_ts)
+                    )
+                    """,
+                ),
             ),
         ),
     )
