@@ -1323,7 +1323,7 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         request: socket.socket,
         client_address: tuple[str, int],
     ) -> None:
-        if not self._request_slots.acquire(blocking=False):
+        if not self._request_slots.acquire(timeout=self.client_timeout):
             try:
                 request.settimeout(0.2)
                 request.sendall(

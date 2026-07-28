@@ -3000,6 +3000,19 @@ class FailingSendAfterPreviewScanner(CleanScanner):
             raise BrokenPipeError(message)
 
 
+class DelayedFailOpenScanner(CleanScanner):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def finish(self):
+        time.sleep(0.05)
+        message = "clamd unavailable after body drain"
+        raise RuntimeError(message)
+
+
 class BlockingFakeSocket(FakeSocket):
     def __init__(
         self,
@@ -3983,6 +3996,55 @@ def test_unavailable_clamd_drains_body_and_fails_open_204(monkeypatch) -> None:
 
     assert response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
     assert b"ICAP/1.0 204 No Content\r\n" in response
+
+
+def test_request_capacity_waits_for_fail_open_respmod_bursts() -> None:
+    server = _load_server()
+
+    class FailOpenServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return DelayedFailOpenScanner()
+
+    with FailOpenServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+        max_scans=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        responses: list[bytes] = []
+        workers = [
+            threading.Thread(
+                target=lambda i=i: responses.append(
+                    _recv_icap_response(
+                        port,
+                        _sample_respmod_request(port).replace(
+                            b"hello", f"b{i:04d}".encode("ascii")
+                        ),
+                        timeout=1,
+                    )
+                )
+            )
+            for i in range(12)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=2)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert len(responses) == 12
+    assert all(
+        response.startswith(b"ICAP/1.0 204 No Content\r\n")
+        for response in responses
+    )
 
 
 def test_unavailable_clamd_fail_open_stress_handles_mixed_respmod_shapes(
