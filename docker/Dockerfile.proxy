@@ -129,6 +129,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/observability_backoff.py \
     web/services/operation_ledger.py \
     web/services/pac_http.py \
+    web/services/pac_private_local.py \
     web/services/pac_profiles_store.py \
     web/services/pac_renderer.py \
     web/services/policy_requests.py \
