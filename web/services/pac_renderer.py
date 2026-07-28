@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,33 @@ PAC_MANIFEST_FILENAME = "manifest.json"
 PAC_STATE_SHA_FILENAME = ".state-sha256"
 PAC_RENDER_DIR = "/var/lib/squid-flask-proxy/pac"
 LOCAL_DOMAIN_SUFFIXES = (".local", ".localdomain", ".home.arpa", ".localhost")
+_PAC_MATERIALIZATION_TARGET_LOCKS_GUARD = threading.Lock()
+_PAC_MATERIALIZATION_TARGET_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _pac_materialization_target_key(path: str | os.PathLike[str]) -> str:
+    return str(Path(path).resolve(strict=False))
+
+
+def _lock_for_pac_materialization_target(
+    path: str | os.PathLike[str],
+) -> threading.Lock:
+    target_key = _pac_materialization_target_key(path)
+    with _PAC_MATERIALIZATION_TARGET_LOCKS_GUARD:
+        return _PAC_MATERIALIZATION_TARGET_LOCKS.setdefault(
+            target_key,
+            threading.Lock(),
+        )
+
+
+@contextlib.contextmanager
+def _locked_pac_materialization_target(target: str | os.PathLike[str]):
+    lock = _lock_for_pac_materialization_target(target)
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _fsync_parent_dir(path: str | os.PathLike[str]) -> None:
@@ -698,43 +726,57 @@ def materialize_proxy_pac_state(
     parent.mkdir(parents=True, exist_ok=True)
 
     stage_root = Path(tempfile.mkdtemp(prefix=".pac-stage-", dir=str(parent)))
+    try:
+        _materialize_proxy_pac_state_from_stage(target, stage_root, state=state)
+    finally:
+        shutil.rmtree(stage_root, ignore_errors=True)
+        _fsync_parent_dir(stage_root)
+
+
+def _materialize_proxy_pac_state_from_stage(
+    target: Path,
+    stage_root: Path,
+    *,
+    state: ProxyPacState,
+) -> None:
     payload_dir = stage_root / "payload"
     payload_dir.mkdir(parents=True, exist_ok=True)
     backup_dir: Path | None = None
 
-    try:
-        for item in state.files:
-            rel = _safe_pac_state_relative_path(item.relative_path)
-            if not rel:
-                msg = f"Unsafe PAC materialization path: {item.relative_path}"
-                raise ValueError(msg)
-            dest = payload_dir / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            _write_pac_text_file(dest, str(item.content or ""))
-        _fsync_dir(payload_dir)
+    for item in state.files:
+        rel = _safe_pac_state_relative_path(item.relative_path)
+        if not rel:
+            msg = f"Unsafe PAC materialization path: {item.relative_path}"
+            raise ValueError(msg)
+        dest = payload_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _write_pac_text_file(dest, str(item.content or ""))
+    _fsync_dir(payload_dir)
 
-        if target.exists():
-            backup_dir = parent / f".pac-backup-{os.getpid()}-{int(time.time() * 1000)}"
-            if backup_dir.exists():
+    parent = target.parent
+    with _locked_pac_materialization_target(target):
+        try:
+            if target.exists():
+                backup_dir = parent / (
+                    f".pac-backup-{os.getpid()}-{int(time.time() * 1000)}"
+                )
+                if backup_dir.exists():
+                    shutil.rmtree(backup_dir, ignore_errors=True)
+                    _fsync_parent_dir(backup_dir)
+                Path(str(target)).replace(str(backup_dir))
+                _fsync_parent_dir(target)
+
+            Path(str(payload_dir)).replace(str(target))
+            _fsync_parent_dir(target)
+            if backup_dir is not None:
                 shutil.rmtree(backup_dir, ignore_errors=True)
                 _fsync_parent_dir(backup_dir)
-            Path(str(target)).replace(str(backup_dir))
-            _fsync_parent_dir(target)
-
-        Path(str(payload_dir)).replace(str(target))
-        _fsync_parent_dir(target)
-        if backup_dir is not None:
-            shutil.rmtree(backup_dir, ignore_errors=True)
-            _fsync_parent_dir(backup_dir)
-    except Exception:
-        if backup_dir is not None and backup_dir.exists() and not target.exists():
-            with contextlib.suppress(Exception):
-                Path(str(backup_dir)).replace(str(target))
-                _fsync_parent_dir(target)
-        raise
-    finally:
-        shutil.rmtree(stage_root, ignore_errors=True)
-        _fsync_parent_dir(stage_root)
+        except Exception:
+            if backup_dir is not None and backup_dir.exists() and not target.exists():
+                with contextlib.suppress(Exception):
+                    Path(str(backup_dir)).replace(str(target))
+                    _fsync_parent_dir(target)
+            raise
 
 
 def read_materialized_pac_state_sha(

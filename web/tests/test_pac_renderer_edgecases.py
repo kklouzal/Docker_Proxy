@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1190,6 +1191,117 @@ def test_materialize_proxy_pac_state_fsyncs_parent_directories_during_rollback(
 
     assert parent_fsyncs == ["payload", tmp_path.name, tmp_path.name, tmp_path.name]
     assert (target / "fallback.pac").read_text(encoding="utf-8") == "original\n"
+
+
+def test_materialize_proxy_pac_state_serializes_overlapping_same_target(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    target = tmp_path / "pac"
+    target.mkdir()
+    (target / "fallback.pac").write_text("original\n", encoding="utf-8")
+    first_state = pac_renderer.ProxyPacState(
+        proxy_id="live",
+        state_sha256="sha-a",
+        files=(pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="A"),),
+    )
+    second_state = pac_renderer.ProxyPacState(
+        proxy_id="live",
+        state_sha256="sha-b",
+        files=(pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="B"),),
+    )
+
+    first_thread_holder: dict[str, threading.Thread] = {}
+    second_thread_holder: dict[str, threading.Thread] = {}
+    first_moved_target_to_backup = threading.Event()
+    first_can_publish = threading.Event()
+    second_waited_for_target_lock = threading.Event()
+    second_replaced_while_first_was_paused = threading.Event()
+    errors: list[BaseException] = []
+
+    class InstrumentedLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def acquire(self) -> bool:
+            if threading.current_thread() is second_thread_holder.get("thread"):
+                second_waited_for_target_lock.set()
+            return self._lock.acquire()
+
+        def release(self) -> None:
+            self._lock.release()
+
+    target_key = pac_renderer._pac_materialization_target_key(target)
+    sentinel = object()
+    with pac_renderer._PAC_MATERIALIZATION_TARGET_LOCKS_GUARD:
+        original_target_lock = pac_renderer._PAC_MATERIALIZATION_TARGET_LOCKS.get(
+            target_key,
+            sentinel,
+        )
+        pac_renderer._PAC_MATERIALIZATION_TARGET_LOCKS[target_key] = InstrumentedLock()
+
+    original_replace = pac_renderer.Path.replace
+
+    def interleaving_replace(self: Path, target_path: object) -> Path:
+        result = original_replace(self, target_path)
+        current_thread = threading.current_thread()
+        target_path_obj = Path(target_path)
+        if (
+            current_thread is first_thread_holder.get("thread")
+            and target_path_obj.name.startswith(".pac-backup-")
+        ):
+            first_moved_target_to_backup.set()
+            if not first_can_publish.wait(timeout=2):
+                msg = "timed out waiting to resume first publish"
+                raise AssertionError(msg)
+        elif current_thread is second_thread_holder.get("thread"):
+            second_replaced_while_first_was_paused.set()
+        return result
+
+    monkeypatch.setattr(pac_renderer.Path, "replace", interleaving_replace)
+
+    def publish(state: object) -> None:
+        try:
+            pac_renderer.materialize_proxy_pac_state(target, state=state)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    try:
+        first_thread = threading.Thread(target=publish, args=(first_state,))
+        first_thread_holder["thread"] = first_thread
+        first_thread.start()
+        assert first_moved_target_to_backup.wait(timeout=2)
+        assert not target.exists()
+
+        second_thread = threading.Thread(target=publish, args=(second_state,))
+        second_thread_holder["thread"] = second_thread
+        second_thread.start()
+        assert second_waited_for_target_lock.wait(timeout=2)
+        assert not second_replaced_while_first_was_paused.is_set()
+
+        first_can_publish.set()
+        first_thread.join(timeout=2)
+        second_thread.join(timeout=2)
+
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+        if errors:
+            msg = "publish thread failed"
+            raise AssertionError(msg) from errors[0]
+        assert (target / "fallback.pac").read_text(encoding="utf-8") == "B"
+        assert not list(tmp_path.glob(".pac-backup-*"))
+    finally:
+        first_can_publish.set()
+        with pac_renderer._PAC_MATERIALIZATION_TARGET_LOCKS_GUARD:
+            if original_target_lock is sentinel:
+                pac_renderer._PAC_MATERIALIZATION_TARGET_LOCKS.pop(target_key, None)
+            else:
+                pac_renderer._PAC_MATERIALIZATION_TARGET_LOCKS[target_key] = (
+                    original_target_lock
+                )
 
 
 def test_materialize_proxy_pac_state_rejects_unsafe_paths_and_preserves_existing_payload(
