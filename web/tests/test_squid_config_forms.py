@@ -532,6 +532,82 @@ def test_generated_config_renders_numeric_dns_packet_max_from_direct_options() -
     assert "dns_packet_max 1400 bytes" in config
 
 
+@pytest.mark.parametrize(
+    ("field", "directive", "valid_value"),
+    [
+        ("tls_key_log_path", "tls_key_log", "/var/log/squid/tls.keys"),
+        ("accept_filter_value", "accept_filter", "data=30"),
+        (
+            "sslproxy_foreign_intermediate_certs",
+            "sslproxy_foreign_intermediate_certs",
+            "/etc/squid/ssl/intermediates.pem",
+        ),
+    ],
+)
+def test_generated_config_renders_and_parses_single_token_directive_values(
+    field: str,
+    directive: str,
+    valid_value: str,
+) -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+
+    config = controller.generate_config_from_template(
+        build_template_options({field: valid_value}, max_workers=4),
+    )
+
+    assert f"{directive} {valid_value}" in config
+    assert controller.get_tunable_options(config)[field] == valid_value
+
+
+@pytest.mark.parametrize(
+    ("field", "directive", "bad_value"),
+    [
+        ("tls_key_log_path", "tls_key_log", "/var/log/squid/tls keys.log"),
+        ("tls_key_log_path", "tls_key_log", "/var/log/squid/tls.keys # off"),
+        ("tls_key_log_path", "tls_key_log", "/var/log/squid/tls.keys\\"),
+        ("accept_filter_value", "accept_filter", "data extra"),
+        ("accept_filter_value", "accept_filter", "data # comment"),
+        ("accept_filter_value", "accept_filter", "data\\"),
+        (
+            "sslproxy_foreign_intermediate_certs",
+            "sslproxy_foreign_intermediate_certs",
+            "/etc/squid/ssl/intermediate certs.pem",
+        ),
+        (
+            "sslproxy_foreign_intermediate_certs",
+            "sslproxy_foreign_intermediate_certs",
+            "/etc/squid/ssl/intermediates.pem # off",
+        ),
+        (
+            "sslproxy_foreign_intermediate_certs",
+            "sslproxy_foreign_intermediate_certs",
+            "/etc/squid/ssl/intermediates.pem\\",
+        ),
+    ],
+)
+def test_generated_config_rejects_ambiguous_single_token_directive_values(
+    field: str,
+    directive: str,
+    bad_value: str,
+) -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    controller.squid_conf_template_path = str(
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    )
+
+    with pytest.raises(ValueError, match=directive):
+        controller.generate_config_from_template(
+            build_template_options({field: bad_value}, max_workers=4),
+        )
+
+
 def test_tunable_parser_accepts_dns_packet_max_comments_and_rejects_extra_tokens() -> (
     None
 ):

@@ -35,6 +35,7 @@ class SquidController(_CoreSquidController):
     _CPU_AFFINITY_RE = re.compile(r"^[A-Za-z0-9_,= ]+$")
     _EMAIL_LOCAL_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$")
     _HTTP_FIELD_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+    _SINGLE_TOKEN_RE = re.compile(r"^[^\s#\\]+$")
 
     def __init__(
         self,
@@ -197,6 +198,18 @@ class SquidController(_CoreSquidController):
 
     def _validate_single_line_value(self, value: str, field_name: str) -> str:
         return self._sanitize_single_line(value, field_name)
+
+    def _validate_single_token_value(self, value: str, field_name: str) -> str:
+        clean = self._sanitize_single_line(value, field_name)
+        if not clean:
+            return ""
+        if not self._SINGLE_TOKEN_RE.match(clean):
+            msg = (
+                f"{field_name} must be a single token "
+                "without spaces, comments, or backslashes"
+            )
+            raise ValueError(msg)
+        return clean
 
     def _validate_http_field_name(self, value: str, field_name: str) -> str:
         if not value:
@@ -443,7 +456,7 @@ class SquidController(_CoreSquidController):
         stats_collection_rules_text = self._normalize_multiline_text(
             options.get("stats_collection_rules_text") or "",
         )
-        tls_key_log_path = self._validate_single_line_value(
+        tls_key_log_path = self._validate_single_token_value(
             str(options.get("tls_key_log_path") or ""),
             "tls_key_log",
         )
@@ -512,7 +525,7 @@ class SquidController(_CoreSquidController):
         )
         client_ip_max_connections = optional_int_value("client_ip_max_connections")
         tcp_recv_bufsize_kb = optional_int_value("tcp_recv_bufsize_kb")
-        accept_filter_value = self._validate_single_line_value(
+        accept_filter_value = self._validate_single_token_value(
             str(options.get("accept_filter_value") or ""),
             "accept_filter",
         )
@@ -638,7 +651,7 @@ class SquidController(_CoreSquidController):
             32,
             minimum=0,
         )
-        sslproxy_foreign_intermediate_certs = self._validate_single_line_value(
+        sslproxy_foreign_intermediate_certs = self._validate_single_token_value(
             str(options.get("sslproxy_foreign_intermediate_certs") or ""),
             "sslproxy_foreign_intermediate_certs",
         )
