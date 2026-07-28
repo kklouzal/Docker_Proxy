@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from services.operation_ledger import ProxyOperation, get_operation_ledger
 from services.proxy_context import normalize_proxy_id
 from services.proxy_registry import get_proxy_registry
+
+logger = logging.getLogger(__name__)
 
 
 def _ephemeral_operation(
@@ -107,13 +111,36 @@ def request_proxy_reconcile(
     return op
 
 
+def _canonical_registered_proxy_id(proxy: object) -> str:
+    proxy_id = getattr(proxy, "proxy_id", proxy)
+    raw_proxy_id = "" if proxy_id is None else str(proxy_id).strip()
+    canonical_proxy_id = normalize_proxy_id(proxy_id)
+    if not raw_proxy_id or raw_proxy_id != canonical_proxy_id:
+        return ""
+    return canonical_proxy_id
+
+
 def nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
     """Queue reconciliation operations for all registered proxies."""
     proxies = list(get_proxy_registry().list_proxies())
     total = len(proxies)
     queued = 0
+    seen_proxy_ids: set[str] = set()
     for proxy in proxies:
-        proxy_id = getattr(proxy, "proxy_id", proxy)
+        proxy_id = _canonical_registered_proxy_id(proxy)
+        if not proxy_id:
+            logger.warning(
+                "Skipping registered proxy with invalid proxy_id during reconciliation nudge: %r",
+                getattr(proxy, "proxy_id", proxy),
+            )
+            continue
+        if proxy_id in seen_proxy_ids:
+            logger.warning(
+                "Skipping duplicate registered proxy identity during reconciliation nudge: %s",
+                proxy_id,
+            )
+            continue
+        seen_proxy_ids.add(proxy_id)
         op = request_proxy_reconcile(
             proxy_id,
             operation_type="runtime_nudge",
@@ -124,4 +151,17 @@ def nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
         )
         if getattr(op, "operation_id", 0) and op.status == "pending":
             queued += 1
+        elif not getattr(op, "operation_id", 0) and op.status == "failed":
+            logger.warning(
+                "Proxy reconciliation nudge was not queued for %s: %s",
+                proxy_id,
+                getattr(op, "detail", "") or "operation ledger returned a failed operation",
+            )
+        else:
+            logger.warning(
+                "Proxy reconciliation nudge did not create a pending operation for %s: operation_id=%r status=%r",
+                proxy_id,
+                getattr(op, "operation_id", 0),
+                getattr(op, "status", ""),
+            )
     return total, queued

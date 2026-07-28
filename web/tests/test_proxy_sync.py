@@ -22,7 +22,7 @@ def proxy_sync_module():
 
 
 class _Registry:
-    def __init__(self, proxy_ids: list[str]) -> None:
+    def __init__(self, proxy_ids: list[object]) -> None:
         self._proxies = [SimpleNamespace(proxy_id=proxy_id) for proxy_id in proxy_ids]
 
     def list_proxies(self):
@@ -88,6 +88,51 @@ def test_nudge_registered_proxies_counts_only_queued_ledger_operations(
     assert proxy_sync_module.nudge_registered_proxies(force=True) == (3, 2)
     assert [op.proxy_id for op in ledger.operations] == ["live", "edge-false"]
     assert [op.force for op in ledger.operations] == [True, True]
+
+
+def test_nudge_registered_proxies_skips_invalid_and_duplicate_registry_ids(
+    monkeypatch, proxy_sync_module, caplog
+) -> None:
+    ledger = _Ledger()
+    monkeypatch.setattr(
+        proxy_sync_module,
+        "get_proxy_registry",
+        lambda: _Registry(["live", "bad id", "live", "../default", "edge-2"]),
+    )
+    monkeypatch.setattr(proxy_sync_module, "get_operation_ledger", lambda: ledger)
+
+    assert proxy_sync_module.nudge_registered_proxies(force=False) == (5, 2)
+    assert [op.proxy_id for op in ledger.operations] == ["live", "edge-2"]
+    assert "invalid proxy_id" in caplog.text
+    assert "duplicate registered proxy identity" in caplog.text
+
+
+def test_nudge_registered_proxies_logs_non_pending_ledger_results(
+    monkeypatch, proxy_sync_module, caplog
+) -> None:
+    class _MixedLedger(_Ledger):
+        def create_operation(self, proxy_id, **kwargs):
+            if str(proxy_id) == "edge-applying":
+                return SimpleNamespace(
+                    operation_id=7,
+                    proxy_id=str(proxy_id),
+                    status="applying",
+                    **kwargs,
+                )
+            return super().create_operation(proxy_id, **kwargs)
+
+    ledger = _MixedLedger(failing={"edge-error"})
+    monkeypatch.setattr(
+        proxy_sync_module,
+        "get_proxy_registry",
+        lambda: _Registry(["live", "edge-applying", "edge-error"]),
+    )
+    monkeypatch.setattr(proxy_sync_module, "get_operation_ledger", lambda: ledger)
+
+    assert proxy_sync_module.nudge_registered_proxies(force=True) == (3, 1)
+    assert [op.proxy_id for op in ledger.operations] == ["live"]
+    assert "was not queued for edge-error" in caplog.text
+    assert "did not create a pending operation for edge-applying" in caplog.text
 
 
 def test_request_proxy_reconcile_does_not_fall_back_to_direct_sync_when_ledger_fails(
