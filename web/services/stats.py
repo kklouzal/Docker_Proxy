@@ -263,17 +263,20 @@ def parse_access_log_hit_rate(
     # Squid default log format typically contains:
     #   ts elapsed client result_code/status bytes method url ...
     # where result_code looks like TCP_HIT/200, TCP_MISS/200, etc.
-    hits = 0
-    total = 0
-    hit_bytes = 0
-    total_bytes = 0
+    def _empty_result() -> dict[str, float | None]:
+        return {"request_hit_ratio": None, "byte_hit_ratio": None}
 
-    try:
-        if not pathlib.Path(access_log_path).exists():
-            return {"request_hit_ratio": None, "byte_hit_ratio": None}
+    def _parse_one(path: pathlib.Path) -> tuple[dict[str, float | None], int]:
+        hits = 0
+        total = 0
+        hit_bytes = 0
+        total_bytes = 0
+
+        if not path.exists():
+            return _empty_result(), 0
 
         # Read last ~max_lines lines without external dependencies.
-        with pathlib.Path(access_log_path).open("rb") as f:
+        with path.open("rb") as f:
             f.seek(0, os.SEEK_END)
             size = f.tell()
             # Structured diagnostic lines are longer than the old lean access log.
@@ -285,6 +288,7 @@ def parse_access_log_hit_rate(
                 starts_on_line_boundary = f.read(1) == b"\n"
             f.seek(read_start, os.SEEK_SET)
             chunk = f.read().decode("utf-8", errors="replace")
+
         lines = chunk.splitlines()
         if not starts_on_line_boundary and lines:
             # The byte tail can begin in the middle of a structured row; do not
@@ -374,9 +378,28 @@ def parse_access_log_hit_rate(
             "byte_hit_ratio": (hit_bytes / total_bytes * 100.0)
             if total_bytes
             else None,
-        }
-    except Exception:
-        return {"request_hit_ratio": None, "byte_hit_ratio": None}
+        }, total
+
+    active_path = pathlib.Path(access_log_path)
+    # Docker_Proxy rotates access-observe.log with copytruncate, leaving the
+    # active file empty immediately after rotation while the most recent usable
+    # rows live in access-observe.log.1.  Check the active file first so new
+    # traffic wins and rotated history is never double-counted; only fall back
+    # when a candidate has no complete parseable rows.
+    candidates = [active_path]
+    candidates.extend(
+        active_path.with_name(f"{active_path.name}.{i}") for i in range(1, 11)
+    )
+
+    for path in candidates:
+        try:
+            result, complete_rows = _parse_one(path)
+        except Exception:
+            continue
+        if complete_rows:
+            return result
+
+    return _empty_result()
 
 
 def parse_squid_hit_rate(mgr_5min: str) -> dict[str, float | None]:

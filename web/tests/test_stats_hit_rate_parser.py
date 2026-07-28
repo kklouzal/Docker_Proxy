@@ -14,6 +14,12 @@ def _write_log(tmp_path: Path, line: str) -> str:
     return str(path)
 
 
+def _write_rotated_log(tmp_path: Path, suffix: int, line: str) -> Path:
+    path = tmp_path / f"access-observe.log.{suffix}"
+    path.write_text(line + chr(10), encoding="utf-8")
+    return path
+
+
 def test_parse_access_log_hit_rate_fast_path_accepts_tab_separated_rows(
     tmp_path,
 ) -> None:
@@ -112,3 +118,57 @@ def test_parse_access_log_hit_rate_drops_truncated_leading_row_from_byte_tail(
     result = parse_access_log_hit_rate(str(log), max_lines=2)
 
     assert result == {"request_hit_ratio": 0.0, "byte_hit_ratio": 0.0}
+
+
+def test_parse_access_log_hit_rate_falls_back_to_latest_rotated_log_when_empty(
+    tmp_path,
+) -> None:
+    log = tmp_path / "access-observe.log"
+    log.write_text("", encoding="utf-8")
+    _write_rotated_log(
+        tmp_path,
+        1,
+        "1710000009\t0.0\t10.0.0.15\tGET\thttp://example.com/hit\tTCP_HIT/200\t80",
+    )
+
+    result = parse_access_log_hit_rate(str(log), max_lines=10)
+
+    assert result == {"request_hit_ratio": 100.0, "byte_hit_ratio": 100.0}
+
+
+def test_parse_access_log_hit_rate_active_complete_rows_win_over_rotated_log(
+    tmp_path,
+) -> None:
+    log = tmp_path / "access-observe.log"
+    log.write_text(
+        "1710000010\t0.0\t10.0.0.16\tGET\thttp://example.com/miss\tTCP_MISS/200\t50\n",
+        encoding="utf-8",
+    )
+    _write_rotated_log(
+        tmp_path,
+        1,
+        "1710000011\t0.0\t10.0.0.17\tGET\thttp://example.com/hit\tTCP_HIT/200\t50",
+    )
+
+    result = parse_access_log_hit_rate(str(log), max_lines=10)
+
+    assert result == {"request_hit_ratio": 0.0, "byte_hit_ratio": 0.0}
+
+
+def test_parse_access_log_hit_rate_partial_active_row_falls_back_to_rotated_log(
+    tmp_path,
+) -> None:
+    log = tmp_path / "access-observe.log"
+    log.write_text(
+        "1710000012\t0.0\t10.0.0.18\tGET\thttp://example.com/partial\tTCP_MISS/200\t500",
+        encoding="utf-8",
+    )
+    _write_rotated_log(
+        tmp_path,
+        1,
+        "1710000013\t0.0\t10.0.0.19\tGET\thttp://example.com/hit\tTCP_HIT/200\t500",
+    )
+
+    result = parse_access_log_hit_rate(str(log), max_lines=10)
+
+    assert result == {"request_hit_ratio": 100.0, "byte_hit_ratio": 100.0}
