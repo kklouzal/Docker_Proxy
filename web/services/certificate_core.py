@@ -573,6 +573,17 @@ def _dns_san_valid(hostname: str) -> bool:
     return all(label_re.fullmatch(label or "") for label in labels)
 
 
+def _admin_ui_certificate_san_authority_host(parsed: object) -> str:
+    try:
+        port = parsed.port
+        hostname = parsed.hostname or ""
+    except ValueError:
+        return ""
+    if str(parsed.netloc or "").endswith(":") or port == 0:
+        return ""
+    return hostname.strip().strip("[]").rstrip(".")
+
+
 def sanitize_admin_ui_certificate_san_token(token: object) -> str:
     value = str(token or "").split(",", 1)[0].strip().rstrip(".")
     if not value:
@@ -583,13 +594,13 @@ def sanitize_admin_ui_certificate_san_token(token: object) -> str:
         parsed = urlsplit(value)
         if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
             return ""
-        value = (parsed.hostname or "").strip().strip("[]").rstrip(".")
+        value = _admin_ui_certificate_san_authority_host(parsed)
     elif value.startswith("["):
         from urllib.parse import urlsplit
 
         try:
             parsed = urlsplit(f"//{value}")
-            value = (parsed.hostname or "").strip().strip("[]").rstrip(".")
+            value = _admin_ui_certificate_san_authority_host(parsed)
         except ValueError:
             return ""
     elif "/" in value or "@" in value or "\\" in value or "*" in value:

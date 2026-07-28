@@ -483,3 +483,35 @@ def test_admin_ui_san_normalization_handles_forwarded_hosts_and_ipv6() -> None:
     assert "bad/host" not in sans
     assert "example.test" not in sans
     assert "*.example.test" not in sans
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://proxy.example.test:bad",
+        "https://proxy.example.test:0",
+        "https://proxy.example.test:65536",
+        "[2001:db8::10]:bad",
+        "[2001:db8::10]:0",
+    ],
+)
+def test_admin_ui_san_normalization_rejects_invalid_authority_ports(
+    value: str,
+) -> None:
+    assert certificate_core.normalize_admin_ui_certificate_san_token(value) == ""
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("https://proxy.example.test:8443", "proxy.example.test"),
+        ("[2001:db8::10]:5000", "2001:db8::10"),
+        ("edge.example.test:8443", "edge.example.test"),
+        ("2001:db8::10", "2001:db8::10"),
+    ],
+)
+def test_admin_ui_san_normalization_strips_valid_numeric_ports(
+    value: str,
+    expected: str,
+) -> None:
+    assert certificate_core.normalize_admin_ui_certificate_san_token(value) == expected
