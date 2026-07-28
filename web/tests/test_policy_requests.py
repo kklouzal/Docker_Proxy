@@ -1579,6 +1579,71 @@ def test_policy_request_store_can_scope_admin_lists_and_mutations(tmp_path) -> N
     assert store.active_webfilter_exceptions(proxy_id="edge-a") == []
 
 
+def test_policy_request_store_unscoped_mutations_reject_missing_or_stale_rows(
+    tmp_path,
+) -> None:
+    configure_test_mysql_env(tmp_path / "policy-request-unscoped-stale")
+    ensure_web_import_path()
+    from services.policy_requests import PolicyRequestStore
+
+    store = PolicyRequestStore()
+    store.init_db()
+
+    def assert_value_error(callable_obj, expected: str) -> None:
+        try:
+            callable_obj()
+        except ValueError as exc:
+            assert expected in str(exc)
+        else:
+            msg = f"expected ValueError containing {expected!r}"
+            raise AssertionError(msg)
+
+    assert_value_error(
+        lambda: store.close_request(9999, reviewer="admin"),
+        "Pending request not found",
+    )
+
+    close_req = store.create_request(
+        proxy_id="edge-a",
+        client_ip="192.168.1.55",
+        request_url="https://close.example/",
+        domain="close.example",
+    )
+    store.close_request(close_req.id, reviewer="admin", status="rejected")
+    assert store.list_requests(statuses=["rejected"])[0].id == close_req.id
+    assert_value_error(
+        lambda: store.close_request(close_req.id, reviewer="admin", status="closed"),
+        "Pending request not found",
+    )
+
+    approve_req = store.create_request(
+        proxy_id="edge-a",
+        client_ip="192.168.1.56",
+        request_url="https://approved.example/",
+        domain="approved.example",
+    )
+    exception = store.approve_request(
+        approve_req.id,
+        reviewer="admin",
+        indefinite=True,
+    )
+    assert_value_error(
+        lambda: store.close_request(approve_req.id, reviewer="admin"),
+        "Pending request not found",
+    )
+
+    assert_value_error(
+        lambda: store.revoke_exception(9999, revoked_by="admin"),
+        "Active exception not found",
+    )
+    store.revoke_exception(exception.id, revoked_by="admin", admin_note="cleanup")
+    assert store.active_webfilter_exceptions(proxy_id="edge-a") == []
+    assert_value_error(
+        lambda: store.revoke_exception(exception.id, revoked_by="admin"),
+        "Active exception not found",
+    )
+
+
 def test_policy_request_store_state_transitions_are_one_way(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "policy-request-transitions")
     ensure_web_import_path()
@@ -1610,9 +1675,18 @@ def test_policy_request_store_state_transitions_are_one_way(tmp_path) -> None:
         domain="approve.example",
     )
     store.approve_request(approved.id, reviewer="admin", indefinite=True)
-    store.close_request(
-        approved.id, reviewer="admin", status="closed", admin_note="late close"
-    )
+    try:
+        store.close_request(
+            approved.id,
+            reviewer="admin",
+            status="closed",
+            admin_note="late close",
+        )
+    except ValueError as exc:
+        assert "Pending request not found" in str(exc)
+    else:
+        msg = "approved request should not be closeable"
+        raise AssertionError(msg)
     assert store.list_requests(statuses=["approved"])[0].id == approved.id
 
 

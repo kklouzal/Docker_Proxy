@@ -536,11 +536,11 @@ class PolicyRequestStore:
                     f"UPDATE {self.REQUEST_TABLE} SET status=%s,admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s WHERE id=%s AND status='pending'",
                     (status, note, now, now, reviewer_s, int(request_id)),
                 )
-            if (
-                scoped_proxy_id
-                and max(0, int(getattr(result, "rowcount", 0) or 0)) == 0
-            ):
-                msg = "Request not found for selected proxy."
+            if max(0, int(getattr(result, "rowcount", 0) or 0)) == 0:
+                if scoped_proxy_id:
+                    msg = "Request not found for selected proxy."
+                else:
+                    msg = "Pending request not found."
                 raise ValueError(msg)
 
     def revoke_exception(
@@ -582,11 +582,11 @@ class PolicyRequestStore:
                     f"UPDATE {self.EXCEPTION_TABLE} SET status='revoked',updated_ts=%s,revoked_ts=%s,revoked_by=%s,admin_note=CASE WHEN %s='' THEN admin_note ELSE %s END WHERE id=%s AND status='active'",
                     (now, now, revoked_by_s, note, note, int(exception_id)),
                 )
-            if (
-                scoped_proxy_id
-                and max(0, int(getattr(result, "rowcount", 0) or 0)) == 0
-            ):
-                msg = "Exception not found for selected proxy."
+            if max(0, int(getattr(result, "rowcount", 0) or 0)) == 0:
+                if scoped_proxy_id:
+                    msg = "Exception not found for selected proxy."
+                else:
+                    msg = "Active exception not found."
                 raise ValueError(msg)
 
     def active_webfilter_exceptions(
