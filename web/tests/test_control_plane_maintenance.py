@@ -18,6 +18,12 @@ class _Result:
     def fetchone(self):
         return None
 
+    def fetchall(self):
+        return [
+            {"id": row_id, "proxy_id": f"edge-{row_id}"}
+            for row_id in range(1, max(0, self.rowcount) + 1)
+        ]
+
 
 class _Connection:
     def __init__(self) -> None:
@@ -46,6 +52,11 @@ def test_control_plane_prune_expires_policy_and_cache_rows(monkeypatch) -> None:
     monkeypatch.setattr(maintenance, "CONTROL_PLANE_MAINTENANCE_TABLES", tables)
     monkeypatch.setattr(maintenance, "_table_exists", lambda _table: True)
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(
+        maintenance,
+        "_queue_policy_exception_expiry_policy_sync",
+        lambda _proxy_id: True,
+    )
     monkeypatch.setattr(maintenance.time, "time", lambda: 1_000_000)
     monkeypatch.setattr(
         maintenance,
@@ -349,8 +360,13 @@ def test_control_plane_keep_n_failure_rolls_back_current_chunk(monkeypatch) -> N
 
 
 def test_policy_exception_expiry_update_is_bounded(monkeypatch) -> None:
-    pending = [_SequencedConnection([2]), _SequencedConnection([1])]
-    used: list[_SequencedConnection] = []
+    pending = [
+        _PolicyExpiryConnection(
+            [{"id": 1, "proxy_id": "edge-a"}, {"id": 2, "proxy_id": "edge-b"}],
+        ),
+        _PolicyExpiryConnection([{"id": 3, "proxy_id": "edge-c"}]),
+    ]
+    used: list[_PolicyExpiryConnection] = []
 
     def connect():
         conn = pending.pop(0)
@@ -360,16 +376,194 @@ def test_policy_exception_expiry_update_is_bounded(monkeypatch) -> None:
     monkeypatch.setattr(maintenance, "connect", connect)
     monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 2)
     monkeypatch.setattr(maintenance, "default_max_rows", lambda: 3)
+    monkeypatch.setattr(
+        maintenance,
+        "_queue_policy_exception_expiry_policy_sync",
+        lambda _proxy_id: True,
+    )
 
     result = maintenance._expire_policy_exceptions(now_ts=999)
 
     assert result.deleted_rows == 3
     assert result.iterations == 2
     assert result.truncated is True
-    sql, params = used[0].queries[0]
-    assert sql.startswith("UPDATE policy_exceptions SET status='expired'")
-    assert "ORDER BY expires_ts ASC, id ASC LIMIT %s" in sql
-    assert params == (999, 999, 2)
+    select_sql, select_params = used[0].queries[0]
+    update_sql, update_params = used[0].queries[1]
+    assert select_sql.startswith("SELECT id, proxy_id FROM policy_exceptions")
+    assert "ORDER BY expires_ts ASC, id ASC LIMIT %s" in select_sql
+    assert select_params == (999, 2)
+    assert update_sql.startswith("UPDATE policy_exceptions SET status='expired'")
+    assert "WHERE status='active' AND id IN (%s,%s)" in update_sql
+    assert update_params == (999, 1, 2)
+
+
+class _PolicyExpiryResult:
+    def __init__(self, rows=None, rowcount: int = 0) -> None:
+        self._rows = list(rows or [])
+        self.rowcount = rowcount
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+class _PolicyExpiryConnection:
+    def __init__(self, rows, rowcount: int | None = None) -> None:
+        self.rows = list(rows)
+        self.rowcount = len(self.rows) if rowcount is None else rowcount
+        self.queries: list[tuple[str, tuple[object, ...]]] = []
+        self.committed = False
+        self.rolled_back = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, _exc, _tb):
+        if exc_type is None:
+            self.committed = True
+        else:
+            self.rolled_back = True
+        return False
+
+    def execute(self, sql, params=()):
+        compact = " ".join(str(sql).split())
+        params = tuple(params or ())
+        self.queries.append((compact, params))
+        if compact.startswith("SELECT id, proxy_id FROM policy_exceptions"):
+            return _PolicyExpiryResult(rows=self.rows)
+        if compact.startswith("UPDATE policy_exceptions SET status='expired'"):
+            return _PolicyExpiryResult(rowcount=self.rowcount)
+        return _PolicyExpiryResult(rowcount=0)
+
+
+def test_policy_exception_expiry_queues_policy_sync_deduped_by_proxy(monkeypatch) -> None:
+    pending = [
+        _PolicyExpiryConnection(
+            [
+                {"id": 1, "proxy_id": "Edge-A"},
+                {"id": 2, "proxy_id": "edge-a"},
+            ],
+        ),
+        _PolicyExpiryConnection([{"id": 3, "proxy_id": "edge-b"}]),
+    ]
+    used: list[_PolicyExpiryConnection] = []
+    queued: list[str] = []
+
+    def connect():
+        conn = pending.pop(0)
+        used.append(conn)
+        return conn
+
+    monkeypatch.setattr(maintenance, "connect", connect)
+    monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 2)
+    monkeypatch.setattr(maintenance, "default_max_rows", lambda: 3)
+    monkeypatch.setattr(
+        maintenance,
+        "_queue_policy_exception_expiry_policy_sync",
+        lambda proxy_id: queued.append(proxy_id) or True,
+    )
+
+    result = maintenance._expire_policy_exceptions(now_ts=999)
+
+    assert result.deleted_rows == 3
+    assert result.iterations == 2
+    assert result.truncated is True
+    assert result.queue_attempts == 2
+    assert result.queue_failures == 0
+    assert result.queued_proxies == ("edge-a", "edge-b")
+    assert queued == ["edge-a", "edge-b"]
+    first_select_sql, first_select_params = used[0].queries[0]
+    first_update_sql, first_update_params = used[0].queries[1]
+    assert first_select_sql.startswith("SELECT id, proxy_id FROM policy_exceptions")
+    assert "ORDER BY expires_ts ASC, id ASC LIMIT %s" in first_select_sql
+    assert first_select_params == (999, 2)
+    assert first_update_sql.startswith("UPDATE policy_exceptions SET status='expired'")
+    assert "WHERE status='active' AND id IN (%s,%s)" in first_update_sql
+    assert first_update_params == (999, 1, 2)
+
+
+def test_policy_exception_expiry_does_not_queue_without_expired_rows(monkeypatch) -> None:
+    conn = _PolicyExpiryConnection([])
+    queued: list[str] = []
+
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 50)
+    monkeypatch.setattr(maintenance, "default_max_rows", lambda: 500)
+    monkeypatch.setattr(
+        maintenance,
+        "_queue_policy_exception_expiry_policy_sync",
+        lambda proxy_id: queued.append(proxy_id) or True,
+    )
+
+    result = maintenance._expire_policy_exceptions(now_ts=999)
+
+    assert result.deleted_rows == 0
+    assert result.iterations == 1
+    assert result.truncated is False
+    assert result.queue_attempts == 0
+    assert result.queued_proxies == ()
+    assert queued == []
+    assert len(conn.queries) == 1
+    assert conn.queries[0][0].startswith("SELECT id, proxy_id FROM policy_exceptions")
+
+
+def test_policy_exception_expiry_reports_policy_sync_queue_failures(monkeypatch) -> None:
+    conn = _PolicyExpiryConnection([{"id": 1, "proxy_id": "edge-a"}])
+
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 50)
+    monkeypatch.setattr(maintenance, "default_max_rows", lambda: 500)
+    monkeypatch.setattr(
+        maintenance,
+        "_queue_policy_exception_expiry_policy_sync",
+        lambda _proxy_id: False,
+    )
+
+    result = maintenance._expire_policy_exceptions(now_ts=999)
+
+    assert result.deleted_rows == 1
+    assert result.queue_attempts == 1
+    assert result.queue_failures == 1
+    assert result.queued_proxies == ()
+
+
+def test_policy_exception_expiry_policy_sync_uses_operation_ledger(monkeypatch) -> None:
+    from services import policy_materializer, proxy_sync
+
+    calls: list[dict[str, object]] = []
+
+    class PolicyState:
+        policy_sha256 = "b" * 64
+
+    class Operation:
+        operation_id = 42
+        status = "pending"
+
+    monkeypatch.setattr(
+        policy_materializer,
+        "build_proxy_policy_state",
+        lambda proxy_id: PolicyState(),
+    )
+
+    def request_proxy_reconcile(proxy_id, **kwargs):
+        calls.append({"proxy_id": proxy_id, **kwargs})
+        return Operation()
+
+    monkeypatch.setattr(proxy_sync, "request_proxy_reconcile", request_proxy_reconcile)
+
+    assert maintenance._queue_policy_exception_expiry_policy_sync("edge-a") is True
+    assert calls == [
+        {
+            "proxy_id": "edge-a",
+            "operation_type": "policy_sync",
+            "subject": "Policy reconciliation",
+            "summary": "Policy state bbbbbbbbbbbb queued after exception expiry.",
+            "target_kind": "policy_state",
+            "target_ref": "b" * 64,
+            "detail": "Desired policy SHA after exception expiry: " + "b" * 64,
+            "created_by": "control-plane-maintenance",
+            "force": True,
+        },
+    ]
 
 
 def test_control_plane_prune_reports_truncated_backlog(monkeypatch) -> None:

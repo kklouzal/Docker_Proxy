@@ -144,6 +144,14 @@ class ControlPlaneMaintenanceResult:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class PolicyExceptionExpiryResult(BoundedDeleteResult):
+    queued_proxies: tuple[str, ...] = ()
+    queue_attempts: int = 0
+    queue_failures: int = 0
+    queue_failure_detail: str = ""
+
+
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     try:
         value = int((os.environ.get(name) or str(default)).strip() or str(default))
@@ -369,11 +377,60 @@ def _delete_expired_cache(table: str, *, now_ts: int) -> BoundedDeleteResult:
     )
 
 
-def _expire_policy_exceptions(*, now_ts: int) -> BoundedDeleteResult:
+def _row_value(row: Any, key: str, index: int, default: object = None) -> object:
+    try:
+        return row[key]
+    except Exception:
+        try:
+            return row[index]
+        except Exception:
+            return default
+
+
+def _queue_policy_exception_expiry_policy_sync(proxy_id: str) -> bool:
+    from services.policy_materializer import build_proxy_policy_state
+    from services.proxy_sync import request_proxy_reconcile
+
+    desired_policy_sha = ""
+    detail = "Policy exceptions expired; proxy should refresh materialized policy files."
+    try:
+        desired_policy_sha = str(
+            build_proxy_policy_state(proxy_id).policy_sha256 or "",
+        )
+    except Exception as exc:
+        detail = (
+            "Policy exceptions expired; desired policy SHA was unavailable before "
+            f"queueing. {public_detail(exc)}"
+        )
+
+    summary = "Expired policy exceptions queued for reconciliation."
+    if desired_policy_sha:
+        summary = (
+            f"Policy state {desired_policy_sha[:12]} queued after exception expiry."
+        )
+        detail = f"Desired policy SHA after exception expiry: {desired_policy_sha}"
+    operation = request_proxy_reconcile(
+        proxy_id,
+        operation_type="policy_sync",
+        subject="Policy reconciliation",
+        summary=summary,
+        target_kind="policy_state",
+        target_ref=desired_policy_sha,
+        detail=detail,
+        created_by="control-plane-maintenance",
+        force=True,
+    )
+    return bool(
+        getattr(operation, "operation_id", 0)
+        and str(getattr(operation, "status", "") or "") in {"pending", "applying"}
+    )
+
+
+def _expire_policy_exceptions(*, now_ts: int) -> PolicyExceptionExpiryResult:
     per_chunk = default_chunk_size()
     per_run = default_max_rows()
     if per_run <= 0:
-        return BoundedDeleteResult(
+        return PolicyExceptionExpiryResult(
             table="policy_exceptions",
             deleted_rows=0,
             iterations=0,
@@ -381,29 +438,71 @@ def _expire_policy_exceptions(*, now_ts: int) -> BoundedDeleteResult:
         )
     total = 0
     iterations = 0
+    affected_proxy_ids: set[str] = set()
     while total < per_run:
         limit = min(per_chunk, per_run - total)
         with connect() as conn:
-            result = conn.execute(
+            rows = conn.execute(
                 """
-                UPDATE policy_exceptions
-                SET status='expired', updated_ts=%s
+                SELECT id, proxy_id
+                FROM policy_exceptions
                 WHERE status='active' AND expires_ts > 0 AND expires_ts <= %s
                 ORDER BY expires_ts ASC, id ASC
                 LIMIT %s
                 """,
-                (int(now_ts), int(now_ts), int(limit)),
-            )
-            updated = max(0, int(getattr(result, "rowcount", 0) or 0))
+                (int(now_ts), int(limit)),
+            ).fetchall()
+            ids = [int(_row_value(row, "id", 0, 0) or 0) for row in rows]
+            proxy_ids = {
+                str(_row_value(row, "proxy_id", 1, "") or "").strip().lower()
+                for row in rows
+            }
+            ids = [row_id for row_id in ids if row_id > 0]
+            proxy_ids.discard("")
+            if not ids:
+                updated = 0
+            else:
+                placeholders = ",".join(["%s"] * len(ids))
+                result = conn.execute(
+                    f"""
+                    UPDATE policy_exceptions
+                    SET status='expired', updated_ts=%s
+                    WHERE status='active' AND id IN ({placeholders})
+                    """,
+                    (int(now_ts), *ids),
+                )
+                updated = max(0, int(getattr(result, "rowcount", 0) or 0))
+                if updated > 0:
+                    affected_proxy_ids.update(proxy_ids)
         total += updated
         iterations += 1
         if updated < limit:
             break
-    return BoundedDeleteResult(
+
+    queued_proxies: list[str] = []
+    queue_failures = 0
+    queue_failure_detail = ""
+    for proxy_id in sorted(affected_proxy_ids):
+        try:
+            queued = _queue_policy_exception_expiry_policy_sync(proxy_id)
+        except Exception as exc:
+            queued = False
+            if not queue_failure_detail:
+                queue_failure_detail = public_detail(exc)
+        if queued:
+            queued_proxies.append(proxy_id)
+        else:
+            queue_failures += 1
+
+    return PolicyExceptionExpiryResult(
         table="policy_exceptions",
         deleted_rows=total,
         iterations=iterations,
         truncated=total >= per_run,
+        queued_proxies=tuple(queued_proxies),
+        queue_attempts=len(affected_proxy_ids),
+        queue_failures=queue_failures,
+        queue_failure_detail=queue_failure_detail,
     )
 
 
@@ -563,6 +662,15 @@ def _run_one_prune(
         details = [_bounded_retention_detail(deleted)]
         if updated.iterations or updated.truncated:
             details.append("expired_" + _bounded_retention_detail(updated))
+        if updated.queue_attempts:
+            details.append(
+                "expired_policy_sync="
+                f"queued={len(updated.queued_proxies)}"
+                f" attempted={updated.queue_attempts}"
+                f" failed={updated.queue_failures}",
+            )
+            if updated.queue_failure_detail:
+                details.append(f"queue_detail={updated.queue_failure_detail[:200]}")
         return ControlPlaneMaintenanceResult(
             table=table,
             status="pruned",
