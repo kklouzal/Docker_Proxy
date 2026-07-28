@@ -40,17 +40,21 @@ class _StrictRestoreConn:
         *,
         target_identity: str | None = TARGET_ID,
         adoption_marker: bool = False,
+        adoption_marker_target: str | None = None,
         nonfresh_tables: set[str] | None = None,
-        lifecycle_status: str | None = None,
+        lifecycle_status: str | None = "active",
         lock_acquired: bool = True,
         fail_on_sql: str = "",
+        schema_defaults: bool = False,
     ) -> None:
         self.target_identity = target_identity
         self.adoption_marker = adoption_marker
+        self.adoption_marker_target = adoption_marker_target or target_identity
         self.nonfresh_tables = nonfresh_tables or set()
         self.lifecycle_status = lifecycle_status
         self.lock_acquired = lock_acquired
         self.fail_on_sql = fail_on_sql
+        self.schema_defaults = schema_defaults
         self.ops: list[tuple[str, tuple[Any, ...]]] = []
         self.commits = 0
         self.rollbacks = 0
@@ -69,17 +73,22 @@ class _StrictRestoreConn:
             if self.target_identity is None:
                 return _Result()
             return _Result([{"control_plane_id": self.target_identity}])
-        if text.startswith("SELECT source_control_plane_id, target_control_plane_id FROM proxy_recovery_adoptions"):
-            if not self.adoption_marker:
+        if text.startswith("SELECT source_control_plane_id, target_control_plane_id") and "FROM proxy_recovery_adoptions" in text:
+            if not self.adoption_marker or params[1] != self.adoption_marker_target:
                 return _Result()
             return _Result(
                 [
                     {
                         "source_control_plane_id": SOURCE_ID,
-                        "target_control_plane_id": self.target_identity,
+                        "target_control_plane_id": self.adoption_marker_target,
+                        "status": "adopted",
                     },
                 ],
             )
+        if text.startswith("SELECT target_control_plane_id FROM proxy_recovery_adoptions"):
+            if not self.adoption_marker:
+                return _Result()
+            return _Result([{"target_control_plane_id": self.adoption_marker_target}])
         if text.startswith("SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones"):
             return _Result()
         if text.startswith("SELECT status FROM proxy_instances"):
@@ -89,6 +98,55 @@ class _StrictRestoreConn:
         if text.startswith("SELECT GET_LOCK"):
             return _Result([{"acquired": 1 if self.lock_acquired else 0}])
         if text.startswith("DO RELEASE_LOCK"):
+            return _Result()
+        if text.startswith("SELECT `key`, url, enabled FROM adblock_lists"):
+            if "adblock_lists" in self.nonfresh_tables:
+                return _Result([{"key": "custom", "url": "https://custom.invalid/list.txt", "enabled": 1}])
+            if self.schema_defaults:
+                return _Result(
+                    [
+                        {"key": key, "url": url, "enabled": 0}
+                        for key, url in sorted(restore._ADBLOCK_DEFAULT_LISTS.items())
+                    ],
+                )
+            return _Result()
+        if text.startswith("SELECT k, v FROM adblock_settings"):
+            if "adblock_settings" in self.nonfresh_tables:
+                return _Result([{"k": "enabled", "v": "0"}])
+            if self.schema_defaults:
+                return _Result([{"k": key, "v": value} for key, value in sorted(restore._ADBLOCK_DEFAULT_SETTINGS.items())])
+            return _Result()
+        if text.startswith("SELECT enabled, certfile, keyfile, san_tokens FROM admin_ui_https_settings"):
+            if "admin_ui_https_settings" in self.nonfresh_tables:
+                return _Result([{"enabled": 1, "certfile": "/cert", "keyfile": "/key", "san_tokens": "dns:admin"}])
+            if self.schema_defaults:
+                return _Result([{"enabled": 0, "certfile": "", "keyfile": "", "san_tokens": ""}])
+            return _Result()
+        if text.startswith("SELECT retention_days FROM observability_settings"):
+            if "observability_settings" in self.nonfresh_tables:
+                return _Result([{"retention_days": 90}])
+            if self.schema_defaults:
+                return _Result([{"retention_days": restore._OBSERVABILITY_DEFAULT_RETENTION_DAYS}])
+            return _Result()
+        if text.startswith("SELECT provider, enabled, server_urls"):
+            if self.schema_defaults and "FROM directory_auth_profiles" in text:
+                return _Result(list(restore._DIRECTORY_DEFAULT_ROWS))
+            return _Result()
+        if text.startswith("SELECT provider, enabled, metadata_url"):
+            if self.schema_defaults:
+                return _Result([dict(restore._SAML_DEFAULT_ROW)])
+            return _Result()
+        if text.startswith("SELECT direct_enabled FROM pac_proxy_chain_settings"):
+            if "pac_proxy_chain_settings" in self.nonfresh_tables:
+                return _Result([{"direct_enabled": 0}])
+            if self.schema_defaults:
+                return _Result([{"direct_enabled": 1}])
+            return _Result()
+        if text.startswith("SELECT k, v FROM webfilter_settings"):
+            if "webfilter_settings" in self.nonfresh_tables:
+                return _Result([{"k": "enabled", "v": "1"}])
+            if self.schema_defaults:
+                return _Result([{"k": key, "v": value} for key, value in sorted(restore._WEBFILTER_DEFAULT_SETTINGS.items())])
             return _Result()
         if text.startswith("SELECT COUNT(*) AS count"):
             return _Result([{"count": 1 if _probe_table(text) in self.nonfresh_tables else 0}])
@@ -117,6 +175,14 @@ class _StrictRestoreConn:
 
 def _sql(sql: str) -> str:
     return " ".join(str(sql).split())
+
+
+@pytest.fixture(autouse=True)
+def _metadata_tables_available(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "services.proxy_write_guard.table_exists",
+        lambda _conn, name: name in {"proxy_instances", "proxy_lifecycle_tombstones"},
+    )
 
 
 def _probe_table(sql: str) -> str:
@@ -262,9 +328,13 @@ def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adop
 
     result = restore.restore_recovery_bundle(conn, _bundle(), "EDGE-01", now_ts=NOW)
 
+    assert result.status == "adopted"
     assert result.proxy_id == "edge-01"
+    assert result.target_proxy_id == "edge-01"
     assert result.source_control_plane_id == SOURCE_ID
     assert result.target_control_plane_id == TARGET_ID
+    assert result.bundle_content_sha256 == "a" * 64
+    assert result.adopted_ts == NOW
     assert conn.rollbacks == 0
     assert conn.commits == 1
 
@@ -283,8 +353,9 @@ def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adop
 
 
 def test_identity_mismatch_same_identity_and_missing_identity_fail_closed() -> None:
-    with pytest.raises(restore.ProxyRecoveryRestoreError, match="source control plane"):
-        restore.restore_recovery_bundle(_StrictRestoreConn(target_identity=SOURCE_ID), _bundle(), "edge-01", now_ts=NOW)
+    same = restore.restore_recovery_bundle(_StrictRestoreConn(target_identity=SOURCE_ID), _bundle(), "edge-01", now_ts=NOW)
+    assert same.status == "same_control_plane"
+    assert same.restored_rows == 0
     with pytest.raises(restore.ProxyRecoveryRestoreError, match="missing"):
         restore.restore_recovery_bundle(_StrictRestoreConn(target_identity=None), _bundle(), "edge-01", now_ts=NOW)
     with pytest.raises(restore.ProxyRecoveryRestoreError, match="invalid"):
@@ -300,19 +371,40 @@ def test_source_target_proxy_mismatch_rejects_before_database_access() -> None:
 
 def test_nonfresh_target_or_existing_adoption_marker_rejects_without_mutation() -> None:
     conn = _StrictRestoreConn(nonfresh_tables={"webfilter_settings"})
-    with pytest.raises(restore.ProxyRecoveryRestoreError, match="not fresh"):
-        restore.restore_recovery_bundle(conn, _bundle(), "edge-01", now_ts=NOW)
+    result = restore.restore_recovery_bundle(conn, _bundle(), "edge-01", now_ts=NOW)
+    assert result.status == "not_eligible"
+    assert "webfilter" in result.reason
     assert not any(sql.startswith(("START TRANSACTION", "DELETE", "INSERT")) for sql, _params in conn.ops)
 
-    marked = _StrictRestoreConn(adoption_marker=True)
-    with pytest.raises(restore.ProxyRecoveryRestoreError, match="adoption marker"):
-        restore.restore_recovery_bundle(marked, _bundle(), "edge-01", now_ts=NOW)
+    marked = _StrictRestoreConn(adoption_marker=True, nonfresh_tables={"webfilter_settings"})
+    marked_result = restore.restore_recovery_bundle(marked, _bundle(), "edge-01", now_ts=NOW)
+    assert marked_result.status == "already_adopted"
     assert not any(sql.startswith(("START TRANSACTION", "DELETE", "INSERT")) for sql, _params in marked.ops)
+
+    ambiguous = _StrictRestoreConn(adoption_marker=True, adoption_marker_target="323e4567-e89b-42d3-a456-426614174000")
+    with pytest.raises(restore.ProxyRecoveryRestoreError, match="ambiguous"):
+        restore.restore_recovery_bundle(ambiguous, _bundle(), "edge-01", now_ts=NOW)
+
+
+def test_different_fresh_target_can_independently_adopt() -> None:
+    target = _StrictRestoreConn(target_identity="323e4567-e89b-42d3-a456-426614174000")
+    result = restore.restore_recovery_bundle(target, _bundle(), "edge-01", now_ts=NOW)
+    assert result.status == "adopted"
+    assert result.target_control_plane_id == "323e4567-e89b-42d3-a456-426614174000"
+
+
+def test_known_schema_defaults_are_fresh_and_replaced() -> None:
+    conn = _StrictRestoreConn(schema_defaults=True)
+    result = restore.restore_recovery_bundle(conn, _bundle(), "edge-01", now_ts=NOW)
+    assert result.status == "adopted"
+    assert any(sql.startswith("DELETE FROM directory_auth_profiles") for sql, _params in conn.ops)
+    assert any(sql.startswith("DELETE FROM saml_auth_profiles") for sql, _params in conn.ops)
+    assert any(sql.startswith("DELETE FROM webfilter_settings") for sql, _params in conn.ops)
 
 
 def test_lifecycle_rejection_and_lock_failure_fail_closed() -> None:
     removed = _StrictRestoreConn(lifecycle_status="removed")
-    with pytest.raises(restore.ProxyRecoveryRestoreError, match="lifecycle status"):
+    with pytest.raises(Exception, match=r"status.*removed"):
         restore.restore_recovery_bundle(removed, _bundle(), "edge-01", now_ts=NOW)
     assert not any(sql.startswith("START TRANSACTION") for sql, _params in removed.ops)
 
@@ -353,6 +445,7 @@ def test_malformed_columns_types_duplicates_pac_orphans_and_active_cardinality_r
                 },
             ),
         },
+        {"adblock_proxy_meta": ({"proxy_id": "edge-01", "k": "source-only", "v": "excluded"},)},
     ]
     for overrides in cases:
         conn = _StrictRestoreConn()
@@ -376,8 +469,9 @@ def test_rollback_on_mid_write_failure_and_release_lock() -> None:
 def test_restore_contract_has_no_select_star_or_bundle_derived_tables() -> None:
     restore.validate_restore_contract()
     module_sql_values = [
-        *[item[1] for item in restore._FRESHNESS_PROBES_NONE],
-        *[item[1] for item in restore._FRESHNESS_PROBES_PROXY],
+        restore._ADOPTION_MARKER_PAIR_SELECT_SQL,
+        restore._ADOPTION_MARKER_PROXY_SELECT_SQL,
+        restore._ADOPTION_MARKER_INSERT_SQL,
         *restore._DELETE_DEFAULTS_SQL,
         *restore._DELETE_PROXY_DEFAULTS_SQL,
     ]

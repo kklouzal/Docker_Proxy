@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from services import proxy_recovery
 from services.db import connect
@@ -17,8 +17,21 @@ from services.proxy_write_guard import (
 from services.schema_lifecycle import read_control_plane_identity
 
 
-class ProxyRecoveryRestoreError(ValueError):
+class ProxyRecoveryRestoreError(proxy_recovery.ProxyRecoveryError):
     """Raised when a recovery bundle is not safe to restore."""
+
+
+RestoreStatus = Literal[
+    "adopted",
+    "already_adopted",
+    "same_control_plane",
+    "not_eligible",
+]
+
+_RESTORE_STATUS_ADOPTED: Final = "adopted"
+_RESTORE_STATUS_ALREADY_ADOPTED: Final = "already_adopted"
+_RESTORE_STATUS_SAME_CONTROL_PLANE: Final = "same_control_plane"
+_RESTORE_STATUS_NOT_ELIGIBLE: Final = "not_eligible"
 
 
 @dataclass(frozen=True)
@@ -43,11 +56,16 @@ class RestorePlan:
 
 @dataclass(frozen=True)
 class RestoreResult:
+    status: RestoreStatus
     proxy_id: str
+    target_proxy_id: str
     source_control_plane_id: str
     target_control_plane_id: str
+    bundle_content_sha256: str
     restored_tables: tuple[str, ...]
     restored_rows: int
+    adopted_ts: int = 0
+    reason: str = ""
 
 
 _EXPECTED_TABLE_COLUMNS: Final = MappingProxyType(
@@ -157,141 +175,98 @@ _ACTIVE_REVISION_TABLES: Final = frozenset(
 )
 _EXACT_WEBFILTER_KEYS: Final = frozenset({"enabled", "blocked_categories"})
 
+_ADBLOCK_DEFAULT_LISTS: Final = MappingProxyType(
+    {
+        "easylist": "https://easylist.to/easylist/easylist.txt",
+        "easyprivacy": "https://easylist.to/easylist/easyprivacy.txt",
+        "cookiemonster": "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt",
+    },
+)
+_ADBLOCK_DEFAULT_SETTINGS: Final = MappingProxyType(
+    {"enabled": "1", "cache_ttl": "3600", "cache_max": "200000"},
+)
+_OBSERVABILITY_DEFAULT_RETENTION_DAYS: Final = 30
+_WEBFILTER_DEFAULT_SETTINGS: Final = MappingProxyType(
+    {"enabled": "0", "blocked_categories": ""},
+)
+_DIRECTORY_DEFAULT_ROWS: Final = (
+    {
+        "provider": "active_directory",
+        "enabled": 0,
+        "server_urls": "ldaps://dc.example.local:636",
+        "use_starttls": 0,
+        "verify_tls": 1,
+        "ca_bundle": "",
+        "bind_dn": "svc-docker-proxy@example.local",
+        "bind_password": "",
+        "base_dn": "DC=example,DC=local",
+        "user_search_base": "",
+        "user_filter": "(|(sAMAccountName={username})(userPrincipalName={username}))",
+        "user_attribute": "sAMAccountName",
+        "group_search_base": "",
+        "group_filter": "(member:1.2.840.113556.1.4.1941:={user_dn})",
+        "required_admin_group": "CN=Docker Proxy Admins,OU=Groups,DC=example,DC=local",
+        "timeout_seconds": 5,
+    },
+    {
+        "provider": "ldap",
+        "enabled": 0,
+        "server_urls": "ldaps://ldap.example.org:636",
+        "use_starttls": 0,
+        "verify_tls": 1,
+        "ca_bundle": "",
+        "bind_dn": "cn=proxy-bind,ou=service,dc=example,dc=org",
+        "bind_password": "",
+        "base_dn": "dc=example,dc=org",
+        "user_search_base": "ou=people",
+        "user_filter": "(uid={username})",
+        "user_attribute": "uid",
+        "group_search_base": "ou=groups",
+        "group_filter": "(|(member={user_dn})(uniqueMember={user_dn})(memberUid={username}))",
+        "required_admin_group": "cn=docker-proxy-admins,ou=groups,dc=example,dc=org",
+        "timeout_seconds": 5,
+    },
+)
+_SAML_DEFAULT_ROW: Final = MappingProxyType(
+    {
+        "provider": "saml",
+        "enabled": 0,
+        "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+        "require_https": 1,
+        "verify_tls": 1,
+        "ca_bundle": "",
+        "timeout_seconds": 10,
+        "max_metadata_bytes": 2 * 1024 * 1024,
+        "raw_metadata_xml": "",
+        "public_base_url": "",
+        "username_attribute": "NameID",
+        "groups_attribute": "groups",
+        "required_group": "",
+    },
+)
+
 _ADOPTION_MARKER_TABLE: Final = "proxy_recovery_adoptions"
-_ADOPTION_MARKER_SELECT_SQL: Final = (
-    "SELECT source_control_plane_id, target_control_plane_id "
-    "FROM proxy_recovery_adoptions WHERE proxy_id=%s LIMIT 1"
+_ADOPTION_MARKER_PAIR_SELECT_SQL: Final = (
+    "SELECT source_control_plane_id, target_control_plane_id, status "
+    "FROM proxy_recovery_adoptions "
+    "WHERE proxy_id=%s AND target_control_plane_id=%s LIMIT 1"
+)
+_ADOPTION_MARKER_PROXY_SELECT_SQL: Final = (
+    "SELECT target_control_plane_id "
+    "FROM proxy_recovery_adoptions WHERE proxy_id=%s LIMIT 2"
 )
 _ADOPTION_MARKER_INSERT_SQL: Final = """
     INSERT INTO proxy_recovery_adoptions(
         proxy_id, target_control_plane_id, source_control_plane_id, bundle_content_sha256,
         status, adopted_ts, detail
-    ) VALUES(%s,%s,%s,%s,'restored',%s,'')
+    ) VALUES(%s,%s,%s,%s,'adopted',%s,'')
     """
-
-
-# Fixed freshness probes.  They intentionally do not derive identifiers from a
-# bundle.  Default rows inserted by schema init are allowed only when they match
-# the explicit default predicate; restore deletes/replaces those rows in the same
-# locked transaction.
-_FRESHNESS_PROBES_NONE: Final = (
-    (
-        "adblock_lists",
-        """
-        SELECT COUNT(*) AS count
-        FROM adblock_lists
-        WHERE NOT (
-            (`key`='easylist' AND url='https://easylist.to/easylist/easylist.txt' AND enabled=0)
-            OR (`key`='easyprivacy' AND url='https://easylist.to/easylist/easyprivacy.txt' AND enabled=0)
-            OR (`key`='cookiemonster' AND url='https://secure.fanboy.co.nz/fanboy-cookiemonster.txt' AND enabled=0)
-        )
-        """,
-        (),
-    ),
-    (
-        "adblock_settings",
-        """
-        SELECT COUNT(*) AS count
-        FROM adblock_settings
-        WHERE NOT (
-            (k='enabled' AND v='1')
-            OR (k='cache_ttl' AND v='3600')
-            OR (k='cache_max' AND v='200000')
-        )
-        """,
-        (),
-    ),
-    (
-        "adblock_artifact_revisions",
-        "SELECT COUNT(*) AS count FROM adblock_artifact_revisions WHERE is_active=1",
-        (),
-    ),
-    (
-        "certificate_bundle_revisions",
-        "SELECT COUNT(*) AS count FROM certificate_bundle_revisions WHERE is_active=1",
-        (),
-    ),
-    (
-        "admin_ui_https_settings",
-        """
-        SELECT COUNT(*) AS count
-        FROM admin_ui_https_settings
-        WHERE NOT (id=1 AND enabled=0 AND certfile='' AND keyfile='' AND (san_tokens IS NULL OR san_tokens=''))
-        """,
-        (),
-    ),
-    (
-        "observability_settings",
-        "SELECT COUNT(*) AS count FROM observability_settings WHERE NOT (id=1 AND retention_days=30)",
-        (),
-    ),
-    (
-        "directory_auth_profiles",
-        "SELECT COUNT(*) AS count FROM directory_auth_profiles",
-        (),
-    ),
-    (
-        "saml_auth_profiles",
-        "SELECT COUNT(*) AS count FROM saml_auth_profiles",
-        (),
-    ),
-)
-
-_FRESHNESS_PROBES_PROXY: Final = (
-    (
-        "proxy_config_revisions",
-        "SELECT COUNT(*) AS count FROM proxy_config_revisions WHERE proxy_id=%s AND is_active=1",
-    ),
-    ("pac_profiles", "SELECT COUNT(*) AS count FROM pac_profiles WHERE proxy_id=%s"),
-    (
-        "pac_direct_domains",
-        """
-        SELECT COUNT(*) AS count
-        FROM pac_direct_domains d
-        INNER JOIN pac_profiles p ON p.id=d.profile_id
-        WHERE p.proxy_id=%s
-        """,
-    ),
-    (
-        "pac_direct_dst_nets",
-        """
-        SELECT COUNT(*) AS count
-        FROM pac_direct_dst_nets n
-        INNER JOIN pac_profiles p ON p.id=n.profile_id
-        WHERE p.proxy_id=%s
-        """,
-    ),
-    ("pac_backup_proxies", "SELECT COUNT(*) AS count FROM pac_backup_proxies WHERE proxy_id=%s"),
-    (
-        "pac_proxy_chain_settings",
-        "SELECT COUNT(*) AS count FROM pac_proxy_chain_settings WHERE proxy_id=%s",
-    ),
-    ("policy_exceptions", "SELECT COUNT(*) AS count FROM policy_exceptions WHERE proxy_id=%s"),
-    ("sslfilter_domains", "SELECT COUNT(*) AS count FROM sslfilter_domains WHERE proxy_id=%s"),
-    ("sslfilter_src_nets", "SELECT COUNT(*) AS count FROM sslfilter_src_nets WHERE proxy_id=%s"),
-    ("sslfilter_settings", "SELECT COUNT(*) AS count FROM sslfilter_settings WHERE proxy_id=%s"),
-    (
-        "webfilter_settings",
-        """
-        SELECT COUNT(*) AS count
-        FROM webfilter_settings
-        WHERE proxy_id=%s AND NOT ((k='enabled' AND v='0') OR (k='blocked_categories' AND v=''))
-        """,
-    ),
-    ("webfilter_whitelist", "SELECT COUNT(*) AS count FROM webfilter_whitelist WHERE proxy_id=%s"),
-    ("adblock_proxy_meta", "SELECT COUNT(*) AS count FROM adblock_proxy_meta WHERE proxy_id=%s"),
-    (
-        "observability_report_schedules",
-        "SELECT COUNT(*) AS count FROM observability_report_schedules WHERE proxy_id=%s",
-    ),
-)
-
 
 _DELETE_DEFAULTS_SQL: Final = (
     "DELETE FROM adblock_lists",
     "DELETE FROM adblock_settings",
-    "DELETE FROM adblock_artifact_revisions WHERE is_active=1",
-    "DELETE FROM certificate_bundle_revisions WHERE is_active=1",
+    "DELETE FROM adblock_artifact_revisions",
+    "DELETE FROM certificate_bundle_revisions",
     "DELETE FROM admin_ui_https_settings WHERE id=1",
     "DELETE FROM observability_settings WHERE id=1",
     "DELETE FROM directory_auth_profiles",
@@ -374,42 +349,67 @@ def restore_recovery_bundle(
 ) -> RestoreResult:
     plan = build_restore_plan(bundle, target_proxy_id, now_ts=now_ts)
     target_identity = _read_target_identity(conn)
-    _validate_identity_eligibility(plan, target_identity)
-    _assert_no_adoption_marker(conn, plan.proxy_id, target_identity)
-    _assert_target_fresh(conn, plan.proxy_id)
+    skip = _skip_result_if_already_decided(conn, plan, target_identity)
+    if skip is not None:
+        return skip
+    freshness_reason = _freshness_failure_reason(conn, plan.proxy_id)
+    if freshness_reason:
+        return _restore_result(
+            _RESTORE_STATUS_NOT_ELIGIBLE,
+            plan,
+            target_identity,
+            reason=freshness_reason,
+        )
     first_decision = resolve_proxy_write_id(
         conn,
         plan.proxy_id,
         allow_alias=False,
-        require_registered=False,
+        require_registered=True,
         use_cache=False,
     )
-    _assert_registry_lifecycle_allows_restore(conn, first_decision.proxy_id)
     if first_decision.proxy_id != plan.proxy_id:
         raise ProxyRecoveryRestoreError("target proxy id resolved unexpectedly during restore")
 
     lock_name = proxy_lifecycle_lock_name(plan.proxy_id)
     acquired = False
     in_transaction = False
+    restored_identity = target_identity
     try:
         acquired = _acquire_lifecycle_lock(conn, lock_name, lock_timeout_seconds)
         second_decision = resolve_proxy_write_id(
             conn,
             plan.proxy_id,
             allow_alias=False,
-            require_registered=False,
+            require_registered=True,
             use_cache=False,
         )
-        _assert_registry_lifecycle_allows_restore(conn, second_decision.proxy_id)
         if second_decision.proxy_id != plan.proxy_id:
             raise ProxyRecoveryRestoreError("target proxy id changed during restore lock acquisition")
 
         conn.execute("START TRANSACTION")
         in_transaction = True
         locked_identity = _read_target_identity(conn, for_update=True)
-        _validate_identity_eligibility(plan, locked_identity)
-        _assert_no_adoption_marker(conn, plan.proxy_id, locked_identity, for_update=True)
-        _assert_target_fresh(conn, plan.proxy_id)
+        skip = _skip_result_if_already_decided(
+            conn,
+            plan,
+            locked_identity,
+            for_update=True,
+        )
+        if skip is not None:
+            conn.rollback()
+            in_transaction = False
+            return skip
+        freshness_reason = _freshness_failure_reason(conn, plan.proxy_id)
+        if freshness_reason:
+            conn.rollback()
+            in_transaction = False
+            return _restore_result(
+                _RESTORE_STATUS_NOT_ELIGIBLE,
+                plan,
+                locked_identity,
+                reason=freshness_reason,
+            )
+        restored_identity = locked_identity
         _apply_restore_plan(conn, plan, locked_identity)
         conn.commit()
         in_transaction = False
@@ -422,12 +422,11 @@ def restore_recovery_bundle(
     finally:
         if acquired:
             _release_lifecycle_lock(conn, lock_name)
-    return RestoreResult(
-        proxy_id=plan.proxy_id,
-        source_control_plane_id=plan.source_control_plane_id,
-        target_control_plane_id=target_identity,
-        restored_tables=tuple(table.table_name for table in plan.tables),
-        restored_rows=plan.row_count,
+    return _restore_result(
+        _RESTORE_STATUS_ADOPTED,
+        plan,
+        restored_identity,
+        adopted_ts=plan.now_ts,
     )
 
 
@@ -592,56 +591,299 @@ def _normalize_sha256_hex(value: Any) -> str:
     return text
 
 
-def _validate_identity_eligibility(plan: RestorePlan, target_identity: str) -> None:
+def _restore_result(
+    status: RestoreStatus,
+    plan: RestorePlan,
+    target_identity: str,
+    *,
+    adopted_ts: int = 0,
+    reason: str = "",
+) -> RestoreResult:
+    restored_tables: tuple[str, ...] = ()
+    restored_rows = 0
+    if status == _RESTORE_STATUS_ADOPTED:
+        restored_tables = tuple(table.table_name for table in plan.tables)
+        restored_rows = plan.row_count
+    return RestoreResult(
+        status=status,
+        proxy_id=plan.proxy_id,
+        target_proxy_id=plan.proxy_id,
+        source_control_plane_id=plan.source_control_plane_id,
+        target_control_plane_id=target_identity,
+        bundle_content_sha256=plan.bundle_content_sha256,
+        restored_tables=restored_tables,
+        restored_rows=restored_rows,
+        adopted_ts=adopted_ts,
+        reason=reason,
+    )
+
+
+def _skip_result_if_already_decided(
+    conn: Any,
+    plan: RestorePlan,
+    target_identity: str,
+    *,
+    for_update: bool = False,
+) -> RestoreResult | None:
     if plan.source_control_plane_id == target_identity:
-        raise ProxyRecoveryRestoreError("bundle source control plane matches target identity")
+        return _restore_result(
+            _RESTORE_STATUS_SAME_CONTROL_PLANE,
+            plan,
+            target_identity,
+            reason="bundle source is the current control plane",
+        )
+    marker_state = _adoption_marker_state(conn, plan.proxy_id, target_identity, for_update=for_update)
+    if marker_state == "same_target":
+        return _restore_result(
+            _RESTORE_STATUS_ALREADY_ADOPTED,
+            plan,
+            target_identity,
+            reason="target control plane already adopted this proxy bundle once",
+        )
+    if marker_state == "ambiguous":
+        raise ProxyRecoveryRestoreError("target proxy has an ambiguous recovery adoption marker")
+    return None
 
 
-def _assert_no_adoption_marker(
+def _adoption_marker_state(
     conn: Any,
     proxy_id: str,
     target_identity: str,
     *,
     for_update: bool = False,
-) -> None:
-    sql = _ADOPTION_MARKER_SELECT_SQL
+) -> Literal["none", "same_target", "ambiguous"]:
+    pair_sql = _ADOPTION_MARKER_PAIR_SELECT_SQL
+    proxy_sql = _ADOPTION_MARKER_PROXY_SELECT_SQL
     if for_update:
-        sql += " FOR UPDATE"
-    row = conn.execute(sql, (proxy_id,)).fetchone()
-    if row is not None:
-        marker_target = str(_row_value(row, "target_control_plane_id", 1) or "")
-        if marker_target == target_identity:
-            raise ProxyRecoveryRestoreError("target proxy already has a recovery adoption marker")
-        raise ProxyRecoveryRestoreError("target proxy has an ambiguous recovery adoption marker")
+        pair_sql += " FOR UPDATE"
+        proxy_sql += " FOR UPDATE"
+    pair_row = conn.execute(pair_sql, (proxy_id, target_identity)).fetchone()
+    if pair_row is not None:
+        return "same_target"
+    rows = conn.execute(proxy_sql, (proxy_id,)).fetchall()
+    if rows:
+        return "ambiguous"
+    return "none"
 
 
-def _assert_target_fresh(conn: Any, proxy_id: str) -> None:
-    for table_name, sql, params in _FRESHNESS_PROBES_NONE:
-        if _count(conn, sql, params) != 0:
-            raise ProxyRecoveryRestoreError(f"target table {table_name} is not fresh")
-    for table_name, sql in _FRESHNESS_PROBES_PROXY:
-        if _count(conn, sql, (proxy_id,)) != 0:
-            raise ProxyRecoveryRestoreError(f"target proxy table {table_name} is not fresh")
+def _freshness_failure_reason(conn: Any, proxy_id: str) -> str:
+    probes = (
+        _fresh_adblock_lists,
+        _fresh_adblock_settings,
+        _fresh_no_adblock_artifacts,
+        _fresh_no_certificate_bundles,
+        _fresh_admin_ui_https_settings,
+        _fresh_observability_settings,
+        _fresh_directory_auth_profiles,
+        _fresh_saml_auth_profiles,
+        _fresh_no_proxy_config_revision,
+        _fresh_no_pac_profiles,
+        _fresh_no_pac_backup_proxies,
+        _fresh_pac_proxy_chain_settings,
+        _fresh_no_policy_exceptions,
+        _fresh_no_sslfilter_rows,
+        _fresh_webfilter_settings,
+        _fresh_no_proxy_table_rows,
+    )
+    for probe in probes:
+        reason = probe(conn, proxy_id)
+        if reason:
+            return reason
+    return ""
 
 
-def _assert_registry_lifecycle_allows_restore(conn: Any, proxy_id: str) -> None:
-    row = conn.execute(
-        "SELECT status FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
-        (proxy_id,),
-    ).fetchone()
-    if row is None:
-        return
-    status = str(_row_value(row, "status", 0) or "unknown").strip().lower()
-    if status in {"renaming", "rename_pending", "removing", "remove_pending", "removed", "deleting", "deleted", "replaced"}:
-        raise ProxyRecoveryRestoreError(f"target proxy lifecycle status {status!r} rejects recovery restore")
+def _fresh_adblock_lists(conn: Any, _proxy_id: str) -> str:
+    rows = _rows(conn, "SELECT `key`, url, enabled FROM adblock_lists ORDER BY `key` ASC")
+    actual = {
+        (str(_row_value(row, "key", 0) or ""), str(_row_value(row, "url", 1) or ""), int(_row_value(row, "enabled", 2) or 0))
+        for row in rows
+    }
+    allowed = {(key, url, 0) for key, url in _ADBLOCK_DEFAULT_LISTS.items()}
+    if actual and actual != allowed:
+        return "adblock lists are not canonical schema defaults"
+    return ""
 
 
-def _count(conn: Any, sql: str, params: tuple[Any, ...]) -> int:
+def _fresh_adblock_settings(conn: Any, _proxy_id: str) -> str:
+    rows = _rows(conn, "SELECT k, v FROM adblock_settings ORDER BY k ASC")
+    actual = {str(_row_value(row, "k", 0) or ""): str(_row_value(row, "v", 1) or "") for row in rows}
+    if actual and actual != dict(_ADBLOCK_DEFAULT_SETTINGS):
+        return "adblock settings are not canonical schema defaults"
+    return ""
+
+
+def _fresh_no_adblock_artifacts(conn: Any, _proxy_id: str) -> str:
+    if _count(conn, "SELECT COUNT(*) AS count FROM adblock_artifact_revisions"):
+        return "adblock artifact revision already exists"
+    return ""
+
+
+def _fresh_no_certificate_bundles(conn: Any, _proxy_id: str) -> str:
+    if _count(conn, "SELECT COUNT(*) AS count FROM certificate_bundle_revisions"):
+        return "certificate bundle revision already exists"
+    return ""
+
+
+def _fresh_admin_ui_https_settings(conn: Any, _proxy_id: str) -> str:
+    rows = _rows(conn, "SELECT enabled, certfile, keyfile, san_tokens FROM admin_ui_https_settings WHERE id=1")
+    if not rows:
+        return ""
+    if len(rows) == 1:
+        row = rows[0]
+        if (
+            int(_row_value(row, "enabled", 0) or 0) == 0
+            and str(_row_value(row, "certfile", 1) or "") == ""
+            and str(_row_value(row, "keyfile", 2) or "") == ""
+            and str(_row_value(row, "san_tokens", 3) or "") == ""
+        ):
+            return ""
+    return "admin UI HTTPS settings are not canonical schema defaults"
+
+
+def _fresh_observability_settings(conn: Any, _proxy_id: str) -> str:
+    rows = _rows(conn, "SELECT retention_days FROM observability_settings WHERE id=1")
+    if not rows:
+        return ""
+    if len(rows) == 1 and int(_row_value(rows[0], "retention_days", 0) or 0) == _OBSERVABILITY_DEFAULT_RETENTION_DAYS:
+        return ""
+    return "observability settings are not canonical schema defaults"
+
+
+def _fresh_directory_auth_profiles(conn: Any, _proxy_id: str) -> str:
+    rows = _rows(
+        conn,
+        """
+        SELECT provider, enabled, server_urls, use_starttls, verify_tls, ca_bundle,
+               bind_dn, bind_password, base_dn, user_search_base, user_filter,
+               user_attribute, group_search_base, group_filter, required_admin_group,
+               timeout_seconds
+        FROM directory_auth_profiles
+        ORDER BY provider ASC
+        """,
+    )
+    if not rows:
+        return ""
+    columns = _EXPECTED_TABLE_COLUMNS["directory_auth_profiles"]
+    actual = tuple(_project_row(row, columns) for row in rows)
+    expected = tuple(dict(row) for row in sorted(_DIRECTORY_DEFAULT_ROWS, key=lambda item: str(item["provider"])))
+    if actual == expected:
+        return ""
+    return "directory auth profiles are not canonical schema defaults"
+
+
+def _fresh_saml_auth_profiles(conn: Any, _proxy_id: str) -> str:
+    rows = _rows(
+        conn,
+        """
+        SELECT provider, enabled, metadata_url, require_https, verify_tls, ca_bundle,
+               timeout_seconds, max_metadata_bytes, raw_metadata_xml, public_base_url,
+               username_attribute, groups_attribute, required_group
+        FROM saml_auth_profiles
+        ORDER BY provider ASC
+        """,
+    )
+    if not rows:
+        return ""
+    actual = tuple(_project_row(row, _EXPECTED_TABLE_COLUMNS["saml_auth_profiles"]) for row in rows)
+    if actual == (dict(_SAML_DEFAULT_ROW),):
+        return ""
+    return "SAML auth profile is not the canonical schema default"
+
+
+def _fresh_no_proxy_config_revision(conn: Any, proxy_id: str) -> str:
+    if _count(conn, "SELECT COUNT(*) AS count FROM proxy_config_revisions WHERE proxy_id=%s", (proxy_id,)):
+        return "proxy config revision already exists for target proxy"
+    return ""
+
+
+def _fresh_no_pac_profiles(conn: Any, proxy_id: str) -> str:
+    if _count(conn, "SELECT COUNT(*) AS count FROM pac_profiles WHERE proxy_id=%s", (proxy_id,)):
+        return "PAC profiles already exist for target proxy"
+    return ""
+
+
+def _fresh_no_pac_backup_proxies(conn: Any, proxy_id: str) -> str:
+    if _count(conn, "SELECT COUNT(*) AS count FROM pac_backup_proxies WHERE proxy_id=%s", (proxy_id,)):
+        return "PAC backup proxies already exist for target proxy"
+    return ""
+
+
+def _fresh_pac_proxy_chain_settings(conn: Any, proxy_id: str) -> str:
+    rows = _rows(conn, "SELECT direct_enabled FROM pac_proxy_chain_settings WHERE proxy_id=%s", (proxy_id,))
+    if not rows:
+        return ""
+    if len(rows) == 1 and int(_row_value(rows[0], "direct_enabled", 0) or 0) == 1:
+        return ""
+    return "PAC proxy chain settings are not canonical defaults"
+
+
+def _fresh_no_policy_exceptions(conn: Any, proxy_id: str) -> str:
+    if _count(conn, "SELECT COUNT(*) AS count FROM policy_exceptions WHERE proxy_id=%s", (proxy_id,)):
+        return "policy exceptions already exist for target proxy"
+    return ""
+
+
+def _fresh_no_sslfilter_rows(conn: Any, proxy_id: str) -> str:
+    if _count(conn, "SELECT COUNT(*) AS count FROM sslfilter_domains WHERE proxy_id=%s", (proxy_id,)):
+        return "SSL filter rows already exist for target proxy"
+    if _count(conn, "SELECT COUNT(*) AS count FROM sslfilter_src_nets WHERE proxy_id=%s", (proxy_id,)):
+        return "SSL filter rows already exist for target proxy"
+    if _count(conn, "SELECT COUNT(*) AS count FROM sslfilter_settings WHERE proxy_id=%s", (proxy_id,)):
+        return "SSL filter rows already exist for target proxy"
+    return ""
+
+
+def _fresh_webfilter_settings(conn: Any, proxy_id: str) -> str:
+    rows = _rows(conn, "SELECT k, v FROM webfilter_settings WHERE proxy_id=%s ORDER BY k ASC", (proxy_id,))
+    if not rows:
+        return ""
+    actual = {str(_row_value(row, "k", 0) or ""): str(_row_value(row, "v", 1) or "") for row in rows}
+    if actual == dict(_WEBFILTER_DEFAULT_SETTINGS):
+        return ""
+    return "webfilter settings are not canonical target defaults"
+
+
+def _fresh_no_proxy_table_rows(conn: Any, proxy_id: str) -> str:
+    if _count(conn, "SELECT COUNT(*) AS count FROM webfilter_whitelist WHERE proxy_id=%s", (proxy_id,)):
+        return "target proxy declarative rows already exist"
+    if _count(conn, "SELECT COUNT(*) AS count FROM adblock_proxy_meta WHERE proxy_id=%s", (proxy_id,)):
+        return "target proxy declarative rows already exist"
+    if _count(conn, "SELECT COUNT(*) AS count FROM observability_report_schedules WHERE proxy_id=%s", (proxy_id,)):
+        return "target proxy declarative rows already exist"
+    return ""
+
+
+def _count(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> int:
     row = conn.execute(sql, params).fetchone()
     try:
         return int(_row_value(row, "count", 0) or 0)
     except Exception as exc:
         raise ProxyRecoveryRestoreError("freshness probe returned an invalid count") from exc
+
+
+def _rows(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> tuple[Any, ...]:
+    return tuple(conn.execute(sql, params).fetchall())
+
+
+def _project_row(row: Any, columns: tuple[str, ...]) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    for index, column in enumerate(columns):
+        value = _row_value(row, column, index)
+        if column in {
+            "enabled",
+            "use_starttls",
+            "verify_tls",
+            "require_https",
+            "timeout_seconds",
+            "max_metadata_bytes",
+        }:
+            value = int(value or 0)
+        elif value is None:
+            value = ""
+        else:
+            value = str(value)
+        projected[column] = value
+    return projected
 
 
 def _acquire_lifecycle_lock(conn: Any, lock_name: str, timeout_seconds: int) -> bool:
