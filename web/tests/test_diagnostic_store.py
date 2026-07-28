@@ -302,6 +302,57 @@ def test_policy_and_icap_candidate_queries_order_ties_by_id(monkeypatch) -> None
     assert [row["correlation_kind"] for row in icap_candidates] == ["domain_time"] * 3
 
 
+def test_read_last_lines_drops_partial_leading_seed_line(tmp_path) -> None:
+    store = DiagnosticStore()
+    log = tmp_path / "access-observe.log"
+    long_first_record = "1710000001	" + ("x" * 1700) + "	TCP_HIT/200"
+    complete_second_record = "1710000002	request-second	TCP_MISS/200"
+    complete_third_record = "1710000003	request-third	TCP_HIT/200"
+    log.write_text(
+        f"{long_first_record}\n{complete_second_record}\n{complete_third_record}\n",
+        encoding="utf-8",
+    )
+
+    lines = store._read_last_lines(str(log), max_lines=3)
+
+    assert lines == [complete_second_record, complete_third_record]
+
+
+def test_read_last_lines_drops_partial_trailing_seed_line(tmp_path) -> None:
+    store = DiagnosticStore()
+    log = tmp_path / "access-observe.log"
+    complete_record = "1710000004	request-complete	TCP_MISS/200"
+    partially_written_record = "1710000005	request-partial	TCP_HIT/200"
+    log.write_text(
+        complete_record + "\n" + partially_written_record,
+        encoding="utf-8",
+    )
+
+    lines = store._read_last_lines(str(log), max_lines=10)
+
+    assert lines == [complete_record]
+
+
+def test_read_last_lines_keeps_seed_line_when_tail_starts_on_line_boundary(
+    tmp_path,
+) -> None:
+    store = DiagnosticStore()
+    log = tmp_path / "access-observe.log"
+    base_tailed_record = "1710000006\trequest-boundary\tTCP_HIT/200\n"
+    padding_len = 512 - len(base_tailed_record.encode("utf-8"))
+    tailed_record = base_tailed_record.replace(
+        "boundary",
+        "boundary" + ("a" * padding_len),
+    )
+    assert len(tailed_record.encode("utf-8")) == 512
+    filler_record = "1710000000\tfiller\tTCP_MISS/200\n"
+    log.write_text(filler_record + tailed_record, encoding="utf-8")
+
+    lines = store._read_last_lines(str(log), max_lines=1)
+
+    assert lines == [tailed_record.rstrip("\n")]
+
+
 def test_parse_request_log_line_extracts_tls_and_policy_fields() -> None:
     store = DiagnosticStore()
     line = (

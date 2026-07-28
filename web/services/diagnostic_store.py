@@ -840,10 +840,20 @@ class DiagnosticStore:
                 handle.seek(0, os.SEEK_END)
                 size = handle.tell()
                 read_size = min(size, max_lines * 512)
-                if read_size > 0:
-                    handle.seek(-read_size, os.SEEK_END)
+                read_start = size - read_size
+                starts_on_line_boundary = read_start == 0
+                if read_start > 0:
+                    handle.seek(read_start - 1, os.SEEK_SET)
+                    starts_on_line_boundary = handle.read(1) == b"\n"
+                handle.seek(read_start, os.SEEK_SET)
                 chunk = handle.read().decode("utf-8", errors="replace")
-            return [line for line in chunk.splitlines()[-max_lines:] if line.strip()]
+
+            lines = chunk.splitlines()
+            if not starts_on_line_boundary and lines:
+                lines = lines[1:]
+            if chunk and not chunk.endswith(("\n", "\r")) and lines:
+                lines = lines[:-1]
+            return [line for line in lines[-max_lines:] if line.strip()]
         except Exception:
             return []
 
