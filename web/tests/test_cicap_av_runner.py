@@ -1404,6 +1404,68 @@ def test_fail_open_placeholder_returns_204_for_transactions() -> None:
     assert b"clamav-fail-open-unavailable" in respmod
 
 
+def test_fail_open_placeholder_server_backlog_covers_respmod_burst_workers() -> None:
+    runner = _load_runner()
+
+    # Python's TCPServer default is 5, which is smaller than Squid's live-test
+    # RESPMOD burst worker count and can cause clients to see a closed proxy
+    # connection before the placeholder accepts the ICAP transaction.
+    assert runner._FailOpenAvServer.request_queue_size >= 10
+
+
+def test_fail_open_placeholder_serves_concurrent_respmod_shape_burst() -> None:
+    runner = _load_runner()
+
+    with runner._FailOpenAvServer(
+        ("127.0.0.1", 0), runner._FailOpenAvHandler
+    ) as server:
+        server.fail_open = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+        chunked = b"5\r\nhello\r\n0\r\n\r\n"
+
+        def exchange(index: int) -> bytes:
+            request = (
+                (
+                    f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+                    "Host: 127.0.0.1\r\n"
+                    "Allow: 204\r\n"
+                    "Encapsulated: res-hdr=0, "
+                    f"res-body={len(response_header)}\r\n"
+                    f"X-Burst-Index: {index}\r\n\r\n"
+                ).encode("ascii")
+                + response_header
+                + chunked
+            )
+            with socket.create_connection(("127.0.0.1", port), timeout=2) as sock:
+                sock.settimeout(2)
+                sock.sendall(request)
+                response = bytearray()
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+                return bytes(response)
+
+        import concurrent.futures
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                responses = list(executor.map(exchange, range(80)))
+        finally:
+            server.shutdown()
+            thread.join(timeout=1)
+
+    assert len(responses) == 80
+    for response in responses:
+        assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+        assert b"hello" in response
+        assert b"HTTP/1.1 502 Bad Gateway" not in response
+
+
 def test_fail_closed_placeholder_keeps_service_unavailable_transactions() -> None:
     runner = _load_runner()
 

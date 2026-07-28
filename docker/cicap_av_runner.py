@@ -1265,6 +1265,11 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
 class _FailOpenAvServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    # Squid can open a RESPMOD burst while the real AV backend is unavailable.
+    # Python's TCPServer default listen backlog is 5, which is below the live
+    # proxy burst width and can make proxy clients observe a closed connection
+    # instead of the placeholder's fail-open ICAP response.
+    request_queue_size = 64
     fail_open = True
 
 
