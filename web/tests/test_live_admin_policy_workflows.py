@@ -493,12 +493,14 @@ def test_live_sslfilter_granular_policy_stays_proxy_side_only(
     assert toggle_private_response.status == 200
     toggle_private_params = query_params(toggle_private_response.url)
     assert toggle_private_params.get("private_saved") == ["1"]
-    assert toggle_private_params.get("policy_queue") == ["1"]
+    assert toggle_private_params.get("pac_queue") == ["1"]
+    assert toggle_private_params.get("policy_queue") is None
     assert (
         "Private/local PAC bypass preference updated and queued for proxy reconciliation."
         in toggle_private_response.text
     )
-    assert "Policy change saved; proxy reconciliation is queued" in (
+    assert "PAC materialization refresh is queued" in toggle_private_response.text
+    assert "Policy change saved; proxy reconciliation is queued" not in (
         toggle_private_response.text
     )
 

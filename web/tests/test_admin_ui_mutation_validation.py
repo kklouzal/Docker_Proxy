@@ -87,13 +87,18 @@ def test_sslfilter_destination_domain_mutation_syncs_managed_policy(
     assert loaded.operation_ledger.operations[-1].status == "pending"
 
 
-def test_sslfilter_private_network_toggle_syncs_managed_policy(
+def test_sslfilter_private_network_toggle_queues_pac_materialization_for_selected_proxy(
     monkeypatch, tmp_path
 ) -> None:
     loaded, client = _loaded(
         monkeypatch,
         tmp_path,
         registry=FakeRegistry(["default", "edge-2"]),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "build_proxy_pac_state",
+        lambda proxy_id: SimpleNamespace(state_sha256=f"pac-sha-{proxy_id}"),
     )
 
     response = _post(
@@ -106,11 +111,16 @@ def test_sslfilter_private_network_toggle_syncs_managed_policy(
     location = response.headers.get("Location", "")
     assert "proxy_id=edge-2" in location
     assert "private_saved=1" in location
-    assert "policy_queue=1" in location
+    assert "pac_queue=1" in location
+    assert "policy_queue=1" not in location
     assert loaded.sslfilter_store.exclude_private_nets is True
-    assert loaded.operation_ledger.operations[-1].proxy_id == "edge-2"
-    assert loaded.operation_ledger.operations[-1].operation_type == "policy_sync"
-    assert loaded.operation_ledger.operations[-1].status == "pending"
+    assert loaded.proxy_client.synced == []
+    operation = loaded.operation_ledger.operations[-1]
+    assert operation.proxy_id == "edge-2"
+    assert operation.operation_type == "pac_refresh"
+    assert operation.target_kind == "pac_state"
+    assert operation.target_ref == "pac-sha-edge-2"
+    assert operation.status == "pending"
 
     page = client.get(location)
     text = page.get_data(as_text=True)
@@ -118,7 +128,8 @@ def test_sslfilter_private_network_toggle_syncs_managed_policy(
         "Private/local PAC bypass preference updated and queued for proxy reconciliation."
         in text
     )
-    assert "Policy change saved; proxy reconciliation is queued" in text
+    assert "PAC materialization refresh is queued for Edge-2" in text
+    assert "Policy change saved; proxy reconciliation is queued" not in text
     assert "fc00::/7" in text
     assert "fe80::/10" in text
     assert "127.0.0.0/8" in text

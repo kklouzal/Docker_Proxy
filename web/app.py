@@ -2413,13 +2413,19 @@ def _redirect_after_policy_refresh(
 
 def _redirect_after_pac_refresh(endpoint: str, **params):
     ok, detail = _queue_pac_runtime_refresh()
-    if not ok:
-        params.pop("ok", None)
-        params["error"] = "1"
-        params["msg"] = (
-            detail
-            or "PAC profile changes were saved, but proxy materialization was not queued."
-        )
+    if ok:
+        if params.get("pac_queue") and detail:
+            params.setdefault("pac_msg", detail[:1000])
+        return _redirect_to(endpoint, **params)
+
+    params.pop("ok", None)
+    params.pop("pac_queue", None)
+    params.pop("pac_msg", None)
+    params["error"] = "1"
+    params["msg"] = (
+        detail
+        or "PAC profile changes were saved, but proxy materialization was not queued."
+    )
     return _redirect_to(endpoint, **params)
 
 
@@ -4643,7 +4649,11 @@ def _handle_sslfilter_post(store: Any):
 
     if action == "toggle_private":
         store.set_exclude_private_nets(request.form.get("exclude_private_nets") == "on")
-        return _sslfilter_redirect(private_saved="1")
+        return _redirect_after_pac_refresh(
+            "sslfilter",
+            private_saved="1",
+            pac_queue="1",
+        )
 
     return _redirect_to("sslfilter")
 
