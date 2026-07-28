@@ -146,6 +146,17 @@ class OperationLedger:
             "),256)"
         )
 
+    @staticmethod
+    def _stale_recovery_priority_sql(alias: str) -> str:
+        prefix = f"{alias}." if alias else ""
+        return (
+            "CASE "
+            f"WHEN {prefix}status='applying' AND {prefix}started_ts>=%s THEN 0 "
+            f"WHEN {prefix}status='applying' THEN 1 "
+            "ELSE 2 "
+            "END"
+        )
+
     def _backfill_active_request_keys(self, conn) -> None:
         now = int(time.time())
         request_key_expr = self._request_key_sql()
@@ -513,6 +524,8 @@ class OperationLedger:
         active_request_key_expr = self._request_key_sql("active")
         with self._connect() as conn:
             keeper_request_key_expr = self._request_key_sql("keeper")
+            keeper_priority_expr = self._stale_recovery_priority_sql("keeper")
+            active_priority_expr = self._stale_recovery_priority_sql("active")
             conn.execute(
                 f"""
                 UPDATE proxy_operations active
@@ -536,27 +549,11 @@ class OperationLedger:
                  AND keeper.status IN ('pending','applying')
                  AND {keeper_request_key_expr}={active_request_key_expr}
                  AND (
-                     CASE
-                         WHEN keeper.status='applying' AND keeper.started_ts>=%s THEN 0
-                         WHEN keeper.status='applying' THEN 1
-                         ELSE 2
-                     END
-                     < CASE
-                         WHEN active.status='applying' AND active.started_ts>=%s THEN 0
-                         WHEN active.status='applying' THEN 1
-                         ELSE 2
-                     END
+                     {keeper_priority_expr}
+                     < {active_priority_expr}
                      OR (
-                         CASE
-                             WHEN keeper.status='applying' AND keeper.started_ts>=%s THEN 0
-                             WHEN keeper.status='applying' THEN 1
-                             ELSE 2
-                         END
-                         = CASE
-                             WHEN active.status='applying' AND active.started_ts>=%s THEN 0
-                             WHEN active.status='applying' THEN 1
-                             ELSE 2
-                         END
+                         {keeper_priority_expr}
+                         = {active_priority_expr}
                          AND (
                              keeper.created_ts < active.created_ts
                              OR (keeper.created_ts = active.created_ts AND keeper.id < active.id)

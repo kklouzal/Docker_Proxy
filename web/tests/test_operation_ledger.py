@@ -340,6 +340,72 @@ def test_requeue_stale_applying_recovers_without_active_key_collisions(
     assert conn.committed is True
 
 
+def test_requeue_stale_applying_supersede_sql_preserves_valid_keeper_ordering(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _RequeueConnection:
+        def __init__(self) -> None:
+            self.queries = []
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            self.queries.append((compact, tuple(params or ())))
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _RequeueConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 1000)
+
+    ledger.requeue_stale_applying("edge-a", older_than_seconds=300)
+
+    supersede_sql, supersede_params = conn.queries[0]
+    assert "AND ( AND" not in supersede_sql
+
+    priority_case = (
+        "CASE WHEN keeper.status='applying' AND keeper.started_ts>=%s THEN 0 "
+        "WHEN keeper.status='applying' THEN 1 ELSE 2 END"
+    )
+    active_priority_case = (
+        "CASE WHEN active.status='applying' AND active.started_ts>=%s THEN 0 "
+        "WHEN active.status='applying' THEN 1 ELSE 2 END"
+    )
+    assert supersede_sql.count(priority_case) == 2
+    assert supersede_sql.count(active_priority_case) == 2
+    assert supersede_sql.index(f"{priority_case} < {active_priority_case}") < (
+        supersede_sql.index(f"{priority_case} = {active_priority_case}")
+    )
+    assert (
+        supersede_sql.index(f"{priority_case} = {active_priority_case}")
+        < supersede_sql.index("keeper.created_ts < active.created_ts")
+    )
+    assert (
+        "OR (keeper.created_ts = active.created_ts AND keeper.id < active.id)"
+        in supersede_sql
+    )
+    assert supersede_params == (
+        "edge-a",
+        700,
+        700,
+        700,
+        700,
+        700,
+        1000,
+        1000,
+        "edge-a",
+    )
+
+
 def test_claim_pending_returns_only_rows_claimed_by_current_token(monkeypatch) -> None:
     _add_repo_paths()
     from services.operation_ledger import OperationLedger
