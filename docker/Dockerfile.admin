@@ -3,7 +3,8 @@ ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages
 
 FROM alpine:${ALPINE_VERSION} AS python_deps
 
-RUN apk add --no-cache \
+COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install
+RUN apk-install \
     python3 \
     py3-pip \
     ca-certificates \
@@ -35,7 +36,8 @@ ENV APP_VERSION=${APP_VERSION} \
     BUILD_DATE=${BUILD_DATE} \
     IMAGE_NAME=${IMAGE_NAME}
 
-RUN apk add --no-cache \
+COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install
+RUN apk-install \
     python3 \
     supervisor \
     openssl \

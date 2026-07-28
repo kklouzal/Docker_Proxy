@@ -3,7 +3,8 @@ ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages
 
 FROM alpine:${ALPINE_VERSION} AS python_deps
 
-RUN apk add --no-cache python3 py3-pip ca-certificates
+COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install
+RUN apk-install python3 py3-pip ca-certificates
 
 WORKDIR /tmp/deps
 
@@ -17,7 +18,8 @@ FROM alpine:${ALPINE_VERSION} AS cicap_builder
 ARG CICAP_GIT_REF=C_ICAP_0.6.5
 ARG CICAP_MODULES_GIT_REF=C_ICAP_MODULES_0.5.7
 
-RUN apk add --no-cache \
+COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install
+RUN apk-install \
         build-base \
         autoconf \
         automake \
@@ -94,7 +96,8 @@ ENV APP_VERSION=${APP_VERSION} \
 # - HTML templates and static assets
 # - Admin-only service modules (auth, audit, housekeeping, form parsing)
 
-RUN apk add --no-cache squid python3 supervisor openssl ca-certificates libatomic \
+COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install
+RUN apk-install squid python3 supervisor openssl ca-certificates libatomic \
         pcre2 \
         brotli-libs \
         zstd-libs

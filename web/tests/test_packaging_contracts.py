@@ -123,6 +123,34 @@ def _workflow_build_arg_blocks(workflow: str) -> list[dict[str, str]]:
     return blocks
 
 
+def _dockerfile_stages(dockerfile: str) -> list[str]:
+    text = _read(dockerfile)
+    return [
+        "FROM " + stage
+        for stage in re.split(r"^FROM ", text, flags=re.MULTILINE)[1:]
+    ]
+
+
+def test_alpine_package_installs_use_retry_helper_for_runtime_images() -> None:
+    helper = _read("docker/apk-install.sh")
+
+    assert "apk add --no-cache \"$@\"" in helper
+    assert "APK_INSTALL_RETRIES:-4" in helper
+    assert "APK_INSTALL_RETRY_DELAY_SECONDS:-5" in helper
+
+    for dockerfile in ("docker/Dockerfile.admin", "docker/Dockerfile.proxy"):
+        text = _read(dockerfile)
+        assert "COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install" in text
+
+        for stage in _dockerfile_stages(dockerfile):
+            if "apk add --no-cache" not in stage and "apk-install" not in stage:
+                continue
+            assert "COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install" in stage
+            assert "RUN apk-install" in stage
+
+        assert "RUN apk add --no-cache" not in text
+
+
 def test_proxy_and_admin_dockerfiles_keep_runtime_payloads_separated() -> None:
     proxy = _read("docker/Dockerfile.proxy")
     admin = _read("docker/Dockerfile.admin")
