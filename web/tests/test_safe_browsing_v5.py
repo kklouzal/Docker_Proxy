@@ -202,6 +202,48 @@ def test_safe_browsing_checker_confirms_full_hash_after_local_prefix(
     )
 
 
+def test_safe_browsing_checker_fails_open_when_full_hash_search_raises(
+    monkeypatch,
+) -> None:
+    checker = SafeBrowsingLocalChecker(api_key="test")
+    target = expression_hashes("http://suspicious.example/")[0]
+    remote_calls = []
+
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("mw-4b",) if prefix == target[:4] else (),
+    )
+    monkeypatch.setattr(
+        checker, "_cache_lookup", lambda prefix, full_hashes, local_lists=None: None
+    )
+
+    def search_hashes(api_key, prefixes):
+        remote_calls.append((api_key, tuple(prefixes)))
+        msg = "simulated hashes.search timeout with secret test key"
+        raise TimeoutError(msg)
+
+    def cache_search_response(*args, **kwargs) -> NoReturn:
+        msg = "failed hashes.search responses must not be cached as unsafe"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(checker._store, "search_hashes", search_hashes)
+    monkeypatch.setattr(checker, "_cache_search_response", cache_search_response)
+
+    verdict = checker.check_url("http://suspicious.example/")
+
+    assert verdict == SafeBrowsingVerdict(
+        "safe",
+        reason="full-hash confirmation unavailable",
+    )
+    assert "secret" not in verdict.reason
+    assert remote_calls == [("test", (target[:4],))]
+    assert all(
+        cached_verdict.verdict == "safe"
+        for _expires, cached_verdict in checker._verdict_cache.values()
+    )
+
+
 def test_safe_browsing_checker_reports_matching_list_for_threat(monkeypatch) -> None:
     checker = SafeBrowsingLocalChecker(
         api_key="test",

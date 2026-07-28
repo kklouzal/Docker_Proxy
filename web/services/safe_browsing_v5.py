@@ -1250,7 +1250,16 @@ class SafeBrowsingLocalChecker:
                         reason="api key unavailable for full-hash confirmation",
                     )
                 else:
-                    response, duration = self._store.search_hashes(api_key, [prefix])
+                    try:
+                        response, duration = self._store.search_hashes(api_key, [prefix])
+                    except Exception:
+                        self.close()
+                        verdict = SafeBrowsingVerdict(
+                            "safe",
+                            reason="full-hash confirmation unavailable",
+                        )
+                        last_safe_verdict = verdict
+                        continue
                     self._cache_search_response(prefix, response, duration, local_lists)
                     verdict = SafeBrowsingVerdict(
                         "safe",
