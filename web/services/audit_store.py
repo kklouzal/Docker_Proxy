@@ -5,13 +5,27 @@ import logging
 import threading
 import time
 
-from services.bounded_delete import default_chunk_size, delete_where_in_chunks
+from services.bounded_delete import (
+    default_chunk_size,
+    default_max_rows,
+    delete_where_in_chunks,
+)
 from services.db import connect
 from services.proxy_context import get_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
 from services.revision_lifecycle import ensure_index
 
 logger = logging.getLogger(__name__)
+
+
+def _row_value(row: object, column: str, index: int, default: object = None) -> object:
+    try:
+        return row[column]  # type: ignore[index]
+    except Exception:
+        try:
+            return row[index]  # type: ignore[index]
+        except Exception:
+            return default
 
 
 class AuditStore:
@@ -124,8 +138,8 @@ class AuditStore:
                     ),
                 )
 
-        # Keep storage bounded (last 200 events) without an unbounded delete in
-        # the request transaction that records the event.
+        # Keep storage bounded (last 200 events per proxy) without an unbounded
+        # delete in the request transaction that records the event.
         self._prune_to_last_events(max_events=200, max_rows=default_chunk_size())
 
     def _prune_to_last_events(
@@ -135,26 +149,48 @@ class AuditStore:
         max_rows: int | None = None,
     ) -> int:
         keep = max(1, int(max_events or 200))
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT ts, id FROM audit_events ORDER BY ts DESC, id DESC LIMIT %s",
-                (keep,),
-            ).fetchall()
-        if len(rows) < keep:
+        remaining_rows = default_max_rows() if max_rows is None else max(0, int(max_rows))
+        if remaining_rows <= 0:
             return 0
-        boundary_ts = int(rows[-1][0] or 0)
-        boundary_id = int(rows[-1][1] or 0)
-        result = delete_where_in_chunks(
-            self._connect,
-            table="audit_events",
-            where_sql="(ts < %s OR (ts = %s AND id < %s))",
-            params=(boundary_ts, boundary_ts, boundary_id),
-            order_by_columns=("ts", "id"),
-            max_rows=max_rows,
-            log_key="audit_store.prune.last_n",
-            log_label="Audit last-N prune",
-        )
-        return result.deleted_rows
+
+        with self._connect() as conn:
+            proxy_rows = conn.execute(
+                "SELECT DISTINCT proxy_id FROM audit_events ORDER BY proxy_id",
+            ).fetchall()
+
+        deleted_rows = 0
+        for proxy_row in proxy_rows:
+            if remaining_rows <= 0:
+                break
+            proxy_id = str(_row_value(proxy_row, "proxy_id", 0, "default") or "default")
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT ts, id
+                    FROM audit_events
+                    WHERE proxy_id=%s
+                    ORDER BY ts DESC, id DESC
+                    LIMIT %s
+                    """,
+                    (proxy_id, keep),
+                ).fetchall()
+            if len(rows) < keep:
+                continue
+            boundary_ts = int(_row_value(rows[-1], "ts", 0, 0) or 0)
+            boundary_id = int(_row_value(rows[-1], "id", 1, 0) or 0)
+            result = delete_where_in_chunks(
+                self._connect,
+                table="audit_events",
+                where_sql="proxy_id = %s AND (ts < %s OR (ts = %s AND id < %s))",
+                params=(proxy_id, boundary_ts, boundary_ts, boundary_id),
+                order_by_columns=("proxy_id", "ts", "id"),
+                max_rows=remaining_rows,
+                log_key="audit_store.prune.last_n",
+                log_label="Audit last-N prune",
+            )
+            deleted_rows += result.deleted_rows
+            remaining_rows -= result.deleted_rows
+        return deleted_rows
 
     def latest_config_apply(self) -> object | None:
         # Returns the most recent config_apply* event (if any).
