@@ -6,6 +6,7 @@ import pytest
 from services.winhttp_registry_builder import (
     WinHttpBuilderError,
     build_advproxy_command,
+    build_advproxy_settings_file_write_command,
     build_advproxy_settings_json,
     build_contract_output,
     build_legacy_set_proxy_command,
@@ -464,6 +465,52 @@ def test_advproxy_command_preserves_json_quotes_as_one_settings_argument() -> No
     assert command.count(' settings=') == 1
     assert '\\"Proxy\\":\\"http=proxy.example:3128;https=proxy.example:3128\\"' in command
     assert r'\"ProxyBypass\":\"C:\\ProxyBypass\\;<local>\"' in command
+
+
+def test_advproxy_settings_file_write_command_materializes_referenced_file() -> None:
+    result = build_contract_output(
+        {
+            "proxy_host": "proxy.example",
+            "proxy_port": 3128,
+            "destination_schemes": ["http", "https"],
+            "bypass_list": "localhost <local>",
+            "autoconfig_url": "https://pac.example.local/winhttp/proxy.pac?site=main",
+            "advproxy_scope": "user",
+        },
+    )
+
+    assert result.advproxy_settings_file_write_command == (
+        "@'\n"
+        "{\n"
+        '  "Proxy": "http=proxy.example:3128;https=proxy.example:3128",\n'
+        '  "ProxyBypass": "localhost;<local>",\n'
+        '  "AutoconfigUrl": "https://pac.example.local/winhttp/proxy.pac?site=main",\n'
+        '  "AutoDetect": false\n'
+        "}\n"
+        "'@ | Set-Content -LiteralPath .\\winhttp-proxy-settings.json "
+        "-Encoding ascii -NoNewline"
+    )
+    assert result.advproxy_settings_file_command == (
+        "netsh winhttp set advproxy setting-scope=user "
+        "settings-file=winhttp-proxy-settings.json"
+    )
+
+
+def test_advproxy_settings_file_write_command_rejects_unsafe_filename() -> None:
+    with pytest.raises(WinHttpBuilderError, match="settings file name"):
+        build_advproxy_settings_file_write_command("{}", filename=r"..\\proxy.json")
+
+
+def test_contract_output_rejects_values_that_would_break_powershell_here_string() -> None:
+    with pytest.raises(WinHttpBuilderError, match="Bypass list"):
+        build_contract_output(
+            {
+                "proxy_host": "proxy.example",
+                "proxy_port": 3128,
+                "destination_schemes": ["http"],
+                "bypass_list": "safe.example\n'@",
+            },
+        )
 
 
 def test_pac_or_autodetect_disables_basic_registry_binary() -> None:

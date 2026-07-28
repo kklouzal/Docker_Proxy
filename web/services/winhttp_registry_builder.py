@@ -30,6 +30,7 @@ COMMAND_UNSAFE_RE = re.compile(r'["&|%!^\x00-\x1f\x7f]')
 COMMAND_REDIRECTION_RE = re.compile(r"[<>]")
 RAW_HEX_INPUT_RE = re.compile(r"^[0-9a-fA-F,\s\\-]*$")
 CUSTOM_PROXY_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
+SETTINGS_FILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def _is_ambiguous_ipv4_like_host(value: str) -> bool:
@@ -77,6 +78,7 @@ class WinHttpContractOutput:
     advproxy_json: str
     advproxy_command: str
     advproxy_settings_file_json: str
+    advproxy_settings_file_write_command: str
     advproxy_settings_file_command: str
     reset_proxy_command: str
     import_ie_command: str
@@ -772,6 +774,34 @@ def build_advproxy_command(
     return f"netsh winhttp set advproxy setting-scope={chosen_scope} settings={_quote_windows_command_argument(settings_json)}"
 
 
+def build_advproxy_settings_file_write_command(
+    settings_json: str,
+    *,
+    filename: str = "winhttp-proxy-settings.json",
+) -> str:
+    _validate_command_value(filename, "advproxy settings file name")
+    if (
+        any(separator in filename for separator in ("/", "\\"))
+        or filename in {".", ".."}
+        or not SETTINGS_FILE_NAME_RE.fullmatch(filename)
+    ):
+        msg = "advproxy settings file name must be a simple file name, not a path or shell expression."
+        raise WinHttpBuilderError(msg)
+    if "\r" in settings_json or "\x00" in settings_json:
+        msg = "advproxy settings-file JSON must not contain carriage returns or NUL bytes."
+        raise WinHttpBuilderError(msg)
+    _ascii_bytes(settings_json)
+    if "\n'@" in f"\n{settings_json}":
+        msg = "advproxy settings-file JSON cannot be safely embedded in a PowerShell here-string."
+        raise WinHttpBuilderError(msg)
+    return (
+        "@'\n"
+        f"{settings_json}\n"
+        "'@ | Set-Content -LiteralPath "
+        f".\\{filename} -Encoding ascii -NoNewline"
+    )
+
+
 def build_legacy_set_proxy_command(proxy_string: str, bypass_string: str) -> str:
     command = f"netsh winhttp set proxy proxy-server={_quote_windows_command_argument(proxy_string)}"
     if bypass_string:
@@ -938,6 +968,9 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
             settings_json=advproxy_json_compact,
         ),
         advproxy_settings_file_json=advproxy_json_pretty,
+        advproxy_settings_file_write_command=build_advproxy_settings_file_write_command(
+            advproxy_json_pretty,
+        ),
         advproxy_settings_file_command=f"netsh winhttp set advproxy setting-scope={scope} settings-file=winhttp-proxy-settings.json",
         reset_proxy_command="netsh winhttp reset proxy",
         import_ie_command="netsh winhttp import proxy source=ie",

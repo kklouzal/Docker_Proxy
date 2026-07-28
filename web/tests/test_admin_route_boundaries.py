@@ -1180,6 +1180,8 @@ def test_winhttp_registry_builder_renders_and_generates_static_binary(
         in text
     )
     assert "netsh winhttp set advproxy" in text
+    assert "Set-Content -LiteralPath .\\winhttp-proxy-settings.json" in text
+    assert "settings-file=winhttp-proxy-settings.json" in text
 
 
 def test_winhttp_registry_builder_normalizes_exported_reg_binary(

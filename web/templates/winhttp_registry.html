@@ -238,11 +238,25 @@
 
     <section class="card">
       <div class="card-header">
-        <h2 class="card-title">netsh commands</h2>
-        <button class="btn ghost" type="button" data-copy-target="#winhttp-command-list">Copy</button>
+        <h2 class="card-title">advproxy settings-file workflow</h2>
+        <button class="btn ghost" type="button" data-copy-target="#winhttp-settings-file-workflow">Copy</button>
       </div>
       <div class="card-body">
-        <textarea id="winhttp-command-list" rows="12" readonly>{{ output.advproxy_command }}
+        <div class="surface-note small">Run the PowerShell write step in the target directory first, then run the netsh settings-file command from that same directory.</div>
+        <textarea id="winhttp-settings-file-workflow" rows="13" readonly>{{ output.advproxy_settings_file_write_command }}
+{{ output.advproxy_settings_file_command }}</textarea>
+      </div>
+    </section>
+  </div>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Deployment commands</h2>
+      <button class="btn ghost" type="button" data-copy-target="#winhttp-command-list">Copy</button>
+    </div>
+    <div class="card-body">
+      <textarea id="winhttp-command-list" rows="12" readonly>{{ output.advproxy_command }}
+{{ output.advproxy_settings_file_write_command }}
 {{ output.advproxy_settings_file_command }}
 {{ output.legacy_set_proxy_command }}
 {{ output.show_advproxy_command }}
@@ -253,9 +267,8 @@
 {{ output.show_tracing_command }}
 {{ output.reset_tracing_command }}
 {{ output.flush_logbuffer_command }}</textarea>
-      </div>
-    </section>
-  </div>
+    </div>
+  </section>
 {% endif %}
 
 <section class="card">
