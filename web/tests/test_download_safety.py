@@ -318,6 +318,52 @@ def test_open_download_url_uses_canonicalized_unicode_dot_request_host(
     assert seen_urls == ["https://public.example/feed.csv"]
 
 
+def test_open_download_url_percent_encodes_non_ascii_path_before_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    seen_urls: list[str] = []
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        assert host == "public.example"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                ("93.184.216.34", 0),
+            ),
+        ]
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            seen_urls.append(req.full_url)
+            msg = "stop"
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(RuntimeError, match="stop"):
+        download_safety.open_download_url(
+            "https://public.example/feeds/✓%20report.csv;v=✓?name=café&literal=%25",
+            timeout=1,
+            user_agent="unit-test-agent",
+        )
+
+    expected_url = (
+        "https://public.example/feeds/%E2%9C%93%20report.csv;"
+        "v=%E2%9C%93?name=caf%C3%A9&literal=%25"
+    )
+    assert seen_urls == [expected_url]
+
+
 def test_validate_download_url_rejects_percent_encoded_authority_before_dns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

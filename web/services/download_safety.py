@@ -7,7 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from urllib.parse import unquote_to_bytes, urljoin, urlparse
+from urllib.parse import quote, unquote_to_bytes, urljoin, urlparse
 
 _ALLOWED_DOWNLOAD_REQUEST_HEADERS = {
     "if-modified-since": "If-Modified-Since",
@@ -96,12 +96,28 @@ def _is_ambiguous_ipv4_download_host(hostname: str) -> bool:
     return True
 
 
+_DOWNLOAD_PATH_SAFE = "/:%@!$&'()*+,;=%"
+_DOWNLOAD_PARAMS_SAFE = ":%@!$&'()*+,;=%"
+_DOWNLOAD_QUERY_SAFE = "/?:%@!$&'()*+,;=%"
+
+
+def _quote_download_url_component(value: str, *, safe: str) -> str:
+    if not value:
+        return value
+    return quote(value, safe=safe, encoding="utf-8", errors="strict")
+
+
 def _canonical_download_url(parsed, hostname: str) -> str:
     host = f"[{hostname}]" if ":" in hostname else hostname
     port = parsed.port
     if port is not None:
         host = f"{host}:{port}"
-    return parsed._replace(netloc=host).geturl()
+    return parsed._replace(
+        netloc=host,
+        path=_quote_download_url_component(parsed.path, safe=_DOWNLOAD_PATH_SAFE),
+        params=_quote_download_url_component(parsed.params, safe=_DOWNLOAD_PARAMS_SAFE),
+        query=_quote_download_url_component(parsed.query, safe=_DOWNLOAD_QUERY_SAFE),
+    ).geturl()
 
 
 def is_internal_host(hostname: str) -> bool:
