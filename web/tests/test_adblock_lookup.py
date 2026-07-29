@@ -229,6 +229,14 @@ def test_adblock_lookup_rejects_malformed_authority_candidates(
     assert _raws(lookup.candidate_rules("https://ads.example:bad/banner.js")) == set()
     assert _raws(lookup.candidate_rules("https://ads.example:99999/banner.js")) == set()
     assert _raws(
+        lookup.candidate_rules(r"https://safe.example\@ads.example/banner.js")
+    ) == set()
+    assert _raws(
+        lookup.candidate_rules(r"https://safe.example\.ads.example/banner.js")
+    ) == set()
+    assert _raws(lookup.candidate_rules(r"https://ads.example\path/banner.js")) == set()
+    assert _raws(lookup.candidate_rules("https://ads.example\n.evil/banner.js")) == set()
+    assert _raws(
         lookup.candidate_rules("https://safe.example%2f.ads.example/banner.js")
     ) == set()
     assert "||ads.example^" in _raws(

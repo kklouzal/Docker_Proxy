@@ -385,6 +385,10 @@ def test_adblock_decision_treats_escaped_abp_metacharacters_as_literals(
         "http://example.com]",
         "https://ads.example:bad/banner.js",
         "https://ads.example:99999/banner.js",
+        r"https://safe.example\@ads.example/banner.js",
+        r"https://safe.example\.ads.example/banner.js",
+        r"https://ads.example\path/banner.js",
+        "https://ads.example\n.evil/banner.js",
     ],
 )
 def test_adblock_decision_malformed_request_urls_do_not_raise(

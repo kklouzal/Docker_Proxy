@@ -53,8 +53,17 @@ def normalize_adblock_host(host: str) -> str:
 
 
 def safe_adblock_urlsplit(url: str) -> Any | None:
+    raw = str(url or "")
+    if (
+        not raw
+        or "\\" in raw
+        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw)
+    ):
+        return None
     try:
-        parsed = urlsplit(url or "")
+        parsed = urlsplit(raw)
+        if "\\" in (parsed.netloc or ""):
+            return None
         _hostname = parsed.hostname
         _port = parsed.port
         return parsed
