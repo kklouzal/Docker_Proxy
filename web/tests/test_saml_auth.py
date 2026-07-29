@@ -472,11 +472,19 @@ def test_saml_profile_rejects_parser_ambiguous_metadata_urls(
         store.save_profile({"metadata_url": metadata_url})
 
 
-def test_saml_profile_rejects_zero_metadata_url_port() -> None:
+@pytest.mark.parametrize(
+    "metadata_url",
+    [
+        "https://adfs.example.local:0/metadata.xml",
+        "https://adfs.example.local:/metadata.xml",
+        "https://adfs.example.local:/FederationMetadata/2007-06/FederationMetadata.xml",
+    ],
+)
+def test_saml_profile_rejects_invalid_metadata_url_ports(metadata_url: str) -> None:
     store = MemorySamlAuthStore()
 
     with pytest.raises(ValueError, match="metadata URL includes an invalid port"):
-        store.save_profile({"metadata_url": "https://adfs.example.local:0/metadata.xml"})
+        store.save_profile({"metadata_url": metadata_url})
 
 
 def test_saml_profile_accepts_valid_public_base_url_port() -> None:
@@ -539,6 +547,8 @@ def test_saml_profile_rejects_parser_ambiguous_public_base_urls(
         "https://admin.example.test:99999",
         "https://admin.example.test:notaport",
         "https://admin.example.test:0",
+        "https://admin.example.test:",
+        "https://admin.example.test:/saml",
     ],
 )
 def test_saml_profile_rejects_invalid_public_base_url_ports(

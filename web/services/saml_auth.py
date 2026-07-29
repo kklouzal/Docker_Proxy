@@ -80,6 +80,10 @@ def _decoded_authority_component_is_unsafe(value: str) -> bool:
     )
 
 
+def _has_empty_explicit_authority_port(netloc: str) -> bool:
+    return netloc.endswith(":")
+
+
 def _normalize_saml_url(value: Any, *, label: str) -> str:
     url = str(value or "").strip()
     if not url:
@@ -100,7 +104,7 @@ def _normalize_saml_url(value: Any, *, label: str) -> str:
     except ValueError as exc:
         msg = f"SAML {label} URL includes an invalid port."
         raise ValueError(msg) from exc
-    if port == 0:
+    if _has_empty_explicit_authority_port(parsed.netloc) or port == 0:
         msg = f"SAML {label} URL includes an invalid port."
         raise ValueError(msg)
     if _decoded_authority_component_is_unsafe(parsed.netloc) or any(
@@ -674,7 +678,7 @@ class SamlAuthStore:
         except ValueError as exc:
             msg = "SAML public base URL includes an invalid port."
             raise ValueError(msg) from exc
-        if port == 0:
+        if _has_empty_explicit_authority_port(parsed.netloc) or port == 0:
             msg = "SAML public base URL includes an invalid port."
             raise ValueError(msg)
         if _decoded_authority_component_is_unsafe(parsed.netloc) or any(
