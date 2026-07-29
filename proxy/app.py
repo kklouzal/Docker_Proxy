@@ -451,6 +451,31 @@ def manage_sync() -> Any:
     return jsonify(result), (200 if result.get("ok") else 409)
 
 
+@app.route("/api/manage/config/current", methods=["GET"])
+@_require_management_auth
+def manage_config_current() -> Any:
+    current_runtime = _runtime()
+    reader = getattr(current_runtime, "get_current_config_text", None)
+    raw_config = reader() if callable(reader) else ""
+    config_text = str(raw_config or "")
+    config_sha256 = ""
+    if config_text:
+        config_sha256 = hashlib.sha256(
+            config_text.encode("utf-8", errors="replace"),
+        ).hexdigest()
+    return jsonify(
+        {
+            "ok": bool(config_text.strip()),
+            "proxy_id": getattr(current_runtime, "proxy_id", ""),
+            "config_text": config_text,
+            "config_sha256": config_sha256,
+            "detail": "Running Squid config returned."
+            if config_text.strip()
+            else "Running Squid config is empty or unavailable.",
+        },
+    ), 200
+
+
 @app.route("/api/manage/config/validate", methods=["POST"])
 @_require_management_auth
 def manage_config_validate() -> Any:

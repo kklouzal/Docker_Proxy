@@ -997,15 +997,19 @@ class ProxyRuntime:
             self._navigation_health_cache_ts = 0.0
             self._navigation_health_cache_value = None
 
+    def get_current_config_text(self) -> str:
+        current = self.controller.get_current_config() or ""
+        normalizer = getattr(self.controller, "normalize_config_text", None)
+        if current and callable(normalizer):
+            current = normalizer(current)
+        return str(current or "")
+
     def _current_config_sha(self) -> str:
         if self.services.current_config_sha_reader is not None:
             return str(self.services.current_config_sha_reader() or "")
-        current = self.controller.get_current_config() or ""
+        current = self.get_current_config_text()
         if not current:
             return ""
-        normalizer = getattr(self.controller, "normalize_config_text", None)
-        if callable(normalizer):
-            current = normalizer(current)
         return hashlib.sha256(current.encode("utf-8", errors="replace")).hexdigest()
 
     def _current_adblock_enabled(self) -> bool:

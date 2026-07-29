@@ -343,6 +343,19 @@ class ProxyClient:
             timeout_seconds=timeout_seconds,
         ).data
 
+    def get_current_config(
+        self,
+        proxy_id: object | None,
+        *,
+        timeout_seconds: float = 10.0,
+    ) -> dict[str, Any]:
+        return self._request(
+            proxy_id,
+            method="GET",
+            path="/api/manage/config/current",
+            timeout_seconds=timeout_seconds,
+        ).data
+
     def validate_config(
         self,
         proxy_id: object | None,

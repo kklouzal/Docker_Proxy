@@ -99,6 +99,38 @@ def test_proxy_client_sets_bearer_auth_and_json_body(
     assert captured["timeout"] == pytest.approx(9.5)
 
 
+def test_proxy_client_get_current_config_uses_management_endpoint(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        proxy_client,
+        "get_proxy_registry",
+        lambda: _Registry("http://proxy-mgmt:5000/api/manage"),
+    )
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["method"] = request.get_method()
+        captured["timeout"] = timeout
+        return _Response({"ok": True, "config_text": "http_port 3128\n"})
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    payload = proxy_client.ProxyClient().get_current_config(
+        "live",
+        timeout_seconds=6.5,
+    )
+
+    assert payload == {"ok": True, "config_text": "http_port 3128\n"}
+    assert captured == {
+        "url": "http://proxy-mgmt:5000/api/manage/config/current",
+        "method": "GET",
+        "timeout": 6.5,
+    }
+
+
 def test_proxy_client_canonicalizes_endpoint_shaped_management_url(
     monkeypatch, proxy_client_module
 ) -> None:

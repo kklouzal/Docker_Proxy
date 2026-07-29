@@ -74,6 +74,9 @@ class _Runtime:
         self.sync_operation_id = operation_id
         return {"ok": False, "detail": "sync failed"}
 
+    def get_current_config_text(self) -> str:
+        return "http_port 3128\nssl_bump splice all\n"
+
     def validate_config_text(self, config_text: str):
         self.validation_text = config_text
         return {"ok": False, "detail": "parse failed"}
@@ -136,6 +139,7 @@ def test_proxy_management_api_requires_token_for_all_management_endpoints(
     endpoints = [
         ("GET", "/api/manage/health", None),
         ("POST", "/api/manage/sync", {}),
+        ("GET", "/api/manage/config/current", None),
         ("POST", "/api/manage/config/validate", {"config_text": "workers 1\n"}),
         ("POST", "/api/manage/config/rollback", {"reason": "test"}),
         ("POST", "/api/manage/cache/clear", {}),
@@ -174,6 +178,26 @@ def test_proxy_management_api_accepts_bearer_and_x_proxy_token(monkeypatch) -> N
     assert bearer.get_json()["proxy_id"] == "edge-a"
     assert x_token.status_code == 200
     assert bad.status_code == 403
+
+
+def test_proxy_management_config_current_returns_running_config(monkeypatch) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    proxy_app.runtime = _Runtime()
+    client = proxy_app.app.test_client()
+
+    response = _management_get(
+        client,
+        "/api/manage/config/current",
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["ok"] is True
+    assert data["proxy_id"] == "edge-a"
+    assert data["config_text"] == "http_port 3128\nssl_bump splice all\n"
+    assert len(data["config_sha256"]) == 64
 
 
 def test_proxy_management_auth_uses_constant_time_compare(monkeypatch) -> None:

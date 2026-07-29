@@ -3206,24 +3206,63 @@ def _cached_observability_summary(
     return dict(summary)
 
 
+def _selected_proxy_running_config(proxy_id: str) -> tuple[str, str]:
+    fetcher = getattr(get_proxy_client(), "get_current_config", None)
+    if not callable(fetcher):
+        return "", "Selected proxy client cannot fetch the running Squid config."
+    try:
+        result = fetcher(proxy_id)
+    except ProxyClientError as exc:
+        return "", str(exc)
+    config_text = str((result or {}).get("config_text") or "")
+    if config_text.strip():
+        return config_text, ""
+    detail = str(
+        (result or {}).get("detail")
+        or "Selected proxy runtime returned an empty running Squid config."
+    )
+    return "", detail
+
+
 def _current_managed_config() -> str:
     """Return the effective config for the active proxy.
 
     Config revisions are the source of truth. The live Squid config is used only
     as a bootstrap fallback for a proxy that has not yet stored its first revision.
+    In admin/proxy split deployments, bootstrap from the selected proxy runtime
+    instead of from the admin container's local filesystem.
     """
+    proxy_id = get_proxy_id()
     revisions = get_config_revisions()
-    current = revisions.get_active_config_text(get_proxy_id())
+    current = revisions.get_active_config_text(proxy_id)
     if current:
         return current
+
+    runtime_detail = ""
+    if _active_proxy_management_url():
+        runtime_config, runtime_detail = _selected_proxy_running_config(proxy_id)
+        if runtime_config.strip():
+            revisions.ensure_active_revision(
+                proxy_id,
+                runtime_config,
+                created_by="system",
+                source_kind="bootstrap_runtime",
+            )
+            return runtime_config
+
     fallback = squid_controller.get_current_config() or ""
     if fallback.strip():
         revisions.ensure_active_revision(
-            get_proxy_id(),
+            proxy_id,
             fallback,
             created_by="system",
             source_kind="bootstrap",
         )
+        return fallback
+
+    if runtime_detail:
+        detail = f"Selected proxy runtime did not provide a Squid config: {runtime_detail}"
+        raise ProxyClientError(detail)
     return fallback
 
 
@@ -5055,7 +5094,14 @@ def api_version_status():
 
 @app.route("/api/squid-config", methods=["GET"])
 def api_squid_config():
-    cfg = _current_managed_config()
+    try:
+        cfg = _current_managed_config()
+    except ProxyClientError as exc:
+        return app.response_class(
+            str(exc),
+            status=502,
+            mimetype="text/plain; charset=utf-8",
+        )
     return app.response_class(cfg, mimetype="text/plain; charset=utf-8")
 
 

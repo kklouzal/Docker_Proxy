@@ -877,6 +877,104 @@ def test_api_squid_config_plain_text_contract(monkeypatch, tmp_path) -> None:
     assert "Content-Security-Policy" not in response.headers
 
 
+def test_api_squid_config_bootstraps_from_selected_proxy_runtime_when_admin_empty(
+    monkeypatch, tmp_path
+) -> None:
+    class EmptyController:
+        def get_current_config(self) -> str:
+            return ""
+
+    class EmptyRevisions:
+        def __init__(self) -> None:
+            self.created = []
+
+        def get_active_config_text(self, _proxy_id):
+            return ""
+
+        def ensure_active_revision(self, proxy_id, config_text, **kwargs):
+            self.created.append((proxy_id, config_text, kwargs))
+            return SimpleNamespace(revision_id=1, config_text=config_text)
+
+    class RuntimeConfigProxyClient(RecordingProxyClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config_calls = []
+
+        def get_current_config(self, proxy_id):
+            self.config_calls.append(str(proxy_id))
+            return {
+                "ok": True,
+                "config_text": "http_port 3128\nssl_bump splice all\n",
+            }
+
+    revisions = EmptyRevisions()
+    proxy_client = RuntimeConfigProxyClient()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        controller=EmptyController(),
+        config_revisions=revisions,
+        proxy_client=proxy_client,
+        registry=FakeRegistry(["edge-a"]),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/squid-config?proxy_id=edge-a")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "http_port 3128" in body
+    assert "ssl_bump splice all" in body
+    assert proxy_client.config_calls == ["edge-a"]
+    assert revisions.created == [
+        (
+            "edge-a",
+            "http_port 3128\nssl_bump splice all\n",
+            {"created_by": "system", "source_kind": "bootstrap_runtime"},
+        )
+    ]
+
+
+def test_api_squid_config_reports_proxy_runtime_empty_instead_of_empty_success(
+    monkeypatch, tmp_path
+) -> None:
+    class EmptyController:
+        def get_current_config(self) -> str:
+            return ""
+
+    class EmptyRevisions:
+        def get_active_config_text(self, _proxy_id):
+            return ""
+
+    class EmptyRuntimeConfigProxyClient(RecordingProxyClient):
+        def get_current_config(self, proxy_id):
+            return {
+                "ok": False,
+                "config_text": "",
+                "detail": f"runtime config unavailable for {proxy_id}",
+            }
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        controller=EmptyController(),
+        config_revisions=EmptyRevisions(),
+        proxy_client=EmptyRuntimeConfigProxyClient(),
+        registry=FakeRegistry(["edge-a"]),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/squid-config?proxy_id=edge-a")
+
+    assert response.status_code == 502
+    assert response.headers.get("Content-Type", "").startswith("text/plain")
+    body = response.get_data(as_text=True)
+    assert "runtime config unavailable for edge-a" in body
+    assert body.strip()
+
+
 def test_api_squid_config_state_reports_pending_desired_revision(
     monkeypatch, tmp_path
 ) -> None:
