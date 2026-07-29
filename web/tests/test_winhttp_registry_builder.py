@@ -499,9 +499,24 @@ def test_advproxy_settings_file_write_command_materializes_referenced_file() -> 
     )
 
 
-def test_advproxy_settings_file_write_command_rejects_unsafe_filename() -> None:
+@pytest.mark.parametrize(
+    "filename",
+    [
+        r"..\\proxy.json",
+        "CON.json",
+        "NUL.txt",
+        "PRN",
+        "AUX.config",
+        "COM1.json",
+        "LPT9.json",
+        "winhttp-proxy-settings.json.",
+    ],
+)
+def test_advproxy_settings_file_write_command_rejects_unsafe_filename(
+    filename: str,
+) -> None:
     with pytest.raises(WinHttpBuilderError, match="settings file name"):
-        build_advproxy_settings_file_write_command("{}", filename=r"..\\proxy.json")
+        build_advproxy_settings_file_write_command("{}", filename=filename)
 
 
 def test_contract_output_rejects_values_that_would_break_powershell_here_string() -> None:

@@ -31,6 +31,14 @@ COMMAND_REDIRECTION_RE = re.compile(r"[<>]")
 RAW_HEX_INPUT_RE = re.compile(r"^[0-9a-fA-F,\s\\-]*$")
 CUSTOM_PROXY_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
 SETTINGS_FILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+WINDOWS_RESERVED_SETTINGS_FILE_STEMS = (
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+)
 
 
 def _is_ambiguous_ipv4_like_host(value: str) -> bool:
@@ -782,19 +790,28 @@ def build_advproxy_command(
     return f"netsh winhttp set advproxy setting-scope={chosen_scope} settings={_quote_windows_command_argument(settings_json)}"
 
 
+def _validate_settings_file_name(filename: str) -> str:
+    value = str(filename or "")
+    _validate_command_value(value, "advproxy settings file name")
+    reserved_stem = value.split(".", 1)[0].upper()
+    if (
+        any(separator in value for separator in ("/", "\\"))
+        or value in {".", ".."}
+        or value.endswith(".")
+        or reserved_stem in WINDOWS_RESERVED_SETTINGS_FILE_STEMS
+        or not SETTINGS_FILE_NAME_RE.fullmatch(value)
+    ):
+        msg = "advproxy settings file name must be a simple, non-reserved file name, not a path or shell expression."
+        raise WinHttpBuilderError(msg)
+    return value
+
+
 def build_advproxy_settings_file_write_command(
     settings_json: str,
     *,
     filename: str = "winhttp-proxy-settings.json",
 ) -> str:
-    _validate_command_value(filename, "advproxy settings file name")
-    if (
-        any(separator in filename for separator in ("/", "\\"))
-        or filename in {".", ".."}
-        or not SETTINGS_FILE_NAME_RE.fullmatch(filename)
-    ):
-        msg = "advproxy settings file name must be a simple file name, not a path or shell expression."
-        raise WinHttpBuilderError(msg)
+    safe_filename = _validate_settings_file_name(filename)
     if "\r" in settings_json or "\x00" in settings_json:
         msg = "advproxy settings-file JSON must not contain carriage returns or NUL bytes."
         raise WinHttpBuilderError(msg)
@@ -806,7 +823,7 @@ def build_advproxy_settings_file_write_command(
         "@'\n"
         f"{settings_json}\n"
         "'@ | Set-Content -LiteralPath "
-        f".\\{filename} -Encoding ascii -NoNewline"
+        f".\\{safe_filename} -Encoding ascii -NoNewline"
     )
 
 
