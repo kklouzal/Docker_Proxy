@@ -26,6 +26,9 @@ from services.ui_support import (
         "/%2525252fevil.example/path",
         "/%E0%A4%A",
         "/%C0%AF",
+        "/admin?next=%ZZ",
+        "/admin#%ZZ",
+        "/admin?next=%0d%0aLocation:%20//evil.example",
     ],
 )
 def test_safe_local_return_url_rejects_absolute_or_malformed(value: str) -> None:
@@ -61,6 +64,15 @@ def test_safe_local_return_url_preserves_valid_local_return() -> None:
     )
 
 
+def test_safe_local_return_url_allows_encoded_slashes_in_query_and_fragment() -> None:
+    assert safe_local_return_url("/login?next=%2Fadmin") == "/login?next=%2Fadmin"
+    assert safe_local_return_url("/admin#%2Fsection") == "/admin#%2Fsection"
+    assert (
+        safe_local_return_url("/admin?next=%252Fadmin#tab=%252Fsection")
+        == "/admin?next=%252Fadmin#tab=%252Fsection"
+    )
+
+
 def test_append_query_to_local_return_fails_closed_for_malformed_return() -> None:
     assert append_query_to_local_return("http://[::1", ok=1) is None
 
@@ -76,6 +88,13 @@ def test_append_query_to_local_return_preserves_valid_query_and_fragment() -> No
     assert (
         append_query_to_local_return("/admin/ssl?pane=old&keep=1#details", pane="tls")
         == "/admin/ssl?keep=1&pane=tls#details"
+    )
+
+
+def test_append_query_to_local_return_allows_encoded_slash_next_value() -> None:
+    assert (
+        append_query_to_local_return("/login?next=%2Fadmin#%2Fsection", ok=1)
+        == "/login?next=%2Fadmin&ok=1#%2Fsection"
     )
 
 

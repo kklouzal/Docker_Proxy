@@ -659,9 +659,33 @@ def bulk_lines(value: str | None) -> list[str]:
     return lines
 
 
+_MALFORMED_PERCENT_ESCAPE_PATTERN = re.compile(r"%(?![0-9A-Fa-f]{2})")
+
+
+def _has_control_char(value: str) -> bool:
+    return any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+
+
+def _fully_unquote_strict(value: str) -> str | None:
+    decoded = value
+    for _ in range(max(1, len(value))):
+        if _MALFORMED_PERCENT_ESCAPE_PATTERN.search(decoded):
+            return None
+        previous = decoded
+        try:
+            decoded = unquote(previous, errors="strict")
+        except UnicodeDecodeError:
+            return None
+        if decoded == previous:
+            break
+    else:
+        return None
+    return decoded
+
+
 def safe_local_return_url(value: str | None) -> str | None:
     raw = (value or "").strip()
-    if not raw or "\\" in raw:
+    if not raw or "\\" in raw or _has_control_char(raw):
         return None
     try:
         parsed = urlsplit(raw)
@@ -672,30 +696,20 @@ def safe_local_return_url(value: str | None) -> str | None:
     if not parsed.path.startswith("/") or parsed.path.startswith("//"):
         return None
 
-    decoded = raw
-    for _ in range(max(1, len(raw))):
-        previous = decoded
-        try:
-            decoded = unquote(previous, errors="strict")
-        except UnicodeDecodeError:
-            return None
-        if decoded == previous:
-            break
-    else:
+    decoded_path = _fully_unquote_strict(parsed.path)
+    decoded_query = _fully_unquote_strict(parsed.query)
+    decoded_fragment = _fully_unquote_strict(parsed.fragment)
+    if decoded_path is None or decoded_query is None or decoded_fragment is None:
         return None
-    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in decoded):
+
+    decoded_parts = (decoded_path, decoded_query, decoded_fragment)
+    if any(_has_control_char(part) or "\\" in part for part in decoded_parts):
         return None
-    if "\\" in decoded or decoded.startswith("//"):
+    if not decoded_path.startswith("/") or decoded_path.startswith("//"):
         return None
-    try:
-        decoded_parsed = urlsplit(decoded)
-    except ValueError:
+    if any(segment in {".", ".."} for segment in decoded_path.split("/")):
         return None
-    if decoded_parsed.scheme or decoded_parsed.netloc:
-        return None
-    if any(segment in {".", ".."} for segment in decoded_parsed.path.split("/")):
-        return None
-    if decoded.count("/") > raw.count("/"):
+    if decoded_path.count("/") > parsed.path.count("/"):
         return None
 
     return urlunsplit(("", "", parsed.path, parsed.query, parsed.fragment))
