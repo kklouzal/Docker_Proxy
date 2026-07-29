@@ -13,6 +13,12 @@ _WEBCAT_BUILD_TABLE_RE = re.compile(
     r"^webcat_(?:domains|categories|aliases|meta|pairs)_(?:stage|old)_(\d+)_(\d+)$",
 )
 
+_LIST_WEBCAT_BUILD_TABLES_SQL = (
+    "SELECT TABLE_NAME FROM information_schema.TABLES "
+    "WHERE TABLE_SCHEMA = DATABASE() "
+    "AND TABLE_NAME LIKE 'webcat\\\\_%' ESCAPE '\\\\'"
+)
+
 
 @dataclass(frozen=True)
 class WebCatBuildTableCleanupResult:
@@ -85,9 +91,7 @@ def commit_if_supported(conn) -> None:
 
 
 def list_webcat_build_tables(conn) -> list[str]:
-    rows = conn.execute(
-        "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'webcat\\_%' ESCAPE '\\'",
-    ).fetchall()
+    rows = conn.execute(_LIST_WEBCAT_BUILD_TABLES_SQL).fetchall()
     tables: list[str] = []
     for row in rows:
         table = _table_name_from_row(row)

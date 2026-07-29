@@ -19,9 +19,10 @@ class _Connection:
         self.commits = 0
 
     def execute(self, sql, params=()):
-        compact = " ".join(str(sql).split())
+        text = str(sql)
+        compact = " ".join(text.split())
         params = tuple(params or ())
-        self.queries.append((compact, params))
+        self.queries.append((text, params))
         if "information_schema.TABLES" in compact:
             return _Rows(self.tables)
         return _Rows([])
@@ -32,6 +33,28 @@ class _Connection:
 
 def _drop_queries(conn: _Connection) -> list[str]:
     return [query for query, _params in conn.queries if query.startswith("DROP TABLE")]
+
+
+def test_list_webcat_build_tables_uses_valid_mysql_escape_literal() -> None:
+    conn = _Connection(
+        [
+            ("webcat_domains_stage_111_1000",),
+            ("webcat_domains",),
+            ("webcat_domains_stage_111_1000_extra",),
+        ],
+    )
+
+    tables = webcat_hygiene.list_webcat_build_tables(conn)
+
+    assert tables == ["webcat_domains_stage_111_1000"]
+    assert conn.queries == [
+        (
+            "SELECT TABLE_NAME FROM information_schema.TABLES "
+            "WHERE TABLE_SCHEMA = DATABASE() "
+            "AND TABLE_NAME LIKE 'webcat\\\\_%' ESCAPE '\\\\'",
+            (),
+        ),
+    ]
 
 
 def test_webcat_build_table_matching_is_strict() -> None:
