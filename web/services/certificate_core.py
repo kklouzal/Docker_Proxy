@@ -650,6 +650,8 @@ def _canonical_admin_ui_certificate_san(clean: str) -> tuple[str, str] | None:
         if not _dns_san_valid(dns):
             return None
         return f"dns:{dns}", dns
+    if getattr(ip, "scope_id", None):
+        return None
     return f"ip:{ip.compressed}", ip.compressed
 
 

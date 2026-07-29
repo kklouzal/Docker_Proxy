@@ -653,6 +653,64 @@ def test_admin_ui_https_configured_sans_canonicalize_ipv6_and_dedupe(
     assert tokens == ("2001:db8::1", "proxyadmin.example.com")
 
 
+def test_admin_ui_https_preference_rejects_configured_scoped_ipv6_san(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={
+            "csrf_token": token,
+            "enabled": "1",
+            "san_tokens": "[fe80::1%25eth0]:5000",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert _location_params(response)["ok"] == ["0"]
+    assert "DNS names or IP addresses" in _location_params(response)["msg"][0]
+    assert bundles.admin_ui_https_settings.enabled is False
+
+
+def test_admin_ui_https_request_sans_drop_scoped_ipv6_before_persisting(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile, _keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: (True, "restart requested"),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        headers={"X-Forwarded-Host": "[fe80::1%25eth0]:5000"},
+        data={"csrf_token": token, "enabled": "1", "san_tokens": ""},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert bundles.admin_ui_https_settings.enabled is True
+    assert bundles.admin_ui_https_settings.san_tokens == ""
+    leaf = x509.load_pem_x509_certificate(Path(certfile).read_bytes())
+    sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert "fe80::1%25eth0" not in [
+        str(ip) for ip in sans.get_values_for_type(x509.IPAddress)
+    ]
+
+
 def test_admin_ui_https_request_sans_parse_bracketed_ipv6_request_host(
     monkeypatch, tmp_path
 ) -> None:

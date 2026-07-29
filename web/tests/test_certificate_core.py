@@ -485,6 +485,29 @@ def test_admin_ui_san_normalization_handles_forwarded_hosts_and_ipv6() -> None:
     assert "*.example.test" not in sans
 
 
+def test_admin_ui_san_normalization_rejects_scoped_ipv6_literals() -> None:
+    sans = certificate_core.normalize_admin_ui_certificate_sans(
+        [
+            "fe80::1%eth0",
+            "fe80::1%25eth0",
+            "[fe80::1%25eth0]:5000",
+            "2001:db8::10",
+            "[2001:db8::10]:5000",
+        ],
+    )
+
+    assert certificate_core.normalize_admin_ui_certificate_san_token("fe80::1%eth0") == ""
+    assert (
+        certificate_core.normalize_admin_ui_certificate_san_token(
+            "[fe80::1%25eth0]:5000",
+        )
+        == ""
+    )
+    assert "fe80::1%eth0" not in sans
+    assert "fe80::1%25eth0" not in sans
+    assert "2001:db8::10" in sans
+
+
 @pytest.mark.parametrize(
     "value",
     [
