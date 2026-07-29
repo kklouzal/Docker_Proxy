@@ -16,7 +16,7 @@ from services.control_plane_maintenance import (
 from services.db import OPERATIONAL_ERRORS
 from services.diagnostic_store import get_diagnostic_store
 from services.live_stats import get_store
-from services.logutil import log_exception_throttled
+from services.logutil import log_exception_throttled, should_log
 from services.observability_maintenance import (
     ObservabilityMaintenanceAlreadyRunningError,
     acquire_observability_maintenance_lock,
@@ -312,6 +312,26 @@ def _sleep_until(target: datetime) -> None:
         time.sleep(min(300.0, max(1.0, remaining)))
 
 
+def _log_failed_housekeeping_result(
+    result: dict[str, Any] | None, *, run_label: str
+) -> None:
+    """Surface best-effort housekeeping failures returned without raising."""
+    if not isinstance(result, dict) or result.get("ok", True):
+        return
+    try:
+        if should_log(f"housekeeping.loop.result.{run_label}", interval_seconds=300):
+            logger.warning(
+                "Housekeeping %s returned failed result: status=%s detail=%s result=%s",
+                run_label,
+                result.get("status"),
+                result.get("detail"),
+                result,
+            )
+    except Exception:
+        # Never let logging break the worker loop.
+        pass
+
+
 def _run_due_scheduled_housekeeping(
     *,
     now: datetime,
@@ -327,11 +347,12 @@ def _run_due_scheduled_housekeeping(
 
     if weekly_due:
         try:
-            run_housekeeping_once(
+            result = run_housekeeping_once(
                 retention_days=current_retention_days(retention_days),
                 analyze=True,
                 optimize=True,
             )
+            _log_failed_housekeeping_result(result, run_label="weekly")
         except Exception:
             log_exception_throttled(
                 logger,
@@ -349,9 +370,10 @@ def _run_due_scheduled_housekeeping(
             )
     elif daily_due:
         try:
-            run_housekeeping_once(
+            result = run_housekeeping_once(
                 retention_days=current_retention_days(retention_days),
             )
+            _log_failed_housekeeping_result(result, run_label="daily")
         except Exception:
             log_exception_throttled(
                 logger,
@@ -383,9 +405,10 @@ def start_housekeeping(
         if interval_seconds is not None:
             while True:
                 try:
-                    run_housekeeping_once(
+                    result = run_housekeeping_once(
                         retention_days=current_retention_days(retention_days),
                     )
+                    _log_failed_housekeeping_result(result, run_label="interval")
                 except Exception:
                     log_exception_throttled(
                         logger,

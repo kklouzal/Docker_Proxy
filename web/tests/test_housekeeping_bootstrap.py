@@ -521,6 +521,104 @@ def test_housekeeping_scheduled_due_daily_only_preserved(
     assert next_weekly == weekly_due
 
 
+def test_housekeeping_scheduled_due_daily_logs_structured_failed_result(
+    monkeypatch, housekeeping, caplog
+) -> None:
+    calls: list[tuple[int, bool, bool]] = []
+    result = {
+        "ok": False,
+        "status": "failed",
+        "detail": "diagnostic prune failed",
+        "prune": {"ok": False, "steps": []},
+    }
+
+    def run_once(
+        *,
+        retention_days: int,
+        analyze: bool = False,
+        optimize: bool = False,
+        **_kwargs,
+    ):
+        calls.append((retention_days, analyze, optimize))
+        return result
+
+    monkeypatch.setattr(housekeeping, "current_retention_days", lambda default: default)
+    monkeypatch.setattr(housekeeping, "run_housekeeping_once", run_once)
+    monkeypatch.setattr(housekeeping, "should_log", lambda *_args, **_kwargs: True)
+
+    with caplog.at_level("WARNING", logger=housekeeping.logger.name):
+        next_daily, next_weekly = housekeeping._run_due_scheduled_housekeeping(
+            now=datetime(2026, 5, 25, 2, 30, tzinfo=UTC),
+            next_daily=datetime(2026, 5, 25, 2, 0, tzinfo=UTC),
+            next_weekly=datetime(2026, 5, 31, 3, 0, tzinfo=UTC),
+            retention_days=45,
+            daily_hour=2,
+            weekly_weekday=6,
+            weekly_hour=3,
+        )
+
+    assert calls == [(45, False, False)]
+    assert next_daily == datetime(2026, 5, 26, 2, 0, tzinfo=UTC)
+    assert next_weekly == datetime(2026, 5, 31, 3, 0, tzinfo=UTC)
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelname == "WARNING"
+    assert "Housekeeping daily returned failed result" in caplog.records[0].message
+    assert "diagnostic prune failed" in caplog.records[0].message
+
+
+def test_housekeeping_interval_loop_logs_structured_failed_result_once(
+    monkeypatch, housekeeping, caplog
+) -> None:
+    class StopLoopError(Exception):
+        pass
+
+    calls: list[tuple[int, bool, bool]] = []
+    result = {
+        "ok": False,
+        "status": "failed",
+        "detail": "control-plane prune failed",
+    }
+
+    def run_once(
+        *,
+        retention_days: int,
+        analyze: bool = False,
+        optimize: bool = False,
+        **_kwargs,
+    ):
+        calls.append((retention_days, analyze, optimize))
+        return result
+
+    class InlineThread:
+        def __init__(self, *, target, name: str, daemon: bool) -> None:
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self) -> None:
+            self.target()
+
+    def stop_after_iteration(_seconds: float) -> None:
+        raise StopLoopError
+
+    monkeypatch.setattr(housekeeping, "_started", False)
+    monkeypatch.setattr(housekeeping, "current_retention_days", lambda default: default)
+    monkeypatch.setattr(housekeeping, "run_housekeeping_once", run_once)
+    monkeypatch.setattr(housekeeping, "should_log", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(housekeeping.threading, "Thread", InlineThread)
+    monkeypatch.setattr(housekeeping.time, "sleep", stop_after_iteration)
+
+    with caplog.at_level("WARNING", logger=housekeeping.logger.name):
+        with pytest.raises(StopLoopError):
+            housekeeping.start_housekeeping(retention_days=45, interval_seconds=60)
+
+    assert calls == [(45, False, False)]
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelname == "WARNING"
+    assert "Housekeeping interval returned failed result" in caplog.records[0].message
+    assert "control-plane prune failed" in caplog.records[0].message
+
+
 def test_housekeeping_scheduled_due_weekly_only_preserved(
     monkeypatch, housekeeping
 ) -> None:
