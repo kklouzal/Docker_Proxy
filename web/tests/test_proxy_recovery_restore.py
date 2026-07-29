@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: I001
 
+import hashlib
 import sys
 from pathlib import Path
 from typing import Any
@@ -214,7 +215,8 @@ def _bundle(*, proxy_id: str = "edge-01", source_id: str = SOURCE_ID, overrides:
 def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
     sha = "a" * 64
     cert_sha = "b" * 64
-    cfg_sha = "c" * 64
+    cfg_text = "http_port 3128"
+    cfg_sha = hashlib.sha256(cfg_text.encode("utf-8", errors="replace")).hexdigest()
     return {
         "adblock_lists": ({"key": "easylist", "url": "https://example.invalid/easy.txt", "enabled": 1},),
         "adblock_settings": ({"k": "enabled", "v": "1"},),
@@ -278,7 +280,7 @@ def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
             },
         ),
         "proxy_config_revisions": (
-            {"proxy_id": proxy_id, "config_sha256": cfg_sha, "config_text": "http_port 3128"},
+            {"proxy_id": proxy_id, "config_sha256": cfg_sha, "config_text": cfg_text},
         ),
         "pac_profiles": (
             {"source_profile_id": 42, "proxy_id": proxy_id, "name": "default", "client_cidr": "10.0.0.0/24"},
@@ -416,9 +418,13 @@ def test_lifecycle_rejection_and_lock_failure_fail_closed() -> None:
 
 
 def test_malformed_columns_types_duplicates_pac_orphans_and_active_cardinality_reject_before_writes() -> None:
+    mismatched_config_sha_rows = _base_rows("edge-01")["proxy_config_revisions"]
+    mismatched_config_sha_row = dict(mismatched_config_sha_rows[0])
+    mismatched_config_sha_row["config_sha256"] = "d" * 64
     cases = [
         {"adblock_lists": ({"key": "easylist", "url": "u", "enabled": 1, "extra": "x"},)},
         {"adblock_lists": ({"key": "easylist", "url": "u", "enabled": "1"},)},
+        {"proxy_config_revisions": (mismatched_config_sha_row,)},
         {
             "webfilter_settings": (
                 {"proxy_id": "edge-01", "k": "enabled", "v": "1"},
@@ -478,4 +484,32 @@ def test_restore_contract_has_no_select_star_or_bundle_derived_tables() -> None:
     assert all("SELECT *" not in _sql(sql).upper() for sql in module_sql_values)
     assert tuple(restore._EXPECTED_TABLE_COLUMNS) == tuple(
         spec.table_name for spec in proxy_recovery.recovery_registry()
+    )
+
+
+def test_config_revision_restore_recomputes_declared_sha_before_writes() -> None:
+    config_text = "http_port 3128\nvisible_hostname recovered\n"
+    expected_sha = hashlib.sha256(
+        config_text.encode("utf-8", errors="replace"),
+    ).hexdigest()
+    bundle = _bundle(
+        overrides={
+            "proxy_config_revisions": (
+                {
+                    "proxy_id": "edge-01",
+                    "config_sha256": expected_sha,
+                    "config_text": config_text,
+                },
+            ),
+        },
+    )
+    conn = _StrictRestoreConn()
+
+    result = restore.restore_recovery_bundle(conn, bundle, "edge-01", now_ts=NOW)
+
+    assert result.status == "adopted"
+    assert any(
+        sql.startswith("INSERT INTO proxy_config_revisions")
+        and params == ("edge-01", expected_sha, config_text, NOW)
+        for sql, params in conn.ops
     )

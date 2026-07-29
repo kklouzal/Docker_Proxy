@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 # ruff: noqa: EM101, EM102, TRY003
+import hashlib
 import time
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -493,11 +494,32 @@ def _validate_rows(
                 raise ProxyRecoveryRestoreError(f"duplicate natural key in recovery table {table_name}")
             seen_keys.add(key)
         rows.append(normalized)
+    if table_name == "proxy_config_revisions":
+        _validate_proxy_config_revision_digests(rows, expected_columns)
     if table_name == "webfilter_settings":
         keys = {dict(zip(expected_columns, row, strict=True))["k"] for row in rows}
         if not keys.issubset(_EXACT_WEBFILTER_KEYS):
             raise ProxyRecoveryRestoreError("webfilter restore contains unsupported setting key")
     return tuple(rows)
+
+
+def _validate_proxy_config_revision_digests(
+    rows: tuple[tuple[Any, ...], ...],
+    columns: tuple[str, ...],
+) -> None:
+    if not rows:
+        return
+    sha_index = columns.index("config_sha256")
+    text_index = columns.index("config_text")
+    for row in rows:
+        config_text = str(row[text_index] or "")
+        expected_sha = hashlib.sha256(
+            config_text.encode("utf-8", errors="replace"),
+        ).hexdigest()
+        if str(row[sha_index] or "") != expected_sha:
+            raise ProxyRecoveryRestoreError(
+                "proxy config revision digest does not match config text",
+            )
 
 
 def _normalize_column_value(
