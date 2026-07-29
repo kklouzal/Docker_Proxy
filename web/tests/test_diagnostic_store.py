@@ -168,6 +168,72 @@ def test_domain_time_candidate_queries_order_ties_by_id(monkeypatch) -> None:
     assert [row["correlation_kind"] for row in candidates] == ["domain_time"] * 4
 
 
+def test_policy_candidate_query_ignores_blank_client_ip_for_domain_time_match(monkeypatch) -> None:
+    captured_sql: list[str] = []
+    captured_params: list[tuple[object, ...]] = []
+
+    class FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class RequestConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, params):
+            sql_text = str(sql)
+            captured_sql.append(sql_text)
+            captured_params.append(tuple(params))
+            if "client_ip = %s" in sql_text:
+                # A whitespace-only policy src_ip used to bind as an empty client_ip,
+                # which made the otherwise valid domain/time correlation impossible.
+                return FakeCursor([])
+            if "ORDER BY ts DESC" in sql_text:
+                return FakeCursor(
+                    [
+                        _candidate_request_row(
+                            ts=1000,
+                            master_xaction="tx-domain-match",
+                            row_id=40,
+                        )
+                    ]
+                )
+            if "ORDER BY ts ASC" in sql_text:
+                return FakeCursor([])
+            raise AssertionError(sql_text)
+
+    store = DiagnosticStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", RequestConnection)
+    monkeypatch.setattr(
+        store,
+        "_batch_list_icap_by_master_xactions",
+        lambda *_args, **_kwargs: {},
+    )
+
+    candidates = store.list_request_candidates_for_policy_event(
+        around_ts=1000,
+        url="https://example.test/policy",
+        client_ip="   ",
+        domain="example.test",
+        window_seconds=30,
+        limit=3,
+    )
+
+    assert "client_ip = %s" not in captured_sql[0]
+    assert "domain = %s" in captured_sql[0]
+    assert "url LIKE %s" in captured_sql[0]
+    assert all("" not in params for params in captured_params)
+    assert [row["master_xaction"] for row in candidates] == ["tx-domain-match"]
+    assert candidates[0]["correlation_kind"] == "domain_time"
+
+
 def test_policy_and_icap_candidate_queries_order_ties_by_id(monkeypatch) -> None:
     request_sql: list[str] = []
     icap_sql: list[str] = []

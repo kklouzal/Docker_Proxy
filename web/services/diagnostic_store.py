@@ -1822,11 +1822,12 @@ class DiagnosticStore:
         branch_lim = min(200, max(lim * 4, lim))
         self.init_db()
 
+        normalized_client_ip = (client_ip or "").strip()
         base_where = ["proxy_id = %s"]
         base_params: list[Any] = [get_proxy_id()]
-        if client_ip:
+        if normalized_client_ip:
             base_where.append("client_ip = %s")
-            base_params.append(client_ip.strip())
+            base_params.append(normalized_client_ip)
         like_parts: list[str] = []
         like_params: list[Any] = []
         if normalized_domain:
