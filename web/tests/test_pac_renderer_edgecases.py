@@ -67,6 +67,30 @@ def _evaluate_pac(rendered: str, host: str) -> str:
     return subprocess.check_output(["node", "-e", script], text=True)
 
 
+def _evaluate_pac_with_dns_answer(rendered: str, host: str, dns_answer: str) -> str:
+    script = "\n".join(
+        (
+            "function dnsDomainIs(host, domain) { return host.endsWith(domain); }",
+            "function isPlainHostName(host) { return host.indexOf('.') < 0; }",
+            f"function dnsResolve(host) {{ return {json.dumps(dns_answer)}; }}",
+            "function isInNet(ip, pattern, mask) {",
+            "  if (!/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(ip || '')) {",
+            "    throw new Error('isInNet called with non-IPv4 address: ' + ip);",
+            "  }",
+            "  function toInt(value) {",
+            "    return value.split('.').reduce(function(acc, octet) {",
+            "      return ((acc << 8) | (parseInt(octet, 10) & 255)) >>> 0;",
+            "    }, 0);",
+            "  }",
+            "  return (toInt(ip) & toInt(mask)) === (toInt(pattern) & toInt(mask));",
+            "}",
+            rendered,
+            f"process.stdout.write(FindProxyForURL('', {json.dumps(host)}));",
+        ),
+    )
+    return subprocess.check_output(["node", "-e", script], text=True)
+
+
 def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
@@ -1070,10 +1094,11 @@ def test_rendered_pac_always_bypasses_loopback_ipv4_literals() -> None:
     )
 
     loopback_rule = (
-        "if (/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(host) && "
+        "if (isIpv4Address(host) && "
         "isInNet(host, '127.0.0.0', '255.0.0.0')) return 'DIRECT';"
     )
 
+    assert "function isIpv4Address(value)" in rendered
     assert loopback_rule in rendered
     assert "var ip = hostIp();" not in rendered
 
@@ -1204,6 +1229,49 @@ def test_rendered_pac_keeps_existing_ipv4_private_and_domain_direct_behavior() -
     assert _evaluate_pac(rendered, "203.0.113.7") == (
         "PROXY proxy.example:3128; DIRECT"
     )
+
+
+def test_pac_ipv4_direct_rules_ignore_ipv6_dns_answer_without_throwing() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_pac(
+        "PROXY proxy.example:3128; DIRECT",
+        proxy_host="proxy.example",
+        direct_domains=[],
+        direct_dst_nets=["10.20.0.0/16"],
+        include_private=True,
+    )
+
+    assert _evaluate_pac_with_dns_answer(
+        rendered,
+        "dualstack.example",
+        "2001:db8::10",
+    ) == "PROXY proxy.example:3128; DIRECT"
+    assert _evaluate_pac_with_dns_answer(
+        rendered,
+        "intranet.example",
+        "10.20.3.4",
+    ) == "DIRECT"
+
+
+def test_pac_ipv4_direct_rules_ignore_malformed_dns_answer_without_throwing() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_pac(
+        "PROXY proxy.example:3128; DIRECT",
+        proxy_host="proxy.example",
+        direct_domains=[],
+        direct_dst_nets=["10.20.0.0/16"],
+        include_private=False,
+    )
+
+    assert _evaluate_pac_with_dns_answer(
+        rendered,
+        "stale.example",
+        "10.20.3.4 garbage",
+    ) == "PROXY proxy.example:3128; DIRECT"
 
 
 def test_select_manifest_file_prefers_most_specific_overlapping_cidr() -> None:

@@ -492,8 +492,17 @@ def _render_pac(
             "  var normalizedProxyHost = proxyHost.replace(/^\\[/, '').replace(/\\]$/, '').toLowerCase().replace(/\\.+$/, '');",
             "  var isIpv6Literal = host.indexOf(':') >= 0;",
             "  var ipv6FirstHextet = isIpv6Literal ? host.split(':', 1)[0] : '';",
+            "  function isIpv4Address(value) {",
+            "    if (!/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(value || '')) return false;",
+            "    var parts = value.split('.');",
+            "    for (var i = 0; i < parts.length; i += 1) {",
+            "      var octet = parseInt(parts[i], 10);",
+            "      if (octet < 0 || octet > 255 || String(octet) !== parts[i]) return false;",
+            "    }",
+            "    return true;",
+            "  }",
             "  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'DIRECT';",
-            "  if (/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(host) && isInNet(host, '127.0.0.0', '255.0.0.0')) return 'DIRECT';",
+            "  if (isIpv4Address(host) && isInNet(host, '127.0.0.0', '255.0.0.0')) return 'DIRECT';",
             "  if (!isIpv6Literal && isPlainHostName(host)) return 'DIRECT';",
             "  if (host === normalizedProxyHost) return 'DIRECT';",
         ),
@@ -508,7 +517,7 @@ def _render_pac(
             "  var cachedIp = '';",
             "  function hostIp() {",
             "    if (cachedIp) return cachedIp;",
-            "    if (/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(host)) {",
+            "    if (isIpv4Address(host)) {",
             "      cachedIp = host;",
             "      return cachedIp;",
             "    }",
@@ -534,7 +543,8 @@ def _render_pac(
             (
                 "",
                 "  var ip = hostIp();",
-                "  if (ip && isInNet(ip, '127.0.0.0', '255.0.0.0')) return 'DIRECT';",
+                "  var hasIpv4 = isIpv4Address(ip);",
+                "  if (hasIpv4 && isInNet(ip, '127.0.0.0', '255.0.0.0')) return 'DIRECT';",
             ),
         )
 
@@ -548,7 +558,7 @@ def _render_pac(
         net = ipaddress.ip_network(canonical_cidr, strict=False)
         seen_dst_nets.add(canonical_cidr)
         lines.append(
-            f"  if (ip && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(canonical_cidr)}')) return 'DIRECT';",
+            f"  if (hasIpv4 && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(canonical_cidr)}')) return 'DIRECT';",
         )
 
     if include_private:
@@ -568,7 +578,7 @@ def _render_pac(
         for cidr in PAC_PRIVATE_LOCAL_IPV4_NETS:
             net = ipaddress.ip_network(cidr, strict=False)
             lines.append(
-                f"  if (ip && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(cidr)}')) return 'DIRECT';",
+                f"  if (hasIpv4 && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(cidr)}')) return 'DIRECT';",
             )
 
     lines.extend((f"  return {json.dumps(str(proxy_chain or ''))};", "}"))
