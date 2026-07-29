@@ -52,11 +52,52 @@ def check_tcp(
 
 
 def is_local_host(host: str) -> bool:
-    normalized = (host or "").strip().lower()
+    normalized = (host or "").strip().lower().strip("[]")
     return normalized in {"", "127.0.0.1", "localhost", "::1", "0.0.0.0", "::"}
 
 
-def has_listen_socket(path: str, port: int) -> bool:
+def _proc_net_address_to_ip(
+    hex_address: str,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    raw = (hex_address or "").strip()
+    try:
+        if len(raw) == 8:
+            return ipaddress.IPv4Address(bytes.fromhex(raw)[::-1])
+        if len(raw) == 32:
+            data = bytes.fromhex(raw)
+            # /proc/net/tcp6 stores each 32-bit word little-endian; reverse each
+            # word to recover the address browsers/operators expect to see.
+            return ipaddress.IPv6Address(
+                b"".join(data[offset : offset + 4][::-1] for offset in range(0, 16, 4)),
+            )
+    except Exception:
+        return None
+    return None
+
+
+def _listen_socket_matches_host(
+    listen_address: ipaddress.IPv4Address | ipaddress.IPv6Address | None,
+    host: str | None,
+) -> bool:
+    if host is None or not str(host).strip():
+        return True
+    if listen_address is None:
+        return False
+    normalized_host = str(host or "").strip().lower().strip("[]")
+    if normalized_host == "localhost":
+        return listen_address.is_loopback
+    try:
+        target = ipaddress.ip_address(normalized_host)
+    except ValueError:
+        return True
+    if listen_address.version == target.version:
+        return listen_address == target or listen_address.is_unspecified
+    if isinstance(target, ipaddress.IPv4Address) and listen_address.version == 6:
+        return listen_address.is_unspecified
+    return False
+
+
+def has_listen_socket(path: str, port: int, host: str | None = None) -> bool:
     try:
         with pathlib.Path(path).open(encoding="utf-8", errors="replace") as fh:
             next(fh, None)
@@ -69,8 +110,11 @@ def has_listen_socket(path: str, port: int) -> bool:
                 if state != "0A":
                     continue
                 try:
-                    _addr, port_hex = local_addr.rsplit(":", 1)
-                    if int(port_hex, 16) == int(port):
+                    addr_hex, port_hex = local_addr.rsplit(":", 1)
+                    if int(port_hex, 16) == int(port) and _listen_socket_matches_host(
+                        _proc_net_address_to_ip(addr_hex),
+                        host,
+                    ):
                         return True
                 except Exception:
                     continue
@@ -82,9 +126,10 @@ def has_listen_socket(path: str, port: int) -> bool:
 
 
 def check_local_listener(service_name: str, host: str, port: int) -> dict[str, Any]:
-    if has_listen_socket("/proc/net/tcp", port) or has_listen_socket(
+    if has_listen_socket("/proc/net/tcp", port, host) or has_listen_socket(
         "/proc/net/tcp6",
         port,
+        host,
     ):
         return {"ok": True, "detail": f"{service_name} listening on {host}:{port}"}
     return {"ok": False, "detail": f"{service_name} is not listening on {host}:{port}"}

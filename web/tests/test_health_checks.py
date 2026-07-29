@@ -106,8 +106,27 @@ def test_health_check_local_host_listener_and_target_helpers(
         encoding="utf-8",
     )
     assert health_checks.has_listen_socket(str(proc_tcp), 14000) is True
+    assert health_checks.has_listen_socket(str(proc_tcp), 14000, "127.0.0.1") is True
+    assert health_checks.has_listen_socket(str(proc_tcp), 14000, "10.0.0.5") is False
     assert health_checks.has_listen_socket(str(proc_tcp), 14001) is False
     assert health_checks.has_listen_socket(str(tmp_path / "missing"), 14000) is False
+
+    proc_tcp_wildcard = tmp_path / "tcp_wildcard"
+    proc_tcp_wildcard.write_text(
+        "sl local_address rem_address st\n0: 00000000:36B0 00000000:0000 0A\n",
+        encoding="utf-8",
+    )
+    assert health_checks.has_listen_socket(str(proc_tcp_wildcard), 14000, "10.0.0.5") is True
+
+    proc_tcp6 = tmp_path / "tcp6"
+    proc_tcp6.write_text(
+        "sl local_address rem_address st\n"
+        "0: 00000000000000000000000001000000:36B1 00000000000000000000000000000000:0000 0A\n",
+        encoding="utf-8",
+    )
+    assert health_checks.is_local_host("[::1]") is True
+    assert health_checks.has_listen_socket(str(proc_tcp6), 14001, "::1") is True
+    assert health_checks.has_listen_socket(str(proc_tcp6), 14001, "2001:db8::1") is False
 
     assert health_checks.annotate_service_target(
         {"ok": 1, "detail": "ready"}, host="127.0.0.1", port=3310, service="clamd"
