@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.proxy_context import normalize_proxy_id
-from services.proxy_registry import get_proxy_registry, normalize_management_url
+from services.proxy_registry import (
+    _bounded_repeated_unquote as _bounded_repeated_query_unquote,
+)
+from services.proxy_registry import (
+    get_proxy_registry,
+    normalize_management_url,
+)
 
 
 class ProxyClientError(RuntimeError):
@@ -68,8 +74,7 @@ def _safe_decoded_management_path(path: str) -> bool:
         return False
     try:
         decoded_segments = [
-            urllib.parse.unquote(segment, errors="strict")
-            for segment in raw_segments
+            urllib.parse.unquote(segment, errors="strict") for segment in raw_segments
         ]
     except UnicodeDecodeError:
         return False
@@ -178,8 +183,12 @@ class ProxyClient:
 
         query = parsed.query
         if query:
-            decoded_query = urllib.parse.unquote(query)
-            if _has_unsafe_management_path_text(decoded_query) or "\\" in decoded_query:
+            decoded_query = _bounded_repeated_query_unquote(query)
+            if (
+                decoded_query is None
+                or _has_unsafe_management_path_text(decoded_query)
+                or "\\" in decoded_query
+            ):
                 raise ProxyClientError(_UNSAFE_QUERY_MANAGEMENT_PATH)
 
         relative_path = raw_path.lstrip("/")

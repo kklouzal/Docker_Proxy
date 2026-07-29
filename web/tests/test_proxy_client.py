@@ -271,6 +271,95 @@ def test_proxy_client_get_logs_omits_max_bytes_when_not_provided(
     assert captured["url"] == "http://proxy-mgmt:5000/api/manage/logs?log=access"
 
 
+def test_proxy_client_get_logs_preserves_urlencoded_query_values(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return _Response({"ok": True, "content": "line\n"})
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    proxy_client.ProxyClient().get_logs("live", log_key="access log/one", max_bytes=128)
+
+    assert captured["url"] == (
+        "http://proxy-mgmt:5000/api/manage/logs?log=access+log%2Fone&max_bytes=128"
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/manage/logs?log=%ZZ",
+        "/api/manage/logs?log=%",
+        "/api/manage/logs?log=%A",
+        "/api/manage/logs?log=%E0%A4%A",
+        "/api/manage/logs?log=%25ZZ",
+        "/api/manage/logs?log=%25",
+    ],
+)
+def test_proxy_client_rejects_malformed_management_query_percent_encoding_before_urlopen(
+    monkeypatch,
+    proxy_client_module,
+    path: str,
+) -> None:
+    proxy_client = proxy_client_module
+    monkeypatch.setattr(
+        proxy_client,
+        "get_proxy_registry",
+        lambda: _Registry("http://proxy-mgmt:5000/root"),
+    )
+
+    def fail_urlopen(*_args, **_kwargs) -> NoReturn:
+        msg = "urlopen should not be called for unsafe query strings"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fail_urlopen)
+
+    with pytest.raises(
+        proxy_client.ProxyClientError, match="Unsafe proxy management path"
+    ):
+        proxy_client.ProxyClient()._request("live", method="GET", path=path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/manage/logs?log=access%255Cevil",
+        "/api/manage/logs?log=access%250aevil",
+        "/api/manage/logs?log=access%2520evil",
+    ],
+)
+def test_proxy_client_rejects_nested_encoded_unsafe_management_query_before_urlopen(
+    monkeypatch,
+    proxy_client_module,
+    path: str,
+) -> None:
+    proxy_client = proxy_client_module
+    monkeypatch.setattr(
+        proxy_client,
+        "get_proxy_registry",
+        lambda: _Registry("http://proxy-mgmt:5000/root"),
+    )
+
+    def fail_urlopen(*_args, **_kwargs) -> NoReturn:
+        msg = "urlopen should not be called for unsafe query strings"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fail_urlopen)
+
+    with pytest.raises(
+        proxy_client.ProxyClientError, match="Unsafe proxy management path"
+    ):
+        proxy_client.ProxyClient()._request("live", method="GET", path=path)
+
+
 def test_proxy_client_http_error_uses_json_detail(
     monkeypatch, proxy_client_module
 ) -> None:
