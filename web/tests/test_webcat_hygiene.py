@@ -49,9 +49,11 @@ def test_list_webcat_build_tables_uses_valid_mysql_escape_literal() -> None:
     assert tables == ["webcat_domains_stage_111_1000"]
     assert conn.queries == [
         (
-            "SELECT TABLE_NAME FROM information_schema.TABLES "
-            "WHERE TABLE_SCHEMA = DATABASE() "
-            "AND TABLE_NAME LIKE 'webcat\\\\_%' ESCAPE '\\\\'",
+            (
+                "SELECT TABLE_NAME FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME LIKE 'webcat\\\\_%' ESCAPE '\\\\'"
+            ),
             (),
         ),
     ]
