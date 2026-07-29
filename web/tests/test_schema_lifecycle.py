@@ -214,18 +214,23 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "auth_provider_profile_tables",
         "control_plane_identity",
         "proxy_recovery_adoptions",
+        "policy_exception_method_scope",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 17
-    assert specs[-2].version == 16
-    assert specs[-2].name == "control_plane_identity"
-    assert specs[-1].version == 17
-    assert specs[-1].name == "proxy_recovery_adoptions"
+    assert schema_lifecycle.latest_schema_version() == 18
+    assert specs[-3].version == 16
+    assert specs[-3].name == "control_plane_identity"
+    assert specs[-2].version == 17
+    assert specs[-2].name == "proxy_recovery_adoptions"
+    assert specs[-1].version == 18
+    assert specs[-1].name == "policy_exception_method_scope"
     assert schema_lifecycle.latest_schema_checksum() == specs[-1].checksum
-    assert specs[-2].tables[0].table == "control_plane_identity"
-    assert "control_plane_id CHAR(36) NOT NULL" in specs[-2].tables[0].create_sql
-    assert specs[-1].tables[0].table == "proxy_recovery_adoptions"
-    assert "proxy_id VARCHAR(64) NOT NULL" in specs[-1].tables[0].create_sql
-    assert "PRIMARY KEY(proxy_id, target_control_plane_id)" in specs[-1].tables[0].create_sql
+    assert specs[-3].tables[0].table == "control_plane_identity"
+    assert "control_plane_id CHAR(36) NOT NULL" in specs[-3].tables[0].create_sql
+    assert specs[-2].tables[0].table == "proxy_recovery_adoptions"
+    assert "proxy_id VARCHAR(64) NOT NULL" in specs[-2].tables[0].create_sql
+    assert "PRIMARY KEY(proxy_id, target_control_plane_id)" in specs[-2].tables[0].create_sql
+    assert specs[-1].columns[0].table == "policy_exceptions"
+    assert specs[-1].columns[0].name == "method"
 
 
 class _IdentityConn:

@@ -30,6 +30,7 @@ POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS = 24 * 60 * 60
 POLICY_EXCEPTION_MIN_DURATION_SECONDS = 60
 POLICY_EXCEPTION_MAX_DURATION_SECONDS = 30 * 24 * 60 * 60
 _SAFE = re.compile(r"[^a-z0-9_.:-]+", re.IGNORECASE)
+_HTTP_METHOD = re.compile(r"^[A-Z0-9!#$%&'*+.^_`|~-]{1,16}$")
 _HOST_LABEL = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
     re.IGNORECASE,
@@ -99,6 +100,7 @@ class PolicyException:
     revoked_ts: int
     revoked_by: str
     source_request_id: int | None
+    method: str = ""
 
     def is_expired(self, *, at_ts: int | None = None) -> bool:
         now = int(at_ts if at_ts is not None else now_ts())
@@ -140,6 +142,11 @@ def normalize_block_type(v: object) -> str:
     return s if s in BLOCK_TYPES else "webfilter"
 
 
+def normalize_method(v: object) -> str:
+    method = _text(v, 16).upper()
+    return method if _HTTP_METHOD.fullmatch(method) else ""
+
+
 def normalize_client_ip(v: object) -> str:
     s = _text(v, 64)
     if "," in s:
@@ -163,7 +170,10 @@ def _s(row: Any, k: str, i: int) -> str:
     try:
         v = row[k]
     except Exception:
-        v = row[i]
+        try:
+            v = row[i]
+        except Exception:
+            v = ""
     return str(v or "")
 
 
@@ -171,7 +181,10 @@ def _i(row: Any, k: str, i: int, d: int = 0) -> int:
     try:
         v = row[k]
     except Exception:
-        v = row[i]
+        try:
+            v = row[i]
+        except Exception:
+            v = d
     try:
         return int(v) if v is not None else d
     except Exception:
@@ -182,7 +195,10 @@ def _oi(row: Any, k: str, i: int) -> int | None:
     try:
         v = row[k]
     except Exception:
-        v = row[i]
+        try:
+            v = row[i]
+        except Exception:
+            v = None
     if v is None:
         return None
     try:
@@ -230,6 +246,7 @@ def _exc(row: Any) -> PolicyException:
         _i(row, "revoked_ts", 12),
         _s(row, "revoked_by", 13),
         _oi(row, "source_request_id", 14),
+        _s(row, "method", 15),
     )
 
 
@@ -265,7 +282,7 @@ class PolicyRequestStore:
                     f"CREATE TABLE IF NOT EXISTS {self.REQUEST_TABLE}(id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', status VARCHAR(24) NOT NULL DEFAULT 'pending', block_type VARCHAR(32) NOT NULL DEFAULT 'webfilter', client_ip VARCHAR(64) NOT NULL, request_url TEXT NOT NULL, domain VARCHAR(255) NOT NULL, category VARCHAR(128) NOT NULL DEFAULT '', method VARCHAR(16) NOT NULL DEFAULT '', squid_error VARCHAR(64) NOT NULL DEFAULT '', user_note TEXT NOT NULL, admin_note TEXT NOT NULL, created_ts BIGINT NOT NULL, updated_ts BIGINT NOT NULL, reviewed_ts BIGINT NOT NULL DEFAULT 0, reviewer VARCHAR(128) NOT NULL DEFAULT '', exception_id BIGINT NULL, KEY idx_policy_requests_status_ts (status, created_ts, id), KEY idx_policy_requests_proxy_status_ts (proxy_id,status,created_ts,id), KEY idx_policy_requests_domain (domain), KEY idx_policy_requests_client (client_ip))",
                 )
                 c.execute(
-                    f"CREATE TABLE IF NOT EXISTS {self.EXCEPTION_TABLE}(id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', status VARCHAR(24) NOT NULL DEFAULT 'active', block_type VARCHAR(32) NOT NULL DEFAULT 'webfilter', client_ip VARCHAR(64) NOT NULL, domain VARCHAR(255) NOT NULL, category VARCHAR(128) NOT NULL DEFAULT '', created_ts BIGINT NOT NULL, updated_ts BIGINT NOT NULL, created_by VARCHAR(128) NOT NULL DEFAULT '', admin_note TEXT NOT NULL, expires_ts BIGINT NOT NULL DEFAULT 0, revoked_ts BIGINT NOT NULL DEFAULT 0, revoked_by VARCHAR(128) NOT NULL DEFAULT '', source_request_id BIGINT NULL, KEY idx_policy_exceptions_active (proxy_id,status,block_type,expires_ts), KEY idx_policy_exceptions_request (source_request_id), KEY idx_policy_exceptions_domain_client (proxy_id,domain,client_ip))",
+                    f"CREATE TABLE IF NOT EXISTS {self.EXCEPTION_TABLE}(id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', status VARCHAR(24) NOT NULL DEFAULT 'active', block_type VARCHAR(32) NOT NULL DEFAULT 'webfilter', client_ip VARCHAR(64) NOT NULL, domain VARCHAR(255) NOT NULL, category VARCHAR(128) NOT NULL DEFAULT '', method VARCHAR(16) NOT NULL DEFAULT '', created_ts BIGINT NOT NULL, updated_ts BIGINT NOT NULL, created_by VARCHAR(128) NOT NULL DEFAULT '', admin_note TEXT NOT NULL, expires_ts BIGINT NOT NULL DEFAULT 0, revoked_ts BIGINT NOT NULL DEFAULT 0, revoked_by VARCHAR(128) NOT NULL DEFAULT '', source_request_id BIGINT NULL, KEY idx_policy_exceptions_active (proxy_id,status,block_type,expires_ts), KEY idx_policy_exceptions_request (source_request_id), KEY idx_policy_exceptions_domain_client (proxy_id,domain,client_ip), KEY idx_policy_exceptions_scope (proxy_id,status,block_type,client_ip,domain,category,method,expires_ts))",
                 )
             self._schema_ready = True
 
@@ -279,7 +296,7 @@ class PolicyRequestStore:
 
     def _esql(self, w: str = "") -> str:
         return (
-            "SELECT id,proxy_id,status,block_type,client_ip,domain,category,created_ts,updated_ts,created_by,admin_note,expires_ts,revoked_ts,revoked_by,source_request_id FROM "
+            "SELECT id,proxy_id,status,block_type,client_ip,domain,category,created_ts,updated_ts,created_by,admin_note,expires_ts,revoked_ts,revoked_by,source_request_id,method FROM "
             + self.EXCEPTION_TABLE
             + " "
             + w
@@ -303,11 +320,15 @@ class PolicyRequestStore:
         url = _text(request_url, 2048)
         d = normalize_domain(domain, request_url=url)
         ip = normalize_client_ip(client_ip)
+        method_s = normalize_method(method)
         if not d:
             msg = "A valid destination domain is required."
             raise ValueError(msg)
         if not ip:
             msg = "A valid client IP address is required."
+            raise ValueError(msg)
+        if _text(method, 16) and not method_s:
+            msg = "A valid HTTP request method is required when provided."
             raise ValueError(msg)
         now = now_ts()
         with self._connect() as c:
@@ -322,7 +343,7 @@ class PolicyRequestStore:
                         url,
                         d,
                         _text(category, 128),
-                        _text(method, 16).upper(),
+                        method_s,
                         _text(squid_error, 64),
                         _text(user_note, 2000, True),
                         now,
@@ -434,6 +455,10 @@ class PolicyRequestStore:
                     "exceptions. Use reject or close for this request type."
                 )
                 raise ValueError(msg)
+            req_method = normalize_method(req.method)
+            if req.method and not req_method:
+                msg = "Policy request method is invalid."
+                raise ValueError(msg)
             with guarded_proxy_write(c, req.proxy_id) as guard:
                 canonical_proxy_id = guard.proxy_id
                 claim = c.execute(
@@ -453,7 +478,7 @@ class PolicyRequestStore:
                     raise ValueError(msg)
                 existing = c.execute(
                     self._esql(
-                        "WHERE proxy_id=%s AND status='active' AND block_type=%s AND client_ip=%s AND domain=%s AND category=%s AND (expires_ts=0 OR expires_ts>%s) ORDER BY CASE WHEN expires_ts=0 THEN 1 ELSE 0 END DESC, expires_ts DESC,id ASC LIMIT 1 FOR UPDATE",
+                        "WHERE proxy_id=%s AND status='active' AND block_type=%s AND client_ip=%s AND domain=%s AND category=%s AND method=%s AND (expires_ts=0 OR expires_ts>%s) ORDER BY CASE WHEN expires_ts=0 THEN 1 ELSE 0 END DESC, expires_ts DESC,id ASC LIMIT 1 FOR UPDATE",
                     ),
                     (
                         canonical_proxy_id,
@@ -461,6 +486,7 @@ class PolicyRequestStore:
                         req.client_ip,
                         req.domain,
                         req.category,
+                        req_method,
                         now,
                     ),
                 ).fetchone()
@@ -472,13 +498,14 @@ class PolicyRequestStore:
                     )
                 else:
                     r = c.execute(
-                        f"INSERT INTO {self.EXCEPTION_TABLE}(proxy_id,status,block_type,client_ip,domain,category,created_ts,updated_ts,created_by,admin_note,expires_ts,revoked_ts,revoked_by,source_request_id) VALUES(%s,'active',%s,%s,%s,%s,%s,%s,%s,%s,%s,0,'',%s)",
+                        f"INSERT INTO {self.EXCEPTION_TABLE}(proxy_id,status,block_type,client_ip,domain,category,method,created_ts,updated_ts,created_by,admin_note,expires_ts,revoked_ts,revoked_by,source_request_id) VALUES(%s,'active',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,'',%s)",
                         (
                             canonical_proxy_id,
                             req.block_type,
                             req.client_ip,
                             req.domain,
                             req.category,
+                            req_method,
                             now,
                             now,
                             reviewer_s,
@@ -602,7 +629,7 @@ class PolicyRequestStore:
         with self._connect() as c:
             rows = c.execute(
                 self._esql(
-                    "WHERE proxy_id=%s AND status='active' AND block_type='webfilter' AND (expires_ts=0 OR expires_ts>%s) ORDER BY domain ASC,client_ip ASC,id ASC LIMIT %s",
+                    "WHERE proxy_id=%s AND status='active' AND block_type='webfilter' AND (expires_ts=0 OR expires_ts>%s) ORDER BY domain ASC,client_ip ASC,category ASC,method ASC,id ASC LIMIT %s",
                 ),
                 (p, now, max(1, min(int(limit), 10000))),
             ).fetchall()

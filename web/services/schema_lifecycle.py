@@ -27,7 +27,7 @@ from services.db import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 17
+_SCHEMA_VERSION = 18
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -738,6 +738,24 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                         KEY idx_proxy_recovery_adoptions_bundle (bundle_content_sha256, adopted_ts)
                     )
                     """,
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=18,
+            name="policy_exception_method_scope",
+            columns=(
+                SchemaColumnSpec(
+                    "policy_exceptions",
+                    "method",
+                    "ALTER TABLE policy_exceptions ADD COLUMN method VARCHAR(16) NOT NULL DEFAULT '' AFTER category",
+                ),
+            ),
+            indexes=(
+                SchemaIndexSpec(
+                    "policy_exceptions",
+                    "idx_policy_exceptions_scope",
+                    "CREATE INDEX idx_policy_exceptions_scope ON policy_exceptions(proxy_id,status,block_type,client_ip,domain,category,method,expires_ts)",
                 ),
             ),
         ),

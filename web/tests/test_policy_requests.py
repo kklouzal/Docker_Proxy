@@ -70,7 +70,7 @@ class _PolicyApproveConn:
         ):
             return _PolicyApproveResult(rowcount=self.claim_rowcount)
         if "INSERT INTO policy_exceptions" in text:
-            self.inserted_expires_ts = int(params_t[9])
+            self.inserted_expires_ts = int(params_t[10])
             return _PolicyApproveResult(lastrowid=11)
         if "FROM policy_exceptions WHERE id=%s" in text:
             return _PolicyApproveResult(
@@ -82,6 +82,7 @@ class _PolicyApproveConn:
                     "client_ip": "192.168.1.55",
                     "domain": "example.com",
                     "category": "adult",
+                    "method": "GET",
                     "created_ts": 1000,
                     "updated_ts": 1000,
                     "created_by": "admin",
@@ -180,6 +181,37 @@ def test_policy_request_store_approval_indefinite_flag_keeps_no_expiry(
     exception = store.approve_request(7, reviewer="admin", indefinite=True)
 
     assert exception.expires_ts == 0
+
+
+def test_policy_request_store_approval_duplicate_lookup_and_insert_include_method(
+    monkeypatch,
+) -> None:
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    conn = _PolicyApproveConn()
+    store = module.PolicyRequestStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(module, "now_ts", lambda: 1000)
+
+    exception = store.approve_request(7, reviewer="admin", admin_note="ok")
+
+    assert exception.method == "GET"
+    duplicate_lookup = [
+        (sql, params)
+        for sql, params in conn.calls
+        if "FROM policy_exceptions" in sql and "method=%s" in sql
+    ]
+    assert duplicate_lookup
+    assert duplicate_lookup[0][1][5] == "GET"
+    insert_calls = [
+        (sql, params) for sql, params in conn.calls if "INSERT INTO policy_exceptions" in sql
+    ]
+    assert insert_calls
+    assert "category,method,created_ts" in insert_calls[0][0]
+    assert insert_calls[0][1][5] == "GET"
 
 
 def test_policy_request_store_approval_stale_pending_claim_does_not_insert(
@@ -352,6 +384,115 @@ def test_policy_request_store_reuses_unexpired_duplicate_approval_scope(
     ]
 
 
+def test_policy_request_store_keeps_method_scoped_approvals_distinct(
+    monkeypatch, tmp_path
+) -> None:
+    configure_test_mysql_env(tmp_path / "policy-request-method-scope")
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    now = 1000
+    monkeypatch.setattr(module, "now_ts", lambda: now)
+    store = module.PolicyRequestStore()
+    store.init_db()
+
+    def create_request(method: str):
+        return store.create_request(
+            proxy_id="edge-a",
+            client_ip="192.168.1.55",
+            request_url="https://method.example/path",
+            domain="method.example",
+            category="adult",
+            method=method,
+        )
+
+    get_req = create_request("get")
+    get_exception = store.approve_request(
+        get_req.id,
+        reviewer="admin",
+        duration_seconds=600,
+    )
+    assert get_exception.method == "GET"
+
+    now = 1100
+    post_req = create_request("post")
+    post_exception = store.approve_request(
+        post_req.id,
+        reviewer="admin",
+        duration_seconds=600,
+    )
+    assert post_exception.method == "POST"
+    assert post_exception.id != get_exception.id
+
+    now = 1200
+    duplicate_get_req = create_request("GET")
+    duplicate_get = store.approve_request(
+        duplicate_get_req.id,
+        reviewer="operator",
+        duration_seconds=3600,
+    )
+    assert duplicate_get.id == get_exception.id
+
+    active = store.active_webfilter_exceptions(proxy_id="edge-a")
+    assert {(ex.domain, ex.client_ip, ex.category, ex.method) for ex in active} == {
+        ("method.example", "192.168.1.55", "adult", "GET"),
+        ("method.example", "192.168.1.55", "adult", "POST"),
+    }
+    approved_requests = store.list_requests(statuses=["approved"], proxy_id="edge-a")
+    assert {req.id: req.exception_id for req in approved_requests} == {
+        get_req.id: get_exception.id,
+        post_req.id: post_exception.id,
+        duplicate_get_req.id: get_exception.id,
+    }
+
+
+def test_policy_request_store_keeps_legacy_empty_method_exception_broad(
+    tmp_path,
+) -> None:
+    configure_test_mysql_env(tmp_path / "policy-request-broad-method")
+    ensure_web_import_path()
+    from services.policy_requests import PolicyRequestStore
+
+    store = PolicyRequestStore()
+    store.init_db()
+    broad_req = store.create_request(
+        proxy_id="edge-a",
+        client_ip="192.168.1.55",
+        request_url="https://broad.example/path",
+        domain="broad.example",
+        category="adult",
+        method="",
+    )
+    method_req = store.create_request(
+        proxy_id="edge-a",
+        client_ip="192.168.1.55",
+        request_url="https://broad.example/path",
+        domain="broad.example",
+        category="adult",
+        method="CONNECT",
+    )
+
+    broad_exception = store.approve_request(
+        broad_req.id,
+        reviewer="admin",
+        indefinite=True,
+    )
+    method_exception = store.approve_request(
+        method_req.id,
+        reviewer="admin",
+        indefinite=True,
+    )
+
+    assert broad_exception.method == ""
+    assert method_exception.method == "CONNECT"
+    assert method_exception.id != broad_exception.id
+    assert [(ex.id, ex.method) for ex in store.active_webfilter_exceptions(proxy_id="edge-a")] == [
+        (broad_exception.id, ""),
+        (method_exception.id, "CONNECT"),
+    ]
+
+
 def test_policy_request_store_bounds_direct_approval_durations(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "policy-request-duration-bounds")
     ensure_web_import_path()
@@ -447,6 +588,7 @@ def test_webfilter_materialization_renders_client_scoped_exceptions(
                     0,
                     "",
                     1,
+                    method="GET",
                 ),
                 PolicyException(
                     8,
@@ -475,6 +617,8 @@ def test_webfilter_materialization_renders_client_scoped_exceptions(
         reset_proxy_id(token)
     assert "acl webfilter_exception_src_7 src 192.168.1.55" in text
     assert "acl webfilter_exception_dst_7 dstdomain bad.example .bad.example" in text
+    assert "acl webfilter_exception_method_7 method GET" in text
+    assert "http_access allow webfilter_exception_src_7 webfilter_exception_dst_7 webfilter_exception_method_7" in text
     assert "webfilter_exception_src_8" not in text
     assert "bad domain.example" not in text
     assert text.index("http_access allow webfilter_exception_src_7") < text.index(

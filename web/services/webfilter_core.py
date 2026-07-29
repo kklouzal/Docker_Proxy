@@ -586,6 +586,12 @@ class WebFilterStoreBase:
                     errors="replace",
                 ),
             )
+            digest.update(b":")
+            digest.update(
+                str(getattr(ex, "method", "") or "")
+                .upper()
+                .encode("ascii", errors="ignore"),
+            )
             digest.update(b"\0")
         return "webcat_" + digest.hexdigest()[:16]
 
@@ -696,13 +702,24 @@ class WebFilterStoreBase:
             if not client_ip or not domain:
                 continue
             suffix = f"{getattr(ex, 'id', 0)}"
+            method = str(getattr(ex, "method", "") or "").upper()
+            method_acl = ""
+            method_acl_note = ""
+            method_acl_rule = ""
+            if method and not re.fullmatch(r"[A-Z0-9!#$%&'*+.^_`|~-]{1,16}", method):
+                continue
             lines.append(f"acl webfilter_exception_src_{suffix} src {client_ip}")
             dst_domains = f"{domain} .{domain}" if "." in domain else domain
+            if method:
+                method_acl = f"webfilter_exception_method_{suffix}"
+                method_acl_note = f" {method_acl}"
+                method_acl_rule = f"acl {method_acl} method {method}"
             lines.extend(
                 (
                     f"acl webfilter_exception_dst_{suffix} dstdomain {dst_domains}",
-                    f"note webfilter_allow exception_{suffix} webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}",
-                    f"http_access allow webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}",
+                    *((method_acl_rule,) if method_acl_rule else ()),
+                    f"note webfilter_allow exception_{suffix} webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}{method_acl_note}",
+                    f"http_access allow webfilter_exception_src_{suffix} webfilter_exception_dst_{suffix}{method_acl_note}",
                 )
             )
 

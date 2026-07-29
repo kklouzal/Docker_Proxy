@@ -21,6 +21,9 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 | 13 | `control_plane_retention_indexes` | Bounded housekeeping indexes for revision/application/operation/policy/observability retention paths. |
 | 14 | `schema_lifecycle_complete_runtime_assertions` | Cutover marker used by lazy stores to replace runtime DDL with a one-time process assertion that startup migrations are current. |
 | 15 | `auth_provider_profile_tables` | `directory_auth_profiles` and `saml_auth_profiles`, including default disabled provider rows and SAML compatibility columns, so authentication-provider setup is covered by the startup lifecycle instead of runtime page/login paths. |
+| 16 | `control_plane_identity` | `control_plane_identity` singleton identity table used to distinguish control-plane ownership during proxy recovery. |
+| 17 | `proxy_recovery_adoptions` | `proxy_recovery_adoptions` records accepted cross-control-plane recovery adoptions. |
+| 18 | `policy_exception_method_scope` | Adds `policy_exceptions.method` and method-aware lookup coverage so webfilter approvals can preserve HTTP method scope while legacy empty-method exceptions remain broad. |
 
 ## Lifecycle model
 
