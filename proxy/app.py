@@ -31,7 +31,7 @@ from services.proxy_logs import (
     read_proxy_log,
 )
 from services.version_status import current_component_metadata
-from werkzeug.exceptions import BadRequest
+from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from proxy.agent import start_agent
 from proxy.runtime import get_runtime
@@ -69,6 +69,15 @@ def _policy_request_too_large_response(max_content_length: int) -> Response:
     )
 
 
+def _policy_request_malformed_form_response() -> Response:
+    return Response(
+        "<!doctype html><title>Request failed</title><h1>Request failed</h1>"
+        "<p>The policy request form could not be parsed.</p>",
+        status=400,
+        mimetype="text/html; charset=utf-8",
+    )
+
+
 def _reject_oversized_policy_request_body() -> Response | None:
     max_content_length = _policy_request_max_content_length()
     request.max_content_length = max_content_length
@@ -76,6 +85,20 @@ def _reject_oversized_policy_request_body() -> Response | None:
     if content_length is not None and content_length > max_content_length:
         return _policy_request_too_large_response(max_content_length)
     return None
+
+
+def _policy_request_form_or_error() -> tuple[Any | None, Response | None]:
+    oversized_response = _reject_oversized_policy_request_body()
+    if oversized_response is not None:
+        return None, oversized_response
+    try:
+        return request.form, None
+    except RequestEntityTooLarge:
+        return None, _policy_request_too_large_response(
+            _policy_request_max_content_length(),
+        )
+    except BadRequest:
+        return None, _policy_request_malformed_form_response()
 
 
 def _runtime() -> Any:
@@ -211,12 +234,12 @@ def _is_public_listener_path(
         return normalized_path in {"/proxy.pac", "/wpad.dat"}
 
 
-def _policy_request_client_ip() -> str:
+def _policy_request_client_ip(form: Any) -> str:
     forwarded_ip = forwarded_client_ip_from_headers(request.headers, request.remote_addr)
     if forwarded_ip:
         return forwarded_ip
     remote_ip = request.remote_addr or ""
-    form_ip = request.form.get("client_ip") or ""
+    form_ip = form.get("client_ip") or ""
     if forwarded_headers_trusted(remote_ip) and normalize_client_ip(form_ip):
         return form_ip
     return remote_ip
@@ -317,11 +340,10 @@ def public_policy_request_get() -> Any:
 def public_policy_request() -> Any:
     if not _is_public_listener_request():
         abort(404)
-    oversized_response = _reject_oversized_policy_request_body()
-    if oversized_response is not None:
-        return oversized_response
-    form = request.form
-    client_ip = _policy_request_client_ip()
+    form, form_error = _policy_request_form_or_error()
+    if form_error is not None:
+        return form_error
+    client_ip = _policy_request_client_ip(form)
     try:
         req = get_policy_request_store().create_request(
             proxy_id=get_proxy_id(),

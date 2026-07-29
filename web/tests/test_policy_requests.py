@@ -585,6 +585,93 @@ def test_proxy_public_policy_request_rejects_oversized_form_before_store(
     assert store_requested is False
 
 
+def test_proxy_public_policy_request_rejects_parser_enforced_oversize(
+    monkeypatch,
+) -> None:
+    ensure_proxy_runtime_import_path()
+    monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    monkeypatch.setenv("POLICY_REQUEST_MAX_CONTENT_LENGTH", "128")
+    from werkzeug.exceptions import RequestEntityTooLarge
+
+    import proxy.app as proxy_app
+
+    proxy_app = importlib.reload(proxy_app)
+    store_requested = False
+
+    def raise_too_large(_self):
+        raise RequestEntityTooLarge
+
+    def get_store():
+        nonlocal store_requested
+        store_requested = True
+
+        class Store:
+            def create_request(self, **kwargs):
+                return None
+
+        return Store()
+
+    monkeypatch.setattr(proxy_app.app.request_class, "form", property(raise_too_large))
+    monkeypatch.setattr(proxy_app, "get_policy_request_store", get_store)
+    res = proxy_app.app.test_client().post(
+        "/policy-request",
+        base_url="http://localhost:80",
+        data=b"request_url=https%3A%2F%2Fbad.example%2F&domain=bad.example",
+        content_type="application/x-www-form-urlencoded",
+        environ_overrides={"CONTENT_LENGTH": ""},
+    )
+
+    assert res.status_code == 413
+    assert "Policy request submissions are limited to 128 bytes" in res.get_data(
+        as_text=True,
+    )
+    assert store_requested is False
+
+
+def test_proxy_public_policy_request_rejects_malformed_form_parse(
+    monkeypatch,
+) -> None:
+    ensure_proxy_runtime_import_path()
+    monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    from werkzeug.exceptions import BadRequest
+
+    import proxy.app as proxy_app
+
+    proxy_app = importlib.reload(proxy_app)
+    store_requested = False
+
+    def raise_bad_request(_self):
+        raise BadRequest
+
+    def get_store():
+        nonlocal store_requested
+        store_requested = True
+
+        class Store:
+            def create_request(self, **kwargs):
+                return None
+
+        return Store()
+
+    monkeypatch.setattr(proxy_app.app.request_class, "form", property(raise_bad_request))
+    monkeypatch.setattr(proxy_app, "get_policy_request_store", get_store)
+    res = proxy_app.app.test_client().post(
+        "/policy-request",
+        base_url="http://localhost:80",
+        data=b"request_url=%",
+        content_type="application/x-www-form-urlencoded",
+        environ_overrides={"CONTENT_LENGTH": ""},
+    )
+
+    assert res.status_code == 400
+    body = res.get_data(as_text=True)
+    assert "The policy request form could not be parsed" in body
+    assert "Bad Request" not in body
+    assert store_requested is False
+
+
 def test_proxy_public_policy_request_invalid_size_limit_env_falls_back(
     monkeypatch,
 ) -> None:
