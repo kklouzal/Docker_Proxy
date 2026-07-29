@@ -31,6 +31,13 @@ class RecordingTimeseriesStore:
         return []
 
 
+class FailingTimeseriesStore(RecordingTimeseriesStore):
+    def query(self, **kwargs: object) -> list[object]:
+        self.queries.append(kwargs)
+        msg = "backend rebuilding: password=supersecret"
+        raise RuntimeError(msg)
+
+
 class RecordingProxyClient:
     def __init__(self) -> None:
         self.health_calls: list[tuple[str, float | None]] = []
@@ -1297,6 +1304,30 @@ def test_api_timeseries_reports_canonical_resolution_for_unknown_name(
     assert response.json["resolution"] == "1s"
     assert store.queries[-1]["resolution"] == "1s"
     assert isinstance(response.json["points"], list)
+
+
+def test_api_timeseries_degrades_to_json_when_store_query_fails(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.delenv("EXPOSE_INTERNAL_ERRORS", raising=False)
+    store = FailingTimeseriesStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, timeseries_store=store)
+    monkeypatch.setattr(loaded.module.time, "time", lambda: 1_700_000_000)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/timeseries?resolution=1m&window=1&limit=bad")
+
+    assert response.status_code == 200
+    assert response.headers.get("Content-Type", "").startswith("application/json")
+    assert response.json["resolution"] == "1m"
+    assert response.json["since"] == 1_699_999_990
+    assert response.json["points"] == []
+    assert response.json["error"] == "timeseries_unavailable"
+    assert response.json["detail"] == "Timeseries data could not be loaded."
+    assert "supersecret" not in response.json["detail"]
+    assert store.queries[-1]["resolution"] == "1m"
+    assert store.queries[-1]["limit"] == 500
 
 
 def test_winhttp_registry_builder_renders_and_generates_static_binary(

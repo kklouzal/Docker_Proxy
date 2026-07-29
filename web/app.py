@@ -8309,8 +8309,22 @@ def api_timeseries():
     limit_i = _query_int_arg("limit", default=500)
 
     since = int(time.time()) - window_i
-    points = get_timeseries_store().query(resolution=res, since=since, limit=limit_i)
-    return jsonify({"resolution": res, "since": since, "points": points})
+    try:
+        points = get_timeseries_store().query(resolution=res, since=since, limit=limit_i)
+        return jsonify({"resolution": res, "since": since, "points": points})
+    except Exception as exc:
+        return jsonify(
+            {
+                "resolution": res,
+                "since": since,
+                "points": [],
+                "error": "timeseries_unavailable",
+                "detail": public_error_message(
+                    exc,
+                    default="Timeseries data could not be loaded.",
+                ),
+            },
+        )
 
 
 @app.route("/reload", methods=["POST"])
