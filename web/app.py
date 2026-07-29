@@ -141,7 +141,11 @@ from services.proxy_health import (
 )
 from services.proxy_health import send_sample_av_icap as _shared_send_sample_av_icap
 from services.proxy_health import test_eicar as _shared_test_eicar
-from services.proxy_logs import parse_proxy_log_max_bytes, proxy_log_status_code
+from services.proxy_logs import (
+    DEFAULT_LOG_TAIL_BYTES,
+    parse_proxy_log_max_bytes,
+    proxy_log_status_code,
+)
 from services.proxy_registry import get_proxy_registry as _default_get_proxy_registry
 from services.proxy_sync import request_proxy_reconcile
 from services.runtime_helpers import env_float as _env_float
@@ -5263,12 +5267,31 @@ def operations_status():
     )
 
 
+LOG_TAIL_SIZE_OPTIONS = (
+    (16 * 1024, "16 KiB"),
+    (64 * 1024, "64 KiB"),
+    (128 * 1024, "128 KiB"),
+    (DEFAULT_LOG_TAIL_BYTES, "256 KiB"),
+)
+
+
 @app.route("/logs", methods=["GET"])
 def logs_status():
     proxy_id = get_proxy_id()
     requested_log = request.args.get("log")
-    payload, logs, _proxy_error = _get_selected_log_payload(proxy_id, requested_log)
-    return render_template("logs.html", log_payload=payload, logs=logs)
+    max_bytes = parse_proxy_log_max_bytes(request.args.get("max_bytes"))
+    payload, logs, _proxy_error = _get_selected_log_payload(
+        proxy_id,
+        requested_log,
+        max_bytes=max_bytes,
+    )
+    return render_template(
+        "logs.html",
+        log_payload=payload,
+        logs=logs,
+        log_tail_size_options=LOG_TAIL_SIZE_OPTIONS,
+        max_log_tail_bytes=DEFAULT_LOG_TAIL_BYTES,
+    )
 
 
 def _get_selected_log_payload(
@@ -5295,7 +5318,7 @@ def _get_selected_log_payload(
             "content": "",
             "size_bytes": 0,
             "truncated": False,
-            "max_bytes": 256 * 1024,
+            "max_bytes": DEFAULT_LOG_TAIL_BYTES,
             "logs": [],
         }
     logs = payload.get("logs") if isinstance(payload.get("logs"), list) else []

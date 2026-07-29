@@ -11,7 +11,7 @@
         <p class="page-subtitle">Raw current log-file tail for {{ active_proxy.display_name }}.</p>
         <div class="hero-badges">
             <span class="badge {{ 'ok' if log_payload.ok else 'warn' }}">{{ log_payload.status }}</span>
-            <span class="badge">Last {{ (log_payload.max_bytes or 0) // 1024 }} KiB</span>
+            <span class="badge" id="log-tail-badge">Last {{ (log_payload.max_bytes or 0) // 1024 }} KiB</span>
         </div>
     </div>
     <div class="page-actions">
@@ -39,7 +39,13 @@
                 </option>
                 {% endfor %}
             </select>
-            <button class="btn primary" id="log-refresh" type="button">Refresh</button>
+            <label for="log-max-bytes">Tail size</label>
+            <select id="log-max-bytes" name="max_bytes">
+                {% for bytes, label in log_tail_size_options %}
+                <option value="{{ bytes }}" {{ 'selected' if bytes == log_payload.max_bytes else '' }}>{{ label }}</option>
+                {% endfor %}
+            </select>
+            <button class="btn primary" id="log-refresh" type="submit">Refresh</button>
         </form>
 
         <div class="surface-note small" id="log-detail">
@@ -55,17 +61,20 @@
 (() => {
   const form = document.getElementById('log-viewer-form');
   const select = document.getElementById('log-key');
+  const maxBytes = document.getElementById('log-max-bytes');
   const button = document.getElementById('log-refresh');
   const content = document.getElementById('log-content');
   const detail = document.getElementById('log-detail');
   const badge = document.getElementById('log-size-badge');
-  if (!form || !select || !button || !content || !detail || !badge) return;
+  const tailBadge = document.getElementById('log-tail-badge');
+  if (!form || !select || !maxBytes || !button || !content || !detail || !badge || !tailBadge) return;
 
   const refresh = async () => {
     button.disabled = true;
     button.textContent = 'Refreshing...';
-    const params = new URLSearchParams();
+    const params = new URLSearchParams(new FormData(form));
     params.set('log', select.value || 'access');
+    params.set('max_bytes', maxBytes.value || '{{ max_log_tail_bytes }}');
     try {
       const apiUrl = form.dataset.apiUrl || '/api/logs';
       const separator = apiUrl.includes('?') ? '&' : '?';
@@ -77,7 +86,12 @@
       const payload = await response.json();
       content.value = payload.content || '';
       badge.textContent = `${payload.size_bytes || 0} bytes`;
+      const returnedMaxBytes = String(payload.max_bytes || '{{ max_log_tail_bytes }}');
+      if ([...maxBytes.options].some((option) => option.value === returnedMaxBytes)) {
+        maxBytes.value = returnedMaxBytes;
+      }
       const cap = Math.floor((payload.max_bytes || 0) / 1024);
+      tailBadge.textContent = `Last ${cap} KiB`;
       detail.textContent = `${payload.detail || 'Log unavailable.'}${payload.truncated ? ` Showing the last ${cap} KiB.` : ''}`;
     } catch {
       detail.textContent = 'Log refresh failed.';
@@ -87,8 +101,12 @@
     }
   };
 
-  button.addEventListener('click', refresh);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    refresh();
+  });
   select.addEventListener('change', refresh);
+  maxBytes.addEventListener('change', refresh);
 })();
 </script>
 {% endblock %}

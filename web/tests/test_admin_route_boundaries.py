@@ -651,6 +651,53 @@ def test_logs_page_renders_status_nav_and_selected_proxy_log(
     assert 'href="/logs?proxy_id=edge-2"' in body
 
 
+def test_logs_page_exposes_and_preserves_tail_size_control(
+    monkeypatch, tmp_path
+) -> None:
+    class MaxBytesEchoProxyClient(RecordingProxyClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.max_byte_calls: list[object | None] = []
+
+        def get_logs(
+            self,
+            proxy_id: object,
+            *,
+            log_key: object | None = None,
+            max_bytes: object | None = None,
+            **kwargs,
+        ) -> dict[str, object]:
+            self.max_byte_calls.append(max_bytes)
+            payload = super().get_logs(proxy_id, log_key=log_key, **kwargs)
+            payload["max_bytes"] = max_bytes or 256 * 1024
+            payload["truncated"] = True
+            return payload
+
+    proxy_client = MaxBytesEchoProxyClient()
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=proxy_client,
+        registry=registry,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/logs?proxy_id=edge-2&log=access&max_bytes=65536")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert proxy_client.log_calls == [("edge-2", "access")]
+    assert proxy_client.max_byte_calls == [64 * 1024]
+    assert 'id="log-max-bytes" name="max_bytes"' in body
+    assert '<option value="65536" selected>64 KiB</option>' in body
+    assert "Last 64 KiB" in body
+    assert "Showing the last 64 KiB." in body
+    assert "new URLSearchParams(new FormData(form))" in body
+    assert "params.set('max_bytes', maxBytes.value" in body
+
+
 def test_logs_page_preserves_explicit_rejected_log_selection(
     monkeypatch, tmp_path
 ) -> None:
