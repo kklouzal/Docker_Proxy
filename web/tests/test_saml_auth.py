@@ -827,6 +827,58 @@ def test_build_saml_settings_revalidates_cached_idp_endpoint_locations() -> None
         )
 
 
+def test_build_saml_settings_prefers_redirect_idp_endpoints_over_post_order() -> None:
+    metadata = f"""<?xml version="1.0" encoding="UTF-8"?>
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
+    xmlns:ds="http://www.w3.org/2000/09/xmldsig#"
+    entityID="https://idp.example.test/metadata">
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <KeyDescriptor use="signing">
+      <ds:KeyInfo>
+        <ds:X509Data>
+          <ds:X509Certificate>{SIGNING_CERT}</ds:X509Certificate>
+        </ds:X509Data>
+      </ds:KeyInfo>
+    </KeyDescriptor>
+    <SingleSignOnService
+        Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+        Location="https://idp.example.test/sso/post" />
+    <SingleSignOnService
+        Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+        Location="https://idp.example.test/sso/redirect" />
+    <SingleLogoutService
+        Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+        Location="https://idp.example.test/slo/post" />
+    <SingleLogoutService
+        Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+        Location="https://idp.example.test/slo/redirect" />
+  </IDPSSODescriptor>
+</EntityDescriptor>
+"""
+    parsed = parse_saml_metadata(metadata)
+    profile = replace(
+        MemorySamlAuthStore().default_profile(),
+        raw_metadata_xml="cached",
+        parsed_metadata_json=json.dumps(parsed, sort_keys=True),
+    )
+
+    settings = build_saml_settings(
+        profile,
+        _saml_request("https://admin.example.test/auth/saml/login"),
+    )
+
+    assert parsed["sso_services"][0]["binding"].endswith(":HTTP-POST")
+    assert parsed["slo_services"][0]["binding"].endswith(":HTTP-POST")
+    assert settings["idp"]["singleSignOnService"] == {
+        "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+        "url": "https://idp.example.test/sso/redirect",
+    }
+    assert settings["idp"]["singleLogoutService"] == {
+        "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+        "url": "https://idp.example.test/slo/redirect",
+    }
+
+
 def test_build_saml_settings_rejects_double_encoded_cached_idp_endpoint_locations() -> None:
     parsed = parse_saml_metadata(
         _metadata_with_service_locations(

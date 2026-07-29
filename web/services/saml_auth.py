@@ -38,6 +38,7 @@ _NS = {"md": _MD_NS, "ds": _DS_NS}
 _SAML_METADATA_REQUEST_HEADERS = {
     "Accept": "application/samlmetadata+xml, application/xml, text/xml",
 }
+_SAML_HTTP_REDIRECT_BINDING = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
 _MAX_URL_PERCENT_DECODE_PASSES = 8
 _PERCENT_ENCODED_OCTET_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 
@@ -756,8 +757,8 @@ def parse_saml_metadata(raw_xml: str) -> dict[str, Any]:
     settings = {
         "idp": {
             "entityId": entity_id,
-            "singleSignOnService": _first_location(sso_services),
-            "singleLogoutService": _first_location(slo_services),
+            "singleSignOnService": _preferred_location(sso_services),
+            "singleLogoutService": _preferred_location(slo_services),
             "x509certMulti": {
                 "signing": signing_certs,
                 "encryption": encryption_certs,
@@ -833,12 +834,41 @@ def _services(parent: ElementTree.Element, local_name: str) -> list[dict[str, st
 
 
 def _first_location(services: list[dict[str, str]]) -> dict[str, str]:
-    if not services:
-        return {}
-    return {
-        "url": services[0]["location"],
-        "binding": services[0]["binding"],
-    }
+    for service in services:
+        binding = str(service.get("binding") or "").strip()
+        location = str(service.get("location") or "").strip()
+        if binding and location:
+            return {
+                "url": location,
+                "binding": binding,
+            }
+    return {}
+
+
+def _preferred_location(services: list[dict[str, str]]) -> dict[str, str]:
+    for service in services:
+        binding = str(service.get("binding") or "").strip()
+        location = str(service.get("location") or "").strip()
+        if binding == _SAML_HTTP_REDIRECT_BINDING and location:
+            return {
+                "url": location,
+                "binding": binding,
+            }
+    return _first_location(services)
+
+
+def _preferred_idp_settings(parsed: dict[str, Any]) -> dict[str, Any]:
+    settings = dict(parsed.get("settings") or {})
+    idp_settings = dict(settings.get("idp") or {})
+    sso_service = _preferred_location(parsed.get("sso_services") or [])
+    slo_service = _preferred_location(parsed.get("slo_services") or [])
+    if sso_service:
+        idp_settings["singleSignOnService"] = sso_service
+    if slo_service:
+        idp_settings["singleLogoutService"] = slo_service
+    if idp_settings:
+        settings["idp"] = idp_settings
+    return settings
 
 
 def _certificates(parent: ElementTree.Element) -> tuple[list[str], list[str]]:
@@ -977,7 +1007,7 @@ def build_saml_settings(
             },
             "NameIDFormat": "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified",
         },
-        **(parsed.get("settings") or {}),
+        **_preferred_idp_settings(parsed),
         "security": {
             "authnRequestsSigned": False,
             "logoutRequestSigned": False,
