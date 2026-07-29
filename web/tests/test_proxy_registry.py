@@ -8,6 +8,10 @@ import pytest
 
 from .mysql_test_utils import configure_test_mysql_env
 
+# Escaped IDNA/fullwidth regression inputs avoid Ruff's ambiguous-unicode lint.
+IDNA_MANAGEMENT_HOST = "B\u00dcCHER.example"
+FULLWIDTH_LOOPBACK_IPV4_IDNA_DOTS = "\uff11\uff12\uff17\u3002\uff10\u3002\uff10\u3002\uff11"
+
 if TYPE_CHECKING:
     from types import ModuleType
 
@@ -479,6 +483,14 @@ def test_management_url_normalization_canonicalizes_listener_base() -> None:
         == "http://proxy-mgmt:5000"
     )
     assert (
+        proxy_registry.normalize_management_url("http://Example.COM.:5000/root/")
+        == "http://example.com:5000/root"
+    )
+    assert (
+        proxy_registry.normalize_management_url(f"http://{IDNA_MANAGEMENT_HOST}:5000/root")
+        == "http://xn--bcher-kva.example:5000/root"
+    )
+    assert (
         proxy_registry.normalize_management_url("http://proxy-mgmt:5000/root/")
         == "http://proxy-mgmt:5000/root"
     )
@@ -593,6 +605,12 @@ def test_management_url_normalization_rejects_ambiguous_ipv4_hosts() -> None:
     assert proxy_registry.normalize_management_url("http://2130706433:5000") == ""
     assert proxy_registry.normalize_management_url("017700000001:5000") == ""
     assert proxy_registry.normalize_management_url("127.1:5000") == ""
+    assert (
+        proxy_registry.normalize_management_url(
+            f"http://{FULLWIDTH_LOOPBACK_IPV4_IDNA_DOTS}:5000"
+        )
+        == ""
+    )
 
 
 @pytest.mark.parametrize(
@@ -601,7 +619,6 @@ def test_management_url_normalization_rejects_ambiguous_ipv4_hosts() -> None:
         "http://bad_host:5000",
         "http://proxy;evil:5000",
         "http://proxy%2eexample:5000",
-        "http://proxy。example.com:5000",
         "http://[2001:4860:4860::8888%25eth0]:5000/api/manage",
     ],
 )

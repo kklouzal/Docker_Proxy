@@ -28,6 +28,7 @@ from services.proxy_lifecycle import (
 )
 from services.proxy_write_guard import clear_proxy_write_guard_cache
 from services.public_endpoint import (
+    _canonical_public_dns_host,
     _is_ambiguous_ipv4_host,
 )
 from services.public_endpoint import (
@@ -111,20 +112,11 @@ def _bounded_repeated_unquote(value: str) -> str | None:
         return None
 
 
-def _valid_management_dns_host(value: str) -> bool:
-    candidate = value.rstrip(".").lower()
-    if not candidate or len(candidate) > 253:
-        return False
-    labels = candidate.split(".")
-    return not any(
-        not label
-        or len(label) > 63
-        or not label.isascii()
-        or not label[0].isalnum()
-        or not label[-1].isalnum()
-        or any(not (ch.isalnum() or ch == "-") for ch in label)
-        for label in labels
-    )
+def _canonical_management_dns_host(value: str) -> str:
+    candidate = _canonical_public_dns_host(value, allow_single_label=True)
+    if not candidate or _is_ambiguous_ipv4_host(candidate):
+        return ""
+    return candidate
 
 
 def _safe_decoded_path_segments(path: str) -> list[str] | None:
@@ -225,7 +217,8 @@ def normalize_management_url(value: object | None) -> str:
     try:
         parsed_ip = ip_address(host)
     except ValueError:
-        if _is_ambiguous_ipv4_host(host) or not _valid_management_dns_host(host):
+        host = _canonical_management_dns_host(host)
+        if not host:
             return ""
     else:
         if getattr(parsed_ip, "scope_id", None):
