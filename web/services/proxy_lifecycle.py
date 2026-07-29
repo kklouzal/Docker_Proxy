@@ -109,6 +109,10 @@ PROXY_LIFECYCLE_TABLES: tuple[ProxyLifecycleTable, ...] = (
     ProxyLifecycleTable("proxy_config_applications", order_columns=("proxy_id", "applied_ts", "id")),
     ProxyLifecycleTable("proxy_config_revisions", order_columns=("proxy_id", "created_ts", "id")),
     ProxyLifecycleTable("proxy_operations", order_columns=("proxy_id", "updated_ts", "id")),
+    ProxyLifecycleTable(
+        "proxy_recovery_adoptions",
+        order_columns=("proxy_id", "adopted_ts", "target_control_plane_id"),
+    ),
     ProxyLifecycleTable("ssl_errors", order_columns=("proxy_id", "last_seen", "row_key")),
     ProxyLifecycleTable("sslfilter_domains", order_columns=("proxy_id", "policy", "domain")),
     ProxyLifecycleTable("sslfilter_src_nets", order_columns=("proxy_id", "policy", "cidr")),

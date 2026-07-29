@@ -224,6 +224,7 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
     assert specs[-2].tables[0].table == "control_plane_identity"
     assert "control_plane_id CHAR(36) NOT NULL" in specs[-2].tables[0].create_sql
     assert specs[-1].tables[0].table == "proxy_recovery_adoptions"
+    assert "proxy_id VARCHAR(64) NOT NULL" in specs[-1].tables[0].create_sql
     assert "PRIMARY KEY(proxy_id, target_control_plane_id)" in specs[-1].tables[0].create_sql
 
 
