@@ -677,6 +677,89 @@ def test_operations_api_returns_ledger_entries(monkeypatch, tmp_path) -> None:
     assert data["counts"]["pending"] == 1
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_field"),
+    [
+        ("after_updated_ts=abc", "after_updated_ts"),
+        ("after_id=abc", "after_id"),
+        ("after_updated_ts=-1", "after_updated_ts"),
+        ("after_id=-1", "after_id"),
+    ],
+)
+def test_operations_api_rejects_invalid_since_cursor_args(
+    monkeypatch, tmp_path, query, expected_field
+) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(
+        admin_app,
+        "get_operation_ledger",
+        lambda: pytest.fail("invalid cursors must not load the operation ledger"),
+    )
+
+    with admin_app.app.test_request_context(f"/api/operations?{query}"):
+        response, status = admin_app.api_operations()
+
+    assert status == 400
+    data = response.get_json()
+    assert data["ok"] is False
+    assert data["proxy_id"] == "edge-a"
+    assert data["operations"] == []
+    assert data["counts"] == {}
+    assert expected_field in data["error"]
+    assert "non-negative integer" in data["error"]
+
+
+def test_operations_api_uses_valid_since_cursor_args(monkeypatch, tmp_path) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+
+    class Op:
+        operation_id = 9
+        status = "applied"
+        updated_ts = 456
+
+        def to_dict(self):
+            return {
+                "operation_id": self.operation_id,
+                "status": self.status,
+                "updated_ts": self.updated_ts,
+            }
+
+    class Ledger:
+        def list_operations(self, proxy_id, *, limit):  # pragma: no cover - guard
+            pytest.fail("valid since cursors must use list_recent_since")
+
+        def list_recent_since(
+            self, proxy_id, *, after_updated_ts, after_id, limit
+        ):
+            assert proxy_id == "edge-a"
+            assert after_updated_ts == 123
+            assert after_id == 7
+            assert limit == 100
+            return [Op()]
+
+        def counts_by_status(self, proxy_id):
+            assert proxy_id == "edge-a"
+            return {"pending": 0, "applying": 0, "applied": 1, "failed": 0}
+
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(admin_app, "get_operation_ledger", Ledger)
+
+    with admin_app.app.test_request_context(
+        "/api/operations?after_updated_ts=123&after_id=7"
+    ):
+        response, status = admin_app.api_operations()
+
+    assert status == 200
+    data = response.get_json()
+    assert data["ok"] is True
+    assert data["operations"] == [
+        {"operation_id": 9, "status": "applied", "updated_ts": 456}
+    ]
+    assert data["counts"]["applied"] == 1
+
+
 def test_revert_operation_queues_revision_revert(monkeypatch, tmp_path) -> None:
     admin_app = _load_admin_app(monkeypatch, tmp_path)
     queued: list[dict[str, object]] = []
