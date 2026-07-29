@@ -240,8 +240,15 @@ class ProxyPacTarget:
             host = "<request-host>"
         else:
             host = self.proxy_host_token
+        seen_endpoints = {
+            _proxy_chain_endpoint_key(self.proxy_host_token, self.http_proxy_port),
+        }
         entries = [f"PROXY {host}:{self.http_proxy_port}"]
         for rendered_host, backup_port in self.normalized_backup_proxies:
+            endpoint_key = _proxy_chain_endpoint_key(rendered_host, backup_port)
+            if endpoint_key in seen_endpoints:
+                continue
+            seen_endpoints.add(endpoint_key)
             entries.append(f"PROXY {rendered_host}:{int(backup_port)}")
         if self.direct_enabled:
             entries.append("DIRECT")
@@ -335,6 +342,18 @@ def _format_host_only_for_pac(host: str) -> str:
     if ":" in host and not host.startswith("["):
         return f"[{host}]"
     return host or "127.0.0.1"
+
+
+def _proxy_chain_endpoint_key(host: str, port: object) -> tuple[str, int]:
+    normalized_host = str(host or "").strip()
+    if normalized_host.startswith("[") and "]" in normalized_host:
+        normalized_host = normalized_host[1 : normalized_host.find("]")]
+    normalized_host = normalized_host.rstrip(".").lower()
+    try:
+        normalized_host = str(ipaddress.ip_address(normalized_host))
+    except ValueError:
+        pass
+    return normalized_host, int(port)
 
 
 def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:

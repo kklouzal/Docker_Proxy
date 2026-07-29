@@ -929,6 +929,37 @@ def test_pac_target_renders_ordered_backup_proxy_chain_and_optional_direct() -> 
     )
 
 
+def test_pac_target_filters_duplicate_proxy_chain_endpoints() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    target = pac_renderer.ProxyPacTarget(
+        proxy_id="default",
+        public_host="Proxy.Example.",
+        pac_scheme="http",
+        pac_port=80,
+        http_proxy_port=3128,
+        backup_proxies=(
+            ("proxy.example", 3128),
+            ("backup.example", 8080),
+            ("Backup.Example.", 8080),
+            ("backup.example", 8443),
+            ("2001:db8::20", 8080),
+            ("[2001:0db8::20]:8080", None),
+        ),
+        direct_enabled=True,
+    )
+
+    assert (
+        target.proxy_chain
+        == "PROXY proxy.example:3128; PROXY backup.example:8080; "
+        "PROXY backup.example:8443; PROXY [2001:db8::20]:8080; DIRECT"
+    )
+    assert target.proxy_chain.count("PROXY proxy.example:3128") == 1
+    assert target.proxy_chain.count("PROXY backup.example:8080") == 1
+    assert "[2001:0db8::20]:8080" not in target.proxy_chain
+
+
 def test_pac_target_filters_stale_invalid_backup_proxy_rows() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
