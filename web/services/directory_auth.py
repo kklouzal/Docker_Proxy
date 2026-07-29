@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from string import Formatter
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -868,6 +868,24 @@ class DirectoryAuthStore:
             "LDAP server URLs must be valid ldap:// or ldaps:// URLs with a host "
             "and optional numeric port."
         )
+
+        def unsafe_authority(value: str) -> bool:
+            decoded = unquote(value)
+            return any(
+                ch.isspace()
+                or ord(ch) < 32
+                or ord(ch) == 127
+                or ch in "/?#@\\"
+                for ch in decoded
+            )
+
+        def has_empty_explicit_authority_port(value: str) -> bool:
+            authority = value.rsplit("@", 1)[-1]
+            if authority.startswith("["):
+                bracket_end = authority.find("]")
+                return bracket_end >= 0 and authority[bracket_end + 1 :] == ":"
+            return authority.endswith(":") and ":" in authority
+
         urls = []
         for raw_line in str(value or "").splitlines():
             source = raw_line.strip()
@@ -892,6 +910,8 @@ class DirectoryAuthStore:
                 or parsed.path
                 or parsed.query
                 or parsed.fragment
+                or has_empty_explicit_authority_port(parsed.netloc)
+                or unsafe_authority(parsed.netloc)
             ):
                 raise ValueError(invalid_url_msg)
             host = f"[{hostname}]" if ":" in hostname else hostname

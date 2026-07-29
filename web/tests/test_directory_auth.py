@@ -374,7 +374,13 @@ def test_join_dn_requires_base_dn_boundary() -> None:
         ("ldap://ldap.example.org#frag", "valid ldap:// or ldaps:// URLs"),
         ("ldap://user@ldap.example.org", "valid ldap:// or ldaps:// URLs"),
         ("ldap://ldap.example.org:not-a-port", "valid ldap:// or ldaps:// URLs"),
+        ("ldap://ldap.example.org:", "valid ldap:// or ldaps:// URLs"),
+        ("ldap://[2001:db8::1]:", "valid ldap:// or ldaps:// URLs"),
         ("ldap://2001:db8::1", "valid ldap:// or ldaps:// URLs"),
+        ("ldap://ldap.example.org%2Fevil", "valid ldap:// or ldaps:// URLs"),
+        ("ldap://ldap.example.org%3Fevil", "valid ldap:// or ldaps:// URLs"),
+        ("ldap://ldap.example.org%40evil.example", "valid ldap:// or ldaps:// URLs"),
+        ("ldap://ldap.example.org%5Cevil", "valid ldap:// or ldaps:// URLs"),
     ],
 )
 def test_profile_save_rejects_invalid_server_urls(
