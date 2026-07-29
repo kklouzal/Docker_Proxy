@@ -873,6 +873,96 @@ def test_webfilter_disabled_materialization_ignores_stale_enforcement_settings(
     assert state.whitelist_text == "example.com\n"
 
 
+def test_write_managed_text_files_coalesces_exact_duplicate_target(
+    tmp_path, monkeypatch
+) -> None:
+    materialized_files = _import_materialized_files_module()
+
+    target = tmp_path / "target.conf"
+    real_replace = materialized_files.os.replace
+    real_write_staged_file = materialized_files._write_staged_file
+    replace_calls: list[tuple[str, str]] = []
+    staged_calls: list[tuple[str, str]] = []
+
+    def record_write_staged_file(path, content, **kwargs):
+        staged_calls.append((str(path), str(content)))
+        return real_write_staged_file(path, content, **kwargs)
+
+    def record_replace(src, dst):
+        replace_calls.append((str(src), str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(
+        materialized_files, "_write_staged_file", record_write_staged_file
+    )
+    monkeypatch.setattr(materialized_files.os, "replace", record_replace)
+
+    materialized_files.write_managed_text_files(
+        (str(target), "managed content\n"),
+        (str(target), "managed content\n"),
+    )
+
+    assert target.read_text(encoding="utf-8") == "managed content\n"
+    assert staged_calls == [(str(target), "managed content\n")]
+    assert [dst for _src, dst in replace_calls] == [str(target)]
+
+
+def test_write_managed_text_files_rejects_conflicting_duplicate_target(
+    tmp_path, monkeypatch
+) -> None:
+    materialized_files = _import_materialized_files_module()
+
+    target = tmp_path / "target.conf"
+    target.write_text("original\n", encoding="utf-8")
+
+    def reject_replace(*_args, **_kwargs) -> NoReturn:
+        msg = "conflicting duplicate target must be rejected before replace"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(materialized_files.os, "replace", reject_replace)
+
+    try:
+        materialized_files.write_managed_text_files(
+            (str(target), "new first\n"),
+            (str(target), "new second\n"),
+        )
+    except ValueError as exc:
+        assert "conflicting content" in str(exc)
+        assert str(target) in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        msg = "expected conflicting duplicate target to raise"
+        raise AssertionError(msg)
+
+    assert target.read_text(encoding="utf-8") == "original\n"
+
+
+def test_write_managed_text_files_coalesces_alias_target_path(
+    tmp_path, monkeypatch
+) -> None:
+    materialized_files = _import_materialized_files_module()
+
+    target = tmp_path / "target.conf"
+    alias_parent = tmp_path / "nested"
+    alias_parent.mkdir()
+    alias = alias_parent / ".." / "target.conf"
+    real_replace = materialized_files.os.replace
+    replace_calls: list[tuple[str, str]] = []
+
+    def record_replace(src, dst):
+        replace_calls.append((str(src), str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(materialized_files.os, "replace", record_replace)
+
+    materialized_files.write_managed_text_files(
+        (str(target), "managed content\n"),
+        (str(alias), "managed content\n"),
+    )
+
+    assert target.read_text(encoding="utf-8") == "managed content\n"
+    assert [dst for _src, dst in replace_calls] == [str(target)]
+
+
 def test_write_managed_text_files_restores_previous_files_when_late_replace_fails(
     tmp_path, monkeypatch
 ) -> None:

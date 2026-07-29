@@ -111,28 +111,53 @@ def _write_staged_file(
         raise
 
 
+def _coalesced_managed_text_files(
+    files: tuple[tuple[str, str], ...],
+) -> tuple[tuple[str, str, str], ...]:
+    coalesced: list[tuple[str, str, str]] = []
+    by_target: dict[str, tuple[str, str]] = {}
+    for path, content in files:
+        target_key = _managed_path_key(path)
+        existing = by_target.get(target_key)
+        if existing is None:
+            by_target[target_key] = (path, content)
+            coalesced.append((target_key, path, content))
+            continue
+        existing_path, existing_content = existing
+        if existing_content != content:
+            msg = (
+                "Managed text file target renders conflicting content: "
+                f"{existing_path!r} and {path!r}"
+            )
+            raise ValueError(msg)
+    return tuple(coalesced)
+
+
 def write_managed_text_files(*files: tuple[str, str]) -> None:
+    materialized_files = _coalesced_managed_text_files(files)
     temp_paths: list[str] = []
     backups: dict[str, _FileBackup] = {}
-    replaced_paths: list[str] = []
+    replaced_paths: list[tuple[str, str]] = []
     try:
-        with _locked_materialized_paths([path for path, _content in files]):
+        with _locked_materialized_paths(
+            [target_key for target_key, _path, _content in materialized_files]
+        ):
             try:
-                for path, _content in files:
+                for target_key, path, _content in materialized_files:
                     try:
                         stat = pathlib.Path(path).stat()
                         with pathlib.Path(path).open("rb") as existing:
-                            backups[path] = _FileBackup(
+                            backups[target_key] = _FileBackup(
                                 existed=True,
                                 content=existing.read(),
                                 mode=stat.st_mode & 0o777,
                                 owner=(stat.st_uid, stat.st_gid),
                             )
                     except FileNotFoundError:
-                        backups[path] = _FileBackup(existed=False)
+                        backups[target_key] = _FileBackup(existed=False)
 
-                for path, content in files:
-                    backup = backups[path]
+                for target_key, path, content in materialized_files:
+                    backup = backups[target_key]
                     temp_paths.append(
                         _write_staged_file(
                             path,
@@ -142,13 +167,15 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
                         )
                     )
 
-                for (path, _content), temp_path in zip(files, temp_paths, strict=False):
+                for (target_key, path, _content), temp_path in zip(
+                    materialized_files, temp_paths, strict=False
+                ):
                     os.replace(temp_path, path)  # noqa: PTH105
                     _fsync_parent_dir(path)
-                    replaced_paths.append(path)
+                    replaced_paths.append((target_key, path))
             except Exception:
-                for path in reversed(replaced_paths):
-                    backup = backups.get(path, _FileBackup(existed=False))
+                for target_key, path in reversed(replaced_paths):
+                    backup = backups.get(target_key, _FileBackup(existed=False))
                     if backup.existed:
                         temp_path = _write_staged_file(
                             path,
