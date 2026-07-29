@@ -412,6 +412,62 @@ def test_proxy_management_json_payloads_preserve_missing_body_defaults(
     assert runtime.rollback_reason == "Rollback requested by management API."
 
 
+def test_proxy_management_config_validate_defaults_missing_config_text(
+    monkeypatch,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    runtime = _Runtime()
+    proxy_app.runtime = runtime
+    client = proxy_app.app.test_client()
+
+    response = _management_post(
+        client,
+        "/api/manage/config/validate",
+        json={},
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": False, "detail": "parse failed"}
+    assert runtime.validation_text == ""
+
+
+def test_proxy_management_config_validate_rejects_non_string_config_text(
+    monkeypatch,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    runtime = _Runtime()
+    proxy_app.runtime = runtime
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret"}
+    cases = [
+        ["workers", "1"],
+        {"directive": "workers 1"},
+        7,
+        False,
+        None,
+    ]
+
+    for config_text in cases:
+        response = _management_post(
+            client,
+            "/api/manage/config/validate",
+            json={"config_text": config_text},
+            headers=headers,
+        )
+
+        assert response.status_code == 400, repr(config_text)
+        assert response.is_json, repr(config_text)
+        assert response.get_json() == {
+            "ok": False,
+            "detail": "config_text must be a string.",
+        }
+
+    assert runtime.validation_text is None
+
+
 def test_proxy_management_api_status_codes_and_payload_mapping(monkeypatch) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")

@@ -195,6 +195,15 @@ def _parse_management_force(payload: dict[str, Any]) -> tuple[bool, str | None]:
     return False, "force must be a boolean."
 
 
+def _management_config_text_or_abort(payload: dict[str, Any]) -> str:
+    if "config_text" not in payload:
+        return ""
+    config_text = payload.get("config_text")
+    if not isinstance(config_text, str):
+        _abort_management_json_payload("config_text must be a string.")
+    return config_text
+
+
 def _public_pac_port() -> str:
     raw = (os.environ.get("PAC_HTTP_PORT") or "80").strip() or "80"
     try:
@@ -502,7 +511,8 @@ def manage_config_current() -> Any:
 @_require_management_auth
 def manage_config_validate() -> Any:
     payload = _management_json_payload()
-    result = _runtime().validate_config_text(str(payload.get("config_text") or ""))
+    config_text = _management_config_text_or_abort(payload)
+    result = _runtime().validate_config_text(config_text)
     return jsonify(result), 200
 
 
