@@ -5658,11 +5658,9 @@ def remove_proxy():
 
 @app.route("/proxies", methods=["GET"])
 def proxies():
-    registry = get_proxy_registry()
-    requested_proxy = request.args.get("proxy_id")
-    if requested_proxy is not None:
-        session["active_proxy_id"] = normalize_proxy_id(requested_proxy)
-    proxies = _proxy_inventory_or_default(registry)
+    active_proxy_id, active_proxy, proxies = _resolve_selected_proxy_context()
+    g._active_proxy = active_proxy
+    g._proxy_inventory = proxies
     live_health = {
         proxy.proxy_id: {
             "ok": str(proxy.status or "").lower() == "healthy",
@@ -5674,15 +5672,6 @@ def proxies():
         }
         for proxy in proxies
     }
-    active_proxy_id = normalize_proxy_id(
-        session.get("active_proxy_id") or get_default_proxy_id(),
-    )
-    active_proxy = _resolve_proxy_from_inventory(registry, proxies, active_proxy_id)
-    if active_proxy is None:
-        active_proxy = proxies[0] if proxies else None
-    active_proxy_id = active_proxy.proxy_id if active_proxy else ""
-    if active_proxy_id:
-        session["active_proxy_id"] = active_proxy_id
     if active_proxy_id in live_health:
         try:
             live_health[active_proxy_id] = _cached_proxy_health(
