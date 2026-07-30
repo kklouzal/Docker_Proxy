@@ -397,13 +397,6 @@ def public_pac(_pac_path: str = "") -> Any:
         ),
     )
     response.set_etag(hashlib.sha256(etag_material).hexdigest())
-    response.headers["X-PAC-Source"] = resolution.source
-    if resolution.state_sha256:
-        response.headers["X-PAC-State-SHA256"] = resolution.state_sha256
-    if resolution.selected_file:
-        response.headers["X-PAC-Selected-File"] = resolution.selected_file
-    if resolution.diagnostic:
-        response.headers["X-PAC-Diagnostic"] = resolution.diagnostic
     return response.make_conditional(request)
 
 
