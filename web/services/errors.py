@@ -66,6 +66,11 @@ def _redact_sensitive_text(text: str) -> str:
     return _SENSITIVE_KEY_RE.sub(_replace_sensitive_key, text)
 
 
+def redact_sensitive_text(text: object) -> str:
+    """Return text with credential-like values redacted for UI/audit surfaces."""
+    return _redact_sensitive_text("" if text is None else str(text))
+
+
 def public_error_message(
     e: Exception,
     *,
@@ -80,12 +85,12 @@ def public_error_message(
     """
     if expose_internal_errors():
         detail = clean_text(
-            _redact_sensitive_text(f"{type(e).__name__}: {e}"), max_len=max_len
+        redact_sensitive_text(f"{type(e).__name__}: {e}"), max_len=max_len
         )
         return detail or default
 
     if isinstance(e, ValueError):
-        msg = clean_text(_redact_sensitive_text(str(e)), max_len=max_len)
+        msg = clean_text(redact_sensitive_text(str(e)), max_len=max_len)
         return msg or default
 
     return default

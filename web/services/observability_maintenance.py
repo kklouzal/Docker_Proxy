@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from services.bounded_delete import BoundedDeleteResult, delete_where_in_chunks, env_int
 from services.db import DATABASE_ERRORS, connect, connect_unpooled, table_exists
+from services.errors import redact_sensitive_text
 from services.sql_identifiers import quote_mysql_identifier
 
 if TYPE_CHECKING:
@@ -171,7 +172,7 @@ def _best_effort_delete_fallback(table: str) -> tuple[str, int, str]:
 
 
 def public_detail(exc: BaseException) -> str:
-    text = str(exc).strip()
+    text = redact_sensitive_text(str(exc)).strip()
     return text[:300] if text else exc.__class__.__name__
 
 

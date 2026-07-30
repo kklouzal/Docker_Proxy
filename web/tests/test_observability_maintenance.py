@@ -210,6 +210,17 @@ def test_observability_retention_days_are_bounded() -> None:
     )
 
 
+def test_observability_maintenance_public_detail_redacts_sensitive_values() -> None:
+    detail = maintenance.public_detail(
+        RuntimeError("database unavailable password=secret token='abc123'"),
+    )
+
+    assert "secret" not in detail
+    assert "abc123" not in detail
+    assert "password=[redacted]" in detail
+    assert "token='[redacted]'" in detail
+
+
 def test_observability_advisory_lock_uses_unpooled_connection(monkeypatch) -> None:
     pooled_calls: list[str] = []
     unpooled_calls: list[str] = []

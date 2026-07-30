@@ -75,7 +75,7 @@ from services.error_pages import (
     render_preview,
     template_tokens,
 )
-from services.errors import public_error_message
+from services.errors import clean_text, public_error_message, redact_sensitive_text
 from services.housekeeping import (
     run_housekeeping_once as _default_run_housekeeping_once,
 )
@@ -298,6 +298,7 @@ _OBSERVABILITY_SUMMARY_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, int]]
 _OBSERVABILITY_RESULT_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
 _OBSERVABILITY_RESULT_CACHE_LIMIT = 24
 _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS = 5.0
+_OBSERVABILITY_SEARCH_MAX_CHARS = 200
 
 
 def _proxy_health_timeout_seconds() -> float:
@@ -427,6 +428,7 @@ _OBSERVABILITY_EMPTY_EXPORT_HEADERS = {
         "last_seen",
         "detail",
     ],
+    "settings": ["section", "key", "value"],
 }
 
 
@@ -2049,7 +2051,14 @@ def _record_audit_event(
 
 
 def _audit_safe_detail(value: Any, *, limit: int = 500) -> str:
-    return " ".join(str(value or "").split())[:limit]
+    return " ".join(redact_sensitive_text(value).split())[:limit]
+
+
+def _recipient_count_for_audit(value: object) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    return len([token for token in re.split(r"[,; ]+", text) if token.strip()])
 
 
 def _normalize_choice(
@@ -2081,6 +2090,28 @@ def _bounded_int(
         parsed = max(minimum, parsed)
     if maximum is not None:
         parsed = min(maximum, parsed)
+    return parsed
+
+
+def _required_bounded_int(
+    value: object,
+    *,
+    field_label: str,
+    minimum: int,
+    maximum: int,
+) -> int:
+    text = str(value or "").strip()
+    if not text:
+        msg = f"{field_label} is required."
+        raise ValueError(msg)
+    try:
+        parsed = int(text)
+    except Exception as exc:
+        msg = f"{field_label} must be an integer."
+        raise ValueError(msg) from exc
+    if parsed < minimum or parsed > maximum:
+        msg = f"{field_label} must be between {minimum} and {maximum}."
+        raise ValueError(msg)
     return parsed
 
 
@@ -2243,7 +2274,21 @@ def _observability_privacy_from_request() -> bool:
 
 
 def _observability_search_from_request() -> str:
-    return (request.args.get("q") or request.args.get("search") or "").strip().lower()
+    return _observability_search_value(
+        request.args.get("q") or request.args.get("search") or "",
+    )
+
+
+def _observability_search_from_form() -> str:
+    return _observability_search_value(
+        request.form.get("q") or request.form.get("search") or "",
+    )
+
+
+def _observability_search_value(value: object) -> str:
+    return clean_text(str(value or "").strip(), max_len=0).lower()[
+        :_OBSERVABILITY_SEARCH_MAX_CHARS
+    ]
 
 
 def _observability_export_format_from_request() -> str:
@@ -2419,6 +2464,11 @@ def _empty_observability_payload(
             "export_contracts": [],
             "privacy": {"enabled": False, "mode": "raw"},
         }
+    if pane == "settings":
+        return {
+            "retention_settings": {"retention_days": 30, "updated_ts": 0},
+            "maintenance_status": {"latest": {}, "history": []},
+        }
     return {"rows": []}
 
 
@@ -2452,6 +2502,48 @@ def _empty_observability_export_response(pane: str, export_format: str = "csv"):
         rows = ([metric, 0] for metric in _OBSERVABILITY_OVERVIEW_EXPORT_METRICS)
         return _observability_export_response(headers, rows, export_format)
     return _observability_export_response(headers, [], export_format)
+
+
+def _observability_settings_export_rows() -> list[list[object]]:
+    retention = get_observability_retention_settings()
+    maintenance = get_observability_maintenance_status()
+    rows: list[list[object]] = [
+        ["retention", "retention_days", retention.get("retention_days", 30)],
+        ["retention", "updated_ts", retention.get("updated_ts", 0)],
+    ]
+    latest = maintenance.get("latest") if isinstance(maintenance, dict) else None
+    if isinstance(latest, dict) and latest:
+        rows.extend(
+            ["maintenance_latest", key, latest.get(key, "")]
+            for key in (
+                "status",
+                "run_type",
+                "retention_days",
+                "maintained_tables",
+                "finished_ts",
+                "duration_ms",
+            )
+        )
+    history = maintenance.get("history") if isinstance(maintenance, dict) else None
+    if isinstance(history, list):
+        for index, item in enumerate(history[:5], start=1):
+            if not isinstance(item, dict):
+                continue
+            rows.extend(
+                [
+                    [
+                        f"maintenance_history_{index}",
+                        "status",
+                        item.get("status", ""),
+                    ],
+                    [
+                        f"maintenance_history_{index}",
+                        "finished_ts",
+                        item.get("finished_ts", 0),
+                    ],
+                ],
+            )
+    return rows
 
 
 _POLICY_REFRESH_SUCCESS_PARAMS = {
@@ -5735,7 +5827,6 @@ def revert_operation(operation_id: int):
 
 @app.route("/observability", methods=["GET"])
 def observability():
-    queries = get_observability_queries()
     pane = _observability_pane_from_request()
     sort = _observability_sort_from_request(pane)
     limit = _query_int_arg("limit", default=50, minimum=10, maximum=200)
@@ -5750,24 +5841,29 @@ def observability():
     resolve_hostnames = _observability_resolve_hostnames_from_request()
     privacy = _observability_privacy_from_request()
 
-    try:
-        summary = _cached_observability_result(
-            _observability_result_cache_key(
-                "observability",
-                "summary",
-                get_proxy_id(),
-                window_i,
-            ),
-            lambda: queries.summary(since=since_ts),
-        )
-    except Exception:
-        log_exception_throttled(
-            app.logger,
-            "web.app.observability.summary",
-            interval_seconds=30.0,
-            message="Failed to load observability summary; rendering empty state",
-        )
+    queries = None
+    if pane == "settings":
         summary = _empty_observability_summary()
+    else:
+        queries = get_observability_queries()
+        try:
+            summary = _cached_observability_result(
+                _observability_result_cache_key(
+                    "observability",
+                    "summary",
+                    get_proxy_id(),
+                    window_i,
+                ),
+                lambda: queries.summary(since=since_ts),
+            )
+        except Exception:
+            log_exception_throttled(
+                app.logger,
+                "web.app.observability.summary",
+                interval_seconds=30.0,
+                message="Failed to load observability summary; rendering empty state",
+            )
+            summary = _empty_observability_summary()
     summary = {
         **_empty_observability_summary(),
         **(summary if isinstance(summary, dict) else {}),
@@ -6119,13 +6215,13 @@ def observability_maintenance():
 
 @app.route("/observability/settings", methods=["POST"])
 def observability_settings():
-    retention_days = _bounded_int(
-        request.form.get("retention_days"),
-        default=30,
-        minimum=1,
-        maximum=3650,
-    )
     try:
+        retention_days = _required_bounded_int(
+            request.form.get("retention_days"),
+            field_label="Retention days",
+            minimum=1,
+            maximum=3650,
+        )
         settings = set_observability_retention_settings(
             retention_days=retention_days,
         )
@@ -6197,8 +6293,14 @@ def observability_report_schedules():
             enabled=enabled,
         )
         _OBSERVABILITY_RESULT_CACHE.clear()
+        saved_pane = str(schedule.get("pane") or pane)
+        saved_format = str(schedule.get("report_format") or report_format)
+        saved_privacy = bool(schedule.get("privacy", privacy))
+        recipient_count = _recipient_count_for_audit(schedule.get("recipients"))
         detail = (
-            f"saved {cadence} {pane} observability report preset for {recipients[:160]}"
+            f"saved {cadence} {saved_pane} observability report preset; "
+            f"format={saved_format}; privacy={'on' if saved_privacy else 'off'}; "
+            f"recipients={recipient_count}"
         )
         _record_audit_event(
             "observability_report_schedule_save",
@@ -6231,7 +6333,6 @@ def observability_report_schedules():
 
 @app.route("/observability/export", methods=["GET"])
 def observability_export():
-    queries = get_observability_queries()
     pane = _observability_pane_from_request()
     sort = _observability_sort_from_request(pane)
     limit = _query_int_arg("limit", default=200, minimum=10, maximum=1000)
@@ -6249,6 +6350,13 @@ def observability_export():
     summary_data: dict[str, Any] | None = None
     total_requests = 0
     try:
+        if pane == "settings":
+            return _observability_export_response(
+                _OBSERVABILITY_EMPTY_EXPORT_HEADERS["settings"],
+                _observability_settings_export_rows(),
+                export_format,
+            )
+        queries = get_observability_queries()
         if pane in {"overview", "clients", "destinations", "performance", "reports"}:
             summary_data = _cached_observability_result(
                 _observability_result_cache_key(
@@ -6686,7 +6794,7 @@ def observability_export():
             app.logger,
             f"web.app.observability.export.{pane}",
             interval_seconds=30.0,
-            message="Failed to export observability pane; returning empty CSV",
+            message="Failed to export observability pane; returning empty export",
         )
         return _empty_observability_export_response(pane, export_format)
 
@@ -7072,7 +7180,7 @@ def _observability_remediation_allowed_domains(
         _OBSERVABILITY_SORT_OPTIONS["remediation"],
         _OBSERVABILITY_SORT_DEFAULTS["remediation"],
     )
-    search = ((request.form.get("q") or "").strip() or "")
+    search = _observability_search_from_form()
     runtime_health = _cached_proxy_health(
         get_proxy_id(),
         timeout_seconds=max(3.0, _proxy_health_timeout_seconds()),
@@ -7308,7 +7416,7 @@ def _observability_remediation_domain_redirect_params() -> dict[str, Any]:
             _OBSERVABILITY_SORT_OPTIONS["remediation"],
             _OBSERVABILITY_SORT_DEFAULTS["remediation"],
         ),
-        "q": ((request.form.get("q") or "").strip() or None),
+        "q": (_observability_search_from_form() or None),
     }
 
 

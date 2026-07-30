@@ -574,6 +574,12 @@ def test_observability_report_schedule_post_records_configuration(
 
     assert response.status_code == 302
     assert "schedule_saved=1" in response.headers["Location"]
+    record = loaded.audit_store.records[-1]
+    assert record["kind"] == "observability_report_schedule_save"
+    assert record["ok"] is True
+    assert "recipients=1" in record["detail"]
+    assert "privacy=on" in record["detail"]
+    assert "ops@example.com" not in record["detail"]
 
 
 def test_spa_document_fetches_are_not_browser_cached(monkeypatch, tmp_path) -> None:

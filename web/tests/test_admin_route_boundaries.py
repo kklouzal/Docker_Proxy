@@ -1787,6 +1787,43 @@ def test_observability_settings_updates_retention_days(monkeypatch, tmp_path) ->
     assert "45 days" in loaded.audit_store.records[-1]["detail"]
 
 
+def test_observability_settings_rejects_invalid_retention_days(
+    monkeypatch, tmp_path
+) -> None:
+    saved: list[int] = []
+
+    def set_retention(*, retention_days: object) -> dict[str, int]:
+        days = int(retention_days)
+        saved.append(days)
+        return {"retention_days": days, "updated_ts": 123}
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        set_observability_retention_settings=set_retention,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/observability/settings",
+        data={"csrf_token": csrf_token(client, "/"), "retention_days": "not-days"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert saved == []
+    location = response.headers["Location"]
+    assert "pane=settings" in location
+    assert "settings_error=1" in location
+    assert (
+        loaded.audit_store.records[-1]["kind"]
+        == "observability_retention_settings_save"
+    )
+    assert loaded.audit_store.records[-1]["ok"] is False
+    assert "integer" in loaded.audit_store.records[-1]["detail"]
+
+
 def test_observability_settings_reads_maintenance_status_from_runtime_services(
     monkeypatch, tmp_path
 ) -> None:
@@ -1851,6 +1888,53 @@ def test_observability_settings_handles_maintenance_status_failures(
     body = page.get_data(as_text=True)
     assert "No maintenance run history" in body
     assert "secret" not in body
+
+
+def test_observability_settings_export_returns_settings_rows_without_data_pane_query(
+    monkeypatch, tmp_path
+) -> None:
+    class SettingsExportQueries:
+        def top_destinations(self, **_kwargs):
+            msg = "settings export must not query destination rows"
+            raise AssertionError(msg)
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=SettingsExportQueries(),
+        get_observability_retention_settings=lambda: {
+            "retention_days": 45,
+            "updated_ts": 111,
+        },
+        get_observability_maintenance_status=lambda: {
+            "latest": {
+                "status": "success",
+                "run_type": "manual",
+                "retention_days": 45,
+                "maintained_tables": 3,
+                "finished_ts": 222,
+                "duration_ms": 12,
+            },
+            "history": [],
+        },
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability/export?pane=settings&format=json")
+
+    assert response.status_code == 200
+    assert response.headers.get("Content-Type", "").startswith("application/json")
+    assert json.loads(response.get_data(as_text=True)) == [
+        {"section": "retention", "key": "retention_days", "value": 45},
+        {"section": "retention", "key": "updated_ts", "value": 111},
+        {"section": "maintenance_latest", "key": "status", "value": "success"},
+        {"section": "maintenance_latest", "key": "run_type", "value": "manual"},
+        {"section": "maintenance_latest", "key": "retention_days", "value": 45},
+        {"section": "maintenance_latest", "key": "maintained_tables", "value": 3},
+        {"section": "maintenance_latest", "key": "finished_ts", "value": 222},
+        {"section": "maintenance_latest", "key": "duration_ms", "value": 12},
+    ]
 
 
 def test_observability_settings_runs_manual_database_maintenance(
@@ -2134,6 +2218,14 @@ def test_observability_accepts_search_alias_for_page_and_export(
     )
     assert response.status_code == 200
     assert observability_queries.destination_calls[-1]["search"] == "canonical.example"
+
+    response = client.get("/observability?pane=destinations&q=Video%0AExample")
+    assert response.status_code == 200
+    assert observability_queries.destination_calls[-1]["search"] == "video example"
+
+    response = client.get("/observability?pane=destinations&q=" + ("a" * 500))
+    assert response.status_code == 200
+    assert len(observability_queries.destination_calls[-1]["search"]) <= 200
 
 
 def test_observability_cache_export_contract_aligns_csv_and_json(
