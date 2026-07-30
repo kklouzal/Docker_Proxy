@@ -15,11 +15,44 @@ from services.db import (
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
 )
+from services.errors import redact_sensitive_text
 from services.proxy_context import normalize_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
 
 OPERATION_STATUSES = ("pending", "applying", "applied", "superseded", "failed")
 TERMINAL_STATUSES = {"applied", "superseded", "failed"}
+_REQUIRED_COLUMNS = (
+    "request_key",
+    "claim_token",
+    "stale_requeue_count",
+    "force_sync",
+)
+_REQUIRED_INDEXES = (
+    "idx_proxy_operations_proxy_status_created_id",
+    "idx_proxy_operations_proxy_started_id",
+    "idx_proxy_operations_proxy_updated_id",
+    "uniq_proxy_operations_active_request",
+)
+
+
+def _text_or_default(value: object | None, *, default: str = "") -> str:
+    if value is None:
+        return default
+    text = str(value)
+    return text or default
+
+
+def _limited_text(
+    value: object | None,
+    limit: int,
+    *,
+    default: str = "",
+    redact: bool = False,
+) -> str:
+    text = _text_or_default(value, default=default)
+    if redact:
+        text = redact_sensitive_text(text)
+    return text[:limit]
 
 
 @dataclass(frozen=True)
@@ -41,6 +74,7 @@ class ProxyOperation:
     started_ts: int
     completed_ts: int
     updated_ts: int
+    stale_requeue_count: int = 0
     force: bool = False
     claim_token: str = ""
 
@@ -67,13 +101,14 @@ class ProxyOperation:
             "started_ts": self.started_ts,
             "completed_ts": self.completed_ts,
             "updated_ts": self.updated_ts,
+            "stale_requeue_count": self.stale_requeue_count,
             "force": self.force,
             "can_revert": self.can_revert,
         }
 
 
 class OperationLedger:
-    _SELECT_COLUMNS = "id, proxy_id, status, operation_type, subject, summary, target_kind, target_ref, rollback_kind, rollback_ref, request_hash, detail, created_by, created_ts, started_ts, completed_ts, updated_ts, force_sync, claim_token"
+    _SELECT_COLUMNS = "id, proxy_id, status, operation_type, subject, summary, target_kind, target_ref, rollback_kind, rollback_ref, request_hash, detail, created_by, created_ts, started_ts, completed_ts, updated_ts, stale_requeue_count, force_sync, claim_token"
 
     def __init__(self) -> None:
         self._schema_ready = False
@@ -124,11 +159,11 @@ class OperationLedger:
     ) -> str:
         payload = "\0".join(
             (
-                (operation_type or "sync")[:64],
-                (subject or "")[:255],
-                (target_kind or "")[:64],
-                str(target_ref or "")[:255],
-                (request_hash or "")[:64],
+                _limited_text(operation_type, 64, default="sync"),
+                _limited_text(subject, 255),
+                _limited_text(target_kind, 64),
+                _limited_text(target_ref, 255),
+                _limited_text(request_hash, 64),
             ),
         )
         return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
@@ -241,6 +276,7 @@ class OperationLedger:
             started_ts BIGINT NOT NULL DEFAULT 0,
             completed_ts BIGINT NOT NULL DEFAULT 0,
             updated_ts BIGINT NOT NULL,
+            stale_requeue_count INT NOT NULL DEFAULT 0,
             force_sync TINYINT(1) NOT NULL DEFAULT 0,
             KEY idx_proxy_operations_proxy_status (proxy_id, status, created_ts),
             KEY idx_proxy_operations_proxy_updated (proxy_id, updated_ts),
@@ -256,9 +292,17 @@ class OperationLedger:
             conn.execute(
                 "ALTER TABLE proxy_operations ADD COLUMN claim_token CHAR(32) NULL DEFAULT NULL AFTER request_key",
             )
+        if not self._column_exists(
+            conn,
+            "proxy_operations",
+            "stale_requeue_count",
+        ):
+            conn.execute(
+                "ALTER TABLE proxy_operations ADD COLUMN stale_requeue_count INT NOT NULL DEFAULT 0 AFTER updated_ts",
+            )
         if not self._column_exists(conn, "proxy_operations", "force_sync"):
             conn.execute(
-                "ALTER TABLE proxy_operations ADD COLUMN force_sync TINYINT(1) NOT NULL DEFAULT 0 AFTER updated_ts",
+                "ALTER TABLE proxy_operations ADD COLUMN force_sync TINYINT(1) NOT NULL DEFAULT 0 AFTER stale_requeue_count",
             )
         self._backfill_active_request_keys(conn)
         for index_name, ddl in (
@@ -285,6 +329,31 @@ class OperationLedger:
                 "ALTER TABLE proxy_operations ADD UNIQUE KEY uniq_proxy_operations_active_request (proxy_id, request_key)",
             )
 
+    def _schema_missing_requirements(self, conn) -> list[str]:
+        missing = [
+            f"column:{column_name}"
+            for column_name in _REQUIRED_COLUMNS
+            if not self._column_exists(conn, "proxy_operations", column_name)
+        ]
+        missing.extend(
+            f"index:{index_name}"
+            for index_name in _REQUIRED_INDEXES
+            if not self._index_exists(conn, "proxy_operations", index_name)
+        )
+        return missing
+
+    def _schema_current_on_connection(self, conn) -> bool:
+        if not hasattr(conn, "native"):
+            return False
+        try:
+            from services.schema_lifecycle import runtime_schema_ready_for_lazy_store
+
+            return runtime_schema_ready_for_lazy_store(
+                conn,
+            ) and not self._schema_missing_requirements(conn)
+        except Exception:
+            return False
+
     def init_db(self) -> None:
         if self._schema_ready:
             return
@@ -294,16 +363,9 @@ class OperationLedger:
 
             def _ensure_schema() -> None:
                 with self._connect() as conn:
-                    try:
-                        from services.schema_lifecycle import (
-                            runtime_schema_ready_for_lazy_store,
-                        )
-
-                        if runtime_schema_ready_for_lazy_store(conn):
-                            self._schema_ready = True
-                            return
-                    except Exception:
-                        pass
+                    if self._schema_current_on_connection(conn):
+                        self._schema_ready = True
+                        return
                     if not hasattr(conn, "native"):
                         self._init_db_on_connection(conn)
                         return
@@ -338,6 +400,7 @@ class OperationLedger:
             started_ts=int(row["started_ts"] or 0),
             completed_ts=int(row["completed_ts"] or 0),
             updated_ts=int(row["updated_ts"] or 0),
+            stale_requeue_count=int(row.get("stale_requeue_count") or 0),
             force=bool(int(row["force_sync"] or 0)),
             claim_token=str(row.get("claim_token") or ""),
         )
@@ -361,16 +424,16 @@ class OperationLedger:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         now = int(time.time())
-        op_type = (operation_type or "sync")[:64]
-        subject_text = (subject or "")[:255]
-        summary_text = (summary or "")[:512]
-        target_kind_text = (target_kind or "")[:64]
-        target_ref_text = str(target_ref or "")[:255]
-        rollback_kind_text = (rollback_kind or "")[:64]
-        rollback_ref_text = str(rollback_ref or "")[:255]
-        request_hash_text = (request_hash or "")[:64]
-        detail_text = (detail or "")[:4000]
-        created_by_text = (created_by or "")[:255]
+        op_type = _limited_text(operation_type, 64, default="sync")
+        subject_text = _limited_text(subject, 255)
+        summary_text = _limited_text(summary, 512, redact=True)
+        target_kind_text = _limited_text(target_kind, 64)
+        target_ref_text = _limited_text(target_ref, 255)
+        rollback_kind_text = _limited_text(rollback_kind, 64)
+        rollback_ref_text = _limited_text(rollback_ref, 255)
+        request_hash_text = _limited_text(request_hash, 64)
+        detail_text = _limited_text(detail, 4000, redact=True)
+        created_by_text = _limited_text(created_by, 255)
         force_requested = bool(force)
         request_key = self._request_key(
             operation_type=op_type,
@@ -379,50 +442,58 @@ class OperationLedger:
             target_ref=target_ref_text,
             request_hash=request_hash_text,
         )
-        with self._connect() as conn:
-            with guarded_proxy_write(conn, proxy_key) as guard:
-                proxy_key = guard.proxy_id
-                cur = conn.execute(
-                    """
-                    INSERT INTO proxy_operations(proxy_id,status,operation_type,subject,summary,target_kind,target_ref,rollback_kind,rollback_ref,request_hash,request_key,detail,created_by,created_ts,updated_ts,force_sync)
-                    VALUES(%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), summary=VALUES(summary), detail=VALUES(detail), created_by=VALUES(created_by), updated_ts=VALUES(updated_ts), force_sync=GREATEST(force_sync, VALUES(force_sync))
-                    """,
-                    (
-                        proxy_key,
-                    op_type,
-                    subject_text,
-                    summary_text,
-                    target_kind_text,
-                    target_ref_text,
-                    rollback_kind_text,
-                    rollback_ref_text,
-                    request_hash_text,
-                    request_key,
-                    detail_text,
-                    created_by_text,
-                    now,
-                    now,
-                        1 if force_requested else 0,
-                    ),
-                )
-                if rollback_kind_text and rollback_ref_text:
-                    conn.execute(
+
+        def _create() -> object | None:
+            nonlocal proxy_key
+            with self._connect() as conn:
+                with guarded_proxy_write(conn, proxy_key) as guard:
+                    proxy_key = guard.proxy_id
+                    cur = conn.execute(
                         """
-                        UPDATE proxy_operations
-                        SET rollback_kind=%s, rollback_ref=%s
-                        WHERE id=%s AND (rollback_kind='' OR rollback_ref='')
+                        INSERT INTO proxy_operations(proxy_id,status,operation_type,subject,summary,target_kind,target_ref,rollback_kind,rollback_ref,request_hash,request_key,detail,created_by,created_ts,updated_ts,force_sync)
+                        VALUES(%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), summary=VALUES(summary), detail=VALUES(detail), created_by=VALUES(created_by), updated_ts=VALUES(updated_ts), force_sync=GREATEST(force_sync, VALUES(force_sync))
                         """,
                         (
+                            proxy_key,
+                            op_type,
+                            subject_text,
+                            summary_text,
+                            target_kind_text,
+                            target_ref_text,
                             rollback_kind_text,
                             rollback_ref_text,
-                            int(cur.lastrowid or 0),
+                            request_hash_text,
+                            request_key,
+                            detail_text,
+                            created_by_text,
+                            now,
+                            now,
+                            1 if force_requested else 0,
                         ),
                     )
-                row = conn.execute(
-                    f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1",
-                    (int(cur.lastrowid or 0),),
-                ).fetchone()
+                    if rollback_kind_text and rollback_ref_text:
+                        conn.execute(
+                            """
+                            UPDATE proxy_operations
+                            SET rollback_kind=%s, rollback_ref=%s
+                            WHERE id=%s AND (rollback_kind='' OR rollback_ref='')
+                            """,
+                            (
+                                rollback_kind_text,
+                                rollback_ref_text,
+                                int(cur.lastrowid or 0),
+                            ),
+                        )
+                    return conn.execute(
+                        f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1",
+                        (int(cur.lastrowid or 0),),
+                    ).fetchone()
+
+        row = run_mysql_operation_with_retry(
+            _create,
+            operation_name="operation ledger create",
+        )
         operation = self._row_to_operation(row)
         if operation is None:
             msg = "Operation ledger insert did not return a row."
@@ -515,86 +586,135 @@ class OperationLedger:
         proxy_id: object | None,
         *,
         older_than_seconds: int = 600,
+        max_requeues: int = 3,
     ) -> int:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         now = int(time.time())
         cutoff = now - max(60, int(older_than_seconds or 600))
+        max_requeues = max(1, min(20, int(max_requeues or 3)))
         stale_request_key_expr = self._request_key_sql("stale")
         active_request_key_expr = self._request_key_sql("active")
-        with self._connect() as conn:
-            keeper_request_key_expr = self._request_key_sql("keeper")
-            keeper_priority_expr = self._stale_recovery_priority_sql("keeper")
-            active_priority_expr = self._stale_recovery_priority_sql("active")
-            conn.execute(
-                f"""
-                UPDATE proxy_operations active
-                JOIN (
-                    SELECT proxy_id, request_key
-                    FROM (
-                        SELECT stale_source.proxy_id,
-                               {stale_request_key_expr.replace("stale.", "stale_source.")} AS request_key
-                        FROM proxy_operations stale_source
-                        WHERE stale_source.proxy_id=%s
-                          AND stale_source.status='applying'
-                          AND stale_source.started_ts>0
-                          AND stale_source.started_ts<%s
-                    ) stale_source_keys
-                    GROUP BY proxy_id, request_key
-                ) stale_keys
-                  ON stale_keys.proxy_id=active.proxy_id
-                 AND stale_keys.request_key={active_request_key_expr}
-                JOIN proxy_operations keeper
-                  ON keeper.proxy_id=active.proxy_id
-                 AND keeper.status IN ('pending','applying')
-                 AND {keeper_request_key_expr}={active_request_key_expr}
-                 AND (
-                     {keeper_priority_expr}
-                     < {active_priority_expr}
-                     OR (
+
+        def _recover_stale() -> int:
+            with self._connect() as conn:
+                keeper_request_key_expr = self._request_key_sql("keeper")
+                keeper_priority_expr = self._stale_recovery_priority_sql("keeper")
+                active_priority_expr = self._stale_recovery_priority_sql("active")
+                conn.execute(
+                    f"""
+                    UPDATE proxy_operations active
+                    JOIN (
+                        SELECT proxy_id, request_key
+                        FROM (
+                            SELECT stale_source.proxy_id,
+                                   {stale_request_key_expr.replace("stale.", "stale_source.")} AS request_key
+                            FROM proxy_operations stale_source
+                            WHERE stale_source.proxy_id=%s
+                              AND stale_source.status='applying'
+                              AND stale_source.started_ts>0
+                              AND stale_source.started_ts<%s
+                        ) stale_source_keys
+                        GROUP BY proxy_id, request_key
+                    ) stale_keys
+                      ON stale_keys.proxy_id=active.proxy_id
+                     AND stale_keys.request_key={active_request_key_expr}
+                    JOIN proxy_operations keeper
+                      ON keeper.proxy_id=active.proxy_id
+                     AND keeper.status IN ('pending','applying')
+                     AND {keeper_request_key_expr}={active_request_key_expr}
+                     AND (
                          {keeper_priority_expr}
-                         = {active_priority_expr}
-                         AND (
-                             keeper.created_ts < active.created_ts
-                             OR (keeper.created_ts = active.created_ts AND keeper.id < active.id)
+                         < {active_priority_expr}
+                         OR (
+                             {keeper_priority_expr}
+                             = {active_priority_expr}
+                             AND (
+                                 keeper.created_ts < active.created_ts
+                                 OR (keeper.created_ts = active.created_ts AND keeper.id < active.id)
+                             )
                          )
                      )
-                 )
-                SET active.status='superseded',
-                    active.detail='Superseded by a matching active operation before stale applying recovery.',
-                    active.completed_ts=%s,
-                    active.updated_ts=%s,
-                    active.started_ts=0,
-                    active.request_key=NULL,
-                    active.claim_token=NULL
-                WHERE active.proxy_id=%s
-                  AND active.status IN ('pending','applying')
-                """,
-                (proxy_key, cutoff, cutoff, cutoff, cutoff, cutoff, now, now, proxy_key),
+                    SET active.status='superseded',
+                        active.detail='Superseded by a matching active operation before stale applying recovery.',
+                        active.completed_ts=%s,
+                        active.updated_ts=%s,
+                        active.started_ts=0,
+                        active.request_key=NULL,
+                        active.claim_token=NULL
+                    WHERE active.proxy_id=%s
+                      AND active.status IN ('pending','applying')
+                    """,
+                    (
+                        proxy_key,
+                        cutoff,
+                        cutoff,
+                        cutoff,
+                        cutoff,
+                        cutoff,
+                        now,
+                        now,
+                        proxy_key,
+                    ),
+                )
+                conn.execute(
+                    f"""
+                    UPDATE proxy_operations stale
+                    LEFT JOIN proxy_operations active
+                      ON active.proxy_id=stale.proxy_id
+                     AND active.status IN ('pending','applying')
+                     AND active.id<>stale.id
+                     AND {active_request_key_expr}={stale_request_key_expr}
+                    SET stale.status='failed',
+                        stale.detail='Failed after repeated stale applying recoveries; operation needs operator review before retry.',
+                        stale.completed_ts=%s,
+                        stale.updated_ts=%s,
+                        stale.started_ts=0,
+                        stale.request_key=NULL,
+                        stale.claim_token=NULL
+                    WHERE stale.proxy_id=%s
+                      AND stale.status='applying'
+                      AND stale.started_ts>0
+                      AND stale.started_ts<%s
+                      AND stale.stale_requeue_count >= %s
+                      AND active.id IS NULL
+                    """,
+                    (now, now, proxy_key, cutoff, max_requeues),
+                )
+                cur = conn.execute(
+                    f"""
+                    UPDATE proxy_operations stale
+                    LEFT JOIN proxy_operations active
+                      ON active.proxy_id=stale.proxy_id
+                     AND active.status IN ('pending','applying')
+                     AND active.id<>stale.id
+                     AND {active_request_key_expr}={stale_request_key_expr}
+                    SET stale.status='pending',
+                        stale.detail='Requeued after stale applying state.',
+                        stale.updated_ts=%s,
+                        stale.started_ts=0,
+                        stale.completed_ts=0,
+                        stale.stale_requeue_count=stale.stale_requeue_count+1,
+                        stale.request_key={stale_request_key_expr},
+                        stale.claim_token=NULL
+                    WHERE stale.proxy_id=%s
+                      AND stale.status='applying'
+                      AND stale.started_ts>0
+                      AND stale.started_ts<%s
+                      AND stale.stale_requeue_count < %s
+                      AND active.id IS NULL
+                    """,
+                    (now, proxy_key, cutoff, max_requeues),
+                )
+                return int(getattr(cur, "rowcount", 0) or 0)
+
+        return int(
+            run_mysql_operation_with_retry(
+                _recover_stale,
+                operation_name="operation ledger stale recovery",
             )
-            cur = conn.execute(
-                f"""
-                UPDATE proxy_operations stale
-                LEFT JOIN proxy_operations active
-                  ON active.proxy_id=stale.proxy_id
-                 AND active.status IN ('pending','applying')
-                 AND active.id<>stale.id
-                 AND {active_request_key_expr}={stale_request_key_expr}
-                SET stale.status='pending',
-                    stale.detail='Requeued after stale applying state.',
-                    stale.updated_ts=%s,
-                    stale.started_ts=0,
-                    stale.request_key={stale_request_key_expr},
-                    stale.claim_token=NULL
-                WHERE stale.proxy_id=%s
-                  AND stale.status='applying'
-                  AND stale.started_ts>0
-                  AND stale.started_ts<%s
-                  AND active.id IS NULL
-                """,
-                (now, proxy_key, cutoff),
-            )
-        return int(getattr(cur, "rowcount", 0) or 0)
+            or 0,
+        )
 
     def claim_pending(
         self,
@@ -616,28 +736,35 @@ class OperationLedger:
             params.append(target_operation_id)
             limit = 1
         params.append(limit)
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT id FROM proxy_operations
-                WHERE {where}
-                ORDER BY created_ts ASC, id ASC LIMIT %s
-                FOR UPDATE SKIP LOCKED
-                """,
-                tuple(params),
-            ).fetchall()
-            ids = [int(row["id"] or 0) for row in rows]
-            if not ids:
-                return []
-            placeholders = ",".join(["%s"] * len(ids))
-            conn.execute(
-                f"UPDATE proxy_operations SET status='applying', started_ts=%s, updated_ts=%s, claim_token=%s WHERE proxy_id=%s AND status='pending' AND id IN ({placeholders})",
-                (now, now, claim_token, proxy_key, *ids),
-            )
-            claimed_rows = conn.execute(
-                f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE proxy_id=%s AND status='applying' AND claim_token=%s AND id IN ({placeholders}) ORDER BY created_ts ASC, id ASC",
-                (proxy_key, claim_token, *ids),
-            ).fetchall()
+
+        def _claim() -> list[Any]:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT id FROM proxy_operations
+                    WHERE {where}
+                    ORDER BY created_ts ASC, id ASC LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                    """,
+                    tuple(params),
+                ).fetchall()
+                ids = [int(row["id"] or 0) for row in rows]
+                if not ids:
+                    return []
+                placeholders = ",".join(["%s"] * len(ids))
+                conn.execute(
+                    f"UPDATE proxy_operations SET status='applying', started_ts=%s, updated_ts=%s, claim_token=%s WHERE proxy_id=%s AND status='pending' AND id IN ({placeholders})",
+                    (now, now, claim_token, proxy_key, *ids),
+                )
+                return conn.execute(
+                    f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE proxy_id=%s AND status='applying' AND claim_token=%s AND id IN ({placeholders}) ORDER BY created_ts ASC, id ASC",
+                    (proxy_key, claim_token, *ids),
+                ).fetchall()
+
+        claimed_rows = run_mysql_operation_with_retry(
+            _claim,
+            operation_name="operation ledger claim",
+        )
         return [
             op
             for op in (self._row_to_operation(row) for row in claimed_rows)
@@ -661,8 +788,7 @@ class OperationLedger:
         completed = now if status in TERMINAL_STATUSES else 0
         where = "id=%s"
         where_params: list[Any] = [int(operation_id or 0)]
-        if status not in TERMINAL_STATUSES:
-            where += " AND status NOT IN ('applied','superseded','failed')"
+        where += " AND status NOT IN ('applied','superseded','failed')"
         if expected_status:
             expected_status_text = str(expected_status or "")
             if expected_status_text not in OPERATION_STATUSES:
@@ -673,23 +799,31 @@ class OperationLedger:
         if expected_claim_token is not None:
             where += " AND claim_token=%s"
             where_params.append(str(expected_claim_token))
-        with self._connect() as conn:
-            conn.execute(
-                f"UPDATE proxy_operations SET status=%s, detail=%s, completed_ts=%s, updated_ts=%s, request_key=IF(%s, NULL, request_key), claim_token=IF(%s, NULL, claim_token) WHERE {where}",
-                (
-                    status,
-                    (detail or "")[:4000],
-                    completed,
-                    now,
-                    status in TERMINAL_STATUSES,
-                    status in TERMINAL_STATUSES,
-                    *where_params,
-                ),
-            )
-            row = conn.execute(
-                f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1",
-                (int(operation_id or 0),),
-            ).fetchone()
+        detail_text = _limited_text(detail, 4000, redact=True)
+
+        def _mark() -> object | None:
+            with self._connect() as conn:
+                conn.execute(
+                    f"UPDATE proxy_operations SET status=%s, detail=%s, completed_ts=%s, updated_ts=%s, request_key=IF(%s, NULL, request_key), claim_token=IF(%s, NULL, claim_token) WHERE {where}",
+                    (
+                        status,
+                        detail_text,
+                        completed,
+                        now,
+                        status in TERMINAL_STATUSES,
+                        status in TERMINAL_STATUSES,
+                        *where_params,
+                    ),
+                )
+                return conn.execute(
+                    f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1",
+                    (int(operation_id or 0),),
+                ).fetchone()
+
+        row = run_mysql_operation_with_retry(
+            _mark,
+            operation_name="operation ledger mark status",
+        )
         return self._row_to_operation(row)
 
     def mark_many(

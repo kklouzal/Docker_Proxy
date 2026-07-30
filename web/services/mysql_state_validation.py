@@ -79,6 +79,7 @@ _REQUIRED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("proxy_operations", "status"),
     ("proxy_operations", "request_key"),
     ("proxy_operations", "claim_token"),
+    ("proxy_operations", "stale_requeue_count"),
     ("saml_auth_profiles", "public_base_url"),
     ("saml_auth_profiles", "username_attribute"),
     ("saml_auth_profiles", "groups_attribute"),

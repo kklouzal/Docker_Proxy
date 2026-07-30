@@ -47,6 +47,7 @@ def _operation_row(**overrides):
         "started_ts": 0,
         "completed_ts": 0,
         "updated_ts": 123,
+        "stale_requeue_count": 0,
         "force_sync": 0,
         "claim_token": "",
     }
@@ -160,6 +161,45 @@ def test_init_db_backfills_active_request_keys_before_unique_index(monkeypatch) 
     assert supersede_params == (123, 123)
     assert "WHERE status IN ('pending','applying')" in sql[backfill_pos]
     assert conn.committed is True
+
+
+def test_init_db_repairs_missing_operation_requirements_even_when_runtime_schema_current(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _CurrentSchemaConnection(_Connection):
+        native = object()
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            self.queries.append((compact, tuple(params or ())))
+            if "GET_LOCK" in compact:
+                return _Result([{"acquired": 1}])
+            if "RELEASE_LOCK" in compact:
+                return _Result([{"released": 1}])
+            return _Result()
+
+    conn = _CurrentSchemaConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr(
+        ledger,
+        "_column_exists",
+        lambda _conn, _table, column: column != "stale_requeue_count",
+    )
+    monkeypatch.setattr(ledger, "_index_exists", lambda *_args: True)
+    monkeypatch.setattr(
+        "services.schema_lifecycle.runtime_schema_ready_for_lazy_store",
+        lambda _conn: True,
+    )
+
+    ledger.init_db()
+
+    sql = [query for query, _params in conn.queries]
+    assert any(query.startswith("CREATE TABLE IF NOT EXISTS proxy_operations") for query in sql)
+    assert any("ADD COLUMN stale_requeue_count" in query for query in sql)
 
 
 def test_claim_pending_locks_and_updates_claimed_rows_in_one_transaction(
@@ -295,6 +335,7 @@ def test_requeue_stale_applying_recovers_without_active_key_collisions(
             result.rowcount = (
                 3
                 if compact.startswith("UPDATE proxy_operations stale LEFT JOIN")
+                and "SET stale.status='pending'" in compact
                 else 0
             )
             return result
@@ -328,15 +369,26 @@ def test_requeue_stale_applying_recovers_without_active_key_collisions(
     assert "active.request_key=NULL" in supersede_sql
     assert "active.claim_token=NULL" in supersede_sql
     assert supersede_params == ("edge-a", 700, 700, 700, 700, 700, 1000, 1000, "edge-a")
-    requeue_sql, requeue_params = conn.queries[1]
+    quarantine_sql, quarantine_params = conn.queries[1]
+    assert quarantine_sql.startswith("UPDATE proxy_operations stale LEFT JOIN")
+    assert "SET stale.status='failed'" in quarantine_sql
+    assert "repeated stale applying recoveries" in quarantine_sql
+    assert "stale.request_key=NULL" in quarantine_sql
+    assert "stale.claim_token=NULL" in quarantine_sql
+    assert "stale.stale_requeue_count >= %s" in quarantine_sql
+    assert quarantine_params == (1000, 1000, "edge-a", 700, 3)
+    requeue_sql, requeue_params = conn.queries[2]
     assert requeue_sql.startswith("UPDATE proxy_operations stale LEFT JOIN")
     assert "active.status IN ('pending','applying')" in requeue_sql
     assert "active.id IS NULL" in requeue_sql
     assert "SET stale.status='pending'" in requeue_sql
+    assert "stale.completed_ts=0" in requeue_sql
+    assert "stale.stale_requeue_count=stale.stale_requeue_count+1" in requeue_sql
+    assert "stale.stale_requeue_count < %s" in requeue_sql
     assert "request_key=SHA2(CONCAT(" in requeue_sql
     assert "stale.claim_token=NULL" in requeue_sql
     assert "COALESCE(NULLIF(stale.operation_type,''),'sync')" in requeue_sql
-    assert requeue_params == (1000, "edge-a", 700)
+    assert requeue_params == (1000, "edge-a", 700, 3)
     assert conn.committed is True
 
 
@@ -473,7 +525,10 @@ def test_mark_status_can_guard_applying_claim_token(monkeypatch) -> None:
     )
 
     update_sql, update_params = conn.queries[0]
-    assert "WHERE id=%s AND status=%s AND claim_token=%s" in update_sql
+    assert (
+        "WHERE id=%s AND status NOT IN ('applied','superseded','failed') AND status=%s AND claim_token=%s"
+        in update_sql
+    )
     assert update_params == (
         "applied",
         "done",
@@ -506,7 +561,10 @@ def test_mark_status_empty_expected_claim_token_adds_claim_guard(monkeypatch) ->
     )
 
     update_sql, update_params = conn.queries[0]
-    assert "WHERE id=%s AND status=%s AND claim_token=%s" in update_sql
+    assert (
+        "WHERE id=%s AND status NOT IN ('applied','superseded','failed') AND status=%s AND claim_token=%s"
+        in update_sql
+    )
     assert update_params == (
         "applied",
         "done",
@@ -589,7 +647,10 @@ def test_stale_claim_completion_does_not_overwrite_reclaimed_operation_detail(
     assert current.detail == "new claim is still running"
     assert current.claim_token == "new-claim"
     update_sql, update_params = conn.queries[0]
-    assert "WHERE id=%s AND status=%s AND claim_token=%s" in update_sql
+    assert (
+        "WHERE id=%s AND status NOT IN ('applied','superseded','failed') AND status=%s AND claim_token=%s"
+        in update_sql
+    )
     assert update_params[-3:] == (11, "applying", "old-claim")
 
 
@@ -667,7 +728,10 @@ def test_empty_stale_claim_completion_does_not_overwrite_reclaimed_operation_det
     assert current.detail == "new claim is still running"
     assert current.claim_token == "new-claim"
     update_sql, update_params = conn.queries[0]
-    assert "WHERE id=%s AND status=%s AND claim_token=%s" in update_sql
+    assert (
+        "WHERE id=%s AND status NOT IN ('applied','superseded','failed') AND status=%s AND claim_token=%s"
+        in update_sql
+    )
     assert update_params[-3:] == (11, "applying", "")
 
 
@@ -737,6 +801,80 @@ def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:
     assert insert_params[-1] == 1
     assert op.operation_id == 11
     assert conn.committed is True
+
+
+def test_create_operation_normalizes_falsey_refs_and_redacts_operator_details(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _CreateConnection:
+        def __init__(self) -> None:
+            self.queries = []
+            self.row = None
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("INSERT INTO proxy_operations"):
+                result = _Result()
+                result.lastrowid = 11
+                self.row = _operation_row(
+                    id=11,
+                    proxy_id=params[0],
+                    operation_type=params[1],
+                    subject=params[2],
+                    summary=params[3],
+                    target_kind=params[4],
+                    target_ref=params[5],
+                    rollback_kind=params[6],
+                    rollback_ref=params[7],
+                    request_hash=params[8],
+                    request_key=params[9],
+                    detail=params[10],
+                    created_by=params[11],
+                )
+                return result
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.row])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _CreateConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+
+    op = ledger.create_operation(
+        "edge-a",
+        operation_type="cache_clear",
+        subject="Proxy cache clear",
+        summary="Queued with token=summary-secret",
+        target_kind="cache_epoch",
+        target_ref=0,
+        rollback_kind="cache_epoch",
+        rollback_ref=0,
+        request_hash=0,
+        detail="Authorization: Bearer detail-secret password=detail-secret",
+        created_by="admin",
+    )
+
+    insert_params = conn.queries[0][1]
+    assert insert_params[3] == "Queued with token=[redacted]"
+    assert insert_params[5] == "0"
+    assert insert_params[7] == "0"
+    assert insert_params[8] == "0"
+    assert insert_params[10] == "Authorization: Bearer [redacted] password=[redacted]"
+    assert op.summary == "Queued with token=[redacted]"
+    assert op.detail == "Authorization: Bearer [redacted] password=[redacted]"
 
 
 def test_duplicate_active_request_preserves_original_rollback_metadata(
@@ -1584,6 +1722,62 @@ def test_terminal_status_releases_active_request_key(monkeypatch) -> None:
         True,
         7,
     )
+
+
+def test_terminal_status_does_not_overwrite_existing_terminal_operation(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _TerminalConnection:
+        def __init__(self) -> None:
+            self.row = _operation_row(
+                id=7,
+                status="applied",
+                detail="already applied",
+                completed_ts=600,
+                updated_ts=600,
+                request_key=None,
+                claim_token=None,
+            )
+            self.queries = []
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("UPDATE proxy_operations SET status=%s"):
+                if "AND status NOT IN ('applied','superseded','failed')" not in compact:
+                    self.row["status"] = params[0]
+                    self.row["detail"] = params[1]
+                result = _Result()
+                result.rowcount = 0
+                return result
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.row])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _TerminalConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 789)
+
+    current = ledger.mark_status(7, status="failed", detail="late failure")
+
+    assert current is not None
+    assert current.status == "applied"
+    assert current.detail == "already applied"
+    update_sql, update_params = conn.queries[0]
+    assert "AND status NOT IN ('applied','superseded','failed')" in update_sql
+    assert update_params == ("failed", "late failure", 789, 789, True, True, 7)
 
 
 def test_non_terminal_status_keeps_active_request_key(monkeypatch) -> None:
