@@ -421,7 +421,7 @@ The project requires a MySQL 8+ backend today. SQLite and ad-hoc local state are
 Local deterministic tests:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -m "not live" -p no:cacheprovider --durations=10 -ra web\tests
+.venv\Scripts\python.exe -m pytest -m "not live and not mysql" -p no:cacheprovider --durations=10 -ra web\tests
 ```
 
 Live Compose test stack:

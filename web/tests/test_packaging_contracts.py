@@ -223,6 +223,24 @@ def test_admin_dockerfile_includes_direct_service_import_dependencies() -> None:
     assert "webcat_hygiene.py" in copied_services
 
 
+def test_admin_image_contains_documented_mysql_state_validation_cli() -> None:
+    admin = _read("docker/Dockerfile.admin")
+    docs = _read("docs/mysql-backup-restore-validation.md")
+
+    assert "Run from the admin-ui environment" in docs
+    assert "python -m services.mysql_state_validation --phase pre-backup" in docs
+    assert "python -m services.mysql_state_validation --phase post-restore" in docs
+    assert "web/services/mysql_state_validation.py" in admin
+    assert "web/services/mysql_state_validation.py" not in _read("docker/Dockerfile.proxy")
+
+
+def test_local_deterministic_test_command_matches_ci_mysql_exclusion() -> None:
+    expected_marker = '-m "not live and not mysql"'
+
+    assert expected_marker in _read(".github/workflows/publish-ghcr.yml")
+    assert expected_marker in _read("README.md")
+
+
 def test_ghcr_publish_passes_runtime_version_build_args() -> None:
     workflow = _read(".github/workflows/publish-ghcr.yml")
     proxy = _read("docker/Dockerfile.proxy")
@@ -326,6 +344,16 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     assert "# ADBLOCK_RULE_CACHE_MAX=50000" in env_example
     assert "# ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES=8388608" in env_example
     assert "MYSQL_MAX_ALLOWED_PACKET=256M" in env_example
+
+
+def test_common_compose_env_surface_is_documented_in_env_example() -> None:
+    compose = _read("docker-compose.common.yml")
+    env_example = _read("config/app.env.example")
+    compose_env_names = sorted(
+        set(re.findall(r"\$\{([A-Z0-9_]+)(?::[-?][^}]*)?\}", compose)),
+    )
+
+    assert [name for name in compose_env_names if name not in env_example] == []
 
 
 def test_proxy_cicap_build_enables_compression_support_and_strips_artifacts() -> None:
