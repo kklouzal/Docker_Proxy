@@ -743,7 +743,9 @@ def _operation_view(operation: Any | None) -> dict[str, Any]:
         "operation_subject": str(getattr(operation, "subject", "") or ""),
         "operation_summary": str(getattr(operation, "summary", "") or ""),
         "operation_updated_ts": _safe_revision_id(getattr(operation, "updated_ts", 0)),
-        "operation_detail": str(getattr(operation, "detail", "") or ""),
+        "operation_detail": redact_sensitive_text(
+            getattr(operation, "detail", "") or "",
+        ),
     }
 
 
@@ -864,6 +866,10 @@ def _operation_template_rows(operations: list[Any]) -> list[Any]:
                 row.is_global_certificate_revert = False
             except Exception:
                 pass
+        try:
+            row.detail = redact_sensitive_text(getattr(row, "detail", "") or "")
+        except Exception:
+            pass
         rows.append(row)
     return rows
 
