@@ -238,6 +238,7 @@ def test_mysql_lifecycle_write_guard_aliases_and_stale_rejection(tmp_path: Path)
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy("edge-old")
+    registry.ensure_proxy("edge-keep")
     config_store = config_revisions.ConfigRevisionStore()
     ledger = operation_ledger.OperationLedger()
 
