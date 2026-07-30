@@ -421,6 +421,55 @@ def test_icap_readiness_cli_rejects_non_finite_numeric_flags(capsys) -> None:
     assert "argument --probe-timeout: must be a finite number" in captured.err
 
 
+def test_icap_readiness_probe_does_not_swallow_programming_errors(monkeypatch) -> None:
+    _add_repo_paths()
+    import icap_readiness  # type: ignore
+
+    def raise_runtime_error(*_args, **_kwargs):
+        msg = "synthetic non-socket bug"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(icap_readiness.socket, "create_connection", raise_runtime_error)
+
+    with pytest.raises(RuntimeError, match="synthetic non-socket bug"):
+        icap_readiness.probe_service(_service(1344), timeout=0.1)
+
+
+def test_icap_readiness_reports_status_file_write_failures(tmp_path) -> None:
+    _add_repo_paths()
+    import icap_readiness  # type: ignore
+
+    config = tmp_path / "20-icap.conf"
+    config.write_text("", encoding="utf-8")
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("already a file", encoding="utf-8")
+
+    ok, detail, payload = icap_readiness.wait_ready(
+        [str(config)],
+        timeout=0.1,
+        probe_timeout=0.1,
+        interval=0.05,
+        status_file=str(blocked_parent / "status.json"),
+    )
+
+    assert ok is True
+    assert detail == "No ICAP services are configured."
+    assert payload["ok"] is True
+    assert "failed to write ICAP readiness status file" in payload["status_file_error"]
+
+
+def test_squid_ready_start_delegates_numeric_env_parsing_to_readiness() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    script = (repo_root / "docker" / "squid_ready_start.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert '--timeout "$TIMEOUT"' not in script
+    assert '--probe-timeout "$PROBE_TIMEOUT"' not in script
+    assert '--interval "$INTERVAL"' not in script
+    assert '--status-file "$STATUS_FILE"' in script
+
+
 def test_cicap_av_runner_optional_fallback_answers_options(tmp_path, monkeypatch) -> None:
     _add_repo_paths()
     import docker.cicap_av_runner as runner  # type: ignore

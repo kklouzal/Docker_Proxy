@@ -234,7 +234,7 @@ def probe_service(service: IcapService, *, timeout: float) -> ProbeResult:
             sock.settimeout(timeout)
             sock.sendall(request)
             head = _read_icap_headers(sock)
-    except Exception as exc:
+    except OSError as exc:
         return ProbeResult(service=service, ok=False, detail=f"connect/options failed: {exc}")
 
     ok, detail, first_line, headers = _parse_icap_response_head(head)
@@ -289,17 +289,18 @@ def _result_to_json(result: ProbeResult) -> dict[str, object]:
     return data
 
 
-def _write_status(path: str, payload: dict[str, object]) -> None:
+def _write_status(path: str, payload: dict[str, object]) -> str | None:
     if not path:
-        return
+        return None
     try:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
         tmp.replace(target)
-    except Exception:
-        pass
+    except OSError as exc:
+        return f"failed to write ICAP readiness status file {path}: {exc}"
+    return None
 
 
 def check_once(configs: list[str], *, probe_timeout: float) -> tuple[bool, str, dict[str, object]]:
@@ -334,14 +335,18 @@ def wait_ready(
     while True:
         ok, detail, payload = check_once(configs, probe_timeout=probe_timeout)
         payload = {**payload, "checked_at": int(time.time()), "timeout_seconds": timeout}
-        _write_status(status_file, payload)
+        status_error = _write_status(status_file, payload)
+        if status_error:
+            payload = {**payload, "status_file_error": status_error}
         if ok:
             return True, detail, payload
         last_detail = detail
         last_payload = payload
         if time.monotonic() >= deadline:
             timeout_payload = {**last_payload, "ok": False, "timed_out": True}
-            _write_status(status_file, timeout_payload)
+            status_error = _write_status(status_file, timeout_payload)
+            if status_error:
+                timeout_payload = {**timeout_payload, "status_file_error": status_error}
             return False, last_detail, timeout_payload
         time.sleep(max(0.05, min(interval, deadline - time.monotonic())))
 

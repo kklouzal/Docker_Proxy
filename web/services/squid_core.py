@@ -28,6 +28,7 @@ from services.logutil import log_exception_throttled
 logger = logging.getLogger(__name__)
 
 _SQUID_LIFECYCLE_LOCK = threading.RLock()
+_SAFE_CLAMD_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
 _ADBLOCK_ICAP_METHODS = "GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
@@ -69,6 +70,13 @@ def _parse_port(value: object, default: int) -> int:
     except Exception:
         return default
     return port if 1 <= port <= 65535 else default
+
+
+def _sanitize_clamd_host(value: object) -> str:
+    host = str(value or "").replace("\r", "").strip()
+    if not host or not _SAFE_CLAMD_HOST_RE.fullmatch(host):
+        return "127.0.0.1"
+    return host
 
 
 def _icap_port_bases(
@@ -697,9 +705,7 @@ class SquidController:
         run_dir = self._cicap_run_dir()
         adblock_base, av_base = _icap_port_bases(count)
         resp_base = _clamav_respmod_stream_port_base(count)
-        clamd_host = (
-            os.environ.get("CLAMD_HOST") or "127.0.0.1"
-        ).strip() or "127.0.0.1"
+        clamd_host = _sanitize_clamd_host(os.environ.get("CLAMD_HOST"))
         clamd_port = _parse_port(os.environ.get("CLAMD_PORT"), 3310)
         remote_clamd = _clamd_host_is_remote(clamd_host)
         fail_open = clamav_fail_open(options)

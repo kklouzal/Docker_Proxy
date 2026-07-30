@@ -557,6 +557,7 @@ def test_materialize_runtime_removes_remote_respmod_when_clamd_returns_local(
 
     assert ok, detail
     assert not (supervisor_dir / "clamav_respmod_1.conf").exists()
+
     assert (supervisor_dir / "cicap_av_1.conf").exists()
     include_text = (tmp_path / "20-icap.conf").read_text(encoding="utf-8")
     assert (
@@ -564,6 +565,23 @@ def test_materialize_runtime_removes_remote_respmod_when_clamd_returns_local(
         in include_text
     )
     assert "icap://127.0.0.1:14002/avrespmod" not in include_text
+
+
+def test_runtime_supervisor_sanitizes_clamd_shell_tokens(monkeypatch) -> None:
+    _add_web_to_path()
+
+    from services.squid_core import SquidController  # type: ignore
+
+    monkeypatch.setenv("CLAMD_HOST", 'clamd"; touch /tmp/pwned; #')
+    monkeypatch.setenv("CLAMD_PORT", "70000")
+
+    files = SquidController()._render_icap_supervisor_files(workers=1)
+    rendered = "\n".join(files.values())
+
+    assert 'clamd"; touch /tmp/pwned; #' not in rendered
+    assert 'CLAMD_HOST="127.0.0.1"' in rendered
+    assert 'CLAMD_PORT="3310"' in rendered
+    assert "clamav_respmod_1" not in "\n".join(str(path) for path in files)
 
 
 def test_render_icap_include_makes_required_clamav_fail_closed(monkeypatch) -> None:

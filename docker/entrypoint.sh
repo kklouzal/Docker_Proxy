@@ -217,7 +217,7 @@ FORWARDING_CANARY_PATH="${FORWARDING_CANARY_PATH:-/__docker_proxy_forwarding_can
 case "${FORWARDING_CANARY_PATH}" in
     /*)
         case "${FORWARDING_CANARY_PATH}" in
-            *'?'*|*'#'*|*'\\'*|*'//'*) FORWARDING_CANARY_PATH=/__docker_proxy_forwarding_canary ;;
+            *[?]*|*[#]*|*[\\]*|*//*) FORWARDING_CANARY_PATH=/__docker_proxy_forwarding_canary ;;
         esac
         ;;
     *) FORWARDING_CANARY_PATH=/__docker_proxy_forwarding_canary ;;
@@ -1088,7 +1088,8 @@ if [ "$CICAP_AV_RESP_PORT" -lt $((CICAP_AV_PORT + WORKERS)) ] && [ "$CICAP_AV_PO
     CICAP_AV_RESP_PORT=$((CICAP_AV_PORT + WORKERS))
 fi
 
-CLAMD_HOST="$(printf '%s' "${CLAMD_HOST:-127.0.0.1}" | tr -d '\r')"
+CLAMD_HOST_RAW="$(printf '%s' "${CLAMD_HOST:-127.0.0.1}" | tr -d '\r')"
+CLAMD_HOST="$(sanitize_bind_host "$CLAMD_HOST_RAW")"
 if [ -z "$CLAMD_HOST" ]; then
     CLAMD_HOST="127.0.0.1"
 fi
@@ -1103,7 +1104,12 @@ fi
 CLAMD_PORT_RAW="${CLAMD_PORT:-3310}"
 case "$CLAMD_PORT_RAW" in
     ''|*[!0-9]*) CLAMD_PORT=3310 ;;
-    *) CLAMD_PORT="$CLAMD_PORT_RAW" ;;
+    *)
+        CLAMD_PORT="$CLAMD_PORT_RAW"
+        if [ "$CLAMD_PORT" -gt 65535 ]; then
+            CLAMD_PORT=3310
+        fi
+        ;;
 esac
 
 CLAMAV_REQUIRED_RAW="${CLAMAV_REQUIRED:-}"
