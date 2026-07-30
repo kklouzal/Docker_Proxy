@@ -225,6 +225,38 @@ def test_admin_dockerfile_includes_direct_service_import_dependencies() -> None:
     assert "webcat_hygiene.py" in copied_services
 
 
+def test_proxy_schema_startup_does_not_import_admin_only_modules() -> None:
+    schema = _read("web/services/schema_lifecycle.py")
+    proxy = _read("docker/Dockerfile.proxy")
+    admin_only_modules = {
+        "auth_store",
+        "audit_store",
+        "directory_auth",
+        "saml_auth",
+        "observability_maintenance",
+        "observability_queries",
+        "webfilter_store",
+        "control_plane_maintenance",
+    }
+
+    for module_name in sorted(admin_only_modules):
+        assert f'import_module("services.{module_name}")' not in schema
+        assert f"import_module('services.{module_name}')" not in schema
+        assert f"web/services/{module_name}.py" not in proxy
+
+    for expected_table in (
+        "users",
+        "audit_events",
+        "webfilter_settings",
+        "webfilter_blocked_log",
+        "observability_settings",
+        "observability_report_schedules",
+        "directory_auth_profiles",
+        "saml_auth_profiles",
+    ):
+        assert expected_table in schema
+
+
 def test_admin_image_contains_documented_mysql_state_validation_cli() -> None:
     admin = _read("docker/Dockerfile.admin")
     docs = _read("docs/mysql-backup-restore-validation.md")

@@ -498,6 +498,17 @@ def _apply_spec(conn: Any, spec: SchemaMigrationSpec) -> None:
         )
 
 
+def _apply_embedded_schema(conn: Any, spec: SchemaMigrationSpec) -> None:
+    for table in spec.tables:
+        conn.execute(table.create_sql)
+    for step in spec.data_steps:
+        step.apply(conn)
+    for column in spec.columns:
+        ensure_column(conn, table_name=column.table, column_name=column.name, ddl=column.ddl)
+    for index in spec.indexes:
+        ensure_index(conn, table_name=index.table, index_name=index.name, ddl=index.ddl)
+
+
 def _repair_revision_uniques(conn: Any) -> None:
     if table_exists(conn, "proxy_config_revisions"):
         repair_duplicate_active_rows(conn, table_name="proxy_config_revisions", scope_column="proxy_id")
@@ -507,8 +518,27 @@ def _repair_revision_uniques(conn: Any) -> None:
         repair_duplicate_active_rows(conn, table_name="adblock_artifact_revisions")
 
 
-def _init_auth_schema(_conn: Any) -> None:
-    importlib.import_module("services.auth_store").get_auth_store().ensure_schema()
+def _init_auth_schema(conn: Any) -> None:
+    _apply_embedded_schema(
+        conn,
+        SchemaMigrationSpec(
+            version=0,
+            name="auth_store_tables",
+            tables=(
+                SchemaObjectSpec(
+                    "users",
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        username VARCHAR(64) PRIMARY KEY,
+                        password_hash TEXT NOT NULL,
+                        created_ts BIGINT NOT NULL,
+                        updated_ts BIGINT NOT NULL
+                    )
+                    """,
+                ),
+            ),
+        ),
+    )
 
 
 def _init_proxy_registry_schema(_conn: Any) -> None:
@@ -535,8 +565,37 @@ def _backfill_operation_ledger_active_request_keys(conn: Any) -> None:
     importlib.import_module("services.operation_ledger").get_operation_ledger()._backfill_active_request_keys(conn)
 
 
-def _init_audit_schema(_conn: Any) -> None:
-    importlib.import_module("services.audit_store").get_audit_store().init_db()
+def _init_audit_schema(conn: Any) -> None:
+    _apply_embedded_schema(
+        conn,
+        SchemaMigrationSpec(
+            version=0,
+            name="audit_store_tables",
+            tables=(
+                SchemaObjectSpec(
+                    "audit_events",
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_events (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        ts BIGINT NOT NULL,
+                        kind VARCHAR(80) NOT NULL,
+                        ok TINYINT(1) NOT NULL,
+                        remote_addr VARCHAR(64),
+                        user_agent VARCHAR(256),
+                        detail TEXT,
+                        config_sha256 CHAR(64),
+                        config_text LONGTEXT,
+                        KEY idx_audit_ts (ts),
+                        KEY idx_audit_ts_id (ts, id),
+                        KEY idx_audit_kind (kind),
+                        KEY idx_audit_proxy_ts (proxy_id, ts)
+                    )
+                    """,
+                ),
+            ),
+        ),
+    )
 
 
 def _init_adblock_runtime_schema(conn: Any) -> None:
@@ -544,8 +603,64 @@ def _init_adblock_runtime_schema(conn: Any) -> None:
     store_module.AdblockStore(lists_dir=os.environ.get("ADBLOCK_LISTS_DIR", "."))._init_schema(conn)
 
 
-def _init_webfilter_runtime_schema(_conn: Any) -> None:
-    importlib.import_module("services.webfilter_store").get_webfilter_store().init_db()
+def _init_webfilter_runtime_schema(conn: Any) -> None:
+    _apply_embedded_schema(
+        conn,
+        SchemaMigrationSpec(
+            version=0,
+            name="webfilter_runtime_tables",
+            tables=(
+                SchemaObjectSpec(
+                    "webfilter_settings",
+                    """
+                    CREATE TABLE IF NOT EXISTS webfilter_settings (
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        k VARCHAR(64) NOT NULL,
+                        v LONGTEXT NOT NULL,
+                        PRIMARY KEY(proxy_id, k)
+                    )
+                    """,
+                ),
+                SchemaObjectSpec(
+                    "webfilter_meta",
+                    """
+                    CREATE TABLE IF NOT EXISTS webfilter_meta (
+                        k VARCHAR(64) PRIMARY KEY,
+                        v LONGTEXT NOT NULL
+                    )
+                    """,
+                ),
+                SchemaObjectSpec(
+                    "webfilter_whitelist",
+                    """
+                    CREATE TABLE IF NOT EXISTS webfilter_whitelist (
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        pattern VARCHAR(255) NOT NULL,
+                        added_ts BIGINT NOT NULL,
+                        PRIMARY KEY(proxy_id, pattern),
+                        KEY idx_webfilter_whitelist_proxy_ts (proxy_id, added_ts)
+                    )
+                    """,
+                ),
+                SchemaObjectSpec(
+                    "webfilter_blocked_log",
+                    """
+                    CREATE TABLE IF NOT EXISTS webfilter_blocked_log (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        ts BIGINT NOT NULL,
+                        src_ip VARCHAR(64) NOT NULL,
+                        url TEXT NOT NULL,
+                        category VARCHAR(128) NOT NULL,
+                        KEY idx_webfilter_blocked_log_ts_id (ts, id),
+                        KEY idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)
+                    )
+                    """,
+                ),
+            ),
+        ),
+    )
+    _seed_webfilter_defaults(conn)
 
 
 def _init_sslfilter_schema(_conn: Any) -> None:
@@ -572,12 +687,72 @@ def _init_timeseries_schema(_conn: Any) -> None:
     importlib.import_module("services.timeseries_store").get_timeseries_store().init_db()
 
 
-def _init_observability_schema(_conn: Any) -> None:
-    maintenance = importlib.import_module("services.observability_maintenance")
-    queries = importlib.import_module("services.observability_queries")
-    maintenance._ensure_observability_settings_table()
-    maintenance._ensure_observability_maintenance_runs_table()
-    queries.get_observability_queries()._ensure_report_schedule_db()
+def _init_observability_schema(conn: Any) -> None:
+    _apply_embedded_schema(
+        conn,
+        SchemaMigrationSpec(
+            version=0,
+            name="observability_control_tables",
+            tables=(
+                SchemaObjectSpec(
+                    "observability_settings",
+                    """
+                    CREATE TABLE IF NOT EXISTS observability_settings (
+                        id TINYINT PRIMARY KEY,
+                        retention_days INT NOT NULL DEFAULT 30,
+                        updated_ts BIGINT NOT NULL
+                    )
+                    """,
+                ),
+                SchemaObjectSpec(
+                    "observability_maintenance_runs",
+                    """
+                    CREATE TABLE IF NOT EXISTS observability_maintenance_runs (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        run_type VARCHAR(32) NOT NULL,
+                        started_ts BIGINT NOT NULL,
+                        finished_ts BIGINT NOT NULL,
+                        duration_ms BIGINT NOT NULL DEFAULT 0,
+                        status VARCHAR(16) NOT NULL,
+                        retention_days INT NOT NULL,
+                        `analyze` TINYINT NOT NULL DEFAULT 0,
+                        `optimize` TINYINT NOT NULL DEFAULT 0,
+                        pruned TINYINT NOT NULL DEFAULT 0,
+                        maintained_tables INT NOT NULL DEFAULT 0,
+                        detail VARCHAR(512) NOT NULL DEFAULT '',
+                        KEY idx_observability_maintenance_runs_started (started_ts),
+                        KEY idx_observability_maintenance_runs_status (status)
+                    )
+                    """,
+                ),
+                SchemaObjectSpec(
+                    "observability_report_schedules",
+                    """
+                    CREATE TABLE IF NOT EXISTS observability_report_schedules (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        enabled TINYINT(1) NOT NULL DEFAULT 1,
+                        name VARCHAR(120) NOT NULL,
+                        cadence VARCHAR(16) NOT NULL,
+                        recipients VARCHAR(512) NOT NULL,
+                        pane VARCHAR(32) NOT NULL,
+                        report_format VARCHAR(16) NOT NULL,
+                        privacy TINYINT(1) NOT NULL DEFAULT 1,
+                        window_seconds INT NOT NULL,
+                        created_ts BIGINT NOT NULL,
+                        updated_ts BIGINT NOT NULL,
+                        next_run_ts BIGINT NOT NULL DEFAULT 0,
+                        last_run_ts BIGINT NOT NULL DEFAULT 0,
+                        last_status VARCHAR(64) NOT NULL DEFAULT '',
+                        KEY idx_obs_report_schedules_proxy_next (proxy_id, enabled, next_run_ts),
+                        KEY idx_obs_report_schedules_proxy_updated (proxy_id, updated_ts)
+                    )
+                    """,
+                ),
+            ),
+        ),
+    )
+    _seed_observability_settings(conn)
 
 
 def _init_policy_schema(_conn: Any) -> None:
@@ -588,12 +763,86 @@ def _init_pac_schema(_conn: Any) -> None:
     importlib.import_module("services.pac_profiles_store").get_pac_profiles_store().init_db()
 
 
-def _init_directory_auth_schema(_conn: Any) -> None:
-    importlib.import_module("services.directory_auth").get_directory_auth_store().ensure_default_profiles()
+def _init_directory_auth_schema(conn: Any) -> None:
+    _apply_embedded_schema(
+        conn,
+        SchemaMigrationSpec(
+            version=0,
+            name="directory_auth_profile_tables",
+            tables=(
+                SchemaObjectSpec(
+                    "directory_auth_profiles",
+                    """
+                    CREATE TABLE IF NOT EXISTS directory_auth_profiles (
+                        provider VARCHAR(32) PRIMARY KEY,
+                        enabled TINYINT(1) NOT NULL DEFAULT 0,
+                        server_urls TEXT NOT NULL,
+                        use_starttls TINYINT(1) NOT NULL DEFAULT 0,
+                        verify_tls TINYINT(1) NOT NULL DEFAULT 1,
+                        ca_bundle TEXT NOT NULL,
+                        bind_dn TEXT NOT NULL,
+                        bind_password TEXT NOT NULL,
+                        base_dn TEXT NOT NULL,
+                        user_search_base TEXT NOT NULL,
+                        user_filter TEXT NOT NULL,
+                        user_attribute VARCHAR(64) NOT NULL,
+                        group_search_base TEXT NOT NULL,
+                        group_filter TEXT NOT NULL,
+                        required_admin_group TEXT NOT NULL,
+                        timeout_seconds INT NOT NULL DEFAULT 5,
+                        last_test_ok TINYINT(1) NOT NULL DEFAULT 0,
+                        last_test_ts BIGINT NOT NULL DEFAULT 0,
+                        last_test_detail TEXT NOT NULL,
+                        updated_ts BIGINT NOT NULL
+                    )
+                    """,
+                ),
+            ),
+        ),
+    )
+    _seed_directory_auth_profiles(conn)
 
 
-def _init_saml_auth_schema(_conn: Any) -> None:
-    importlib.import_module("services.saml_auth").get_saml_auth_store().ensure_default_profile()
+def _init_saml_auth_schema(conn: Any) -> None:
+    _apply_embedded_schema(
+        conn,
+        SchemaMigrationSpec(
+            version=0,
+            name="saml_auth_profile_tables",
+            tables=(
+                SchemaObjectSpec(
+                    "saml_auth_profiles",
+                    """
+                    CREATE TABLE IF NOT EXISTS saml_auth_profiles (
+                        provider VARCHAR(32) PRIMARY KEY,
+                        enabled TINYINT(1) NOT NULL DEFAULT 0,
+                        metadata_url TEXT NOT NULL,
+                        require_https TINYINT(1) NOT NULL DEFAULT 1,
+                        verify_tls TINYINT(1) NOT NULL DEFAULT 1,
+                        ca_bundle TEXT NOT NULL,
+                        timeout_seconds INT NOT NULL DEFAULT 10,
+                        max_metadata_bytes INT NOT NULL DEFAULT 2097152,
+                        raw_metadata_xml LONGTEXT NOT NULL,
+                        parsed_metadata_json LONGTEXT NOT NULL,
+                        entity_id TEXT NOT NULL,
+                        fetched_ts BIGINT NOT NULL DEFAULT 0,
+                        cache_expires_ts BIGINT NOT NULL DEFAULT 0,
+                        valid_until_ts BIGINT NOT NULL DEFAULT 0,
+                        last_refresh_ok TINYINT(1) NOT NULL DEFAULT 0,
+                        last_refresh_ts BIGINT NOT NULL DEFAULT 0,
+                        last_refresh_detail TEXT NOT NULL,
+                        public_base_url TEXT NOT NULL,
+                        username_attribute VARCHAR(255) NOT NULL DEFAULT 'NameID',
+                        groups_attribute VARCHAR(255) NOT NULL DEFAULT 'groups',
+                        required_group TEXT NOT NULL,
+                        updated_ts BIGINT NOT NULL
+                    )
+                    """,
+                ),
+            ),
+        ),
+    )
+    _seed_saml_auth_profile(conn)
 
 
 def _init_proxy_lifecycle_schema(conn: Any) -> None:
@@ -603,12 +852,239 @@ def _init_proxy_lifecycle_schema(conn: Any) -> None:
         lifecycle.ensure_proxy_lifecycle_index(conn, table)
 
 
-def _init_control_plane_retention_indexes(_conn: Any) -> None:
-    maintenance = importlib.import_module("services.control_plane_maintenance")
-    for table in maintenance.CONTROL_PLANE_RETENTION_INDEXES:
-        if table_exists(_conn, table):
-            for index_name, ddl in maintenance.CONTROL_PLANE_RETENTION_INDEXES[table]:
-                ensure_index(_conn, table_name=table, index_name=index_name, ddl=ddl)
+_CONTROL_PLANE_RETENTION_INDEXES: dict[str, tuple[tuple[str, str], ...]] = {
+    "proxy_config_revisions": (
+        (
+            "idx_proxy_config_revisions_proxy_created_id",
+            "ALTER TABLE proxy_config_revisions ADD INDEX idx_proxy_config_revisions_proxy_created_id (proxy_id, created_ts, id)",
+        ),
+        (
+            "idx_proxy_config_revisions_proxy_active_created_id",
+            "ALTER TABLE proxy_config_revisions ADD INDEX idx_proxy_config_revisions_proxy_active_created_id (proxy_id, is_active, created_ts, id)",
+        ),
+    ),
+    "certificate_bundle_revisions": (
+        (
+            "idx_certificate_bundle_revisions_created_id",
+            "ALTER TABLE certificate_bundle_revisions ADD INDEX idx_certificate_bundle_revisions_created_id (created_ts, id)",
+        ),
+        (
+            "idx_certificate_bundle_revisions_active_created_id",
+            "ALTER TABLE certificate_bundle_revisions ADD INDEX idx_certificate_bundle_revisions_active_created_id (is_active, created_ts, id)",
+        ),
+    ),
+    "proxy_config_applications": (
+        (
+            "idx_proxy_config_applications_proxy_applied_id",
+            "ALTER TABLE proxy_config_applications ADD INDEX idx_proxy_config_applications_proxy_applied_id (proxy_id, applied_ts, id)",
+        ),
+    ),
+    "proxy_certificate_applications": (
+        (
+            "idx_proxy_certificate_applications_proxy_applied_id",
+            "ALTER TABLE proxy_certificate_applications ADD INDEX idx_proxy_certificate_applications_proxy_applied_id (proxy_id, applied_ts, id)",
+        ),
+    ),
+    "proxy_adblock_artifact_applications": (
+        (
+            "idx_proxy_adblock_artifact_apply_proxy_applied_id",
+            "ALTER TABLE proxy_adblock_artifact_applications ADD INDEX idx_proxy_adblock_artifact_apply_proxy_applied_id (proxy_id, applied_ts, id)",
+        ),
+    ),
+    "proxy_operations": (
+        (
+            "idx_proxy_operations_proxy_updated_id",
+            "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_updated_id (proxy_id, updated_ts, id)",
+        ),
+    ),
+    "policy_requests": (
+        (
+            "idx_policy_requests_proxy_updated_id",
+            "ALTER TABLE policy_requests ADD INDEX idx_policy_requests_proxy_updated_id (proxy_id, updated_ts, id)",
+        ),
+    ),
+    "policy_exceptions": (
+        (
+            "idx_policy_exceptions_status_expires",
+            "ALTER TABLE policy_exceptions ADD INDEX idx_policy_exceptions_status_expires (status, expires_ts, id)",
+        ),
+        (
+            "idx_policy_exceptions_proxy_updated_id",
+            "ALTER TABLE policy_exceptions ADD INDEX idx_policy_exceptions_proxy_updated_id (proxy_id, updated_ts, id)",
+        ),
+    ),
+    "observability_maintenance_runs": (
+        (
+            "idx_observability_maintenance_runs_started_id",
+            "ALTER TABLE observability_maintenance_runs ADD INDEX idx_observability_maintenance_runs_started_id (started_ts, id)",
+        ),
+    ),
+}
+
+
+def _init_control_plane_retention_indexes(conn: Any) -> None:
+    for table, indexes in _CONTROL_PLANE_RETENTION_INDEXES.items():
+        if table_exists(conn, table):
+            for index_name, ddl in indexes:
+                ensure_index(conn, table_name=table, index_name=index_name, ddl=ddl)
+
+
+def _seed_webfilter_defaults(conn: Any) -> None:
+    defaults = {
+        "enabled": "0",
+        "source_url": "https://dsi.ut-capitole.fr/blacklists/download/all.tar.gz",
+        "source_provider": "auto",
+        "blocked_categories": "",
+        "last_success": "0",
+        "last_attempt": "0",
+        "last_error": "",
+        "next_run_ts": "0",
+        "safe_browsing_enabled": "0",
+        "safe_browsing_api_key": "",
+        "safe_browsing_lists": "se-4b,mw-4b,uws-4b",
+        "safe_browsing_last_success": "0",
+        "safe_browsing_last_attempt": "0",
+        "safe_browsing_last_error": "",
+        "safe_browsing_next_run_ts": "0",
+    }
+    global_keys = {
+        "source_url",
+        "source_provider",
+        "last_success",
+        "last_attempt",
+        "last_error",
+        "next_run_ts",
+        "safe_browsing_enabled",
+        "safe_browsing_api_key",
+        "safe_browsing_lists",
+        "safe_browsing_last_success",
+        "safe_browsing_last_attempt",
+        "safe_browsing_last_error",
+        "safe_browsing_next_run_ts",
+    }
+    for key, value in defaults.items():
+        scope = "__global__" if key in global_keys else "default"
+        conn.execute(
+            "INSERT IGNORE INTO webfilter_settings(proxy_id, k, v) VALUES(%s,%s,%s)",
+            (scope, key, value),
+        )
+
+
+def _seed_observability_settings(conn: Any) -> None:
+    conn.execute(
+        """
+        INSERT INTO observability_settings(id, retention_days, updated_ts)
+        VALUES(1, %s, %s) AS incoming
+        ON DUPLICATE KEY UPDATE id = observability_settings.id
+        """,
+        (30, int(time.time())),
+    )
+
+
+def _directory_auth_default_profiles(now: int) -> tuple[tuple[Any, ...], ...]:
+    return (
+        (
+            "ldap",
+            0,
+            "ldaps://ldap.example.org:636",
+            0,
+            1,
+            "",
+            "cn=proxy-bind,ou=service,dc=example,dc=org",
+            "",
+            "dc=example,dc=org",
+            "ou=people",
+            "(uid={username})",
+            "uid",
+            "ou=groups",
+            "(|(member={user_dn})(uniqueMember={user_dn})(memberUid={username}))",
+            "cn=docker-proxy-admins,ou=groups,dc=example,dc=org",
+            5,
+            0,
+            0,
+            "",
+            now,
+        ),
+        (
+            "active_directory",
+            0,
+            "ldaps://dc.example.local:636",
+            0,
+            1,
+            "",
+            "svc-docker-proxy@example.local",
+            "",
+            "DC=example,DC=local",
+            "",
+            "(|(sAMAccountName={username})(userPrincipalName={username}))",
+            "sAMAccountName",
+            "",
+            "(member:1.2.840.113556.1.4.1941:={user_dn})",
+            "CN=Docker Proxy Admins,OU=Groups,DC=example,DC=local",
+            5,
+            0,
+            0,
+            "",
+            now,
+        ),
+    )
+
+
+def _seed_directory_auth_profiles(conn: Any) -> None:
+    for row in _directory_auth_default_profiles(int(time.time())):
+        conn.execute(
+            """
+            INSERT IGNORE INTO directory_auth_profiles(
+                provider, enabled, server_urls, use_starttls, verify_tls,
+                ca_bundle, bind_dn, bind_password, base_dn,
+                user_search_base, user_filter, user_attribute,
+                group_search_base, group_filter, required_admin_group,
+                timeout_seconds, last_test_ok, last_test_ts,
+                last_test_detail, updated_ts
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            row,
+        )
+
+
+def _seed_saml_auth_profile(conn: Any) -> None:
+    conn.execute(
+        """
+        INSERT IGNORE INTO saml_auth_profiles(
+            provider, enabled, metadata_url, require_https, verify_tls,
+            ca_bundle, timeout_seconds, max_metadata_bytes,
+            raw_metadata_xml, parsed_metadata_json, entity_id,
+            fetched_ts, cache_expires_ts, valid_until_ts,
+            last_refresh_ok, last_refresh_ts, last_refresh_detail,
+            public_base_url, username_attribute, groups_attribute,
+            required_group, updated_ts
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """,
+        (
+            "saml",
+            0,
+            "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            1,
+            1,
+            "",
+            10,
+            2 * 1024 * 1024,
+            "",
+            "",
+            "",
+            0,
+            0,
+            0,
+            0,
+            0,
+            "",
+            "",
+            "NameID",
+            "groups",
+            "",
+            int(time.time()),
+        ),
+    )
 
 
 def _backfill_application_ledger_evidence(conn: Any) -> None:
