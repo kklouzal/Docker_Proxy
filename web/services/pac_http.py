@@ -4,6 +4,7 @@ import ipaddress
 import json
 import os
 import threading
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,16 @@ from services.public_endpoint import (
 PAC_CONTENT_TYPE = "application/x-ns-proxy-autoconfig"
 DEFAULT_PUBLIC_PAC_PATHS = frozenset({"/proxy.pac", "/wpad.dat"})
 _FileSignature = tuple[str, int, int, int, int, int]
+
+
+@dataclass(frozen=True)
+class PacResolution:
+    content: bytes
+    source: str
+    state_sha256: str = ""
+    selected_file: str = ""
+    fallback_file: str = ""
+    diagnostic: str = ""
 
 
 @lru_cache(maxsize=1)
@@ -186,7 +197,9 @@ def forwarded_headers_trusted(remote_addr: str | None = None) -> bool:
     return _remote_addr_trusts_forwarded_headers(remote_addr)
 
 
-def forwarded_client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
+def forwarded_client_ip_from_headers(
+    headers: Any, remote_addr: str | None = None
+) -> str:
     if headers is not None and _remote_addr_trusts_forwarded_headers(remote_addr):
         xff = _first_forwarded_ip(headers.get("X-Forwarded-For"))
         if xff:
@@ -291,11 +304,14 @@ def _materialized_state_sha_matches(
     # manifest agree with each other.
     manifest_for_hash = dict(manifest)
     manifest_for_hash["state_sha256"] = ""
-    manifest_text_for_hash = json.dumps(
-        manifest_for_hash,
-        indent=2,
-        sort_keys=True,
-    ) + "\n"
+    manifest_text_for_hash = (
+        json.dumps(
+            manifest_for_hash,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     files_for_hash = [
         RenderedPacFile(relative_path=path, content=content)
         for path, content in sorted(files.items())
@@ -323,6 +339,21 @@ class LocalPacCache:
         self._files: dict[str, str] = {}
         self._state_signatures: tuple[_FileSignature, ...] = ()
         self._file_signatures: tuple[_FileSignature, ...] = ()
+        self._last_error = ""
+
+    def _clear_locked(
+        self,
+        *,
+        state_signatures: tuple[_FileSignature, ...],
+        reason: str,
+    ) -> bool:
+        self._state_sha = ""
+        self._manifest = {}
+        self._files = {}
+        self._state_signatures = state_signatures
+        self._file_signatures = ()
+        self._last_error = str(reason or "PAC materialized state is unavailable.")[:240]
+        return False
 
     def _read_state_sha(self) -> str:
         try:
@@ -383,7 +414,7 @@ class LocalPacCache:
             )
         return tuple(signatures)
 
-    def _load_locked(self) -> bool:
+    def _load_locked(self, *, attempts: int = 2) -> bool:
         state_sha = self._read_state_sha()
         state_signatures = self._state_file_signatures()
         cached_file_paths = tuple(self._files)
@@ -397,109 +428,120 @@ class LocalPacCache:
         ):
             file_signatures = self._pac_file_signatures(cached_file_paths)
             if file_signatures == self._file_signatures:
+                self._last_error = ""
                 return True
 
-        manifest_path = self.pac_dir / PAC_MANIFEST_FILENAME
-        if not manifest_path.exists():
-            self._state_sha = ""
-            self._manifest = {}
-            self._files = {}
-            self._state_signatures = state_signatures
-            self._file_signatures = ()
-            return False
+        for _attempt in range(max(1, int(attempts))):
+            manifest_path = self.pac_dir / PAC_MANIFEST_FILENAME
+            if not manifest_path.exists():
+                return self._clear_locked(
+                    state_signatures=state_signatures,
+                    reason="PAC manifest is missing.",
+                )
 
-        try:
-            manifest = json.loads(
-                manifest_path.read_text(encoding="utf-8", errors="replace") or "{}",
-            )
-        except Exception:
-            self._state_sha = ""
-            self._manifest = {}
-            self._files = {}
-            self._state_signatures = state_signatures
-            self._file_signatures = ()
-            return False
-        if not isinstance(manifest, dict):
-            self._state_sha = ""
-            self._manifest = {}
-            self._files = {}
-            self._state_signatures = state_signatures
-            self._file_signatures = ()
-            return False
-        manifest_state_sha = str(manifest.get("state_sha256") or "").strip()
-        if not state_sha:
-            self._state_sha = ""
-            self._manifest = {}
-            self._files = {}
-            self._state_signatures = state_signatures
-            self._file_signatures = ()
-            return False
-        if manifest_state_sha and state_sha != manifest_state_sha:
-            self._state_sha = ""
-            self._manifest = {}
-            self._files = {}
-            self._state_signatures = state_signatures
-            self._file_signatures = ()
-            return False
-
-        files: dict[str, str] = {}
-        fallback_file = _safe_manifest_file_path(manifest.get("fallback_file"))
-        if not fallback_file:
-            fallback_file = "fallback.pac"
-        candidates = {fallback_file}
-        profiles = manifest.get("profiles")
-        if isinstance(profiles, list):
-            for entry in profiles:
-                if not isinstance(entry, dict):
-                    continue
-                path = _safe_manifest_file_path(entry.get("file"))
-                if path:
-                    candidates.add(path)
-        for rel_path in sorted(candidates):
-            safe_path, file_path = _safe_manifest_file(self.pac_dir, rel_path)
-            if not safe_path or file_path is None:
-                continue
-            if not file_path.exists() or not file_path.is_file():
-                continue
             try:
-                files[safe_path] = file_path.read_text(
-                    encoding="utf-8",
-                    errors="replace",
+                manifest = json.loads(
+                    manifest_path.read_text(encoding="utf-8", errors="replace") or "{}",
                 )
             except Exception:
+                return self._clear_locked(
+                    state_signatures=state_signatures,
+                    reason="PAC manifest could not be parsed.",
+                )
+            if not isinstance(manifest, dict):
+                return self._clear_locked(
+                    state_signatures=state_signatures,
+                    reason="PAC manifest has an invalid shape.",
+                )
+            manifest_state_sha = str(manifest.get("state_sha256") or "").strip()
+            if not state_sha:
+                return self._clear_locked(
+                    state_signatures=state_signatures,
+                    reason="PAC state marker is missing.",
+                )
+            if not manifest_state_sha or state_sha != manifest_state_sha:
+                return self._clear_locked(
+                    state_signatures=state_signatures,
+                    reason="PAC state marker does not match the manifest.",
+                )
+
+            files: dict[str, str] = {}
+            fallback_file = _safe_manifest_file_path(manifest.get("fallback_file"))
+            if not fallback_file:
+                fallback_file = "fallback.pac"
+            candidates = {fallback_file}
+            profiles = manifest.get("profiles")
+            if isinstance(profiles, list):
+                for entry in profiles:
+                    if not isinstance(entry, dict):
+                        continue
+                    path = _safe_manifest_file_path(entry.get("file"))
+                    if path:
+                        candidates.add(path)
+            file_signatures_before = self._pac_file_signatures(candidates)
+            for rel_path in sorted(candidates):
+                safe_path, file_path = _safe_manifest_file(self.pac_dir, rel_path)
+                if not safe_path or file_path is None:
+                    continue
+                if not file_path.exists() or not file_path.is_file():
+                    continue
+                try:
+                    files[safe_path] = file_path.read_text(
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                except Exception:
+                    continue
+
+            if not files:
+                return self._clear_locked(
+                    state_signatures=state_signatures,
+                    reason="PAC materialized files are missing.",
+                )
+
+            loaded_file_paths = tuple(files)
+            file_signatures_after = self._pac_file_signatures(loaded_file_paths)
+            final_state_sha = self._read_state_sha()
+            final_state_signatures = self._state_file_signatures()
+            if (
+                final_state_sha != state_sha
+                or final_state_signatures != state_signatures
+                or file_signatures_after != file_signatures_before
+            ):
+                state_sha = final_state_sha
+                state_signatures = final_state_signatures
                 continue
 
-        if not files:
-            self._state_sha = ""
-            self._manifest = {}
-            self._files = {}
-            self._state_signatures = state_signatures
-            self._file_signatures = ()
-            return False
+            if _is_rendered_state_sha(
+                state_sha
+            ) and not _materialized_state_sha_matches(
+                manifest=manifest,
+                files=files,
+                state_sha=state_sha,
+            ):
+                return self._clear_locked(
+                    state_signatures=state_signatures,
+                    reason="PAC materialized files do not match the state marker.",
+                )
 
-        if _is_rendered_state_sha(state_sha) and not _materialized_state_sha_matches(
-            manifest=manifest,
-            files=files,
-            state_sha=state_sha,
-        ):
-            self._state_sha = ""
-            self._manifest = {}
-            self._files = {}
+            self._state_sha = state_sha or str(manifest.get("state_sha256") or "")
+            self._manifest = manifest
+            self._files = files
             self._state_signatures = state_signatures
-            self._file_signatures = ()
-            return False
+            same_cached_files = frozenset(loaded_file_paths) == frozenset(
+                cached_file_paths
+            )
+            if file_signatures is not None and same_cached_files:
+                self._file_signatures = file_signatures
+            else:
+                self._file_signatures = file_signatures_after
+            self._last_error = ""
+            return True
 
-        self._state_sha = state_sha or str(manifest.get("state_sha256") or "")
-        self._manifest = manifest
-        self._files = files
-        self._state_signatures = state_signatures
-        loaded_file_paths = tuple(files)
-        same_cached_files = frozenset(loaded_file_paths) == frozenset(cached_file_paths)
-        if file_signatures is not None and same_cached_files:
-            self._file_signatures = file_signatures
-        else:
-            self._file_signatures = self._pac_file_signatures(loaded_file_paths)
-        return True
+        return self._clear_locked(
+            state_signatures=state_signatures,
+            reason="PAC materialized state changed while it was being loaded.",
+        )
 
     def public_paths(self) -> frozenset[str]:
         with self._lock:
@@ -541,7 +583,12 @@ class LocalPacCache:
             for public_path, public_query in targets
         )
 
-    def resolve(self, *, client_ip: str, request_host: str) -> bytes | None:
+    def resolve_with_metadata(
+        self,
+        *,
+        client_ip: str,
+        request_host: str,
+    ) -> PacResolution | None:
         with self._lock:
             if not self._load_locked():
                 return None
@@ -554,7 +601,21 @@ class LocalPacCache:
             content = self._files.get(selected) or self._files.get(fallback)
             if not content:
                 return None
-            return substitute_request_host(content, request_host).encode("utf-8")
+            selected_file = selected if self._files.get(selected) else fallback
+            return PacResolution(
+                content=substitute_request_host(content, request_host).encode("utf-8"),
+                source="materialized",
+                state_sha256=self._state_sha,
+                selected_file=selected_file,
+                fallback_file=fallback,
+            )
+
+    def resolve(self, *, client_ip: str, request_host: str) -> bytes | None:
+        resolution = self.resolve_with_metadata(
+            client_ip=client_ip,
+            request_host=request_host,
+        )
+        return resolution.content if resolution is not None else None
 
 
 _CACHE_LOCK = threading.Lock()
@@ -601,6 +662,26 @@ def resolve_pac_bytes(
     if data is not None:
         return data
     return default_pac_bytes(request_host)
+
+
+def resolve_pac(
+    *,
+    client_ip: str,
+    request_host: str,
+    pac_dir: str | None = None,
+) -> PacResolution:
+    cache = get_pac_cache(pac_dir)
+    resolution = cache.resolve_with_metadata(
+        client_ip=client_ip,
+        request_host=request_host,
+    )
+    if resolution is not None:
+        return resolution
+    return PacResolution(
+        content=default_pac_bytes(request_host),
+        source="emergency",
+        diagnostic=cache._last_error,
+    )
 
 
 def pac_content_disposition(path: str) -> str:

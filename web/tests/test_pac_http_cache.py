@@ -26,7 +26,54 @@ def pac_http():
     return module
 
 
-def test_pac_render_dir_is_cached_until_explicitly_cleared(monkeypatch, pac_http) -> None:
+def _rendered_state_sha(
+    pac_http, manifest: dict[str, object], files: dict[str, str]
+) -> str:
+    manifest_for_hash = dict(manifest)
+    manifest_for_hash["state_sha256"] = ""
+    manifest_text = json.dumps(manifest_for_hash, indent=2, sort_keys=True) + "\n"
+    rendered_files = [
+        pac_http.RenderedPacFile(relative_path=path, content=content)
+        for path, content in sorted(files.items())
+    ]
+    rendered_files.append(
+        pac_http.RenderedPacFile(
+            relative_path=pac_http.PAC_MANIFEST_FILENAME,
+            content=manifest_text,
+        ),
+    )
+    return pac_http.calculate_pac_state_sha(rendered_files)
+
+
+def _write_verified_pac_state(
+    pac_http,
+    pac_dir: Path,
+    *,
+    manifest: dict[str, object],
+    files: dict[str, str],
+) -> str:
+    pac_dir.mkdir(parents=True, exist_ok=True)
+    state_sha = _rendered_state_sha(pac_http, manifest, files)
+    manifest = dict(manifest)
+    manifest["state_sha256"] = state_sha
+    for rel_path, content in files.items():
+        path = pac_dir / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    (pac_dir / pac_http.PAC_MANIFEST_FILENAME).write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (pac_dir / pac_http.PAC_STATE_SHA_FILENAME).write_text(
+        state_sha + "\n",
+        encoding="utf-8",
+    )
+    return state_sha
+
+
+def test_pac_render_dir_is_cached_until_explicitly_cleared(
+    monkeypatch, pac_http
+) -> None:
     pac_http.pac_render_dir.cache_clear()
     monkeypatch.setenv("PAC_RENDER_DIR", "/tmp/pac-one")
 
@@ -53,7 +100,9 @@ def test_client_ip_ignores_untrusted_forwarded_headers(monkeypatch, pac_http) ->
     )
 
 
-def test_client_ip_honors_forwarded_headers_from_trusted_proxy(monkeypatch, pac_http) -> None:
+def test_client_ip_honors_forwarded_headers_from_trusted_proxy(
+    monkeypatch, pac_http
+) -> None:
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "192.0.2.0/24, 2001:db8::/32")
 
     assert (
@@ -81,13 +130,15 @@ def test_client_ip_rejects_invalid_forwarded_headers(monkeypatch, pac_http) -> N
     )
 
 
-def test_local_pac_cache_ignores_manifest_paths_outside_pac_dir(tmp_path, pac_http) -> None:
+def test_local_pac_cache_ignores_manifest_paths_outside_pac_dir(
+    tmp_path, pac_http
+) -> None:
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
     (tmp_path / "secret.pac").write_text("SECRET", encoding="utf-8")
     (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
     (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","profiles":[{"client_cidr":"10.0.0.0/8","file":"../secret.pac"}]}""",
+        """{"fallback_file":"fallback.pac","state_sha256":"state-one","profiles":[{"client_cidr":"10.0.0.0/8","file":"../secret.pac"}]}""",
         encoding="utf-8",
     )
     (pac_dir / "fallback.pac").write_text(
@@ -340,7 +391,7 @@ def test_local_pac_cache_exposes_configured_public_pac_path(tmp_path, pac_http) 
     pac_dir.mkdir()
     (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
     (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","public_pac_path":"/download/wpad.dat?site=lab"}""",
+        """{"fallback_file":"fallback.pac","public_pac_path":"/download/wpad.dat?site=lab","state_sha256":"state-one"}""",
         encoding="utf-8",
     )
     (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
@@ -361,7 +412,7 @@ def test_local_pac_cache_matches_percent_encoded_public_pac_path(
     pac_dir.mkdir()
     (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
     (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","public_pac_path":"/download/%77pad.dat?site=lab"}""",
+        """{"fallback_file":"fallback.pac","public_pac_path":"/download/%77pad.dat?site=lab","state_sha256":"state-one"}""",
         encoding="utf-8",
     )
     (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
@@ -381,7 +432,7 @@ def test_local_pac_cache_exposes_configured_public_pac_url_target(
     pac_dir.mkdir()
     (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
     (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","public_pac_url":"https://pac.example/download/wpad.dat?site=lab"}""",
+        """{"fallback_file":"fallback.pac","public_pac_url":"https://pac.example/download/wpad.dat?site=lab","state_sha256":"state-one"}""",
         encoding="utf-8",
     )
     (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
@@ -429,7 +480,9 @@ def test_local_pac_cache_rejects_credentialed_public_pac_url(
     assert cache.public_request_allowed("/download/wpad.dat", "site=lab") is False
 
 
-@pytest.mark.parametrize("url", ["https:/download/wpad.dat", "https:///download/wpad.dat"])
+@pytest.mark.parametrize(
+    "url", ["https:/download/wpad.dat", "https:///download/wpad.dat"]
+)
 def test_local_pac_cache_rejects_missing_authority_public_pac_url(
     tmp_path,
     pac_http,
@@ -457,7 +510,7 @@ def test_local_pac_cache_requires_configured_public_pac_query(
     pac_dir.mkdir()
     (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
     (pac_dir / "manifest.json").write_text(
-        """{"fallback_file":"fallback.pac","public_pac_path":"/download/wpad.dat?site=lab"}""",
+        """{"fallback_file":"fallback.pac","public_pac_path":"/download/wpad.dat?site=lab","state_sha256":"state-one"}""",
         encoding="utf-8",
     )
     (pac_dir / "fallback.pac").write_text("PAC", encoding="utf-8")
@@ -591,7 +644,11 @@ def test_local_pac_cache_warm_reload_scans_pac_signatures_once(
     cache.pac_signature_requests.clear()
 
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == second
-    assert cache.pac_signature_requests == [("fallback.pac",)]
+    assert cache.pac_signature_requests == [
+        ("fallback.pac",),
+        ("fallback.pac",),
+        ("fallback.pac",),
+    ]
 
 
 def test_local_pac_cache_reloads_when_referenced_pac_file_is_replaced_same_signature(
@@ -659,7 +716,9 @@ def test_local_pac_cache_reloads_when_referenced_pac_file_ctime_changes_only(
     )
 
 
-def test_local_pac_cache_rejects_marker_manifest_sha_mismatch(tmp_path, pac_http) -> None:
+def test_local_pac_cache_rejects_marker_manifest_sha_mismatch(
+    tmp_path, pac_http
+) -> None:
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
     (pac_dir / ".state-sha256").write_text("state-two\n", encoding="utf-8")
@@ -719,7 +778,9 @@ def test_local_pac_cache_rejects_tampered_pac_file_with_valid_state_sha(
     assert cache.public_paths() == frozenset({"/proxy.pac", "/wpad.dat"})
 
 
-def test_local_pac_cache_rejects_manifest_without_state_marker(tmp_path, pac_http) -> None:
+def test_local_pac_cache_rejects_manifest_without_state_marker(
+    tmp_path, pac_http
+) -> None:
     pac_dir = tmp_path / "pac"
     pac_dir.mkdir()
     (pac_dir / "manifest.json").write_text(
@@ -745,4 +806,212 @@ def test_pac_content_disposition_uses_requested_filename(pac_http) -> None:
     assert (
         pac_http.pac_content_disposition("/download/custom.pac")
         == 'inline; filename="proxy.pac"'
+    )
+
+
+def test_local_pac_cache_selects_profile_from_verified_materialized_snapshot(
+    tmp_path,
+    pac_http,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    corp_pac = 'function FindProxyForURL(){return "PROXY corp";}\n'
+    fallback_pac = 'function FindProxyForURL(){return "PROXY fallback";}\n'
+    state_sha = _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={
+            "fallback_file": "fallback.pac",
+            "profiles": [
+                {"profile_id": 10, "client_cidr": "10.0.0.0/8", "file": "corp.pac"},
+            ],
+            "state_sha256": "",
+        },
+        files={"corp.pac": corp_pac, "fallback.pac": fallback_pac},
+    )
+
+    cache = pac_http.LocalPacCache(str(pac_dir))
+
+    corp = cache.resolve_with_metadata(
+        client_ip="10.1.2.3",
+        request_host="proxy.example",
+    )
+    fallback = cache.resolve_with_metadata(
+        client_ip="192.0.2.10",
+        request_host="proxy.example",
+    )
+
+    assert corp is not None
+    assert corp.source == "materialized"
+    assert corp.state_sha256 == state_sha
+    assert corp.selected_file == "corp.pac"
+    assert corp.content == corp_pac.encode("utf-8")
+    assert fallback is not None
+    assert fallback.selected_file == "fallback.pac"
+    assert fallback.content == fallback_pac.encode("utf-8")
+
+
+def test_local_pac_cache_rejects_manifest_referencing_missing_profile_file(
+    tmp_path,
+    pac_http,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={
+            "fallback_file": "fallback.pac",
+            "profiles": [
+                {"profile_id": 10, "client_cidr": "10.0.0.0/8", "file": "corp.pac"},
+            ],
+            "state_sha256": "",
+        },
+        files={
+            "fallback.pac": 'function FindProxyForURL(){return "PROXY fallback";}\n'
+        },
+    )
+
+    cache = pac_http.LocalPacCache(str(pac_dir))
+
+    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
+    resolved = pac_http.resolve_pac(
+        client_ip="192.0.2.10",
+        request_host="proxy.example",
+        pac_dir=str(pac_dir),
+    )
+    assert resolved.source == "emergency"
+    assert b"PROXY fallback" not in resolved.content
+
+
+def test_local_pac_cache_invalidates_profile_deletion_in_verified_state(
+    tmp_path,
+    pac_http,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={
+            "fallback_file": "fallback.pac",
+            "profiles": [
+                {"profile_id": 10, "client_cidr": "10.0.0.0/8", "file": "corp.pac"},
+            ],
+            "state_sha256": "",
+        },
+        files={
+            "corp.pac": 'function FindProxyForURL(){return "PROXY corp";}\n',
+            "fallback.pac": 'function FindProxyForURL(){return "PROXY fallback";}\n',
+        },
+    )
+    cache = pac_http.LocalPacCache(str(pac_dir))
+    assert (
+        cache.resolve_with_metadata(
+            client_ip="10.1.2.3",
+            request_host="proxy.example",
+        ).selected_file
+        == "corp.pac"
+    )  # type: ignore[union-attr]
+
+    replacement = tmp_path / "replacement"
+    _write_verified_pac_state(
+        pac_http,
+        replacement,
+        manifest={"fallback_file": "fallback.pac", "profiles": [], "state_sha256": ""},
+        files={
+            "fallback.pac": 'function FindProxyForURL(){return "PROXY fallback2";}\n'
+        },
+    )
+    old = tmp_path / "old-pac"
+    pac_dir.replace(old)
+    replacement.replace(pac_dir)
+
+    reloaded = cache.resolve_with_metadata(
+        client_ip="10.1.2.3",
+        request_host="proxy.example",
+    )
+
+    assert reloaded is not None
+    assert reloaded.selected_file == "fallback.pac"
+    assert (
+        reloaded.content == b'function FindProxyForURL(){return "PROXY fallback2";}\n'
+    )
+
+
+def test_local_pac_cache_rejects_partial_generation_that_changes_during_load(
+    tmp_path,
+    pac_http,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    first_sha = _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={"fallback_file": "fallback.pac", "profiles": [], "state_sha256": ""},
+        files={"fallback.pac": 'function FindProxyForURL(){return "PROXY one";}\n'},
+    )
+    second_dir = tmp_path / "second"
+    second_sha = _write_verified_pac_state(
+        pac_http,
+        second_dir,
+        manifest={"fallback_file": "fallback.pac", "profiles": [], "state_sha256": ""},
+        files={"fallback.pac": 'function FindProxyForURL(){return "PROXY two";}\n'},
+    )
+
+    class FlappingPacCache(pac_http.LocalPacCache):
+        def __init__(self, pac_dir: str) -> None:
+            super().__init__(pac_dir)
+            self._swapped = False
+
+        def _pac_file_signatures(self, rel_paths: object):
+            signatures = super()._pac_file_signatures(rel_paths)
+            if not self._swapped and rel_paths and self._read_state_sha() == first_sha:
+                self._swapped = True
+                for item in second_dir.iterdir():
+                    target = Path(self.pac_dir) / item.name
+                    if item.is_file():
+                        target.write_text(
+                            item.read_text(encoding="utf-8"), encoding="utf-8"
+                        )
+            return signatures
+
+    cache = FlappingPacCache(str(pac_dir))
+    resolved = cache.resolve_with_metadata(
+        client_ip="192.0.2.10",
+        request_host="proxy.example",
+    )
+
+    assert resolved is not None
+    assert resolved.state_sha256 == second_sha
+    assert resolved.content == b'function FindProxyForURL(){return "PROXY two";}\n'
+
+
+def test_resolve_pac_reports_emergency_fallback_when_verified_state_is_corrupt(
+    tmp_path,
+    pac_http,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / pac_http.PAC_STATE_SHA_FILENAME).write_text(
+        "b" * 64 + "\n", encoding="utf-8"
+    )
+    (pac_dir / pac_http.PAC_MANIFEST_FILENAME).write_text(
+        json.dumps({"fallback_file": "fallback.pac", "state_sha256": "b" * 64}),
+        encoding="utf-8",
+    )
+    (pac_dir / "fallback.pac").write_text(
+        'function FindProxyForURL(){return "PROXY tampered";}\n',
+        encoding="utf-8",
+    )
+
+    resolved = pac_http.resolve_pac(
+        client_ip="192.0.2.10",
+        request_host="proxy.example",
+        pac_dir=str(pac_dir),
+    )
+
+    assert resolved.source == "emergency"
+    assert resolved.state_sha256 == ""
+    assert b"PROXY tampered" not in resolved.content
+    assert b"FindProxyForURL" in resolved.content
+    assert (
+        "state marker" in resolved.diagnostic
+        or "materialized files" in resolved.diagnostic
     )

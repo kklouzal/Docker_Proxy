@@ -21,7 +21,7 @@ from services.pac_http import (
     public_pac_request_allowed,
     public_pac_request_path_safe,
     request_host_from_headers,
-    resolve_pac_bytes,
+    resolve_pac,
 )
 from services.policy_requests import get_policy_request_store, normalize_client_ip
 from services.proxy_context import get_proxy_id
@@ -291,7 +291,9 @@ def _is_public_listener_path(
 
 
 def _policy_request_client_ip(form: Any) -> str:
-    forwarded_ip = forwarded_client_ip_from_headers(request.headers, request.remote_addr)
+    forwarded_ip = forwarded_client_ip_from_headers(
+        request.headers, request.remote_addr
+    )
     if forwarded_ip:
         return forwarded_ip
     remote_ip = request.remote_addr or ""
@@ -373,15 +375,35 @@ def public_pac(_pac_path: str = "") -> Any:
     if not _is_public_listener_request():
         abort(404)
     path = "/wpad.dat" if request.path == "/" else request.path
-    data = resolve_pac_bytes(
+    resolution = resolve_pac(
         client_ip=client_ip_from_headers(request.headers, request.remote_addr),
         request_host=request_host_from_headers(request.headers, request.remote_addr),
     )
+    data = resolution.content
     response = Response(data, content_type=PAC_CONTENT_TYPE)
     response.headers["Content-Disposition"] = pac_content_disposition(path)
-    response.headers["Cache-Control"] = "private, max-age=30"
+    response.headers["Cache-Control"] = (
+        "private, max-age=30"
+        if resolution.source == "materialized"
+        else "no-store, private"
+    )
     response.headers["Vary"] = "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
-    response.set_etag(hashlib.sha256(data).hexdigest())
+    etag_material = b"\0".join(
+        (
+            resolution.source.encode("utf-8", errors="replace"),
+            resolution.state_sha256.encode("utf-8", errors="replace"),
+            resolution.selected_file.encode("utf-8", errors="replace"),
+            data,
+        ),
+    )
+    response.set_etag(hashlib.sha256(etag_material).hexdigest())
+    response.headers["X-PAC-Source"] = resolution.source
+    if resolution.state_sha256:
+        response.headers["X-PAC-State-SHA256"] = resolution.state_sha256
+    if resolution.selected_file:
+        response.headers["X-PAC-Selected-File"] = resolution.selected_file
+    if resolution.diagnostic:
+        response.headers["X-PAC-Diagnostic"] = resolution.diagnostic
     return response.make_conditional(request)
 
 

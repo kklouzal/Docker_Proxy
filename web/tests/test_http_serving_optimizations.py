@@ -163,7 +163,10 @@ class ReportsPrivacyLeakQueries(CountingObservabilityQueries):
                         "ts": 4140,
                         "src_ip": "192.0.2.80",
                         "correlated_candidates": [
-                            {"client_ip": "192.0.2.80", "url": "https://blocked.example/"}
+                            {
+                                "client_ip": "192.0.2.80",
+                                "url": "https://blocked.example/",
+                            }
                         ],
                     }
                 ],
@@ -333,9 +336,7 @@ def test_admin_html_responses_are_gzip_compressed_when_requested(
     assert b"Squid" in gzip.decompress(response.get_data())
 
 
-def test_admin_html_responses_respect_gzip_quality_zero(
-    monkeypatch, tmp_path
-) -> None:
+def test_admin_html_responses_respect_gzip_quality_zero(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
     login_client(client)
@@ -606,7 +607,7 @@ def test_normal_admin_gets_revalidate_instead_of_immutable_cache(
     assert response.headers.get("Cache-Control") == "no-cache"
 
 
-def test_proxy_pac_responses_have_cache_headers_and_conditional_etag(
+def test_proxy_pac_emergency_responses_are_private_no_store_and_conditional_etag(
     monkeypatch,
 ) -> None:
     _add_repo_paths()
@@ -625,7 +626,7 @@ def test_proxy_pac_responses_have_cache_headers_and_conditional_etag(
     )
 
     assert first.status_code == 200
-    assert first.headers.get("Cache-Control") == "private, max-age=30"
+    assert first.headers.get("Cache-Control") == "no-store, private"
     assert (
         first.headers.get("Vary")
         == "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"

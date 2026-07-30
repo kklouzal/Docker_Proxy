@@ -56,7 +56,9 @@ def public_pac_client(monkeypatch):
     return build_client
 
 
-def test_public_listener_serves_configured_pac_path(tmp_path, public_pac_client) -> None:
+def test_public_listener_serves_configured_pac_path(
+    tmp_path, public_pac_client
+) -> None:
     pac_dir = tmp_path / "pac"
     _write_pac_artifacts(pac_dir, public_pac_path="/download/wpad.dat?site=lab")
     client = public_pac_client(pac_dir)
@@ -68,6 +70,7 @@ def test_public_listener_serves_configured_pac_path(tmp_path, public_pac_client)
     assert response.status_code == 200
     assert response.data == b"PAC public-proxy.example"
     assert response.headers["Content-Disposition"] == 'inline; filename="wpad.dat"'
+    assert response.headers["Cache-Control"] == "private, max-age=30"
 
 
 def test_public_listener_fallback_pac_rejects_single_label_request_host(
