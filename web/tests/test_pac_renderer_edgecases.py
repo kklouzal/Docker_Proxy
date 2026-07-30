@@ -1058,6 +1058,63 @@ def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback
     )
 
 
+def test_select_manifest_file_uses_lowest_profile_id_for_equal_prefix_matches() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    manifest = {
+        "fallback_file": "fallback.pac",
+        "profiles": [
+            {"profile_id": 50, "client_cidr": "10.2.3.0/24", "file": "later.pac"},
+            {"profile_id": 20, "client_cidr": "10.2.3.0/24", "file": "earlier.pac"},
+            {"profile_id": 10, "client_cidr": "10.0.0.0/8", "file": "corp.pac"},
+        ],
+    }
+
+    assert pac_renderer.select_manifest_file(manifest, "10.2.3.44") == "earlier.pac"
+
+
+def test_select_manifest_file_uses_lowest_profile_id_for_catch_all_fallback() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    manifest = {
+        "fallback_file": "fallback.pac",
+        "profiles": [
+            {"profile_id": 40, "client_cidr": "", "file": "stale-catch-all.pac"},
+            {"profile_id": 8, "client_cidr": "", "file": "canonical-catch-all.pac"},
+            {"profile_id": 2, "client_cidr": "10.0.0.0/8", "file": "corp.pac"},
+        ],
+    }
+
+    assert (
+        pac_renderer.select_manifest_file(manifest, "192.0.2.55")
+        == "canonical-catch-all.pac"
+    )
+    assert (
+        pac_renderer.select_manifest_file(manifest, "not-an-ip")
+        == "canonical-catch-all.pac"
+    )
+
+
+def test_select_manifest_file_keeps_manifest_order_when_profile_ids_are_absent() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    manifest = {
+        "fallback_file": "fallback.pac",
+        "profiles": [
+            {"client_cidr": "", "file": "first-catch-all.pac"},
+            {"client_cidr": "", "file": "second-catch-all.pac"},
+            {"client_cidr": "10.2.3.0/24", "file": "first-branch.pac"},
+            {"client_cidr": "10.2.3.0/24", "file": "second-branch.pac"},
+        ],
+    }
+
+    assert pac_renderer.select_manifest_file(manifest, "10.2.3.44") == "first-branch.pac"
+    assert pac_renderer.select_manifest_file(manifest, "192.0.2.55") == "first-catch-all.pac"
+
+
 def test_rendered_pac_does_not_treat_ipv6_literals_as_plain_hosts() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore

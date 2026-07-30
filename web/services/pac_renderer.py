@@ -853,6 +853,24 @@ def _manifest_fallback_file(manifest: dict[str, object]) -> str:
     return _safe_manifest_relative_path(manifest.get("fallback_file")) or "fallback.pac"
 
 
+def _manifest_profile_id(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        candidate = value.strip()
+        if candidate.isdecimal():
+            return int(candidate)
+    return None
+
+
+def _manifest_profile_order_key(profile_id: int | None, order: int) -> tuple[int, int, int]:
+    if profile_id is not None:
+        return (0, profile_id, order)
+    return (1, order, order)
+
+
 def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
     fallback_file = _manifest_fallback_file(manifest)
     profiles = manifest.get("profiles")
@@ -865,18 +883,22 @@ def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
         parsed_ip = None
 
     catch_all = ""
+    catch_all_key: tuple[int, int, int] | None = None
     best_match = ""
-    best_prefix_len = -1
-    for entry in profiles:
+    best_match_key: tuple[int, int, int, int] | None = None
+    for order, entry in enumerate(profiles):
         if not isinstance(entry, dict):
             continue
         client_cidr = str(entry.get("client_cidr") or "").strip()
         file_name = _safe_manifest_relative_path(entry.get("file"))
         if not file_name:
             continue
+        profile_id = _manifest_profile_id(entry.get("profile_id"))
+        profile_order_key = _manifest_profile_order_key(profile_id, order)
         if not client_cidr:
-            if not catch_all:
+            if catch_all_key is None or profile_order_key < catch_all_key:
                 catch_all = file_name
+                catch_all_key = profile_order_key
             continue
         if parsed_ip is None:
             continue
@@ -886,9 +908,11 @@ def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
             continue
         if parsed_ip.version != network.version:
             continue
-        if parsed_ip in network and network.prefixlen > best_prefix_len:
-            best_match = file_name
-            best_prefix_len = int(network.prefixlen)
+        if parsed_ip in network:
+            match_key = (-int(network.prefixlen), *profile_order_key)
+            if best_match_key is None or match_key < best_match_key:
+                best_match = file_name
+                best_match_key = match_key
 
     if best_match:
         return best_match
