@@ -22,6 +22,23 @@ def _params(location: str) -> dict[str, list[str]]:
     return parse_qs(urlsplit(location).query)
 
 
+def _assert_latest_pac_refresh_matches_desired(loaded, store) -> str:
+    desired_sha, desired_error = loaded.module._desired_pac_state_sha_for_proxy(
+        "default",
+        pac_profiles_store=store,
+    )
+    assert desired_error == ""
+    assert len(desired_sha) == 64
+    int(desired_sha, 16)
+    operation = loaded.operation_ledger.operations[-1]
+    assert operation.operation_type == "pac_refresh"
+    assert operation.status == "pending"
+    assert operation.target_kind == "pac_state"
+    assert operation.target_ref == desired_sha
+    assert desired_sha in operation.detail
+    return desired_sha
+
+
 def test_adblock_settings_clamp_invalid_cache_values_and_request_refresh(
     monkeypatch, tmp_path
 ) -> None:
@@ -217,6 +234,7 @@ def test_pac_builder_bad_ids_and_xss_like_names_are_handled(
         created = loaded.module._handle_pac_builder_post(store)
     assert _params(created.location)["ok"] == ["1"]
     assert store.profiles[1].name == "<script>alert(1)</script>"
+    _assert_latest_pac_refresh_matches_desired(loaded, store)
 
     invalid_profile_ids = ["not-int", "999999999999999999999999999999999999"]
     for action in ("update", "delete"):
@@ -249,6 +267,7 @@ def test_pac_builder_backup_proxy_chain_actions(monkeypatch, tmp_path) -> None:
     ):
         added_a = loaded.module._handle_pac_builder_post(store)
     assert _params(added_a.location)["ok"] == ["1"]
+    sha_a = _assert_latest_pac_refresh_matches_desired(loaded, store)
 
     with loaded.module.app.test_request_context(
         "/pac",
@@ -261,6 +280,8 @@ def test_pac_builder_backup_proxy_chain_actions(monkeypatch, tmp_path) -> None:
     ):
         added_b = loaded.module._handle_pac_builder_post(store)
     assert _params(added_b.location)["ok"] == ["1"]
+    sha_b = _assert_latest_pac_refresh_matches_desired(loaded, store)
+    assert sha_b != sha_a
     assert [item.proxy_host for item in store.backup_proxies] == [
         "backup-a.example",
         "backup-b.example",
@@ -277,6 +298,8 @@ def test_pac_builder_backup_proxy_chain_actions(monkeypatch, tmp_path) -> None:
     ):
         moved = loaded.module._handle_pac_builder_post(store)
     assert _params(moved.location)["ok"] == ["1"]
+    sha_moved = _assert_latest_pac_refresh_matches_desired(loaded, store)
+    assert sha_moved != sha_b
     assert [item.proxy_host for item in store.backup_proxies] == [
         "backup-b.example",
         "backup-a.example",
@@ -287,7 +310,59 @@ def test_pac_builder_backup_proxy_chain_actions(monkeypatch, tmp_path) -> None:
     ):
         toggled = loaded.module._handle_pac_builder_post(store)
     assert _params(toggled.location)["ok"] == ["1"]
+    sha_toggled = _assert_latest_pac_refresh_matches_desired(loaded, store)
+    assert sha_toggled != sha_moved
     assert store.direct_enabled is False
+
+
+def test_pac_builder_update_and_delete_queue_post_mutation_sha(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakePacProfilesStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, pac_profiles_store=store)
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={
+            "action": "create",
+            "name": "Office LAN",
+            "client_cidr": "192.168.10.0/24",
+            "direct_domains": "internal.example",
+        },
+    ):
+        created = loaded.module._handle_pac_builder_post(store)
+    assert _params(created.location)["ok"] == ["1"]
+    create_sha = _assert_latest_pac_refresh_matches_desired(loaded, store)
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={
+            "action": "update",
+            "profile_id": "1",
+            "name": "Office LAN Updated",
+            "client_cidr": "192.168.20.0/24",
+            "direct_domains": "internal.example\nupdates.example",
+        },
+    ):
+        updated = loaded.module._handle_pac_builder_post(store)
+    assert _params(updated.location)["ok"] == ["1"]
+    update_sha = _assert_latest_pac_refresh_matches_desired(loaded, store)
+    assert update_sha != create_sha
+    assert store.profiles[1].name == "Office LAN Updated"
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={"action": "delete", "profile_id": "1"},
+    ):
+        deleted = loaded.module._handle_pac_builder_post(store)
+    assert _params(deleted.location)["ok"] == ["1"]
+    delete_sha = _assert_latest_pac_refresh_matches_desired(loaded, store)
+    assert delete_sha != update_sha
+    assert store.profiles == {}
+    assert len(loaded.operation_ledger.operations) == 3
 
 
 def test_pac_builder_noop_ids_do_not_queue_runtime_refresh(

@@ -2710,8 +2710,23 @@ def _redirect_after_policy_refresh(
     return _redirect_to(endpoint, **params)
 
 
-def _redirect_after_pac_refresh(endpoint: str, **params):
-    ok, detail = _queue_pac_runtime_refresh()
+def _pac_refresh_failure_detail(detail: str) -> str:
+    prefix = "PAC profile changes were saved, but proxy materialization was not queued."
+    clean_detail = (detail or "").strip()
+    if not clean_detail:
+        return prefix
+    if clean_detail.startswith(prefix):
+        return clean_detail
+    return f"{prefix} {clean_detail}"
+
+
+def _redirect_after_pac_refresh(
+    endpoint: str,
+    *,
+    pac_profiles_store: Any | None = None,
+    **params,
+):
+    ok, detail = _queue_pac_runtime_refresh(pac_profiles_store=pac_profiles_store)
     if ok:
         if params.get("pac_queue") and detail:
             params.setdefault("pac_msg", detail[:1000])
@@ -2721,10 +2736,7 @@ def _redirect_after_pac_refresh(endpoint: str, **params):
     params.pop("pac_queue", None)
     params.pop("pac_msg", None)
     params["error"] = "1"
-    params["msg"] = (
-        detail
-        or "PAC profile changes were saved, but proxy materialization was not queued."
-    )
+    params["msg"] = _pac_refresh_failure_detail(detail)
     return _redirect_to(endpoint, **params)
 
 
@@ -4034,9 +4046,44 @@ def _best_effort_refresh_managed_policy(
         )
 
 
-def _desired_pac_state_sha_for_proxy(proxy_id: str) -> tuple[str, str]:
+def _build_desired_proxy_pac_state(
+    proxy_id: str,
+    *,
+    pac_profiles_store: Any | None = None,
+) -> Any:
+    """Build desired PAC state using the same stores as the just-saved form flow."""
     try:
-        state = build_proxy_pac_state(proxy_id)
+        signature = inspect.signature(build_proxy_pac_state)
+    except (TypeError, ValueError):
+        signature = None
+    parameters = signature.parameters if signature is not None else {}
+    accepts_runtime_stores = any(
+        param.kind is inspect.Parameter.VAR_KEYWORD for param in parameters.values()
+    ) or {
+        "pac_profiles_store",
+        "sslfilter_store",
+        "proxy_registry",
+    }.issubset(parameters)
+    if accepts_runtime_stores:
+        return build_proxy_pac_state(
+            proxy_id,
+            pac_profiles_store=pac_profiles_store,
+            sslfilter_store=get_sslfilter_store(),
+            proxy_registry=get_proxy_registry(),
+        )
+    return build_proxy_pac_state(proxy_id)
+
+
+def _desired_pac_state_sha_for_proxy(
+    proxy_id: str,
+    *,
+    pac_profiles_store: Any | None = None,
+) -> tuple[str, str]:
+    try:
+        state = _build_desired_proxy_pac_state(
+            proxy_id,
+            pac_profiles_store=pac_profiles_store,
+        )
     except Exception as exc:
         return "", public_error_message(
             exc,
@@ -4054,9 +4101,15 @@ def _desired_pac_state_sha_for_proxy(proxy_id: str) -> tuple[str, str]:
         )
 
 
-def _queue_pac_runtime_refresh() -> tuple[bool, str]:
+def _queue_pac_runtime_refresh(
+    *,
+    pac_profiles_store: Any | None = None,
+) -> tuple[bool, str]:
     proxy_id = get_proxy_id()
-    desired_pac_sha, desired_error = _desired_pac_state_sha_for_proxy(proxy_id)
+    desired_pac_sha, desired_error = _desired_pac_state_sha_for_proxy(
+        proxy_id,
+        pac_profiles_store=pac_profiles_store,
+    )
     if not desired_pac_sha:
         detail = "PAC runtime refresh was not queued because the desired PAC state SHA is unavailable."
         if desired_error:
@@ -5026,6 +5079,14 @@ def _handle_sslfilter_post(store: Any):
 
 def _handle_pac_builder_post(store: Any):
     action = _form_action()
+
+    def _redirect_pac_builder_ok():
+        return _redirect_after_pac_refresh(
+            "pac_builder",
+            pac_profiles_store=store,
+            ok="1",
+        )
+
     try:
         if action == "add_backup_proxy":
             ok, err, _ = store.add_backup_proxy(
@@ -5034,7 +5095,7 @@ def _handle_pac_builder_post(store: Any):
             )
             if not ok:
                 return _redirect_to("pac_builder", error="1", msg=err)
-            return _redirect_after_pac_refresh("pac_builder", ok="1")
+            return _redirect_pac_builder_ok()
 
         if action == "remove_backup_proxy":
             changed = store.delete_backup_proxy(
@@ -5044,7 +5105,7 @@ def _handle_pac_builder_post(store: Any):
                 return _redirect_to(
                     "pac_builder", error="1", msg="Backup proxy not found."
                 )
-            return _redirect_after_pac_refresh("pac_builder", ok="1")
+            return _redirect_pac_builder_ok()
 
         if action == "move_backup_proxy":
             changed = store.move_backup_proxy(
@@ -5055,17 +5116,17 @@ def _handle_pac_builder_post(store: Any):
                 return _redirect_to(
                     "pac_builder", error="1", msg="Backup proxy not found."
                 )
-            return _redirect_after_pac_refresh("pac_builder", ok="1")
+            return _redirect_pac_builder_ok()
 
         if action == "toggle_direct":
             store.set_direct_enabled(request.form.get("direct_enabled") == "on")
-            return _redirect_after_pac_refresh("pac_builder", ok="1")
+            return _redirect_pac_builder_ok()
 
         if action == "create":
             ok, err, _ = store.upsert_profile(**_pac_profile_form_data(profile_id=None))
             if not ok:
                 return _redirect_to("pac_builder", error="1", msg=err)
-            return _redirect_after_pac_refresh("pac_builder", ok="1")
+            return _redirect_pac_builder_ok()
 
         if action == "update":
             pid, id_err = _pac_profile_id_from_form()
@@ -5074,7 +5135,7 @@ def _handle_pac_builder_post(store: Any):
             ok, err, _ = store.upsert_profile(**_pac_profile_form_data(profile_id=pid))
             if not ok:
                 return _redirect_to("pac_builder", error="1", msg=err)
-            return _redirect_after_pac_refresh("pac_builder", ok="1")
+            return _redirect_pac_builder_ok()
 
         if action == "delete":
             pid, id_err = _pac_profile_id_from_form()
@@ -5083,7 +5144,7 @@ def _handle_pac_builder_post(store: Any):
             changed = store.delete_profile(pid)
             if not changed:
                 return _redirect_to("pac_builder", error="1", msg="Profile not found.")
-            return _redirect_after_pac_refresh("pac_builder", ok="1")
+            return _redirect_pac_builder_ok()
     except Exception as e:
         return _redirect_to("pac_builder", error="1", msg=public_error_message(e))
 

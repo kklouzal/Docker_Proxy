@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import inspect
 import ipaddress
 import json
 import os
@@ -356,12 +357,18 @@ def _proxy_chain_endpoint_key(host: str, port: object) -> tuple[str, int]:
     return normalized_host, int(port)
 
 
-def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
+def resolve_proxy_pac_target(
+    proxy_id: object | None = None,
+    *,
+    pac_profiles_store: object | None = None,
+    proxy_registry: object | None = None,
+) -> ProxyPacTarget:
     normalized_proxy_id = (
         get_proxy_id() if proxy_id is None else normalize_proxy_id(proxy_id)
     )
     try:
-        proxy = get_proxy_registry().get_proxy(normalized_proxy_id)
+        registry = proxy_registry or get_proxy_registry()
+        proxy = registry.get_proxy(normalized_proxy_id)
     except Exception:
         proxy = None
 
@@ -427,7 +434,8 @@ def resolve_proxy_pac_target(proxy_id: object | None = None) -> ProxyPacTarget:
     direct_enabled = True
     token = set_proxy_id(normalized_proxy_id)
     try:
-        chain_settings = get_pac_profiles_store().list_proxy_chain_settings()
+        store = pac_profiles_store or get_pac_profiles_store()
+        chain_settings = store.list_proxy_chain_settings()
         backup_proxies = tuple(
             (
                 str(getattr(item, "proxy_host", "") or ""),
@@ -585,9 +593,10 @@ def _render_pac(
     return "\n".join(lines) + "\n"
 
 
-def _pac_include_private_nets() -> bool:
+def _pac_include_private_nets(*, sslfilter_store: object | None = None) -> bool:
+    store = sslfilter_store or get_sslfilter_store()
     return bool(
-        getattr(get_sslfilter_store().list_all(), "exclude_private_nets", False),
+        getattr(store.list_all(), "exclude_private_nets", False),
     )
 
 
@@ -669,18 +678,52 @@ def calculate_pac_state_sha(
     return digest.hexdigest()
 
 
-def build_proxy_pac_state(proxy_id: object | None = None) -> ProxyPacState:
+def _resolve_proxy_pac_target_for_state(
+    proxy_id: str,
+    *,
+    pac_profiles_store: object,
+    proxy_registry: object | None,
+) -> ProxyPacTarget:
+    try:
+        signature = inspect.signature(resolve_proxy_pac_target)
+    except (TypeError, ValueError):
+        signature = None
+    parameters = signature.parameters if signature is not None else {}
+    accepts_runtime_stores = any(
+        param.kind is inspect.Parameter.VAR_KEYWORD for param in parameters.values()
+    ) or {"pac_profiles_store", "proxy_registry"}.issubset(parameters)
+    if accepts_runtime_stores:
+        return resolve_proxy_pac_target(
+            proxy_id,
+            pac_profiles_store=pac_profiles_store,
+            proxy_registry=proxy_registry,
+        )
+    return resolve_proxy_pac_target(proxy_id)
+
+
+def build_proxy_pac_state(
+    proxy_id: object | None = None,
+    *,
+    pac_profiles_store: object | None = None,
+    sslfilter_store: object | None = None,
+    proxy_registry: object | None = None,
+) -> ProxyPacState:
     normalized_proxy_id = (
         get_proxy_id() if proxy_id is None else normalize_proxy_id(proxy_id)
     )
     token = set_proxy_id(normalized_proxy_id)
     try:
-        target = resolve_proxy_pac_target(normalized_proxy_id)
+        store = pac_profiles_store or get_pac_profiles_store()
+        target = _resolve_proxy_pac_target_for_state(
+            normalized_proxy_id,
+            pac_profiles_store=store,
+            proxy_registry=proxy_registry,
+        )
         sorted_profiles = sorted(
-            get_pac_profiles_store().list_profiles(),
+            store.list_profiles(),
             key=_profile_sort_key,
         )
-        include_private = _pac_include_private_nets()
+        include_private = _pac_include_private_nets(sslfilter_store=sslfilter_store)
         pac_files = {
             f"profile-{int(profile.id)}.pac": _render_profile_pac(
                 profile,
