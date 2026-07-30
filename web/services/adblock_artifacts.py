@@ -20,6 +20,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+from services.application_ledgers import (
+    normalize_application_actor,
+    normalize_application_detail,
+    normalize_sha256_evidence,
+)
 from services.db import (
     DATABASE_ERRORS,
     connect,
@@ -635,6 +640,10 @@ class AdblockArtifactStore:
             sql = (
                 "SELECT id FROM adblock_artifact_revisions "
                 f"WHERE is_active=0 AND id NOT IN ({placeholders}) "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM proxy_adblock_artifact_applications app "
+                "WHERE app.revision_id=adblock_artifact_revisions.id"
+                ") "
                 "ORDER BY created_ts ASC, id ASC LIMIT %s"
             )
             rows = conn.execute(sql, (*tuple(sorted(keep_ids)), int(batch_size))).fetchall()
@@ -643,6 +652,10 @@ class AdblockArtifactStore:
                 """
                 SELECT id FROM adblock_artifact_revisions
                 WHERE is_active=0
+                  AND NOT EXISTS (
+                    SELECT 1 FROM proxy_adblock_artifact_applications app
+                    WHERE app.revision_id=adblock_artifact_revisions.id
+                  )
                 ORDER BY created_ts ASC, id ASC
                 LIMIT %s
                 """,
@@ -699,12 +712,18 @@ class AdblockArtifactStore:
             with guarded_proxy_write(conn, proxy_key) as guard:
                 proxy_key = guard.proxy_id
                 revision = conn.execute(
-                    "SELECT id FROM adblock_artifact_revisions WHERE id=%s LIMIT 1 FOR SHARE",
+                    "SELECT id, artifact_sha256 FROM adblock_artifact_revisions WHERE id=%s LIMIT 1 FOR SHARE",
                     (target_revision_id,),
                 ).fetchone()
                 if revision is None:
                     msg = f"Adblock artifact revision {target_revision_id} was not found."
                     raise ValueError(msg)
+                evidence_sha = normalize_sha256_evidence(
+                    artifact_sha256,
+                    fallback=str(revision["artifact_sha256"] or ""),
+                    ok=bool(ok),
+                    label="Adblock artifact application SHA-256",
+                )
                 cur = conn.execute(
                     """
                     INSERT INTO proxy_adblock_artifact_applications(
@@ -716,10 +735,10 @@ class AdblockArtifactStore:
                         proxy_key,
                         target_revision_id,
                         1 if ok else 0,
-                        (detail or "")[:4000],
-                        (applied_by or "proxy")[:255],
+                        normalize_application_detail(detail),
+                        normalize_application_actor(applied_by),
                         now,
-                        (artifact_sha256 or "")[:64],
+                        evidence_sha,
                     ),
                 )
                 row = conn.execute(

@@ -4,6 +4,11 @@ import threading
 import time
 from dataclasses import dataclass
 
+from services.application_ledgers import (
+    normalize_application_actor,
+    normalize_application_detail,
+    normalize_sha256_evidence,
+)
 from services.certificate_core import CertificateBundle
 from services.db import OPERATIONAL_ERRORS, connect
 from services.proxy_context import normalize_proxy_id
@@ -560,12 +565,18 @@ class CertificateBundleStore:
             with guarded_proxy_write(conn, proxy_key) as guard:
                 proxy_key = guard.proxy_id
                 revision = conn.execute(
-                    "SELECT id FROM certificate_bundle_revisions WHERE id=%s LIMIT 1 FOR SHARE",
+                    "SELECT id, bundle_sha256 FROM certificate_bundle_revisions WHERE id=%s LIMIT 1 FOR SHARE",
                     (target_revision_id,),
                 ).fetchone()
                 if revision is None:
                     msg = f"Certificate bundle revision {target_revision_id} was not found."
                     raise ValueError(msg)
+                evidence_sha = normalize_sha256_evidence(
+                    bundle_sha256,
+                    fallback=str(revision["bundle_sha256"] or ""),
+                    ok=bool(ok),
+                    label="Certificate application bundle SHA-256",
+                )
                 cur = conn.execute(
                     """
                     INSERT INTO proxy_certificate_applications(
@@ -577,10 +588,10 @@ class CertificateBundleStore:
                         proxy_key,
                         target_revision_id,
                         1 if ok else 0,
-                        (detail or "")[:4000],
-                        (applied_by or "proxy")[:255],
+                        normalize_application_detail(detail),
+                        normalize_application_actor(applied_by),
                         now,
-                        (bundle_sha256 or "")[:64],
+                        evidence_sha,
                     ),
                 )
                 row = conn.execute(

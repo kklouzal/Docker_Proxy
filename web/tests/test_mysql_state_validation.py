@@ -35,6 +35,10 @@ class _ValidationConn:
         duplicate_ops: int = 0,
         schema_checksum: str | None = None,
         terminal_claims: int = 0,
+        orphan_application_owners: int = 0,
+        invalid_config_applications: int = 0,
+        invalid_certificate_applications: int = 0,
+        invalid_adblock_applications: int = 0,
         orphan_operations: int = 0,
         orphan_pac_profiles: int = 0,
         orphan_pac_direct_domains: int = 0,
@@ -55,6 +59,10 @@ class _ValidationConn:
         self.duplicate_ops = duplicate_ops
         self.schema_checksum = schema_checksum or module.latest_schema_checksum()
         self.terminal_claims = terminal_claims
+        self.orphan_application_owners = orphan_application_owners
+        self.invalid_config_applications = invalid_config_applications
+        self.invalid_certificate_applications = invalid_certificate_applications
+        self.invalid_adblock_applications = invalid_adblock_applications
         self.orphan_operations = orphan_operations
         self.orphan_pac_profiles = orphan_pac_profiles
         self.orphan_pac_direct_domains = orphan_pac_direct_domains
@@ -96,6 +104,14 @@ class _ValidationConn:
             return _Result([{"n": self.duplicate_ops}])
         if "from proxy_operations" in text and "request_key is not null" in text:
             return _Result([{"n": self.terminal_claims}])
+        if "from ( select app.proxy_id from proxy_config_applications" in text:
+            return _Result([{"n": self.orphan_application_owners}])
+        if "from proxy_config_applications app" in text and "revision/evidence" not in text:
+            return _Result([{"n": self.invalid_config_applications}])
+        if "from proxy_certificate_applications app" in text and "left join certificate_bundle_revisions" in text:
+            return _Result([{"n": self.invalid_certificate_applications}])
+        if "from proxy_adblock_artifact_applications app" in text and "left join adblock_artifact_revisions" in text:
+            return _Result([{"n": self.invalid_adblock_applications}])
         if "from proxy_operations op" in text and "proxy.proxy_id is null" in text:
             return _Result([{"n": self.orphan_operations}])
         if "from pac_profiles pac_profile" in text and "proxy.proxy_id is null" in text:
@@ -298,6 +314,40 @@ def test_mysql_state_validation_fails_orphan_operation_ownership() -> None:
 
     assert result.ok is False
     assert any("owned by missing proxies" in error for error in result.errors)
+
+
+@pytest.mark.parametrize(
+    ("conn_kwargs", "expected_error"),
+    [
+        (
+            {"orphan_application_owners": 2},
+            "proxy application ledgers have 2 row(s) owned by missing proxies without tombstones",
+        ),
+        (
+            {"invalid_config_applications": 1},
+            "proxy_config_applications has 1 invalid revision/evidence row(s)",
+        ),
+        (
+            {"invalid_certificate_applications": 3},
+            "proxy_certificate_applications has 3 invalid revision/evidence row(s)",
+        ),
+        (
+            {"invalid_adblock_applications": 4},
+            "proxy_adblock_artifact_applications has 4 invalid revision/evidence row(s)",
+        ),
+    ],
+)
+def test_mysql_state_validation_fails_application_ledger_integrity(conn_kwargs, expected_error) -> None:
+    _add_web_to_path()
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(mysql_state_validation, **conn_kwargs),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert expected_error in result.errors
 
 
 @pytest.mark.parametrize(

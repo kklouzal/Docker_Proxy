@@ -5,6 +5,12 @@ import threading
 import time
 from dataclasses import dataclass
 
+from services.application_ledgers import (
+    normalize_application_actor,
+    normalize_application_detail,
+    normalize_sha256_evidence,
+    row_value,
+)
 from services.db import OPERATIONAL_ERRORS, connect
 from services.proxy_context import normalize_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
@@ -37,6 +43,7 @@ class ConfigApplication:
     detail: str
     applied_by: str
     applied_ts: int
+    config_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -131,9 +138,30 @@ class ConfigRevisionStore:
                         detail TEXT,
                         applied_by VARCHAR(255) NOT NULL DEFAULT '',
                         applied_ts BIGINT NOT NULL,
-                        KEY idx_proxy_config_applications_proxy_ts (proxy_id, applied_ts)
+                        config_sha256 CHAR(64) NOT NULL DEFAULT '',
+                        KEY idx_proxy_config_applications_proxy_ts (proxy_id, applied_ts),
+                        KEY idx_proxy_config_applications_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)
                     )
                     """,
+                )
+                ensure_generated_column(
+                    conn,
+                    table_name="proxy_config_applications",
+                    column_name="config_sha256",
+                    ddl=(
+                        "ALTER TABLE proxy_config_applications "
+                        "ADD COLUMN config_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts"
+                    ),
+                )
+                ensure_index(
+                    conn,
+                    table_name="proxy_config_applications",
+                    index_name="idx_proxy_config_applications_proxy_revision_ts",
+                    ddl=(
+                        "ALTER TABLE proxy_config_applications "
+                        "ADD INDEX idx_proxy_config_applications_proxy_revision_ts "
+                        "(proxy_id, revision_id, applied_ts, id)"
+                    ),
                 )
                 repair_duplicate_active_rows(
                     conn,
@@ -187,6 +215,7 @@ class ConfigRevisionStore:
             detail=str(row["detail"] or ""),
             applied_by=str(row["applied_by"] or ""),
             applied_ts=int(row["applied_ts"] or 0),
+            config_sha256=str(row_value(row, "config_sha256") or ""),
         )
 
     def _row_to_metadata(self, row: object | None) -> ConfigRevisionMetadata | None:
@@ -585,6 +614,7 @@ class ConfigRevisionStore:
         ok: bool,
         detail: str = "",
         applied_by: str = "proxy",
+        config_sha256: str = "",
     ) -> ConfigApplication:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
@@ -594,24 +624,34 @@ class ConfigRevisionStore:
             with guarded_proxy_write(conn, proxy_key) as guard:
                 proxy_key = guard.proxy_id
                 revision = conn.execute(
-                    "SELECT id FROM proxy_config_revisions WHERE proxy_id=%s AND id=%s LIMIT 1 FOR SHARE",
+                    "SELECT id, config_sha256 FROM proxy_config_revisions WHERE proxy_id=%s AND id=%s LIMIT 1 FOR SHARE",
                     (proxy_key, target_revision_id),
                 ).fetchone()
                 if revision is None:
                     msg = f"Config revision {target_revision_id} was not found for proxy {proxy_key}."
                     raise ValueError(msg)
+                revision_sha = str(revision["config_sha256"] or "")
+                evidence_sha = normalize_sha256_evidence(
+                    config_sha256,
+                    fallback=revision_sha,
+                    ok=bool(ok),
+                    label="Config application evidence SHA-256",
+                )
                 cur = conn.execute(
                     """
-                    INSERT INTO proxy_config_applications(proxy_id, revision_id, ok, detail, applied_by, applied_ts)
-                    VALUES(%s,%s,%s,%s,%s,%s)
+                    INSERT INTO proxy_config_applications(
+                        proxy_id, revision_id, ok, detail, applied_by, applied_ts, config_sha256
+                    )
+                    VALUES(%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (
                         proxy_key,
                         target_revision_id,
                         1 if ok else 0,
-                        (detail or "")[:4000],
-                        (applied_by or "proxy")[:255],
+                        normalize_application_detail(detail),
+                        normalize_application_actor(applied_by),
                         now,
+                        evidence_sha,
                     ),
                 )
                 row = conn.execute(

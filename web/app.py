@@ -1677,7 +1677,9 @@ def _adblock_runtime_state(
         "latest_apply_id": _safe_revision_id(getattr(latest_apply, "application_id", 0)),
         "latest_apply_ok": bool(getattr(latest_apply, "ok", False)) if latest_apply is not None else None,
         "latest_apply_ts": _safe_revision_id(getattr(latest_apply, "applied_ts", 0)),
-        "latest_apply_detail": str(getattr(latest_apply, "detail", "") or ""),
+        "latest_apply_detail": redact_sensitive_text(
+            getattr(latest_apply, "detail", "") or "",
+        ),
         "latest_apply_sha": apply_sha,
         "latest_apply_short_sha": _short_sha(apply_sha),
         "operation_status_label": _operation_status_label(operation_status),

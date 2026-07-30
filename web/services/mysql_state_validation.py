@@ -74,8 +74,11 @@ _REQUIRED_TABLES: tuple[str, ...] = (
 
 _REQUIRED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("proxy_config_revisions", "active_proxy_id"),
+    ("proxy_config_applications", "config_sha256"),
     ("certificate_bundle_revisions", "active_global_slot"),
+    ("proxy_certificate_applications", "bundle_sha256"),
     ("adblock_artifact_revisions", "active_global_slot"),
+    ("proxy_adblock_artifact_applications", "artifact_sha256"),
     ("proxy_operations", "proxy_id"),
     ("proxy_operations", "status"),
     ("proxy_operations", "request_key"),
@@ -93,8 +96,11 @@ _REQUIRED_COLUMNS: tuple[tuple[str, str], ...] = (
 
 _REQUIRED_INDEXES: tuple[tuple[str, str], ...] = (
     ("proxy_config_revisions", "uniq_proxy_config_revisions_active_proxy"),
+    ("proxy_config_applications", "idx_proxy_config_applications_proxy_revision_ts"),
     ("certificate_bundle_revisions", "uniq_certificate_bundle_revisions_active"),
+    ("proxy_certificate_applications", "idx_proxy_certificate_applications_proxy_revision_ts"),
     ("adblock_artifact_revisions", "uniq_adblock_artifact_revisions_active"),
+    ("proxy_adblock_artifact_applications", "idx_proxy_adblock_artifact_apply_proxy_revision_ts"),
     ("proxy_operations", "idx_proxy_operations_proxy_status_created_id"),
     ("proxy_operations", "idx_proxy_operations_proxy_started_id"),
     ("proxy_operations", "idx_proxy_operations_proxy_updated_id"),
@@ -410,6 +416,78 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
             )
             if orphan_config_revisions:
                 result.error(f"proxy_config_revisions has {orphan_config_revisions} row(s) owned by missing proxies without tombstones")
+
+            orphan_application_owners = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM (
+                    SELECT app.proxy_id FROM proxy_config_applications app
+                    LEFT JOIN proxy_instances proxy ON proxy.proxy_id=app.proxy_id
+                    LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=app.proxy_id
+                    WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
+                    UNION ALL
+                    SELECT app.proxy_id FROM proxy_certificate_applications app
+                    LEFT JOIN proxy_instances proxy ON proxy.proxy_id=app.proxy_id
+                    LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=app.proxy_id
+                    WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
+                    UNION ALL
+                    SELECT app.proxy_id FROM proxy_adblock_artifact_applications app
+                    LEFT JOIN proxy_instances proxy ON proxy.proxy_id=app.proxy_id
+                    LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=app.proxy_id
+                    WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
+                ) orphan_applications
+                """,
+                context="proxy application ledgers orphan ownership",
+            )
+            if orphan_application_owners:
+                result.error(f"proxy application ledgers have {orphan_application_owners} row(s) owned by missing proxies without tombstones")
+
+            invalid_config_applications = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM proxy_config_applications app
+                LEFT JOIN proxy_config_revisions revision
+                  ON revision.id=app.revision_id AND revision.proxy_id=app.proxy_id
+                WHERE revision.id IS NULL
+                   OR (app.config_sha256 <> '' AND app.config_sha256 NOT REGEXP '^[0-9a-f]{64}$')
+                   OR (app.ok=1 AND app.config_sha256 <> '' AND revision.config_sha256 REGEXP '^[0-9a-f]{64}$' AND app.config_sha256 <> revision.config_sha256)
+                """,
+                context="proxy_config_applications revision/evidence integrity",
+            )
+            if invalid_config_applications:
+                result.error(f"proxy_config_applications has {invalid_config_applications} invalid revision/evidence row(s)")
+
+            invalid_certificate_applications = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM proxy_certificate_applications app
+                LEFT JOIN certificate_bundle_revisions revision ON revision.id=app.revision_id
+                WHERE revision.id IS NULL
+                   OR (app.bundle_sha256 <> '' AND app.bundle_sha256 NOT REGEXP '^[0-9a-f]{64}$')
+                   OR (app.ok=1 AND app.bundle_sha256 <> '' AND revision.bundle_sha256 REGEXP '^[0-9a-f]{64}$' AND app.bundle_sha256 <> revision.bundle_sha256)
+                """,
+                context="proxy_certificate_applications revision/evidence integrity",
+            )
+            if invalid_certificate_applications:
+                result.error(f"proxy_certificate_applications has {invalid_certificate_applications} invalid revision/evidence row(s)")
+
+            invalid_adblock_applications = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM proxy_adblock_artifact_applications app
+                LEFT JOIN adblock_artifact_revisions revision ON revision.id=app.revision_id
+                WHERE revision.id IS NULL
+                   OR (app.artifact_sha256 <> '' AND app.artifact_sha256 NOT REGEXP '^[0-9a-f]{64}$')
+                   OR (app.ok=1 AND app.artifact_sha256 <> '' AND revision.artifact_sha256 REGEXP '^[0-9a-f]{64}$' AND app.artifact_sha256 <> revision.artifact_sha256)
+                """,
+                context="proxy_adblock_artifact_applications revision/evidence integrity",
+            )
+            if invalid_adblock_applications:
+                result.error(f"proxy_adblock_artifact_applications has {invalid_adblock_applications} invalid revision/evidence row(s)")
 
             orphan_operations = _count_row(
                 active_conn,

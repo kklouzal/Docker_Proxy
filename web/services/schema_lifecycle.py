@@ -27,7 +27,7 @@ from services.db import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 20
+_SCHEMA_VERSION = 21
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -611,6 +611,46 @@ def _init_control_plane_retention_indexes(_conn: Any) -> None:
                 ensure_index(_conn, table_name=table, index_name=index_name, ddl=ddl)
 
 
+def _backfill_application_ledger_evidence(conn: Any) -> None:
+    ensure_column(
+        conn,
+        table_name="proxy_config_applications",
+        column_name="config_sha256",
+        ddl="ALTER TABLE proxy_config_applications ADD COLUMN config_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts",
+    )
+    if column_exists(conn, "proxy_config_applications", "config_sha256"):
+        conn.execute(
+            """
+            UPDATE proxy_config_applications app
+            JOIN proxy_config_revisions revision
+              ON revision.id=app.revision_id AND revision.proxy_id=app.proxy_id
+            SET app.config_sha256=revision.config_sha256
+            WHERE app.config_sha256=''
+              AND revision.config_sha256 REGEXP '^[0-9a-f]{64}$'
+            """,
+        )
+    if column_exists(conn, "proxy_certificate_applications", "bundle_sha256"):
+        conn.execute(
+            """
+            UPDATE proxy_certificate_applications app
+            JOIN certificate_bundle_revisions revision ON revision.id=app.revision_id
+            SET app.bundle_sha256=revision.bundle_sha256
+            WHERE app.bundle_sha256=''
+              AND revision.bundle_sha256 REGEXP '^[0-9a-f]{64}$'
+            """,
+        )
+    if column_exists(conn, "proxy_adblock_artifact_applications", "artifact_sha256"):
+        conn.execute(
+            """
+            UPDATE proxy_adblock_artifact_applications app
+            JOIN adblock_artifact_revisions revision ON revision.id=app.revision_id
+            SET app.artifact_sha256=revision.artifact_sha256
+            WHERE app.artifact_sha256=''
+              AND revision.artifact_sha256 REGEXP '^[0-9a-f]{64}$'
+            """,
+        )
+
+
 def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
     return (
         SchemaMigrationSpec(
@@ -823,6 +863,30 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                     "webfilter_blocked_log",
                     "idx_webfilter_blocked_log_proxy_ts",
                     "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)",
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=21,
+            name="application_ledger_evidence_indexes",
+            columns=(
+                SchemaColumnSpec(
+                    "proxy_config_applications",
+                    "config_sha256",
+                    "ALTER TABLE proxy_config_applications ADD COLUMN config_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts",
+                ),
+            ),
+            indexes=(
+                SchemaIndexSpec(
+                    "proxy_config_applications",
+                    "idx_proxy_config_applications_proxy_revision_ts",
+                    "ALTER TABLE proxy_config_applications ADD INDEX idx_proxy_config_applications_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)",
+                ),
+            ),
+            data_steps=(
+                SchemaDataStep(
+                    "application_ledger_evidence_backfill",
+                    _backfill_application_ledger_evidence,
                 ),
             ),
         ),

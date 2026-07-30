@@ -353,15 +353,25 @@ def _delete_revision_rows(
     cutoff_ts: int,
     keep_rows: int,
     partition_column: str | None = None,
+    application_table: str = "",
+    application_proxy_scoped: bool = False,
 ) -> BoundedDeleteResult:
     active_col = quote_mysql_identifier(active_column)
+    candidate_only = [f"candidate.{active_col} = 0"]
+    if application_table:
+        app_table = quote_mysql_identifier(application_table)
+        app_predicate = f"NOT EXISTS (SELECT 1 FROM {app_table} app WHERE app.revision_id = candidate.id"
+        if application_proxy_scoped:
+            app_predicate += " AND app.proxy_id = candidate.proxy_id"
+        app_predicate += ")"
+        candidate_only.append(app_predicate)
     return _delete_retained_rows_in_chunks(
         table=table,
         timestamp_column=timestamp_column,
         cutoff_ts=cutoff_ts,
         keep_rows=keep_rows,
         partition_column=partition_column,
-        candidate_only_sql=f"candidate.{active_col} = 0",
+        candidate_only_sql=" AND ".join(candidate_only),
     )
 
 
@@ -556,6 +566,8 @@ def _run_one_prune(
             cutoff_ts=cutoff_ts,
             keep_rows=keep_revisions,
             partition_column="proxy_id",
+            application_table="proxy_config_applications",
+            application_proxy_scoped=True,
         )
         return ControlPlaneMaintenanceResult(
             table=table,
@@ -571,6 +583,7 @@ def _run_one_prune(
             active_column="is_active",
             cutoff_ts=cutoff_ts,
             keep_rows=keep_revisions,
+            application_table="proxy_certificate_applications",
         )
         return ControlPlaneMaintenanceResult(
             table=table,
