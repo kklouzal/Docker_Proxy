@@ -1431,7 +1431,7 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
 
     class Revisions:
         def get_active_revision_metadata(self, _proxy_id):
-            return SimpleNamespace(revision_id=9, config_sha256="active-sha")
+            return SimpleNamespace(revision_id=9, config_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 
         def latest_apply(self, _proxy_id) -> None:
             return None
@@ -5461,7 +5461,7 @@ def test_sync_from_db_marks_matching_certificate_revision_applied(monkeypatch) -
         "ok": True,
         "changed": False,
         "certificate_revision_id": 12,
-        "certificate_bundle_sha256": "cert-sha-12",
+        "certificate_bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "detail": "Proxy is already using the active certificate bundle.",
     }
     runtime.sync_policy_state = lambda force=False: {
@@ -5490,7 +5490,7 @@ def test_sync_from_db_marks_matching_certificate_revision_applied(monkeypatch) -
 
     assert result["ok"] is True
     assert result["certificate_revision_id"] == 12
-    assert result["certificate_bundle_sha256"] == "cert-sha-12"
+    assert result["certificate_bundle_sha256"] == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     assert calls == [
         (
             5,
@@ -5513,7 +5513,7 @@ def test_sync_from_db_fails_certificate_operation_with_hash_mismatch(
         operation_type="certificate_apply",
         target_kind="certificate_revision",
         target_ref="12",
-        request_hash="expected-cert-sha",
+        request_hash="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     )
     calls: list[tuple[int, str, str]] = []
 
@@ -5534,7 +5534,7 @@ def test_sync_from_db_fails_certificate_operation_with_hash_mismatch(
         lambda *, force=False, artifact_force=None, operations=None: {
             "ok": True,
             "certificate_revision_id": 12,
-            "certificate_bundle_sha256": "different-cert-sha",
+            "certificate_bundle_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "detail": "runtime reconciled with mismatched certificate hash",
             "executed_operation_types": ["certificate_apply"],
         }
@@ -5544,7 +5544,7 @@ def test_sync_from_db_fails_certificate_operation_with_hash_mismatch(
 
     assert result["ok"] is True
     assert calls[0][0:2] == (5, "failed")
-    assert "queued revision 12 hash expected-cer" in calls[0][2]
+    assert "queued revision 12 hash eeeeeeeeeeee" in calls[0][2]
     assert "differs from applied certificate bundle evidence" in calls[0][2]
 
 
@@ -5561,7 +5561,7 @@ def test_sync_from_db_fails_certificate_operation_without_hash_evidence(
         operation_type="certificate_revert",
         target_kind="certificate_revision",
         target_ref="12",
-        request_hash="expected-cert-sha",
+        request_hash="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     )
     calls: list[tuple[int, str, str]] = []
 
@@ -5635,7 +5635,7 @@ def test_sync_from_db_marks_stale_certificate_revision_superseded(monkeypatch) -
         "ok": True,
         "changed": False,
         "certificate_revision_id": 12,
-        "certificate_bundle_sha256": "cert-sha-12",
+        "certificate_bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "detail": "Proxy is already using the active certificate bundle.",
     }
     runtime.sync_policy_state = lambda force=False: {
@@ -5718,7 +5718,7 @@ def test_sync_from_db_fails_certificate_operation_without_revision_evidence(
     runtime.sync_certificate_bundle = lambda force=False: {
         "ok": True,
         "changed": False,
-        "certificate_bundle_sha256": "cert-sha-12",
+        "certificate_bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "detail": "Proxy certificate state reconciled without revision evidence.",
     }
     runtime.sync_policy_state = lambda force=False: {
@@ -5936,7 +5936,7 @@ def test_operation_completion_requires_exact_adblock_artifact_revision_and_hash(
         operation_type="adblock_refresh",
         target_kind="adblock_artifact",
         target_ref="7",
-        request_hash="artifact-a",
+        request_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
 
     assert runtime_module._operation_completion_status(
@@ -5946,8 +5946,8 @@ def test_operation_completion_requires_exact_adblock_artifact_revision_and_hash(
         result={
             "executed_operation_types": ["adblock_refresh"],
             "revision_id": 7,
-            "artifact_sha256": "artifact-a",
-            "current_adblock_artifact_sha256": "artifact-a",
+            "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "current_adblock_artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         },
     ) == ("applied", "runtime reconciled")
 
@@ -5958,8 +5958,8 @@ def test_operation_completion_requires_exact_adblock_artifact_revision_and_hash(
         result={
             "executed_operation_types": ["adblock_refresh"],
             "revision_id": 8,
-            "artifact_sha256": "artifact-b",
-            "current_adblock_artifact_sha256": "artifact-b",
+            "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "current_adblock_artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         },
     )
     assert status == "superseded"
@@ -5981,12 +5981,12 @@ def test_operation_completion_requires_exact_adblock_artifact_revision_and_hash(
         result={
             "executed_operation_types": ["adblock_refresh"],
             "revision_id": 7,
-            "artifact_sha256": "artifact-a",
-            "current_adblock_artifact_sha256": "artifact-current-mismatch",
+            "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "current_adblock_artifact_sha256": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccurrent-mismatch",
         },
     )
     assert mismatch_status == "failed"
-    assert "queued artifact artifact-a" in mismatch_detail
+    assert "queued artifact aaaaaaaaaaaa" in mismatch_detail
 
 
 def test_operation_completion_tracks_adblock_build_settings_version_target() -> None:
@@ -6007,7 +6007,8 @@ def test_operation_completion_tracks_adblock_build_settings_version_target() -> 
             "executed_operation_types": ["adblock_refresh"],
             "adblock_settings_version": 12,
             "revision_id": 9,
-            "artifact_sha256": "artifact-c",
+            "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "current_adblock_artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         },
     ) == ("applied", "runtime reconciled")
 
@@ -6019,7 +6020,7 @@ def test_operation_completion_tracks_adblock_build_settings_version_target() -> 
             "executed_operation_types": ["adblock_refresh"],
             "adblock_settings_version": 13,
             "revision_id": 10,
-            "artifact_sha256": "artifact-d",
+            "artifact_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
         },
     )
     assert status == "superseded"
@@ -6059,7 +6060,7 @@ def test_operation_completion_supports_revert_config_revision_target() -> None:
         operation_type="revert",
         target_kind="config_revision",
         target_ref="9",
-        request_hash="active-sha",
+        request_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
 
     assert runtime_module._operation_completion_status(
@@ -6069,7 +6070,7 @@ def test_operation_completion_supports_revert_config_revision_target() -> None:
         result={
             "executed_operation_types": ["revert"],
             "revision_id": 9,
-            "active_revision_sha": "active-sha",
+            "active_revision_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         },
     ) == ("applied", "runtime reconciled")
 
@@ -6081,6 +6082,50 @@ def test_operation_completion_supports_revert_config_revision_target() -> None:
     )
     assert bad_status == "failed"
     assert "operation 'revert' cannot target 'no target'" in bad_detail
+
+
+def test_operation_completion_normalizes_and_rejects_request_hash_evidence() -> None:
+    from proxy import runtime as runtime_module
+
+    uppercase = SimpleNamespace(
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref="12",
+        request_hash="A" * 64,
+    )
+
+    assert runtime_module._operation_completion_status(
+        uppercase,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["certificate_apply"],
+            "certificate_revision_id": 12,
+            "certificate_bundle_sha256": "a" * 64,
+            "current_certificate_sha": "a" * 64,
+        },
+    ) == ("applied", "runtime reconciled")
+
+    malformed = SimpleNamespace(
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref="12",
+        request_hash="a" * 65,
+    )
+    status, detail = runtime_module._operation_completion_status(
+        malformed,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["certificate_apply"],
+            "certificate_revision_id": 12,
+            "certificate_bundle_sha256": "a" * 64,
+            "current_certificate_sha": "a" * 64,
+        },
+    )
+
+    assert status == "failed"
+    assert "queued request_hash evidence is invalid" in detail
 
 
 def test_sync_from_db_marks_unsupported_operation_failed(monkeypatch) -> None:
@@ -6391,8 +6436,8 @@ def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() 
             "changed": True,
             "revision_id": 44,
             "adblock_settings_version": 15,
-            "artifact_sha256": "manual-active-sha",
-            "current_adblock_artifact_sha256": "manual-active-sha",
+            "artifact_sha256": "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "current_adblock_artifact_sha256": "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "detail": "Adblock artifact applied.",
         }
 
@@ -6403,7 +6448,7 @@ def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() 
         "Squid reconfigured for policy update.",
     )
     runtime._current_config_sha = lambda: "current-sha"
-    runtime._current_adblock_artifact_sha = lambda: "manual-active-sha"
+    runtime._current_adblock_artifact_sha = lambda: "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     runtime.controller = SimpleNamespace(
         set_adblock_icap_revision_token=lambda _token: None,
     )
@@ -6442,7 +6487,7 @@ def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() 
 
     assert result["ok"] is True
     assert result["adblock_revision_id"] == 44
-    assert result["artifact_sha256"] == "manual-active-sha"
+    assert result["artifact_sha256"] == "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     assert result["adblock_settings_version"] == 15
     assert result["executed_operation_types"] == ["adblock_refresh"]
     assert "build request was already cleared" in result["detail"]

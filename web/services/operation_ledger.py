@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import threading
 import time
@@ -21,6 +22,7 @@ from services.proxy_write_guard import guarded_proxy_write
 
 OPERATION_STATUSES = ("pending", "applying", "applied", "superseded", "failed")
 TERMINAL_STATUSES = {"applied", "superseded", "failed"}
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _text_or_default(value: object | None, *, default: str = "") -> str:
@@ -41,6 +43,25 @@ def _limited_text(
     if redact:
         text = redact_sensitive_text(text)
     return text[:limit]
+
+
+def normalize_operation_request_hash(value: object | None) -> str:
+    """Normalize queued operation hash evidence to unambiguous SHA-256 text.
+
+    ``request_hash`` is used by runtime completion as proof that the applied
+    config/certificate/adblock artifact is the exact target that was queued.
+    Truncating or preserving malformed values can turn operator-visible status
+    into ambiguous evidence, so non-empty values must already be SHA-256.
+    """
+    if value is None or value is False or value == 0:
+        return ""
+    text = _text_or_default(value).strip().lower()
+    if not text:
+        return ""
+    if not _SHA256_RE.fullmatch(text):
+        msg = "Operation request_hash must be a SHA-256 digest when provided."
+        raise ValueError(msg)
+    return text
 
 
 @dataclass(frozen=True)
@@ -404,7 +425,7 @@ class OperationLedger:
         target_ref_text = _limited_text(target_ref, 255)
         rollback_kind_text = _limited_text(rollback_kind, 64)
         rollback_ref_text = _limited_text(rollback_ref, 255)
-        request_hash_text = _limited_text(request_hash, 64)
+        request_hash_text = normalize_operation_request_hash(request_hash)
         detail_text = _limited_text(detail, 4000, redact=True)
         created_by_text = _limited_text(created_by, 255)
         force_requested = bool(force)

@@ -41,7 +41,10 @@ from services.health_checks import build_clamav_health
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled, should_log
 from services.materialized_files import write_managed_text_files
-from services.operation_ledger import get_operation_ledger
+from services.operation_ledger import (
+    get_operation_ledger,
+    normalize_operation_request_hash,
+)
 from services.pac_renderer import (
     PAC_RENDER_DIR,
     build_proxy_pac_state,
@@ -150,6 +153,20 @@ def _int_or_none(value: object) -> int | None:
     except Exception:
         return None
     return parsed if parsed > 0 else None
+
+
+def _operation_request_hash(operation: Any) -> tuple[str, str]:
+    try:
+        return normalize_operation_request_hash(
+            getattr(operation, "request_hash", ""),
+        ), ""
+    except ValueError as exc:
+        return "", str(exc)
+
+
+def _normalized_result_hash(value: object | None) -> str:
+    text = str(value or "").strip().lower()
+    return text or ""
 
 
 def _operation_requests_force(operation: Any) -> bool:
@@ -323,6 +340,25 @@ def _operations_target_config_revision(
     return False
 
 
+def _operations_target_revision_kind(
+    operations: list[Any] | None,
+    *,
+    target_kind: str,
+    revision_id: object,
+) -> bool:
+    target_revision_id = _int_or_none(revision_id)
+    if target_revision_id is None:
+        return False
+    for operation in operations or []:
+        if not _operation_target_compatible(operation):
+            continue
+        if _operation_target_kind(operation) != target_kind:
+            continue
+        if _int_or_none(getattr(operation, "target_ref", None)) == target_revision_id:
+            return True
+    return False
+
+
 def _latest_apply_matches_config_revision(
     latest_apply: Any,
     revision_id: object,
@@ -381,6 +417,20 @@ def _mark_claimed_operation_status(
         expected_status="applying",
         expected_claim_token=getattr(operation, "claim_token", ""),
     )
+
+
+def _call_sync_with_operations(func: Any, *, force: bool, operations: list[Any] | None):
+    try:
+        parameters = inspect.signature(func).parameters
+        supports_operations = "operations" in parameters or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in parameters.values()
+        )
+    except (TypeError, ValueError):
+        supports_operations = True
+    if supports_operations:
+        return func(force=force, operations=operations)
+    return func(force=force)
 
 
 def _operation_completion_status(
@@ -467,14 +517,22 @@ def _operation_completion_status(
 
     if target_kind == "certificate_revision":
         target_ref = _int_or_none(getattr(operation, "target_ref", None))
-        target_hash = str(getattr(operation, "request_hash", "") or "").strip()
+        target_hash, target_hash_error = _operation_request_hash(operation)
+        if target_hash_error:
+            op_detail = (
+                "Certificate operation completed reconciliation but queued "
+                f"request_hash evidence is invalid: {target_hash_error}"
+            )
+            if detail:
+                op_detail = f"{op_detail}\n{detail}"
+            return "failed", op_detail[:4000]
         applied_ref = _int_or_none(result.get("certificate_revision_id"))
-        applied_hash = str(
+        applied_hash = _normalized_result_hash(
             result.get("certificate_bundle_sha256")
             or result.get("current_certificate_sha")
             or result.get("desired_certificate_bundle_sha256")
             or ""
-        ).strip()
+        )
         if target_ref is None:
             op_detail = (
                 "Certificate operation completed reconciliation but did not include "
@@ -526,11 +584,19 @@ def _operation_completion_status(
         return default_status, detail
 
     target_ref = _int_or_none(getattr(operation, "target_ref", None))
-    target_hash = str(getattr(operation, "request_hash", "") or "").strip()
+    target_hash, target_hash_error = _operation_request_hash(operation)
+    if target_hash_error:
+        op_detail = (
+            "Config operation completed reconciliation but queued request_hash "
+            f"evidence is invalid: {target_hash_error}"
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
     applied_ref = _int_or_none(result.get("revision_id"))
-    active_hash = str(
+    active_hash = _normalized_result_hash(
         result.get("active_revision_sha") or result.get("config_sha256") or "",
-    ).strip()
+    )
     if target_ref is None:
         op_detail = (
             "Config operation completed reconciliation but did not include "
@@ -637,12 +703,20 @@ def _operation_adblock_artifact_status(
     result: dict[str, Any],
 ) -> tuple[str, str]:
     target_ref = _int_or_none(getattr(operation, "target_ref", None))
-    target_hash = str(getattr(operation, "request_hash", "") or "").strip()
+    target_hash, target_hash_error = _operation_request_hash(operation)
+    if target_hash_error:
+        op_detail = (
+            "Adblock artifact operation completed reconciliation but queued "
+            f"request_hash evidence is invalid: {target_hash_error}"
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
     applied_ref = _int_or_none(result.get("adblock_revision_id"))
     if applied_ref is None:
         applied_ref = _int_or_none(result.get("revision_id"))
-    applied_hash = str(result.get("artifact_sha256") or "").strip()
-    current_hash = str(result.get("current_adblock_artifact_sha256") or "").strip()
+    applied_hash = _normalized_result_hash(result.get("artifact_sha256"))
+    current_hash = _normalized_result_hash(result.get("current_adblock_artifact_sha256"))
     if target_ref is None or not target_hash:
         op_detail = (
             "Adblock artifact operation completed reconciliation but did not include "
@@ -695,6 +769,11 @@ def _operation_adblock_build_status(
 ) -> tuple[str, str]:
     target_ref = _int_or_none(getattr(operation, "target_ref", None))
     applied_settings_version = _int_or_none(result.get("adblock_settings_version"))
+    applied_ref = _int_or_none(result.get("adblock_revision_id"))
+    if applied_ref is None:
+        applied_ref = _int_or_none(result.get("revision_id"))
+    applied_hash = _normalized_result_hash(result.get("artifact_sha256"))
+    current_hash = _normalized_result_hash(result.get("current_adblock_artifact_sha256"))
     if target_ref is None:
         op_detail = (
             "Adblock artifact build operation completed reconciliation but did not include "
@@ -719,6 +798,30 @@ def _operation_adblock_build_status(
         if detail:
             op_detail = f"{op_detail}\n{detail}"
         return "superseded", op_detail[:4000]
+    if applied_ref is None or not applied_hash:
+        op_detail = (
+            "Adblock artifact build operation completed reconciliation but did not "
+            "report active artifact revision/hash evidence required to verify the queued build."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    if not current_hash:
+        op_detail = (
+            f"Adblock artifact build for settings version {target_ref} completed, "
+            "but current runtime artifact SHA evidence is unavailable."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    if applied_hash != current_hash:
+        op_detail = (
+            "Adblock artifact build did not converge selected-proxy runtime state; "
+            f"built artifact {applied_hash[:12]} differs from current artifact {current_hash[:12]}."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
     return default_status, detail
 
 
@@ -729,6 +832,12 @@ def _certificate_result_evidence(result: dict[str, Any]) -> dict[str, Any]:
         ),
         "certificate_bundle_sha256": str(
             result.get("certificate_bundle_sha256")
+            or result.get("bundle_sha256")
+            or "",
+        ).strip(),
+        "current_certificate_sha": str(
+            result.get("current_certificate_sha")
+            or result.get("certificate_bundle_sha256")
             or result.get("bundle_sha256")
             or "",
         ).strip(),
@@ -2686,7 +2795,12 @@ class ProxyRuntime:
             "download_pending": bool(result.get("download_pending")),
         }
 
-    def sync_adblock_state(self, *, force: bool = False) -> dict[str, Any]:
+    def sync_adblock_state(
+        self,
+        *,
+        force: bool = False,
+        operations: list[Any] | None = None,
+    ) -> dict[str, Any]:
         revision_meta = self.adblock_artifacts.get_active_artifact_metadata()
         store = self.adblock_store
         store.init_db()
@@ -2775,7 +2889,12 @@ class ProxyRuntime:
             applied_sha = str(applied_sha_raw or "").strip()
             applied_ok = bool(getattr(applied, "ok", False)) if applied else False
             if (
-                applied is None
+                _operations_target_revision_kind(
+                    operations,
+                    target_kind="adblock_artifact",
+                    revision_id=revision_meta.revision_id,
+                )
+                or applied is None
                 or not applied_ok
                 or (
                     applied_sha_raw is not None
@@ -3073,7 +3192,12 @@ class ProxyRuntime:
                 source_kind="bootstrap",
             )
 
-    def sync_certificate_bundle(self, *, force: bool = False) -> dict[str, Any]:
+    def sync_certificate_bundle(
+        self,
+        *,
+        force: bool = False,
+        operations: list[Any] | None = None,
+    ) -> dict[str, Any]:
         revision_meta = self.certificate_bundles.get_active_bundle_metadata()
         if revision_meta is None:
             return {
@@ -3137,8 +3261,16 @@ class ProxyRuntime:
                     "changed": ok_restart,
                     "detail": detail,
                     "certificate_bundle_sha256": revision_meta.bundle_sha256,
+                    "current_certificate_sha": revision_meta.bundle_sha256
+                    if ok_restart
+                    else current_sha,
                 }
-            if not latest_apply_matches:
+            refresh_apply_evidence = _operations_target_revision_kind(
+                operations,
+                target_kind="certificate_revision",
+                revision_id=revision_meta.revision_id,
+            )
+            if refresh_apply_evidence or not latest_apply_matches:
                 try:
                     applied = self.certificate_bundles.record_apply_result(
                         self.proxy_id,
@@ -3148,8 +3280,20 @@ class ProxyRuntime:
                         applied_by="proxy",
                         bundle_sha256=revision_meta.bundle_sha256,
                     )
-                except Exception:
-                    applied = None
+                except Exception as exc:
+                    detail = public_error_message(
+                        exc,
+                        default="Failed to record certificate bundle application.",
+                    )
+                    return {
+                        "ok": False,
+                        "proxy_id": self.proxy_id,
+                        "certificate_revision_id": revision_meta.revision_id,
+                        "changed": False,
+                        "detail": detail,
+                        "certificate_bundle_sha256": revision_meta.bundle_sha256,
+                        "current_certificate_sha": current_sha,
+                    }
             result = {
                 "ok": True,
                 "proxy_id": self.proxy_id,
@@ -3157,6 +3301,7 @@ class ProxyRuntime:
                 "changed": False,
                 "detail": "Proxy is already using the active certificate bundle.",
                 "certificate_bundle_sha256": revision_meta.bundle_sha256,
+                "current_certificate_sha": current_sha,
             }
             if applied is not None:
                 result["application_id"] = applied.application_id
@@ -4017,7 +4162,11 @@ class ProxyRuntime:
                 "current_config_sha": self._current_config_sha(),
                 **operation_evidence,
             }
-        cert_result = self.sync_certificate_bundle(force=artifact_force_value)
+        cert_result = _call_sync_with_operations(
+            self.sync_certificate_bundle,
+            force=artifact_force_value,
+            operations=operations,
+        )
         cert_evidence = _certificate_result_evidence(cert_result)
         cert_ok = bool(cert_result.get("ok", True))
         cert_changed = bool(cert_result.get("changed", False))
@@ -4125,7 +4274,11 @@ class ProxyRuntime:
                         **operation_evidence,
                     }
 
-        adblock_result = self.sync_adblock_state(force=artifact_force_value)
+        adblock_result = _call_sync_with_operations(
+            self.sync_adblock_state,
+            force=artifact_force_value,
+            operations=operations,
+        )
         adblock_ok = bool(adblock_result.get("ok", True))
         adblock_changed = bool(adblock_result.get("changed", False))
         adblock_evidence = {

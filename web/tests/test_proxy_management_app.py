@@ -571,7 +571,7 @@ def test_proxy_management_sync_operation_id_records_current_config_apply(
         operation_type="config_apply",
         target_kind="config_revision",
         target_ref="9",
-        request_hash="current-sha",
+        request_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         force=True,
         claim_token="claim-0",
     )
@@ -618,7 +618,7 @@ def test_proxy_management_sync_operation_id_records_current_config_apply(
 
     class Revisions:
         def get_active_revision_metadata(self, _proxy_id):
-            return SimpleNamespace(revision_id=9, config_sha256="current-sha")
+            return SimpleNamespace(revision_id=9, config_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 
         def latest_apply(self, _proxy_id):
             return None
@@ -658,7 +658,7 @@ def test_proxy_management_sync_operation_id_records_current_config_apply(
         "artifact_sha256": "adblock-sha",
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
-    runtime._current_config_sha = lambda: "current-sha"
+    runtime._current_config_sha = lambda: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     runtime._current_adblock_artifact_sha = lambda: "adblock-sha"
     runtime._current_adblock_enabled = lambda: True
     runtime._ensure_policy_runtime_config = lambda: (True, "", False)
@@ -716,7 +716,7 @@ def test_proxy_runtime_targeted_operation_sync_requires_claim(monkeypatch) -> No
             raise AssertionError(msg)
 
     runtime.controller = Controller()
-    runtime._current_config_sha = lambda: "current-sha"
+    runtime._current_config_sha = lambda: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
 
     result = runtime.sync_from_db(operation_id=42)
@@ -757,7 +757,7 @@ def test_config_operation_completion_requires_matching_revision_hash() -> None:
         operation_type="config_apply",
         target_kind="config_revision",
         target_ref="9",
-        request_hash="queued-sha",
+        request_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
 
     status, detail = runtime_module._operation_completion_status(
@@ -788,7 +788,7 @@ def test_config_operation_completion_requires_matching_revision_hash() -> None:
         detail="sync complete",
         result={
             "revision_id": 9,
-            "active_revision_sha": "queued-sha",
+            "active_revision_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "current_config_sha": "normalized-runtime-sha",
         },
     )

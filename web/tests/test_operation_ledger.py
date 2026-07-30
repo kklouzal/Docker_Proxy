@@ -39,7 +39,7 @@ def _operation_row(**overrides):
         "target_ref": "42",
         "rollback_kind": "",
         "rollback_ref": "",
-        "request_hash": "abc123",
+        "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "request_key": "".rjust(64, "a"),
         "detail": "",
         "created_by": "admin",
@@ -799,7 +799,7 @@ def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:
         target_ref=42,
         rollback_kind="config_revision",
         rollback_ref=3,
-        request_hash="abc123",
+        request_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         created_by="admin",
         force=True,
     )
@@ -891,10 +891,75 @@ def test_create_operation_normalizes_falsey_refs_and_redacts_operator_details(
     assert insert_params[3] == "Queued with token=[redacted]"
     assert insert_params[5] == "0"
     assert insert_params[7] == "0"
-    assert insert_params[8] == "0"
+    assert insert_params[8] == ""
     assert insert_params[10] == "Authorization: Bearer [redacted] password=[redacted]"
     assert op.summary == "Queued with token=[redacted]"
     assert op.detail == "Authorization: Bearer [redacted] password=[redacted]"
+
+
+def test_create_operation_normalizes_and_rejects_request_hash_evidence(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _CreateConnection:
+        def __init__(self) -> None:
+            self.queries = []
+            self.row = None
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("INSERT INTO proxy_operations"):
+                result = _Result()
+                result.lastrowid = 11
+                self.row = _operation_row(
+                    id=11,
+                    request_hash=params[8],
+                    request_key=params[9],
+                )
+                return result
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.row])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _CreateConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+
+    operation = ledger.create_operation(
+        "edge-a",
+        operation_type="config_apply",
+        subject="Squid config",
+        summary="Apply revision",
+        target_kind="config_revision",
+        target_ref=42,
+        request_hash="A" * 64,
+    )
+
+    assert operation.request_hash == "a" * 64
+    assert conn.queries[0][1][8] == "a" * 64
+
+    with pytest.raises(ValueError, match="request_hash"):
+        ledger.create_operation(
+            "edge-a",
+            operation_type="config_apply",
+            subject="Squid config",
+            summary="Apply revision",
+            target_kind="config_revision",
+            target_ref=42,
+            request_hash="a" * 65,
+        )
 
 
 def test_duplicate_active_request_preserves_original_rollback_metadata(
@@ -953,7 +1018,7 @@ def test_duplicate_active_request_preserves_original_rollback_metadata(
         target_ref=17,
         rollback_kind="config_revision",
         rollback_ref=17,
-        request_hash="abc123",
+        request_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         detail="Duplicate detail",
         created_by="operator-b",
         force=True,
@@ -1083,7 +1148,7 @@ def test_duplicate_active_request_fills_missing_rollback_metadata(
         summary="Initial apply without rollback",
         target_kind="config_revision",
         target_ref=17,
-        request_hash="abc123",
+        request_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         detail="initial detail",
         created_by="operator-a",
     )
@@ -1096,7 +1161,7 @@ def test_duplicate_active_request_fills_missing_rollback_metadata(
         target_ref=17,
         rollback_kind="config_revision",
         rollback_ref=3,
-        request_hash="abc123",
+        request_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         detail="duplicate detail",
         created_by="operator-b",
         force=True,
@@ -1228,7 +1293,7 @@ def test_duplicate_requests_refresh_mutable_fields_without_replacing_rollback(
         target_ref=17,
         rollback_kind="config_revision",
         rollback_ref=3,
-        request_hash="abc123",
+        request_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         detail="first detail",
         created_by="operator-a",
         force=False,
@@ -1242,7 +1307,7 @@ def test_duplicate_requests_refresh_mutable_fields_without_replacing_rollback(
         target_ref=17,
         rollback_kind="config_revision",
         rollback_ref=17,
-        request_hash="abc123",
+        request_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         detail="duplicate detail",
         created_by="operator-b",
         force=True,
@@ -1256,7 +1321,7 @@ def test_duplicate_requests_refresh_mutable_fields_without_replacing_rollback(
         target_ref=18,
         rollback_kind="config_revision",
         rollback_ref=17,
-        request_hash="def456",
+        request_hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         detail="distinct detail",
         created_by="operator-c",
         force=False,
@@ -1342,7 +1407,7 @@ def test_duplicate_request_dedupes_existing_operation_types_without_regressing_u
         target_ref=target_ref,
         rollback_kind=rollback_kind,
         rollback_ref="replacement" if rollback_kind else "",
-        request_hash="request-sha",
+        request_hash="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         detail="new detail",
         created_by="operator-b",
         force=True,
@@ -1490,7 +1555,7 @@ def test_duplicate_while_applying_returns_same_id_preserves_rollback_and_no_pend
         target_ref=17,
         rollback_kind="config_revision",
         rollback_ref=3,
-        request_hash="abc123",
+        request_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         detail="first",
         created_by="operator-a",
     )
@@ -1504,7 +1569,7 @@ def test_duplicate_while_applying_returns_same_id_preserves_rollback_and_no_pend
         target_ref=17,
         rollback_kind="config_revision",
         rollback_ref=17,
-        request_hash="abc123",
+        request_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         detail="duplicate",
         created_by="operator-b",
         force=True,
@@ -1707,7 +1772,7 @@ def test_multi_proxy_same_request_key_is_isolated(monkeypatch) -> None:
         "summary": "policy",
         "target_kind": "policy_state",
         "target_ref": "same-sha",
-        "request_hash": "same-sha",
+        "request_hash": "",
     }
     edge_a = ledger.create_operation("edge-a", **kwargs)
     edge_b = ledger.create_operation("edge-b", **kwargs)

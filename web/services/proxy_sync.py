@@ -3,7 +3,11 @@ from __future__ import annotations
 import logging
 
 from services.errors import public_error_message, redact_sensitive_text
-from services.operation_ledger import ProxyOperation, get_operation_ledger
+from services.operation_ledger import (
+    ProxyOperation,
+    get_operation_ledger,
+    normalize_operation_request_hash,
+)
 from services.proxy_context import normalize_proxy_id
 from services.proxy_registry import get_proxy_registry
 
@@ -30,6 +34,10 @@ def _ephemeral_operation(
     import time
 
     now = int(time.time())
+    try:
+        normalized_request_hash = normalize_operation_request_hash(request_hash)
+    except ValueError:
+        normalized_request_hash = ""
     return ProxyOperation(
         operation_id=0,
         proxy_id=normalize_proxy_id(proxy_id),
@@ -41,7 +49,7 @@ def _ephemeral_operation(
         target_ref=str(target_ref or "")[:255],
         rollback_kind=(rollback_kind or "")[:64],
         rollback_ref=str(rollback_ref or "")[:255],
-        request_hash=(request_hash or "")[:64],
+        request_hash=normalized_request_hash,
         detail=(detail or "")[:4000],
         created_by=(created_by or "")[:255],
         created_ts=now,
