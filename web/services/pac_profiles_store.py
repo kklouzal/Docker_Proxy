@@ -23,6 +23,37 @@ class PacProfile:
 
 
 @dataclass(frozen=True)
+class PacProfileMutation:
+    ok: bool
+    error: str = ""
+    profile_id: int | None = None
+    changed: bool = False
+
+    def __iter__(self):
+        yield self.ok
+        yield self.error
+        yield self.profile_id
+
+
+@dataclass(frozen=True)
+class PacBackupProxyMutation:
+    ok: bool
+    error: str = ""
+    backup_proxy_id: int | None = None
+    changed: bool = False
+
+    def __iter__(self):
+        yield self.ok
+        yield self.error
+        yield self.backup_proxy_id
+
+
+@dataclass(frozen=True)
+class PacBooleanMutation:
+    changed: bool
+
+
+@dataclass(frozen=True)
 class PacBackupProxy:
     id: int
     proxy_host: str
@@ -60,6 +91,14 @@ def _normalize_domain(domain: str) -> tuple[str | None, str]:
     ):
         return None, "Invalid domain."
     return (f"*.{d}" if wildcard else d), ""
+
+
+def _ordered_unique(values: list[str]) -> tuple[str, ...]:
+    ordered: list[str] = []
+    for value in values:
+        if value not in ordered:
+            ordered.append(value)
+    return tuple(ordered)
 
 
 def _normalize_client_cidr(cidr: str) -> tuple[str | None, str]:
@@ -403,15 +442,30 @@ class PacProfilesStore:
         *,
         proxy_host: str,
         proxy_port: object | None = None,
-    ) -> tuple[bool, str, int | None]:
+    ) -> PacBackupProxyMutation:
         self.init_db()
         host, port, err = _normalize_proxy_host_port(proxy_host, proxy_port)
         if host is None or port is None:
-            return False, err, None
+            return PacBackupProxyMutation(False, err, None, False)
 
         with self._connect() as conn:
             with guarded_proxy_write(conn, get_proxy_id()) as guard:
                 proxy_id = guard.proxy_id
+                existing = conn.execute(
+                    """
+                    SELECT id FROM pac_backup_proxies
+                    WHERE proxy_id=%s AND proxy_host=%s AND proxy_port=%s
+                    LIMIT 1
+                    """,
+                    (proxy_id, host, port),
+                ).fetchone()
+                if existing is not None:
+                    return PacBackupProxyMutation(
+                        True,
+                        "",
+                        int(existing["id"]),
+                        False,
+                    )
                 row = conn.execute(
                     "SELECT COALESCE(MAX(position), 0) AS max_position FROM pac_backup_proxies WHERE proxy_id=%s",
                     (proxy_id,),
@@ -424,7 +478,7 @@ class PacProfilesStore:
                     """,
                     (proxy_id, host, port, position, _now()),
                 )
-                return True, "", int(cur.lastrowid)
+                return PacBackupProxyMutation(True, "", int(cur.lastrowid), True)
 
     def _resequence_backup_proxies(self, conn, proxy_id: str) -> list[int]:
         rows = conn.execute(
@@ -488,18 +542,26 @@ class PacProfilesStore:
                     )
                 return True
 
-    def set_direct_enabled(self, enabled: bool) -> None:
+    def set_direct_enabled(self, enabled: bool) -> PacBooleanMutation:
         self.init_db()
+        normalized_enabled = 1 if enabled else 0
         with self._connect() as conn:
             with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                current = conn.execute(
+                    "SELECT direct_enabled FROM pac_proxy_chain_settings WHERE proxy_id=%s LIMIT 1",
+                    (guard.proxy_id,),
+                ).fetchone()
+                if current is not None and int(current["direct_enabled"] or 0) == normalized_enabled:
+                    return PacBooleanMutation(False)
                 conn.execute(
                     """
                     INSERT INTO pac_proxy_chain_settings(proxy_id, direct_enabled, updated_ts)
                     VALUES(%s,%s,%s) AS incoming
                     ON DUPLICATE KEY UPDATE direct_enabled=incoming.direct_enabled, updated_ts=incoming.updated_ts
                     """,
-                    (guard.proxy_id, 1 if enabled else 0, _now()),
+                    (guard.proxy_id, normalized_enabled, _now()),
                 )
+                return PacBooleanMutation(True)
 
     def upsert_profile(
         self,
@@ -510,23 +572,32 @@ class PacProfilesStore:
         direct_domains_text: str,
         direct_dst_nets_text: str,
         **_ignored: object,
-    ) -> tuple[bool, str, int | None]:
+    ) -> PacProfileMutation:
         self.init_db()
 
         nm = (name or "").strip()
         if not nm:
-            return False, "Name is required.", None
+            return PacProfileMutation(False, "Name is required.", None, False)
+        if len(nm) > 255:
+            return PacProfileMutation(
+                False,
+                "Name must be 255 characters or fewer.",
+                None,
+                False,
+            )
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in nm):
+            return PacProfileMutation(False, "Name contains invalid characters.", None, False)
 
         cidr_norm, err = _normalize_client_cidr(client_cidr)
         if cidr_norm is None:
-            return False, err, None
+            return PacProfileMutation(False, err, None, False)
 
         domains: list[str] = []
         for ln in (direct_domains_text or "").splitlines():
             d, derr = _normalize_domain(ln)
             if d is None:
                 if derr:
-                    return False, derr, None
+                    return PacProfileMutation(False, derr, None, False)
                 continue
             if d not in domains:
                 domains.append(d)
@@ -535,11 +606,14 @@ class PacProfilesStore:
         for ln in (direct_dst_nets_text or "").splitlines():
             c, cerr = _normalize_pac_dst_v4_cidr(ln)
             if c is None:
-                return False, cerr, None
+                return PacProfileMutation(False, cerr, None, False)
             if not c:
                 continue
             if c not in nets:
                 nets.append(c)
+
+        domain_key = _ordered_unique(domains)
+        net_key = _ordered_unique(nets)
 
         with self._connect() as conn:
             with guarded_proxy_write(conn, get_proxy_id()) as guard:
@@ -550,14 +624,37 @@ class PacProfilesStore:
                         (proxy_id, nm, cidr_norm or "", _now()),
                     )
                     pid = int(cur.lastrowid)
+                    changed = True
                 else:
                     pid = int(profile_id)
                     existing = conn.execute(
-                        "SELECT 1 FROM pac_profiles WHERE id=%s AND proxy_id=%s LIMIT 1",
+                        "SELECT name, client_cidr FROM pac_profiles WHERE id=%s AND proxy_id=%s LIMIT 1",
                         (pid, proxy_id),
                     ).fetchone()
                     if existing is None:
-                        return False, "Profile not found.", None
+                        return PacProfileMutation(False, "Profile not found.", None, False)
+                    existing_domains = tuple(
+                        str(row["domain"])
+                        for row in conn.execute(
+                            "SELECT domain FROM pac_direct_domains WHERE profile_id=%s ORDER BY domain ASC",
+                            (pid,),
+                        ).fetchall()
+                    )
+                    existing_nets = tuple(
+                        str(row["cidr"])
+                        for row in conn.execute(
+                            "SELECT cidr FROM pac_direct_dst_nets WHERE profile_id=%s ORDER BY cidr ASC",
+                            (pid,),
+                        ).fetchall()
+                    )
+                    changed = not (
+                        str(existing["name"] or "") == nm
+                        and str(existing["client_cidr"] or "") == (cidr_norm or "")
+                        and tuple(sorted(existing_domains)) == tuple(sorted(domain_key))
+                        and tuple(sorted(existing_nets)) == tuple(sorted(net_key))
+                    )
+                    if not changed:
+                        return PacProfileMutation(True, "", pid, False)
                     conn.execute(
                         "UPDATE pac_profiles SET name=%s, client_cidr=%s WHERE id=%s AND proxy_id=%s",
                         (nm, cidr_norm or "", pid, proxy_id),
@@ -584,7 +681,7 @@ class PacProfilesStore:
                         (pid, c),
                     )
 
-        return True, "", pid
+        return PacProfileMutation(True, "", pid, changed)
 
     def delete_profile(self, profile_id: int) -> bool:
         self.init_db()

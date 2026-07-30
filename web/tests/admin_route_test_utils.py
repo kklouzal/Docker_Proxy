@@ -1055,11 +1055,17 @@ class FakePacProfilesStore:
     def add_backup_proxy(
         self, *, proxy_host: str, proxy_port: object | None = None
     ) -> tuple[bool, str, int | None]:
-        from services.pac_profiles_store import _normalize_proxy_host_port
+        from services.pac_profiles_store import (  # type: ignore
+            PacBackupProxyMutation,
+            _normalize_proxy_host_port,
+        )
 
         host, port, err = _normalize_proxy_host_port(proxy_host, proxy_port)
         if host is None or port is None:
-            return False, err, None
+            return PacBackupProxyMutation(False, err, None, False)
+        for item in self.backup_proxies:
+            if item.proxy_host == host and item.proxy_port == port:
+                return PacBackupProxyMutation(True, "", item.id, False)
         bid = self.next_backup_id
         self.next_backup_id += 1
         self.backup_proxies.append(
@@ -1071,7 +1077,7 @@ class FakePacProfilesStore:
                 created_ts=0,
             ),
         )
-        return True, "", bid
+        return PacBackupProxyMutation(True, "", bid, True)
 
     def delete_backup_proxy(self, backup_proxy_id: int) -> bool:
         before = len(self.backup_proxies)
@@ -1104,8 +1110,12 @@ class FakePacProfilesStore:
             item.position = idx
         return True
 
-    def set_direct_enabled(self, enabled: bool) -> None:
+    def set_direct_enabled(self, enabled: bool) -> Any:
+        from services.pac_profiles_store import PacBooleanMutation  # type: ignore
+
+        changed = self.direct_enabled != bool(enabled)
         self.direct_enabled = bool(enabled)
+        return PacBooleanMutation(changed)
 
     def upsert_profile(
         self,
@@ -1116,10 +1126,12 @@ class FakePacProfilesStore:
         direct_domains_text: str,
         direct_dst_nets_text: str,
     ) -> tuple[bool, str, int | None]:
+        from services.pac_profiles_store import PacProfileMutation  # type: ignore
+
         if client_cidr and "/" not in client_cidr:
-            return False, "Invalid CIDR.", None
+            return PacProfileMutation(False, "Invalid CIDR.", None, False)
         if profile_id is not None and profile_id not in self.profiles:
-            return False, "Profile not found.", None
+            return PacProfileMutation(False, "Profile not found.", None, False)
         pid = profile_id or self.next_id
         if profile_id is None:
             self.next_id += 1
@@ -1129,6 +1141,15 @@ class FakePacProfilesStore:
         nets = [
             line.strip() for line in direct_dst_nets_text.splitlines() if line.strip()
         ]
+        existing = self.profiles.get(pid)
+        changed = existing is None or not (
+            existing.name == name
+            and existing.client_cidr == client_cidr
+            and existing.direct_domains == domains
+            and existing.direct_dst_nets == nets
+        )
+        if not changed:
+            return PacProfileMutation(True, "", pid, False)
         self.profiles[pid] = SimpleNamespace(
             id=pid,
             name=name,
@@ -1136,7 +1157,7 @@ class FakePacProfilesStore:
             direct_domains=domains,
             direct_dst_nets=nets,
         )
-        return True, "", pid
+        return PacProfileMutation(True, "", pid, True)
 
     def delete_profile(self, profile_id: int) -> bool:
         return self.profiles.pop(profile_id, None) is not None

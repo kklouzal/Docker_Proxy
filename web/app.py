@@ -2803,6 +2803,13 @@ def _pac_profile_id_from_form() -> tuple[int | None, str]:
     return profile_id, ""
 
 
+def _pac_mutation_changed(result: Any, *, default: bool = True) -> bool:
+    changed = getattr(result, "changed", None)
+    if changed is None:
+        return bool(default)
+    return bool(changed)
+
+
 def _selected_proxy_pac_context() -> tuple[Any, str, str]:
     target = resolve_proxy_pac_target(get_proxy_id())
     pac_url = target.pac_url
@@ -5080,7 +5087,9 @@ def _handle_sslfilter_post(store: Any):
 def _handle_pac_builder_post(store: Any):
     action = _form_action()
 
-    def _redirect_pac_builder_ok():
+    def _redirect_pac_builder_ok(*, changed: bool = True):
+        if not changed:
+            return _redirect_to("pac_builder", ok="1")
         return _redirect_after_pac_refresh(
             "pac_builder",
             pac_profiles_store=store,
@@ -5089,62 +5098,70 @@ def _handle_pac_builder_post(store: Any):
 
     try:
         if action == "add_backup_proxy":
-            ok, err, _ = store.add_backup_proxy(
+            result = store.add_backup_proxy(
                 proxy_host=request.form.get("backup_proxy_host") or "",
                 proxy_port=request.form.get("backup_proxy_port") or "",
             )
+            ok, err, _ = result
             if not ok:
                 return _redirect_to("pac_builder", error="1", msg=err)
-            return _redirect_pac_builder_ok()
+            return _redirect_pac_builder_ok(changed=_pac_mutation_changed(result))
 
         if action == "remove_backup_proxy":
-            changed = store.delete_backup_proxy(
+            result = store.delete_backup_proxy(
                 _bounded_int(request.form.get("backup_proxy_id"), default=0)
             )
+            changed = _pac_mutation_changed(result, default=bool(result))
             if not changed:
                 return _redirect_to(
                     "pac_builder", error="1", msg="Backup proxy not found."
                 )
-            return _redirect_pac_builder_ok()
+            return _redirect_pac_builder_ok(changed=changed)
 
         if action == "move_backup_proxy":
-            changed = store.move_backup_proxy(
+            result = store.move_backup_proxy(
                 _bounded_int(request.form.get("backup_proxy_id"), default=0),
                 request.form.get("direction") or "",
             )
+            changed = _pac_mutation_changed(result, default=bool(result))
             if not changed:
                 return _redirect_to(
                     "pac_builder", error="1", msg="Backup proxy not found."
                 )
-            return _redirect_pac_builder_ok()
+            return _redirect_pac_builder_ok(changed=changed)
 
         if action == "toggle_direct":
-            store.set_direct_enabled(request.form.get("direct_enabled") == "on")
-            return _redirect_pac_builder_ok()
+            result = store.set_direct_enabled(request.form.get("direct_enabled") == "on")
+            return _redirect_pac_builder_ok(
+                changed=_pac_mutation_changed(result, default=True)
+            )
 
         if action == "create":
-            ok, err, _ = store.upsert_profile(**_pac_profile_form_data(profile_id=None))
+            result = store.upsert_profile(**_pac_profile_form_data(profile_id=None))
+            ok, err, _ = result
             if not ok:
                 return _redirect_to("pac_builder", error="1", msg=err)
-            return _redirect_pac_builder_ok()
+            return _redirect_pac_builder_ok(changed=_pac_mutation_changed(result))
 
         if action == "update":
             pid, id_err = _pac_profile_id_from_form()
             if pid is None:
                 return _redirect_to("pac_builder", error="1", msg=id_err)
-            ok, err, _ = store.upsert_profile(**_pac_profile_form_data(profile_id=pid))
+            result = store.upsert_profile(**_pac_profile_form_data(profile_id=pid))
+            ok, err, _ = result
             if not ok:
                 return _redirect_to("pac_builder", error="1", msg=err)
-            return _redirect_pac_builder_ok()
+            return _redirect_pac_builder_ok(changed=_pac_mutation_changed(result))
 
         if action == "delete":
             pid, id_err = _pac_profile_id_from_form()
             if pid is None:
                 return _redirect_to("pac_builder", error="1", msg=id_err)
-            changed = store.delete_profile(pid)
+            result = store.delete_profile(pid)
+            changed = _pac_mutation_changed(result, default=bool(result))
             if not changed:
                 return _redirect_to("pac_builder", error="1", msg="Profile not found.")
-            return _redirect_pac_builder_ok()
+            return _redirect_pac_builder_ok(changed=changed)
     except Exception as e:
         return _redirect_to("pac_builder", error="1", msg=public_error_message(e))
 

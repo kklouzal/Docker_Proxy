@@ -316,6 +316,76 @@ def test_pac_builder_backup_proxy_chain_actions(monkeypatch, tmp_path) -> None:
     assert store.direct_enabled is False
 
 
+def test_pac_builder_noop_equivalent_actions_do_not_queue_runtime_refresh(
+    monkeypatch, tmp_path
+) -> None:
+    store = FakePacProfilesStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, pac_profiles_store=store)
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={
+            "action": "create",
+            "name": "Office LAN",
+            "client_cidr": "192.168.10.0/24",
+            "direct_domains": "internal.example",
+        },
+    ):
+        created = loaded.module._handle_pac_builder_post(store)
+    assert _params(created.location)["ok"] == ["1"]
+    assert len(loaded.operation_ledger.operations) == 1
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={
+            "action": "update",
+            "profile_id": "1",
+            "name": "Office LAN",
+            "client_cidr": "192.168.10.0/24",
+            "direct_domains": "internal.example",
+        },
+    ):
+        unchanged_profile = loaded.module._handle_pac_builder_post(store)
+    assert _params(unchanged_profile.location)["ok"] == ["1"]
+    assert len(loaded.operation_ledger.operations) == 1
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={
+            "action": "add_backup_proxy",
+            "backup_proxy_host": "backup-a.example",
+            "backup_proxy_port": "3128",
+        },
+    ):
+        added_backup = loaded.module._handle_pac_builder_post(store)
+    assert _params(added_backup.location)["ok"] == ["1"]
+    assert len(loaded.operation_ledger.operations) == 2
+
+    with loaded.module.app.test_request_context(
+        "/pac",
+        method="POST",
+        data={
+            "action": "add_backup_proxy",
+            "backup_proxy_host": "http://Backup-A.Example:3128",
+            "backup_proxy_port": "",
+        },
+    ):
+        duplicate_backup = loaded.module._handle_pac_builder_post(store)
+    assert _params(duplicate_backup.location)["ok"] == ["1"]
+    assert len(store.backup_proxies) == 1
+    assert len(loaded.operation_ledger.operations) == 2
+
+    with loaded.module.app.test_request_context(
+        "/pac", method="POST", data={"action": "toggle_direct", "direct_enabled": "on"}
+    ):
+        unchanged_direct = loaded.module._handle_pac_builder_post(store)
+    assert _params(unchanged_direct.location)["ok"] == ["1"]
+    assert len(loaded.operation_ledger.operations) == 2
+
+
 def test_pac_builder_update_and_delete_queue_post_mutation_sha(
     monkeypatch, tmp_path
 ) -> None:

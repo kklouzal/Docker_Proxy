@@ -814,6 +814,28 @@ def test_rendered_pac_preserves_exact_and_wildcard_direct_domain_semantics() -> 
     assert 'if dnsDomainIs(host, ".example.com") return \'DIRECT\';' not in rendered
 
 
+def test_rendered_pac_is_deterministic_for_equivalent_direct_rule_ordering() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    first = pac_renderer._render_pac(
+        "PROXY proxy.example:3128; DIRECT",
+        proxy_host="proxy.example",
+        direct_domains=["*.Media.Example", "example.com", "*.media.example"],
+        direct_dst_nets=["10.20.1.7/16", "192.0.2.4/24", "10.20.0.0/16"],
+        include_private=False,
+    )
+    second = pac_renderer._render_pac(
+        "PROXY proxy.example:3128; DIRECT",
+        proxy_host="proxy.example",
+        direct_domains=["example.com", "*.media.example"],
+        direct_dst_nets=["192.0.2.0/24", "10.20.0.0/16"],
+        include_private=False,
+    )
+
+    assert first == second
+
+
 def test_rendered_pac_normalizes_stale_direct_domain_inputs() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
@@ -851,15 +873,10 @@ def test_rendered_pac_strips_root_dot_before_host_matching() -> None:
         include_private=False,
     )
 
-    host_normalizer = (
-        "host = (host || '').toLowerCase().replace(/\\.+$/, '')"
-        ".replace(/^\\[/, '').replace(/\\]$/, '');"
-    )
-    proxy_host_normalizer = (
-        "var normalizedProxyHost = proxyHost.replace(/^\\[/, '').replace(/\\]$/, '')"
-        ".toLowerCase().replace(/\\.+$/, '');"
-    )
+    host_normalizer = "host = normalizePacHost(host);"
+    proxy_host_normalizer = "var normalizedProxyHost = normalizePacHost(proxyHost);"
 
+    assert "function normalizePacHost(value)" in rendered
     assert host_normalizer in rendered
     assert proxy_host_normalizer in rendered
     assert rendered.index(host_normalizer) < rendered.index("host === 'localhost'")
@@ -881,16 +898,36 @@ def test_rendered_pac_strips_ipv6_url_brackets_before_local_and_proxy_matching()
         include_private=False,
     )
 
-    host_normalizer = (
-        "host = (host || '').toLowerCase().replace(/\\.+$/, '')"
-        ".replace(/^\\[/, '').replace(/\\]$/, '');"
-    )
+    host_normalizer = "host = normalizePacHost(host);"
 
+    assert "function normalizePacHost(value)" in rendered
     assert host_normalizer in rendered
     assert rendered.index(host_normalizer) < rendered.index("host === '::1'")
     assert rendered.index(host_normalizer) < rendered.index(
         "host === normalizedProxyHost"
     )
+
+
+def test_rendered_pac_normalizes_host_brackets_ports_and_root_dots() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_pac(
+        "PROXY proxy.example:3128; DIRECT",
+        proxy_host="[2001:db8::10]:3128",
+        direct_domains=["example.com", "*.media.example"],
+        direct_dst_nets=["10.20.0.0/16"],
+        include_private=True,
+    )
+
+    assert _evaluate_pac(rendered, "Example.COM.:443") == "DIRECT"
+    assert _evaluate_pac(rendered, "video.media.example.:443") == "DIRECT"
+    assert _evaluate_pac(rendered, "badexample.com:443") == (
+        "PROXY proxy.example:3128; DIRECT"
+    )
+    assert _evaluate_pac(rendered, "10.20.3.4:443") == "DIRECT"
+    assert _evaluate_pac(rendered, "[fe80::1]:443") == "DIRECT"
+    assert _evaluate_pac(rendered, "[2001:db8::10]:3128") == "DIRECT"
 
 
 def test_pac_target_advertises_only_explicit_proxy_listener() -> None:

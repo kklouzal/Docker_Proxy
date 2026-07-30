@@ -492,12 +492,23 @@ def _render_pac(
     lines.extend(
         (
             "function FindProxyForURL(url, host) {",
-            (
-                "  host = (host || '').toLowerCase().replace(/\\.+$/, '')"
-                ".replace(/^\\[/, '').replace(/\\]$/, '');"
-            ),
+            "  function normalizePacHost(value) {",
+            "    var normalized = (value || '').toLowerCase().replace(/^\\s+|\\s+$/g, '');",
+            "    if (normalized.charAt(0) === '[') {",
+            "      var bracketEnd = normalized.indexOf(']');",
+            "      if (bracketEnd >= 0) normalized = normalized.substring(1, bracketEnd);",
+            "    } else {",
+            "      var colon = normalized.lastIndexOf(':');",
+            "      if (colon >= 0 && normalized.indexOf(':') === colon) {",
+            "        var maybePort = normalized.substring(colon + 1);",
+            "        if (/^\\d+$/.test(maybePort)) normalized = normalized.substring(0, colon);",
+            "      }",
+            "    }",
+            "    return normalized.replace(/\\.+$/, '');",
+            "  }",
+            "  host = normalizePacHost(host);",
             f"  var proxyHost = {json.dumps(str(proxy_host or PAC_HOST_PLACEHOLDER))};",
-            "  var normalizedProxyHost = proxyHost.replace(/^\\[/, '').replace(/\\]$/, '').toLowerCase().replace(/\\.+$/, '');",
+            "  var normalizedProxyHost = normalizePacHost(proxyHost);",
             "  var isIpv6Literal = host.indexOf(':') >= 0;",
             "  var ipv6FirstHextet = isIpv6Literal ? host.split(':', 1)[0] : '';",
             "  function isIpv4Address(value) {",
@@ -535,12 +546,13 @@ def _render_pac(
         ),
     )
 
-    seen_domains: set[str] = set()
+    normalized_domains: set[str] = set()
     for domain in direct_domains:
         d = _normalize_domain_rule(domain)
-        if not d or d in seen_domains:
+        if not d:
             continue
-        seen_domains.add(d)
+        normalized_domains.add(d)
+    for d in sorted(normalized_domains):
         match_expression = _domain_match_expression(d)
         if match_expression:
             lines.append(f"  if ({match_expression}) return 'DIRECT';")
@@ -556,15 +568,18 @@ def _render_pac(
             ),
         )
 
-    seen_dst_nets: set[str] = set()
+    normalized_dst_nets: set[str] = set()
     for cidr in direct_dst_nets:
         canonical_cidr, _err = _normalize_pac_dst_v4_cidr(cidr)
         if not canonical_cidr:
             continue
-        if canonical_cidr in seen_dst_nets:
-            continue
+        normalized_dst_nets.add(canonical_cidr)
+
+    for canonical_cidr in sorted(
+        normalized_dst_nets,
+        key=lambda value: ipaddress.ip_network(value, strict=False),
+    ):
         net = ipaddress.ip_network(canonical_cidr, strict=False)
-        seen_dst_nets.add(canonical_cidr)
         lines.append(
             f"  if (hasIpv4 && isInNet(ip, '{net.network_address}', '{_cidr_to_mask(canonical_cidr)}')) return 'DIRECT';",
         )
