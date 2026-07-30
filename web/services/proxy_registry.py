@@ -24,6 +24,7 @@ from services.proxy_lifecycle import (
     ProxyLifecycleIncompleteError,
     ProxyLifecycleRunResult,
     ensure_lifecycle_schema,
+    prepare_proxy_lifecycle,
     proxy_scoped_tables_with_rows,
     remove_proxy_scoped_rows,
     rename_proxy_scoped_rows,
@@ -810,6 +811,9 @@ class ProxyRegistry:
                                 mysql_schema_lock_timeout_seconds(),
                             ),
                         )
+                    prepare_proxy_lifecycle(conn, action="rename")
+                    conn.commit()
+
                     old_row = conn.execute(
                         f"SELECT {self._SELECT_COLUMNS} FROM proxy_instances WHERE proxy_id=%s LIMIT 1 FOR UPDATE",
                         (old_key,),
@@ -969,7 +973,6 @@ class ProxyRegistry:
                         """,
                         (old_key, new_key, f"Rename in progress to {new_key}.", now, now),
                     )
-                    conn.commit()
                     self._clear_lifecycle_write_cache(old_key, new_key)
 
                     lifecycle_result = rename_proxy_scoped_rows(
@@ -990,7 +993,6 @@ class ProxyRegistry:
                                 old_key,
                             ),
                         )
-                        conn.commit()
                         msg = f"Proxy rename for {old_key!r} paused after bounded chunk limit; retry to resume."
                         raise ProxyLifecycleIncompleteError(msg, lifecycle_result)
 
@@ -1059,6 +1061,9 @@ class ProxyRegistry:
                     self._lifecycle_lock_name(proxy_key),
                     mysql_schema_lock_timeout_seconds(),
                 ):
+                    prepare_proxy_lifecycle(conn, action="remove")
+                    conn.commit()
+
                     rows = conn.execute(
                         "SELECT proxy_id FROM proxy_instances ORDER BY proxy_id FOR UPDATE",
                     ).fetchall()
@@ -1103,7 +1108,6 @@ class ProxyRegistry:
                         """,
                         (proxy_key, "Proxy removal in progress.", now_ts, now_ts),
                     )
-                    conn.commit()
                     self._clear_lifecycle_write_cache(proxy_key)
 
                     lifecycle_result = remove_proxy_scoped_rows(conn, proxy_id=proxy_key)
@@ -1121,7 +1125,6 @@ class ProxyRegistry:
                                 proxy_key,
                             ),
                         )
-                        conn.commit()
                         msg = f"Proxy removal for {proxy_key!r} paused after bounded chunk limit; retry to resume."
                         raise ProxyLifecycleIncompleteError(msg, lifecycle_result)
 

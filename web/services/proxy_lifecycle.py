@@ -277,6 +277,39 @@ def lifecycle_inventory(conn: Any) -> tuple[ProxyLifecycleTable, ...]:
     return tuple(inventory)
 
 
+def prepare_proxy_lifecycle(conn: Any, *, action: LifecycleAction) -> None:
+    """Prepare lifecycle indexes before the caller opens a data transaction.
+
+    MySQL DDL performs implicit commits, so registry rename/remove callers run
+    index preparation before writing in-progress/tombstone rows.  The bounded
+    mutation helpers still call ``ensure_proxy_lifecycle_index`` defensively,
+    but this preflight keeps normal discovered-table index creation outside the
+    rollback-sensitive data transaction.
+    """
+    for table in lifecycle_inventory(conn):
+        if action == "rename":
+            if not table.rename or table.is_indirect_child:
+                continue
+            ensure_proxy_lifecycle_index(conn, table)
+            continue
+
+        if not table.remove:
+            continue
+        if table.is_indirect_child:
+            if not _table_exists(conn, table.owner_table):
+                continue
+            ensure_proxy_lifecycle_index(conn, table)
+            ensure_proxy_lifecycle_index(
+                conn,
+                ProxyLifecycleTable(
+                    table.owner_table,
+                    order_columns=("proxy_id", table.owner_pk),
+                ),
+            )
+            continue
+        ensure_proxy_lifecycle_index(conn, table)
+
+
 def _order_sql(conn: Any, table: ProxyLifecycleTable) -> str:
     cols = _columns(conn, table.table)
     usable = [column for column in table.order_columns if column in cols]
@@ -317,7 +350,6 @@ def _bounded_update_proxy_id(
         changed = max(0, int(getattr(result, "rowcount", 0) or 0))
         total += changed
         iterations += 1
-        conn.commit()
         if changed < limit:
             break
     return ProxyLifecycleStepResult(
@@ -378,7 +410,6 @@ def _bounded_delete_proxy_id(
             deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
             total += deleted
             iterations += 1
-            conn.commit()
             if deleted < limit:
                 break
         return ProxyLifecycleStepResult(
@@ -402,7 +433,6 @@ def _bounded_delete_proxy_id(
         deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
         total += deleted
         iterations += 1
-        conn.commit()
         if deleted < limit:
             break
     return ProxyLifecycleStepResult(
