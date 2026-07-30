@@ -9,6 +9,7 @@ import pytest
 from .admin_route_test_utils import (
     FakeAdblockStore,
     FakePacProfilesStore,
+    FakeRegistry,
     FakeSslfilterStore,
     FakeWebfilterStore,
     load_admin_app,
@@ -363,6 +364,54 @@ def test_pac_builder_update_and_delete_queue_post_mutation_sha(
     assert delete_sha != update_sha
     assert store.profiles == {}
     assert len(loaded.operation_ledger.operations) == 3
+
+
+def test_pac_builder_queues_sha_for_selected_proxy_context(monkeypatch, tmp_path) -> None:
+    store = FakePacProfilesStore()
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        registry=FakeRegistry(["default", "edge-b"]),
+        pac_profiles_store=store,
+    )
+
+    with loaded.module.app.test_request_context(
+        "/pac?proxy_id=edge-b",
+        method="POST",
+        data={
+            "action": "create",
+            "name": "Selected Edge",
+            "client_cidr": "10.8.0.0/24",
+            "direct_domains": "selected.example",
+        },
+    ):
+        active_proxy_id, _active_proxy, _proxies = (
+            loaded.module._resolve_selected_proxy_context()
+        )
+        token = loaded.module.set_proxy_id(active_proxy_id)
+        try:
+            created = loaded.module._handle_pac_builder_post(store)
+        finally:
+            loaded.module.reset_proxy_id(token)
+
+    assert _params(created.location)["ok"] == ["1"]
+    desired_sha, desired_error = loaded.module._desired_pac_state_sha_for_proxy(
+        "edge-b",
+        pac_profiles_store=store,
+    )
+    default_sha, default_error = loaded.module._desired_pac_state_sha_for_proxy(
+        "default",
+        pac_profiles_store=store,
+    )
+    assert desired_error == ""
+    assert default_error == ""
+    assert desired_sha != default_sha
+    operation = loaded.operation_ledger.operations[-1]
+    assert operation.proxy_id == "edge-b"
+    assert operation.operation_type == "pac_refresh"
+    assert operation.target_kind == "pac_state"
+    assert operation.target_ref == desired_sha
+    assert desired_sha in operation.detail
 
 
 def test_pac_builder_noop_ids_do_not_queue_runtime_refresh(

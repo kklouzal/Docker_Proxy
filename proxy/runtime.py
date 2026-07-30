@@ -3187,16 +3187,41 @@ class ProxyRuntime:
                 ),
             }
 
+        verified_sha = self._current_pac_state_sha()
+        verified_ok, verified_detail = self._pac_materialization_integrity(
+            desired,
+            current_sha=verified_sha,
+        )
+        if not verified_ok:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": True,
+                "state_sha256": desired.state_sha256,
+                "previous_state_sha256": current_sha,
+                "current_state_sha256": verified_sha,
+                "detail": _state_sync_failure_detail(
+                    "PAC",
+                    (
+                        "PAC state materialized locally, but current materialization "
+                        f"evidence could not verify convergence: {verified_detail}"
+                    ),
+                    desired_sha=desired.state_sha256,
+                    current_sha=verified_sha,
+                ),
+            }
+
         return {
             "ok": True,
             "proxy_id": self.proxy_id,
             "changed": True,
             "state_sha256": desired.state_sha256,
             "previous_state_sha256": current_sha,
+            "current_state_sha256": verified_sha,
             "detail": "\n".join(
                 part
                 for part in (
-                    "PAC state materialized locally.",
+                    "PAC state materialized locally and verified current.",
                     (
                         "Reapplied PAC state because local materialization was stale: "
                         f"{integrity_detail.strip()}"
@@ -4345,9 +4370,7 @@ class ProxyRuntime:
         pac_evidence = {
             "state_sha256": str(pac_result.get("state_sha256") or ""),
             "current_state_sha256": str(
-                pac_result.get("current_state_sha256")
-                or pac_result.get("state_sha256")
-                or "",
+                pac_result.get("current_state_sha256") or "",
             ),
         }
         if str(pac_result.get("detail") or "").strip():

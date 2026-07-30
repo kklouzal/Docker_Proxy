@@ -290,6 +290,160 @@ def test_sync_pac_state_force_does_not_churn_intact_materialization(
     assert result["state_sha256"] == "same-pac-sha"
 
 
+def test_sync_pac_state_reports_verified_current_sha_after_materialize(
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    from services import pac_renderer  # type: ignore
+
+    state = pac_renderer.ProxyPacState(
+        proxy_id="live",
+        state_sha256="new-pac-sha",
+        files=(
+            pac_renderer.RenderedPacFile(
+                relative_path="fallback.pac",
+                content="PAC content\n",
+            ),
+            pac_renderer.RenderedPacFile(
+                relative_path=pac_renderer.PAC_STATE_SHA_FILENAME,
+                content="new-pac-sha\n",
+            ),
+        ),
+    )
+    pac_dir = tmp_path / "pac"
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_pac_sha_reader=None)
+    runtime.pac_render_dir = str(pac_dir)
+    runtime.pac_state_builder = lambda _proxy_id: state
+
+    result = runtime.sync_pac_state()
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["state_sha256"] == "new-pac-sha"
+    assert result["current_state_sha256"] == "new-pac-sha"
+    assert "verified current" in result["detail"]
+
+
+def test_sync_pac_state_fails_when_post_materialize_evidence_is_absent(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services import pac_renderer  # type: ignore
+
+    import proxy.runtime as runtime_module  # type: ignore
+
+    state = pac_renderer.ProxyPacState(
+        proxy_id="live",
+        state_sha256="new-pac-sha",
+        files=(
+            pac_renderer.RenderedPacFile(
+                relative_path="fallback.pac",
+                content="PAC content\n",
+            ),
+            pac_renderer.RenderedPacFile(
+                relative_path=pac_renderer.PAC_STATE_SHA_FILENAME,
+                content="new-pac-sha\n",
+            ),
+        ),
+    )
+    pac_dir = tmp_path / "pac"
+
+    def stale_materialize(target_dir, *, state):
+        pathlib_target = Path(target_dir)
+        pathlib_target.mkdir(parents=True, exist_ok=True)
+        (pathlib_target / pac_renderer.PAC_STATE_SHA_FILENAME).write_text(
+            "old-pac-sha\n",
+            encoding="utf-8",
+        )
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_pac_sha_reader=None)
+    runtime.pac_render_dir = str(pac_dir)
+    runtime.pac_state_builder = lambda _proxy_id: state
+    monkeypatch.setattr(runtime_module, "materialize_proxy_pac_state", stale_materialize)
+
+    result = runtime.sync_pac_state()
+
+    assert result["ok"] is False
+    assert result["state_sha256"] == "new-pac-sha"
+    assert result["current_state_sha256"] == "old-pac-sha"
+    assert "could not verify convergence" in result["detail"]
+
+
+def test_sync_from_db_pac_evidence_does_not_invent_current_sha(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False, operations=None: {
+        "ok": True,
+        "changed": False,
+        "detail": "",
+    }
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+        "detail": "",
+        "policy_sha256": POLICY_SHA_A,
+        "current_policy_sha": POLICY_SHA_A,
+    }
+    runtime.sync_adblock_state = lambda force=False, operations=None: {
+        "ok": True,
+        "changed": False,
+        "detail": "",
+    }
+    runtime.sync_pac_state = lambda force=False: {
+        "ok": True,
+        "changed": True,
+        "detail": "PAC reported no current evidence.",
+        "state_sha256": PAC_SHA_A,
+    }
+    runtime._current_config_sha = lambda: "config-sha"
+    runtime._current_policy_sha = lambda: POLICY_SHA_A
+    runtime._current_adblock_artifact_sha = lambda: ""
+    runtime._current_pac_state_sha = lambda: ""
+    runtime._current_adblock_enabled = lambda: False
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime._capture_recovery_bundle_after_sync = lambda _result: None
+    runtime.controller = SimpleNamespace()
+    runtime.registry = SimpleNamespace(mark_apply_result=lambda *args, **kwargs: None)
+    runtime.revisions = SimpleNamespace(get_active_revision_metadata=lambda _proxy_id: None)
+
+    result = runtime._sync_from_db_unlocked(
+        operations=[
+            SimpleNamespace(
+                operation_type="pac_refresh",
+                target_kind="pac_state",
+                target_ref=PAC_SHA_A,
+                force=True,
+            ),
+        ],
+    )
+
+    assert result["ok"] is True
+    assert result["state_sha256"] == PAC_SHA_A
+    assert result["current_state_sha256"] == ""
+    status, detail = runtime_module._operation_completion_status(
+        SimpleNamespace(
+            operation_type="pac_refresh",
+            target_kind="pac_state",
+            target_ref=PAC_SHA_A,
+        ),
+        default_status="applied",
+        detail=result["detail"],
+        result=result,
+    )
+    assert status == "failed"
+    assert "current runtime evidence" in detail
+
+
 def test_sync_pac_state_reapplies_when_marker_matches_but_file_missing(
     tmp_path,
 ) -> None:

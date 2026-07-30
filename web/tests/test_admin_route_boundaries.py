@@ -4028,6 +4028,39 @@ def test_pac_runtime_state_classifies_selected_proxy_materialization(
     assert state["current_pac_sha"] == current_sha
 
 
+def test_pac_runtime_state_selected_proxy_requires_runtime_current_sha(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=RuntimeEvidenceProxyClient(
+            {"default": {"desired_pac_sha": PAC_SHA, "current_pac_sha": ""}}
+        ),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_pac_state_sha_for_proxy",
+        lambda _proxy_id: (PAC_SHA, ""),
+    )
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="pac_refresh",
+        subject="PAC refresh",
+        summary="PAC queued.",
+        target_kind="pac_state",
+        target_ref=PAC_SHA,
+    )
+    operation.status = "applied"
+
+    state = loaded.module._pac_runtime_state("default")
+
+    assert state["state"] == "unknown"
+    assert state["current_pac_sha"] == ""
+    assert state["operation_matches_desired"] is True
+    assert "did not report enough PAC SHA evidence" in state["detail"]
+
+
 def test_pac_runtime_state_no_desired_unavailable_and_stale_operation(
     monkeypatch, tmp_path
 ) -> None:
