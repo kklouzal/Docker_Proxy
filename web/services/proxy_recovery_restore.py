@@ -9,13 +9,13 @@ from typing import Any, Final, Literal
 
 from services import proxy_recovery
 from services.db import connect
-from services.observability_queries import _normalize_report_schedule_recipients
 from services.proxy_recovery_db import recovery_export_query_plans
 from services.proxy_write_guard import (
     ProxyLifecycleWriteError,
     proxy_lifecycle_lock_name,
     resolve_proxy_write_id,
 )
+from services.report_schedule_recipients import normalize_report_schedule_recipients
 from services.schema_lifecycle import read_control_plane_identity
 
 
@@ -601,7 +601,7 @@ def _normalize_column_value(
 def _normalize_observability_report_schedule_text(column: str, value: str) -> str:
     if column == "recipients":
         try:
-            return _normalize_report_schedule_recipients(value)
+            return normalize_report_schedule_recipients(value)
         except ValueError as exc:
             raise ProxyRecoveryRestoreError(
                 "observability_report_schedules recipients are invalid",

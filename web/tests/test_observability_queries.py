@@ -1787,6 +1787,14 @@ def test_save_report_schedule_normalizes_and_deduplicates_recipients(monkeypatch
     _add_web_to_path()
 
     from services import observability_queries  # type: ignore
+    from services.report_schedule_recipients import (  # type: ignore
+        normalize_report_schedule_recipients,
+    )
+
+    assert (
+        observability_queries.normalize_report_schedule_recipients
+        is normalize_report_schedule_recipients
+    )
 
     class InsertResult:
         lastrowid = 31

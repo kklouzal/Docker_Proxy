@@ -395,6 +395,28 @@ def test_restore_rejects_invalid_report_schedule_cadence_format_and_window() -> 
             restore.build_restore_plan(bundle, "edge-01", now_ts=NOW)
 
 
+def test_restore_report_schedule_uses_shared_recipient_normalization_contract() -> None:
+    from services.report_schedule_recipients import normalize_report_schedule_recipients
+
+    assert restore.normalize_report_schedule_recipients is normalize_report_schedule_recipients
+
+    row = {
+        **_base_recovery_row("observability_report_schedules"),
+        "recipients": " Ops@example.com; alerts@example.com ops@example.com ",
+    }
+    bundle = _bundle_with_table_rows("observability_report_schedules", (row,))
+
+    plan = restore.build_restore_plan(bundle, "edge-01", now_ts=NOW)
+    schedule_table = next(
+        table
+        for table in plan.tables
+        if table.table_name == "observability_report_schedules"
+    )
+    recipients_index = schedule_table.columns.index("recipients")
+
+    assert schedule_table.rows[0][recipients_index] == "Ops@example.com, alerts@example.com"
+
+
 def test_restore_rejects_report_schedule_with_invalid_or_sensitive_recipient() -> None:
     row = {
         **_base_recovery_row("observability_report_schedules"),
