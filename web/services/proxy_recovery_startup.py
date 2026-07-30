@@ -73,7 +73,7 @@ def run_startup_recovery(
     ensure_schema=ensure_startup_schema_if_configured,
     connect_factory=connect,
     recovery_dir: str | Path | None = None,
-    max_bundle_bytes: int = proxy_recovery.DEFAULT_MAX_BUNDLE_BYTES,
+    max_bundle_bytes: int | None = None,
 ) -> StartupRecoveryResult:
     """Adopt a proxy-local recovery bundle before normal startup mutation.
 
@@ -126,10 +126,13 @@ def run_startup_recovery(
     _register_minimal_proxy_identity(registry, normalized_proxy_id)
 
     try:
+        resolved_max_bundle_bytes = proxy_recovery.resolve_max_bundle_bytes(
+            max_bundle_bytes,
+        )
         bundle = proxy_recovery.read_recovery_bundle(
             normalized_proxy_id,
             recovery_dir=recovery_dir,
-            max_bundle_bytes=max_bundle_bytes,
+            max_bundle_bytes=resolved_max_bundle_bytes,
         )
     except Exception as exc:
         raise ProxyRecoveryStartupError(
@@ -189,7 +192,7 @@ def capture_recovery_bundle_after_authoritative_state(
     changed: bool = False,
     connect_factory=connect,
     recovery_dir: str | Path | None = None,
-    max_bundle_bytes: int = proxy_recovery.DEFAULT_MAX_BUNDLE_BYTES,
+    max_bundle_bytes: int | None = None,
     now_mono: float | None = None,
     last_capture_mono: float = 0.0,
     min_interval_seconds: float = _RECOVERY_CAPTURE_MIN_INTERVAL_SECONDS,
@@ -211,11 +214,14 @@ def capture_recovery_bundle_after_authoritative_state(
             detail="recovery capture skipped by interval gate",
         )
     try:
+        resolved_max_bundle_bytes = proxy_recovery.resolve_max_bundle_bytes(
+            max_bundle_bytes,
+        )
         path = capture_and_write_recovery_bundle(
             connect_factory,
             normalized_proxy_id,
             recovery_dir=recovery_dir,
-            max_bundle_bytes=max_bundle_bytes,
+            max_bundle_bytes=resolved_max_bundle_bytes,
         )
     except Exception as exc:
         detail = "required recovery capture failed" if required else "recovery capture failed"

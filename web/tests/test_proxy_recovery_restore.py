@@ -228,6 +228,38 @@ def _bundle(*, proxy_id: str = "edge-01", source_id: str = SOURCE_ID, overrides:
     )
 
 
+def test_read_validate_and_restore_uses_operator_max_bundle_bytes(monkeypatch) -> None:
+    configured = 2 * 1024 * 1024
+    calls: list[int] = []
+    monkeypatch.setenv(
+        proxy_recovery.RECOVERY_MAX_BUNDLE_BYTES_ENV,
+        str(configured),
+    )
+
+    def read_bundle(*_args, **kwargs):
+        calls.append(int(kwargs["max_bundle_bytes"]))
+        return _bundle()
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(proxy_recovery, "read_recovery_bundle", read_bundle)
+    monkeypatch.setattr(
+        restore,
+        "restore_recovery_bundle",
+        lambda *_args, **_kwargs: "restored",
+    )
+
+    result = restore.read_validate_and_restore("edge-01", connect_factory=_Conn)
+
+    assert result == "restored"
+    assert calls == [configured]
+
+
 def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
     sha = "a" * 64
     cert_sha = "b" * 64

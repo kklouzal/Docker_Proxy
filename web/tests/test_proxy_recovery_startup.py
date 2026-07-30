@@ -123,6 +123,45 @@ def test_successful_or_explicit_skip_statuses_continue(
     assert result.status == status
 
 
+def test_startup_uses_operator_max_bundle_bytes_for_bundle_read(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    configured = 2 * 1024 * 1024
+    _touch_bundle_and_key(tmp_path)
+    monkeypatch.setenv(
+        startup.proxy_recovery.RECOVERY_MAX_BUNDLE_BYTES_ENV,
+        str(configured),
+    )
+
+    def read_bundle(*_args, **kwargs):
+        calls.append(f"read_max:{kwargs['max_bundle_bytes']}")
+        return object()
+
+    monkeypatch.setattr(startup.proxy_recovery, "read_recovery_bundle", read_bundle)
+    monkeypatch.setattr(
+        startup,
+        "restore_recovery_bundle",
+        lambda *_a, **_k: SimpleNamespace(
+            status="same_control_plane",
+            reason="",
+            restored_rows=0,
+        ),
+    )
+
+    result = startup.run_startup_recovery(
+        proxy_id="edge-01",
+        registry=_Registry(calls),
+        ensure_schema=lambda: calls.append("schema"),
+        connect_factory=lambda: _Conn(calls),
+        recovery_dir=tmp_path,
+    )
+
+    assert result.status == "same_control_plane"
+    assert f"read_max:{configured}" in calls
+
+
 def test_not_eligible_fails_closed_after_restore_decision(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     _touch_bundle_and_key(tmp_path)
@@ -201,9 +240,14 @@ def test_tampered_bundle_fails_closed_without_secret_logging(monkeypatch, tmp_pa
 
 def test_optional_capture_interval_gate_requires_caller_state(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
+    configured = 2 * 1024 * 1024
+    monkeypatch.setenv(
+        startup.proxy_recovery.RECOVERY_MAX_BUNDLE_BYTES_ENV,
+        str(configured),
+    )
 
-    def capture(*_args, **_kwargs):
-        calls.append("capture")
+    def capture(*_args, **kwargs):
+        calls.append(f"capture:{kwargs['max_bundle_bytes']}")
         return tmp_path / "edge-01.bundle.json"
 
     monkeypatch.setattr(startup, "capture_and_write_recovery_bundle", capture)
@@ -228,7 +272,7 @@ def test_optional_capture_interval_gate_requires_caller_state(monkeypatch, tmp_p
     )
     assert changed.ok is True
     assert changed.skipped is False
-    assert calls == ["capture"]
+    assert calls == [f"capture:{configured}"]
 
 
 def test_capture_failure_is_fatal_only_when_required(monkeypatch, tmp_path: Path) -> None:
@@ -265,5 +309,6 @@ def test_compose_recovery_dir_lives_on_proxy_durable_volume_only() -> None:
 
     assert "proxy_data:/var/lib/squid-flask-proxy" in text
     assert "DEFAULT_RECOVERY_DIR" not in text
+    assert "PROXY_RECOVERY_MAX_BUNDLE_BYTES" in text
     admin_section = text.split("  proxy:", 1)[0]
     assert "/var/lib/squid-flask-proxy" not in admin_section

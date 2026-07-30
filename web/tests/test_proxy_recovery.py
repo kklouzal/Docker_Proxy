@@ -47,6 +47,40 @@ def _rows() -> dict[str, list[dict[str, object]]]:
     }
 
 
+def test_max_bundle_bytes_defaults_and_operator_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(recovery.RECOVERY_MAX_BUNDLE_BYTES_ENV, raising=False)
+
+    assert recovery.DEFAULT_MAX_BUNDLE_BYTES == 128 * 1024 * 1024
+    assert recovery.DEFAULT_MAX_BUNDLE_BYTES > 88_659_553
+    assert recovery.resolve_max_bundle_bytes() == recovery.DEFAULT_MAX_BUNDLE_BYTES
+
+    configured = 96 * 1024 * 1024
+    monkeypatch.setenv(recovery.RECOVERY_MAX_BUNDLE_BYTES_ENV, str(configured))
+
+    assert recovery.recovery_bundle_size_config_from_env().max_bundle_bytes == configured
+    assert recovery.resolve_max_bundle_bytes() == configured
+    assert recovery.resolve_max_bundle_bytes(2 * 1024 * 1024) == 2 * 1024 * 1024
+    assert recovery.resolve_max_bundle_bytes(64) == 64
+
+    monkeypatch.setenv(recovery.RECOVERY_MAX_BUNDLE_BYTES_ENV, "")
+    assert recovery.resolve_max_bundle_bytes() == recovery.DEFAULT_MAX_BUNDLE_BYTES
+
+    for value in (
+        "64MiB",
+        "1.5",
+        "-1",
+        "true",
+        str(recovery.MIN_MAX_BUNDLE_BYTES - 1),
+        str(recovery.HARD_MAX_BUNDLE_BYTES + 1),
+    ):
+        monkeypatch.setenv(recovery.RECOVERY_MAX_BUNDLE_BYTES_ENV, value)
+        with pytest.raises(recovery.ProxyRecoveryError, match="bundle byte limit"):
+            recovery.resolve_max_bundle_bytes()
+
+    with pytest.raises(recovery.ProxyRecoveryError, match="bundle byte limit"):
+        recovery.resolve_max_bundle_bytes(True)  # type: ignore[arg-type]
+
+
 def test_registry_is_immutable_ordered_and_documents_exclusions() -> None:
     registry = recovery.recovery_registry()
     table_names = {spec.table_name for spec in registry}
@@ -286,6 +320,44 @@ def test_future_version_malformed_encoding_and_oversized_write_rejected(
             {"adblock_settings": [{"large": "x" * 200}]},
             recovery_dir=tmp_path,
             max_bundle_bytes=64,
+        )
+
+
+def test_env_max_bundle_bytes_enforces_create_write_read_and_parse_limits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = {"adblock_settings": [{"large": "x" * recovery.MIN_MAX_BUNDLE_BYTES}]}
+    monkeypatch.setenv(
+        recovery.RECOVERY_MAX_BUNDLE_BYTES_ENV,
+        str(recovery.MIN_MAX_BUNDLE_BYTES),
+    )
+
+    with pytest.raises(recovery.ProxyRecoveryError, match="exceeds maximum size"):
+        _create_recovery_bundle("edge-01", rows, recovery_dir=tmp_path)
+
+    with pytest.raises(recovery.ProxyRecoveryError, match="exceeds maximum size"):
+        _write_recovery_bundle(
+            "edge-01",
+            rows,
+            recovery_dir=tmp_path,
+        )
+
+    path = _write_recovery_bundle(
+        "edge-01",
+        rows,
+        recovery_dir=tmp_path,
+        max_bundle_bytes=2 * recovery.MIN_MAX_BUNDLE_BYTES,
+    )
+    raw = path.read_bytes()
+
+    with pytest.raises(recovery.ProxyRecoveryError, match="exceeds maximum size"):
+        recovery.read_recovery_bundle("edge-01", recovery_dir=tmp_path)
+    with pytest.raises(recovery.ProxyRecoveryError, match="exceeds maximum size"):
+        recovery.parse_recovery_bundle(
+            raw,
+            expected_proxy_id="edge-01",
+            key=recovery.read_signing_key("edge-01", tmp_path),
         )
 
 

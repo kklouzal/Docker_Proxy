@@ -25,7 +25,10 @@ from typing import Any, Final
 
 FORMAT_VERSION: Final = 2
 DATA_SCHEMA_VERSION: Final = 1
-DEFAULT_MAX_BUNDLE_BYTES: Final = 8 * 1024 * 1024
+RECOVERY_MAX_BUNDLE_BYTES_ENV: Final = "PROXY_RECOVERY_MAX_BUNDLE_BYTES"
+DEFAULT_MAX_BUNDLE_BYTES: Final = 128 * 1024 * 1024
+MIN_MAX_BUNDLE_BYTES: Final = 1 * 1024 * 1024
+HARD_MAX_BUNDLE_BYTES: Final = 512 * 1024 * 1024
 RECOVERY_DIR_ENV: Final = "PROXY_RECOVERY_DIR"
 DEFAULT_RECOVERY_DIR: Final = Path("/var/lib/squid-flask-proxy/recovery")
 MAC_ALGORITHM: Final = "HMAC-SHA256"
@@ -82,6 +85,11 @@ class IntegrityMetadata:
     content_sha256: str
     mac_alg: str
     mac: str
+
+
+@dataclass(frozen=True)
+class RecoveryBundleSizeConfig:
+    max_bundle_bytes: int
 
 
 @dataclass(frozen=True)
@@ -295,6 +303,55 @@ def resolve_recovery_dir(recovery_dir: Path | str | None = None) -> Path:
     return DEFAULT_RECOVERY_DIR
 
 
+def recovery_bundle_size_config_from_env() -> RecoveryBundleSizeConfig:
+    return RecoveryBundleSizeConfig(
+        max_bundle_bytes=validate_max_bundle_bytes(
+            os.environ.get(RECOVERY_MAX_BUNDLE_BYTES_ENV),
+        ),
+    )
+
+
+def resolve_max_bundle_bytes(max_bundle_bytes: int | None = None) -> int:
+    if max_bundle_bytes is not None:
+        return validate_max_bundle_bytes(max_bundle_bytes, allow_below_min=True)
+    return recovery_bundle_size_config_from_env().max_bundle_bytes
+
+
+def validate_max_bundle_bytes(
+    value: object | None = None,
+    *,
+    allow_below_min: bool = False,
+) -> int:
+    if value is None:
+        return DEFAULT_MAX_BUNDLE_BYTES
+    if isinstance(value, bool):
+        msg = "invalid recovery max bundle byte limit"
+        raise _recovery_error(msg)
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return DEFAULT_MAX_BUNDLE_BYTES
+        if not stripped.isdecimal():
+            msg = "invalid recovery max bundle byte limit"
+            raise _recovery_error(msg)
+        parsed = int(stripped)
+    else:
+        msg = "invalid recovery max bundle byte limit"
+        raise _recovery_error(msg)
+    if parsed < 1:
+        msg = "invalid recovery max bundle byte limit"
+        raise _recovery_error(msg)
+    if not allow_below_min and parsed < MIN_MAX_BUNDLE_BYTES:
+        msg = "recovery max bundle byte limit is below minimum"
+        raise _recovery_error(msg)
+    if parsed > HARD_MAX_BUNDLE_BYTES:
+        msg = "recovery max bundle byte limit exceeds hard maximum"
+        raise _recovery_error(msg)
+    return parsed
+
+
 def create_recovery_bundle(
     proxy_id: str,
     tables: Mapping[str, Iterable[Mapping[str, Any]]] | Iterable[RecoveryTablePayload],
@@ -303,7 +360,7 @@ def create_recovery_bundle(
     schema_version: int = DATA_SCHEMA_VERSION,
     created_ts: str | None = None,
     recovery_dir: Path | str | None = None,
-    max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
+    max_bundle_bytes: int | None = None,
 ) -> RecoveryBundle:
     unsigned = _unsigned_payload(
         proxy_id,
@@ -315,7 +372,7 @@ def create_recovery_bundle(
     sealed = _seal_unsigned_payload(
         unsigned,
         get_or_create_signing_key(unsigned["proxy_id"], recovery_dir),
-        max_bundle_bytes=max_bundle_bytes,
+        max_bundle_bytes=resolve_max_bundle_bytes(max_bundle_bytes),
     )
     return _bundle_from_envelope(sealed)
 
@@ -328,7 +385,7 @@ def write_recovery_bundle(
     schema_version: int = DATA_SCHEMA_VERSION,
     created_ts: str | None = None,
     recovery_dir: Path | str | None = None,
-    max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
+    max_bundle_bytes: int | None = None,
 ) -> Path:
     unsigned = _unsigned_payload(
         proxy_id,
@@ -338,7 +395,11 @@ def write_recovery_bundle(
         created_ts=created_ts,
     )
     key = get_or_create_signing_key(unsigned["proxy_id"], recovery_dir)
-    sealed = _seal_unsigned_payload(unsigned, key, max_bundle_bytes=max_bundle_bytes)
+    sealed = _seal_unsigned_payload(
+        unsigned,
+        key,
+        max_bundle_bytes=resolve_max_bundle_bytes(max_bundle_bytes),
+    )
     path = bundle_path_for_proxy(unsigned["proxy_id"], recovery_dir)
     _atomic_write_private(path, serialize_envelope(sealed), 0o600)
     return path
@@ -349,17 +410,19 @@ def read_recovery_bundle(
     *,
     expected_source_control_plane_id: str | None = None,
     recovery_dir: Path | str | None = None,
-    max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
+    max_bundle_bytes: int | None = None,
 ) -> RecoveryBundle:
     normalized = normalize_proxy_id(proxy_id)
     path = bundle_path_for_proxy(normalized, recovery_dir)
-    raw = _read_private_regular_file(path, max_bytes=max_bundle_bytes)
+    validated_max_bundle_bytes = resolve_max_bundle_bytes(max_bundle_bytes)
+    raw = _read_private_regular_file(path, max_bytes=validated_max_bundle_bytes)
     key = read_signing_key(normalized, recovery_dir)
     return parse_recovery_bundle(
         raw,
         expected_proxy_id=normalized,
         expected_source_control_plane_id=expected_source_control_plane_id,
         key=key,
+        max_bundle_bytes=validated_max_bundle_bytes,
     )
 
 
@@ -386,9 +449,10 @@ def parse_recovery_bundle(
     expected_proxy_id: str,
     expected_source_control_plane_id: str | None = None,
     key: bytes,
-    max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
+    max_bundle_bytes: int | None = None,
 ) -> RecoveryBundle:
-    if len(raw) > max_bundle_bytes:
+    validated_max_bundle_bytes = resolve_max_bundle_bytes(max_bundle_bytes)
+    if len(raw) > validated_max_bundle_bytes:
         msg = "recovery bundle exceeds maximum size"
         raise _recovery_error(msg)
     envelope = _json_loads_no_duplicates(raw)

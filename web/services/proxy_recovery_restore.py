@@ -451,13 +451,14 @@ def read_validate_and_restore(
     expected_source_control_plane_id: str | None = None,
     recovery_dir: str | None = None,
     now_ts: int | None = None,
-    max_bundle_bytes: int = proxy_recovery.DEFAULT_MAX_BUNDLE_BYTES,
+    max_bundle_bytes: int | None = None,
 ) -> RestoreResult:
+    resolved_max_bundle_bytes = proxy_recovery.resolve_max_bundle_bytes(max_bundle_bytes)
     bundle = proxy_recovery.read_recovery_bundle(
         target_proxy_id,
         expected_source_control_plane_id=expected_source_control_plane_id,
         recovery_dir=recovery_dir,
-        max_bundle_bytes=max_bundle_bytes,
+        max_bundle_bytes=resolved_max_bundle_bytes,
     )
     with connect_factory() as conn:
         return restore_recovery_bundle(conn, bundle, target_proxy_id, now_ts=now_ts)

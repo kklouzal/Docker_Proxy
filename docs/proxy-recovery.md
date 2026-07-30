@@ -2,6 +2,8 @@
 
 Each proxy writes a signed recovery bundle plus a private HMAC key under `PROXY_RECOVERY_DIR` (default: `/var/lib/squid-flask-proxy/recovery`). That directory must live on the proxy's durable volume (`/var/lib/squid-flask-proxy` in the compose files), not on Admin UI/MySQL-only storage. For RB5009/RouterOS-adjacent deployments, keep the persisted host/NAS path mapped into the proxy container at this durable path; do not place the bundle/key on ephemeral router flash, Admin UI exports, or shared backup bundles. Do not expose or copy the key through environment variables, UI fields, logs, or shared backup bundles.
 
+Bundle reads and writes are bounded by `PROXY_RECOVERY_MAX_BUNDLE_BYTES`, which accepts decimal bytes only. The default is `134217728` (128 MiB), large enough for current active adblock artifact recovery payloads while preserving bounded deserialization; values below 1 MiB or above `536870912` (512 MiB) are rejected as invalid configuration.
+
 ## First connection to a replacement control plane
 
 When an existing proxy container first connects to a fresh replacement MySQL/Admin UI control plane, startup runs schema migrations through the recovery marker schema, minimally registers the proxy identity needed by lifecycle write guards, verifies the local bundle/key, then attempts one adoption before normal defaults/config refresh/apply run.

@@ -405,7 +405,7 @@ def capture_and_write_recovery_bundle(
     proxy_id: str = "default",
     *,
     recovery_dir: Path | str | None = None,
-    max_bundle_bytes: int = proxy_recovery.DEFAULT_MAX_BUNDLE_BYTES,
+    max_bundle_bytes: int | None = None,
 ) -> Path:
     with connect_factory() as conn:
         captured = capture_recovery_state(conn, proxy_id)
