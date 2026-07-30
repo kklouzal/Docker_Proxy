@@ -27,7 +27,7 @@ from services.db import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 19
+_SCHEMA_VERSION = 20
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -800,6 +800,29 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                 SchemaDataStep(
                     "operation_ledger_active_request_key_backfill",
                     _backfill_operation_ledger_active_request_keys,
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=20,
+            name="webfilter_blocked_log_lifecycle_indexes",
+            columns=(
+                SchemaColumnSpec(
+                    "webfilter_blocked_log",
+                    "proxy_id",
+                    "ALTER TABLE webfilter_blocked_log ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id",
+                ),
+            ),
+            indexes=(
+                SchemaIndexSpec(
+                    "webfilter_blocked_log",
+                    "idx_webfilter_blocked_log_ts_id",
+                    "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)",
+                ),
+                SchemaIndexSpec(
+                    "webfilter_blocked_log",
+                    "idx_webfilter_blocked_log_proxy_ts",
+                    "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)",
                 ),
             ),
         ),

@@ -156,7 +156,9 @@ def test_webfilter_blocked_log_retention_index_bootstrap():
 
     sql = _joined(conn)
     assert "KEY idx_webfilter_blocked_log_ts_id (ts, id)" in sql
+    assert "KEY idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)" in sql
     assert "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)" in sql
+    assert "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)" in sql
 
 
 def test_webcat_acl_blocked_log_writer_retention_index_bootstrap():
@@ -169,9 +171,16 @@ def test_webcat_acl_blocked_log_writer_retention_index_bootstrap():
         "idx_webfilter_blocked_log_ts_id",
         "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)",
     )
+    writer._ensure_index(
+        conn,
+        "webfilter_blocked_log",
+        "idx_webfilter_blocked_log_proxy_ts",
+        "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)",
+    )
 
     sql = _joined(conn)
     assert "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)" in sql
+    assert "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)" in sql
 
 
 def test_control_plane_retention_index_manifest_matches_prune_queries():

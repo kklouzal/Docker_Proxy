@@ -80,6 +80,7 @@ _REQUIRED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("proxy_operations", "request_key"),
     ("proxy_operations", "claim_token"),
     ("proxy_operations", "stale_requeue_count"),
+    ("webfilter_blocked_log", "proxy_id"),
     ("saml_auth_profiles", "public_base_url"),
     ("saml_auth_profiles", "username_attribute"),
     ("saml_auth_profiles", "groups_attribute"),
@@ -94,6 +95,8 @@ _REQUIRED_INDEXES: tuple[tuple[str, str], ...] = (
     ("proxy_operations", "idx_proxy_operations_proxy_started_id"),
     ("proxy_operations", "idx_proxy_operations_proxy_updated_id"),
     ("proxy_operations", "uniq_proxy_operations_active_request"),
+    ("webfilter_blocked_log", "idx_webfilter_blocked_log_ts_id"),
+    ("webfilter_blocked_log", "idx_webfilter_blocked_log_proxy_ts"),
 )
 
 

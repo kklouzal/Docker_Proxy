@@ -369,13 +369,73 @@ def test_blocked_log_db_keeps_block_when_source_ip_unavailable(monkeypatch) -> N
 
     db.insert(ts=123, src_ip="", url="http://blocked.example/", category="adult")
 
-    assert db._queue.get_nowait() == (
-        123,
-        "default",
-        "unknown",
-        "http://blocked.example/",
-        "adult",
+    assert db._queue.get_nowait() == (123, "unknown", "http://blocked.example/", "adult")
+
+
+def test_blocked_log_db_sanitizes_untrusted_log_fields(monkeypatch) -> None:
+    webcat_acl = _webcat_acl_module()
+
+    db = webcat_acl._BlockedLogDb(max_rows=10)
+    monkeypatch.setattr(db, "start", lambda: None)
+    monkeypatch.setattr(webcat_acl, "_now", lambda: 999)
+
+    db.insert(
+        ts=-1,
+        src_ip="not-an-ip\r\nX-Injected: yes",
+        url="https://user:secret@example.test/path?token=clear&ok=1#fragment",
+        category=" Adult<script> ",
     )
+
+    ts, src_ip, url, category = db._queue.get_nowait()
+    assert ts == 999
+    assert src_ip == "unknown"
+    assert "user:secret" not in url
+    assert "token=clear" not in url
+    assert "fragment" not in url
+    assert url == "https://example.test/path?token=[redacted]&ok=1"
+    assert category == "adultscript"
+
+
+def test_blocked_log_db_sanitizes_url_edge_cases(monkeypatch) -> None:
+    webcat_acl = _webcat_acl_module()
+
+    db = webcat_acl._BlockedLogDb(max_rows=10)
+    monkeypatch.setattr(db, "start", lambda: None)
+
+    cases = [
+        (
+            "http://user:pass@[2001:db8::1]:8080/a?password=abc&x=1#f",
+            "http://[2001:db8::1]:8080/a?password=[redacted]&x=1",
+        ),
+        (
+            "http://[::1]/path?api_key=abc#frag",
+            "http://[::1]/path?api_key=[redacted]",
+        ),
+        (
+            "http://[::1:8080/path?token=abc#frag",
+            "http://[::1:8080/path?token=[redacted]",
+        ),
+        (
+            "http://example.test/path?access_token=&token",
+            "http://example.test/path?access_token=[redacted]&token=[redacted]",
+        ),
+        (
+            "http://example.test/path?token=abc;api_key=def&ok=1#frag",
+            "http://example.test/path?token=[redacted];api_key=[redacted]&ok=1",
+        ),
+        (
+            "not a url token=secret#frag",
+            "not a url token=[redacted]",
+        ),
+        (
+            "https://user:pass@[vbad]/path?token=abc#frag",
+            "https://[vbad]/path?token=[redacted]",
+        ),
+    ]
+
+    for raw_url, expected in cases:
+        db.insert(ts=123, src_ip="192.0.2.10", url=raw_url, category="adult")
+        assert db._queue.get_nowait()[2] == expected
 
 
 def test_blocked_log_db_preserves_batch_when_connection_unavailable(
@@ -384,14 +444,14 @@ def test_blocked_log_db_preserves_batch_when_connection_unavailable(
     webcat_acl = _webcat_acl_module()
 
     db = webcat_acl._BlockedLogDb(max_rows=10)
-    batch = [(123, "default", "192.0.2.10", "http://blocked.example/", "adult")]
+    batch = [(123, "192.0.2.10", "http://blocked.example/", "adult")]
     monkeypatch.setattr(db, "_connect", lambda: None)
 
     conn, flushed = db._flush_batch_if_possible(None, batch)
 
     assert conn is None
     assert flushed is False
-    assert batch == [(123, "default", "192.0.2.10", "http://blocked.example/", "adult")]
+    assert batch == [(123, "192.0.2.10", "http://blocked.example/", "adult")]
 
 
 def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
@@ -413,7 +473,7 @@ def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
             raise RuntimeError(msg)
 
     db = BrokenBlockedLogDb(max_rows=10)
-    batch = [(123, "default", "192.0.2.10", "http://blocked.example/", "adult")]
+    batch = [(123, "192.0.2.10", "http://blocked.example/", "adult")]
     conn = FakeConn()
     db._conn = conn
 
@@ -424,7 +484,78 @@ def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
     assert db._conn is None
     assert rolled_back == [True]
     assert closed == [True]
-    assert batch == [(123, "default", "192.0.2.10", "http://blocked.example/", "adult")]
+    assert batch == [(123, "192.0.2.10", "http://blocked.example/", "adult")]
+
+
+def test_blocked_log_db_uses_proxy_write_guard_canonical_proxy(monkeypatch) -> None:
+    webcat_acl = _webcat_acl_module()
+
+    class Result:
+        rowcount = 1
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.executed = []
+            self.commits = 0
+
+        def executemany(self, sql, params):
+            self.executed.append((" ".join(str(sql).split()), tuple(params)))
+            return Result()
+
+        def commit(self):
+            self.commits += 1
+
+    def fake_guarded_rows(_conn, proxy_id, rows, row_factory, **_kwargs):
+        assert proxy_id == "edge-old"
+        return type(
+            "Guarded",
+            (),
+            {
+                "proxy_id": "edge-new",
+                "rows": tuple(row_factory("edge-new", row) for row in rows),
+            },
+        )()
+
+    monkeypatch.setenv("PROXY_INSTANCE_ID", "edge-old")
+    monkeypatch.setattr(webcat_acl, "guarded_proxy_rows", fake_guarded_rows)
+    db = webcat_acl._BlockedLogDb(max_rows=10)
+    conn = FakeConn()
+
+    db._flush(conn, [(123, "192.0.2.10", "http://blocked.example/", "adult")])
+
+    assert conn.executed[0][1][0][1] == "edge-new"
+
+
+def test_blocked_log_db_drops_lifecycle_blocked_batches(monkeypatch) -> None:
+    webcat_acl = _webcat_acl_module()
+    from services.proxy_write_guard import ProxyLifecycleWriteError  # type: ignore
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.rollbacks = 0
+            self.executemany_calls = 0
+
+        def rollback(self) -> None:
+            self.rollbacks += 1
+
+        def executemany(self, *_args, **_kwargs) -> None:
+            self.executemany_calls += 1
+
+    def reject_rows(*_args, **_kwargs):
+        msg = "Proxy 'edge-old' has been removed"
+        raise ProxyLifecycleWriteError(msg)
+
+    monkeypatch.setattr(webcat_acl, "guarded_proxy_rows", reject_rows)
+    db = webcat_acl._BlockedLogDb(max_rows=10)
+    conn = FakeConn()
+    batch = [(123, "192.0.2.10", "http://blocked.example/", "adult")]
+
+    returned_conn, flushed = db._flush_batch_if_possible(conn, batch)
+
+    assert returned_conn is conn
+    assert flushed is True
+    assert conn.rollbacks == 1
+    assert conn.executemany_calls == 0
 
 
 def test_blocked_log_prune_uses_bounded_ordered_delete(monkeypatch) -> None:
@@ -464,12 +595,54 @@ def test_blocked_log_prune_uses_bounded_ordered_delete(monkeypatch) -> None:
     db = webcat_acl._BlockedLogDb(max_rows=3)
     conn = FakeConn()
 
-    db._prune_old_rows(conn, "webfilter_blocked_log")
+    db._prune_old_rows(conn, "webfilter_blocked_log", "edge-a")
 
     delete_sql, delete_params = next(
         (sql, params) for sql, params in conn.executed if sql.startswith("DELETE FROM")
     )
     assert "ORDER BY ts ASC, id ASC LIMIT" in delete_sql
     assert "NOT IN" not in delete_sql
-    assert delete_params == (100, 100, 1, 2)
+    assert delete_params == ("edge-a", 100, 100, 1, 2)
     assert conn.commits == 1
+
+
+def test_webfilter_store_list_blocked_log_clamps_orders_and_redacts(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import webfilter_store  # type: ignore
+
+    class Result:
+        def fetchall(self):
+            return [
+                (
+                    123,
+                    "192.0.2.10",
+                    "https://user:secret@example.test/path?access_token=&token#fragment",
+                    "adult",
+                ),
+            ]
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, params=None):
+            self.calls.append((" ".join(str(sql).split()), tuple(params or ())))
+            return Result()
+
+    conn = FakeConn()
+    store = webfilter_store.WebFilterStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(webfilter_store, "get_proxy_id", lambda: "edge-a")
+
+    rows = store.list_blocked_log(limit=999999)
+
+    assert "ORDER BY ts DESC, id DESC LIMIT" in conn.calls[0][0]
+    assert conn.calls[0][1] == ("edge-a", 1000)
+    assert rows[0]["url"] == "https://example.test/path?access_token=[redacted]&token=[redacted]"

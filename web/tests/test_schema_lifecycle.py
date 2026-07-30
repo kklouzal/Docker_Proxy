@@ -216,34 +216,43 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "proxy_recovery_adoptions",
         "policy_exception_method_scope",
         "operation_ledger_stale_requeue_lifecycle",
+        "webfilter_blocked_log_lifecycle_indexes",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 19
-    assert specs[-4].version == 16
-    assert specs[-4].name == "control_plane_identity"
-    assert specs[-3].version == 17
-    assert specs[-3].name == "proxy_recovery_adoptions"
-    assert specs[-2].version == 18
-    assert specs[-2].name == "policy_exception_method_scope"
-    assert specs[-1].version == 19
-    assert specs[-1].name == "operation_ledger_stale_requeue_lifecycle"
+    assert schema_lifecycle.latest_schema_version() == 20
+    assert specs[-5].version == 16
+    assert specs[-5].name == "control_plane_identity"
+    assert specs[-4].version == 17
+    assert specs[-4].name == "proxy_recovery_adoptions"
+    assert specs[-3].version == 18
+    assert specs[-3].name == "policy_exception_method_scope"
+    assert specs[-2].version == 19
+    assert specs[-2].name == "operation_ledger_stale_requeue_lifecycle"
+    assert specs[-1].version == 20
+    assert specs[-1].name == "webfilter_blocked_log_lifecycle_indexes"
     assert schema_lifecycle.latest_schema_checksum() == specs[-1].checksum
-    assert specs[-4].tables[0].table == "control_plane_identity"
-    assert "control_plane_id CHAR(36) NOT NULL" in specs[-4].tables[0].create_sql
-    assert specs[-3].tables[0].table == "proxy_recovery_adoptions"
-    assert "proxy_id VARCHAR(64) NOT NULL" in specs[-3].tables[0].create_sql
-    assert "PRIMARY KEY(proxy_id, target_control_plane_id)" in specs[-3].tables[0].create_sql
-    assert specs[-2].columns[0].table == "policy_exceptions"
-    assert specs[-2].columns[0].name == "method"
-    assert specs[-1].columns[0].table == "proxy_operations"
-    assert specs[-1].columns[0].name == "stale_requeue_count"
-    assert [index.name for index in specs[-1].indexes] == [
+    assert specs[-5].tables[0].table == "control_plane_identity"
+    assert "control_plane_id CHAR(36) NOT NULL" in specs[-5].tables[0].create_sql
+    assert specs[-4].tables[0].table == "proxy_recovery_adoptions"
+    assert "proxy_id VARCHAR(64) NOT NULL" in specs[-4].tables[0].create_sql
+    assert "PRIMARY KEY(proxy_id, target_control_plane_id)" in specs[-4].tables[0].create_sql
+    assert specs[-3].columns[0].table == "policy_exceptions"
+    assert specs[-3].columns[0].name == "method"
+    assert specs[-2].columns[0].table == "proxy_operations"
+    assert specs[-2].columns[0].name == "stale_requeue_count"
+    assert [index.name for index in specs[-2].indexes] == [
         "idx_proxy_operations_proxy_status_created_id",
         "idx_proxy_operations_proxy_started_id",
         "idx_proxy_operations_proxy_updated_id",
         "uniq_proxy_operations_active_request",
     ]
-    assert specs[-1].indexes[-1].unique is True
-    assert specs[-1].data_steps[0].name == "operation_ledger_active_request_key_backfill"
+    assert specs[-2].indexes[-1].unique is True
+    assert specs[-2].data_steps[0].name == "operation_ledger_active_request_key_backfill"
+    assert specs[-1].columns[0].table == "webfilter_blocked_log"
+    assert specs[-1].columns[0].name == "proxy_id"
+    assert [index.name for index in specs[-1].indexes] == [
+        "idx_webfilter_blocked_log_ts_id",
+        "idx_webfilter_blocked_log_proxy_ts",
+    ]
 
 
 class _IdentityConn:

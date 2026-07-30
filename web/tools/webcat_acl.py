@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import queue
+import re
 import sqlite3
 import sys
 import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 HERE = Path(Path(__file__).parent).resolve()
 APP_ROOT = Path(os.path.join(HERE, "..")).resolve()
@@ -20,6 +23,7 @@ import contextlib  # noqa: E402
 
 from services.db import DATABASE_ERRORS, connect, mysql_error_code  # noqa: E402
 from services.domain_normalization import normalize_domain as _norm_domain  # noqa: E402
+from services.errors import redact_sensitive_text  # noqa: E402
 from services.helper_runtime import (  # noqa: E402
     HelperStats,
     TtlLruCache,
@@ -31,12 +35,111 @@ from services.proxy_context import (  # noqa: E402
     get_default_proxy_id,
     normalize_proxy_id,
 )
+from services.proxy_write_guard import (  # noqa: E402
+    ProxyLifecycleWriteError,
+    guarded_proxy_rows,
+)
 from services.runtime_helpers import env_float as _env_float  # noqa: E402
 from services.runtime_helpers import env_int as _env_int  # noqa: E402
 from services.runtime_helpers import now_ts as _now  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
+
+
+_CATEGORY_UNSAFE_RE = re.compile(r"[^a-z0-9_\-]+")
+_LOG_URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@")
+_SENSITIVE_QUERY_KEY_RE = re.compile(
+    r"^(?:password|passwd|pwd|secret|client[_-]?secret|token|access[_-]?token|refresh[_-]?token|api[_-]?key|apikey)$",
+    re.IGNORECASE,
+)
+
+
+def _clean_log_text(value: object, *, max_len: int) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    text = "".join(ch if (ch >= " " and ch != "\x7f") else " " for ch in text)
+    text = " ".join(text.split())
+    if max_len and len(text) > max_len:
+        return text[:max_len]
+    return text
+
+
+def _normalize_log_src_ip(value: object) -> str:
+    text = _clean_log_text(value, max_len=128)
+    if "," in text:
+        text = text.split(",", 1)[0].strip()
+    try:
+        return str(ipaddress.ip_address(text))
+    except Exception:
+        return "unknown"
+
+
+def _normalize_log_category(value: object) -> str:
+    category = _clean_log_text(value, max_len=128).lower().replace(" ", "_")
+    category = _CATEGORY_UNSAFE_RE.sub("", category).strip("_-")
+    return category[:128]
+
+
+def _redact_log_query(query: str) -> str:
+    if not query:
+        return ""
+    parts = re.split(r"([&;])", query)
+    redacted: list[str] = []
+    for part in parts:
+        if part in {"&", ";"}:
+            redacted.append(part)
+            continue
+        key, _sep, _value = part.partition("=")
+        decoded_key = unquote_plus(key).strip()
+        if decoded_key and _SENSITIVE_QUERY_KEY_RE.fullmatch(decoded_key):
+            redacted.append(f"{key}=[redacted]")
+            continue
+        redacted.append(redact_sensitive_text(part))
+    return "".join(redacted)
+
+
+def _strip_log_url_userinfo(text: str) -> str:
+    return _LOG_URL_USERINFO_RE.sub(r"\1", text)
+
+
+def _normalize_log_url(value: object) -> str:
+    raw = _clean_log_text(value, max_len=2000)
+    text = redact_sensitive_text(raw)
+    if not text:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+    except Exception:
+        return _strip_log_url_userinfo(text).split("#", 1)[0][:2000]
+    if parsed.scheme and parsed.netloc:
+        host = parsed.hostname or ""
+        if host:
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            netloc = host
+            try:
+                if parsed.port is not None:
+                    netloc = f"{netloc}:{parsed.port}"
+            except ValueError:
+                pass
+            query = _redact_log_query(parsed.query)
+            text = urlunsplit((parsed.scheme, netloc, parsed.path, query, ""))
+        else:
+            text = _strip_log_url_userinfo(text).split("#", 1)[0]
+    else:
+        text = text.split("#", 1)[0]
+    return text[:2000]
+
+
+def _normalize_log_ts(value: object) -> int:
+    now = _now()
+    try:
+        ts = int(value)
+    except Exception:
+        return now
+    if ts <= 0 or ts > now + 86400:
+        return now
+    return ts
 
 
 def _parent_domains(domain: str, *, max_levels: int = 6) -> Iterable[str]:
@@ -500,7 +603,10 @@ class _Db:
 
 class _BlockedLogDb:
     def __init__(self, *, max_rows: int = 5000) -> None:
-        self.max_rows = int(max_rows) if max_rows else 5000
+        try:
+            self.max_rows = max(0, min(1_000_000, int(max_rows)))
+        except Exception:
+            self.max_rows = 5000
         self._conn = None
         self._last_open_attempt = 0
         self._inserts = 0
@@ -516,7 +622,7 @@ class _BlockedLogDb:
             minimum=0.1,
             maximum=10.0,
         )
-        self._queue: queue.Queue[tuple[int, str, str, str, str]] = queue.Queue(
+        self._queue: queue.Queue[tuple[int, str, str, str]] = queue.Queue(
             maxsize=_env_int(
                 "WEBFILTER_LOG_QUEUE_SIZE",
                 10000,
@@ -548,6 +654,16 @@ class _BlockedLogDb:
         conn = None
         try:
             conn = connect()
+            try:
+                from services.schema_lifecycle import (
+                    runtime_schema_ready_for_lazy_store,
+                )
+
+                if runtime_schema_ready_for_lazy_store(conn):
+                    self._conn = conn
+                    return conn
+            except Exception:
+                pass
             blocked_log_table = self._table(conn)
             conn.execute(
                 f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("
@@ -561,11 +677,23 @@ class _BlockedLogDb:
                 f"KEY idx_{blocked_log_table}_proxy_ts (proxy_id, ts, id)"
                 ")",
             )
+            self._ensure_column(
+                conn,
+                blocked_log_table,
+                "proxy_id",
+                f"ALTER TABLE {blocked_log_table} ADD COLUMN proxy_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id",
+            )
             self._ensure_index(
                 conn,
                 blocked_log_table,
                 f"idx_{blocked_log_table}_ts_id",
                 f"ALTER TABLE {blocked_log_table} ADD INDEX idx_{blocked_log_table}_ts_id (ts, id)",
+            )
+            self._ensure_index(
+                conn,
+                blocked_log_table,
+                f"idx_{blocked_log_table}_proxy_ts",
+                f"ALTER TABLE {blocked_log_table} ADD INDEX idx_{blocked_log_table}_proxy_ts (proxy_id, ts, id)",
             )
             self._conn = conn
             return conn
@@ -574,6 +702,27 @@ class _BlockedLogDb:
                 with contextlib.suppress(Exception):
                     conn.close()
             return None
+
+    @staticmethod
+    def _ensure_column(conn, table_name: str, column_name: str, ddl: str) -> None:
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = %s
+              AND column_name = %s
+            LIMIT 1
+            """,
+            (table_name, column_name),
+        ).fetchone()
+        if exists:
+            return
+        try:
+            conn.execute(ddl)
+        except DATABASE_ERRORS as exc:
+            if mysql_error_code(exc) != 1060:
+                raise
 
     @staticmethod
     def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
@@ -614,22 +763,23 @@ class _BlockedLogDb:
         if self.max_rows <= 0:
             return
         try:
-            s_ip = (src_ip or "unknown")[:128]
-            s_url = (url or "")[:2000]
-            s_cat = (category or "")[:128]
+            s_ts = _normalize_log_ts(ts)
+            s_ip = _normalize_log_src_ip(src_ip)
+            s_url = _normalize_log_url(url)
+            s_cat = _normalize_log_category(category)
             if not s_url or not s_cat:
                 return
             self.start()
-            self._queue.put_nowait((int(ts), self._proxy_id(), s_ip, s_url, s_cat))
+            self._queue.put_nowait((s_ts, s_ip, s_url, s_cat))
         except Exception:
             return
 
-    def _prune_old_rows(self, conn, blocked_log_table: str) -> None:
+    def _prune_old_rows(self, conn, blocked_log_table: str, proxy_id: str) -> None:
         if self.max_rows <= 0:
             return
         rows = conn.execute(
-            f"SELECT ts, id FROM {blocked_log_table} ORDER BY ts DESC, id DESC LIMIT %s",
-            (int(self.max_rows),),
+            f"SELECT ts, id FROM {blocked_log_table} WHERE proxy_id=%s ORDER BY ts DESC, id DESC LIMIT %s",
+            (proxy_id, int(self.max_rows)),
         ).fetchall()
         if len(rows) < int(self.max_rows):
             return
@@ -652,8 +802,8 @@ class _BlockedLogDb:
         while deleted_total < max_delete:
             limit = min(chunk_size, max_delete - deleted_total)
             result = conn.execute(
-                f"DELETE FROM {blocked_log_table} WHERE (ts < %s OR (ts = %s AND id < %s)) ORDER BY ts ASC, id ASC LIMIT %s",
-                (boundary_ts, boundary_ts, boundary_id, limit),
+                f"DELETE FROM {blocked_log_table} WHERE proxy_id=%s AND (ts < %s OR (ts = %s AND id < %s)) ORDER BY ts ASC, id ASC LIMIT %s",
+                (proxy_id, boundary_ts, boundary_ts, boundary_id, limit),
             )
             conn.commit()
             deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
@@ -661,22 +811,30 @@ class _BlockedLogDb:
             if deleted < limit:
                 break
 
-    def _flush(self, conn, batch: list[tuple[int, str, str, str, str]]) -> None:
+    def _flush(self, conn, batch: list[tuple[int, str, str, str]]) -> None:
         blocked_log_table = self._table(conn)
+        guarded_batch = guarded_proxy_rows(
+            conn,
+            self._proxy_id(),
+            batch,
+            lambda proxy_id, row: (proxy_id, row[0], row[1], row[2], row[3]),
+        )
+        if not guarded_batch.rows:
+            return
         conn.executemany(
             f"INSERT INTO {blocked_log_table}(ts, proxy_id, src_ip, url, category) VALUES(%s,%s,%s,%s,%s)",
-            batch,
+            [(row[1], row[0], row[2], row[3], row[4]) for row in guarded_batch.rows],
         )
         conn.commit()
-        self._inserts += len(batch)
+        self._inserts += len(guarded_batch.rows)
         if self.max_rows > 0 and self._inserts >= 1000:
             self._inserts = 0
-            self._prune_old_rows(conn, blocked_log_table)
+            self._prune_old_rows(conn, blocked_log_table, guarded_batch.proxy_id)
 
     def _flush_batch_if_possible(
         self,
         conn,
-        batch: list[tuple[int, str, str, str, str]],
+        batch: list[tuple[int, str, str, str]],
     ):
         if conn is None:
             conn = self._connect()
@@ -684,6 +842,14 @@ class _BlockedLogDb:
             return None, False
         try:
             self._flush(conn, batch)
+        except ProxyLifecycleWriteError:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            # A removed/renaming/unregistered proxy must not be allowed to
+            # recreate proxy-owned log rows.  The ACL decision has already been
+            # returned to Squid; discard this best-effort observability batch
+            # rather than retrying a lifecycle-blocked write forever.
+            return conn, True
         except Exception:
             with contextlib.suppress(Exception):
                 conn.rollback()
@@ -696,7 +862,7 @@ class _BlockedLogDb:
 
     def _run(self) -> None:
         conn = None
-        batch: list[tuple[int, str, str, str, str]] = []
+        batch: list[tuple[int, str, str, str]] = []
         last_flush = time.monotonic()
         while True:
             timeout = max(0.05, self._flush_interval - (time.monotonic() - last_flush))
