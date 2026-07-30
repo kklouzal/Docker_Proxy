@@ -368,6 +368,33 @@ def test_proxy_management_json_payloads_reject_malformed_json_without_runtime_ca
     assert runtime.supervisor_calls == []
 
 
+def test_proxy_management_json_payloads_reject_oversized_bodies_without_runtime_calls(
+    monkeypatch,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    monkeypatch.setenv("PROXY_MANAGEMENT_JSON_MAX_CONTENT_LENGTH", "8")
+    runtime = _Runtime()
+    proxy_app.runtime = runtime
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret", "Content-Type": "application/json"}
+
+    response = _management_post(
+        client,
+        "/api/manage/sync",
+        data='{"force": false}',
+        headers=headers,
+    )
+
+    assert response.status_code == 413
+    assert response.is_json
+    assert response.get_json() == {
+        "ok": False,
+        "detail": "Management JSON payload is limited to 8 bytes.",
+    }
+    assert runtime.sync_force is None
+
+
 def test_proxy_management_json_payloads_reject_non_json_bodies_without_runtime_calls(
     monkeypatch,
 ) -> None:

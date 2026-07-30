@@ -45,19 +45,43 @@ install_http_optimizations(app, default_dynamic_max_age_seconds=0)
 runtime: Any | None = None
 _PUBLIC_LISTENER_NON_PAC_PATHS = frozenset({"/", "/health", "/policy-request"})
 _POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH = 16 * 1024
+_MANAGEMENT_JSON_DEFAULT_MAX_CONTENT_LENGTH = 1024 * 1024
+
+
+def _bounded_env_int(
+    name: str,
+    *,
+    default: int,
+    minimum: int = 1,
+    maximum: int | None = None,
+) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if value < minimum:
+        return default
+    if maximum is not None:
+        return min(value, maximum)
+    return value
 
 
 def _policy_request_max_content_length() -> int:
-    raw = (os.environ.get("POLICY_REQUEST_MAX_CONTENT_LENGTH") or "").strip()
-    if not raw:
-        return _POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH
-    try:
-        limit = int(raw)
-    except Exception:
-        return _POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH
-    if limit < 1:
-        return _POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH
-    return limit
+    return _bounded_env_int(
+        "POLICY_REQUEST_MAX_CONTENT_LENGTH",
+        default=_POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH,
+    )
+
+
+def _management_json_max_content_length() -> int:
+    return _bounded_env_int(
+        "PROXY_MANAGEMENT_JSON_MAX_CONTENT_LENGTH",
+        default=_MANAGEMENT_JSON_DEFAULT_MAX_CONTENT_LENGTH,
+        maximum=16 * 1024 * 1024,
+    )
 
 
 def _policy_request_too_large_response(max_content_length: int) -> Response:
@@ -141,7 +165,7 @@ def _test_mode_enabled() -> bool:
     }
 
 
-def _abort_management_json_payload(detail: str) -> NoReturn:
+def _abort_management_json_payload(detail: str, *, status_code: int = 400) -> NoReturn:
     abort(
         make_response(
             jsonify(
@@ -150,20 +174,37 @@ def _abort_management_json_payload(detail: str) -> NoReturn:
                     "detail": detail,
                 },
             ),
-            400,
+            status_code,
         ),
     )
 
 
-def _management_request_has_body() -> bool:
+def _management_payload_too_large_detail(max_content_length: int) -> str:
+    return f"Management JSON payload is limited to {max_content_length} bytes."
+
+
+def _management_request_has_body(max_content_length: int) -> bool:
+    request.max_content_length = max_content_length
     content_length = request.content_length
     if content_length is not None:
+        if content_length > max_content_length:
+            _abort_management_json_payload(
+                _management_payload_too_large_detail(max_content_length),
+                status_code=413,
+            )
         return content_length > 0
-    return bool(request.get_data(cache=True))
+    try:
+        return bool(request.get_data(cache=True))
+    except RequestEntityTooLarge:
+        _abort_management_json_payload(
+            _management_payload_too_large_detail(max_content_length),
+            status_code=413,
+        )
 
 
 def _management_json_payload() -> dict[str, Any]:
-    if not _management_request_has_body():
+    max_content_length = _management_json_max_content_length()
+    if not _management_request_has_body(max_content_length):
         return {}
     if not request.is_json:
         _abort_management_json_payload(
@@ -171,6 +212,11 @@ def _management_json_payload() -> dict[str, Any]:
         )
     try:
         payload = request.get_json(silent=False)
+    except RequestEntityTooLarge:
+        _abort_management_json_payload(
+            _management_payload_too_large_detail(max_content_length),
+            status_code=413,
+        )
     except BadRequest:
         _abort_management_json_payload("Management JSON payload is malformed.")
     if payload is None:
