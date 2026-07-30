@@ -141,6 +141,18 @@ def test_export_query_plan_coverage_is_exact_static_and_excludes_unsafe_columns(
     assert recovery_db.recovery_export_query_plans()[-1].table_name == (
         "observability_report_schedules"
     )
+    report_schedule_plan = recovery_db.recovery_export_query_plans()[-1]
+    assert report_schedule_plan.columns == (
+        "proxy_id",
+        "enabled",
+        "name",
+        "cadence",
+        "recipients",
+        "pane",
+        "report_format",
+        "privacy",
+        "window_seconds",
+    )
 
 
 def test_capture_recovery_state_uses_snapshot_identity_exact_queries_and_normalizes_rows() -> None:

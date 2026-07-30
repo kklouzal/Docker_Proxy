@@ -41,6 +41,10 @@ class _ValidationConn:
         orphan_pac_direct_dst_nets: int = 0,
         orphan_pac_backup_proxies: int = 0,
         orphan_pac_chain_settings: int = 0,
+        orphan_report_schedules: int = 0,
+        invalid_report_schedule_cadence: int = 0,
+        invalid_report_schedule_format: int = 0,
+        invalid_report_schedule_times: int = 0,
         count_query_error_contains: str | None = None,
     ) -> None:
         self.tables = set(module._REQUIRED_TABLES) - set(missing_tables)
@@ -55,6 +59,10 @@ class _ValidationConn:
         self.orphan_pac_direct_dst_nets = orphan_pac_direct_dst_nets
         self.orphan_pac_backup_proxies = orphan_pac_backup_proxies
         self.orphan_pac_chain_settings = orphan_pac_chain_settings
+        self.orphan_report_schedules = orphan_report_schedules
+        self.invalid_report_schedule_cadence = invalid_report_schedule_cadence
+        self.invalid_report_schedule_format = invalid_report_schedule_format
+        self.invalid_report_schedule_times = invalid_report_schedule_times
         self.count_query_error_contains = count_query_error_contains
 
     def execute(self, sql, params=()):
@@ -96,6 +104,14 @@ class _ValidationConn:
             return _Result([{"n": self.orphan_pac_backup_proxies}])
         if "from pac_proxy_chain_settings chain_settings" in text and "proxy.proxy_id is null" in text:
             return _Result([{"n": self.orphan_pac_chain_settings}])
+        if "from observability_report_schedules schedule" in text and "proxy.proxy_id is null" in text:
+            return _Result([{"n": self.orphan_report_schedules}])
+        if "from observability_report_schedules" in text and "cadence not in" in text:
+            return _Result([{"n": self.invalid_report_schedule_cadence}])
+        if "from observability_report_schedules" in text and "report_format not in" in text:
+            return _Result([{"n": self.invalid_report_schedule_format}])
+        if "from observability_report_schedules" in text and "updated_ts < created_ts" in text:
+            return _Result([{"n": self.invalid_report_schedule_times}])
         return _Result([{"n": 0}])
 
     def close(self):
@@ -284,6 +300,40 @@ def test_mysql_state_validation_fails_orphan_operation_ownership() -> None:
     ],
 )
 def test_mysql_state_validation_fails_pac_persistence_orphans(conn_kwargs, expected_error) -> None:
+    _add_web_to_path()
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(mysql_state_validation, **conn_kwargs),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert expected_error in result.errors
+
+
+@pytest.mark.parametrize(
+    ("conn_kwargs", "expected_error"),
+    [
+        (
+            {"orphan_report_schedules": 1},
+            "observability_report_schedules has 1 row(s) owned by missing proxies without tombstones",
+        ),
+        (
+            {"invalid_report_schedule_cadence": 2},
+            "observability_report_schedules has 2 row(s) with invalid cadence values",
+        ),
+        (
+            {"invalid_report_schedule_format": 3},
+            "observability_report_schedules has 3 row(s) with invalid format values",
+        ),
+        (
+            {"invalid_report_schedule_times": 4},
+            "observability_report_schedules has 4 row(s) with invalid timestamp values",
+        ),
+    ],
+)
+def test_mysql_state_validation_fails_report_schedule_invariants(conn_kwargs, expected_error) -> None:
     _add_web_to_path()
     from services import mysql_state_validation  # type: ignore
 

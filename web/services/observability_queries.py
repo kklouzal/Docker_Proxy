@@ -64,7 +64,7 @@ def _normalize_report_schedule_recipients(value: object) -> str:
             msg = "Report recipients must not contain empty recipient entries."
             raise ValueError(msg)
         if not _valid_report_schedule_email(recipient):
-            msg = f"Invalid report recipient: {recipient[:80]}"
+            msg = "Report recipients must be valid email addresses."
             raise ValueError(msg)
         key = recipient.lower()
         if key not in seen:
@@ -1488,6 +1488,7 @@ class ObservabilityQueries:
                     ),
                 )
                 inserted_id = int(getattr(result, "lastrowid", 0) or 0)
+                row = None
                 if inserted_id > 0:
                     row = conn.execute(
                         """
@@ -1499,8 +1500,8 @@ class ObservabilityQueries:
                         """,
                         (guard.proxy_id, inserted_id),
                     ).fetchone()
-                    if row is not None:
-                        return self._present_report_schedule_row(row)
+                if row is not None:
+                    return self._present_report_schedule_row(row)
         return self.report_schedules(limit=1)[0]
 
     def audit_activity(self, *, since: int, limit: int = 20) -> dict[str, Any]:

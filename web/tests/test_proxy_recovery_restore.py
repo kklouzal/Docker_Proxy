@@ -325,6 +325,75 @@ def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
     }
 
 
+def _base_recovery_row(table_name: str, proxy_id: str = "edge-01") -> dict[str, Any]:
+    if table_name == "observability_report_schedules":
+        return {
+            "proxy_id": proxy_id,
+            "enabled": 1,
+            "name": "daily",
+            "cadence": "daily",
+            "recipients": "ops@example.invalid",
+            "pane": "reports",
+            "report_format": "csv",
+            "privacy": 1,
+            "window_seconds": 86400,
+        }
+    raise AssertionError(table_name)
+
+
+def _bundle_with_table_rows(
+    table_name: str,
+    rows: tuple[dict[str, Any], ...],
+) -> proxy_recovery.RecoveryBundle:
+    return _bundle(overrides={table_name: rows})
+
+
+def test_restore_rejects_invalid_report_schedule_cadence_format_and_window() -> None:
+    invalid_cases = (
+        (
+            {
+                **_base_recovery_row("observability_report_schedules"),
+                "cadence": "hourly",
+            },
+            "cadence",
+        ),
+        (
+            {
+                **_base_recovery_row("observability_report_schedules"),
+                "report_format": "html",
+            },
+            "report_format",
+        ),
+        (
+            {
+                **_base_recovery_row("observability_report_schedules"),
+                "window_seconds": 299,
+            },
+            "window_seconds",
+        ),
+    )
+
+    for row, expected in invalid_cases:
+        bundle = _bundle_with_table_rows("observability_report_schedules", (row,))
+        with pytest.raises(restore.ProxyRecoveryRestoreError, match=expected):
+            restore.build_restore_plan(bundle, "edge-01", now_ts=NOW)
+
+
+def test_restore_rejects_report_schedule_with_invalid_or_sensitive_recipient() -> None:
+    row = {
+        **_base_recovery_row("observability_report_schedules"),
+        "recipients": "sensitive-person",
+    }
+    bundle = _bundle_with_table_rows("observability_report_schedules", (row,))
+
+    with pytest.raises(restore.ProxyRecoveryRestoreError) as excinfo:
+        restore.build_restore_plan(bundle, "edge-01", now_ts=NOW)
+
+    detail = str(excinfo.value)
+    assert "recipients" in detail
+    assert "sensitive-person" not in detail
+
+
 def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adoption() -> None:
     conn = _StrictRestoreConn()
 

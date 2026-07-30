@@ -1894,6 +1894,35 @@ def test_save_report_schedule_rejects_invalid_recipient_text(
         )
 
 
+def test_save_report_schedule_invalid_recipient_error_does_not_echo_input(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    from services import observability_queries  # type: ignore
+
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_ensure_report_schedule_db", lambda: None)
+    monkeypatch.setattr(
+        queries,
+        "_connect",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("invalid recipients should not be persisted"),
+        ),
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        queries.save_report_schedule(
+            name="Bad report",
+            cadence="daily",
+            recipients="very-sensitive-user",
+        )
+
+    detail = str(excinfo.value)
+    assert detail == "Report recipients must be valid email addresses."
+    assert "very-sensitive-user" not in detail
+
+
 def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_privacy(
     tmp_path, monkeypatch
 ) -> None:

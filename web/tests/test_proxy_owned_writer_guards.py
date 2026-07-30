@@ -145,6 +145,40 @@ def test_observability_schedule_uses_guard_canonical_proxy(monkeypatch) -> None:
     assert insert[1][0] == "edge-new"
 
 
+def test_observability_schedule_guard_blocks_insert_before_persist(monkeypatch) -> None:
+    _add_web_to_path()
+    from services import observability_queries  # type: ignore
+    from services.proxy_write_guard import ProxyLifecycleWriteError  # type: ignore
+
+    module = importlib.reload(observability_queries)
+    conn = _Conn()
+
+    @contextlib.contextmanager
+    def fail_guard(_conn, proxy_id, **_kwargs):
+        assert str(proxy_id) == "edge-removed"
+        msg = "proxy removed"
+        raise ProxyLifecycleWriteError(msg)
+        yield
+
+    monkeypatch.setattr(module, "guarded_proxy_write", fail_guard)
+    monkeypatch.setattr(module, "get_proxy_id", lambda: "edge-removed")
+
+    queries = module.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", lambda: conn)
+    monkeypatch.setattr(queries, "_ensure_report_schedule_db", lambda: None)
+
+    with pytest.raises(ProxyLifecycleWriteError):
+        queries.save_report_schedule(
+            name="Daily", cadence="daily", recipients="ops@example.com"
+        )
+
+    assert not [
+        call
+        for call in conn.calls
+        if "INSERT INTO observability_report_schedules" in call[0]
+    ]
+
+
 def test_policy_close_and_revoke_scoped_mutations_use_guard_canonical_proxy(
     monkeypatch,
 ) -> None:

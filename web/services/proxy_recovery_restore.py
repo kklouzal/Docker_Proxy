@@ -9,6 +9,7 @@ from typing import Any, Final, Literal
 
 from services import proxy_recovery
 from services.db import connect
+from services.observability_queries import _normalize_report_schedule_recipients
 from services.proxy_recovery_db import recovery_export_query_plans
 from services.proxy_write_guard import (
     ProxyLifecycleWriteError,
@@ -175,6 +176,18 @@ _ACTIVE_REVISION_TABLES: Final = frozenset(
     }
 )
 _EXACT_WEBFILTER_KEYS: Final = frozenset({"enabled", "blocked_categories"})
+_OBSERVABILITY_REPORT_SCHEDULE_PANES: Final = frozenset(
+    {
+        "reports",
+        "overview",
+        "destinations",
+        "clients",
+        "cache",
+        "ssl",
+        "security",
+        "performance",
+    },
+)
 
 _ADBLOCK_DEFAULT_LISTS: Final = MappingProxyType(
     {
@@ -500,7 +513,29 @@ def _validate_rows(
         keys = {dict(zip(expected_columns, row, strict=True))["k"] for row in rows}
         if not keys.issubset(_EXACT_WEBFILTER_KEYS):
             raise ProxyRecoveryRestoreError("webfilter restore contains unsupported setting key")
+    if table_name == "observability_report_schedules":
+        _validate_observability_report_schedule_rows(rows, expected_columns)
     return tuple(rows)
+
+
+def _validate_observability_report_schedule_rows(
+    rows: tuple[tuple[Any, ...], ...],
+    columns: tuple[str, ...],
+) -> None:
+    for row in rows:
+        by_col = dict(zip(columns, row, strict=True))
+        cadence = str(by_col.get("cadence") or "").strip().lower()
+        if cadence not in {"daily", "weekly"}:
+            raise ProxyRecoveryRestoreError("observability_report_schedules cadence is invalid")
+        report_format = str(by_col.get("report_format") or "").strip().lower()
+        if report_format not in {"csv", "json", "jsonl"}:
+            raise ProxyRecoveryRestoreError("observability_report_schedules report_format is invalid")
+        pane = str(by_col.get("pane") or "").strip().lower()
+        if pane not in _OBSERVABILITY_REPORT_SCHEDULE_PANES:
+            raise ProxyRecoveryRestoreError("observability_report_schedules pane is invalid")
+        window_seconds = int(by_col.get("window_seconds") or 0)
+        if window_seconds < 300 or window_seconds > 7 * 24 * 3600:
+            raise ProxyRecoveryRestoreError("observability_report_schedules window_seconds is invalid")
 
 
 def _validate_proxy_config_revision_digests(
@@ -536,11 +571,13 @@ def _normalize_column_value(
         return normalized
     if column in _INT_COLUMNS:
         if isinstance(value, bool):
-            return int(value)
-        if not isinstance(value, int):
+            value = int(value)
+        elif not isinstance(value, int):
             raise ProxyRecoveryRestoreError(f"{table_name}.{column} must be an integer")
         if value < 0:
             raise ProxyRecoveryRestoreError(f"{table_name}.{column} must be non-negative")
+        if table_name == "observability_report_schedules" and column in {"enabled", "privacy"} and value not in {0, 1}:
+            raise ProxyRecoveryRestoreError(f"{table_name}.{column} must be 0 or 1")
         if column == "expires_ts" and value and value <= now_ts:
             raise ProxyRecoveryRestoreError("policy exception in recovery bundle is expired")
         return int(value)
@@ -554,8 +591,25 @@ def _normalize_column_value(
         raise ProxyRecoveryRestoreError(f"{table_name}.{column} contains a NUL byte")
     if len(value.encode("utf-8", errors="surrogatepass")) > 4 * 1024 * 1024:
         raise ProxyRecoveryRestoreError(f"{table_name}.{column} exceeds restore field size limit")
+    if table_name == "observability_report_schedules":
+        value = _normalize_observability_report_schedule_text(column, value)
     if column in _HEX_SHA_COLUMNS and (len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value)):
         raise ProxyRecoveryRestoreError(f"{table_name}.{column} must be lowercase sha256 hex")
+    return value
+
+
+def _normalize_observability_report_schedule_text(column: str, value: str) -> str:
+    if column == "recipients":
+        try:
+            return _normalize_report_schedule_recipients(value)
+        except ValueError as exc:
+            raise ProxyRecoveryRestoreError(
+                "observability_report_schedules recipients are invalid",
+            ) from exc
+    if column in {"cadence", "pane", "report_format"}:
+        return value.strip().lower()
+    if column == "name":
+        return value.strip()[:120]
     return value
 
 

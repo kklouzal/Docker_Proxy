@@ -460,6 +460,56 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
             if orphan_pac_chain_settings:
                 result.error(f"pac_proxy_chain_settings has {orphan_pac_chain_settings} row(s) owned by missing proxies without tombstones")
 
+            orphan_report_schedules = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM observability_report_schedules schedule
+                LEFT JOIN proxy_instances proxy ON proxy.proxy_id=schedule.proxy_id
+                LEFT JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=schedule.proxy_id
+                WHERE proxy.proxy_id IS NULL AND tombstone.proxy_id IS NULL
+                """,
+                context="observability_report_schedules orphan ownership",
+            )
+            if orphan_report_schedules:
+                result.error(f"observability_report_schedules has {orphan_report_schedules} row(s) owned by missing proxies without tombstones")
+
+            invalid_report_schedule_cadence = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM observability_report_schedules
+                WHERE cadence NOT IN ('daily','weekly')
+                """,
+                context="observability_report_schedules cadence values",
+            )
+            if invalid_report_schedule_cadence:
+                result.error(f"observability_report_schedules has {invalid_report_schedule_cadence} row(s) with invalid cadence values")
+
+            invalid_report_schedule_format = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM observability_report_schedules
+                WHERE report_format NOT IN ('csv','json','jsonl')
+                """,
+                context="observability_report_schedules format values",
+            )
+            if invalid_report_schedule_format:
+                result.error(f"observability_report_schedules has {invalid_report_schedule_format} row(s) with invalid format values")
+
+            invalid_report_schedule_times = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM observability_report_schedules
+                WHERE updated_ts < created_ts OR next_run_ts < 0 OR last_run_ts < 0
+                """,
+                context="observability_report_schedules timestamp values",
+            )
+            if invalid_report_schedule_times:
+                result.error(f"observability_report_schedules has {invalid_report_schedule_times} row(s) with invalid timestamp values")
+
             invalid_operation_states = _count_row(
                 active_conn,
                 """
