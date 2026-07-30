@@ -261,7 +261,7 @@ _SAML_DEFAULT_ROW: Final = MappingProxyType(
 
 _ADOPTION_MARKER_TABLE: Final = "proxy_recovery_adoptions"
 _ADOPTION_MARKER_PAIR_SELECT_SQL: Final = (
-    "SELECT source_control_plane_id, target_control_plane_id, status "
+    "SELECT source_control_plane_id, target_control_plane_id, bundle_content_sha256, status, detail "
     "FROM proxy_recovery_adoptions "
     "WHERE proxy_id=%s AND target_control_plane_id=%s LIMIT 1"
 )
@@ -708,7 +708,7 @@ def _skip_result_if_already_decided(
             target_identity,
             reason="bundle source is the current control plane",
         )
-    marker_state = _adoption_marker_state(conn, plan.proxy_id, target_identity, for_update=for_update)
+    marker_state = _adoption_marker_state(conn, plan, target_identity, for_update=for_update)
     if marker_state == "same_target":
         return _restore_result(
             _RESTORE_STATUS_ALREADY_ADOPTED,
@@ -717,13 +717,13 @@ def _skip_result_if_already_decided(
             reason="target control plane already adopted this proxy bundle once",
         )
     if marker_state == "ambiguous":
-        raise ProxyRecoveryRestoreError("target proxy has an ambiguous recovery adoption marker")
+        raise ProxyRecoveryRestoreError("target proxy has a conflicting recovery adoption marker")
     return None
 
 
 def _adoption_marker_state(
     conn: Any,
-    proxy_id: str,
+    plan: RestorePlan,
     target_identity: str,
     *,
     for_update: bool = False,
@@ -733,10 +733,26 @@ def _adoption_marker_state(
     if for_update:
         pair_sql += " FOR UPDATE"
         proxy_sql += " FOR UPDATE"
-    pair_row = conn.execute(pair_sql, (proxy_id, target_identity)).fetchone()
+    pair_row = conn.execute(pair_sql, (plan.proxy_id, target_identity)).fetchone()
     if pair_row is not None:
-        return "same_target"
-    rows = conn.execute(proxy_sql, (proxy_id,)).fetchall()
+        try:
+            source_id = _normalize_control_plane_id(_row_value(pair_row, "source_control_plane_id", 0))
+            marker_target = _normalize_control_plane_id(_row_value(pair_row, "target_control_plane_id", 1))
+            bundle_sha = _normalize_sha256_hex(_row_value(pair_row, "bundle_content_sha256", 2))
+        except ProxyRecoveryRestoreError:
+            return "ambiguous"
+        status = str(_row_value(pair_row, "status", 3) or "").strip().lower()
+        detail = str(_row_value(pair_row, "detail", 4) or "")
+        if (
+            source_id == plan.source_control_plane_id
+            and marker_target == target_identity
+            and bundle_sha == plan.bundle_content_sha256
+            and status == _RESTORE_STATUS_ADOPTED
+            and detail == ""
+        ):
+            return "same_target"
+        return "ambiguous"
+    rows = conn.execute(proxy_sql, (plan.proxy_id,)).fetchall()
     if rows:
         return "ambiguous"
     return "none"

@@ -26,7 +26,10 @@ from services.proxy_lifecycle import (
     remove_proxy_scoped_rows,
     rename_proxy_scoped_rows,
 )
-from services.proxy_write_guard import clear_proxy_write_guard_cache
+from services.proxy_write_guard import (
+    clear_proxy_write_guard_cache,
+    proxy_lifecycle_lock_name,
+)
 from services.public_endpoint import (
     _canonical_public_dns_host,
     _is_ambiguous_ipv4_host,
@@ -738,7 +741,7 @@ class ProxyRegistry:
         return [instance for instance in instances if instance is not None]
 
     def _lifecycle_lock_name(self, proxy_id: str) -> str:
-        return f"docker_proxy:proxy_lifecycle:{proxy_id}"[:64]
+        return proxy_lifecycle_lock_name(proxy_id)
 
     def _clear_lifecycle_write_cache(self, *proxy_ids: str) -> None:
         for proxy_id in proxy_ids:

@@ -42,6 +42,8 @@ class _ValidationConn:
         orphan_pac_backup_proxies: int = 0,
         orphan_pac_chain_settings: int = 0,
         orphan_report_schedules: int = 0,
+        invalid_recovery_adoptions: int = 0,
+        blocked_recovery_adoptions: int = 0,
         invalid_report_schedule_cadence: int = 0,
         invalid_report_schedule_format: int = 0,
         invalid_report_schedule_times: int = 0,
@@ -60,6 +62,8 @@ class _ValidationConn:
         self.orphan_pac_backup_proxies = orphan_pac_backup_proxies
         self.orphan_pac_chain_settings = orphan_pac_chain_settings
         self.orphan_report_schedules = orphan_report_schedules
+        self.invalid_recovery_adoptions = invalid_recovery_adoptions
+        self.blocked_recovery_adoptions = blocked_recovery_adoptions
         self.invalid_report_schedule_cadence = invalid_report_schedule_cadence
         self.invalid_report_schedule_format = invalid_report_schedule_format
         self.invalid_report_schedule_times = invalid_report_schedule_times
@@ -106,6 +110,10 @@ class _ValidationConn:
             return _Result([{"n": self.orphan_pac_chain_settings}])
         if "from observability_report_schedules schedule" in text and "proxy.proxy_id is null" in text:
             return _Result([{"n": self.orphan_report_schedules}])
+        if "from proxy_recovery_adoptions marker" in text and "join proxy_lifecycle_tombstones" in text:
+            return _Result([{"n": self.blocked_recovery_adoptions}])
+        if "from proxy_recovery_adoptions" in text and "status <> 'adopted'" in text:
+            return _Result([{"n": self.invalid_recovery_adoptions}])
         if "from observability_report_schedules" in text and "cadence not in" in text:
             return _Result([{"n": self.invalid_report_schedule_cadence}])
         if "from observability_report_schedules" in text and "report_format not in" in text:
@@ -143,6 +151,24 @@ def test_mysql_state_validation_fails_missing_lifecycle_tables() -> None:
 
     assert result.ok is False
     assert any("proxy_id_aliases" in error for error in result.errors)
+
+
+def test_mysql_state_validation_fails_invalid_recovery_adoption_markers() -> None:
+    _add_web_to_path()
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(
+            mysql_state_validation,
+            invalid_recovery_adoptions=1,
+            blocked_recovery_adoptions=2,
+        ),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert any("invalid marker contract" in error for error in result.errors)
+    assert any("lifecycle-blocked" in error for error in result.errors)
 
 
 def test_mysql_state_validation_fails_duplicate_active_operation_keys() -> None:

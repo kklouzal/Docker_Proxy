@@ -42,8 +42,14 @@ class _StrictRestoreConn:
         target_identity: str | None = TARGET_ID,
         adoption_marker: bool = False,
         adoption_marker_target: str | None = None,
+        adoption_marker_source: str = SOURCE_ID,
+        adoption_marker_bundle_sha: str = "a" * 64,
+        adoption_marker_status: str = "adopted",
+        adoption_marker_detail: str = "",
         nonfresh_tables: set[str] | None = None,
         lifecycle_status: str | None = "active",
+        tombstone_action: str | None = None,
+        tombstone_target: str = "",
         lock_acquired: bool = True,
         fail_on_sql: str = "",
         schema_defaults: bool = False,
@@ -51,8 +57,14 @@ class _StrictRestoreConn:
         self.target_identity = target_identity
         self.adoption_marker = adoption_marker
         self.adoption_marker_target = adoption_marker_target or target_identity
+        self.adoption_marker_source = adoption_marker_source
+        self.adoption_marker_bundle_sha = adoption_marker_bundle_sha
+        self.adoption_marker_status = adoption_marker_status
+        self.adoption_marker_detail = adoption_marker_detail
         self.nonfresh_tables = nonfresh_tables or set()
         self.lifecycle_status = lifecycle_status
+        self.tombstone_action = tombstone_action
+        self.tombstone_target = tombstone_target
         self.lock_acquired = lock_acquired
         self.fail_on_sql = fail_on_sql
         self.schema_defaults = schema_defaults
@@ -80,9 +92,11 @@ class _StrictRestoreConn:
             return _Result(
                 [
                     {
-                        "source_control_plane_id": SOURCE_ID,
+                        "source_control_plane_id": self.adoption_marker_source,
                         "target_control_plane_id": self.adoption_marker_target,
-                        "status": "adopted",
+                        "bundle_content_sha256": self.adoption_marker_bundle_sha,
+                        "status": self.adoption_marker_status,
+                        "detail": self.adoption_marker_detail,
                     },
                 ],
             )
@@ -91,7 +105,9 @@ class _StrictRestoreConn:
                 return _Result()
             return _Result([{"target_control_plane_id": self.adoption_marker_target}])
         if text.startswith("SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones"):
-            return _Result()
+            if self.tombstone_action is None:
+                return _Result()
+            return _Result([{"action": self.tombstone_action, "target_proxy_id": self.tombstone_target}])
         if text.startswith("SELECT status FROM proxy_instances"):
             if self.lifecycle_status is None:
                 return _Result()
@@ -440,6 +456,20 @@ def test_source_target_proxy_mismatch_rejects_before_database_access() -> None:
     assert conn.ops == []
 
 
+def test_lifecycle_blocked_marker_writes_fail_before_transaction_and_aliases_stay_blocked() -> None:
+    removed = _StrictRestoreConn(lifecycle_status="removed")
+    with pytest.raises(Exception, match=r"status.*removed"):
+        restore.restore_recovery_bundle(removed, _bundle(), "edge-01", now_ts=NOW)
+    assert not any(sql.startswith("START TRANSACTION") for sql, _params in removed.ops)
+    assert not any(sql.startswith("INSERT INTO proxy_recovery_adoptions") for sql, _params in removed.ops)
+
+    renamed_alias = _StrictRestoreConn(tombstone_action="renamed", tombstone_target="edge-new")
+    with pytest.raises(Exception, match="renamed to"):
+        restore.restore_recovery_bundle(renamed_alias, _bundle(proxy_id="edge-old"), "edge-old", now_ts=NOW)
+    assert not any(sql.startswith("START TRANSACTION") for sql, _params in renamed_alias.ops)
+    assert not any(sql.startswith("INSERT INTO proxy_recovery_adoptions") for sql, _params in renamed_alias.ops)
+
+
 def test_nonfresh_target_or_existing_adoption_marker_rejects_without_mutation() -> None:
     conn = _StrictRestoreConn(nonfresh_tables={"webfilter_settings"})
     result = restore.restore_recovery_bundle(conn, _bundle(), "edge-01", now_ts=NOW)
@@ -453,8 +483,24 @@ def test_nonfresh_target_or_existing_adoption_marker_rejects_without_mutation() 
     assert not any(sql.startswith(("START TRANSACTION", "DELETE", "INSERT")) for sql, _params in marked.ops)
 
     ambiguous = _StrictRestoreConn(adoption_marker=True, adoption_marker_target="323e4567-e89b-42d3-a456-426614174000")
-    with pytest.raises(restore.ProxyRecoveryRestoreError, match="ambiguous"):
+    with pytest.raises(restore.ProxyRecoveryRestoreError, match="conflicting"):
         restore.restore_recovery_bundle(ambiguous, _bundle(), "edge-01", now_ts=NOW)
+
+    conflicting_bundle = _StrictRestoreConn(adoption_marker=True, adoption_marker_bundle_sha="c" * 64)
+    with pytest.raises(restore.ProxyRecoveryRestoreError, match="conflicting"):
+        restore.restore_recovery_bundle(conflicting_bundle, _bundle(), "edge-01", now_ts=NOW)
+    assert not any(sql.startswith(("START TRANSACTION", "DELETE", "INSERT")) for sql, _params in conflicting_bundle.ops)
+
+    failed_marker = _StrictRestoreConn(
+        adoption_marker=True,
+        adoption_marker_status="failed",
+        adoption_marker_detail="secret operator note",
+    )
+    with pytest.raises(restore.ProxyRecoveryRestoreError) as excinfo:
+        restore.restore_recovery_bundle(failed_marker, _bundle(), "edge-01", now_ts=NOW)
+    assert "conflicting" in str(excinfo.value)
+    assert "secret" not in str(excinfo.value)
+    assert not any(sql.startswith(("START TRANSACTION", "DELETE", "INSERT")) for sql, _params in failed_marker.ops)
 
 
 def test_different_fresh_target_can_independently_adopt() -> None:
@@ -474,11 +520,6 @@ def test_known_schema_defaults_are_fresh_and_replaced() -> None:
 
 
 def test_lifecycle_rejection_and_lock_failure_fail_closed() -> None:
-    removed = _StrictRestoreConn(lifecycle_status="removed")
-    with pytest.raises(Exception, match=r"status.*removed"):
-        restore.restore_recovery_bundle(removed, _bundle(), "edge-01", now_ts=NOW)
-    assert not any(sql.startswith("START TRANSACTION") for sql, _params in removed.ops)
-
     locked = _StrictRestoreConn(lock_acquired=False)
     with pytest.raises(Exception, match="lock"):
         restore.restore_recovery_bundle(locked, _bundle(), "edge-01", now_ts=NOW)

@@ -15,6 +15,7 @@ _REQUIRED_TABLES: tuple[str, ...] = (
     "proxy_instances",
     "proxy_lifecycle_tombstones",
     "proxy_id_aliases",
+    "proxy_recovery_adoptions",
     "proxy_config_revisions",
     "proxy_config_applications",
     "certificate_bundle_revisions",
@@ -81,6 +82,9 @@ _REQUIRED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("proxy_operations", "claim_token"),
     ("proxy_operations", "stale_requeue_count"),
     ("webfilter_blocked_log", "proxy_id"),
+    ("proxy_recovery_adoptions", "bundle_content_sha256"),
+    ("proxy_recovery_adoptions", "status"),
+    ("proxy_recovery_adoptions", "detail"),
     ("saml_auth_profiles", "public_base_url"),
     ("saml_auth_profiles", "username_attribute"),
     ("saml_auth_profiles", "groups_attribute"),
@@ -97,6 +101,8 @@ _REQUIRED_INDEXES: tuple[tuple[str, str], ...] = (
     ("proxy_operations", "uniq_proxy_operations_active_request"),
     ("webfilter_blocked_log", "idx_webfilter_blocked_log_ts_id"),
     ("webfilter_blocked_log", "idx_webfilter_blocked_log_proxy_ts"),
+    ("proxy_recovery_adoptions", "idx_proxy_recovery_adoptions_source"),
+    ("proxy_recovery_adoptions", "idx_proxy_recovery_adoptions_bundle"),
 )
 
 
@@ -363,6 +369,33 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
             )
             if alias_tombstone_conflicts:
                 result.error(f"proxy_id_aliases has {alias_tombstone_conflicts} aliases inconsistent with lifecycle tombstones")
+
+            invalid_recovery_adoptions = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM proxy_recovery_adoptions
+                WHERE status <> 'adopted'
+                   OR detail <> ''
+                   OR bundle_content_sha256 NOT REGEXP '^[0-9a-f]{64}$'
+                """,
+                context="proxy_recovery_adoptions marker contract",
+            )
+            if invalid_recovery_adoptions:
+                result.error(f"proxy_recovery_adoptions has {invalid_recovery_adoptions} invalid marker contract row(s)")
+
+            blocked_recovery_adoptions = _count_row(
+                active_conn,
+                """
+                SELECT COUNT(*) AS n
+                FROM proxy_recovery_adoptions marker
+                JOIN proxy_lifecycle_tombstones tombstone ON tombstone.proxy_id=marker.proxy_id
+                WHERE tombstone.action IN ('renaming','renamed','removing','removed')
+                """,
+                context="proxy_recovery_adoptions lifecycle-blocked markers",
+            )
+            if blocked_recovery_adoptions:
+                result.error(f"proxy_recovery_adoptions has {blocked_recovery_adoptions} marker row(s) on lifecycle-blocked proxy ids")
 
             orphan_config_revisions = _count_row(
                 active_conn,

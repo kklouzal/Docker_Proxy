@@ -29,6 +29,18 @@ def _proxy_registry() -> ModuleType:
     return proxy_registry
 
 
+def test_lifecycle_lock_name_matches_write_guard_for_long_proxy_ids() -> None:
+    proxy_registry = _proxy_registry()
+    from services.proxy_write_guard import proxy_lifecycle_lock_name  # type: ignore
+
+    proxy_id = "edge-" + "a" * 58
+    registry = proxy_registry.ProxyRegistry()
+
+    assert len(proxy_id) == 63
+    assert registry._lifecycle_lock_name(proxy_id) == proxy_lifecycle_lock_name(proxy_id)
+    assert registry._lifecycle_lock_name(proxy_id) != f"docker_proxy:proxy_lifecycle:{proxy_id}"[:64]
+
+
 def test_parse_public_pac_url_handles_scheme_host_ports_and_invalid_values() -> None:
     proxy_registry = _proxy_registry()
 
