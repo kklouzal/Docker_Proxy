@@ -993,27 +993,35 @@ def test_api_squid_config_bootstraps_from_selected_proxy_runtime_when_admin_empt
 def test_api_squid_config_reports_proxy_runtime_empty_instead_of_empty_success(
     monkeypatch, tmp_path
 ) -> None:
-    class EmptyController:
+    class LocalFallbackController:
         def get_current_config(self) -> str:
-            return ""
+            return "http_port 127.0.0.1:3128 # admin-local fallback must not leak in\n"
 
     class EmptyRevisions:
+        def __init__(self) -> None:
+            self.created: list[tuple[object, str, dict[str, object]]] = []
+
         def get_active_config_text(self, _proxy_id):
             return ""
+
+        def ensure_active_revision(self, proxy_id, config_text, **kwargs):
+            self.created.append((proxy_id, config_text, kwargs))
+            return SimpleNamespace(revision_id=1, config_text=config_text)
 
     class EmptyRuntimeConfigProxyClient(RecordingProxyClient):
         def get_current_config(self, proxy_id):
             return {
                 "ok": False,
                 "config_text": "",
-                "detail": f"runtime config unavailable for {proxy_id}",
+                "detail": f"runtime config unavailable for {proxy_id}; token=supersecret",
             }
 
+    revisions = EmptyRevisions()
     loaded = load_admin_app(
         monkeypatch,
         tmp_path,
-        controller=EmptyController(),
-        config_revisions=EmptyRevisions(),
+        controller=LocalFallbackController(),
+        config_revisions=revisions,
         proxy_client=EmptyRuntimeConfigProxyClient(),
         registry=FakeRegistry(["edge-a"]),
     )
@@ -1026,7 +1034,85 @@ def test_api_squid_config_reports_proxy_runtime_empty_instead_of_empty_success(
     assert response.headers.get("Content-Type", "").startswith("text/plain")
     body = response.get_data(as_text=True)
     assert "runtime config unavailable for edge-a" in body
+    assert "token=[redacted]" in body
+    assert "supersecret" not in body
+    assert "admin-local fallback" not in body
+    assert revisions.created == []
     assert body.strip()
+
+
+def test_api_squid_config_state_prefers_runtime_drift_over_stale_apply_and_redacts_details(
+    monkeypatch, tmp_path
+) -> None:
+    class Revisions:
+        def get_active_revision_metadata(self, proxy_id):
+            assert proxy_id == "default"
+            return SimpleNamespace(
+                revision_id=5,
+                proxy_id="default",
+                config_sha256="desired-sha",
+                source_kind="manual",
+                created_by="operator",
+                created_ts=10,
+                is_active=True,
+            )
+
+        def latest_apply_for_revision(self, proxy_id, revision_id):
+            assert proxy_id == "default"
+            assert revision_id == 5
+            return SimpleNamespace(
+                application_id=9,
+                proxy_id="default",
+                revision_id=5,
+                ok=True,
+                detail="proxy apply ok token=supersecret",
+                applied_by="proxy",
+                applied_ts=11,
+            )
+
+    class DriftProxyClient(RecordingProxyClient):
+        def get_health(self, proxy_id, *_, timeout_seconds=None, **kwargs):
+            payload = super().get_health(
+                proxy_id, timeout_seconds=timeout_seconds, **kwargs
+            )
+            payload.update(
+                {
+                    "active_revision_id": 5,
+                    "active_revision_sha": "desired-sha",
+                    "current_config_sha": "different-running-sha",
+                }
+            )
+            return payload
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        config_revisions=Revisions(),
+        proxy_client=DriftProxyClient(),
+    )
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="config_apply",
+        subject="Squid config",
+        summary="Revision 5 applied.",
+        target_kind="config_revision",
+        target_ref=5,
+        detail="operation finished token=supersecret",
+    )
+    operation.status = "applied"
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/squid-config/state?proxy_id=default")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["state"] == "drift"
+    assert data["label"] == "Saved/running mismatch"
+    assert data["latest_apply_revision_id"] == 5
+    assert data["latest_apply_detail"] == "proxy apply ok token=[redacted]"
+    assert data["operation_detail"] == "operation finished token=[redacted]"
+    assert "supersecret" not in response.get_data(as_text=True)
 
 
 def test_api_squid_config_state_reports_pending_desired_revision(

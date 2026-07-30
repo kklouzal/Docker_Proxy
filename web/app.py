@@ -1095,14 +1095,21 @@ def _config_runtime_state(
             )
         except Exception:
             runtime_health = {}
-    if latest_apply is None:
-        try:
-            latest_apply = revisions.latest_apply(proxy_id)
-        except Exception:
-            latest_apply = None
-
     revision_id = _safe_revision_id(getattr(active_revision, "revision_id", 0))
     revision_sha = str(getattr(active_revision, "config_sha256", "") or "")
+    if latest_apply is None:
+        try:
+            latest_apply_for_revision = getattr(
+                revisions,
+                "latest_apply_for_revision",
+                None,
+            )
+            if callable(latest_apply_for_revision):
+                latest_apply = latest_apply_for_revision(proxy_id, revision_id)
+            else:
+                latest_apply = revisions.latest_apply(proxy_id)
+        except Exception:
+            latest_apply = None
     running_revision_id = _safe_revision_id(
         (runtime_health or {}).get("active_revision_id"),
     )
@@ -1154,19 +1161,19 @@ def _config_runtime_state(
         state = "reconciled"
         label = "Saved revision running"
         detail = f"Saved revision {revision_id} matches the selected proxy runtime."
-    elif apply_matches:
-        state = "applied_unverified"
-        label = "Apply recorded"
-        detail = (
-            f"The proxy recorded a successful apply for saved revision {revision_id}, "
-            "but current runtime SHA evidence is unavailable."
-        )
     elif running_sha:
         state = "drift"
         label = "Saved/running mismatch"
         detail = (
             f"Saved revision {revision_id} ({_short_sha(revision_sha) or 'unknown sha'}) "
             f"does not match running config {_short_sha(running_sha) or 'unknown sha'}."
+        )
+    elif apply_matches:
+        state = "applied_unverified"
+        label = "Apply recorded"
+        detail = (
+            f"The proxy recorded a successful apply for saved revision {revision_id}, "
+            "but current runtime SHA evidence is unavailable."
         )
     else:
         state = "unknown"
@@ -1191,13 +1198,17 @@ def _config_runtime_state(
         if latest_apply is not None
         else None,
         "latest_apply_ts": _safe_revision_id(getattr(latest_apply, "applied_ts", 0)),
-        "latest_apply_detail": str(getattr(latest_apply, "detail", "") or ""),
+        "latest_apply_detail": redact_sensitive_text(
+            getattr(latest_apply, "detail", "") or "",
+        ),
         "operation_id": operation_id,
         "operation_status": operation_status,
         "operation_updated_ts": _safe_revision_id(
             getattr(latest_operation, "updated_ts", 0),
         ),
-        "operation_detail": str(getattr(latest_operation, "detail", "") or ""),
+        "operation_detail": redact_sensitive_text(
+            getattr(latest_operation, "detail", "") or "",
+        ),
     }
 
 
@@ -3390,13 +3401,22 @@ def _selected_proxy_running_config(proxy_id: str) -> tuple[str, str]:
     try:
         result = fetcher(proxy_id)
     except ProxyClientError as exc:
-        return "", str(exc)
+        return "", public_error_message(
+            ValueError(str(exc)),
+            default="Selected proxy runtime could not provide the running Squid config.",
+            max_len=500,
+        )
     config_text = str((result or {}).get("config_text") or "")
     if config_text.strip():
         return config_text, ""
-    detail = str(
-        (result or {}).get("detail")
-        or "Selected proxy runtime returned an empty running Squid config."
+    detail = public_error_message(
+        ValueError(
+            str(
+                (result or {}).get("detail")
+                or "Selected proxy runtime returned an empty running Squid config."
+            ),
+        ),
+        max_len=500,
     )
     return "", detail
 
@@ -3415,7 +3435,6 @@ def _current_managed_config() -> str:
     if current:
         return current
 
-    runtime_detail = ""
     if _active_proxy_management_url():
         runtime_config, runtime_detail = _selected_proxy_running_config(proxy_id)
         if runtime_config.strip():
@@ -3426,6 +3445,12 @@ def _current_managed_config() -> str:
                 source_kind="bootstrap_runtime",
             )
             return runtime_config
+        detail = (
+            runtime_detail
+            or "Selected proxy runtime returned an empty running Squid config."
+        )
+        msg = f"Selected proxy runtime did not provide a Squid config: {detail}"
+        raise ProxyClientError(msg)
 
     fallback = squid_controller.get_current_config() or ""
     if fallback.strip():
@@ -3437,9 +3462,6 @@ def _current_managed_config() -> str:
         )
         return fallback
 
-    if runtime_detail:
-        detail = f"Selected proxy runtime did not provide a Squid config: {runtime_detail}"
-        raise ProxyClientError(detail)
     return fallback
 
 
@@ -3455,9 +3477,12 @@ def _validate_config_for_current_mode(config_text: str) -> tuple[bool, str]:
     if _active_proxy_management_url():
         try:
             result = get_proxy_client().validate_config(proxy_id, config_text)
-            return bool(result.get("ok", False)), str(result.get("detail") or "")
+            return bool(result.get("ok", False)), redact_sensitive_text(
+                result.get("detail") or "",
+            )
         except ProxyClientError as exc:
-            return False, f"Proxy validation failed: {exc}"
+            detail = redact_sensitive_text(exc)
+            return False, f"Proxy validation failed: {detail}"
 
     if shutil.which("squid") is not None:
         return squid_controller.validate_config_text(config_text)
@@ -5219,7 +5244,6 @@ def index():
         proxy_id,
         active_revision=active_revision,
         runtime_health=health,
-        latest_apply=latest_apply,
     )
 
     return render_template(
@@ -5275,7 +5299,7 @@ def api_squid_config():
         cfg = _current_managed_config()
     except ProxyClientError as exc:
         return app.response_class(
-            str(exc),
+            redact_sensitive_text(exc),
             status=502,
             mimetype="text/plain; charset=utf-8",
         )

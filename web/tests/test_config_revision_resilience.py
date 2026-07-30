@@ -223,3 +223,45 @@ def test_activate_revision_switches_active_revision(monkeypatch) -> None:
     assert revision.revision_id == 9
     assert any("SET is_active=0" in call for call in calls)
     assert any("SET is_active=1" in call for call in calls)
+
+
+class _LatestApplyConn:
+    def __init__(self, calls: list[tuple[str, tuple[object, ...] | None]]) -> None:
+        self.calls = calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.calls.append((str(sql), params))
+        assert params == ("edge-a", 5)
+        assert "revision_id=%s" in str(sql)
+        return SimpleNamespace(
+            fetchone=lambda: {
+                "id": 7,
+                "proxy_id": "edge-a",
+                "revision_id": 5,
+                "ok": 1,
+                "detail": "applied",
+                "applied_by": "proxy",
+                "applied_ts": 123,
+            },
+        )
+
+
+def test_config_revision_latest_apply_can_filter_to_active_revision(monkeypatch) -> None:
+    store = ConfigRevisionStore()
+    calls: list[tuple[str, tuple[object, ...] | None]] = []
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: _LatestApplyConn(calls))
+
+    application = store.latest_apply("edge-a", revision_id=5)
+
+    assert application is not None
+    assert application.application_id == 7
+    assert application.revision_id == 5
+    assert calls

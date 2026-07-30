@@ -622,20 +622,37 @@ class ConfigRevisionStore:
         assert application is not None
         return application
 
-    def latest_apply(self, proxy_id: object | None) -> ConfigApplication | None:
+    def latest_apply(
+        self,
+        proxy_id: object | None,
+        *,
+        revision_id: object | None = None,
+    ) -> ConfigApplication | None:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
+        params: tuple[object, ...] = (proxy_key,)
+        revision_filter = ""
+        if revision_id is not None:
+            revision_filter = " AND revision_id=%s"
+            params = (proxy_key, int(revision_id or 0))
         with self._connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT * FROM proxy_config_applications
-                WHERE proxy_id=%s
+                WHERE proxy_id=%s{revision_filter}
                 ORDER BY applied_ts DESC, id DESC
                 LIMIT 1
                 """,
-                (proxy_key,),
+                params,
             ).fetchone()
         return self._row_to_application(row)
+
+    def latest_apply_for_revision(
+        self,
+        proxy_id: object | None,
+        revision_id: object,
+    ) -> ConfigApplication | None:
+        return self.latest_apply(proxy_id, revision_id=revision_id)
 
 
 _store: ConfigRevisionStore | None = None
