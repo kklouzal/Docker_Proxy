@@ -31,6 +31,7 @@ class _ValidationConn:
         *,
         missing_tables=(),
         missing_columns=(),
+        missing_indexes=(),
         duplicate_ops: int = 0,
         schema_checksum: str | None = None,
         terminal_claims: int = 0,
@@ -44,7 +45,7 @@ class _ValidationConn:
     ) -> None:
         self.tables = set(module._REQUIRED_TABLES) - set(missing_tables)
         self.columns = set(module._REQUIRED_COLUMNS) - set(missing_columns)
-        self.indexes = set(module._REQUIRED_INDEXES)
+        self.indexes = set(module._REQUIRED_INDEXES) - set(missing_indexes)
         self.duplicate_ops = duplicate_ops
         self.schema_checksum = schema_checksum or module.latest_schema_checksum()
         self.terminal_claims = terminal_claims
@@ -194,6 +195,28 @@ def test_mysql_state_validation_fails_missing_operation_proxy_id_before_invarian
 
     assert result.ok is False
     assert result.errors == ["missing generated/idempotency columns: proxy_operations.proxy_id"]
+
+
+def test_mysql_state_validation_fails_missing_operation_progress_index() -> None:
+    _add_web_to_path()
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(
+            mysql_state_validation,
+            missing_indexes=(
+                ("proxy_operations", "idx_proxy_operations_proxy_started_id"),
+            ),
+        ),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert any(
+        "missing generated/idempotency indexes" in error
+        and "proxy_operations.idx_proxy_operations_proxy_started_id" in error
+        for error in result.errors
+    )
 
 
 def test_mysql_state_validation_fails_invalid_schema_checksum() -> None:

@@ -21,18 +21,6 @@ from services.proxy_write_guard import guarded_proxy_write
 
 OPERATION_STATUSES = ("pending", "applying", "applied", "superseded", "failed")
 TERMINAL_STATUSES = {"applied", "superseded", "failed"}
-_REQUIRED_COLUMNS = (
-    "request_key",
-    "claim_token",
-    "stale_requeue_count",
-    "force_sync",
-)
-_REQUIRED_INDEXES = (
-    "idx_proxy_operations_proxy_status_created_id",
-    "idx_proxy_operations_proxy_started_id",
-    "idx_proxy_operations_proxy_updated_id",
-    "uniq_proxy_operations_active_request",
-)
 
 
 def _text_or_default(value: object | None, *, default: str = "") -> str:
@@ -329,28 +317,13 @@ class OperationLedger:
                 "ALTER TABLE proxy_operations ADD UNIQUE KEY uniq_proxy_operations_active_request (proxy_id, request_key)",
             )
 
-    def _schema_missing_requirements(self, conn) -> list[str]:
-        missing = [
-            f"column:{column_name}"
-            for column_name in _REQUIRED_COLUMNS
-            if not self._column_exists(conn, "proxy_operations", column_name)
-        ]
-        missing.extend(
-            f"index:{index_name}"
-            for index_name in _REQUIRED_INDEXES
-            if not self._index_exists(conn, "proxy_operations", index_name)
-        )
-        return missing
-
     def _schema_current_on_connection(self, conn) -> bool:
         if not hasattr(conn, "native"):
             return False
         try:
             from services.schema_lifecycle import runtime_schema_ready_for_lazy_store
 
-            return runtime_schema_ready_for_lazy_store(
-                conn,
-            ) and not self._schema_missing_requirements(conn)
+            return runtime_schema_ready_for_lazy_store(conn)
         except Exception:
             return False
 

@@ -24,6 +24,7 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 | 16 | `control_plane_identity` | `control_plane_identity` singleton identity table used to distinguish control-plane ownership during proxy recovery. |
 | 17 | `proxy_recovery_adoptions` | `proxy_recovery_adoptions` records accepted cross-control-plane recovery adoptions. |
 | 18 | `policy_exception_method_scope` | Adds `policy_exceptions.method` and method-aware lookup coverage so webfilter approvals can preserve HTTP method scope while legacy empty-method exceptions remain broad. |
+| 19 | `operation_ledger_stale_requeue_lifecycle` | Adds `proxy_operations.stale_requeue_count`, backfills active operation idempotency keys, and declares the operation-ledger progress/active-request indexes so lazy operation-ledger startup can trust the lifecycle-current marker without hot-path DDL probes. |
 
 ## Lifecycle model
 

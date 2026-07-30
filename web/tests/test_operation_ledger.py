@@ -163,7 +163,7 @@ def test_init_db_backfills_active_request_keys_before_unique_index(monkeypatch) 
     assert conn.committed is True
 
 
-def test_init_db_repairs_missing_operation_requirements_even_when_runtime_schema_current(
+def test_init_db_trusts_current_runtime_schema_without_requirement_probes(
     monkeypatch,
 ) -> None:
     _add_repo_paths()
@@ -172,16 +172,36 @@ def test_init_db_repairs_missing_operation_requirements_even_when_runtime_schema
     class _CurrentSchemaConnection(_Connection):
         native = object()
 
-        def execute(self, sql, params=()):
-            compact = " ".join(str(sql).split())
-            self.queries.append((compact, tuple(params or ())))
-            if "GET_LOCK" in compact:
-                return _Result([{"acquired": 1}])
-            if "RELEASE_LOCK" in compact:
-                return _Result([{"released": 1}])
-            return _Result()
-
     conn = _CurrentSchemaConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr(
+        ledger,
+        "_column_exists",
+        lambda *_args: pytest.fail("current schema must not trigger hot-path column probes"),
+    )
+    monkeypatch.setattr(
+        ledger,
+        "_index_exists",
+        lambda *_args: pytest.fail("current schema must not trigger hot-path index probes"),
+    )
+    monkeypatch.setattr(
+        "services.schema_lifecycle.runtime_schema_ready_for_lazy_store",
+        lambda _conn: True,
+    )
+
+    ledger.init_db()
+
+    assert conn.queries == []
+
+
+def test_init_db_repairs_missing_operation_requirements_when_schema_unknown(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    conn = _Connection()
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     monkeypatch.setattr(
@@ -192,7 +212,7 @@ def test_init_db_repairs_missing_operation_requirements_even_when_runtime_schema
     monkeypatch.setattr(ledger, "_index_exists", lambda *_args: True)
     monkeypatch.setattr(
         "services.schema_lifecycle.runtime_schema_ready_for_lazy_store",
-        lambda _conn: True,
+        lambda _conn: False,
     )
 
     ledger.init_db()

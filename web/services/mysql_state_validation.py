@@ -90,6 +90,9 @@ _REQUIRED_INDEXES: tuple[tuple[str, str], ...] = (
     ("proxy_config_revisions", "uniq_proxy_config_revisions_active_proxy"),
     ("certificate_bundle_revisions", "uniq_certificate_bundle_revisions_active"),
     ("adblock_artifact_revisions", "uniq_adblock_artifact_revisions_active"),
+    ("proxy_operations", "idx_proxy_operations_proxy_status_created_id"),
+    ("proxy_operations", "idx_proxy_operations_proxy_started_id"),
+    ("proxy_operations", "idx_proxy_operations_proxy_updated_id"),
     ("proxy_operations", "uniq_proxy_operations_active_request"),
 )
 

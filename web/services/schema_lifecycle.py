@@ -27,7 +27,7 @@ from services.db import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 18
+_SCHEMA_VERSION = 19
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -531,6 +531,10 @@ def _init_operation_ledger_schema(_conn: Any) -> None:
     importlib.import_module("services.operation_ledger").get_operation_ledger().init_db()
 
 
+def _backfill_operation_ledger_active_request_keys(conn: Any) -> None:
+    importlib.import_module("services.operation_ledger").get_operation_ledger()._backfill_active_request_keys(conn)
+
+
 def _init_audit_schema(_conn: Any) -> None:
     importlib.import_module("services.audit_store").get_audit_store().init_db()
 
@@ -756,6 +760,46 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                     "policy_exceptions",
                     "idx_policy_exceptions_scope",
                     "CREATE INDEX idx_policy_exceptions_scope ON policy_exceptions(proxy_id,status,block_type,client_ip,domain,category,method,expires_ts)",
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=19,
+            name="operation_ledger_stale_requeue_lifecycle",
+            columns=(
+                SchemaColumnSpec(
+                    "proxy_operations",
+                    "stale_requeue_count",
+                    "ALTER TABLE proxy_operations ADD COLUMN stale_requeue_count INT NOT NULL DEFAULT 0 AFTER updated_ts",
+                ),
+            ),
+            indexes=(
+                SchemaIndexSpec(
+                    "proxy_operations",
+                    "idx_proxy_operations_proxy_status_created_id",
+                    "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_status_created_id (proxy_id, status, created_ts, id)",
+                ),
+                SchemaIndexSpec(
+                    "proxy_operations",
+                    "idx_proxy_operations_proxy_started_id",
+                    "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_started_id (proxy_id, started_ts, id)",
+                ),
+                SchemaIndexSpec(
+                    "proxy_operations",
+                    "idx_proxy_operations_proxy_updated_id",
+                    "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_updated_id (proxy_id, updated_ts, id)",
+                ),
+                SchemaIndexSpec(
+                    "proxy_operations",
+                    "uniq_proxy_operations_active_request",
+                    "ALTER TABLE proxy_operations ADD UNIQUE KEY uniq_proxy_operations_active_request (proxy_id, request_key)",
+                    unique=True,
+                ),
+            ),
+            data_steps=(
+                SchemaDataStep(
+                    "operation_ledger_active_request_key_backfill",
+                    _backfill_operation_ledger_active_request_keys,
                 ),
             ),
         ),
