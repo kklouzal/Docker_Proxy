@@ -7,6 +7,7 @@ from services.operation_ledger import (
     ProxyOperation,
     get_operation_ledger,
     normalize_operation_request_hash,
+    normalize_operation_target_ref,
 )
 from services.proxy_context import normalize_proxy_id
 from services.proxy_registry import get_proxy_registry
@@ -38,6 +39,10 @@ def _ephemeral_operation(
         normalized_request_hash = normalize_operation_request_hash(request_hash)
     except ValueError:
         normalized_request_hash = ""
+    try:
+        normalized_target_ref = normalize_operation_target_ref(target_kind, target_ref)
+    except ValueError:
+        normalized_target_ref = ""
     return ProxyOperation(
         operation_id=0,
         proxy_id=normalize_proxy_id(proxy_id),
@@ -46,7 +51,7 @@ def _ephemeral_operation(
         subject=(subject or "")[:255],
         summary=(summary or "")[:512],
         target_kind=(target_kind or "")[:64],
-        target_ref=str(target_ref or "")[:255],
+        target_ref=normalized_target_ref,
         rollback_kind=(rollback_kind or "")[:64],
         rollback_ref=str(rollback_ref or "")[:255],
         request_hash=normalized_request_hash,
@@ -95,6 +100,32 @@ def request_proxy_reconcile(
             rollback_ref=rollback_ref,
             request_hash=request_hash,
             detail=detail,
+            created_by=created_by,
+            force=force,
+        )
+    except ValueError as exc:
+        error_detail = public_error_message(
+            exc,
+            default="The operation identity is invalid.",
+            max_len=500,
+        )
+        failure_detail = "Proxy reconcile was not queued because the operation identity is invalid."
+        if error_detail:
+            failure_detail = f"{failure_detail} {error_detail}"
+        if detail:
+            failure_detail = f"{redact_sensitive_text(detail)}\n{failure_detail}".strip()
+        return _ephemeral_operation(
+            proxy_id,
+            status="failed",
+            operation_type=operation_type,
+            subject=subject,
+            summary=summary,
+            target_kind=target_kind,
+            target_ref=target_ref,
+            rollback_kind=rollback_kind,
+            rollback_ref=rollback_ref,
+            request_hash=request_hash,
+            detail=failure_detail,
             created_by=created_by,
             force=force,
         )

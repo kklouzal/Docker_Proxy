@@ -821,6 +821,8 @@ class FakeAdblockStore:
 
 class FakeWebfilterStore:
     def __init__(self) -> None:
+        self.squid_include_path = "/etc/squid/conf.d/40-webfilter.conf"
+        self.whitelist_path = "/etc/squid/lists/webfilter-allow.txt"
         self.settings = SimpleNamespace(
             enabled=False,
             source_url="",
@@ -901,9 +903,19 @@ class FakeWebfilterStore:
             return {"ok": False, "verdict": "invalid", "reason": "Domain is required."}
         return {"ok": True, "verdict": "allow", "domain": domain.strip().lower()}
 
+    def render_materialized_state(self) -> Any:
+        whitelist = "".join(f"{entry}\n" for entry, _enabled in self.whitelist)
+        include = "# fake webfilter include\n"
+        if self.settings.enabled:
+            include += "acl fake_webfilter_enabled all\n"
+        return SimpleNamespace(include_text=include, whitelist_text=whitelist)
+
 
 class FakeSslfilterStore:
     def __init__(self) -> None:
+        self.squid_include_path = "/etc/squid/conf.d/30-sslfilter.conf"
+        self.nobump_list_path = "/etc/squid/lists/no-bump-src.txt"
+        self.nocache_src_list_path = "/etc/squid/lists/no-cache-src.txt"
         self.no_bump_domains: list[str] = []
         self.no_cache_domains: list[str] = []
         self.no_bump_src_nets: list[str] = []
@@ -1008,6 +1020,20 @@ class FakeSslfilterStore:
         before = set(self.no_bump_domains)
         self.add_domain("nobump", "discord.com")
         return len(set(self.no_bump_domains) - before), 1, ""
+
+    def render_materialized_state(self) -> Any:
+        include_lines = [
+            "# fake sslfilter include",
+            *[f"ssl::server_name .{domain}" for domain in self.no_bump_domains],
+            *[f"ssl::server_name .{domain}" for domain in self.no_cache_domains],
+        ]
+        nobump = "".join(f"{cidr}\n" for cidr in self.no_bump_src_nets)
+        nocache = "".join(f"{cidr}\n" for cidr in self.no_cache_src_nets)
+        return SimpleNamespace(
+            include_text="\n".join(include_lines) + "\n",
+            nobump_src_list_text=nobump,
+            nocache_src_list_text=nocache,
+        )
 
 
 class FakePacProfilesStore:

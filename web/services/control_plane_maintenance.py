@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 # ruff: noqa: S608
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from services.db import DATABASE_ERRORS, connect, mysql_error_code, table_exists
 from services.observability_maintenance import public_detail
 from services.sql_identifiers import quote_mysql_identifier
 from services.webcat_hygiene import cleanup_stale_webcat_build_tables
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONTROL_PLANE_RETENTION_DAYS = 90
 MIN_CONTROL_PLANE_RETENTION_DAYS = 1
@@ -398,20 +401,24 @@ def _row_value(row: Any, key: str, index: int, default: object = None) -> object
 
 
 def _queue_policy_exception_expiry_policy_sync(proxy_id: str) -> bool:
+    from services.operation_ledger import normalize_operation_target_ref
     from services.policy_materializer import build_proxy_policy_state
     from services.proxy_sync import request_proxy_reconcile
 
     desired_policy_sha = ""
     detail = "Policy exceptions expired; proxy should refresh materialized policy files."
     try:
-        desired_policy_sha = str(
-            build_proxy_policy_state(proxy_id).policy_sha256 or "",
+        desired_policy_sha = normalize_operation_target_ref(
+            "policy_state",
+            build_proxy_policy_state(proxy_id).policy_sha256,
         )
     except Exception as exc:
         detail = (
-            "Policy exceptions expired; desired policy SHA was unavailable before "
-            f"queueing. {public_detail(exc)}"
+            "Policy exceptions expired; policy reconciliation was not queued because "
+            f"desired policy SHA was unavailable or invalid. {public_detail(exc)}"
         )
+        logger.warning(detail)
+        return False
 
     summary = "Expired policy exceptions queued for reconciliation."
     if desired_policy_sha:

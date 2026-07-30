@@ -23,6 +23,7 @@ from services.proxy_write_guard import guarded_proxy_write
 OPERATION_STATUSES = ("pending", "applying", "applied", "superseded", "failed")
 TERMINAL_STATUSES = {"applied", "superseded", "failed"}
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SHA256_TARGET_KINDS = frozenset({"policy_state", "pac_state"})
 
 
 def _text_or_default(value: object | None, *, default: str = "") -> str:
@@ -60,6 +61,34 @@ def normalize_operation_request_hash(value: object | None) -> str:
         return ""
     if not _SHA256_RE.fullmatch(text):
         msg = "Operation request_hash must be a SHA-256 digest when provided."
+        raise ValueError(msg)
+    return text
+
+
+def normalize_operation_target_ref(
+    target_kind: object | None,
+    value: object | None,
+) -> str:
+    """Normalize operation target refs whose contract is a SHA-256 digest.
+
+    Policy and PAC operations target content-addressed desired state.  Treating
+    those refs as free-form text can let uppercase/whitespace variants dedupe
+    separately, or worse, let malformed legacy values appear to prove a runtime
+    state they cannot identify.  Other target kinds intentionally keep their
+    existing revision-id/string contracts and are only bounded by the caller.
+    """
+    kind = _text_or_default(target_kind).strip()
+    if kind not in _SHA256_TARGET_KINDS:
+        return _limited_text(value, 255)
+    if value is None or value is False or value == 0:
+        msg = f"Operation target_ref for {kind} must be a SHA-256 digest."
+        raise ValueError(msg)
+    text = _text_or_default(value).strip().lower()
+    if not text:
+        msg = f"Operation target_ref for {kind} must be a SHA-256 digest."
+        raise ValueError(msg)
+    if not _SHA256_RE.fullmatch(text):
+        msg = f"Operation target_ref for {kind} must be a SHA-256 digest."
         raise ValueError(msg)
     return text
 
@@ -422,7 +451,7 @@ class OperationLedger:
         subject_text = _limited_text(subject, 255)
         summary_text = _limited_text(summary, 512, redact=True)
         target_kind_text = _limited_text(target_kind, 64)
-        target_ref_text = _limited_text(target_ref, 255)
+        target_ref_text = normalize_operation_target_ref(target_kind_text, target_ref)
         rollback_kind_text = _limited_text(rollback_kind, 64)
         rollback_ref_text = _limited_text(rollback_ref, 255)
         request_hash_text = normalize_operation_request_hash(request_hash)

@@ -15,6 +15,15 @@ from .admin_route_test_utils import (
     login_client,
 )
 
+PAC_SHA_BY_PROXY = {
+    "edge-2": "a" * 64,
+    "edge-pac": "b" * 64,
+}
+
+
+def _pac_sha(proxy_id: object) -> str:
+    return PAC_SHA_BY_PROXY.get(str(proxy_id), "c" * 64)
+
 
 def _login(client) -> None:
     login_client(client)
@@ -98,7 +107,7 @@ def test_sslfilter_private_network_toggle_queues_pac_materialization_for_selecte
     monkeypatch.setattr(
         loaded.module,
         "build_proxy_pac_state",
-        lambda proxy_id: SimpleNamespace(state_sha256=f"pac-sha-{proxy_id}"),
+        lambda proxy_id: SimpleNamespace(state_sha256=_pac_sha(proxy_id)),
     )
 
     response = _post(
@@ -119,7 +128,7 @@ def test_sslfilter_private_network_toggle_queues_pac_materialization_for_selecte
     assert operation.proxy_id == "edge-2"
     assert operation.operation_type == "pac_refresh"
     assert operation.target_kind == "pac_state"
-    assert operation.target_ref == "pac-sha-edge-2"
+    assert operation.target_ref == _pac_sha("edge-2")
     assert operation.status == "pending"
 
     page = client.get(location)
@@ -167,6 +176,38 @@ def test_sslfilter_mutation_reports_reconcile_queue_failure_without_success(
     assert "Sync not queued" in text
     assert "Policy changes were saved, but proxy reconciliation was not queued." in text
     assert "SSL filtering policy updated and queued" not in text
+
+
+def test_policy_queue_refuses_missing_desired_sha(monkeypatch, tmp_path) -> None:
+    loaded, _client = _loaded(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_policy_sha_for_proxy",
+        lambda _proxy_id: ("", "policy fingerprint unavailable"),
+    )
+
+    with loaded.module.app.test_request_context("/sslfilter", method="POST"):
+        ok, detail = loaded.module._trigger_policy_sync()
+
+    assert ok is False
+    assert "desired policy SHA is unavailable" in detail
+    assert loaded.operation_ledger.operations == []
+
+
+def test_pac_queue_refuses_malformed_desired_sha(monkeypatch, tmp_path) -> None:
+    loaded, _client = _loaded(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        loaded.module,
+        "build_proxy_pac_state",
+        lambda _proxy_id: SimpleNamespace(state_sha256="not-a-sha"),
+    )
+
+    with loaded.module.app.test_request_context("/pac", method="POST"):
+        ok, detail = loaded.module._queue_pac_runtime_refresh()
+
+    assert ok is False
+    assert "desired PAC state SHA is unavailable" in detail
+    assert loaded.operation_ledger.operations == []
 
 
 def test_webfilter_whitelist_success_discloses_queued_selected_proxy_scope(
@@ -811,7 +852,7 @@ def test_pac_refresh_queues_only_without_direct_proxy_sync(monkeypatch, tmp_path
     monkeypatch.setattr(
         loaded.module,
         "build_proxy_pac_state",
-        lambda proxy_id: SimpleNamespace(state_sha256=f"pac-sha-{proxy_id}"),
+        lambda proxy_id: SimpleNamespace(state_sha256=_pac_sha(proxy_id)),
     )
 
     response = _post(
@@ -826,7 +867,7 @@ def test_pac_refresh_queues_only_without_direct_proxy_sync(monkeypatch, tmp_path
     assert operation.operation_type == "pac_refresh"
     assert operation.proxy_id == "edge-pac"
     assert operation.target_kind == "pac_state"
-    assert operation.target_ref == "pac-sha-edge-pac"
+    assert operation.target_ref == _pac_sha("edge-pac")
 
 
 def test_cache_clear_queues_operation_without_direct_proxy_client(

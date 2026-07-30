@@ -103,7 +103,10 @@ from services.observability_queries import (
 from services.observability_queries import (
     normalize_runtime_health_state_errors,
 )
-from services.operation_ledger import get_operation_ledger
+from services.operation_ledger import (
+    get_operation_ledger,
+    normalize_operation_target_ref,
+)
 from services.pac_private_local import pac_private_local_destination_metadata
 from services.pac_profiles_store import (
     get_pac_profiles_store as _default_get_pac_profiles_store,
@@ -685,6 +688,34 @@ def _short_sha(value: object, *, length: int = 12) -> str:
     return str(value or "").strip()[: max(1, int(length))]
 
 
+def _state_target_sha(target_kind: str, value: object | None) -> str:
+    try:
+        return normalize_operation_target_ref(target_kind, value)
+    except ValueError:
+        return ""
+
+
+def _state_target_sha_error(target_kind: str, value: object | None) -> str:
+    try:
+        normalize_operation_target_ref(target_kind, value)
+    except ValueError as exc:
+        return public_error_message(exc, default="Invalid operation target fingerprint.")
+    return ""
+
+
+def _operation_target_ref_matches(
+    *,
+    target_kind: str,
+    operation_ref: object | None,
+    expected_ref: object | None,
+) -> bool:
+    if target_kind in {"policy_state", "pac_state"}:
+        expected_sha = _state_target_sha(target_kind, expected_ref)
+        operation_sha = _state_target_sha(target_kind, operation_ref)
+        return bool(expected_sha and operation_sha and expected_sha == operation_sha)
+    return str(operation_ref or "") == str(expected_ref or "")
+
+
 def _safe_revision_id(value: object) -> int:
     try:
         return int(value or 0)
@@ -707,9 +738,14 @@ def _latest_operation(
     target_ref_text = str(target_ref or "")
     matching = []
     for op in operations:
-        if target_kind and str(getattr(op, "target_kind", "") or "") != target_kind:
+        operation_target_kind = str(getattr(op, "target_kind", "") or "")
+        if target_kind and operation_target_kind != target_kind:
             continue
-        if target_ref_text and str(getattr(op, "target_ref", "") or "") != target_ref_text:
+        if target_ref_text and not _operation_target_ref_matches(
+            target_kind=target_kind or operation_target_kind,
+            operation_ref=getattr(op, "target_ref", ""),
+            expected_ref=target_ref_text,
+        ):
             continue
         if operation_types and str(getattr(op, "operation_type", "") or "") not in operation_types:
             continue
@@ -1265,7 +1301,13 @@ def _desired_policy_sha_for_proxy(proxy_id: str) -> tuple[str, str]:
             exc,
             default="Desired policy SHA could not be calculated.",
         )
-    return str(state.policy_sha256 or ""), ""
+    try:
+        return normalize_operation_target_ref("policy_state", state.policy_sha256), ""
+    except ValueError as exc:
+        return "", public_error_message(
+            exc,
+            default="Desired policy SHA is invalid.",
+        )
 
 
 def _latest_policy_operation(proxy_id: str, desired_policy_sha: str = ""):
@@ -1311,15 +1353,27 @@ def _policy_runtime_state(
             )
         except Exception:
             runtime_health = {}
-    runtime_desired_sha = str((runtime_health or {}).get("desired_policy_sha") or "")
-    current_policy_sha = str((runtime_health or {}).get("current_policy_sha") or "")
+    runtime_desired_sha = _state_target_sha(
+        "policy_state",
+        (runtime_health or {}).get("desired_policy_sha"),
+    )
+    current_policy_sha = _state_target_sha(
+        "policy_state",
+        (runtime_health or {}).get("current_policy_sha"),
+    )
     state_errors = normalize_runtime_health_state_errors(
         (runtime_health or {}).get("state_errors"),
     )
     latest_operation = _latest_policy_operation(proxy_id, desired_policy_sha)
     operation_status = str(getattr(latest_operation, "status", "") or "")
     operation_id = _safe_revision_id(getattr(latest_operation, "operation_id", 0))
-    operation_target_ref = str(getattr(latest_operation, "target_ref", "") or "")
+    raw_operation_target_ref = str(getattr(latest_operation, "target_ref", "") or "")
+    operation_target_ref = _state_target_sha("policy_state", raw_operation_target_ref)
+    operation_target_error = (
+        _state_target_sha_error("policy_state", raw_operation_target_ref)
+        if latest_operation is not None and raw_operation_target_ref
+        else ""
+    )
     operation_matches_desired = bool(
         latest_operation is not None
         and desired_policy_sha
@@ -1328,9 +1382,7 @@ def _policy_runtime_state(
     running_matches = bool(
         desired_policy_sha and current_policy_sha and desired_policy_sha == current_policy_sha
     )
-    operation_matches_current_desired = bool(
-        operation_matches_desired or (latest_operation is not None and not operation_target_ref)
-    )
+    operation_matches_current_desired = operation_matches_desired
 
     if operation_status in {"pending", "applying"} and operation_matches_current_desired:
         state = operation_status
@@ -1376,7 +1428,12 @@ def _policy_runtime_state(
         label = "Runtime policy unknown"
         detail = "The selected proxy runtime did not report enough policy SHA evidence."
 
-    if latest_operation is not None and not operation_matches_current_desired:
+    if latest_operation is not None and operation_target_error:
+        detail = (
+            f"{detail} Latest selected-proxy policy operation #{operation_id} has an "
+            f"invalid target fingerprint ({operation_target_error}), so it is shown as context only."
+        )
+    elif latest_operation is not None and not operation_matches_current_desired:
         detail = (
             f"{detail} Latest selected-proxy policy operation #{operation_id} targets "
             "a different desired policy fingerprint, so it is shown as context only."
@@ -1397,8 +1454,8 @@ def _policy_runtime_state(
         "current_policy_sha": current_policy_sha,
         "current_policy_short_sha": _short_sha(current_policy_sha),
         "operation_status_label": _operation_status_label(operation_status),
-        "operation_target_ref": operation_target_ref,
-        "operation_target_short_ref": _short_sha(operation_target_ref),
+        "operation_target_ref": operation_target_ref or raw_operation_target_ref,
+        "operation_target_short_ref": _short_sha(operation_target_ref or raw_operation_target_ref),
         "operation_matches_desired": operation_matches_desired,
         "runtime_health_status": str((runtime_health or {}).get("status") or ""),
         "runtime_health_ts": _safe_revision_id((runtime_health or {}).get("timestamp")),
@@ -1463,20 +1520,30 @@ def _pac_runtime_state(
 ) -> dict[str, Any]:
     runtime_health = runtime_health if runtime_health is not None else _runtime_health_for_proxy(proxy_id)
     desired_pac_sha, desired_error = _desired_pac_state_sha_for_proxy(proxy_id)
-    current_pac_sha = str((runtime_health or {}).get("current_pac_sha") or "")
-    runtime_desired_pac_sha = str((runtime_health or {}).get("desired_pac_sha") or "")
+    current_pac_sha = _state_target_sha(
+        "pac_state",
+        (runtime_health or {}).get("current_pac_sha"),
+    )
+    runtime_desired_pac_sha = _state_target_sha(
+        "pac_state",
+        (runtime_health or {}).get("desired_pac_sha"),
+    )
     latest_operation = _latest_pac_operation(proxy_id, desired_pac_sha)
     operation_status = str(getattr(latest_operation, "status", "") or "")
     operation_id = _safe_revision_id(getattr(latest_operation, "operation_id", 0))
-    operation_target_ref = str(getattr(latest_operation, "target_ref", "") or "")
+    raw_operation_target_ref = str(getattr(latest_operation, "target_ref", "") or "")
+    operation_target_ref = _state_target_sha("pac_state", raw_operation_target_ref)
+    operation_target_error = (
+        _state_target_sha_error("pac_state", raw_operation_target_ref)
+        if latest_operation is not None and raw_operation_target_ref
+        else ""
+    )
     operation_matches_desired = bool(
         latest_operation is not None
         and desired_pac_sha
         and operation_target_ref == desired_pac_sha
     )
-    operation_matches_current_desired = bool(
-        operation_matches_desired or (latest_operation is not None and not operation_target_ref)
-    )
+    operation_matches_current_desired = operation_matches_desired
 
     if not desired_pac_sha and not desired_error:
         state = "no_desired_state"
@@ -1528,7 +1595,12 @@ def _pac_runtime_state(
         detail = "The selected proxy did not report enough PAC SHA evidence to verify materialization."
         recovery_action = "Refresh selected-proxy health or use the existing PAC save controls to queue reconciliation."
 
-    if latest_operation is not None and not operation_matches_current_desired:
+    if latest_operation is not None and operation_target_error:
+        detail = (
+            f"{detail} Latest selected-proxy PAC operation #{operation_id} has an invalid "
+            f"target fingerprint ({operation_target_error}), so it is shown as context only."
+        )
+    elif latest_operation is not None and not operation_matches_current_desired:
         detail = (
             f"{detail} Latest selected-proxy PAC operation #{operation_id} targets a different "
             "PAC fingerprint, so stale success/failure is context only."
@@ -1549,8 +1621,8 @@ def _pac_runtime_state(
         "current_pac_sha": current_pac_sha,
         "current_pac_short_sha": _short_sha(current_pac_sha),
         "operation_status_label": _operation_status_label(operation_status),
-        "operation_target_ref": operation_target_ref,
-        "operation_target_short_ref": _short_sha(operation_target_ref),
+        "operation_target_ref": operation_target_ref or raw_operation_target_ref,
+        "operation_target_short_ref": _short_sha(operation_target_ref or raw_operation_target_ref),
         "operation_matches_desired": operation_matches_desired,
     }
 
@@ -3701,13 +3773,15 @@ def _trigger_policy_sync(*, force: bool = True) -> tuple[bool, str]:
     """Queue selected-proxy policy reconciliation with a desired-policy fingerprint."""
     proxy_id = get_proxy_id()
     desired_policy_sha, desired_error = _desired_policy_sha_for_proxy(proxy_id)
+    if not desired_policy_sha:
+        detail = "Policy reconciliation was not queued because the desired policy SHA is unavailable."
+        if desired_error:
+            detail = f"{detail} {desired_error}"
+        return False, detail
     summary = "Policy state reconciliation queued."
     detail = "Admin changed policy state; proxy should refresh materialized policy files."
-    if desired_policy_sha:
-        summary = f"Policy state {_short_sha(desired_policy_sha)} queued for reconciliation."
-        detail = f"Desired policy SHA: {desired_policy_sha}"
-    elif desired_error:
-        detail = f"Desired policy SHA unavailable before queueing. {desired_error}"
+    summary = f"Policy state {_short_sha(desired_policy_sha)} queued for reconciliation."
+    detail = f"Desired policy SHA: {desired_policy_sha}"
     try:
         operation = request_proxy_reconcile(
             proxy_id,
@@ -3968,19 +4042,30 @@ def _desired_pac_state_sha_for_proxy(proxy_id: str) -> tuple[str, str]:
             exc,
             default="Desired PAC state SHA could not be calculated.",
         )
-    return str(getattr(state, "state_sha256", "") or ""), ""
+    try:
+        return normalize_operation_target_ref(
+            "pac_state",
+            getattr(state, "state_sha256", ""),
+        ), ""
+    except ValueError as exc:
+        return "", public_error_message(
+            exc,
+            default="Desired PAC state SHA is invalid.",
+        )
 
 
 def _queue_pac_runtime_refresh() -> tuple[bool, str]:
     proxy_id = get_proxy_id()
     desired_pac_sha, desired_error = _desired_pac_state_sha_for_proxy(proxy_id)
+    if not desired_pac_sha:
+        detail = "PAC runtime refresh was not queued because the desired PAC state SHA is unavailable."
+        if desired_error:
+            detail = f"{detail} {desired_error}"
+        return False, detail
     summary = "PAC profile changes queued for proxy materialization."
     detail = "Admin changed PAC profile state; proxy should refresh materialized PAC files."
-    if desired_pac_sha:
-        summary = f"PAC state {_short_sha(desired_pac_sha)} queued for materialization."
-        detail = f"Desired PAC state SHA: {desired_pac_sha}"
-    elif desired_error:
-        detail = f"Desired PAC state SHA unavailable before queueing. {desired_error}"
+    summary = f"PAC state {_short_sha(desired_pac_sha)} queued for materialization."
+    detail = f"Desired PAC state SHA: {desired_pac_sha}"
     try:
         operation = request_proxy_reconcile(
             proxy_id,

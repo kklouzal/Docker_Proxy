@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+POLICY_SHA = "a" * 64
+
 
 def _add_repo_paths() -> None:
     repo_root = Path(__file__).resolve().parents[2]
@@ -962,6 +964,84 @@ def test_create_operation_normalizes_and_rejects_request_hash_evidence(
         )
 
 
+def test_policy_and_pac_operation_target_refs_are_strict_sha256_and_normalized(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _CreateConnection:
+        def __init__(self) -> None:
+            self.queries = []
+            self.row = _operation_row(
+                operation_type="policy_sync",
+                target_kind="policy_state",
+                target_ref=POLICY_SHA,
+            )
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("INSERT INTO proxy_operations"):
+                self.row.update(
+                    operation_type=params[1],
+                    target_kind=params[4],
+                    target_ref=params[5],
+                    request_key=params[9],
+                )
+                result = _Result()
+                result.lastrowid = 7
+                return result
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.row])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _CreateConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+
+    operation = ledger.create_operation(
+        "edge-a",
+        operation_type="policy_sync",
+        subject="Policy reconciliation",
+        summary="Apply policy",
+        target_kind="policy_state",
+        target_ref=POLICY_SHA.upper(),
+    )
+
+    assert operation.target_ref == POLICY_SHA
+    assert conn.queries[0][1][5] == POLICY_SHA
+
+    with pytest.raises(ValueError, match=r"target_ref.*policy_state"):
+        ledger.create_operation(
+            "edge-a",
+            operation_type="policy_sync",
+            subject="Policy reconciliation",
+            summary="Apply policy",
+            target_kind="policy_state",
+            target_ref="policy-sha",
+        )
+
+    with pytest.raises(ValueError, match=r"target_ref.*pac_state"):
+        ledger.create_operation(
+            "edge-a",
+            operation_type="pac_refresh",
+            subject="PAC refresh",
+            summary="Apply PAC",
+            target_kind="pac_state",
+            target_ref="",
+        )
+
+
 def test_duplicate_active_request_preserves_original_rollback_metadata(
     monkeypatch,
 ) -> None:
@@ -1344,7 +1424,7 @@ def test_duplicate_requests_refresh_mutable_fields_without_replacing_rollback(
     [
         ("config_apply", "config_revision", 17, "config_revision", 3),
         ("certificate_apply", "certificate_revision", 9, "certificate_revision", 5),
-        ("policy_sync", "policy_state", "policy-sha", "", ""),
+        ("policy_sync", "policy_state", POLICY_SHA, "", ""),
     ],
 )
 def test_duplicate_request_dedupes_existing_operation_types_without_regressing_updates(
@@ -1771,7 +1851,7 @@ def test_multi_proxy_same_request_key_is_isolated(monkeypatch) -> None:
         "subject": "Policy reconciliation",
         "summary": "policy",
         "target_kind": "policy_state",
-        "target_ref": "same-sha",
+        "target_ref": POLICY_SHA,
         "request_hash": "",
     }
     edge_a = ledger.create_operation("edge-a", **kwargs)

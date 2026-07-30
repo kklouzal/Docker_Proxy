@@ -18,6 +18,13 @@ from .admin_route_test_utils import (
     login_client,
 )
 
+POLICY_SHA = "a" * 64
+POLICY_SHA_B = "b" * 64
+POLICY_SHA_OLD = "c" * 64
+PAC_SHA = "d" * 64
+PAC_SHA_B = "e" * 64
+PAC_SHA_OLD = "f" * 64
+
 
 class RecordingTimeseriesStore:
     def __init__(self) -> None:
@@ -1050,7 +1057,7 @@ def test_api_squid_config_state_prefers_runtime_drift_over_stale_apply_and_redac
             return SimpleNamespace(
                 revision_id=5,
                 proxy_id="default",
-                config_sha256="desired-sha",
+                config_sha256=POLICY_SHA,
                 source_kind="manual",
                 created_by="operator",
                 created_ts=10,
@@ -1078,7 +1085,7 @@ def test_api_squid_config_state_prefers_runtime_drift_over_stale_apply_and_redac
             payload.update(
                 {
                     "active_revision_id": 5,
-                    "active_revision_sha": "desired-sha",
+                    "active_revision_sha": POLICY_SHA,
                     "current_config_sha": "different-running-sha",
                 }
             )
@@ -1127,7 +1134,7 @@ def test_api_squid_config_state_reports_pending_desired_revision(
             return SimpleNamespace(
                 revision_id=5,
                 proxy_id="default",
-                config_sha256="desired-sha",
+                config_sha256=POLICY_SHA,
                 source_kind="manual",
                 created_by="operator",
                 created_ts=10,
@@ -1176,7 +1183,7 @@ def test_api_squid_config_state_reports_pending_desired_revision(
     assert data["state"] == "pending"
     assert data["label"] == "Apply pending"
     assert data["active_revision_id"] == 5
-    assert data["active_revision_sha"] == "desired-sha"
+    assert data["active_revision_sha"] == POLICY_SHA
     assert data["running_config_sha"] == "running-sha"
     assert data["operation_status"] == "pending"
 
@@ -3780,8 +3787,8 @@ class PolicyEvidenceProxyClient(RecordingProxyClient):
         key = str(proxy_id)
         payload.update(
             {
-                "desired_policy_sha": self.desired_by_proxy.get(key, "desired-sha"),
-                "current_policy_sha": self.current_by_proxy.get(key, "running-sha"),
+                "desired_policy_sha": self.desired_by_proxy.get(key, POLICY_SHA),
+                "current_policy_sha": self.current_by_proxy.get(key, POLICY_SHA_OLD),
                 "timestamp": 1234,
             }
         )
@@ -3816,11 +3823,11 @@ def _artifact_summary(revision_id: int, sha: str) -> SimpleNamespace:
 @pytest.mark.parametrize(
     ("operation_status", "current_sha", "expected_state", "expected_label"),
     [
-        ("pending", "old-sha", "pending", "Policy apply pending"),
-        ("applying", "old-sha", "applying", "Policy apply running"),
-        ("applied", "desired-sha", "reconciled", "Policy running"),
-        ("failed", "old-sha", "failed", "Policy apply failed"),
-        ("superseded", "old-sha", "superseded", "Policy apply superseded"),
+        ("pending", POLICY_SHA_OLD, "pending", "Policy apply pending"),
+        ("applying", POLICY_SHA_OLD, "applying", "Policy apply running"),
+        ("applied", POLICY_SHA, "reconciled", "Policy running"),
+        ("failed", POLICY_SHA_OLD, "failed", "Policy apply failed"),
+        ("superseded", POLICY_SHA_OLD, "superseded", "Policy apply superseded"),
     ],
 )
 def test_policy_runtime_state_tracks_selected_policy_operation_status(
@@ -3839,7 +3846,7 @@ def test_policy_runtime_state_tracks_selected_policy_operation_status(
     monkeypatch.setattr(
         loaded.module,
         "_desired_policy_sha_for_proxy",
-        lambda _proxy_id: ("desired-sha", ""),
+        lambda _proxy_id: (POLICY_SHA, ""),
     )
     operation = loaded.operation_ledger.create_operation(
         "default",
@@ -3847,7 +3854,7 @@ def test_policy_runtime_state_tracks_selected_policy_operation_status(
         subject="Policy reconciliation",
         summary="Policy state queued.",
         target_kind="policy_state",
-        target_ref="desired-sha",
+        target_ref=POLICY_SHA,
     )
     operation.status = operation_status
 
@@ -3859,7 +3866,7 @@ def test_policy_runtime_state_tracks_selected_policy_operation_status(
     assert state["operation_status_label"] == (
         "succeeded" if operation_status == "applied" else operation_status.replace("applying", "running")
     )
-    assert state["desired_policy_sha"] == "desired-sha"
+    assert state["desired_policy_sha"] == POLICY_SHA
     assert state["current_policy_sha"] == current_sha
 
 
@@ -3869,14 +3876,14 @@ def test_policy_runtime_state_isolated_to_selected_proxy(monkeypatch, tmp_path) 
         tmp_path,
         registry=FakeRegistry(["edge-a", "edge-b"]),
         proxy_client=PolicyEvidenceProxyClient(
-            current_by_proxy={"edge-a": "old-a", "edge-b": "old-b"},
-            desired_by_proxy={"edge-a": "desired-a", "edge-b": "desired-b"},
+            current_by_proxy={"edge-a": POLICY_SHA_OLD, "edge-b": POLICY_SHA_OLD},
+            desired_by_proxy={"edge-a": POLICY_SHA, "edge-b": POLICY_SHA_B},
         ),
     )
     monkeypatch.setattr(
         loaded.module,
         "_desired_policy_sha_for_proxy",
-        lambda proxy_id: (f"desired-{str(proxy_id).split('-')[-1]}", ""),
+        lambda proxy_id: (POLICY_SHA if proxy_id == "edge-a" else POLICY_SHA_B, ""),
     )
     edge_a_operation = loaded.operation_ledger.create_operation(
         "edge-a",
@@ -3884,7 +3891,7 @@ def test_policy_runtime_state_isolated_to_selected_proxy(monkeypatch, tmp_path) 
         subject="Policy reconciliation",
         summary="Policy state queued.",
         target_kind="policy_state",
-        target_ref="desired-a",
+        target_ref=POLICY_SHA,
     )
     edge_a_operation.status = "failed"
     edge_b_operation = loaded.operation_ledger.create_operation(
@@ -3893,7 +3900,7 @@ def test_policy_runtime_state_isolated_to_selected_proxy(monkeypatch, tmp_path) 
         subject="Policy reconciliation",
         summary="Policy state queued.",
         target_kind="policy_state",
-        target_ref="desired-b",
+        target_ref=POLICY_SHA_B,
     )
     edge_b_operation.status = "pending"
 
@@ -3909,15 +3916,77 @@ def test_policy_runtime_state_isolated_to_selected_proxy(monkeypatch, tmp_path) 
     assert "Edge-B" in text
 
 
+def test_policy_runtime_state_does_not_treat_unfingerprinted_operation_as_current(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=PolicyEvidenceProxyClient(current_by_proxy={"default": ""}),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_policy_sha_for_proxy",
+        lambda _proxy_id: (POLICY_SHA, ""),
+    )
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="policy_sync",
+        subject="Policy reconciliation",
+        summary="Legacy policy operation.",
+        target_kind="policy_state",
+        target_ref="",
+    )
+    operation.status = "pending"
+
+    state = loaded.module._policy_runtime_state("default")
+
+    assert state["state"] == "unknown"
+    assert "different desired policy fingerprint" in state["detail"]
+    assert state["operation_id"] == operation.operation_id
+    assert state["operation_matches_desired"] is False
+
+
+def test_policy_runtime_state_matches_legacy_uppercase_sha_target(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=PolicyEvidenceProxyClient(current_by_proxy={"default": POLICY_SHA_OLD}),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_policy_sha_for_proxy",
+        lambda _proxy_id: (POLICY_SHA, ""),
+    )
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="policy_sync",
+        subject="Policy reconciliation",
+        summary="Policy operation.",
+        target_kind="policy_state",
+        target_ref=POLICY_SHA.upper(),
+    )
+    operation.status = "pending"
+
+    state = loaded.module._policy_runtime_state("default")
+
+    assert state["state"] == "pending"
+    assert state["operation_matches_desired"] is True
+
+
 @pytest.mark.parametrize(
     ("operation_status", "current_sha", "expected_state", "expected_label"),
     [
-        ("pending", "old-pac", "pending", "PAC materialization pending"),
-        ("applying", "old-pac", "applying", "PAC materialization running"),
-        ("failed", "old-pac", "failed", "PAC materialization failed"),
-        ("superseded", "old-pac", "superseded", "PAC materialization superseded"),
-        ("applied", "desired-pac", "reconciled", "PAC materialized"),
-        ("applied", "old-pac", "drift", "Saved/runtime PAC mismatch"),
+        ("pending", PAC_SHA_OLD, "pending", "PAC materialization pending"),
+        ("applying", PAC_SHA_OLD, "applying", "PAC materialization running"),
+        ("failed", PAC_SHA_OLD, "failed", "PAC materialization failed"),
+        ("superseded", PAC_SHA_OLD, "superseded", "PAC materialization superseded"),
+        ("applied", PAC_SHA, "reconciled", "PAC materialized"),
+        ("applied", PAC_SHA_OLD, "drift", "Saved/runtime PAC mismatch"),
     ],
 )
 def test_pac_runtime_state_classifies_selected_proxy_materialization(
@@ -3932,13 +4001,13 @@ def test_pac_runtime_state_classifies_selected_proxy_materialization(
         monkeypatch,
         tmp_path,
         proxy_client=RuntimeEvidenceProxyClient(
-            {"default": {"desired_pac_sha": "desired-pac", "current_pac_sha": current_sha}}
+            {"default": {"desired_pac_sha": PAC_SHA, "current_pac_sha": current_sha}}
         ),
     )
     monkeypatch.setattr(
         loaded.module,
         "_desired_pac_state_sha_for_proxy",
-        lambda _proxy_id: ("desired-pac", ""),
+        lambda _proxy_id: (PAC_SHA, ""),
     )
     operation = loaded.operation_ledger.create_operation(
         "default",
@@ -3946,7 +4015,7 @@ def test_pac_runtime_state_classifies_selected_proxy_materialization(
         subject="PAC refresh",
         summary="PAC queued.",
         target_kind="pac_state",
-        target_ref="desired-pac",
+        target_ref=PAC_SHA,
     )
     operation.status = operation_status
 
@@ -3955,7 +4024,7 @@ def test_pac_runtime_state_classifies_selected_proxy_materialization(
     assert state["state"] == expected_state
     assert state["label"] == expected_label
     assert state["operation_id"] == operation.operation_id
-    assert state["desired_pac_sha"] == "desired-pac"
+    assert state["desired_pac_sha"] == PAC_SHA
     assert state["current_pac_sha"] == current_sha
 
 
@@ -3979,7 +4048,7 @@ def test_pac_runtime_state_no_desired_unavailable_and_stale_operation(
     monkeypatch.setattr(
         loaded.module,
         "_desired_pac_state_sha_for_proxy",
-        lambda _proxy_id: ("new-pac", ""),
+        lambda _proxy_id: (PAC_SHA, ""),
     )
     stale = loaded.operation_ledger.create_operation(
         "default",
@@ -3987,7 +4056,7 @@ def test_pac_runtime_state_no_desired_unavailable_and_stale_operation(
         subject="PAC refresh",
         summary="old PAC queued.",
         target_kind="pac_state",
-        target_ref="old-pac",
+        target_ref=PAC_SHA_OLD,
     )
     stale.status = "applied"
 
@@ -4007,15 +4076,15 @@ def test_pac_runtime_card_isolates_selected_proxy_partial_convergence(
         registry=FakeRegistry(["edge-a", "edge-b"]),
         proxy_client=RuntimeEvidenceProxyClient(
             {
-                "edge-a": {"desired_pac_sha": "pac-a", "current_pac_sha": "pac-a"},
-                "edge-b": {"desired_pac_sha": "pac-b", "current_pac_sha": "old-b"},
+                "edge-a": {"desired_pac_sha": PAC_SHA, "current_pac_sha": PAC_SHA},
+                "edge-b": {"desired_pac_sha": PAC_SHA_B, "current_pac_sha": PAC_SHA_OLD},
             }
         ),
     )
     monkeypatch.setattr(
         loaded.module,
         "_desired_pac_state_sha_for_proxy",
-        lambda proxy_id: ("pac-a" if proxy_id == "edge-a" else "pac-b", ""),
+        lambda proxy_id: (PAC_SHA if proxy_id == "edge-a" else PAC_SHA_B, ""),
     )
     edge_a_operation = loaded.operation_ledger.create_operation(
         "edge-a",
@@ -4023,7 +4092,7 @@ def test_pac_runtime_card_isolates_selected_proxy_partial_convergence(
         subject="PAC refresh",
         summary="PAC A queued.",
         target_kind="pac_state",
-        target_ref="pac-a",
+        target_ref=PAC_SHA,
     )
     edge_a_operation.status = "applied"
     edge_b_operation = loaded.operation_ledger.create_operation(
@@ -4032,7 +4101,7 @@ def test_pac_runtime_card_isolates_selected_proxy_partial_convergence(
         subject="PAC refresh",
         summary="PAC B queued.",
         target_kind="pac_state",
-        target_ref="pac-b",
+        target_ref=PAC_SHA_B,
     )
     edge_b_operation.status = "pending"
 
@@ -4047,6 +4116,38 @@ def test_pac_runtime_card_isolates_selected_proxy_partial_convergence(
     assert f"#{edge_b_operation.operation_id} pending" in text
     assert f"#{edge_a_operation.operation_id} succeeded" not in text
     assert "Saved PAC profiles/URL are desired state" in text
+
+
+def test_pac_runtime_state_does_not_treat_unfingerprinted_operation_as_current(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=RuntimeEvidenceProxyClient({"default": {"current_pac_sha": ""}}),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "_desired_pac_state_sha_for_proxy",
+        lambda _proxy_id: (PAC_SHA, ""),
+    )
+    operation = loaded.operation_ledger.create_operation(
+        "default",
+        operation_type="pac_refresh",
+        subject="PAC refresh",
+        summary="Legacy PAC operation.",
+        target_kind="pac_state",
+        target_ref="",
+    )
+    operation.status = "pending"
+
+    state = loaded.module._pac_runtime_state("default")
+
+    assert state["state"] == "unknown"
+    assert "different PAC fingerprint" in state["detail"]
+    assert state["operation_id"] == operation.operation_id
+    assert state["operation_matches_desired"] is False
 
 
 @pytest.mark.parametrize(
@@ -4184,7 +4285,7 @@ def test_adblock_runtime_card_isolates_selected_proxy_partial_convergence(
         proxy_client=RuntimeEvidenceProxyClient(
             {
                 "edge-a": {"active_adblock_sha": "fleet-artifact", "current_adblock_sha": "fleet-artifact"},
-                "edge-b": {"active_adblock_sha": "fleet-artifact", "current_adblock_sha": "old-b"},
+                "edge-b": {"active_adblock_sha": "fleet-artifact", "current_adblock_sha": POLICY_SHA_OLD},
             }
         ),
     )
@@ -4223,7 +4324,7 @@ def test_sslfilter_policy_change_queues_fingerprinted_policy_operation(
     monkeypatch.setattr(
         loaded.module,
         "_desired_policy_sha_for_proxy",
-        lambda _proxy_id: ("desired-sha", ""),
+        lambda _proxy_id: (POLICY_SHA, ""),
     )
     client = loaded.module.app.test_client()
     login_client(client)
@@ -4245,4 +4346,4 @@ def test_sslfilter_policy_change_queues_fingerprinted_policy_operation(
     assert operation.proxy_id == "default"
     assert operation.operation_type == "policy_sync"
     assert operation.target_kind == "policy_state"
-    assert operation.target_ref == "desired-sha"
+    assert operation.target_ref == POLICY_SHA

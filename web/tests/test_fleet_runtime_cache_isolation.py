@@ -9,6 +9,9 @@ from .admin_route_test_utils import (
     load_admin_app,
 )
 
+PAC_SHA_EDGE_A = "a" * 64
+PAC_SHA_EDGE_A_OLD = "b" * 64
+
 
 class RecordingHealthClient:
     def __init__(self) -> None:
@@ -231,14 +234,14 @@ def test_pac_runtime_state_ignores_stale_operations_for_other_fingerprints(
         "edge-b",
         operation_type="pac_refresh",
         target_kind="pac_state",
-        target_ref="pac-edge-a",
+        target_ref=PAC_SHA_EDGE_A,
     )
     cross_proxy.status = "failed"
     stale_same_proxy = ledger.create_operation(
         "edge-a",
         operation_type="pac_refresh",
         target_kind="pac_state",
-        target_ref="old-pac-edge-a",
+        target_ref=PAC_SHA_EDGE_A_OLD,
     )
     stale_same_proxy.status = "failed"
     ctx = load_admin_app(
@@ -251,7 +254,7 @@ def test_pac_runtime_state_ignores_stale_operations_for_other_fingerprints(
     monkeypatch.setattr(
         admin_app,
         "_desired_pac_state_sha_for_proxy",
-        lambda proxy_id: (f"pac-{proxy_id}", ""),
+        lambda proxy_id: (PAC_SHA_EDGE_A if proxy_id == "edge-a" else "c" * 64, ""),
     )
 
     state = admin_app._pac_runtime_state(
@@ -259,8 +262,8 @@ def test_pac_runtime_state_ignores_stale_operations_for_other_fingerprints(
         runtime_health={
             "status": "healthy",
             "proxy_status": "healthy",
-            "current_pac_sha": "pac-edge-a",
-            "desired_pac_sha": "pac-edge-a",
+            "current_pac_sha": PAC_SHA_EDGE_A,
+            "desired_pac_sha": PAC_SHA_EDGE_A,
             "timestamp": 123,
         },
     )

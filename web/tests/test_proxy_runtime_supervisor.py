@@ -14,6 +14,13 @@ from typing import NoReturn
 
 import pytest
 
+POLICY_SHA_A = "a" * 64
+POLICY_SHA_B = "b" * 64
+POLICY_SHA_OLD = "c" * 64
+PAC_SHA_A = "d" * 64
+PAC_SHA_B = "e" * 64
+PAC_SHA_OLD = "f" * 64
+
 
 def _healthcheck_forwarding_canary_url_script() -> str:
     repo_root = Path(__file__).resolve().parents[2]
@@ -5768,7 +5775,7 @@ def test_sync_from_db_policy_operation_requires_selected_proxy_policy_convergenc
         operation_id=5,
         operation_type="policy_sync",
         target_kind="policy_state",
-        target_ref="desired-a",
+        target_ref=POLICY_SHA_A,
     )
     calls: list[tuple[int, str, str]] = []
 
@@ -5792,11 +5799,11 @@ def test_sync_from_db_policy_operation_requires_selected_proxy_policy_convergenc
             "ok": True,
             "detail": "runtime reconciled",
             "executed_operation_types": ["policy_sync"],
-            "policy_sha256": "desired-a",
+            "policy_sha256": POLICY_SHA_A,
         }
 
     runtime._sync_from_db_unlocked = sync_unlocked
-    runtime._current_policy_sha = lambda: "old-a"
+    runtime._current_policy_sha = lambda: POLICY_SHA_OLD
 
     result = runtime.sync_from_db(force=False)
 
@@ -5807,7 +5814,7 @@ def test_sync_from_db_policy_operation_requires_selected_proxy_policy_convergenc
             "failed",
             (
                 "policy state sync did not converge selected-proxy runtime state; "
-                "queued policy state desired-a differs from current policy state old-a.\n"
+                f"queued policy state {POLICY_SHA_A[:12]} differs from current policy state {POLICY_SHA_OLD[:12]}.\n"
                 "runtime reconciled"
             ),
         )
@@ -5826,13 +5833,13 @@ def test_sync_from_db_policy_operation_uses_selected_proxy_current_policy_sha(
         operation_id=5,
         operation_type="policy_sync",
         target_kind="policy_state",
-        target_ref="desired-a",
+        target_ref=POLICY_SHA_A,
     )
     edge_b = SimpleNamespace(
         operation_id=6,
         operation_type="policy_sync",
         target_kind="policy_state",
-        target_ref="desired-b",
+        target_ref=POLICY_SHA_B,
     )
     calls: list[tuple[int, str, str]] = []
 
@@ -5856,19 +5863,19 @@ def test_sync_from_db_policy_operation_uses_selected_proxy_current_policy_sha(
             "ok": True,
             "detail": "runtime reconciled",
             "executed_operation_types": ["policy_sync"],
-            "policy_sha256": "desired-a",
-            "current_policy_sha": "desired-a",
+            "policy_sha256": POLICY_SHA_A,
+            "current_policy_sha": POLICY_SHA_A,
         }
 
     runtime._sync_from_db_unlocked = sync_unlocked
-    runtime._current_policy_sha = lambda: "desired-b"
+    runtime._current_policy_sha = lambda: POLICY_SHA_B
 
     result = runtime.sync_from_db(force=False)
 
     assert result["ok"] is True
     assert calls[0] == (5, "applied", "runtime reconciled")
     assert calls[1][0:2] == (6, "superseded")
-    assert "queued policy state desired-b was not applied" in calls[1][2]
+    assert f"queued policy state {POLICY_SHA_B[:12]} was not applied" in calls[1][2]
 
 
 def test_operation_completion_requires_exact_pac_target_and_current_runtime() -> None:
@@ -5877,7 +5884,7 @@ def test_operation_completion_requires_exact_pac_target_and_current_runtime() ->
     op = SimpleNamespace(
         operation_type="pac_refresh",
         target_kind="pac_state",
-        target_ref="pac-a",
+        target_ref=PAC_SHA_A,
     )
 
     assert runtime_module._operation_completion_status(
@@ -5886,10 +5893,43 @@ def test_operation_completion_requires_exact_pac_target_and_current_runtime() ->
         detail="runtime reconciled",
         result={
             "executed_operation_types": ["pac_refresh"],
-            "state_sha256": "pac-a",
-            "current_state_sha256": "pac-a",
+            "state_sha256": PAC_SHA_A,
+            "current_state_sha256": PAC_SHA_A,
         },
     ) == ("applied", "runtime reconciled")
+
+    uppercase_op = SimpleNamespace(
+        operation_type="pac_refresh",
+        target_kind="pac_state",
+        target_ref=PAC_SHA_A.upper(),
+    )
+    assert runtime_module._operation_completion_status(
+        uppercase_op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["pac_refresh"],
+            "state_sha256": PAC_SHA_A,
+            "current_state_sha256": PAC_SHA_A,
+        },
+    ) == ("applied", "runtime reconciled")
+
+    malformed_status, malformed_detail = runtime_module._operation_completion_status(
+        SimpleNamespace(
+            operation_type="pac_refresh",
+            target_kind="pac_state",
+            target_ref="pac-a",
+        ),
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["pac_refresh"],
+            "state_sha256": PAC_SHA_A,
+            "current_state_sha256": PAC_SHA_A,
+        },
+    )
+    assert malformed_status == "failed"
+    assert "valid queued PAC state target" in malformed_detail
 
     status, detail = runtime_module._operation_completion_status(
         op,
@@ -5897,12 +5937,12 @@ def test_operation_completion_requires_exact_pac_target_and_current_runtime() ->
         detail="runtime reconciled",
         result={
             "executed_operation_types": ["pac_refresh"],
-            "state_sha256": "pac-b",
-            "current_state_sha256": "pac-b",
+            "state_sha256": PAC_SHA_B,
+            "current_state_sha256": PAC_SHA_B,
         },
     )
     assert status == "superseded"
-    assert "queued PAC state pac-a" in detail
+    assert f"queued PAC state {PAC_SHA_A[:12]}" in detail
 
     missing_status, missing_detail = runtime_module._operation_completion_status(
         op,
@@ -5919,8 +5959,8 @@ def test_operation_completion_requires_exact_pac_target_and_current_runtime() ->
         detail="runtime reconciled",
         result={
             "executed_operation_types": ["pac_refresh"],
-            "state_sha256": "pac-a",
-            "current_state_sha256": "pac-current-mismatch",
+            "state_sha256": PAC_SHA_A,
+            "current_state_sha256": PAC_SHA_OLD,
         },
     )
     assert mismatch_status == "failed"

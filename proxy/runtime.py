@@ -44,6 +44,7 @@ from services.materialized_files import write_managed_text_files
 from services.operation_ledger import (
     get_operation_ledger,
     normalize_operation_request_hash,
+    normalize_operation_target_ref,
 )
 from services.pac_renderer import (
     PAC_RENDER_DIR,
@@ -482,6 +483,7 @@ def _operation_completion_status(
     if target_kind == "policy_state":
         return _operation_string_target_status(
             label="policy state",
+            target_kind=target_kind,
             target_ref=str(getattr(operation, "target_ref", "") or "").strip(),
             applied_ref=str(result.get("policy_sha256") or "").strip(),
             current_ref=str(result.get("current_policy_sha") or "").strip(),
@@ -492,6 +494,7 @@ def _operation_completion_status(
     if target_kind == "pac_state":
         return _operation_string_target_status(
             label="PAC state",
+            target_kind=target_kind,
             target_ref=str(getattr(operation, "target_ref", "") or "").strip(),
             applied_ref=str(result.get("state_sha256") or "").strip(),
             current_ref=str(result.get("current_state_sha256") or "").strip(),
@@ -646,16 +649,19 @@ def _operation_completion_status(
 def _operation_string_target_status(
     *,
     label: str,
+    target_kind: str,
     target_ref: str,
     applied_ref: str,
     current_ref: str,
     default_status: str,
     detail: str,
 ) -> tuple[str, str]:
-    if not target_ref:
+    try:
+        target_ref = normalize_operation_target_ref(target_kind, target_ref)
+    except ValueError as exc:
         op_detail = (
             f"{label} operation completed reconciliation but did not include "
-            f"a valid queued {label} target."
+            f"a valid queued {label} target: {public_error_message(exc)}"
         )
         if detail:
             op_detail = f"{op_detail}\n{detail}"
@@ -664,6 +670,16 @@ def _operation_string_target_status(
         op_detail = (
             f"{label} operation completed reconciliation but did not report "
             "active target evidence required to verify the queued target."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    try:
+        applied_ref = normalize_operation_target_ref(target_kind, applied_ref)
+    except ValueError as exc:
+        op_detail = (
+            f"{label} operation completed reconciliation but did not report "
+            f"valid active target evidence: {public_error_message(exc)}"
         )
         if detail:
             op_detail = f"{op_detail}\n{detail}"
@@ -680,6 +696,16 @@ def _operation_string_target_status(
         op_detail = (
             f"{label} operation applied target {target_ref[:12]}, but current runtime "
             "evidence required to verify convergence is unavailable."
+        )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+    try:
+        current_ref = normalize_operation_target_ref(target_kind, current_ref)
+    except ValueError as exc:
+        op_detail = (
+            f"{label} operation applied target {target_ref[:12]}, but current runtime "
+            f"evidence is invalid: {public_error_message(exc)}"
         )
         if detail:
             op_detail = f"{op_detail}\n{detail}"
