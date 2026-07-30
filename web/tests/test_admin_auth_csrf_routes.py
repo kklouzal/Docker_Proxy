@@ -12,6 +12,17 @@ from .admin_route_test_utils import (
 )
 
 
+class UnavailableSamlAuthStore:
+    def get_profile(self):
+        msg = "saml profile database password=secret"
+        raise RuntimeError(msg)
+
+    def default_profile(self):
+        from services.saml_auth import SamlAuthStore
+
+        return SamlAuthStore().default_profile()
+
+
 def test_login_requires_csrf_and_accepts_form_or_header_token(
     monkeypatch, tmp_path
 ) -> None:
@@ -64,6 +75,67 @@ def test_login_clears_session_fixation_data_but_preserves_csrf(
         assert sess.permanent is True
 
 
+def test_login_degrades_to_local_auth_when_saml_profile_store_is_unavailable(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        saml_auth_store=UnavailableSamlAuthStore(),
+    )
+    client = loaded.module.app.test_client()
+
+    page = client.get("/login")
+    body = page.get_data(as_text=True)
+
+    assert page.status_code == 200
+    assert "Sign in with SAML" not in body
+    assert "secret" not in body
+
+    token = csrf_token(client, "/login")
+    login_response = client.post(
+        "/login",
+        data={"username": "admin", "password": "admin", "csrf_token": token},
+        follow_redirects=False,
+    )
+
+    assert login_response.status_code in {302, 303}
+    with client.session_transaction() as sess:
+        assert sess.get("user") == "admin"
+
+
+def test_saml_routes_degrade_when_profile_store_is_unavailable(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        saml_auth_store=UnavailableSamlAuthStore(),
+    )
+    client = loaded.module.app.test_client()
+
+    metadata = client.get("/auth/saml/metadata", base_url="https://admin.example.test")
+    metadata_body = metadata.get_data(as_text=True)
+    assert metadata.status_code == 200
+    assert metadata.mimetype == "application/samlmetadata+xml"
+    assert "secret" not in metadata_body
+    assert 'entityID="https://admin.example.test/auth/saml/metadata"' in metadata_body
+
+    login = client.get("/auth/saml/login?next=/administration", follow_redirects=False)
+    assert login.status_code in {302, 303}
+    assert login.headers["Location"].startswith(
+        "/login?next=/administration&error=saml_unavailable"
+    )
+
+    acs = client.post(
+        "/auth/saml/acs",
+        data={"RelayState": "/administration"},
+        follow_redirects=False,
+    )
+    assert acs.status_code in {302, 303}
+    assert acs.headers["Location"].startswith("/login?next=/administration")
+
+
 def test_login_records_success_and_failure_audit_events(monkeypatch, tmp_path) -> None:
     audit = FakeAuditStore()
     loaded = load_admin_app(monkeypatch, tmp_path, audit_store=audit)
@@ -95,6 +167,23 @@ def test_audit_store_failure_does_not_break_login(monkeypatch, tmp_path) -> None
     client = loaded.module.app.test_client()
     response = login_client(client)
     assert response.status_code in {302, 303}
+
+
+def test_recover_route_is_available_before_login_and_clears_proxy_selection(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    with client.session_transaction() as sess:
+        sess["active_proxy_id"] = "stale-proxy"
+
+    response = client.get("/recover", follow_redirects=False)
+
+    assert response.status_code in {302, 303}
+    assert response.headers["Location"].startswith("/?recovered=1")
+    with client.session_transaction() as sess:
+        assert "active_proxy_id" not in sess
+        assert "user" not in sess
 
 
 def test_logout_requires_csrf_and_clears_session(monkeypatch, tmp_path) -> None:
@@ -190,6 +279,15 @@ def test_max_content_length_configuration_accepts_positive_values(
     monkeypatch.setenv("MAX_CONTENT_LENGTH", "1024")
     loaded = load_admin_app(monkeypatch, tmp_path)
     assert loaded.module.app.config["MAX_CONTENT_LENGTH"] == 1024
+
+
+@pytest.mark.parametrize("value", ["TRUE", "Yes", "ON", "1"])
+def test_session_cookie_secure_configuration_accepts_case_insensitive_truthy_values(
+    monkeypatch, tmp_path, value: str
+) -> None:
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", value)
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    assert loaded.module.app.config["SESSION_COOKIE_SECURE"] is True
 
 
 def test_session_timeout_configuration_is_bounded_to_at_least_one_hour(

@@ -152,6 +152,7 @@ from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import extract_domain as _extract_domain
 from services.safe_browsing_v5 import SafeBrowsingStore
 from services.saml_auth import (
+    SamlProviderProfile,
     build_saml_auth,
     build_sp_info,
     build_sp_metadata,
@@ -1825,6 +1826,51 @@ try:
 except Exception:
     app.logger.exception("Failed to apply MySQL schema migrations at Admin UI startup")
     raise
+
+
+def _default_saml_profile() -> SamlProviderProfile:
+    try:
+        return _saml_auth_store.default_profile()
+    except Exception:
+        return SamlProviderProfile(
+            provider="saml",
+            enabled=False,
+            metadata_url="",
+            require_https=True,
+            verify_tls=True,
+            ca_bundle="",
+            timeout_seconds=10,
+            max_metadata_bytes=2 * 1024 * 1024,
+            raw_metadata_xml="",
+            parsed_metadata_json="",
+            entity_id="",
+            fetched_ts=0,
+            cache_expires_ts=0,
+            valid_until_ts=0,
+            last_refresh_ok=False,
+            last_refresh_ts=0,
+            last_refresh_detail="",
+            public_base_url="",
+            username_attribute="NameID",
+            groups_attribute="groups",
+            required_group="",
+            updated_ts=0,
+        )
+
+
+def _current_saml_profile() -> SamlProviderProfile:
+    try:
+        return _saml_auth_store.get_profile()
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.saml_profile",
+            interval_seconds=30.0,
+            message="Failed to load SAML provider profile",
+        )
+        return _default_saml_profile()
+
+
 if _env_secret:
     app.secret_key = _env_secret
 else:
@@ -1839,10 +1885,9 @@ else:
 # reliably emitted across Flask/Werkzeug versions.
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-if (os.environ.get("SESSION_COOKIE_SECURE") or "").strip() in {
+if (os.environ.get("SESSION_COOKIE_SECURE") or "").strip().lower() in {
     "1",
     "true",
-    "True",
     "yes",
     "on",
 }:
@@ -2688,6 +2733,7 @@ def _require_login_guard():
     if request.endpoint in {
         "login",
         "logout",
+        "recover_admin_session",
         "auth_saml_metadata",
         "auth_saml_login",
         "auth_saml_acs",
@@ -2817,7 +2863,7 @@ def _inject_proxy_context():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    saml_profile = _saml_auth_store.get_profile()
+    saml_profile = _current_saml_profile()
     saml_enabled = profile_metadata_ready(saml_profile)
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
@@ -2902,7 +2948,7 @@ def _establish_admin_session(username: str, provider: str) -> None:
 
 @app.route("/auth/saml/metadata", methods=["GET"])
 def auth_saml_metadata():
-    profile = _saml_auth_store.get_profile()
+    profile = _current_saml_profile()
     try:
         metadata = build_sp_metadata(profile, request)
     except Exception as exc:
@@ -2917,7 +2963,7 @@ def auth_saml_metadata():
 
 @app.route("/auth/saml/login", methods=["GET"])
 def auth_saml_login():
-    profile = _saml_auth_store.get_profile()
+    profile = _current_saml_profile()
     next_url = _safe_next_url(request.args.get("next") or "")
     session.pop("saml_request_id", None)
     if not profile_metadata_ready(profile):
@@ -2950,7 +2996,7 @@ def auth_saml_login():
 
 @app.route("/auth/saml/acs", methods=["POST"])
 def auth_saml_acs():
-    profile = _saml_auth_store.get_profile()
+    profile = _current_saml_profile()
     next_url = _safe_next_url(request.form.get("RelayState") or "")
     if not profile_metadata_ready(profile):
         session.pop("saml_request_id", None)
