@@ -5014,6 +5014,54 @@ def test_sync_from_db_routes_claimed_operation_force_to_artifact_sync(
     assert observed == [(False, True)]
 
 
+def test_sync_from_db_does_not_force_artifacts_for_cache_clear(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="cache_clear",
+        target_kind="",
+        force=True,
+    )
+    observed: list[tuple[bool, bool]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, _proxy_id) -> None:
+            return None
+
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, *_args, **_kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+
+    def sync_unlocked(*, force=False, artifact_force=None, operations=None):
+        observed.append((bool(force), bool(artifact_force)))
+        assert operations == [op]
+        return {
+            "ok": True,
+            "detail": "cache cleared",
+            "executed_operation_types": ["cache_clear"],
+            "cache_cleared": True,
+        }
+
+    runtime._sync_from_db_unlocked = sync_unlocked
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert observed == [(False, False)]
+
+
 def test_sync_from_db_logs_operation_ledger_claim_failure(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
@@ -5921,6 +5969,63 @@ def test_operation_completion_tracks_adblock_build_settings_version_target() -> 
     assert "queued settings version 12" in detail
 
 
+def test_operation_completion_rejects_mismatched_supported_target_kind() -> None:
+    from proxy import runtime as runtime_module
+
+    op = SimpleNamespace(
+        operation_type="policy_sync",
+        target_kind="pac_state",
+        target_ref="pac-a",
+    )
+
+    status, detail = runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["policy_sync"],
+            "state_sha256": "pac-a",
+            "current_state_sha256": "pac-a",
+        },
+    )
+
+    assert status == "failed"
+    assert "operation 'policy_sync' cannot target 'pac_state'" in detail
+    assert "expected policy_state" in detail
+    assert "runtime reconciled" in detail
+
+
+def test_operation_completion_supports_revert_config_revision_target() -> None:
+    from proxy import runtime as runtime_module
+
+    op = SimpleNamespace(
+        operation_type="revert",
+        target_kind="config_revision",
+        target_ref="9",
+        request_hash="active-sha",
+    )
+
+    assert runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["revert"],
+            "revision_id": 9,
+            "active_revision_sha": "active-sha",
+        },
+    ) == ("applied", "runtime reconciled")
+
+    bad_status, bad_detail = runtime_module._operation_completion_status(
+        SimpleNamespace(operation_type="revert", target_kind="", target_ref="9"),
+        default_status="applied",
+        detail="runtime reconciled",
+        result={"executed_operation_types": ["revert"]},
+    )
+    assert bad_status == "failed"
+    assert "operation 'revert' cannot target 'no target'" in bad_detail
+
+
 def test_sync_from_db_marks_unsupported_operation_failed(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
@@ -5968,6 +6073,47 @@ def test_sync_from_db_marks_unsupported_operation_failed(monkeypatch) -> None:
             ),
         )
     ]
+
+
+def test_sync_from_db_marks_mismatched_supported_operation_failed(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="pac_refresh",
+        target_kind="policy_state",
+        target_ref="policy-sha",
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, _proxy_id) -> None:
+            return None
+
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._invalidate_health_cache = lambda: None
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime._current_config_sha = lambda: "current-sha"
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is False
+    assert result["executed_operation_types"] == []
+    assert result["incompatible_operation_targets"] == ["pac_refresh:policy_state"]
+    assert calls[0][0:2] == (5, "failed")
+    assert "operation 'pac_refresh' cannot target 'policy_state'" in calls[0][2]
 
 
 def test_sync_from_db_requires_operation_execution_evidence(monkeypatch) -> None:
@@ -6040,6 +6186,10 @@ def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
     runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime._reload_for_policy_update = lambda **_kwargs: (
+        True,
+        "Squid reconfigured for policy update.",
+    )
     runtime._current_config_sha = lambda: "current-sha"
     runtime._current_adblock_artifact_sha = lambda: "artifact-sha"
     runtime.controller = SimpleNamespace(
@@ -6070,6 +6220,96 @@ def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None
     assert cleared == [True]
     assert "Proxy disk cache cleared." in result["detail"]
     assert "cicap_adblock" not in result["detail"]
+
+
+def test_sync_from_db_builds_adblock_artifact_for_build_operation() -> None:
+    runtime = _runtime_shell()
+    build_calls: list[dict[str, object]] = []
+    cleared_refresh: list[bool] = []
+
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime._invalidate_health_cache = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_adblock_state = lambda force=False: {
+        "ok": True,
+        "changed": True,
+        "revision_id": 10,
+        "adblock_settings_version": 12,
+        "artifact_sha256": "artifact-new",
+        "current_adblock_artifact_sha256": "artifact-new",
+        "detail": "Adblock artifact applied.",
+    }
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime._reload_for_policy_update = lambda **_kwargs: (
+        True,
+        "Squid reconfigured for policy update.",
+    )
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime._current_adblock_artifact_sha = lambda: "artifact-new"
+    runtime.controller = SimpleNamespace(
+        set_adblock_icap_revision_token=lambda _token: None,
+    )
+    runtime.registry = SimpleNamespace(mark_apply_result=lambda *args, **kwargs: None)
+    runtime.adblock_store = SimpleNamespace(
+        get_refresh_requested=lambda: 1,
+        clear_refresh_requested=lambda: cleared_refresh.append(True),
+    )
+    runtime.adblock_artifacts = SimpleNamespace(
+        build_active_artifact=lambda **kwargs: (
+            build_calls.append(dict(kwargs))
+            or {
+                "ok": True,
+                "changed": True,
+                "detail": "Activated adblock artifact revision 10.",
+                "revision": SimpleNamespace(
+                    revision_id=10,
+                    settings_version=12,
+                    artifact_sha256="artifact-new",
+                ),
+            }
+        )
+    )
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
+            revision_id=9,
+            config_sha256="current-sha",
+        ),
+        latest_apply=lambda _proxy_id: None,
+    )
+
+    result = runtime._sync_from_db_unlocked(
+        force=False,
+        artifact_force=True,
+        operations=[
+            SimpleNamespace(
+                operation_type="adblock_refresh",
+                target_kind="adblock_artifact_build",
+                target_ref="12",
+                force=True,
+            )
+        ],
+    )
+
+    assert result["ok"] is True
+    assert result["adblock_settings_version"] == 12
+    assert result["artifact_sha256"] == "artifact-new"
+    assert result["executed_operation_types"] == ["adblock_refresh"]
+    assert "Activated adblock artifact revision 10." in result["detail"]
+    assert build_calls == [
+        {
+            "refresh_lists": True,
+            "created_by": "proxy-runtime",
+            "source_kind": "background",
+        }
+    ]
+    assert cleared_refresh == [True]
 
 
 def test_sync_certificate_bundle_rolls_back_material_after_restart_failure(
@@ -6749,7 +6989,8 @@ def test_forced_non_config_operation_refreshes_artifacts_only() -> None:
     operation = SimpleNamespace(
         force=True,
         operation_type="pac_refresh",
-        target_kind="pac_profile",
+        target_kind="pac_state",
+        target_ref="pac-sha",
     )
 
     result = runtime._sync_from_db_unlocked(
@@ -6776,12 +7017,28 @@ def test_operation_config_force_is_limited_to_config_affecting_requests() -> Non
         [SimpleNamespace(force=True, operation_type="manual_sync", target_kind="")]
     )
     assert runtime_module._operations_request_config_force(
-        [SimpleNamespace(force=True, operation_type="config_apply", target_kind="")]
+        [
+            SimpleNamespace(
+                force=True,
+                operation_type="config_apply",
+                target_kind="config_revision",
+            )
+        ]
     )
     pac_operation = SimpleNamespace(
         force=True,
         operation_type="pac_refresh",
-        target_kind="pac_profile",
+        target_kind="pac_state",
     )
     assert not runtime_module._operations_request_config_force([pac_operation])
     assert runtime_module._operations_request_force([pac_operation])
+    assert runtime_module._operations_request_reconciliation_force([pac_operation])
+    cache_operation = SimpleNamespace(
+        force=True,
+        operation_type="cache_clear",
+        target_kind="",
+    )
+    assert runtime_module._operations_request_force([cache_operation])
+    assert not runtime_module._operations_request_reconciliation_force(
+        [cache_operation]
+    )

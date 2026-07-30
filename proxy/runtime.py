@@ -163,24 +163,69 @@ def _operations_request_force(operations: list[Any] | None) -> bool:
     return any(_operation_requests_force(operation) for operation in operations or [])
 
 
-_SUPPORTED_RUNTIME_OPERATION_TYPES = {
-    "sync",
-    "manual_sync",
-    "runtime_nudge",
-    "policy_sync",
-    "config_sync",
-    "config_apply",
-    "revert",
-    "certificate_apply",
-    "certificate_revert",
-    "pac_refresh",
-    "adblock_refresh",
-    "cache_clear",
+def _operation_requests_reconciliation_force(operation: Any) -> bool:
+    if not _operation_requests_force(operation):
+        return False
+    if not _operation_target_compatible(operation):
+        return False
+    return _operation_type(operation) != "cache_clear"
+
+
+def _operations_request_reconciliation_force(operations: list[Any] | None) -> bool:
+    return any(
+        _operation_requests_reconciliation_force(operation)
+        for operation in operations or []
+    )
+
+
+_RUNTIME_OPERATION_TARGET_KINDS: dict[str, frozenset[str]] = {
+    "sync": frozenset({""}),
+    "manual_sync": frozenset({""}),
+    "runtime_nudge": frozenset({""}),
+    "policy_sync": frozenset({"policy_state"}),
+    "config_sync": frozenset({"config_revision"}),
+    "config_apply": frozenset({"config_revision"}),
+    "revert": frozenset({"config_revision"}),
+    "certificate_apply": frozenset({"certificate_revision"}),
+    "certificate_revert": frozenset({"certificate_revision"}),
+    "pac_refresh": frozenset({"pac_state"}),
+    "adblock_refresh": frozenset({"adblock_artifact", "adblock_artifact_build"}),
+    "cache_clear": frozenset({"", "cache_epoch"}),
 }
+
+_SUPPORTED_RUNTIME_OPERATION_TYPES = set(_RUNTIME_OPERATION_TARGET_KINDS)
 
 
 def _operation_type(operation: Any) -> str:
     return str(getattr(operation, "operation_type", "") or "sync")
+
+
+def _operation_target_kind(operation: Any) -> str:
+    return str(getattr(operation, "target_kind", "") or "")
+
+
+def _operation_target_compatible(operation: Any) -> bool:
+    operation_type = _operation_type(operation)
+    allowed_targets = _RUNTIME_OPERATION_TARGET_KINDS.get(operation_type)
+    if allowed_targets is None:
+        return False
+    return _operation_target_kind(operation) in allowed_targets
+
+
+def _operation_target_compatibility_detail(operation: Any) -> str:
+    operation_type = _operation_type(operation)
+    target_kind = _operation_target_kind(operation)
+    allowed_targets = _RUNTIME_OPERATION_TARGET_KINDS.get(operation_type)
+    if allowed_targets is None:
+        return f"Unsupported proxy operation type '{operation_type}' was not executed."
+    expected = ", ".join(sorted(target for target in allowed_targets if target))
+    if "" in allowed_targets:
+        expected = f"{expected}, or no target" if expected else "no target"
+    actual = target_kind or "no target"
+    return (
+        f"Proxy operation '{operation_type}' cannot target '{actual}'; "
+        f"expected {expected}."
+    )
 
 
 def _unsupported_operation_types(operations: list[Any] | None) -> list[str]:
@@ -199,19 +244,56 @@ def _supported_operation_types(operations: list[Any] | None) -> list[str]:
     return sorted(
         {
             operation_type
-            for operation_type in (
-                _operation_type(operation) for operation in operations or []
-            )
+            for operation in operations or []
+            for operation_type in (_operation_type(operation),)
             if operation_type in _SUPPORTED_RUNTIME_OPERATION_TYPES
+            and _operation_target_compatible(operation)
         },
+    )
+
+
+def _incompatible_operation_targets(operations: list[Any] | None) -> list[str]:
+    return sorted(
+        {
+            (
+                f"{_operation_type(operation)}:"
+                f"{_operation_target_kind(operation) or '<none>'}"
+            )
+            for operation in operations or []
+            if _operation_type(operation) in _SUPPORTED_RUNTIME_OPERATION_TYPES
+            and not _operation_target_compatible(operation)
+        },
+    )
+
+
+def _operation_target_kind_present(
+    operations: list[Any] | None,
+    *,
+    operation_type: str,
+    target_kind: str,
+) -> bool:
+    return any(
+        _operation_type(operation) == operation_type
+        and _operation_target_kind(operation) == target_kind
+        for operation in operations or []
+    )
+
+
+def _operations_request_adblock_artifact_build(operations: list[Any] | None) -> bool:
+    return _operation_target_kind_present(
+        operations,
+        operation_type="adblock_refresh",
+        target_kind="adblock_artifact_build",
     )
 
 
 def _operation_requests_config_force(operation: Any) -> bool:
     if not _operation_requests_force(operation):
         return False
+    if not _operation_target_compatible(operation):
+        return False
     operation_type = _operation_type(operation)
-    target_kind = str(getattr(operation, "target_kind", "") or "")
+    target_kind = _operation_target_kind(operation)
     return (
         operation_type in {"manual_sync", "config_sync", "config_apply"}
         or target_kind == "config_revision"
@@ -232,7 +314,9 @@ def _operations_target_config_revision(
     if target_revision_id is None:
         return False
     for operation in operations or []:
-        if str(getattr(operation, "target_kind", "") or "") != "config_revision":
+        if not _operation_target_compatible(operation):
+            continue
+        if _operation_target_kind(operation) != "config_revision":
             continue
         if _int_or_none(getattr(operation, "target_ref", None)) == target_revision_id:
             return True
@@ -311,6 +395,12 @@ def _operation_completion_status(
         op_detail = (
             f"Unsupported proxy operation type '{operation_type}' was not executed."
         )
+        if detail:
+            op_detail = f"{op_detail}\n{detail}"
+        return "failed", op_detail[:4000]
+
+    if not _operation_target_compatible(operation):
+        op_detail = _operation_target_compatibility_detail(operation)
         if detail:
             op_detail = f"{op_detail}\n{detail}"
         return "failed", op_detail[:4000]
@@ -2555,6 +2645,47 @@ class ProxyRuntime:
             "degraded": not snapshot_ok,
         }
 
+    def _build_adblock_artifact_for_runtime_operation(self) -> dict[str, Any]:
+        refresh_lists = False
+        with suppress(Exception):
+            refresh_lists = bool(self.adblock_store.get_refresh_requested())
+        try:
+            result = self.adblock_artifacts.build_active_artifact(
+                refresh_lists=refresh_lists,
+                created_by="proxy-runtime",
+                source_kind="background",
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "changed": False,
+                "detail": public_error_message(
+                    exc,
+                    default="Adblock artifact build failed.",
+                ),
+                "revision_id": None,
+                "adblock_settings_version": None,
+                "artifact_sha256": "",
+                "download_pending": False,
+            }
+        revision = result.get("revision")
+        if bool(result.get("ok")) and not bool(result.get("download_pending")):
+            with suppress(Exception):
+                self.adblock_store.clear_refresh_requested()
+        return {
+            "ok": bool(result.get("ok")),
+            "changed": bool(result.get("changed")),
+            "detail": str(result.get("detail") or "").strip(),
+            "revision_id": _int_or_none(getattr(revision, "revision_id", None)),
+            "adblock_settings_version": _int_or_none(
+                getattr(revision, "settings_version", None),
+            ),
+            "artifact_sha256": str(
+                getattr(revision, "artifact_sha256", "") or "",
+            ).strip(),
+            "download_pending": bool(result.get("download_pending")),
+        }
+
     def sync_adblock_state(self, *, force: bool = False) -> dict[str, Any]:
         revision_meta = self.adblock_artifacts.get_active_artifact_metadata()
         store = self.adblock_store
@@ -3751,7 +3882,10 @@ class ProxyRuntime:
                         force or _operations_request_config_force(claimed_operations),
                     ),
                     artifact_force=bool(
-                        force or _operations_request_force(claimed_operations),
+                        force
+                        or _operations_request_reconciliation_force(
+                            claimed_operations,
+                        ),
                     ),
                     operations=claimed_operations,
                 )
@@ -3836,9 +3970,11 @@ class ProxyRuntime:
         )
         operation_types = set(_supported_operation_types(operations))
         unsupported_operation_types = _unsupported_operation_types(operations)
+        incompatible_operation_targets = _incompatible_operation_targets(operations)
         operation_evidence = {
             "executed_operation_types": sorted(operation_types),
             "unsupported_operation_types": unsupported_operation_types,
+            "incompatible_operation_targets": incompatible_operation_targets,
         }
         unsupported_detail = ""
         if unsupported_operation_types:
@@ -3846,10 +3982,21 @@ class ProxyRuntime:
                 "Unsupported proxy operation type(s) were not executed: "
                 + ", ".join(unsupported_operation_types)
             )
-        if unsupported_operation_types and not operation_types:
+        incompatible_detail = ""
+        if incompatible_operation_targets:
+            incompatible_detail = (
+                "Proxy operation target(s) were not executed: "
+                + ", ".join(incompatible_operation_targets)
+            )
+        if (
+            unsupported_operation_types or incompatible_operation_targets
+        ) and not operation_types:
+            detail = "\n".join(
+                part for part in (unsupported_detail, incompatible_detail) if part
+            )
             return {
                 "ok": False,
-                "detail": unsupported_detail,
+                "detail": detail,
                 "changed": False,
                 "cache_cleared": False,
                 "certificate_changed": False,
@@ -3871,6 +4018,8 @@ class ProxyRuntime:
         )
         if unsupported_detail:
             detail_parts.append(unsupported_detail)
+        if incompatible_detail:
+            detail_parts.append(incompatible_detail)
         if not cert_ok:
             detail = (
                 "\n".join(detail_parts).strip() or "Certificate bundle sync failed."
@@ -3897,7 +4046,9 @@ class ProxyRuntime:
         if str(policy_result.get("detail") or "").strip():
             detail_parts.append(str(policy_result.get("detail") or "").strip())
         if not policy_ok:
-            detail = "\n".join(detail_parts).strip() or "Policy materialization failed."
+            detail = (
+                "\n".join(detail_parts).strip() or "Policy materialization failed."
+            )
             self.registry.mark_apply_result(
                 self.proxy_id,
                 ok=False,
@@ -3909,6 +4060,50 @@ class ProxyRuntime:
             policy_result.update(operation_evidence)
             policy_result["detail"] = detail
             return policy_result
+
+        if _operations_request_adblock_artifact_build(operations):
+            adblock_build_result = self._build_adblock_artifact_for_runtime_operation()
+            if str(adblock_build_result.get("detail") or "").strip():
+                detail_parts.append(str(adblock_build_result["detail"]).strip())
+            if not bool(adblock_build_result.get("ok")):
+                detail = (
+                    "\n".join(detail_parts).strip()
+                    or "Adblock artifact build failed."
+                )
+                self.registry.mark_apply_result(
+                    self.proxy_id,
+                    ok=False,
+                    detail=detail,
+                    current_config_sha=self._current_config_sha(),
+                )
+                return {
+                    "ok": False,
+                    "detail": detail,
+                    "changed": bool(
+                        cert_changed
+                        or policy_changed
+                        or bool(adblock_build_result.get("changed"))
+                    ),
+                    "cache_cleared": False,
+                    "certificate_changed": cert_changed,
+                    "policy_changed": policy_changed,
+                    "adblock_changed": bool(adblock_build_result.get("changed")),
+                    "pac_changed": False,
+                    "config_changed": False,
+                    "current_config_sha": self._current_config_sha(),
+                    **cert_evidence,
+                    **policy_evidence,
+                    "adblock_revision_id": _int_or_none(
+                        adblock_build_result.get("revision_id"),
+                    ),
+                    "adblock_settings_version": _int_or_none(
+                        adblock_build_result.get("adblock_settings_version"),
+                    ),
+                    "artifact_sha256": str(
+                        adblock_build_result.get("artifact_sha256") or "",
+                    ),
+                    **operation_evidence,
+                }
 
         adblock_result = self.sync_adblock_state(force=artifact_force_value)
         adblock_ok = bool(adblock_result.get("ok", True))
