@@ -927,6 +927,261 @@ def test_fleet_query_resolves_proxy_alias_for_live_health(
         assert sess["active_proxy_id"] == "Proxy-PR"
 
 
+def test_fleet_selection_stores_only_registered_canonical_proxy_ids(
+    monkeypatch, tmp_path
+) -> None:
+    class LifecycleRegistry(FakeRegistry):
+        def resolve_proxy_id(self, preferred: object | None = None) -> str:
+            key = str(preferred or "")
+            if key == "renamed-edge":
+                return "edge-2"
+            if key == "removed-edge":
+                msg = "Proxy removed-edge is in lifecycle state removed; secret=password"
+                raise ValueError(msg)
+            return super().resolve_proxy_id(preferred)
+
+    cases = [
+        ("", "default"),
+        ("   ", "default"),
+        ("edge-2", "edge-2"),
+        ("../../edge 2!!", "edge-2"),
+        ("renamed-edge", "edge-2"),
+        ("removed-edge", "default"),
+        ("unknown", "default"),
+        ("EDGE-2", "default"),
+    ]
+    for requested, expected in cases:
+        registry = LifecycleRegistry(["default", "edge-2"])
+        loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+        client = loaded.module.app.test_client()
+        login_client(client)
+
+        response = client.get(f"/proxies?proxy_id={requested}")
+
+        assert response.status_code == 200
+        with client.session_transaction() as sess:
+            assert sess["active_proxy_id"] == expected
+            assert sess["active_proxy_id"] in {"default", "edge-2"}
+
+
+def test_fleet_stale_alias_bookmark_renders_canonical_links_and_forms(
+    monkeypatch, tmp_path
+) -> None:
+    class AliasRegistry(FakeRegistry):
+        def resolve_proxy_id(self, preferred: object | None = None) -> str:
+            if preferred == "old-edge":
+                return "edge-2"
+            return super().resolve_proxy_id(preferred)
+
+    registry = AliasRegistry(["default", "edge-2"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/proxies?proxy_id=old-edge")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    with client.session_transaction() as sess:
+        assert sess["active_proxy_id"] == "edge-2"
+    assert 'href="/?proxy_id=edge-2"' in body
+    assert 'href="/operations?proxy_id=edge-2"' in body
+    assert 'href="/observability?proxy_id=edge-2' in body
+    assert 'name="old_proxy_id" value="edge-2"' in body
+    assert 'name="proxy_id" value="edge-2"' in body
+    assert 'name="csrf_token"' in body
+    assert "old-edge" not in body
+
+
+def test_fleet_get_selection_does_not_run_lifecycle_mutations(
+    monkeypatch, tmp_path
+) -> None:
+    class RecordingRegistry(FakeRegistry):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.renamed: list[tuple[object | None, object | None]] = []
+            self.removed: list[object | None] = []
+
+        def rename_proxy(self, old_proxy_id, new_proxy_id, *, display_name=None):
+            self.renamed.append((old_proxy_id, new_proxy_id))
+            return super().rename_proxy(
+                old_proxy_id, new_proxy_id, display_name=display_name
+            )
+
+        def remove_proxy(self, proxy_id):
+            self.removed.append(proxy_id)
+            return super().remove_proxy(proxy_id)
+
+    registry = RecordingRegistry(["default", "edge-2"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/proxies?proxy_id=edge-2")
+
+    assert response.status_code == 200
+    assert registry.renamed == []
+    assert registry.removed == []
+    assert [proxy.proxy_id for proxy in registry.list_proxies()] == [
+        "default",
+        "edge-2",
+    ]
+
+
+def test_proxy_reconcile_updates_stale_alias_session_and_clears_fleet_caches(
+    monkeypatch, tmp_path
+) -> None:
+    class AliasRegistry(FakeRegistry):
+        def resolve_proxy_id(self, preferred: object | None = None) -> str:
+            if preferred == "old-bookmark":
+                return "Proxy-P"
+            return super().resolve_proxy_id(preferred)
+
+    registry = AliasRegistry(proxy_ids=["Proxy-P", "Proxy-IT"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    loaded.module._PROXY_HEALTH_CACHE["Proxy-P", 1.5, False] = (1.0, {})
+    loaded.module._OBSERVABILITY_SUMMARY_CACHE["Proxy-P", "24h"] = (1.0, {})
+    loaded.module._OBSERVABILITY_RESULT_CACHE["Proxy-P", "24h"] = (1.0, {})
+    client = loaded.module.app.test_client()
+    login_client(client)
+    with client.session_transaction() as sess:
+        sess["active_proxy_id"] = "old-bookmark"
+        sess["unrelated"] = "kept"
+    token = csrf_token(client, "/proxies")
+
+    response = client.post(
+        "/proxies/reconcile",
+        data={
+            "csrf_token": token,
+            "old_proxy_id": "Proxy-P",
+            "new_proxy_id": "Proxy-PR",
+            "display_name": "Proxy-PR",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert "proxy_id=Proxy-PR" in response.headers["Location"]
+    with client.session_transaction() as sess:
+        assert sess["active_proxy_id"] == "Proxy-PR"
+        assert sess["unrelated"] == "kept"
+    assert registry.get_proxy("Proxy-P") is None
+    assert registry.get_proxy("Proxy-PR") is not None
+    assert loaded.module._PROXY_HEALTH_CACHE == {}
+    assert loaded.module._OBSERVABILITY_SUMMARY_CACHE == {}
+    assert loaded.module._OBSERVABILITY_RESULT_CACHE == {}
+
+
+def test_proxy_reconcile_rejects_alias_or_malformed_ids_before_rename(
+    monkeypatch, tmp_path
+) -> None:
+    class RecordingRegistry(FakeRegistry):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.rename_calls: list[tuple[object | None, object | None]] = []
+
+        def resolve_proxy_id(self, preferred: object | None = None) -> str:
+            if preferred == "Proxy-P-old":
+                return "Proxy-P"
+            return super().resolve_proxy_id(preferred)
+
+        def rename_proxy(self, old_proxy_id, new_proxy_id, *, display_name=None):
+            self.rename_calls.append((old_proxy_id, new_proxy_id))
+            return super().rename_proxy(
+                old_proxy_id, new_proxy_id, display_name=display_name
+            )
+
+    registry = RecordingRegistry(proxy_ids=["Proxy-P", "Proxy-IT"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/proxies")
+
+    alias_old = client.post(
+        "/proxies/reconcile",
+        data={
+            "csrf_token": token,
+            "old_proxy_id": "Proxy-P-old",
+            "new_proxy_id": "Proxy-PR",
+            "display_name": "Proxy-PR",
+        },
+        follow_redirects=False,
+    )
+    malformed_new = client.post(
+        "/proxies/reconcile",
+        data={
+            "csrf_token": token,
+            "old_proxy_id": "Proxy-P",
+            "new_proxy_id": "Proxy PR",
+            "display_name": "Proxy PR",
+        },
+        follow_redirects=False,
+    )
+
+    assert alias_old.status_code in {301, 302, 303}
+    assert "error=1" in alias_old.headers["Location"]
+    assert malformed_new.status_code in {301, 302, 303}
+    assert "error=1" in malformed_new.headers["Location"]
+    assert registry.rename_calls == []
+    assert registry.get_proxy("Proxy-P") is not None
+
+
+def test_proxy_remove_rejects_alias_and_moves_alias_session_without_reset(
+    monkeypatch, tmp_path
+) -> None:
+    class AliasRegistry(FakeRegistry):
+        def resolve_proxy_id(self, preferred: object | None = None) -> str:
+            if preferred == "edge-old":
+                return "edge-2"
+            return super().resolve_proxy_id(preferred)
+
+    registry = AliasRegistry(proxy_ids=["default", "edge-2", "edge-3"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/proxies")
+
+    alias_remove = client.post(
+        "/proxies/remove",
+        data={
+            "csrf_token": token,
+            "proxy_id": "edge-old",
+            "confirm_proxy_id": "edge-old",
+        },
+        follow_redirects=False,
+    )
+    assert alias_remove.status_code in {301, 302, 303}
+    assert "error=1" in alias_remove.headers["Location"]
+    assert registry.get_proxy("edge-2") is not None
+
+    with client.session_transaction() as sess:
+        sess["active_proxy_id"] = "edge-old"
+        sess["unrelated"] = "kept"
+    removed = client.post(
+        "/proxies/remove",
+        data={
+            "csrf_token": token,
+            "proxy_id": "edge-2",
+            "confirm_proxy_id": "edge-2",
+        },
+        follow_redirects=False,
+    )
+
+    assert removed.status_code in {301, 302, 303}
+    assert "removed=1" in removed.headers["Location"]
+    assert registry.get_proxy("edge-2") is None
+    with client.session_transaction() as sess:
+        assert sess["active_proxy_id"] == "default"
+        assert sess["unrelated"] == "kept"
+    assert any(
+        record["kind"] == "proxy_remove"
+        and record["ok"] is True
+        and "proxy_id=edge-2" in record["detail"]
+        and "deleted_rows=3" in record["detail"]
+        for record in loaded.audit_store.records
+    )
+
+
 def test_api_squid_config_plain_text_contract(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
@@ -1593,6 +1848,40 @@ def test_proxy_remove_route_requires_typed_proxy_id(monkeypatch, tmp_path) -> No
     assert registry.get_proxy("edge-2") is not None
 
 
+def test_fleet_lifecycle_post_routes_require_login_even_with_csrf(
+    monkeypatch, tmp_path
+) -> None:
+    registry = FakeRegistry(["default", "edge-2"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    token = csrf_token(client, "/login")
+
+    for path, data in (
+        (
+            "/proxies/reconcile",
+            {
+                "old_proxy_id": "edge-2",
+                "new_proxy_id": "edge-3",
+                "display_name": "edge-3",
+            },
+        ),
+        (
+            "/proxies/remove",
+            {"proxy_id": "edge-2", "confirm_proxy_id": "edge-2"},
+        ),
+    ):
+        response = client.post(
+            path, data={"csrf_token": token, **data}, follow_redirects=False
+        )
+
+        assert response.status_code in {301, 302, 303}
+        assert response.headers["Location"].startswith("/login")
+    assert [proxy.proxy_id for proxy in registry.list_proxies()] == [
+        "default",
+        "edge-2",
+    ]
+
+
 def test_post_routes_reject_missing_csrf_after_login(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
@@ -1607,6 +1896,8 @@ def test_post_routes_reject_missing_csrf_after_login(monkeypatch, tmp_path) -> N
         "/clamav/test-icap",
         "/clamav/toggle",
         "/pac",
+        "/proxies/reconcile",
+        "/proxies/remove",
         "/requests",
         "/reload",
         "/squid/config",

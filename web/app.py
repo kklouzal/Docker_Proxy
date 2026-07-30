@@ -3006,9 +3006,30 @@ def _resolve_proxy_from_inventory(
     if active_proxy is not None:
         return active_proxy
 
-    resolved = registry.resolve_proxy_id(preferred_key)
+    try:
+        resolved = registry.resolve_proxy_id(preferred_key)
+    except Exception:
+        return None
     resolved_key = normalize_proxy_id(resolved)
     return next((proxy for proxy in proxies if proxy.proxy_id == resolved_key), None)
+
+
+def _is_exact_normalized_proxy_id(value: object | None) -> bool:
+    raw = "" if value is None else str(value).strip()
+    return bool(raw) and raw == normalize_proxy_id(raw)
+
+
+def _registered_proxy_ids(registry: Any) -> set[str]:
+    return {str(proxy.proxy_id) for proxy in registry.list_proxies()}
+
+
+def _safe_resolve_registered_proxy_id(registry: Any, proxy_id: object | None) -> str:
+    if proxy_id is None:
+        return ""
+    try:
+        return normalize_proxy_id(registry.resolve_proxy_id(proxy_id))
+    except Exception:
+        return ""
 
 
 def _resolve_selected_proxy_context() -> tuple[str, Any, list[Any]]:
@@ -5519,15 +5540,45 @@ def reconcile_proxy_identity():
     old_proxy_id = (request.form.get("old_proxy_id") or "").strip()
     new_proxy_id = (request.form.get("new_proxy_id") or "").strip()
     display_name = (request.form.get("display_name") or "").strip()
+    if not _is_exact_normalized_proxy_id(old_proxy_id):
+        return _redirect_to(
+            "proxies",
+            error="1",
+            msg="Proxy reconcile requires an exact current registered proxy ID.",
+        )
+    if not _is_exact_normalized_proxy_id(new_proxy_id):
+        return _redirect_to(
+            "proxies",
+            error="1",
+            msg="Proxy reconcile requires an exact replacement proxy ID.",
+        )
+    registry = get_proxy_registry()
     try:
-        renamed = get_proxy_registry().rename_proxy(
+        if old_proxy_id not in _registered_proxy_ids(registry):
+            return _redirect_to(
+                "proxies",
+                error="1",
+                msg="Proxy reconcile requires an exact current registered proxy ID.",
+            )
+        active_before = session.get("active_proxy_id")
+        active_before_key = normalize_proxy_id(active_before) if active_before else ""
+        active_before_resolved = _safe_resolve_registered_proxy_id(
+            registry,
+            active_before_key,
+        )
+        renamed = registry.rename_proxy(
             old_proxy_id,
             new_proxy_id,
             display_name=display_name or new_proxy_id,
         )
     except Exception as exc:
         return _redirect_to("proxies", error="1", msg=public_error_message(exc))
-    if session.get("active_proxy_id") == normalize_proxy_id(old_proxy_id):
+    active_after_resolved = _safe_resolve_registered_proxy_id(registry, active_before_key)
+    if (
+        active_before_key in {old_proxy_id, renamed.proxy_id}
+        or active_before_resolved == old_proxy_id
+        or active_after_resolved == renamed.proxy_id
+    ):
         session["active_proxy_id"] = renamed.proxy_id
     _PROXY_HEALTH_CACHE.clear()
     _OBSERVABILITY_SUMMARY_CACHE.clear()
@@ -5546,14 +5597,30 @@ def remove_proxy():
             error="1",
             msg="Proxy removal requires an exact registered proxy ID.",
         )
+    registry = get_proxy_registry()
+    try:
+        if normalized_proxy_id not in _registered_proxy_ids(registry):
+            return _redirect_to(
+                "proxies",
+                error="1",
+                msg="Proxy removal requires an exact registered proxy ID.",
+            )
+    except Exception as exc:
+        return _redirect_to("proxies", error="1", msg=public_error_message(exc))
     if confirmation != normalized_proxy_id:
         return _redirect_to(
             "proxies",
             error="1",
             msg="Type the proxy ID exactly to confirm removal.",
         )
+    active_before = session.get("active_proxy_id")
+    active_before_key = normalize_proxy_id(active_before) if active_before else ""
+    active_before_resolved = _safe_resolve_registered_proxy_id(
+        registry,
+        active_before_key,
+    )
     try:
-        result = get_proxy_registry().remove_proxy(normalized_proxy_id)
+        result = registry.remove_proxy(normalized_proxy_id)
     except Exception as exc:
         _record_audit_event(
             "proxy_remove",
@@ -5562,8 +5629,11 @@ def remove_proxy():
         )
         return _redirect_to("proxies", error="1", msg=public_error_message(exc))
 
-    remaining = get_proxy_registry().list_proxies()
-    if session.get("active_proxy_id") in {None, normalized_proxy_id}:
+    remaining = registry.list_proxies()
+    if active_before is None or normalized_proxy_id in {
+        active_before_key,
+        active_before_resolved,
+    }:
         if remaining:
             session["active_proxy_id"] = remaining[0].proxy_id
         else:
