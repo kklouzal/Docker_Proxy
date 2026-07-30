@@ -922,6 +922,8 @@ class ProxyRuntime:
         self._health_cache_value: dict[str, Any] | None = None
         self._navigation_health_cache_ts = 0.0
         self._navigation_health_cache_value: dict[str, Any] | None = None
+        self._clamav_health_cache_ts = 0.0
+        self._clamav_health_cache_value: dict[str, Any] | None = None
         self._adblock_icap_health_failures = 0
         self._adblock_icap_last_restart_ts = 0.0
         self._recovery_capture_lock = threading.Lock()
@@ -996,6 +998,8 @@ class ProxyRuntime:
             self._health_cache_value = None
             self._navigation_health_cache_ts = 0.0
             self._navigation_health_cache_value = None
+            self._clamav_health_cache_ts = 0.0
+            self._clamav_health_cache_value = None
 
     def get_current_config_text(self) -> str:
         current = self.controller.get_current_config() or ""
@@ -3162,7 +3166,27 @@ class ProxyRuntime:
                 interval_seconds=30.0,
             )
 
-    def collect_clamav_health(self) -> dict[str, Any]:
+    def collect_clamav_health(self, *, force: bool = False) -> dict[str, Any]:
+        now_mono = time.monotonic()
+        try:
+            current_config_sha = self._current_config_sha()
+        except Exception:
+            current_config_sha = ""
+        if not force and self.health_cache_ttl_seconds > 0:
+            with self._health_cache_lock:
+                cached = self._clamav_health_cache_value
+                if (
+                    cached is not None
+                    and (now_mono - self._clamav_health_cache_ts)
+                    < self.health_cache_ttl_seconds
+                    and (
+                        not current_config_sha
+                        or str(cached.get("current_config_sha") or "")
+                        == current_config_sha
+                    )
+                ):
+                    return cached
+
         started_mono = time.monotonic()
         try:
             probe_timeout = max(
@@ -3198,7 +3222,7 @@ class ProxyRuntime:
             "detail": "ClamAV health unavailable",
         }
         ok = bool(clamav.get("ok"))
-        return {
+        result = {
             "ok": ok,
             "status": "healthy" if ok else "degraded",
             "proxy_id": self.proxy_id,
@@ -3209,9 +3233,15 @@ class ProxyRuntime:
                 "clamd": clamd,
             },
             "health_scope": "clamav",
+            "current_config_sha": current_config_sha,
             "health_elapsed_seconds": round(time.monotonic() - started_mono, 3),
             "timestamp": int(time.time()),
         }
+        if not force and self.health_cache_ttl_seconds > 0:
+            with self._health_cache_lock:
+                self._clamav_health_cache_value = result
+                self._clamav_health_cache_ts = time.monotonic()
+        return result
 
     def collect_navigation_health(self, *, force: bool = False) -> dict[str, Any]:
         now_mono = time.monotonic()

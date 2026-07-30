@@ -233,7 +233,8 @@ def _is_public_listener_path(
         or request.environ.get("REQUEST_URI")
         or request.full_path
     )
-    if not public_pac_request_path_safe(raw_target):
+    raw_path = str(raw_target or normalized_path).split("?", 1)[0]
+    if not public_pac_request_path_safe(raw_path):
         return normalized_path in _PUBLIC_LISTENER_NON_PAC_PATHS
     if normalized_path in _PUBLIC_LISTENER_NON_PAC_PATHS:
         return True
@@ -422,10 +423,15 @@ def manage_health() -> Any:
 def manage_clamav_health() -> Any:
     try:
         current_runtime = _runtime()
+        force = str(request.args.get("force") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         collector = getattr(current_runtime, "collect_clamav_health", None)
         if collector is None:
-            return jsonify(current_runtime.collect_health()), 200
-        return jsonify(collector()), 200
+            return jsonify(current_runtime.collect_health(force=force)), 200
+        return jsonify(collector(force=force)), 200
     except Exception as exc:
         detail = public_error_message(
             exc,

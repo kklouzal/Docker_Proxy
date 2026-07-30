@@ -3641,6 +3641,36 @@ def test_collect_health_serializes_cold_refresh(monkeypatch) -> None:
     assert runtime._health_cache_value is result
 
 
+def test_collect_clamav_health_uses_bounded_cache_and_force_refreshes() -> None:
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 60.0
+    runtime._health_cache_lock = threading.Lock()
+    runtime._clamav_health_cache_ts = 0.0
+    runtime._clamav_health_cache_value = None
+    runtime._current_config_sha = lambda: "config-sha"
+    calls = {"runtime_services": 0}
+
+    def runtime_services_builder(**_kwargs):
+        calls["runtime_services"] += 1
+        return {
+            "clamd": {"ok": True, "detail": "clamd healthy"},
+            "av_icap": {"ok": True, "detail": "av healthy"},
+            "clamav": {"ok": True, "detail": "clamav healthy"},
+        }
+
+    runtime.runtime_services_builder = runtime_services_builder
+
+    first = runtime.collect_clamav_health()
+    second = runtime.collect_clamav_health()
+    forced = runtime.collect_clamav_health(force=True)
+
+    assert first is second
+    assert forced is not first
+    assert first["health_scope"] == "clamav"
+    assert first["current_config_sha"] == "config-sha"
+    assert calls["runtime_services"] == 2
+
+
 def test_collect_health_cache_refreshes_when_config_sha_changes() -> None:
     runtime = _runtime_shell()
     runtime.health_cache_ttl_seconds = 60.0

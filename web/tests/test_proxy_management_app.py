@@ -57,6 +57,7 @@ class _Runtime:
             "services": {},
             "stats": {},
             "health_scope": "full",
+            "force": force,
         }
 
     def collect_navigation_health(self, *, force=False):
@@ -67,6 +68,17 @@ class _Runtime:
             "services": {},
             "stats": {},
             "health_scope": "navigation",
+            "force": force,
+        }
+
+    def collect_clamav_health(self, *, force=False):
+        return {
+            "ok": True,
+            "status": "healthy",
+            "proxy_id": self.proxy_id,
+            "services": {},
+            "health_scope": "clamav",
+            "force": force,
         }
 
     def sync_from_db(self, *, force=False, operation_id=None):
@@ -957,11 +969,19 @@ def test_proxy_management_health_defaults_to_navigation_scope_and_full_is_opt_in
 
     navigation = _management_get(client, "/api/manage/health", headers=headers)
     full = _management_get(client, "/api/manage/health?full=1", headers=headers)
+    forced_clamav = _management_get(
+        client, "/api/manage/health/clamav?force=1", headers=headers
+    )
 
     assert navigation.status_code == 200
     assert navigation.get_json()["health_scope"] == "navigation"
+    assert navigation.get_json()["force"] is False
     assert full.status_code == 200
     assert full.get_json()["health_scope"] == "full"
+    assert full.get_json()["force"] is False
+    assert forced_clamav.status_code == 200
+    assert forced_clamav.get_json()["health_scope"] == "clamav"
+    assert forced_clamav.get_json()["force"] is True
 
 
 def test_public_health_declares_lightweight_non_forwarding_scope(monkeypatch) -> None:

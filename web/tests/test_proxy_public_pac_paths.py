@@ -105,6 +105,22 @@ def test_public_listener_serves_configured_pac_url_path(
     assert response.headers["Content-Disposition"] == 'inline; filename="wpad.dat"'
 
 
+def test_public_listener_allows_safe_percent_encoded_query_on_default_pac_path(
+    tmp_path,
+    public_pac_client,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    _write_pac_artifacts(pac_dir)
+    client = public_pac_client(pac_dir)
+    response = client.get(
+        "/proxy.pac?client=lab%20one",
+        base_url="http://public-proxy.example",
+    )
+
+    assert response.status_code == 200
+    assert response.data == b"PAC public-proxy.example"
+
+
 def test_public_listener_serves_percent_encoded_configured_pac_path(
     tmp_path,
     public_pac_client,
