@@ -56,10 +56,22 @@ class ProxyLifecycleRunResult:
     truncated_tables: tuple[str, ...] = ()
 
 
-class ProxyLifecycleIncompleteError(RuntimeError):
-    def __init__(self, message: str, result: ProxyLifecycleRunResult) -> None:
-        super().__init__(message)
-        self.result = result
+_existing_incomplete_error = globals().get("ProxyLifecycleIncompleteError")
+# Pytest and long-lived workers may reload this module while services that
+# imported the previous class object (for example proxy_registry) remain loaded.
+# Keep this exception's identity stable across reloads so callers can catch the
+# production lifecycle-incomplete signal by class instead of by message text.
+if isinstance(_existing_incomplete_error, type) and issubclass(
+    _existing_incomplete_error,
+    RuntimeError,
+):
+    ProxyLifecycleIncompleteError = _existing_incomplete_error
+else:
+
+    class ProxyLifecycleIncompleteError(RuntimeError):
+        def __init__(self, message: str, result: ProxyLifecycleRunResult) -> None:
+            super().__init__(message)
+            self.result = result
 
 
 # Deterministic registry of every application-owned MySQL table known to carry

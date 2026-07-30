@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import importlib
 import sys
 import threading
 from pathlib import Path
@@ -1391,6 +1392,17 @@ def test_concurrent_rename_same_source_to_different_targets_serializes_without_h
             "SELECT proxy_id, COUNT(*) AS c FROM proxy_concurrent_rename_rows GROUP BY proxy_id ORDER BY proxy_id",
         ).fetchall()
     assert [(row["proxy_id"], int(row["c"] or 0)) for row in rows] == [(winner, 2)]
+
+
+def test_lifecycle_incomplete_error_identity_survives_lifecycle_reload() -> None:
+    proxy_registry = _proxy_registry()
+    from services import proxy_lifecycle  # type: ignore
+    from services.proxy_lifecycle import ProxyLifecycleIncompleteError  # type: ignore
+
+    reloaded_lifecycle = importlib.reload(proxy_lifecycle)
+
+    assert reloaded_lifecycle.ProxyLifecycleIncompleteError is ProxyLifecycleIncompleteError
+    assert proxy_registry.ProxyLifecycleIncompleteError is ProxyLifecycleIncompleteError
 
 
 def test_rename_proxy_incomplete_lifecycle_rolls_back_without_success_metadata(
