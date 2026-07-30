@@ -377,10 +377,12 @@ def _operation_completion_status(
 
     if target_kind == "certificate_revision":
         target_ref = _int_or_none(getattr(operation, "target_ref", None))
+        target_hash = str(getattr(operation, "request_hash", "") or "").strip()
         applied_ref = _int_or_none(result.get("certificate_revision_id"))
         applied_hash = str(
-            result.get("desired_certificate_bundle_sha256")
-            or result.get("certificate_bundle_sha256")
+            result.get("certificate_bundle_sha256")
+            or result.get("current_certificate_sha")
+            or result.get("desired_certificate_bundle_sha256")
             or ""
         ).strip()
         if target_ref is None:
@@ -400,6 +402,24 @@ def _operation_completion_status(
                 op_detail = f"{op_detail}\n{detail}"
             return "failed", op_detail[:4000]
         if target_ref == applied_ref:
+            if target_hash and not applied_hash:
+                op_detail = (
+                    f"Certificate operation applied revision {target_ref}, but certificate "
+                    "bundle SHA evidence is unavailable."
+                )
+                if detail:
+                    op_detail = f"{op_detail}\n{detail}"
+                return "failed", op_detail[:4000]
+            if target_hash and target_hash != applied_hash:
+                op_detail = (
+                    "Certificate operation completed reconciliation against the requested "
+                    f"revision id, but queued revision {target_ref} hash "
+                    f"{target_hash[:12]} differs from applied certificate bundle evidence "
+                    f"{applied_hash[:12]}."
+                )
+                if detail:
+                    op_detail = f"{op_detail}\n{detail}"
+                return "failed", op_detail[:4000]
             return default_status, detail
 
         hash_detail = f" ({applied_hash[:12]})" if applied_hash else ""

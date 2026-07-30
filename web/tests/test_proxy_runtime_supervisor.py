@@ -5395,6 +5395,100 @@ def test_sync_from_db_marks_matching_certificate_revision_applied(monkeypatch) -
     ]
 
 
+def test_sync_from_db_fails_certificate_operation_with_hash_mismatch(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref="12",
+        request_hash="expected-cert-sha",
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, _proxy_id) -> None:
+            return None
+
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._sync_from_db_unlocked = (
+        lambda *, force=False, artifact_force=None, operations=None: {
+            "ok": True,
+            "certificate_revision_id": 12,
+            "certificate_bundle_sha256": "different-cert-sha",
+            "detail": "runtime reconciled with mismatched certificate hash",
+            "executed_operation_types": ["certificate_apply"],
+        }
+    )
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert calls[0][0:2] == (5, "failed")
+    assert "queued revision 12 hash expected-cer" in calls[0][2]
+    assert "differs from applied certificate bundle evidence" in calls[0][2]
+
+
+def test_sync_from_db_fails_certificate_operation_without_hash_evidence(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(
+        operation_id=5,
+        operation_type="certificate_revert",
+        target_kind="certificate_revision",
+        target_ref="12",
+        request_hash="expected-cert-sha",
+    )
+    calls: list[tuple[int, str, str]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, _proxy_id) -> None:
+            return None
+
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+            assert limit == 100
+            assert operation_id is None
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append((operation_id, status, detail))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._sync_from_db_unlocked = (
+        lambda *, force=False, artifact_force=None, operations=None: {
+            "ok": True,
+            "certificate_revision_id": 12,
+            "detail": "runtime reconciled without certificate hash evidence",
+            "executed_operation_types": ["certificate_revert"],
+        }
+    )
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert calls[0][0:2] == (5, "failed")
+    assert "certificate bundle SHA evidence is unavailable" in calls[0][2]
+
+
 def test_sync_from_db_marks_stale_certificate_revision_superseded(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore

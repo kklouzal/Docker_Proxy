@@ -121,13 +121,17 @@ def request_proxy_reconcile(
     return op
 
 
-def _canonical_registered_proxy_id(proxy: object) -> str:
+def canonical_registered_proxy_id(proxy: object) -> str:
     proxy_id = getattr(proxy, "proxy_id", proxy)
     raw_proxy_id = "" if proxy_id is None else str(proxy_id).strip()
     canonical_proxy_id = normalize_proxy_id(proxy_id)
     if not raw_proxy_id or raw_proxy_id != canonical_proxy_id:
         return ""
     return canonical_proxy_id
+
+
+def _canonical_registered_proxy_id(proxy: object) -> str:
+    return canonical_registered_proxy_id(proxy)
 
 
 def nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
@@ -137,7 +141,7 @@ def nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
     queued = 0
     seen_proxy_ids: set[str] = set()
     for proxy in proxies:
-        proxy_id = _canonical_registered_proxy_id(proxy)
+        proxy_id = canonical_registered_proxy_id(proxy)
         if not proxy_id:
             logger.warning(
                 "Skipping registered proxy with invalid proxy_id during reconciliation nudge: %r",

@@ -147,7 +147,7 @@ from services.proxy_logs import (
     proxy_log_status_code,
 )
 from services.proxy_registry import get_proxy_registry as _default_get_proxy_registry
-from services.proxy_sync import request_proxy_reconcile
+from services.proxy_sync import canonical_registered_proxy_id, request_proxy_reconcile
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import extract_domain as _extract_domain
 from services.safe_browsing_v5 import SafeBrowsingStore
@@ -785,7 +785,7 @@ def _certificate_global_revert_context(
         current_revision_id
         and target_ref
         and str(current_revision_id) == target_ref
-        and (not request_hash or not current_sha or request_hash == current_sha)
+        and (not request_hash or (current_sha and request_hash == current_sha))
     )
     return {
         "is_global_certificate_revert": True,
@@ -813,6 +813,33 @@ def _operation_global_certificate_context(
     if bundle_store is None:
         bundle_store = get_certificate_bundles()
     return _certificate_global_revert_context(operation, bundle_store)
+
+
+def _registered_certificate_operation_proxy_ids(proxies: Iterable[Any]) -> list[str]:
+    proxy_ids: list[str] = []
+    seen: set[str] = set()
+    for proxy in proxies:
+        proxy_id = canonical_registered_proxy_id(proxy)
+        if not proxy_id or proxy_id in seen:
+            continue
+        proxy_ids.append(proxy_id)
+        seen.add(proxy_id)
+    return proxy_ids
+
+
+def _restore_certificate_active_revision(
+    bundle_store: Any,
+    current_revision_id: object,
+    previous_revision_id: object | None,
+) -> bool:
+    restore_if_current = getattr(bundle_store, "restore_previous_if_current", None)
+    if callable(restore_if_current):
+        return bool(restore_if_current(current_revision_id, previous_revision_id))
+    if previous_revision_id:
+        bundle_store.activate_revision(previous_revision_id)
+    else:
+        bundle_store.deactivate_revision(current_revision_id)
+    return True
 
 
 def _operation_template_rows(operations: list[Any]) -> list[Any]:
@@ -3785,18 +3812,11 @@ def _publish_certificate_bundle_remote(
     def restore_previous_active_bundle() -> None:
         nonlocal restore_detail
         try:
-            restore_if_current = getattr(bundle_store, "restore_previous_if_current", None)
-            if callable(restore_if_current):
-                restored = restore_if_current(
-                    revision.revision_id,
-                    getattr(previous_revision, "revision_id", None),
-                )
-            elif previous_revision is not None:
-                bundle_store.activate_revision(previous_revision.revision_id)
-                restored = True
-            else:
-                bundle_store.deactivate_revision(revision.revision_id)
-                restored = True
+            restored = _restore_certificate_active_revision(
+                bundle_store,
+                revision.revision_id,
+                getattr(previous_revision, "revision_id", None),
+            )
             if restored and previous_revision is not None:
                 restore_detail = "Previous active certificate bundle was restored."
             elif restored:
@@ -3819,17 +3839,19 @@ def _publish_certificate_bundle_remote(
                 "check the certificate bundle store before retrying."
             )
 
-    proxies = get_proxy_registry().list_proxies()
-    attempted = len(proxies)
+    proxy_ids = _registered_certificate_operation_proxy_ids(
+        get_proxy_registry().list_proxies(),
+    )
+    attempted = len(proxy_ids)
     queued_count = 0
     failure_details = []
-    for proxy in proxies:
+    for proxy_id in proxy_ids:
         try:
             operation = request_proxy_reconcile(
-                proxy.proxy_id,
+                proxy_id,
                 operation_type="certificate_apply",
                 subject="Certificate bundle",
-                summary=f"Certificate revision {revision.revision_id} saved; applying asynchronously to proxy {proxy.proxy_id}.",
+                summary=f"Certificate revision {revision.revision_id} saved; applying asynchronously to proxy {proxy_id}.",
                 target_kind="certificate_revision",
                 target_ref=revision.revision_id,
                 rollback_kind="certificate_revision"
@@ -3847,10 +3869,13 @@ def _publish_certificate_bundle_remote(
             )
         except Exception as exc:
             failure_details.append(
-                f"{proxy.proxy_id}: {public_error_message(exc)}",
+                f"{proxy_id}: {public_error_message(exc)}",
             )
             continue
-        if getattr(operation, "operation_id", 0) and operation.status == "pending":
+        if getattr(operation, "operation_id", 0) and operation.status in {
+            "pending",
+            "applying",
+        }:
             queued_count += 1
         elif (
             not getattr(operation, "operation_id", 0)
@@ -3860,7 +3885,9 @@ def _publish_certificate_bundle_remote(
                 getattr(operation, "detail", "")
                 or "Certificate bundle reconciliation was not queued."
             )
-            failure_details.append(f"{proxy.proxy_id}: {operation_detail}")
+            failure_details.append(
+                f"{proxy_id}: {redact_sensitive_text(operation_detail)[:500]}",
+            )
     if attempted == 0:
         restore_previous_active_bundle()
         detail = (
@@ -5734,7 +5761,7 @@ def revert_operation(operation_id: int):
                 not active_revision_id
                 or not op_target_ref
                 or str(active_revision_id) != op_target_ref
-                or (op_target_sha and active_sha and active_sha != op_target_sha)
+                or (op_target_sha and active_sha != op_target_sha)
             ):
                 return _redirect_to("operations_status", error="rollback_stale")
             restored_revision = bundle_store.activate_revision(op.rollback_ref)
@@ -5747,13 +5774,15 @@ def revert_operation(operation_id: int):
             ):
                 rollback_ref = str(active_revision.revision_id)
 
-            proxies = get_proxy_registry().list_proxies()
+            proxy_ids = _registered_certificate_operation_proxy_ids(
+                get_proxy_registry().list_proxies(),
+            )
             queued_count = 0
             failure_detail = ""
-            for proxy in proxies:
+            for proxy_id in proxy_ids:
                 try:
                     operation = request_proxy_reconcile(
-                        proxy.proxy_id,
+                        proxy_id,
                         operation_type="certificate_revert",
                         subject=f"Revert #{op.operation_id}",
                         summary=(
@@ -5762,7 +5791,7 @@ def revert_operation(operation_id: int):
                             f"({_short_sha(active_sha) or 'unknown hash'}) was replaced with "
                             f"revision {restored_revision.revision_id} "
                             f"({_short_sha(getattr(restored_revision, 'bundle_sha256', '')) or 'unknown hash'}); "
-                            f"applying asynchronously to proxy {proxy.proxy_id}."
+                            f"applying asynchronously to proxy {proxy_id}."
                         ),
                         target_kind="certificate_revision",
                         target_ref=restored_revision.revision_id,
@@ -5786,27 +5815,22 @@ def revert_operation(operation_id: int):
                     continue
                 if (
                     getattr(operation, "operation_id", 0)
-                    and operation.status == "pending"
+                    and operation.status in {"pending", "applying"}
                 ):
                     queued_count += 1
                 elif not failure_detail:
-                    failure_detail = str(
+                    failure_detail = redact_sensitive_text(
                         getattr(operation, "detail", "")
                         or "Certificate bundle reconciliation was not queued.",
-                    )
+                    )[:500]
 
-            if proxies and queued_count == 0:
+            if queued_count == 0:
                 try:
-                    restore_if_current = getattr(bundle_store, "restore_previous_if_current", None)
-                    if callable(restore_if_current):
-                        restore_if_current(
-                            restored_revision.revision_id,
-                            getattr(active_revision, "revision_id", None),
-                        )
-                    elif active_revision is not None:
-                        bundle_store.activate_revision(active_revision.revision_id)
-                    else:
-                        bundle_store.deactivate_revision(restored_revision.revision_id)
+                    _restore_certificate_active_revision(
+                        bundle_store,
+                        restored_revision.revision_id,
+                        getattr(active_revision, "revision_id", None),
+                    )
                 except Exception:
                     log_exception_throttled(
                         app.logger,
@@ -5823,16 +5847,11 @@ def revert_operation(operation_id: int):
         except Exception:
             if restored_revision is not None:
                 try:
-                    restore_if_current = getattr(bundle_store, "restore_previous_if_current", None)
-                    if callable(restore_if_current):
-                        restore_if_current(
-                            restored_revision.revision_id,
-                            getattr(active_revision, "revision_id", None),
-                        )
-                    elif active_revision is not None:
-                        bundle_store.activate_revision(active_revision.revision_id)
-                    else:
-                        bundle_store.deactivate_revision(restored_revision.revision_id)
+                    _restore_certificate_active_revision(
+                        bundle_store,
+                        restored_revision.revision_id,
+                        getattr(active_revision, "revision_id", None),
+                    )
                 except Exception:
                     log_exception_throttled(
                         app.logger,

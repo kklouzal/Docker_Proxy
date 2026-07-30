@@ -1513,6 +1513,43 @@ def test_certificate_publish_reports_partial_proxy_queue_failure(
     ]
 
 
+def test_certificate_publish_keeps_bundle_when_matching_operation_already_applying(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=previous)
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry(["edge-a"]),
+    )
+
+    def already_applying(proxy_id, **_kwargs):
+        return SimpleNamespace(
+            operation_id=42,
+            proxy_id=proxy_id,
+            status="applying",
+            detail="matching certificate operation is already applying",
+        )
+
+    monkeypatch.setattr(loaded.module, "request_proxy_reconcile", already_applying)
+
+    with loaded.module.app.test_request_context("/certs/upload", method="POST"):
+        loaded.module.session["user"] = "operator"
+        ok, detail = loaded.module._publish_certificate_bundle_remote(_bundle())
+
+    assert ok is True
+    assert "Queued 1 async operation" in detail
+    assert bundles.bundle is bundles.created[0]
+
+
 def test_revert_certificate_operation_restores_bundle_and_queues_registered_proxies(
     monkeypatch, tmp_path
 ) -> None:
@@ -1575,6 +1612,56 @@ def test_revert_certificate_operation_restores_bundle_and_queues_registered_prox
     ]
     assert "Global/shared active CA bundle revert" in queued_reverts[0].detail
     assert "affects every registered proxy" in queued_reverts[0].detail
+
+
+def test_revert_certificate_operation_restores_bundle_when_no_proxy_targets(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="OLD CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    current = SimpleNamespace(
+        revision_id=12,
+        fullchain_pem="NEW CERT\n",
+        bundle_sha256="current-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=current)
+    bundles._revisions[previous.revision_id] = previous
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry([]),
+    )
+    operation = loaded.operation_ledger.create_operation(
+        "edge-a",
+        operation_type="certificate_apply",
+        target_kind="certificate_revision",
+        target_ref=current.revision_id,
+        rollback_kind="certificate_revision",
+        rollback_ref=previous.revision_id,
+        request_hash=current.bundle_sha256,
+    )
+    operation.status = "failed"
+
+    monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "edge-a")
+    with loaded.module.app.test_request_context(
+        f"/operations/{operation.operation_id}/revert",
+        method="POST",
+        data={"confirm_global_certificate_revert": "1"},
+    ):
+        loaded.module.session["user"] = "operator"
+        response = loaded.module.revert_operation(operation.operation_id)
+
+    assert response.status_code == 302
+    assert "error=revert_failed" in response.location
+    assert bundles.bundle is current
+    assert loaded.operation_ledger.operations == [operation]
 
 
 def test_revert_certificate_operation_keeps_partial_proxy_queue(
