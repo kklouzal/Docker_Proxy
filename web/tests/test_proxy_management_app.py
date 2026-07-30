@@ -571,6 +571,7 @@ def test_proxy_management_sync_operation_id_records_current_config_apply(
         operation_type="config_apply",
         target_kind="config_revision",
         target_ref="9",
+        request_hash="current-sha",
         force=True,
         claim_token="claim-0",
     )
@@ -690,6 +691,108 @@ def test_proxy_management_sync_operation_id_records_current_config_apply(
             "claim-0",
         ),
     ]
+
+
+def test_proxy_runtime_targeted_operation_sync_requires_claim(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = runtime_module.ProxyRuntime.__new__(runtime_module.ProxyRuntime)
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+
+    class Ledger:
+        def requeue_stale_applying(self, proxy_id):
+            assert proxy_id == "edge-a"
+
+        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+            assert proxy_id == "edge-a"
+            assert limit == 100
+            assert operation_id == 42
+            return []
+
+    class Controller:
+        def apply_config_text(self, _text):
+            msg = "unclaimed targeted operation must not execute"
+            raise AssertionError(msg)
+
+    runtime.controller = Controller()
+    runtime._current_config_sha = lambda: "current-sha"
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+
+    result = runtime.sync_from_db(operation_id=42)
+
+    assert result["ok"] is False
+    assert result["changed"] is False
+    assert "was not claimed" in result["detail"]
+    assert result["executed_operation_types"] == []
+
+
+def test_proxy_management_sync_exception_returns_sanitized_json(monkeypatch) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+
+    class Runtime:
+        def sync_from_db(self, *, force=False, operation_id=None):
+            msg = "token=super-secret"
+            raise RuntimeError(msg)
+
+    proxy_app.runtime = Runtime()
+
+    response = _management_post(
+        proxy_app.app.test_client(),
+        "/api/manage/sync",
+        json={"operation_id": 42},
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    assert response.status_code == 500
+    assert response.get_json() == {"ok": False, "detail": "Proxy reconciliation failed."}
+
+
+def test_config_operation_completion_requires_matching_revision_hash() -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    operation = SimpleNamespace(
+        operation_type="config_apply",
+        target_kind="config_revision",
+        target_ref="9",
+        request_hash="queued-sha",
+    )
+
+    status, detail = runtime_module._operation_completion_status(
+        operation,
+        default_status="applied",
+        detail="sync complete",
+        result={"revision_id": 9, "current_config_sha": "normalized-runtime-sha"},
+    )
+    assert status == "failed"
+    assert "active revision SHA evidence is unavailable" in detail
+
+    status, detail = runtime_module._operation_completion_status(
+        operation,
+        default_status="applied",
+        detail="sync complete",
+        result={
+            "revision_id": 9,
+            "active_revision_sha": "other-sha",
+            "current_config_sha": "normalized-runtime-sha",
+        },
+    )
+    assert status == "failed"
+    assert "queued revision 9 hash" in detail
+
+    status, detail = runtime_module._operation_completion_status(
+        operation,
+        default_status="applied",
+        detail="sync complete",
+        result={
+            "revision_id": 9,
+            "active_revision_sha": "queued-sha",
+            "current_config_sha": "normalized-runtime-sha",
+        },
+    )
+    assert (status, detail) == ("applied", "sync complete")
 
 
 def test_proxy_runtime_clamav_icap_preserves_degraded_transport_detail(

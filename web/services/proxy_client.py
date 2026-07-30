@@ -9,6 +9,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from services.errors import redact_sensitive_text
 from services.proxy_context import normalize_proxy_id
 from services.proxy_registry import (
     _bounded_repeated_unquote as _bounded_repeated_query_unquote,
@@ -114,7 +115,7 @@ class ProxyClient:
                 return "Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener."
             return f"Proxy management request failed with HTTP {status_code or 'error'} and returned an HTML error page. Check the registered management URL and proxy runtime logs."
         if text:
-            return text[:1000]
+            return redact_sensitive_text(text)[:1000]
         if status_code is not None:
             return f"Proxy management request failed with HTTP {status_code}."
         return "Proxy management request failed."
@@ -251,9 +252,12 @@ class ProxyClient:
                 }
             if not isinstance(data, dict):
                 data = {"ok": False, "detail": self._non_object_json_detail()}
-            detail = data.get("detail") or self._safe_error_detail(
-                raw,
-                status_code=int(exc.code),
+            detail = redact_sensitive_text(
+                data.get("detail")
+                or self._safe_error_detail(
+                    raw,
+                    status_code=int(exc.code),
+                ),
             )
             msg = f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
             raise ProxyClientError(msg) from exc

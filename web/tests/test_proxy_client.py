@@ -384,6 +384,35 @@ def test_proxy_client_http_error_uses_json_detail(
         proxy_client.ProxyClient().sync_proxy("live")
 
 
+def test_proxy_client_http_error_redacts_json_detail(
+    monkeypatch,
+    proxy_client_module,
+) -> None:
+    proxy_client = proxy_client_module
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+
+    def fake_urlopen(_request, timeout) -> NoReturn:
+        msg = "http://proxy-mgmt:5000/api/manage/sync"
+        raise urllib.error.HTTPError(
+            msg,
+            409,
+            "Conflict",
+            {},
+            io.BytesIO(b'{"ok": false, "detail": "sync failed token=secret-value"}'),
+        )
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().sync_proxy("live")
+
+    message = str(exc_info.value)
+    assert "token=[redacted]" in message
+    assert "secret-value" not in message
+
+
 def test_proxy_client_http_error_rejects_non_object_json(
     monkeypatch, proxy_client_module
 ) -> None:

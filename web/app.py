@@ -864,6 +864,8 @@ def _operation_api_rows(operations: list[Any]) -> list[dict[str, Any]]:
         if not isinstance(payload, dict):
             payload = {}
         row = {key: value for key, value in payload.items() if not callable(value)}
+        if "detail" in row:
+            row["detail"] = redact_sensitive_text(row.get("detail") or "")
         if str(row.get("rollback_kind") or "") == "certificate_revision":
             if bundle_store is None:
                 bundle_store = get_certificate_bundles()

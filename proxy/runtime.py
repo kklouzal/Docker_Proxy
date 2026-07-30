@@ -36,7 +36,7 @@ from services.certificate_core import (
 from services.config_revisions import get_config_revisions
 from services.db import DATABASE_ERRORS
 from services.diagnostic_store import get_diagnostic_store
-from services.errors import public_error_message
+from services.errors import public_error_message, redact_sensitive_text
 from services.health_checks import build_clamav_health
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled, should_log
@@ -416,7 +416,11 @@ def _operation_completion_status(
         return default_status, detail
 
     target_ref = _int_or_none(getattr(operation, "target_ref", None))
+    target_hash = str(getattr(operation, "request_hash", "") or "").strip()
     applied_ref = _int_or_none(result.get("revision_id"))
+    active_hash = str(
+        result.get("active_revision_sha") or result.get("config_sha256") or "",
+    ).strip()
     if target_ref is None:
         op_detail = (
             "Config operation completed reconciliation but did not include "
@@ -434,6 +438,24 @@ def _operation_completion_status(
             op_detail = f"{op_detail}\n{detail}"
         return "failed", op_detail[:4000]
     if target_ref == applied_ref:
+        if target_hash and not active_hash:
+            op_detail = (
+                f"Config operation applied revision {target_ref}, but active revision "
+                "SHA evidence is unavailable."
+            )
+            if detail:
+                op_detail = f"{op_detail}\n{detail}"
+            return "failed", op_detail[:4000]
+        if target_hash and target_hash != active_hash:
+            op_detail = (
+                "Config operation completed reconciliation against the requested "
+                f"revision id, but queued revision {target_ref} hash "
+                f"{target_hash[:12]} differs from active revision evidence "
+                f"{active_hash[:12]}."
+            )
+            if detail:
+                op_detail = f"{op_detail}\n{detail}"
+            return "failed", op_detail[:4000]
         return default_status, detail
 
     op_detail = (
@@ -3642,6 +3664,17 @@ class ProxyRuntime:
         operation_id: int | None = None,
     ) -> dict[str, Any]:
         with _exclusive_runtime_lock("sync", _SYNC_CONTROL_LOCK):
+            target_operation_id = _int_or_none(operation_id)
+            if operation_id is not None and target_operation_id is None:
+                return {
+                    "ok": False,
+                    "proxy_id": self.proxy_id,
+                    "changed": False,
+                    "detail": "operation_id must be a positive integer.",
+                    "current_config_sha": self._current_config_sha(),
+                    "executed_operation_types": [],
+                    "unsupported_operation_types": [],
+                }
             claimed_operations = []
             ledger = None
             try:
@@ -3650,7 +3683,7 @@ class ProxyRuntime:
                 claimed_operations = ledger.claim_pending(
                     self.proxy_id,
                     limit=100,
-                    operation_id=operation_id,
+                    operation_id=target_operation_id,
                 )
             except Exception as exc:
                 _log_recoverable_db_or_unexpected(
@@ -3662,6 +3695,36 @@ class ProxyRuntime:
                 )
                 claimed_operations = []
                 ledger = None
+                if target_operation_id is not None:
+                    return {
+                        "ok": False,
+                        "proxy_id": self.proxy_id,
+                        "changed": False,
+                        "detail": public_error_message(
+                            exc,
+                            default=(
+                                f"Proxy operation #{target_operation_id} could not be claimed "
+                                "because the operation ledger is unavailable."
+                            ),
+                            max_len=500,
+                        ),
+                        "current_config_sha": self._current_config_sha(),
+                        "executed_operation_types": [],
+                        "unsupported_operation_types": [],
+                    }
+            if target_operation_id is not None and not claimed_operations:
+                return {
+                    "ok": False,
+                    "proxy_id": self.proxy_id,
+                    "changed": False,
+                    "detail": (
+                        f"Proxy operation #{target_operation_id} was not claimed; it may "
+                        "already be running, completed, superseded, or assigned to another proxy."
+                    ),
+                    "current_config_sha": self._current_config_sha(),
+                    "executed_operation_types": [],
+                    "unsupported_operation_types": [],
+                }
             try:
                 result = self._sync_from_db_unlocked(
                     force=bool(
@@ -3678,7 +3741,7 @@ class ProxyRuntime:
                         ledger.mark_many(
                             claimed_operations,
                             status="failed",
-                            detail=str(exc)[:4000],
+                            detail=redact_sensitive_text(exc)[:4000],
                         )
                 raise
             if ledger is not None and claimed_operations:
@@ -4196,6 +4259,8 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                "current_config_sha": current_sha,
+                "active_revision_sha": str(revision_meta.config_sha256 or ""),
                 **cert_evidence,
                 **policy_evidence,
                 **adblock_evidence,
@@ -4306,6 +4371,8 @@ class ProxyRuntime:
                 "cache_cleared": cache_cleared,
                 "config_changed": bool(policy_config_changed),
                 "detail": detail,
+                "current_config_sha": current_sha,
+                "active_revision_sha": str(revision_meta.config_sha256 or ""),
                 **cert_evidence,
                 **policy_evidence,
                 **adblock_evidence,
@@ -4395,6 +4462,8 @@ class ProxyRuntime:
             "cache_cleared": cache_cleared,
             "config_changed": True,
             "detail": detail,
+            "current_config_sha": new_sha,
+            "active_revision_sha": str(getattr(revision, "config_sha256", "") or ""),
             **cert_evidence,
             **policy_evidence,
             **adblock_evidence,

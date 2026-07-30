@@ -527,10 +527,14 @@ def manage_sync() -> Any:
     if force_error is not None:
         return jsonify({"ok": False, "detail": force_error}), 400
 
-    result = _runtime().sync_from_db(
-        force=force,
-        operation_id=operation_id,
-    )
+    try:
+        result = _runtime().sync_from_db(
+            force=force,
+            operation_id=operation_id,
+        )
+    except Exception as exc:
+        detail = public_error_message(exc, default="Proxy reconciliation failed.")
+        return jsonify({"ok": False, "detail": detail}), 500
     return jsonify(result), (200 if result.get("ok") else 409)
 
 

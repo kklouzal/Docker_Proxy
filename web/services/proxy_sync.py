@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from services.errors import public_error_message, redact_sensitive_text
 from services.operation_ledger import ProxyOperation, get_operation_ledger
 from services.proxy_context import normalize_proxy_id
 from services.proxy_registry import get_proxy_registry
@@ -90,9 +91,18 @@ def request_proxy_reconcile(
             force=force,
         )
     except Exception as exc:
-        failure_detail = f"Proxy reconcile was not queued because the operation ledger is unavailable: {exc}"
+        error_detail = public_error_message(
+            exc,
+            default="The operation ledger is unavailable.",
+            max_len=500,
+        )
+        failure_detail = (
+            "Proxy reconcile was not queued because the operation ledger is unavailable."
+        )
+        if error_detail:
+            failure_detail = f"{failure_detail} {error_detail}"
         if detail:
-            failure_detail = f"{detail}\n{failure_detail}".strip()
+            failure_detail = f"{redact_sensitive_text(detail)}\n{failure_detail}".strip()
         return _ephemeral_operation(
             proxy_id,
             status="failed",

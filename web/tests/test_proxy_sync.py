@@ -157,3 +157,27 @@ def test_request_proxy_reconcile_does_not_fall_back_to_direct_sync_when_ledger_f
     assert operation.status == "failed"
     assert operation.force is True
     assert "operation ledger is unavailable" in operation.detail
+
+
+def test_request_proxy_reconcile_sanitizes_failed_ephemeral_operation_detail(
+    monkeypatch,
+    proxy_sync_module,
+) -> None:
+    monkeypatch.setattr(
+        proxy_sync_module,
+        "get_operation_ledger",
+        lambda: (_ for _ in ()).throw(RuntimeError("password=hunter2")),
+    )
+
+    operation = proxy_sync_module.request_proxy_reconcile(
+        "live",
+        operation_type="config_apply",
+        subject="Squid config",
+        summary="Apply config",
+        detail="Revision saved with token=abc123.",
+    )
+
+    assert operation.status == "failed"
+    assert "token=[redacted]" in operation.detail
+    assert "abc123" not in operation.detail
+    assert "hunter2" not in operation.detail
