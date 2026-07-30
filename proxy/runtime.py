@@ -2771,7 +2771,17 @@ class ProxyRuntime:
                 )
             except Exception:
                 applied = None
-            if applied is None:
+            applied_sha_raw = getattr(applied, "artifact_sha256", None)
+            applied_sha = str(applied_sha_raw or "").strip()
+            applied_ok = bool(getattr(applied, "ok", False)) if applied else False
+            if (
+                applied is None
+                or not applied_ok
+                or (
+                    applied_sha_raw is not None
+                    and applied_sha != revision_meta.artifact_sha256
+                )
+            ):
                 try:
                     applied = self.adblock_artifacts.record_apply_result(
                         self.proxy_id,
@@ -4062,48 +4072,58 @@ class ProxyRuntime:
             return policy_result
 
         if _operations_request_adblock_artifact_build(operations):
-            adblock_build_result = self._build_adblock_artifact_for_runtime_operation()
-            if str(adblock_build_result.get("detail") or "").strip():
-                detail_parts.append(str(adblock_build_result["detail"]).strip())
-            if not bool(adblock_build_result.get("ok")):
-                detail = (
-                    "\n".join(detail_parts).strip()
-                    or "Adblock artifact build failed."
+            build_still_requested = True
+            try:
+                build_still_requested = bool(self.adblock_store.get_refresh_requested())
+            except Exception:
+                build_still_requested = True
+            if not build_still_requested:
+                detail_parts.append(
+                    "Queued adblock artifact build request was already cleared; reconciling the active adblock artifact.",
                 )
-                self.registry.mark_apply_result(
-                    self.proxy_id,
-                    ok=False,
-                    detail=detail,
-                    current_config_sha=self._current_config_sha(),
-                )
-                return {
-                    "ok": False,
-                    "detail": detail,
-                    "changed": bool(
-                        cert_changed
-                        or policy_changed
-                        or bool(adblock_build_result.get("changed"))
-                    ),
-                    "cache_cleared": False,
-                    "certificate_changed": cert_changed,
-                    "policy_changed": policy_changed,
-                    "adblock_changed": bool(adblock_build_result.get("changed")),
-                    "pac_changed": False,
-                    "config_changed": False,
-                    "current_config_sha": self._current_config_sha(),
-                    **cert_evidence,
-                    **policy_evidence,
-                    "adblock_revision_id": _int_or_none(
-                        adblock_build_result.get("revision_id"),
-                    ),
-                    "adblock_settings_version": _int_or_none(
-                        adblock_build_result.get("adblock_settings_version"),
-                    ),
-                    "artifact_sha256": str(
-                        adblock_build_result.get("artifact_sha256") or "",
-                    ),
-                    **operation_evidence,
-                }
+            else:
+                adblock_build_result = self._build_adblock_artifact_for_runtime_operation()
+                if str(adblock_build_result.get("detail") or "").strip():
+                    detail_parts.append(str(adblock_build_result["detail"]).strip())
+                if not bool(adblock_build_result.get("ok")):
+                    detail = (
+                        "\n".join(detail_parts).strip()
+                        or "Adblock artifact build failed."
+                    )
+                    self.registry.mark_apply_result(
+                        self.proxy_id,
+                        ok=False,
+                        detail=detail,
+                        current_config_sha=self._current_config_sha(),
+                    )
+                    return {
+                        "ok": False,
+                        "detail": detail,
+                        "changed": bool(
+                            cert_changed
+                            or policy_changed
+                            or bool(adblock_build_result.get("changed"))
+                        ),
+                        "cache_cleared": False,
+                        "certificate_changed": cert_changed,
+                        "policy_changed": policy_changed,
+                        "adblock_changed": bool(adblock_build_result.get("changed")),
+                        "pac_changed": False,
+                        "config_changed": False,
+                        "current_config_sha": self._current_config_sha(),
+                        **cert_evidence,
+                        **policy_evidence,
+                        "adblock_revision_id": _int_or_none(
+                            adblock_build_result.get("revision_id"),
+                        ),
+                        "adblock_settings_version": _int_or_none(
+                            adblock_build_result.get("adblock_settings_version"),
+                        ),
+                        "artifact_sha256": str(
+                            adblock_build_result.get("artifact_sha256") or "",
+                        ),
+                        **operation_evidence,
+                    }
 
         adblock_result = self.sync_adblock_state(force=artifact_force_value)
         adblock_ok = bool(adblock_result.get("ok", True))

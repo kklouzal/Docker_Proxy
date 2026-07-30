@@ -3360,6 +3360,63 @@ def test_sync_adblock_state_records_missing_apply_for_current_artifact() -> None
     ]
 
 
+def test_sync_adblock_state_refreshes_stale_apply_for_current_artifact() -> None:
+    recorded = []
+
+    class Artifacts:
+        def get_active_artifact_metadata(self):
+            return SimpleNamespace(revision_id=42, artifact_sha256="same-sha")
+
+        def get_active_artifact(
+            self,
+        ) -> NoReturn:  # pragma: no cover - should not be reached
+            msg = "current artifact should not be fetched for a ledger refresh"
+            raise AssertionError(msg)
+
+        def latest_apply(self, _proxy_id, *, revision_id=None):
+            assert revision_id == 42
+            return SimpleNamespace(
+                application_id=10,
+                revision_id=42,
+                ok=False,
+                artifact_sha256="same-sha",
+            )
+
+        def record_apply_result(self, proxy_id, revision_id, **kwargs):
+            recorded.append(
+                {"proxy_id": proxy_id, "revision_id": revision_id, **kwargs}
+            )
+            return SimpleNamespace(application_id=12)
+
+    class Store:
+        def init_db(self) -> None:
+            pass
+
+        def get_cache_flush_requested(self) -> bool:
+            return False
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
+    runtime.adblock_artifacts = Artifacts()
+    runtime.adblock_store = Store()
+
+    result = runtime.sync_adblock_state(force=True)
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["application_id"] == 12
+    assert recorded == [
+        {
+            "proxy_id": runtime.proxy_id,
+            "revision_id": 42,
+            "ok": True,
+            "detail": "Proxy is already using the active adblock artifact.",
+            "applied_by": "proxy",
+            "artifact_sha256": "same-sha",
+        }
+    ]
+
+
 def test_sync_adblock_state_reports_missing_apply_record_failure() -> None:
     class Artifacts:
         def get_active_artifact_metadata(self):
@@ -6310,6 +6367,86 @@ def test_sync_from_db_builds_adblock_artifact_for_build_operation() -> None:
         }
     ]
     assert cleared_refresh == [True]
+
+
+def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() -> None:
+    runtime = _runtime_shell()
+    adblock_calls: list[bool] = []
+
+    runtime.ensure_registered = lambda: None
+    runtime.bootstrap_revision_if_missing = lambda: None
+    runtime._invalidate_health_cache = lambda: None
+    runtime.sync_certificate_bundle = lambda force=False: {"ok": True, "changed": False}
+    runtime.sync_policy_state = lambda force=False: {
+        "ok": True,
+        "changed": False,
+        "reload_required": False,
+    }
+    runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
+
+    def sync_adblock_state(*, force=False):
+        adblock_calls.append(force)
+        return {
+            "ok": True,
+            "changed": True,
+            "revision_id": 44,
+            "adblock_settings_version": 15,
+            "artifact_sha256": "manual-active-sha",
+            "current_adblock_artifact_sha256": "manual-active-sha",
+            "detail": "Adblock artifact applied.",
+        }
+
+    runtime.sync_adblock_state = sync_adblock_state
+    runtime._ensure_policy_runtime_config = lambda: (True, "", False)
+    runtime._reload_for_policy_update = lambda **_kwargs: (
+        True,
+        "Squid reconfigured for policy update.",
+    )
+    runtime._current_config_sha = lambda: "current-sha"
+    runtime._current_adblock_artifact_sha = lambda: "manual-active-sha"
+    runtime.controller = SimpleNamespace(
+        set_adblock_icap_revision_token=lambda _token: None,
+    )
+    runtime.registry = SimpleNamespace(mark_apply_result=lambda *args, **kwargs: None)
+    runtime.adblock_store = SimpleNamespace(
+        get_refresh_requested=lambda: 0,
+        clear_refresh_requested=lambda: (_ for _ in ()).throw(
+            AssertionError("cleared build operation should not clear refresh again")
+        ),
+    )
+    runtime.adblock_artifacts = SimpleNamespace(
+        build_active_artifact=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cleared adblock build operation must not rebuild")
+        )
+    )
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: SimpleNamespace(
+            revision_id=9,
+            config_sha256="current-sha",
+        ),
+        latest_apply=lambda _proxy_id: None,
+    )
+
+    result = runtime._sync_from_db_unlocked(
+        force=False,
+        artifact_force=True,
+        operations=[
+            SimpleNamespace(
+                operation_type="adblock_refresh",
+                target_kind="adblock_artifact_build",
+                target_ref="14",
+                force=True,
+            )
+        ],
+    )
+
+    assert result["ok"] is True
+    assert result["adblock_revision_id"] == 44
+    assert result["artifact_sha256"] == "manual-active-sha"
+    assert result["adblock_settings_version"] == 15
+    assert result["executed_operation_types"] == ["adblock_refresh"]
+    assert "build request was already cleared" in result["detail"]
+    assert adblock_calls == [True]
 
 
 def test_sync_certificate_bundle_rolls_back_material_after_restart_failure(
