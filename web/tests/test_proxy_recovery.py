@@ -62,10 +62,8 @@ def test_max_bundle_bytes_defaults_and_operator_env(monkeypatch: pytest.MonkeyPa
     assert recovery.resolve_max_bundle_bytes(2 * 1024 * 1024) == 2 * 1024 * 1024
     assert recovery.resolve_max_bundle_bytes(64) == 64
 
-    monkeypatch.setenv(recovery.RECOVERY_MAX_BUNDLE_BYTES_ENV, "")
-    assert recovery.resolve_max_bundle_bytes() == recovery.DEFAULT_MAX_BUNDLE_BYTES
-
     for value in (
+        "",
         "64MiB",
         "1.5",
         "-1",

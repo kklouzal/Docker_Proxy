@@ -332,7 +332,8 @@ def validate_max_bundle_bytes(
     elif isinstance(value, str):
         stripped = value.strip()
         if not stripped:
-            return DEFAULT_MAX_BUNDLE_BYTES
+            msg = "invalid recovery max bundle byte limit"
+            raise _recovery_error(msg)
         if not stripped.isdecimal():
             msg = "invalid recovery max bundle byte limit"
             raise _recovery_error(msg)
