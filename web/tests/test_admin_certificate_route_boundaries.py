@@ -2068,7 +2068,61 @@ def test_operations_page_labels_certificate_revert_as_global_with_hash_evidence(
     assert "Confirm global CA rollback for all registered proxies" in body
 
 
-def test_operations_api_marks_stale_certificate_revert_for_spa(
+def _certificate_revert_operation_with_secret_detail(loaded, *, current, previous):
+    operation = loaded.operation_ledger.create_operation(
+        "edge-a",
+        operation_type="certificate_apply",
+        subject="Certificate bundle",
+        summary="Certificate revision 12 failed on edge-a.",
+        target_kind="certificate_revision",
+        target_ref=current.revision_id,
+        rollback_kind="certificate_revision",
+        rollback_ref=previous.revision_id,
+        request_hash=current.bundle_sha256,
+    )
+    operation.status = "failed"
+    operation.detail = "ledger refused password=super-secret token=abc123"
+    return operation
+
+
+def test_operations_page_sanitizes_certificate_operation_detail(
+    monkeypatch, tmp_path
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="OLD CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    current = SimpleNamespace(
+        revision_id=12,
+        fullchain_pem="FAILED CERT\n",
+        bundle_sha256="failed-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=current)
+    bundles._revisions[previous.revision_id] = previous
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    _certificate_revert_operation_with_secret_detail(
+        loaded,
+        current=current,
+        previous=previous,
+    )
+    monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "edge-a")
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/operations?proxy_id=edge-a")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "password=[redacted]" in body
+    assert "token=[redacted]" in body
+    assert "super-secret" not in body
+    assert "abc123" not in body
+
+
+def test_operations_api_marks_stale_certificate_revert_for_spa_and_sanitizes_detail(
     monkeypatch, tmp_path
 ) -> None:
     previous = SimpleNamespace(
@@ -2093,18 +2147,11 @@ def test_operations_api_marks_stale_certificate_revert_for_spa(
     bundles._revisions[previous.revision_id] = previous
     bundles._revisions[failed_target.revision_id] = failed_target
     loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
-    operation = loaded.operation_ledger.create_operation(
-        "edge-a",
-        operation_type="certificate_apply",
-        subject="Certificate bundle",
-        summary="Certificate revision 12 failed on edge-a.",
-        target_kind="certificate_revision",
-        target_ref=failed_target.revision_id,
-        rollback_kind="certificate_revision",
-        rollback_ref=previous.revision_id,
-        request_hash=failed_target.bundle_sha256,
+    operation = _certificate_revert_operation_with_secret_detail(
+        loaded,
+        current=failed_target,
+        previous=previous,
     )
-    operation.status = "failed"
     monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "edge-a")
     client = loaded.module.app.test_client()
     login_client(client)
@@ -2124,6 +2171,9 @@ def test_operations_api_marks_stale_certificate_revert_for_spa(
     assert row["global_revert_rollback_revision"] == "9"
     assert row["global_revert_rollback_short_sha"] == "previous-sha"
     assert row["global_revert_target_matches_active"] is False
+    assert row["detail"] == "ledger refused password=[redacted] token=[redacted]"
+    assert "super-secret" not in str(row)
+    assert "abc123" not in str(row)
     assert "global_revert_current_sha" not in row
     assert "global_revert_rollback_sha" not in row
 

@@ -844,6 +844,13 @@ def _restore_certificate_active_revision(
     return True
 
 
+def _set_operation_row_attr(row: Any, key: str, value: Any) -> None:
+    try:
+        setattr(row, key, value)
+    except (AttributeError, TypeError):
+        pass
+
+
 def _operation_template_rows(operations: list[Any]) -> list[Any]:
     bundle_store = None
     rows = []
@@ -857,19 +864,14 @@ def _operation_template_rows(operations: list[Any]) -> list[Any]:
                 bundle_store = get_certificate_bundles()
             context = _operation_global_certificate_context(row, bundle_store)
             for key, value in context.items():
-                try:
-                    setattr(row, key, value)
-                except Exception:
-                    pass
+                _set_operation_row_attr(row, key, value)
         else:
-            try:
-                row.is_global_certificate_revert = False
-            except Exception:
-                pass
-        try:
-            row.detail = redact_sensitive_text(getattr(row, "detail", "") or "")
-        except Exception:
-            pass
+            _set_operation_row_attr(row, "is_global_certificate_revert", False)
+        _set_operation_row_attr(
+            row,
+            "detail",
+            redact_sensitive_text(getattr(row, "detail", "") or ""),
+        )
         rows.append(row)
     return rows
 
