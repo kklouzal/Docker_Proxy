@@ -1,3 +1,4 @@
+import importlib
 import os
 import pathlib
 import sys
@@ -555,6 +556,46 @@ def test_blocked_log_db_drops_lifecycle_blocked_batches(monkeypatch) -> None:
     assert returned_conn is conn
     assert flushed is True
     assert conn.rollbacks == 1
+    assert conn.executemany_calls == 0
+
+
+def test_blocked_log_db_drops_reloaded_lifecycle_blocked_batches(monkeypatch) -> None:
+    webcat_acl = _webcat_acl_module()
+    _add_web_to_path()
+    from services import proxy_write_guard  # type: ignore
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.closed = 0
+            self.rollbacks = 0
+            self.executemany_calls = 0
+
+        def rollback(self) -> None:
+            self.rollbacks += 1
+
+        def close(self) -> None:
+            self.closed += 1
+
+        def executemany(self, *_args, **_kwargs) -> None:
+            self.executemany_calls += 1
+
+    reloaded_guard = importlib.reload(proxy_write_guard)
+
+    def reject_rows(*_args, **_kwargs):
+        msg = "Proxy 'edge-old' has been removed"
+        raise reloaded_guard.ProxyLifecycleWriteError(msg)
+
+    monkeypatch.setattr(webcat_acl, "guarded_proxy_rows", reject_rows)
+    db = webcat_acl._BlockedLogDb(max_rows=10)
+    conn = FakeConn()
+    batch = [(123, "192.0.2.10", "http://blocked.example/", "adult")]
+
+    returned_conn, flushed = db._flush_batch_if_possible(conn, batch)
+
+    assert returned_conn is conn
+    assert flushed is True
+    assert conn.rollbacks == 1
+    assert conn.closed == 0
     assert conn.executemany_calls == 0
 
 

@@ -132,6 +132,20 @@ def test_proxy_write_guard_fails_closed_for_metadata_errors(monkeypatch) -> None
         guard.resolve_proxy_write_id(conn, "edge-a")
 
 
+def test_proxy_lifecycle_write_error_marker_survives_module_reload(monkeypatch) -> None:
+    guard = _guard_module(monkeypatch)
+    old_classifier = guard.is_proxy_lifecycle_write_error
+    old_exc = guard.ProxyLifecycleWriteError("blocked before reload")
+
+    reloaded_guard = importlib.reload(guard)
+    new_exc = reloaded_guard.ProxyLifecycleWriteError("blocked after reload")
+
+    assert old_exc.__class__ is not reloaded_guard.ProxyLifecycleWriteError
+    assert old_classifier(new_exc) is True
+    assert reloaded_guard.is_proxy_lifecycle_write_error(old_exc) is True
+    assert reloaded_guard.is_proxy_lifecycle_write_error(RuntimeError("other")) is False
+
+
 def test_proxy_lifecycle_lock_name_keeps_short_ids_readable_and_stable(monkeypatch) -> None:
     guard = _guard_module(monkeypatch)
 

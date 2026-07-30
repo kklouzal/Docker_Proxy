@@ -36,8 +36,8 @@ from services.proxy_context import (  # noqa: E402
     normalize_proxy_id,
 )
 from services.proxy_write_guard import (  # noqa: E402
-    ProxyLifecycleWriteError,
     guarded_proxy_rows,
+    is_proxy_lifecycle_write_error,
 )
 from services.runtime_helpers import env_float as _env_float  # noqa: E402
 from services.runtime_helpers import env_int as _env_int  # noqa: E402
@@ -842,17 +842,15 @@ class _BlockedLogDb:
             return None, False
         try:
             self._flush(conn, batch)
-        except ProxyLifecycleWriteError:
+        except Exception as exc:
             with contextlib.suppress(Exception):
                 conn.rollback()
-            # A removed/renaming/unregistered proxy must not be allowed to
-            # recreate proxy-owned log rows.  The ACL decision has already been
-            # returned to Squid; discard this best-effort observability batch
-            # rather than retrying a lifecycle-blocked write forever.
-            return conn, True
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
+            if is_proxy_lifecycle_write_error(exc):
+                # A removed/renaming/unregistered proxy must not be allowed to
+                # recreate proxy-owned log rows.  The ACL decision has already
+                # been returned to Squid; discard this best-effort observability
+                # batch rather than retrying a lifecycle-blocked write forever.
+                return conn, True
             with contextlib.suppress(Exception):
                 conn.close()
             if self._conn is conn:

@@ -22,6 +22,21 @@ _LIFECYCLE_LOCK_TIMEOUT_SECONDS = 10
 class ProxyLifecycleWriteError(ValueError):
     """Raised when a proxy-scoped write would bypass lifecycle state."""
 
+    proxy_lifecycle_write_error = True
+
+
+def is_proxy_lifecycle_write_error(exc: BaseException) -> bool:
+    """Return whether an exception represents a lifecycle write block.
+
+    Test suites and long-lived helper processes may reload this module while a
+    writer still holds references imported before the reload.  The explicit
+    marker keeps classification stable across those reload/import-order splits
+    without treating same-named unrelated exceptions as lifecycle blocks.
+    """
+    return isinstance(exc, ProxyLifecycleWriteError) or (
+        getattr(exc, "proxy_lifecycle_write_error", False) is True
+    )
+
 
 @dataclass(frozen=True)
 class GuardedProxyBatch:
