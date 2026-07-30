@@ -830,10 +830,16 @@ def test_resolve_proxy_id_honors_rename_alias(tmp_path):
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy("Proxy-P", display_name="Proxy-P")
+    with registry._connect() as conn:
+        conn.execute(
+            "INSERT INTO proxy_id_aliases(alias_proxy_id, proxy_id, created_ts, updated_ts) VALUES(%s,%s,%s,%s)",
+            ("Proxy-Legacy", "Proxy-P", 1, 1),
+        )
 
     registry.rename_proxy("Proxy-P", "Proxy-PR", display_name="Proxy-PR")
 
     assert registry.resolve_proxy_id("Proxy-P") == "Proxy-PR"
+    assert registry.resolve_proxy_id("Proxy-Legacy") == "Proxy-PR"
     assert registry.resolve_proxy_id("Proxy-PR") == "Proxy-PR"
 
 
@@ -843,6 +849,7 @@ def test_remove_proxy_deletes_registry_aliases_and_proxy_scoped_rows(tmp_path):
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy("edge-2", display_name="Edge")
+    registry.ensure_proxy("edge-keep", display_name="Keep")
     registry.rename_proxy("edge-2", "edge-live", display_name="Edge")
     with registry._connect() as conn:
         conn.execute(
@@ -993,6 +1000,112 @@ def test_rename_proxy_is_idempotent_and_tombstones_old_identity(tmp_path):
         raise AssertionError(msg)
 
 
+@pytest.mark.parametrize(
+    ("old_proxy_id", "new_proxy_id"),
+    [("edge-default", "edge-renamed"), ("edge-old", "edge-default")],
+)
+def test_rename_proxy_rejects_default_identity(
+    tmp_path,
+    monkeypatch,
+    old_proxy_id,
+    new_proxy_id,
+):
+    monkeypatch.setenv("DEFAULT_PROXY_ID", "edge-default")
+    configure_test_mysql_env(
+        tmp_path / f"proxy-rename-default-{old_proxy_id}-{new_proxy_id}",
+    )
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-default", display_name="Default")
+    registry.ensure_proxy("edge-old", display_name="Old")
+
+    with pytest.raises(ValueError, match="Default proxy"):
+        registry.rename_proxy(old_proxy_id, new_proxy_id)
+
+    assert registry.get_proxy("edge-default") is not None
+    assert registry.get_proxy("edge-old") is not None
+
+
+def test_rename_proxy_rejects_target_alias_collision(tmp_path):
+    configure_test_mysql_env(tmp_path / "proxy-rename-alias-collision")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-old", display_name="Old")
+    registry.ensure_proxy("edge-live", display_name="Live")
+    registry.rename_proxy("edge-live", "edge-new", display_name="New")
+
+    with pytest.raises(ValueError, match="already registered as an alias"):
+        registry.rename_proxy("edge-old", "edge-live")
+
+    assert registry.get_proxy("edge-old") is not None
+    assert registry.get_proxy("edge-new") is not None
+
+
+def test_rename_proxy_rejects_incomplete_idempotent_retry_with_leftover_rows(
+    tmp_path,
+):
+    configure_test_mysql_env(tmp_path / "proxy-rename-leftover-idempotency")
+    proxy_registry = _proxy_registry()
+    from services.proxy_lifecycle import ProxyLifecycleIncompleteError  # type: ignore
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-new", display_name="New")
+    with registry._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO proxy_id_aliases(alias_proxy_id, proxy_id, created_ts, updated_ts)
+            VALUES(%s,%s,%s,%s)
+            """,
+            ("edge-old", "edge-new", 1, 1),
+        )
+        conn.execute(
+            """
+            INSERT INTO proxy_lifecycle_tombstones(proxy_id, action, target_proxy_id, detail, created_ts, updated_ts)
+            VALUES(%s,'renaming',%s,'incomplete',1,1)
+            """,
+            ("edge-old", "edge-new"),
+        )
+        conn.execute(
+            "CREATE TABLE proxy_leftover_rows (id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL)",
+        )
+        conn.execute(
+            "INSERT INTO proxy_leftover_rows(proxy_id) VALUES(%s)",
+            ("edge-old",),
+        )
+
+    with pytest.raises(ProxyLifecycleIncompleteError, match="leftover scoped rows"):
+        registry.rename_proxy("edge-old", "edge-new")
+
+
+def test_rename_proxy_repairs_completed_rename_metadata_without_old_row(tmp_path):
+    configure_test_mysql_env(tmp_path / "proxy-rename-repair-metadata")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-new", display_name="New")
+    with registry._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO proxy_lifecycle_tombstones(proxy_id, action, target_proxy_id, detail, created_ts, updated_ts)
+            VALUES(%s,'renaming',%s,'needs metadata repair',1,1)
+            """,
+            ("edge-old", "edge-new"),
+        )
+
+    repaired = registry.rename_proxy("edge-old", "edge-new")
+
+    assert repaired.proxy_id == "edge-new"
+    assert registry.resolve_proxy_id("edge-old") == "edge-new"
+    with registry._connect() as conn:
+        tombstone = conn.execute(
+            "SELECT action FROM proxy_lifecycle_tombstones WHERE proxy_id=%s",
+            ("edge-old",),
+        ).fetchone()
+    assert tombstone["action"] == "renamed"
+
+
 def test_rename_proxy_rejects_conflicting_in_progress_target_without_mysql(monkeypatch):
     proxy_registry = _proxy_registry()
 
@@ -1100,6 +1213,7 @@ def test_remove_proxy_cleans_pac_profile_children_and_tombstones_identity(tmp_pa
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy("edge-remove", display_name="Edge")
+    registry.ensure_proxy("edge-keep", display_name="Keep")
     with registry._connect() as conn:
         conn.execute(
             """
@@ -1152,6 +1266,34 @@ def test_remove_proxy_cleans_pac_profile_children_and_tombstones_identity(tmp_pa
         assert conn.execute("SELECT 1 FROM pac_direct_dst_nets LIMIT 1").fetchone() is None
 
 
+def test_remove_proxy_rejects_default_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEFAULT_PROXY_ID", "edge-default")
+    configure_test_mysql_env(tmp_path / "proxy-remove-default")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-default", display_name="Default")
+    registry.ensure_proxy("edge-other", display_name="Other")
+
+    with pytest.raises(ValueError, match="Default proxy"):
+        registry.remove_proxy("edge-default")
+
+    assert registry.get_proxy("edge-default") is not None
+
+
+def test_remove_proxy_rejects_last_proxy(tmp_path):
+    configure_test_mysql_env(tmp_path / "proxy-remove-last")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-only", display_name="Only")
+
+    with pytest.raises(ValueError, match="last registered proxy"):
+        registry.remove_proxy("edge-only")
+
+    assert registry.get_proxy("edge-only") is not None
+
+
 def test_remove_proxy_partial_failure_resumes_with_bounded_chunks(monkeypatch, tmp_path):
     configure_test_mysql_env(tmp_path / "proxy-remove-resume")
     proxy_registry = _proxy_registry()
@@ -1159,6 +1301,7 @@ def test_remove_proxy_partial_failure_resumes_with_bounded_chunks(monkeypatch, t
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy("edge-big", display_name="Edge")
+    registry.ensure_proxy("edge-keep", display_name="Keep")
     with registry._connect() as conn:
         conn.execute(
             "CREATE TABLE proxy_large_backlog (id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL, value VARCHAR(32) NOT NULL)",

@@ -453,6 +453,25 @@ def rename_proxy_scoped_rows(
     )
 
 
+def proxy_scoped_tables_with_rows(conn: Any, *, proxy_id: str) -> tuple[str, ...]:
+    tables: list[str] = []
+    for table in lifecycle_inventory(conn):
+        if table.is_indirect_child:
+            continue
+        if not table.rename or not _table_exists(conn, table.table):
+            continue
+        ensure_proxy_lifecycle_index(conn, table)
+        safe_table = quote_mysql_identifier(table.table)
+        proxy_col = quote_mysql_identifier(table.proxy_column)
+        row = conn.execute(
+            f"SELECT 1 FROM {safe_table} WHERE {proxy_col}=%s LIMIT 1",
+            (proxy_id,),
+        ).fetchone()
+        if row is not None:
+            tables.append(table.table)
+    return tuple(sorted(tables))
+
+
 def remove_proxy_scoped_rows(conn: Any, *, proxy_id: str) -> ProxyLifecycleRunResult:
     table_results: list[ProxyLifecycleStepResult] = []
     for table in lifecycle_inventory(conn):
