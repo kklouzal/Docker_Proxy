@@ -467,6 +467,7 @@ class AppRuntimeServices:
     get_observability_queries: Any
     clear_observability_logs: Any
     run_observability_maintenance: Any
+    get_observability_maintenance_status: Any
     get_observability_retention_settings: Any
     set_observability_retention_settings: Any
     check_icap_adblock: Any
@@ -495,6 +496,7 @@ _default_app_runtime_services = AppRuntimeServices(
     get_observability_queries=_default_get_observability_queries,
     clear_observability_logs=_default_clear_observability_logs,
     run_observability_maintenance=_default_run_housekeeping_once,
+    get_observability_maintenance_status=_default_get_observability_maintenance_status,
     get_observability_retention_settings=_default_get_observability_retention_settings,
     set_observability_retention_settings=_default_set_observability_retention_settings,
     check_icap_adblock=_default_check_icap_adblock,
@@ -591,14 +593,18 @@ def run_observability_maintenance(
     run_type: str = "manual",
 ):
     runner = _app_runtime_services().run_observability_maintenance
-    if "run_type" in inspect.signature(runner).parameters:
-        return runner(analyze=analyze, optimize=optimize, run_type=run_type)
-    return runner(analyze=analyze, optimize=optimize)
+    try:
+        runner_signature = inspect.signature(runner)
+    except (TypeError, ValueError):
+        runner_signature = None
+    if runner_signature is not None and "run_type" not in runner_signature.parameters:
+        return runner(analyze=analyze, optimize=optimize)
+    return runner(analyze=analyze, optimize=optimize, run_type=run_type)
 
 
 def get_observability_maintenance_status():
     try:
-        return _default_get_observability_maintenance_status()
+        return _app_runtime_services().get_observability_maintenance_status()
     except Exception:
         return {"latest": {}, "history": []}
 
@@ -1764,13 +1770,28 @@ def _max_workers() -> int:
 
 
 # Global request body limit (bytes). Keep reasonably above common form posts.
-try:
-    app.config.setdefault(
-        "MAX_CONTENT_LENGTH",
-        int((os.environ.get("MAX_CONTENT_LENGTH") or str(16 * 1024 * 1024)).strip()),
-    )
-except Exception:
-    app.config.setdefault("MAX_CONTENT_LENGTH", 16 * 1024 * 1024)
+_MAX_CONTENT_LENGTH_DEFAULT_BYTES = 16 * 1024 * 1024
+
+
+def _configured_max_content_length() -> int:
+    try:
+        configured = int(
+            (
+                os.environ.get(
+                    "MAX_CONTENT_LENGTH",
+                    str(_MAX_CONTENT_LENGTH_DEFAULT_BYTES),
+                )
+                or str(_MAX_CONTENT_LENGTH_DEFAULT_BYTES)
+            ).strip()
+        )
+    except Exception:
+        return _MAX_CONTENT_LENGTH_DEFAULT_BYTES
+    if configured <= 0:
+        return _MAX_CONTENT_LENGTH_DEFAULT_BYTES
+    return configured
+
+
+app.config["MAX_CONTENT_LENGTH"] = _configured_max_content_length()
 
 # Session security: persist a secret key so login survives container restarts.
 _auth_store = get_auth_store()

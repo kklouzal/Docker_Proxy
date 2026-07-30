@@ -166,6 +166,32 @@ def test_safe_next_url_delegates_to_shared_local_return_sanitizer(
     assert calls == ["/admin", "https://evil.example/phish"]
 
 
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_max_content_length_configuration_defaults_on_nonpositive_values(
+    monkeypatch, tmp_path, value: str
+) -> None:
+    monkeypatch.setenv("MAX_CONTENT_LENGTH", value)
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    assert loaded.module.app.config["MAX_CONTENT_LENGTH"] == 16 * 1024 * 1024
+
+
+@pytest.mark.parametrize("value", ["", "not-an-int"])
+def test_max_content_length_configuration_defaults_on_blank_or_malformed_values(
+    monkeypatch, tmp_path, value: str
+) -> None:
+    monkeypatch.setenv("MAX_CONTENT_LENGTH", value)
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    assert loaded.module.app.config["MAX_CONTENT_LENGTH"] == 16 * 1024 * 1024
+
+
+def test_max_content_length_configuration_accepts_positive_values(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("MAX_CONTENT_LENGTH", "1024")
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    assert loaded.module.app.config["MAX_CONTENT_LENGTH"] == 1024
+
+
 def test_session_timeout_configuration_is_bounded_to_at_least_one_hour(
     monkeypatch, tmp_path
 ) -> None:

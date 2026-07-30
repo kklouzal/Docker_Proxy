@@ -1787,13 +1787,81 @@ def test_observability_settings_updates_retention_days(monkeypatch, tmp_path) ->
     assert "45 days" in loaded.audit_store.records[-1]["detail"]
 
 
+def test_observability_settings_reads_maintenance_status_from_runtime_services(
+    monkeypatch, tmp_path
+) -> None:
+    def status() -> dict[str, object]:
+        return {
+            "latest": {
+                "status": "success",
+                "run_type": "manual",
+                "finished_ts": 1,
+                "retention_days": 45,
+                "pruned": True,
+                "analyze": True,
+                "optimize": True,
+                "maintained_tables": 3,
+                "duration_ms": 12,
+                "detail": "service-provided status",
+            },
+            "history": [],
+        }
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        get_observability_maintenance_status=status,
+        get_observability_retention_settings=lambda: {
+            "retention_days": 45,
+            "updated_ts": 0,
+        },
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    page = client.get("/observability?pane=settings")
+
+    assert page.status_code == 200
+    assert b"service-provided status" in page.data
+    assert b"Last maintenance: success manual" in page.data
+
+
+def test_observability_settings_handles_maintenance_status_failures(
+    monkeypatch, tmp_path
+) -> None:
+    def status() -> None:
+        msg = "maintenance password=secret"
+        raise RuntimeError(msg)
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        get_observability_maintenance_status=status,
+        get_observability_retention_settings=lambda: {
+            "retention_days": 45,
+            "updated_ts": 0,
+        },
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    page = client.get("/observability?pane=settings")
+
+    assert page.status_code == 200
+    body = page.get_data(as_text=True)
+    assert "No maintenance run history" in body
+    assert "secret" not in body
+
+
 def test_observability_settings_runs_manual_database_maintenance(
     monkeypatch, tmp_path
 ) -> None:
-    calls: list[tuple[bool, bool]] = []
+    calls: list[tuple[bool, bool, str]] = []
 
-    def run_maintenance(*, analyze: bool = False, optimize: bool = False):
-        calls.append((analyze, optimize))
+    def run_maintenance(
+        *, analyze: bool = False, optimize: bool = False, run_type: str = "scheduled"
+    ):
+        calls.append((analyze, optimize, run_type))
         return {
             "ok": True,
             "retention_days": 45,
@@ -1823,7 +1891,7 @@ def test_observability_settings_runs_manual_database_maintenance(
     )
 
     assert response.status_code in {302, 303}
-    assert calls == [(True, True)]
+    assert calls == [(True, True, "manual")]
     location = response.headers["Location"]
     assert "/observability" in location
     assert "pane=settings" in location
@@ -1835,6 +1903,37 @@ def test_observability_settings_runs_manual_database_maintenance(
     )
     assert loaded.audit_store.records[-1]["ok"] is True
     assert "45 day retention" in loaded.audit_store.records[-1]["detail"]
+
+
+def test_observability_maintenance_keeps_legacy_runner_compatibility(
+    monkeypatch, tmp_path
+) -> None:
+    calls: list[tuple[bool, bool]] = []
+
+    def run_maintenance(*, analyze: bool = False, optimize: bool = False):
+        calls.append((analyze, optimize))
+        return {
+            "ok": True,
+            "retention_days": 45,
+            "maintenance": {"maintained_tables": 3, "tables": []},
+        }
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        run_observability_maintenance=run_maintenance,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/observability/maintenance",
+        data={"csrf_token": csrf_token(client, "/")},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert calls == [(True, True)]
 
 
 def test_clamav_page_uses_dedicated_clamav_health_endpoint(

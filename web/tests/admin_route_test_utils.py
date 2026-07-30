@@ -1277,6 +1277,10 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
                 "maintenance": {"maintained_tables": 0, "tables": []},
             }
         ),
+        get_observability_maintenance_status=overrides.get(
+            "get_observability_maintenance_status"
+        )
+        or (lambda: {"latest": {}, "history": []}),
         get_observability_retention_settings=overrides.get(
             "get_observability_retention_settings"
         )
