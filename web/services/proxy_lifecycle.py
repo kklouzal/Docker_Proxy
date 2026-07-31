@@ -289,7 +289,11 @@ def lifecycle_inventory(conn: Any) -> tuple[ProxyLifecycleTable, ...]:
     return tuple(inventory)
 
 
-def prepare_proxy_lifecycle(conn: Any, *, action: LifecycleAction) -> None:
+def prepare_proxy_lifecycle(
+    conn: Any,
+    *,
+    action: LifecycleAction,
+) -> tuple[ProxyLifecycleTable, ...]:
     """Prepare lifecycle indexes before the caller opens a data transaction.
 
     MySQL DDL performs implicit commits, so registry rename/remove callers run
@@ -298,7 +302,8 @@ def prepare_proxy_lifecycle(conn: Any, *, action: LifecycleAction) -> None:
     but this preflight keeps normal discovered-table index creation outside the
     rollback-sensitive data transaction.
     """
-    for table in lifecycle_inventory(conn):
+    inventory = lifecycle_inventory(conn)
+    for table in inventory:
         if action == "rename":
             if not table.rename or table.is_indirect_child:
                 continue
@@ -320,6 +325,7 @@ def prepare_proxy_lifecycle(conn: Any, *, action: LifecycleAction) -> None:
             )
             continue
         ensure_proxy_lifecycle_index(conn, table)
+    return inventory
 
 
 def _order_sql(conn: Any, table: ProxyLifecycleTable) -> str:
@@ -338,12 +344,22 @@ def _bounded_update_proxy_id(
     *,
     old_proxy_id: str,
     new_proxy_id: str,
+    ensure_indexes: bool = True,
 ) -> ProxyLifecycleStepResult:
     if not table.rename or table.is_indirect_child:
         return ProxyLifecycleStepResult(table.table, "rename", skipped=True)
     if not _table_exists(conn, table.table):
         return ProxyLifecycleStepResult(table.table, "rename", skipped=True, detail="missing")
-    ensure_proxy_lifecycle_index(conn, table)
+    if ensure_indexes:
+        ensure_proxy_lifecycle_index(conn, table)
+    elif not _index_with_leftmost_column_exists(conn, table.table, table.proxy_column):
+        return ProxyLifecycleStepResult(
+            table.table,
+            "rename",
+            truncated=True,
+            discovered=table.note.startswith("discovered"),
+            detail="missing_prepared_lifecycle_index",
+        )
     per_chunk = lifecycle_chunk_size()
     per_table = lifecycle_max_rows_per_table()
     if per_table <= 0:
@@ -379,6 +395,7 @@ def _bounded_delete_proxy_id(
     table: ProxyLifecycleTable,
     *,
     proxy_id: str,
+    ensure_indexes: bool = True,
 ) -> ProxyLifecycleStepResult:
     if not table.remove:
         return ProxyLifecycleStepResult(table.table, "remove", skipped=True)
@@ -394,11 +411,30 @@ def _bounded_delete_proxy_id(
     if table.is_indirect_child:
         if not _table_exists(conn, table.owner_table):
             return ProxyLifecycleStepResult(table.table, "remove", skipped=True, detail="owner_missing")
-        ensure_proxy_lifecycle_index(conn, table)
-        ensure_proxy_lifecycle_index(
+        if ensure_indexes:
+            ensure_proxy_lifecycle_index(conn, table)
+            ensure_proxy_lifecycle_index(
+                conn,
+                ProxyLifecycleTable(
+                    table.owner_table,
+                    order_columns=("proxy_id", table.owner_pk),
+                ),
+            )
+        elif not _index_with_leftmost_column_exists(
             conn,
-            ProxyLifecycleTable(table.owner_table, order_columns=("proxy_id", table.owner_pk)),
-        )
+            table.table,
+            table.child_fk,
+        ) or not _index_with_leftmost_column_exists(
+            conn,
+            table.owner_table,
+            table.proxy_column,
+        ):
+            return ProxyLifecycleStepResult(
+                table.table,
+                "remove",
+                truncated=True,
+                detail="missing_prepared_lifecycle_index",
+            )
         safe_table = quote_mysql_identifier(table.table)
         child_fk = quote_mysql_identifier(table.child_fk)
         safe_owner = quote_mysql_identifier(table.owner_table)
@@ -432,7 +468,16 @@ def _bounded_delete_proxy_id(
             truncated=total >= per_table,
         )
 
-    ensure_proxy_lifecycle_index(conn, table)
+    if ensure_indexes:
+        ensure_proxy_lifecycle_index(conn, table)
+    elif not _index_with_leftmost_column_exists(conn, table.table, table.proxy_column):
+        return ProxyLifecycleStepResult(
+            table.table,
+            "remove",
+            truncated=True,
+            discovered=table.note.startswith("discovered"),
+            detail="missing_prepared_lifecycle_index",
+        )
     safe_table = quote_mysql_identifier(table.table)
     proxy_col = quote_mysql_identifier(table.proxy_column)
     order_sql = _order_sql(conn, table)
@@ -462,14 +507,17 @@ def rename_proxy_scoped_rows(
     *,
     old_proxy_id: str,
     new_proxy_id: str,
+    inventory: tuple[ProxyLifecycleTable, ...] | None = None,
+    ensure_indexes: bool = True,
 ) -> ProxyLifecycleRunResult:
     table_results: list[ProxyLifecycleStepResult] = []
-    for table in lifecycle_inventory(conn):
+    for table in inventory if inventory is not None else lifecycle_inventory(conn):
         result = _bounded_update_proxy_id(
             conn,
             table,
             old_proxy_id=old_proxy_id,
             new_proxy_id=new_proxy_id,
+            ensure_indexes=ensure_indexes,
         )
         table_results.append(result)
         if result.truncated:
@@ -514,10 +562,21 @@ def proxy_scoped_tables_with_rows(conn: Any, *, proxy_id: str) -> tuple[str, ...
     return tuple(sorted(tables))
 
 
-def remove_proxy_scoped_rows(conn: Any, *, proxy_id: str) -> ProxyLifecycleRunResult:
+def remove_proxy_scoped_rows(
+    conn: Any,
+    *,
+    proxy_id: str,
+    inventory: tuple[ProxyLifecycleTable, ...] | None = None,
+    ensure_indexes: bool = True,
+) -> ProxyLifecycleRunResult:
     table_results: list[ProxyLifecycleStepResult] = []
-    for table in lifecycle_inventory(conn):
-        result = _bounded_delete_proxy_id(conn, table, proxy_id=proxy_id)
+    for table in inventory if inventory is not None else lifecycle_inventory(conn):
+        result = _bounded_delete_proxy_id(
+            conn,
+            table,
+            proxy_id=proxy_id,
+            ensure_indexes=ensure_indexes,
+        )
         table_results.append(result)
         if result.truncated:
             break

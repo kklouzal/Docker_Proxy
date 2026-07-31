@@ -52,6 +52,15 @@ def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
     return mysql_error_code(exc) in codes
 
 
+def _lifecycle_incomplete_retry_detail(result: ProxyLifecycleRunResult) -> str:
+    if any(
+        step.truncated and step.detail == "missing_prepared_lifecycle_index"
+        for step in result.table_results
+    ):
+        return "paused to prepare a newly discovered lifecycle index; retry to resume."
+    return "paused after bounded chunk limit; retry to resume."
+
+
 def _has_unsafe_url_text(value: str) -> bool:
     return any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value)
 
@@ -979,8 +988,12 @@ class ProxyRegistry:
                         conn,
                         old_proxy_id=old_key,
                         new_proxy_id=new_key,
+                        ensure_indexes=False,
                     )
                     if not lifecycle_result.complete:
+                        retry_detail = _lifecycle_incomplete_retry_detail(
+                            lifecycle_result,
+                        )
                         conn.execute(
                             """
                             UPDATE proxy_instances
@@ -988,12 +1001,12 @@ class ProxyRegistry:
                             WHERE proxy_id=%s
                             """,
                             (
-                                "Proxy rename paused after bounded chunk limit; retry to resume.",
+                                f"Proxy rename {retry_detail}",
                                 int(time.time()),
                                 old_key,
                             ),
                         )
-                        msg = f"Proxy rename for {old_key!r} paused after bounded chunk limit; retry to resume."
+                        msg = f"Proxy rename for {old_key!r} {retry_detail}"
                         raise ProxyLifecycleIncompleteError(msg, lifecycle_result)
 
                     conn.execute(
@@ -1110,9 +1123,16 @@ class ProxyRegistry:
                     )
                     self._clear_lifecycle_write_cache(proxy_key)
 
-                    lifecycle_result = remove_proxy_scoped_rows(conn, proxy_id=proxy_key)
+                    lifecycle_result = remove_proxy_scoped_rows(
+                        conn,
+                        proxy_id=proxy_key,
+                        ensure_indexes=False,
+                    )
                     table_counts = dict(lifecycle_result.table_counts)
                     if not lifecycle_result.complete:
+                        retry_detail = _lifecycle_incomplete_retry_detail(
+                            lifecycle_result,
+                        )
                         conn.execute(
                             """
                             UPDATE proxy_instances
@@ -1120,12 +1140,12 @@ class ProxyRegistry:
                             WHERE proxy_id=%s
                             """,
                             (
-                                "Proxy removal paused after bounded chunk limit; retry to resume.",
+                                f"Proxy removal {retry_detail}",
                                 int(time.time()),
                                 proxy_key,
                             ),
                         )
-                        msg = f"Proxy removal for {proxy_key!r} paused after bounded chunk limit; retry to resume."
+                        msg = f"Proxy removal for {proxy_key!r} {retry_detail}"
                         raise ProxyLifecycleIncompleteError(msg, lifecycle_result)
 
                     result = conn.execute(

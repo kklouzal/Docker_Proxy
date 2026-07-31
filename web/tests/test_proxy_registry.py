@@ -1192,7 +1192,14 @@ class _RegistryFaultConn:
         msg = f"Unexpected SQL: {text}"
         raise AssertionError(msg)
 
-    def rename_scoped_rows(self, _conn, *, old_proxy_id: str, new_proxy_id: str):
+    def rename_scoped_rows(
+        self,
+        _conn,
+        *,
+        old_proxy_id: str,
+        new_proxy_id: str,
+        **_kwargs,
+    ):
         self.scoped_rows = [
             new_proxy_id if row == old_proxy_id else row for row in self.scoped_rows
         ]
@@ -1206,7 +1213,7 @@ class _RegistryFaultConn:
             table_counts={"proxy_fault_rows": len(self.scoped_rows)},
         )
 
-    def remove_scoped_rows(self, _conn, *, proxy_id: str):
+    def remove_scoped_rows(self, _conn, *, proxy_id: str, **_kwargs):
         removed = sum(1 for row in self.scoped_rows if row == proxy_id)
         self.scoped_rows = [row for row in self.scoped_rows if row != proxy_id]
         if self.fail_lifecycle_once:
@@ -1419,7 +1426,7 @@ def test_rename_proxy_incomplete_lifecycle_rolls_back_without_success_metadata(
         proxy_registry, "prepare_proxy_lifecycle", lambda *_a, **_k: None
     )
 
-    def incomplete(_conn, *, old_proxy_id: str, new_proxy_id: str):
+    def incomplete(_conn, *, old_proxy_id: str, new_proxy_id: str, **_kwargs):
         conn.scoped_rows = [
             new_proxy_id if row == old_proxy_id else row for row in conn.scoped_rows
         ]
@@ -1465,7 +1472,7 @@ def test_remove_proxy_incomplete_lifecycle_rolls_back_without_success_metadata(
         proxy_registry, "prepare_proxy_lifecycle", lambda *_a, **_k: None
     )
 
-    def incomplete(_conn, *, proxy_id: str):
+    def incomplete(_conn, *, proxy_id: str, **_kwargs):
         conn.scoped_rows = [row for row in conn.scoped_rows if row != proxy_id]
         return proxy_registry.ProxyLifecycleRunResult(
             action="remove",
@@ -1884,6 +1891,157 @@ def test_remove_proxy_incomplete_bounded_result_rolls_back_before_retry(
     assert removed.table_counts["proxy_large_backlog"] == 5
     assert "proxy_large_backlog" in removed.discovered_tables
     assert registry.remove_proxy("edge-big").deleted_rows == 0
+
+
+def test_rename_proxy_missing_prepared_index_rolls_back_without_ddl_leak(
+    monkeypatch,
+    tmp_path,
+):
+    configure_test_mysql_env(tmp_path / "proxy-rename-missing-prepared-index")
+    proxy_registry = _proxy_registry()
+    from services.proxy_lifecycle import ProxyLifecycleIncompleteError  # type: ignore
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-old", display_name="Edge")
+    with registry._connect() as conn:
+        conn.execute(
+            "CREATE TABLE proxy_missing_rename_index (id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL, value VARCHAR(32) NOT NULL)",
+        )
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO proxy_missing_rename_index(proxy_id, value) VALUES(%s,%s)",
+                ("edge-old", f"row-{i}"),
+            )
+
+    original_prepare = proxy_registry.prepare_proxy_lifecycle
+    monkeypatch.setattr(
+        proxy_registry,
+        "prepare_proxy_lifecycle",
+        lambda *_args, **_kwargs: (),
+    )
+    with pytest.raises(ProxyLifecycleIncompleteError) as exc_info:
+        registry.rename_proxy("edge-old", "edge-new", display_name="Edge")
+
+    assert exc_info.value.result.truncated_tables == ("proxy_missing_rename_index",)
+    with registry._connect() as conn:
+        rows = conn.execute(
+            "SELECT proxy_id, COUNT(*) AS c FROM proxy_missing_rename_index GROUP BY proxy_id ORDER BY proxy_id",
+        ).fetchall()
+        old_status = conn.execute(
+            "SELECT status FROM proxy_instances WHERE proxy_id=%s",
+            ("edge-old",),
+        ).fetchone()
+        new_row = conn.execute(
+            "SELECT 1 FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
+            ("edge-new",),
+        ).fetchone()
+        tombstone = conn.execute(
+            "SELECT 1 FROM proxy_lifecycle_tombstones WHERE proxy_id=%s LIMIT 1",
+            ("edge-old",),
+        ).fetchone()
+        index_row = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = 'proxy_missing_rename_index'
+              AND column_name = 'proxy_id'
+              AND seq_in_index = 1
+            LIMIT 1
+            """,
+        ).fetchone()
+    assert [(row["proxy_id"], int(row["c"] or 0)) for row in rows] == [
+        ("edge-old", 3),
+    ]
+    assert old_status["status"] == "unknown"
+    assert new_row is None
+    assert tombstone is None
+    assert index_row is None
+
+    monkeypatch.setattr(proxy_registry, "prepare_proxy_lifecycle", original_prepare)
+    renamed = registry.rename_proxy("edge-old", "edge-new", display_name="Edge")
+
+    assert renamed.proxy_id == "edge-new"
+    with registry._connect() as conn:
+        rows = conn.execute(
+            "SELECT proxy_id, COUNT(*) AS c FROM proxy_missing_rename_index GROUP BY proxy_id ORDER BY proxy_id",
+        ).fetchall()
+    assert [(row["proxy_id"], int(row["c"] or 0)) for row in rows] == [
+        ("edge-new", 3),
+    ]
+
+
+def test_remove_proxy_missing_prepared_index_rolls_back_without_ddl_leak(
+    monkeypatch,
+    tmp_path,
+):
+    configure_test_mysql_env(tmp_path / "proxy-remove-missing-prepared-index")
+    proxy_registry = _proxy_registry()
+    from services.proxy_lifecycle import ProxyLifecycleIncompleteError  # type: ignore
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-remove", display_name="Edge")
+    registry.ensure_proxy("edge-keep", display_name="Keep")
+    with registry._connect() as conn:
+        conn.execute(
+            "CREATE TABLE proxy_missing_remove_index (id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL, value VARCHAR(32) NOT NULL)",
+        )
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO proxy_missing_remove_index(proxy_id, value) VALUES(%s,%s)",
+                ("edge-remove", f"row-{i}"),
+            )
+
+    original_prepare = proxy_registry.prepare_proxy_lifecycle
+    monkeypatch.setattr(
+        proxy_registry,
+        "prepare_proxy_lifecycle",
+        lambda *_args, **_kwargs: (),
+    )
+    with pytest.raises(ProxyLifecycleIncompleteError) as exc_info:
+        registry.remove_proxy("edge-remove")
+
+    assert exc_info.value.result.truncated_tables == ("proxy_missing_remove_index",)
+    with registry._connect() as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS c FROM proxy_missing_remove_index WHERE proxy_id=%s",
+            ("edge-remove",),
+        ).fetchone()
+        status = conn.execute(
+            "SELECT status FROM proxy_instances WHERE proxy_id=%s",
+            ("edge-remove",),
+        ).fetchone()
+        tombstone = conn.execute(
+            "SELECT 1 FROM proxy_lifecycle_tombstones WHERE proxy_id=%s LIMIT 1",
+            ("edge-remove",),
+        ).fetchone()
+        index_row = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = 'proxy_missing_remove_index'
+              AND column_name = 'proxy_id'
+              AND seq_in_index = 1
+            LIMIT 1
+            """,
+        ).fetchone()
+    assert int(remaining["c"] or 0) == 3
+    assert status["status"] == "unknown"
+    assert tombstone is None
+    assert index_row is None
+
+    monkeypatch.setattr(proxy_registry, "prepare_proxy_lifecycle", original_prepare)
+    removed = registry.remove_proxy("edge-remove")
+
+    assert removed.complete is True
+    assert registry.get_proxy("edge-remove") is None
+    with registry._connect() as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS c FROM proxy_missing_remove_index WHERE proxy_id=%s",
+            ("edge-remove",),
+        ).fetchone()
+    assert int(remaining["c"] or 0) == 0
 
 
 def test_rename_proxy_adds_lifecycle_index_for_discovered_tables(tmp_path):
