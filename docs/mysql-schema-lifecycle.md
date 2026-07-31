@@ -1,6 +1,6 @@
 # MySQL schema lifecycle hardening
 
-Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`.  Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once startup migration version 15 is applied.
+Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 20.
 
 ## Version ownership
 
@@ -32,7 +32,7 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 - Startup applies versions in order and records each version checksum/status/events. Already-applied matching versions are no-ops; checksum drift on an applied version blocks startup.
 - MySQL DDL is non-transactional, so every version records a `running` checkpoint before DDL and uses idempotent table/index/column repairs. A failed or interrupted version is marked `failed` and can be retried safely.
 - DDL privilege checks run at startup. Set `MYSQL_CREATE_DATABASE=0` for externally managed databases; migrations still require a DDL-capable account unless a privileged migration job ran first.
-- After version 15, lazy store constructors and control-plane stores use cheap process guards/current-schema assertions instead of repeated hot-path `CREATE TABLE`, `ALTER TABLE`, or `information_schema` repair loops.
+- After the lifecycle-current cutover and subsequent startup migrations, lazy store constructors and control-plane stores use cheap process guards/current-schema assertions instead of repeated hot-path `CREATE TABLE`, `ALTER TABLE`, or `information_schema` repair loops.
 
 ## Rollback/compatibility notes
 

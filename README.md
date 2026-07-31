@@ -441,7 +441,7 @@ Deterministic tests cover stores, route boundaries, Squid/config rendering, cert
 
 The live harness starts MySQL, the admin UI, two proxy runtimes, a traffic fixture, and a dedicated pytest runner. It verifies real login, public/admin health separation, PAC/WPAD serving, authenticated proxy management APIs, sync and config validation/apply paths, multi-proxy selection and scoping, certificate and policy workflows, adblock/web-filter enforcement, selected-proxy ClamAV reporting, cache clear, runtime disruption behavior, security headers/session/CSRF contracts, observability pages, exports, and proxied request telemetry paths.
 
-GitHub Actions runs the release gate on `main`: deterministic tests -> image build tests -> live tests -> GHCR publish.
+GitHub Actions runs the release gate on `main`: Ruff lint -> deterministic tests and MySQL lifecycle integration tests -> image build tests -> live tests -> GHCR publish.
 
 ## Project layout
 
