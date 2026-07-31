@@ -28,7 +28,11 @@ from services.db import (
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
-from services.proxy_write_guard import guarded_proxy_rows, guarded_proxy_write
+from services.proxy_write_guard import (
+    guarded_proxy_rows,
+    guarded_proxy_write,
+    resolve_proxy_read_id_cached,
+)
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
 
@@ -334,9 +338,10 @@ class AdblockStore:
                 )
 
     def _get_proxy_meta(self, conn, key: str, default: str = "") -> str:
+        proxy_id = resolve_proxy_read_id_cached(conn, get_proxy_id()).proxy_id
         row = conn.execute(
             "SELECT v FROM adblock_proxy_meta WHERE proxy_id=%s AND k=%s",
-            (get_proxy_id(), key),
+            (proxy_id, key),
         ).fetchone()
         return str(row[0]) if row and row[0] is not None else default
 
@@ -921,12 +926,13 @@ class AdblockStore:
 
     def get_cache_flush_requested(self) -> int:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT v FROM adblock_proxy_meta WHERE proxy_id=%s AND k='cache_flush_requested'",
-                (get_proxy_id(),),
-            ).fetchone()
             try:
-                return int(row[0]) if row else 0
+                raw_requested = self._get_proxy_meta(
+                    conn,
+                    "cache_flush_requested",
+                    "0",
+                )
+                return int(raw_requested or 0)
             except Exception:
                 return 0
 

@@ -48,6 +48,19 @@ def _import_adblock_artifacts_module():
     return importlib.reload(artifacts_module)
 
 
+def _import_adblock_store_module():
+    repo_root = Path(__file__).resolve().parents[2]
+    web_root = repo_root / "web"
+    for path in (str(repo_root), str(web_root)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    os.environ["DISABLE_BACKGROUND"] = "1"
+    import services.adblock_store as store_module  # type: ignore
+
+    return importlib.reload(store_module)
+
+
 class _FakeSqlResult:
     def __init__(self, rows=None, *, rowcount: int = 0, lastrowid: int | None = None) -> None:
         self._rows = list(rows or [])
@@ -59,6 +72,96 @@ class _FakeSqlResult:
 
     def fetchall(self):
         return list(self._rows)
+
+
+class _AdblockAliasReadConn:
+    native = object()
+
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, tuple[object, ...]]] = []
+        self.application = {
+            "id": 7,
+            "proxy_id": "edge-a",
+            "revision_id": 42,
+            "ok": 1,
+            "detail": "applied",
+            "applied_by": "proxy",
+            "applied_ts": 123,
+            "artifact_sha256": "a" * 64,
+        }
+
+    def execute(self, sql: str, params=()):
+        compact = " ".join(str(sql).split())
+        params = tuple(params or ())
+        self.queries.append((compact, params))
+        if compact.startswith("CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones"):
+            return _FakeSqlResult()
+        if compact.startswith("SELECT 1 FROM information_schema.tables"):
+            return _FakeSqlResult([{"1": 1}])
+        if compact.startswith(
+            "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones",
+        ):
+            return _FakeSqlResult()
+        if compact.startswith("SELECT proxy_id FROM proxy_id_aliases"):
+            if params[0] == "live":
+                return _FakeSqlResult([{"proxy_id": "edge-a"}])
+            return _FakeSqlResult()
+        if compact.startswith("SELECT status FROM proxy_instances"):
+            if params[0] == "edge-a":
+                return _FakeSqlResult([{"status": "active"}])
+            return _FakeSqlResult()
+        if compact.startswith("SELECT * FROM proxy_adblock_artifact_applications"):
+            if params[:2] == ("edge-a", 42):
+                return _FakeSqlResult([self.application])
+            return _FakeSqlResult()
+        msg = f"Unexpected SQL: {compact}"
+        raise AssertionError(msg)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _AdblockProxyMetaAliasConn:
+    native = object()
+
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, tuple[object, ...]]] = []
+
+    def execute(self, sql: str, params=()):
+        compact = " ".join(str(sql).split())
+        params = tuple(params or ())
+        self.queries.append((compact, params))
+        if compact.startswith("CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones"):
+            return _FakeSqlResult()
+        if compact.startswith("SELECT 1 FROM information_schema.tables"):
+            return _FakeSqlResult([{"1": 1}])
+        if compact.startswith(
+            "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones",
+        ):
+            return _FakeSqlResult()
+        if compact.startswith("SELECT proxy_id FROM proxy_id_aliases"):
+            if params[0] == "live":
+                return _FakeSqlResult([{"proxy_id": "edge-a"}])
+            return _FakeSqlResult()
+        if compact.startswith("SELECT status FROM proxy_instances"):
+            if params[0] == "edge-a":
+                return _FakeSqlResult([{"status": "active"}])
+            return _FakeSqlResult()
+        if compact.startswith("SELECT v FROM adblock_proxy_meta"):
+            if params == ("edge-a", "cache_flush_requested"):
+                return _FakeSqlResult([("123",)])
+            return _FakeSqlResult()
+        msg = f"Unexpected SQL: {compact}"
+        raise AssertionError(msg)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 class _FakeAdblockRevisionConn:
@@ -164,6 +267,51 @@ def _enable_first_default_list(store, tmp_path: Path, *, enabled: bool = True) -
     store.set_enabled({status.key: status.key == selected for status in statuses})
     store.set_settings(enabled=enabled, cache_ttl=120, cache_max=4096)
     return selected
+
+
+def test_latest_apply_resolves_proxy_alias_before_read(monkeypatch) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    conn = _AdblockAliasReadConn()
+    store = artifacts_module.AdblockArtifactStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+
+    latest = store.latest_apply("live", revision_id=42)
+
+    assert latest is not None
+    assert latest.proxy_id == "edge-a"
+    assert latest.revision_id == 42
+    assert latest.artifact_sha256 == "a" * 64
+    assert any(
+        query.startswith("SELECT proxy_id FROM proxy_id_aliases")
+        and params == ("live",)
+        for query, params in conn.queries
+    )
+    assert any(
+        query.startswith("SELECT * FROM proxy_adblock_artifact_applications")
+        and params == ("edge-a", 42)
+        for query, params in conn.queries
+    )
+
+
+def test_cache_flush_read_resolves_proxy_alias(monkeypatch) -> None:
+    store_module = _import_adblock_store_module()
+    conn = _AdblockProxyMetaAliasConn()
+    store = store_module.AdblockStore()
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
+
+    token = set_proxy_id("live")
+    try:
+        assert store.get_cache_flush_requested() == 123
+    finally:
+        reset_proxy_id(token)
+
+    assert any(
+        query.startswith("SELECT v FROM adblock_proxy_meta")
+        and params == ("edge-a", "cache_flush_requested")
+        for query, params in conn.queries
+    )
 
 
 def test_artifact_revision_and_summary_share_json_property_parsing(

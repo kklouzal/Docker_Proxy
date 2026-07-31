@@ -380,6 +380,31 @@ def resolve_proxy_write_id_cached(
     )
 
 
+def resolve_proxy_read_id_cached(
+    conn: Any,
+    proxy_id: object | None,
+    *,
+    allow_alias: bool = True,
+    require_registered: bool = True,
+) -> ProxyWriteDecision:
+    """Resolve a proxy id for proxy-scoped reads using write-path identity rules.
+
+    Proxy-owned writers canonicalize aliases through ``guarded_proxy_write`` before
+    inserting rows. Read paths that look up those rows must use the same identity
+    resolution or operator-visible evidence can disappear under renamed/aliased
+    proxy ids even though the runtime write succeeded.
+    """
+    if not hasattr(conn, "native"):
+        proxy_key = normalize_proxy_id(proxy_id)
+        return ProxyWriteDecision(requested_proxy_id=proxy_key, proxy_id=proxy_key)
+    return resolve_proxy_write_id_cached(
+        conn,
+        proxy_id,
+        allow_alias=allow_alias,
+        require_registered=require_registered,
+    )
+
+
 def guarded_proxy_rows(
     conn: Any,
     proxy_id: object | None,

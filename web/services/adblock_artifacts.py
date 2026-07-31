@@ -33,7 +33,7 @@ from services.db import (
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_sync import nudge_registered_proxies
-from services.proxy_write_guard import guarded_proxy_write
+from services.proxy_write_guard import guarded_proxy_write, resolve_proxy_read_id_cached
 from services.revision_lifecycle import (
     ensure_generated_column,
     ensure_index,
@@ -760,6 +760,7 @@ class AdblockArtifactStore:
 
         proxy_key = normalize_proxy_id(proxy_id)
         with self._connect() as conn:
+            proxy_key = resolve_proxy_read_id_cached(conn, proxy_key).proxy_id
             if revision_id is None:
                 row = conn.execute(
                     """
