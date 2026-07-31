@@ -123,6 +123,16 @@ def _workflow_build_arg_blocks(workflow: str) -> list[dict[str, str]]:
     return blocks
 
 
+def _workflow_job_body(workflow: str, job_name: str) -> str:
+    match = re.search(
+        rf"^  {re.escape(job_name)}:\n(?P<body>(?:    .*\n|\n)+?)(?=^  [\w-]+:|\Z)",
+        workflow,
+        flags=re.MULTILINE,
+    )
+    assert match is not None
+    return match.group("body")
+
+
 def _dockerfile_stages(dockerfile: str) -> list[str]:
     text = _read(dockerfile)
     return [
@@ -280,18 +290,39 @@ def test_ghcr_publish_passes_runtime_version_build_args() -> None:
     proxy = _read("docker/Dockerfile.proxy")
     admin = _read("docker/Dockerfile.admin")
     build_arg_blocks = _workflow_build_arg_blocks(workflow)
+    build_date_step = (
+        "      - name: Compute OCI build date\n"
+        "        id: build-date\n"
+        "        shell: bash\n"
+        "        run: echo \"value=$(date -u +'%Y-%m-%dT%H:%M:%SZ')\" "
+        ">> \"$GITHUB_OUTPUT\"\n"
+    )
 
-    assert len(build_arg_blocks) >= 2
-    test_image_args = build_arg_blocks[0]
-    publish_image_args = build_arg_blocks[-1]
+    assert len(build_arg_blocks) == 2
 
-    for build_args in build_arg_blocks:
-        assert build_args["APP_VERSION"] == "${{ github.ref_name }}"
-        assert build_args["GIT_COMMIT"] == "${{ github.sha }}"
-        assert build_args["GIT_REF_NAME"] == "${{ github.ref_name }}"
-        assert build_args["BUILD_DATE"] == "${{ github.event.head_commit.timestamp || github.run_id }}"
-    assert test_image_args["IMAGE_NAME"] == "docker-proxy-${{ matrix.image }}:ci"
-    assert publish_image_args["IMAGE_NAME"] == "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.image }}"
+    job_image_names = {
+        "build-test-images": "docker-proxy-${{ matrix.image }}:ci",
+        "publish-images": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.image }}",
+    }
+    for job_name, expected_image_name in job_image_names.items():
+        job = _workflow_job_body(workflow, job_name)
+        job_build_arg_blocks = _workflow_build_arg_blocks(job)
+        assert len(job_build_arg_blocks) == 1
+        job_build_args = job_build_arg_blocks[0]
+
+        assert job.count("- name: Compute OCI build date") == 1
+        assert build_date_step in job
+        assert "date -u +'%Y-%m-%dT%H:%M:%SZ'" in job
+        assert ">> \"$GITHUB_OUTPUT\"" in job
+        assert job.index("id: build-date") < job.index("uses: docker/build-push-action@v7")
+        assert "${{ github.event.head_commit.timestamp || github.run_id }}" not in job
+        assert job.count("BUILD_DATE=${{ steps.build-date.outputs.value }}") == 1
+
+        assert job_build_args["APP_VERSION"] == "${{ github.ref_name }}"
+        assert job_build_args["GIT_COMMIT"] == "${{ github.sha }}"
+        assert job_build_args["GIT_REF_NAME"] == "${{ github.ref_name }}"
+        assert job_build_args["BUILD_DATE"] == "${{ steps.build-date.outputs.value }}"
+        assert job_build_args["IMAGE_NAME"] == expected_image_name
     assert "ARG IMAGE_NAME=proxy" in proxy
     assert "ARG IMAGE_NAME=admin-ui" in admin
     assert "IMAGE_NAME=${IMAGE_NAME}" in proxy
