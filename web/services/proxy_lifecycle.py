@@ -289,11 +289,7 @@ def lifecycle_inventory(conn: Any) -> tuple[ProxyLifecycleTable, ...]:
     return tuple(inventory)
 
 
-def prepare_proxy_lifecycle(
-    conn: Any,
-    *,
-    action: LifecycleAction,
-) -> tuple[ProxyLifecycleTable, ...]:
+def prepare_proxy_lifecycle(conn: Any, *, action: LifecycleAction) -> None:
     """Prepare lifecycle indexes before the caller opens a data transaction.
 
     MySQL DDL performs implicit commits, so registry rename/remove callers run
@@ -302,8 +298,7 @@ def prepare_proxy_lifecycle(
     but this preflight keeps normal discovered-table index creation outside the
     rollback-sensitive data transaction.
     """
-    inventory = lifecycle_inventory(conn)
-    for table in inventory:
+    for table in lifecycle_inventory(conn):
         if action == "rename":
             if not table.rename or table.is_indirect_child:
                 continue
@@ -325,7 +320,6 @@ def prepare_proxy_lifecycle(
             )
             continue
         ensure_proxy_lifecycle_index(conn, table)
-    return inventory
 
 
 def _order_sql(conn: Any, table: ProxyLifecycleTable) -> str:
@@ -507,11 +501,10 @@ def rename_proxy_scoped_rows(
     *,
     old_proxy_id: str,
     new_proxy_id: str,
-    inventory: tuple[ProxyLifecycleTable, ...] | None = None,
     ensure_indexes: bool = True,
 ) -> ProxyLifecycleRunResult:
     table_results: list[ProxyLifecycleStepResult] = []
-    for table in inventory if inventory is not None else lifecycle_inventory(conn):
+    for table in lifecycle_inventory(conn):
         result = _bounded_update_proxy_id(
             conn,
             table,
@@ -566,11 +559,10 @@ def remove_proxy_scoped_rows(
     conn: Any,
     *,
     proxy_id: str,
-    inventory: tuple[ProxyLifecycleTable, ...] | None = None,
     ensure_indexes: bool = True,
 ) -> ProxyLifecycleRunResult:
     table_results: list[ProxyLifecycleStepResult] = []
-    for table in inventory if inventory is not None else lifecycle_inventory(conn):
+    for table in lifecycle_inventory(conn):
         result = _bounded_delete_proxy_id(
             conn,
             table,

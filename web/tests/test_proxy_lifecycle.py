@@ -269,3 +269,60 @@ def test_remove_proxy_scoped_rows_processes_proxy_recovery_adoptions(
         and params == ("edge-old", 10)
         for statement, params in zip(conn.statements, conn.params, strict=True)
     )
+
+
+def test_rename_proxy_scoped_rows_fails_closed_when_prepared_index_missing(
+    monkeypatch,
+) -> None:
+    lifecycle = _proxy_lifecycle()
+    conn = _LifecycleConn(("proxy_unprepared_rows",))
+    monkeypatch.setattr(
+        lifecycle, "_table_exists", lambda _conn, name: name == "proxy_unprepared_rows"
+    )
+    monkeypatch.setattr(
+        lifecycle, "_index_with_leftmost_column_exists", lambda *_args: False
+    )
+
+    result = lifecycle.rename_proxy_scoped_rows(
+        conn,
+        old_proxy_id="edge-old",
+        new_proxy_id="edge-new",
+        ensure_indexes=False,
+    )
+
+    truncated = next(step for step in result.table_results if step.truncated)
+    assert result.complete is False
+    assert result.table_counts == {}
+    assert result.truncated_tables == ("proxy_unprepared_rows",)
+    assert truncated.table == "proxy_unprepared_rows"
+    assert truncated.detail == "missing_prepared_lifecycle_index"
+    assert not any(statement.startswith("UPDATE ") for statement in conn.statements)
+    assert not any(statement.startswith("ALTER TABLE ") for statement in conn.statements)
+
+
+def test_remove_proxy_scoped_rows_fails_closed_when_prepared_index_missing(
+    monkeypatch,
+) -> None:
+    lifecycle = _proxy_lifecycle()
+    conn = _LifecycleConn(("proxy_unprepared_rows",))
+    monkeypatch.setattr(
+        lifecycle, "_table_exists", lambda _conn, name: name == "proxy_unprepared_rows"
+    )
+    monkeypatch.setattr(
+        lifecycle, "_index_with_leftmost_column_exists", lambda *_args: False
+    )
+
+    result = lifecycle.remove_proxy_scoped_rows(
+        conn,
+        proxy_id="edge-old",
+        ensure_indexes=False,
+    )
+
+    truncated = next(step for step in result.table_results if step.truncated)
+    assert result.complete is False
+    assert result.table_counts == {}
+    assert result.truncated_tables == ("proxy_unprepared_rows",)
+    assert truncated.table == "proxy_unprepared_rows"
+    assert truncated.detail == "missing_prepared_lifecycle_index"
+    assert not any(statement.startswith("DELETE FROM ") for statement in conn.statements)
+    assert not any(statement.startswith("ALTER TABLE ") for statement in conn.statements)
