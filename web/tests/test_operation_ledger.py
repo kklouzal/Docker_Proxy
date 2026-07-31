@@ -66,6 +66,8 @@ class _Connection:
         compact = " ".join(str(sql).split())
         params = tuple(params or ())
         self.queries.append((compact, params))
+        if compact.startswith("SELECT proxy_id FROM proxy_operations"):
+            return _Result([{"proxy_id": "edge-a"}])
         if compact.startswith("SELECT id FROM proxy_operations"):
             return _Result([{"id": 7}, {"id": 8}])
         if (
@@ -95,6 +97,74 @@ class _Connection:
             return _Result(
                 [dict(base, id=7, created_ts=1), dict(base, id=8, created_ts=2)],
             )
+        if compact.startswith("SELECT id, proxy_id, status"):
+            return _Result([_operation_row(id=int(params[0] or 0))])
+        return _Result()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.committed = True
+        return False
+
+
+class _LifecycleConnection:
+    native = object()
+
+    def __init__(
+        self,
+        *,
+        aliases: dict[str, str] | None = None,
+        tombstones: dict[str, tuple[str, str]] | None = None,
+        registry: dict[str, str] | None = None,
+    ) -> None:
+        self.aliases = dict(aliases or {})
+        self.tombstones = dict(tombstones or {})
+        self.registry = dict(registry or {"edge-a": "active"})
+        self.queries = []
+        self.committed = False
+
+    def execute(self, sql, params=()):
+        compact = " ".join(str(sql).split())
+        params = tuple(params or ())
+        self.queries.append((compact, params))
+        lifecycle_result = self._execute_lifecycle(compact, params)
+        if lifecycle_result is not None:
+            return lifecycle_result
+        return self._execute_operation(compact, params)
+
+    def _execute_lifecycle(self, compact: str, params: tuple[object, ...]):
+        if compact.startswith("CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones"):
+            return _Result()
+        if compact.startswith("SELECT 1 FROM information_schema.tables"):
+            return _Result([{"1": 1}])
+        if compact.startswith(
+            "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones",
+        ):
+            row = self.tombstones.get(str(params[0]))
+            if row is None:
+                return _Result()
+            action, target = row
+            return _Result([{"action": action, "target_proxy_id": target}])
+        if compact.startswith("SELECT proxy_id FROM proxy_id_aliases"):
+            target = self.aliases.get(str(params[0]))
+            if target is None:
+                return _Result()
+            return _Result([{"proxy_id": target}])
+        if compact.startswith("SELECT status FROM proxy_instances"):
+            status = self.registry.get(str(params[0]))
+            if status is None:
+                return _Result()
+            return _Result([{"status": status}])
+        if compact.startswith("SELECT GET_LOCK"):
+            return _Result([{"acquired": 1}])
+        if compact.startswith("DO RELEASE_LOCK"):
+            return _Result()
+        return None
+
+    def _execute_operation(self, compact: str, params: tuple[object, ...]):
         return _Result()
 
     def __enter__(self):
@@ -290,6 +360,94 @@ def test_claim_pending_preserves_force_flag(monkeypatch) -> None:
     assert [op.force for op in claimed] == [False, False]
 
 
+def test_claim_pending_accepts_lifecycle_alias_and_uses_canonical_proxy(monkeypatch) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+    from services.proxy_write_guard import clear_proxy_write_guard_cache
+
+    class _LifecycleClaimConnection(_LifecycleConnection):
+        def _execute_operation(self, compact: str, params: tuple[object, ...]):
+            if compact.startswith("SELECT id FROM proxy_operations"):
+                return _Result([{"id": 7}]) if params[0] == "edge-new" else _Result()
+            if compact.startswith("UPDATE proxy_operations SET status='applying'"):
+                return _Result()
+            if (
+                compact.startswith("SELECT id, proxy_id, status")
+                and "claim_token=%s" in compact
+            ):
+                return _Result(
+                    [
+                        _operation_row(
+                            id=7,
+                            proxy_id=params[0],
+                            status="applying",
+                            claim_token=params[1],
+                        ),
+                    ],
+                )
+            return _Result()
+
+    clear_proxy_write_guard_cache()
+    conn = _LifecycleClaimConnection(
+        aliases={"edge-old": "edge-new"},
+        registry={"edge-new": "active"},
+    )
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    monkeypatch.setattr(
+        "services.operation_ledger.secrets.token_hex", lambda _n: "claim-aliased"
+    )
+
+    claimed = ledger.claim_pending("edge-old", limit=5)
+
+    assert [op.proxy_id for op in claimed] == ["edge-new"]
+    claim_select = next(
+        item for item in conn.queries if item[0].startswith("SELECT id FROM proxy_operations")
+    )
+    assert claim_select[1] == ("edge-new", 5)
+    claim_update = next(
+        item
+        for item in conn.queries
+        if item[0].startswith("UPDATE proxy_operations SET status='applying'")
+    )
+    assert claim_update[1] == (123, 123, "claim-aliased", "edge-new", 7)
+    assert conn.committed is True
+
+
+@pytest.mark.parametrize("action", ["renaming", "removing", "removed"])
+def test_claim_pending_fails_closed_for_blocked_lifecycle_states(
+    monkeypatch,
+    action,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+    from services.proxy_write_guard import (
+        ProxyLifecycleWriteError,
+        clear_proxy_write_guard_cache,
+    )
+
+    class _LifecycleClaimConnection(_LifecycleConnection):
+        def _execute_operation(self, compact: str, params: tuple[object, ...]):
+            if compact.startswith("SELECT id FROM proxy_operations"):
+                pytest.fail("blocked lifecycle state must fail before claiming rows")
+            return _Result()
+
+    clear_proxy_write_guard_cache()
+    conn = _LifecycleClaimConnection(
+        tombstones={"edge-a": (action, "edge-b" if action == "renaming" else "")},
+        registry={"edge-a": "active"},
+    )
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+
+    with pytest.raises(ProxyLifecycleWriteError):
+        ledger.claim_pending("edge-a", limit=2)
+    assert conn.committed is False
+
+
 def test_list_recent_since_preserves_claim_token(monkeypatch) -> None:
     _add_repo_paths()
     from services.operation_ledger import OperationLedger
@@ -412,6 +570,47 @@ def test_requeue_stale_applying_recovers_without_active_key_collisions(
     assert "COALESCE(NULLIF(stale.operation_type,''),'sync')" in requeue_sql
     assert requeue_params == (1000, "edge-a", 700, 3)
     assert conn.committed is True
+
+
+def test_requeue_stale_applying_accepts_lifecycle_alias_and_scopes_canonical(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+    from services.proxy_write_guard import clear_proxy_write_guard_cache
+
+    class _LifecycleRequeueConnection(_LifecycleConnection):
+        def _execute_operation(self, compact: str, params: tuple[object, ...]):
+            result = _Result()
+            result.rowcount = (
+                2
+                if compact.startswith("UPDATE proxy_operations stale LEFT JOIN")
+                and "SET stale.status='pending'" in compact
+                else 0
+            )
+            return result
+
+    clear_proxy_write_guard_cache()
+    conn = _LifecycleRequeueConnection(
+        aliases={"edge-old": "edge-new"},
+        registry={"edge-new": "active"},
+    )
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 1000)
+
+    requeued = ledger.requeue_stale_applying("edge-old", older_than_seconds=300)
+
+    assert requeued == 2
+    operation_queries = [
+        item for item in conn.queries if item[0].startswith("UPDATE proxy_operations")
+    ]
+    assert len(operation_queries) == 3
+    assert operation_queries[0][1][0] == "edge-new"
+    assert operation_queries[0][1][-1] == "edge-new"
+    assert operation_queries[1][1][2] == "edge-new"
+    assert operation_queries[2][1][1] == "edge-new"
 
 
 def test_requeue_stale_applying_supersede_sql_preserves_valid_keeper_ordering(
@@ -546,9 +745,12 @@ def test_mark_status_can_guard_applying_claim_token(monkeypatch) -> None:
         expected_claim_token="claim-a",
     )
 
-    update_sql, update_params = conn.queries[0]
+    identity_sql, identity_params = conn.queries[0]
+    assert identity_sql.startswith("SELECT id, proxy_id, status")
+    assert identity_params == (7,)
+    update_sql, update_params = conn.queries[1]
     assert (
-        "WHERE id=%s AND status NOT IN ('applied','superseded','failed') AND status=%s AND claim_token=%s"
+        "WHERE id=%s AND status NOT IN ('applied','superseded','failed') AND status=%s AND claim_token=%s AND proxy_id=%s"
         in update_sql
     )
     assert update_params == (
@@ -561,6 +763,7 @@ def test_mark_status_can_guard_applying_claim_token(monkeypatch) -> None:
         7,
         "applying",
         "claim-a",
+        "edge-a",
     )
 
 
@@ -582,9 +785,9 @@ def test_mark_status_empty_expected_claim_token_adds_claim_guard(monkeypatch) ->
         expected_claim_token="",
     )
 
-    update_sql, update_params = conn.queries[0]
+    update_sql, update_params = conn.queries[1]
     assert (
-        "WHERE id=%s AND status NOT IN ('applied','superseded','failed') AND status=%s AND claim_token=%s"
+        "WHERE id=%s AND status NOT IN ('applied','superseded','failed') AND status=%s AND claim_token=%s AND proxy_id=%s"
         in update_sql
     )
     assert update_params == (
@@ -597,6 +800,7 @@ def test_mark_status_empty_expected_claim_token_adds_claim_guard(monkeypatch) ->
         7,
         "applying",
         "",
+        "edge-a",
     )
 
 
@@ -619,6 +823,8 @@ def test_stale_claim_completion_does_not_overwrite_reclaimed_operation_detail(
             compact = " ".join(str(sql).split())
             params = tuple(params or ())
             self.queries.append((compact, params))
+            if compact.startswith("SELECT proxy_id FROM proxy_operations"):
+                return _Result([{"proxy_id": self.row["proxy_id"]}])
             if compact.startswith("UPDATE proxy_operations SET status=%s"):
                 expected_status = params[7] if len(params) > 7 else None
                 expected_token = params[8] if len(params) > 8 else None
@@ -668,12 +874,12 @@ def test_stale_claim_completion_does_not_overwrite_reclaimed_operation_detail(
     assert current.status == "applying"
     assert current.detail == "new claim is still running"
     assert current.claim_token == "new-claim"
-    update_sql, update_params = conn.queries[0]
+    update_sql, update_params = conn.queries[1]
     assert (
-        "WHERE id=%s AND status NOT IN ('applied','superseded','failed') AND status=%s AND claim_token=%s"
+        "WHERE id=%s AND status NOT IN ('applied','superseded','failed') AND status=%s AND claim_token=%s AND proxy_id=%s"
         in update_sql
     )
-    assert update_params[-3:] == (11, "applying", "old-claim")
+    assert update_params[-4:] == (11, "applying", "old-claim", "edge-a")
 
 
 def test_empty_stale_claim_completion_does_not_overwrite_reclaimed_operation_detail(
@@ -695,6 +901,8 @@ def test_empty_stale_claim_completion_does_not_overwrite_reclaimed_operation_det
             compact = " ".join(str(sql).split())
             params = tuple(params or ())
             self.queries.append((compact, params))
+            if compact.startswith("SELECT proxy_id FROM proxy_operations"):
+                return _Result([{"proxy_id": self.row["proxy_id"]}])
             if compact.startswith("UPDATE proxy_operations SET status=%s"):
                 expected_status = params[7] if "AND status=%s" in compact else None
                 expected_token = params[8] if "AND claim_token=%s" in compact else None
@@ -749,12 +957,134 @@ def test_empty_stale_claim_completion_does_not_overwrite_reclaimed_operation_det
     assert current.status == "applying"
     assert current.detail == "new claim is still running"
     assert current.claim_token == "new-claim"
-    update_sql, update_params = conn.queries[0]
+    update_sql, update_params = conn.queries[1]
     assert (
-        "WHERE id=%s AND status NOT IN ('applied','superseded','failed') AND status=%s AND claim_token=%s"
+        "WHERE id=%s AND status NOT IN ('applied','superseded','failed') AND status=%s AND claim_token=%s AND proxy_id=%s"
         in update_sql
     )
-    assert update_params[-3:] == (11, "applying", "")
+    assert update_params[-4:] == (11, "applying", "", "edge-a")
+
+
+@pytest.mark.parametrize("action", ["renamed", "renaming", "removing", "removed"])
+def test_mark_status_fails_closed_for_lifecycle_blocked_identity(
+    monkeypatch,
+    action,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+    from services.proxy_write_guard import (
+        ProxyLifecycleWriteError,
+        clear_proxy_write_guard_cache,
+    )
+
+    class _LifecycleMarkConnection(_LifecycleConnection):
+        def __init__(self) -> None:
+            super().__init__(
+                tombstones={
+                    "edge-old": (
+                        action,
+                        "edge-new" if action in {"renamed", "renaming"} else "",
+                    ),
+                },
+                registry={"edge-old": "active", "edge-new": "active"},
+            )
+            self.row = _operation_row(
+                id=11,
+                proxy_id="edge-old",
+                status="applying",
+                claim_token="claim-a",
+            )
+
+        def _execute_operation(self, compact: str, params: tuple[object, ...]):
+            if compact.startswith("SELECT proxy_id FROM proxy_operations"):
+                return _Result([{"proxy_id": self.row["proxy_id"]}])
+            if compact.startswith("UPDATE proxy_operations SET status=%s"):
+                pytest.fail("blocked lifecycle identity must fail before mark update")
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.row])
+            return _Result()
+
+    clear_proxy_write_guard_cache()
+    conn = _LifecycleMarkConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+
+    with pytest.raises(ProxyLifecycleWriteError):
+        ledger.mark_status(
+            11,
+            status="applied",
+            expected_status="applying",
+            expected_claim_token="claim-a",
+        )
+    assert conn.committed is False
+
+
+def test_mark_status_update_is_explicitly_scoped_to_initial_proxy_identity(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+
+    class _ProxyChangedConnection:
+        def __init__(self) -> None:
+            self.row = _operation_row(
+                id=11,
+                proxy_id="edge-a",
+                status="applying",
+                detail="still applying",
+                claim_token="claim-a",
+            )
+            self.queries = []
+            self.identity_read = False
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("SELECT id, proxy_id, status") and not self.identity_read:
+                self.identity_read = True
+                initial_row = dict(self.row)
+                self.row["proxy_id"] = "edge-b"
+                return _Result([initial_row])
+            if compact.startswith("UPDATE proxy_operations SET status=%s"):
+                if self.row["proxy_id"] == params[-1]:
+                    self.row["status"] = params[0]
+                    self.row["detail"] = params[1]
+                result = _Result()
+                result.rowcount = 1 if self.row["proxy_id"] == params[-1] else 0
+                return result
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.row])
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _ProxyChangedConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 600)
+
+    current = ledger.mark_status(
+        11,
+        status="applied",
+        detail="done",
+        expected_status="applying",
+        expected_claim_token="claim-a",
+    )
+
+    assert current is not None
+    assert current.proxy_id == "edge-b"
+    assert current.status == "applying"
+    assert current.detail == "still applying"
+    update_sql, update_params = conn.queries[1]
+    assert "AND proxy_id=%s" in update_sql
+    assert update_params[-4:] == (11, "applying", "claim-a", "edge-a")
 
 
 def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:
@@ -1722,6 +2052,8 @@ def test_terminal_release_allows_genuine_retry_new_operation(monkeypatch) -> Non
                 result = _Result()
                 result.lastrowid = row_id
                 return result
+            if compact.startswith("SELECT proxy_id FROM proxy_operations"):
+                return _Result([{"proxy_id": self.rows[int(params[0])]["proxy_id"]}])
             if compact.startswith("UPDATE proxy_operations SET status=%s"):
                 (
                     status,
@@ -1731,8 +2063,11 @@ def test_terminal_release_allows_genuine_retry_new_operation(monkeypatch) -> Non
                     release_key,
                     release_claim,
                     row_id,
+                    proxy_id,
                 ) = params
                 row = self.rows[int(row_id)]
+                if row["proxy_id"] != proxy_id:
+                    return _Result()
                 if release_key:
                     self.active_by_key.pop(
                         (str(row["proxy_id"]), str(row["request_key"])), None
@@ -1875,7 +2210,7 @@ def test_terminal_status_releases_active_request_key(monkeypatch) -> None:
 
     ledger.mark_status(7, status="superseded", detail="newer revision applied")
 
-    update_sql, update_params = conn.queries[0]
+    update_sql, update_params = conn.queries[1]
     assert "request_key=IF(%s, NULL, request_key)" in update_sql
     assert "claim_token=IF(%s, NULL, claim_token)" in update_sql
     assert update_params == (
@@ -1886,6 +2221,7 @@ def test_terminal_status_releases_active_request_key(monkeypatch) -> None:
         True,
         True,
         7,
+        "edge-a",
     )
 
 
@@ -1912,6 +2248,8 @@ def test_terminal_status_does_not_overwrite_existing_terminal_operation(
             compact = " ".join(str(sql).split())
             params = tuple(params or ())
             self.queries.append((compact, params))
+            if compact.startswith("SELECT proxy_id FROM proxy_operations"):
+                return _Result([{"proxy_id": self.row["proxy_id"]}])
             if compact.startswith("UPDATE proxy_operations SET status=%s"):
                 if "AND status NOT IN ('applied','superseded','failed')" not in compact:
                     self.row["status"] = params[0]
@@ -1940,9 +2278,10 @@ def test_terminal_status_does_not_overwrite_existing_terminal_operation(
     assert current is not None
     assert current.status == "applied"
     assert current.detail == "already applied"
-    update_sql, update_params = conn.queries[0]
-    assert "AND status NOT IN ('applied','superseded','failed')" in update_sql
-    assert update_params == ("failed", "late failure", 789, 789, True, True, 7)
+    assert not any(
+        query.startswith("UPDATE proxy_operations SET status=%s")
+        for query, _params in conn.queries
+    )
 
 
 def test_non_terminal_status_keeps_active_request_key(monkeypatch) -> None:
@@ -1957,11 +2296,11 @@ def test_non_terminal_status_keeps_active_request_key(monkeypatch) -> None:
 
     ledger.mark_status(7, status="applying", detail="retrying")
 
-    update_sql, update_params = conn.queries[0]
+    update_sql, update_params = conn.queries[1]
     assert "request_key=IF(%s, NULL, request_key)" in update_sql
     assert "claim_token=IF(%s, NULL, claim_token)" in update_sql
     assert "AND status NOT IN ('applied','superseded','failed')" in update_sql
-    assert update_params == ("applying", "retrying", 0, 789, False, False, 7)
+    assert update_params == ("applying", "retrying", 0, 789, False, False, 7, "edge-a")
 
 
 def test_non_terminal_status_cannot_reopen_terminal_operation(monkeypatch) -> None:
@@ -1985,6 +2324,8 @@ def test_non_terminal_status_cannot_reopen_terminal_operation(monkeypatch) -> No
             compact = " ".join(str(sql).split())
             params = tuple(params or ())
             self.queries.append((compact, params))
+            if compact.startswith("SELECT proxy_id FROM proxy_operations"):
+                return _Result([{"proxy_id": self.row["proxy_id"]}])
             if compact.startswith("UPDATE proxy_operations SET status=%s"):
                 if "AND status NOT IN ('applied','superseded','failed')" not in compact:
                     self.row["status"] = params[0]
@@ -2015,6 +2356,7 @@ def test_non_terminal_status_cannot_reopen_terminal_operation(monkeypatch) -> No
     assert current is not None
     assert current.status == "applied"
     assert current.detail == "already completed"
-    update_sql, update_params = conn.queries[0]
-    assert "AND status NOT IN ('applied','superseded','failed')" in update_sql
-    assert update_params == ("applying", "late retry", 0, 789, False, False, 7)
+    assert not any(
+        query.startswith("UPDATE proxy_operations SET status=%s")
+        for query, _params in conn.queries
+    )
