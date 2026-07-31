@@ -5165,11 +5165,11 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, proxy_id) -> None:
-            calls.append(("requeue", proxy_id))
+        def requeue_stale_applying(self, proxy_id, **kwargs) -> None:
+            calls.append(("requeue", (proxy_id, kwargs)))
 
-        def claim_pending(self, proxy_id, *, limit, operation_id=None):
-            calls.append(("claim", (proxy_id, limit, operation_id)))
+        def claim_pending(self, proxy_id, *, limit, operation_id=None, **kwargs):
+            calls.append(("claim", (proxy_id, limit, operation_id, kwargs)))
             return [op]
 
         def mark_status(self, operation_id, *, status, detail) -> None:
@@ -5188,9 +5188,97 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
 
     assert result["ok"] is True
     assert calls == [
-        ("requeue", "edge-a"),
-        ("claim", ("edge-a", 100, None)),
+        ("requeue", ("edge-a", {"allow_alias": False})),
+        ("claim", ("edge-a", 100, None, {"allow_alias": False})),
         ("mark", (5, "applied", "runtime reconciled")),
+    ]
+
+
+def test_sync_from_db_claims_runtime_operations_with_exact_live_identity(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    op = SimpleNamespace(operation_id=5, target_kind="", target_ref="")
+    calls: list[tuple[str, object]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, proxy_id, **kwargs) -> None:
+            calls.append(("requeue", (proxy_id, kwargs)))
+
+        def claim_pending(self, proxy_id, *, limit, operation_id=None, **kwargs):
+            calls.append(("claim", (proxy_id, limit, operation_id, kwargs)))
+            return [op]
+
+        def mark_status(self, operation_id, *, status, detail) -> None:
+            calls.append(("mark", (operation_id, status, detail)))
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._sync_from_db_unlocked = (
+        lambda *, force=False, artifact_force=None, operations=None: {
+            "ok": True,
+            "detail": "runtime reconciled",
+            "claimed_operation_ids": [op.operation_id for op in (operations or [])],
+        }
+    )
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert calls == [
+        ("requeue", ("edge-a", {"allow_alias": False})),
+        ("claim", ("edge-a", 100, None, {"allow_alias": False})),
+        ("mark", (5, "applied", "runtime reconciled")),
+    ]
+
+
+def test_sync_from_db_old_runtime_alias_cannot_mutate_or_fail_new_proxy_operations(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.proxy_write_guard import ProxyLifecycleWriteError
+
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-old")
+    calls: list[tuple[str, object]] = []
+
+    class Ledger:
+        def requeue_stale_applying(self, proxy_id, **kwargs) -> None:
+            calls.append(("requeue", (proxy_id, kwargs)))
+            assert kwargs == {"allow_alias": False}
+            msg = (
+                "Proxy 'edge-old' was renamed to 'edge-new'; "
+                "stale proxy-scoped writes are blocked."
+            )
+            raise ProxyLifecycleWriteError(msg)
+
+        def claim_pending(self, *_args, **_kwargs):
+            calls.append(("claim", None))
+            msg = "stale runtime must fail before claiming operations"
+            raise AssertionError(msg)
+
+        def mark_status(self, *_args, **_kwargs) -> None:
+            calls.append(("mark", None))
+            msg = "stale runtime must not fail claimed new operations"
+            raise AssertionError(msg)
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+
+    def sync_unlocked(**_kwargs):
+        calls.append(("sync", None))
+        return {"ok": True, "detail": "plain reconciliation without operations"}
+
+    runtime._sync_from_db_unlocked = sync_unlocked
+
+    result = runtime.sync_from_db(force=False)
+
+    assert result["ok"] is True
+    assert calls == [
+        ("requeue", ("edge-old", {"allow_alias": False})),
+        ("sync", None),
     ]
 
 
@@ -5206,10 +5294,11 @@ def test_sync_from_db_routes_claimed_operation_force_to_artifact_sync(
     observed: list[tuple[bool, bool]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, _proxy_id) -> None:
-            return None
+        def requeue_stale_applying(self, _proxy_id, **kwargs) -> None:
+            assert kwargs == {"allow_alias": False}
 
-        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None, **kwargs):
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -5249,10 +5338,11 @@ def test_sync_from_db_does_not_force_artifacts_for_cache_clear(
     observed: list[tuple[bool, bool]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, _proxy_id) -> None:
-            return None
+        def requeue_stale_applying(self, _proxy_id, **kwargs) -> None:
+            assert kwargs == {"allow_alias": False}
 
-        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None, **kwargs):
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -5289,7 +5379,7 @@ def test_sync_from_db_logs_operation_ledger_claim_failure(monkeypatch) -> None:
     observed: list[tuple[bool, list[object]]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, _proxy_id) -> None:
+        def requeue_stale_applying(self, _proxy_id, **kwargs) -> None:
             msg = "ledger unavailable"
             raise RuntimeError(msg)
 
@@ -5348,11 +5438,12 @@ def test_sync_from_db_marks_matching_config_revision_applied(monkeypatch) -> Non
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, proxy_id) -> None:
+        def requeue_stale_applying(self, proxy_id, **kwargs) -> None:
             assert proxy_id == "edge-a"
 
-        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, proxy_id, *, limit, operation_id=None, **kwargs):
             assert proxy_id == "edge-a"
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -5397,11 +5488,12 @@ def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> N
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, proxy_id) -> None:
+        def requeue_stale_applying(self, proxy_id, **kwargs) -> None:
             assert proxy_id == "edge-a"
 
-        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, proxy_id, *, limit, operation_id=None, **kwargs):
             assert proxy_id == "edge-a"
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [stale, current]
@@ -5447,10 +5539,11 @@ def test_sync_from_db_fails_config_operation_with_invalid_target(
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, _proxy_id) -> None:
-            return None
+        def requeue_stale_applying(self, _proxy_id, **kwargs) -> None:
+            assert kwargs == {"allow_alias": False}
 
-        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None, **kwargs):
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -5493,10 +5586,11 @@ def test_sync_from_db_fails_config_operation_without_revision_evidence(
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, _proxy_id) -> None:
-            return None
+        def requeue_stale_applying(self, _proxy_id, **kwargs) -> None:
+            assert kwargs == {"allow_alias": False}
 
-        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None, **kwargs):
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -5538,11 +5632,12 @@ def test_sync_from_db_fails_claimed_config_operation_when_no_active_revision(
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, proxy_id) -> None:
+        def requeue_stale_applying(self, proxy_id, **kwargs) -> None:
             assert proxy_id == "edge-a"
 
-        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, proxy_id, *, limit, operation_id=None, **kwargs):
             assert proxy_id == "edge-a"
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -5602,11 +5697,12 @@ def test_sync_from_db_marks_matching_certificate_revision_applied(monkeypatch) -
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, proxy_id) -> None:
+        def requeue_stale_applying(self, proxy_id, **kwargs) -> None:
             assert proxy_id == "edge-a"
 
-        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, proxy_id, *, limit, operation_id=None, **kwargs):
             assert proxy_id == "edge-a"
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -5679,10 +5775,11 @@ def test_sync_from_db_fails_certificate_operation_with_hash_mismatch(
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, _proxy_id) -> None:
-            return None
+        def requeue_stale_applying(self, _proxy_id, **kwargs) -> None:
+            assert kwargs == {"allow_alias": False}
 
-        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None, **kwargs):
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -5727,10 +5824,11 @@ def test_sync_from_db_fails_certificate_operation_without_hash_evidence(
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, _proxy_id) -> None:
-            return None
+        def requeue_stale_applying(self, _proxy_id, **kwargs) -> None:
+            assert kwargs == {"allow_alias": False}
 
-        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None, **kwargs):
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -5776,11 +5874,12 @@ def test_sync_from_db_marks_stale_certificate_revision_superseded(monkeypatch) -
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, proxy_id) -> None:
+        def requeue_stale_applying(self, proxy_id, **kwargs) -> None:
             assert proxy_id == "edge-a"
 
-        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, proxy_id, *, limit, operation_id=None, **kwargs):
             assert proxy_id == "edge-a"
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [stale, current]
@@ -5860,11 +5959,12 @@ def test_sync_from_db_fails_certificate_operation_without_revision_evidence(
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, proxy_id) -> None:
+        def requeue_stale_applying(self, proxy_id, **kwargs) -> None:
             assert proxy_id == "edge-a"
 
-        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, proxy_id, *, limit, operation_id=None, **kwargs):
             assert proxy_id == "edge-a"
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -5934,10 +6034,11 @@ def test_sync_from_db_policy_operation_requires_selected_proxy_policy_convergenc
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, _proxy_id) -> None:
-            return None
+        def requeue_stale_applying(self, _proxy_id, **kwargs) -> None:
+            assert kwargs == {"allow_alias": False}
 
-        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None, **kwargs):
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -5998,10 +6099,11 @@ def test_sync_from_db_policy_operation_uses_selected_proxy_current_policy_sha(
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, _proxy_id) -> None:
-            return None
+        def requeue_stale_applying(self, _proxy_id, **kwargs) -> None:
+            assert kwargs == {"allow_alias": False}
 
-        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None, **kwargs):
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [edge_a, edge_b]
@@ -6337,10 +6439,11 @@ def test_sync_from_db_marks_unsupported_operation_failed(monkeypatch) -> None:
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, _proxy_id) -> None:
-            return None
+        def requeue_stale_applying(self, _proxy_id, **kwargs) -> None:
+            assert kwargs == {"allow_alias": False}
 
-        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None, **kwargs):
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -6386,10 +6489,11 @@ def test_sync_from_db_marks_mismatched_supported_operation_failed(monkeypatch) -
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, _proxy_id) -> None:
-            return None
+        def requeue_stale_applying(self, _proxy_id, **kwargs) -> None:
+            assert kwargs == {"allow_alias": False}
 
-        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None, **kwargs):
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]
@@ -6422,10 +6526,11 @@ def test_sync_from_db_requires_operation_execution_evidence(monkeypatch) -> None
     calls: list[tuple[int, str, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, _proxy_id) -> None:
-            return None
+        def requeue_stale_applying(self, _proxy_id, **kwargs) -> None:
+            assert kwargs == {"allow_alias": False}
 
-        def claim_pending(self, _proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, _proxy_id, *, limit, operation_id=None, **kwargs):
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id is None
             return [op]

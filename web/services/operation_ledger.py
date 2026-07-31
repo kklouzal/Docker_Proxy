@@ -610,6 +610,7 @@ class OperationLedger:
         *,
         older_than_seconds: int = 600,
         max_requeues: int = 3,
+        allow_alias: bool = True,
     ) -> int:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
@@ -621,7 +622,11 @@ class OperationLedger:
 
         def _recover_stale() -> int:
             with self._connect() as conn:
-                with guarded_proxy_write(conn, proxy_key) as guard:
+                with guarded_proxy_write(
+                    conn,
+                    proxy_key,
+                    allow_alias=allow_alias,
+                ) as guard:
                     guarded_proxy_key = guard.proxy_id
                     keeper_request_key_expr = self._request_key_sql("keeper")
                     keeper_priority_expr = self._stale_recovery_priority_sql("keeper")
@@ -747,6 +752,7 @@ class OperationLedger:
         *,
         limit: int = 50,
         operation_id: object | None = None,
+        allow_alias: bool = True,
     ) -> list[ProxyOperation]:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
@@ -764,7 +770,11 @@ class OperationLedger:
 
         def _claim() -> list[Any]:
             with self._connect() as conn:
-                with guarded_proxy_write(conn, proxy_key) as guard:
+                with guarded_proxy_write(
+                    conn,
+                    proxy_key,
+                    allow_alias=allow_alias,
+                ) as guard:
                     guarded_proxy_key = guard.proxy_id
                     claim_params = [guarded_proxy_key, *params[1:]]
                     rows = conn.execute(

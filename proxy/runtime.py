@@ -4036,11 +4036,12 @@ class ProxyRuntime:
             ledger = None
             try:
                 ledger = get_operation_ledger()
-                ledger.requeue_stale_applying(self.proxy_id)
+                ledger.requeue_stale_applying(self.proxy_id, allow_alias=False)
                 claimed_operations = ledger.claim_pending(
                     self.proxy_id,
                     limit=100,
                     operation_id=target_operation_id,
+                    allow_alias=False,
                 )
             except Exception as exc:
                 _log_recoverable_db_or_unexpected(

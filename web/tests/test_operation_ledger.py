@@ -448,6 +448,150 @@ def test_claim_pending_fails_closed_for_blocked_lifecycle_states(
     assert conn.committed is False
 
 
+def test_claim_pending_rejects_renamed_tombstone_when_alias_disabled(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+    from services.proxy_write_guard import (
+        ProxyLifecycleWriteError,
+        clear_proxy_write_guard_cache,
+    )
+
+    class _LifecycleClaimConnection(_LifecycleConnection):
+        def _execute_operation(self, compact: str, params: tuple[object, ...]):
+            if compact.startswith("SELECT id FROM proxy_operations"):
+                pytest.fail("strict runtime claim must fail before selecting new proxy rows")
+            if compact.startswith("UPDATE proxy_operations"):
+                pytest.fail("strict runtime claim must fail before mutating operations")
+            return _Result()
+
+    clear_proxy_write_guard_cache()
+    conn = _LifecycleClaimConnection(
+        aliases={"edge-old": "edge-new"},
+        tombstones={"edge-old": ("renamed", "edge-new")},
+        registry={"edge-new": "active"},
+    )
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+
+    with pytest.raises(ProxyLifecycleWriteError):
+        ledger.claim_pending("edge-old", limit=5, allow_alias=False)
+
+    assert conn.committed is False
+    assert not any(
+        query.startswith(("SELECT id FROM proxy_operations", "UPDATE proxy_operations"))
+        for query, _params in conn.queries
+    )
+
+
+def test_requeue_stale_applying_rejects_renamed_tombstone_when_alias_disabled(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+    from services.proxy_write_guard import (
+        ProxyLifecycleWriteError,
+        clear_proxy_write_guard_cache,
+    )
+
+    class _LifecycleRequeueConnection(_LifecycleConnection):
+        def _execute_operation(self, compact: str, params: tuple[object, ...]):
+            if compact.startswith("UPDATE proxy_operations"):
+                pytest.fail("strict runtime requeue must fail before mutating operations")
+            return _Result()
+
+    clear_proxy_write_guard_cache()
+    conn = _LifecycleRequeueConnection(
+        aliases={"edge-old": "edge-new"},
+        tombstones={"edge-old": ("renamed", "edge-new")},
+        registry={"edge-new": "active"},
+    )
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+
+    with pytest.raises(ProxyLifecycleWriteError):
+        ledger.requeue_stale_applying("edge-old", allow_alias=False)
+
+    assert conn.committed is False
+    assert not any(
+        query.startswith("UPDATE proxy_operations") for query, _params in conn.queries
+    )
+
+
+def test_new_canonical_runtime_can_claim_and_complete_after_rename(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.operation_ledger import OperationLedger
+    from services.proxy_write_guard import clear_proxy_write_guard_cache
+
+    class _LifecycleClaimAndMarkConnection(_LifecycleConnection):
+        def __init__(self) -> None:
+            super().__init__(
+                tombstones={"edge-old": ("renamed", "edge-new")},
+                registry={"edge-new": "active"},
+            )
+            self.row = _operation_row(id=7, proxy_id="edge-new", status="pending")
+
+        def _execute_operation(self, compact: str, params: tuple[object, ...]):
+            if compact.startswith("SELECT id FROM proxy_operations"):
+                return _Result([{"id": 7}]) if params[0] == "edge-new" else _Result()
+            if compact.startswith("UPDATE proxy_operations SET status='applying'"):
+                if params[3] == "edge-new" and self.row["status"] == "pending":
+                    self.row["status"] = "applying"
+                    self.row["started_ts"] = params[0]
+                    self.row["updated_ts"] = params[1]
+                    self.row["claim_token"] = params[2]
+                return _Result()
+            if compact.startswith("UPDATE proxy_operations SET status=%s"):
+                if (
+                    self.row["status"] == params[7]
+                    and self.row["claim_token"] == params[8]
+                    and params[-1] == "edge-new"
+                ):
+                    self.row["status"] = params[0]
+                    self.row["detail"] = params[1]
+                    self.row["completed_ts"] = params[2]
+                    self.row["updated_ts"] = params[3]
+                    if params[5]:
+                        self.row["claim_token"] = None
+                return _Result()
+            if (
+                compact.startswith("SELECT id, proxy_id, status")
+                and "claim_token=%s" in compact
+            ):
+                if (
+                    self.row["status"] == "applying"
+                    and self.row["claim_token"] == params[1]
+                ):
+                    return _Result([self.row])
+                return _Result()
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([self.row])
+            return _Result()
+
+    clear_proxy_write_guard_cache()
+    conn = _LifecycleClaimAndMarkConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    monkeypatch.setattr(
+        "services.operation_ledger.secrets.token_hex", lambda _n: "claim-new"
+    )
+
+    claimed = ledger.claim_pending("edge-new", limit=5, allow_alias=False)
+    ledger.mark_many(claimed, status="applied", detail="done")
+
+    assert [op.proxy_id for op in claimed] == ["edge-new"]
+    assert conn.row["status"] == "applied"
+    assert conn.row["detail"] == "done"
+    assert conn.row["claim_token"] is None
+
+
 def test_list_recent_since_preserves_claim_token(monkeypatch) -> None:
     _add_repo_paths()
     from services.operation_ledger import OperationLedger
@@ -965,7 +1109,7 @@ def test_empty_stale_claim_completion_does_not_overwrite_reclaimed_operation_det
     assert update_params[-4:] == (11, "applying", "", "edge-a")
 
 
-@pytest.mark.parametrize("action", ["renamed", "renaming", "removing", "removed"])
+@pytest.mark.parametrize("action", ["renaming", "removing", "removed"])
 def test_mark_status_fails_closed_for_lifecycle_blocked_identity(
     monkeypatch,
     action,

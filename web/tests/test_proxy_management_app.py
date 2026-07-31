@@ -579,11 +579,12 @@ def test_proxy_management_sync_operation_id_records_current_config_apply(
     recorded: list[tuple[object, int, bool, str]] = []
 
     class Ledger:
-        def requeue_stale_applying(self, proxy_id):
+        def requeue_stale_applying(self, proxy_id, **kwargs):
             assert proxy_id == "edge-a"
 
-        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, proxy_id, *, limit, operation_id=None, **kwargs):
             assert proxy_id == "edge-a"
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id == 42
             return [operation]
@@ -701,11 +702,12 @@ def test_proxy_runtime_targeted_operation_sync_requires_claim(monkeypatch) -> No
     monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
 
     class Ledger:
-        def requeue_stale_applying(self, proxy_id):
+        def requeue_stale_applying(self, proxy_id, **kwargs):
             assert proxy_id == "edge-a"
 
-        def claim_pending(self, proxy_id, *, limit, operation_id=None):
+        def claim_pending(self, proxy_id, *, limit, operation_id=None, **kwargs):
             assert proxy_id == "edge-a"
+            assert kwargs == {"allow_alias": False}
             assert limit == 100
             assert operation_id == 42
             return []
