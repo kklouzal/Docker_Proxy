@@ -282,22 +282,72 @@ def _validate_bypass_entry(value: str) -> None:
         msg = f"{field_name} must not combine IPv6 literals with wildcards."
         raise WinHttpBuilderError(msg)
 
-    dns_pattern = entry.removesuffix(".")
-    labels = dns_pattern.split(".")
-    if not dns_pattern or len(dns_pattern) > 253:
-        msg = f"{field_name} must be a valid host, domain, IP, or wildcard pattern."
-        raise WinHttpBuilderError(msg)
-    for label in labels:
+    _validate_bypass_wildcard_pattern(entry, field_name)
+
+
+def _invalid_bypass_wildcard_pattern(field_name: str) -> None:
+    msg = f"{field_name} must be a valid host, domain, IP, or wildcard pattern."
+    raise WinHttpBuilderError(msg)
+
+
+def _is_valid_decimal_ipv4_prefix_label(label: str) -> bool:
+    return (
+        label.isdecimal()
+        and (label == "0" or not label.startswith("0"))
+        and 0 <= int(label) <= 255
+    )
+
+
+def _is_valid_dns_label(label: str) -> bool:
+    return (
+        bool(label)
+        and len(label) <= 63
+        and label.isascii()
+        and label[0].isalnum()
+        and label[-1].isalnum()
+        and all(ch.isascii() and (ch.isalnum() or ch == "-") for ch in label)
+    )
+
+
+def _validate_bypass_wildcard_pattern(value: str, field_name: str) -> None:
+    pattern = (value or "").removesuffix(".")
+    labels = tuple(pattern.split("."))
+    if not pattern or len(pattern) > 253 or any(not label for label in labels):
+        _invalid_bypass_wildcard_pattern(field_name)
+
+    wildcard_count = pattern.count("*")
+    if wildcard_count != 1:
+        _invalid_bypass_wildcard_pattern(field_name)
+
+    # WinHTTP accepts practical wildcard bypasses, but global/TLD-wide bypasses
+    # and embedded wildcards are too easy to misread as DNS suffix matching.
+    # Keep the accepted forms explicit:
+    # - DNS suffix: *.example.com
+    # - host prefix label: legacy-* or legacy-*.example.com
+    # - IPv4 prefix: 10.* or 192.168.*
+    if labels[-1] == "*":
+        prefix_labels = labels[:-1]
         if (
-            not label
-            or len(label) > 63
-            or not label.isascii()
-            or label[0] == "-"
-            or label[-1] == "-"
-            or not all(ch.isascii() and (ch.isalnum() or ch in "-*") for ch in label)
+            1 <= len(prefix_labels) <= 3
+            and all(_is_valid_decimal_ipv4_prefix_label(label) for label in prefix_labels)
         ):
-            msg = f"{field_name} must be a valid host, domain, IP, or wildcard pattern."
-            raise WinHttpBuilderError(msg)
+            return
+        _invalid_bypass_wildcard_pattern(field_name)
+
+    if labels[0] == "*":
+        suffix_labels = labels[1:]
+        if len(suffix_labels) >= 2 and all(_is_valid_dns_label(label) for label in suffix_labels):
+            return
+        _invalid_bypass_wildcard_pattern(field_name)
+
+    if labels[0].endswith("-*"):
+        wildcard_label_prefix = labels[0][:-2]
+        if _is_valid_dns_label(wildcard_label_prefix) and all(
+            _is_valid_dns_label(label) for label in labels[1:]
+        ):
+            return
+
+    _invalid_bypass_wildcard_pattern(field_name)
 
 
 def _validate_proxy_host_identity(value: str, field_name: str) -> None:

@@ -261,6 +261,7 @@ def test_bypass_list_accepts_practical_winhttp_bypass_patterns() -> None:
             "example.com",
             "*.example.com",
             "legacy-*",
+            "branch-*.example.com",
             "192.168.*",
             "10.*",
             "127.0.0.1",
@@ -271,9 +272,30 @@ def test_bypass_list_accepts_practical_winhttp_bypass_patterns() -> None:
     )
 
     assert bypass == (
-        "localhost;example.com;*.example.com;legacy-*;192.168.*;10.*;"
-        "127.0.0.1;2001:db8::10;<local>"
+        "localhost;example.com;*.example.com;legacy-*;branch-*.example.com;"
+        "192.168.*;10.*;127.0.0.1;2001:db8::10;<local>"
     )
+
+
+@pytest.mark.parametrize(
+    "bypass_entry",
+    [
+        "*",
+        "*.com",
+        "*.local",
+        "*bad",
+        "bad*example.com",
+        "bad.*.example.com",
+        "bad.*",
+        "192.*.1",
+        "999.*",
+    ],
+)
+def test_bypass_list_rejects_broad_or_misplaced_wildcard_entries(
+    bypass_entry: str,
+) -> None:
+    with pytest.raises(WinHttpBuilderError, match="Bypass list entry"):
+        normalize_bypass_list(bypass_entry, include_local=False)
 
 
 def test_contract_output_uses_validated_bypass_list_in_generated_outputs() -> None:
