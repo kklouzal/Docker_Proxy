@@ -3948,19 +3948,6 @@ def _publish_certificate_bundle_remote(
         activate=True,
     )
     leaf_detail = ""
-    try:
-        admin_https = bundle_store.get_admin_ui_https_settings()
-        if bool(getattr(admin_https, "enabled", False)):
-            material = _materialize_admin_ui_https_leaf(revision)
-            leaf_detail = (
-                " Admin UI HTTPS leaf certificate was regenerated "
-                f"for {', '.join(material.sans)}."
-            )
-    except Exception as exc:
-        leaf_detail = (
-            " Admin UI HTTPS leaf certificate regeneration failed: "
-            f"{public_error_message(exc)}"
-        )
 
     restore_detail = ""
 
@@ -4070,6 +4057,20 @@ def _publish_certificate_bundle_remote(
         )
         if failure_details:
             detail = f"{detail} First queue failure: {failure_details[0]}"
+
+    try:
+        admin_https = bundle_store.get_admin_ui_https_settings()
+        if bool(getattr(admin_https, "enabled", False)):
+            material = _materialize_admin_ui_https_leaf(revision)
+            leaf_detail = (
+                " Admin UI HTTPS leaf certificate was regenerated "
+                f"for {', '.join(material.sans)}."
+            )
+    except Exception as exc:
+        leaf_detail = (
+            " Admin UI HTTPS leaf certificate regeneration failed: "
+            f"{public_error_message(exc)}"
+        )
     return True, detail + leaf_detail
 
 
@@ -4635,9 +4636,17 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
         else None
     )
     default_material = _admin_ui_https_default_material_status()
-    saved_san_tokens = _admin_ui_https_saved_san_tokens(desired)
+    try:
+        saved_san_tokens = _admin_ui_https_saved_san_tokens(desired)
+    except ValueError as exc:
+        saved_san_tokens = ()
+        san_detail = public_error_message(
+            exc,
+            default="Saved Admin UI HTTPS SAN entries are invalid.",
+        )
+        desired_error = f"{desired_error} {san_detail}".strip()
     admin_ui_sans = normalize_admin_ui_certificate_sans(
-        _admin_ui_https_leaf_san_tokens(desired)
+        (*saved_san_tokens, *_admin_ui_https_request_san_tokens())
     )
     return {
         "runtime_enabled": runtime_enabled,
@@ -4777,9 +4786,17 @@ def _webfilter_set_settings(store: Any, **kwargs: Any) -> None:
         "safe_browsing_lists",
     }
     try:
-        accepted_settings = set(inspect.signature(store.set_settings).parameters)
+        parameters = inspect.signature(store.set_settings).parameters
     except (TypeError, ValueError):
         accepted_settings = optional_names
+    else:
+        if any(
+            param.kind is inspect.Parameter.VAR_KEYWORD
+            for param in parameters.values()
+        ):
+            accepted_settings = optional_names
+        else:
+            accepted_settings = set(parameters)
     store.set_settings(
         **{
             key: value

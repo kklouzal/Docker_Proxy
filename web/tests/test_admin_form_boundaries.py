@@ -174,6 +174,42 @@ def test_webfilter_save_validates_source_url_and_whitelist(
     assert "wl_err" in _params(bad_whitelist.location)
 
 
+def test_webfilter_set_settings_preserves_optional_fields_for_kwargs_store(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    class KwargsStore:
+        def __init__(self) -> None:
+            self.received = {}
+
+        def set_settings(self, **kwargs):
+            self.received = dict(kwargs)
+
+    store = KwargsStore()
+
+    loaded.module._webfilter_set_settings(
+        store,
+        enabled=True,
+        source_url="https://example.test/categories.csv",
+        blocked_categories=["adult"],
+        source_provider="csv",
+        safe_browsing_enabled=True,
+        safe_browsing_api_key="test-key",
+        safe_browsing_lists=["mw-4b"],
+    )
+
+    assert store.received == {
+        "enabled": True,
+        "source_url": "https://example.test/categories.csv",
+        "blocked_categories": ["adult"],
+        "source_provider": "csv",
+        "safe_browsing_enabled": True,
+        "safe_browsing_api_key": "test-key",
+        "safe_browsing_lists": ["mw-4b"],
+    }
+
+
 def test_sslfilter_add_remove_and_unknown_actions(monkeypatch, tmp_path) -> None:
     store = FakeSslfilterStore()
     loaded = load_admin_app(monkeypatch, tmp_path, sslfilter_store=store)

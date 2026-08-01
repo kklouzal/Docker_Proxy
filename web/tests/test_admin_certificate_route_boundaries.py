@@ -754,6 +754,22 @@ def test_admin_ui_https_preference_rejects_invalid_configured_san(
     assert bundles.admin_ui_https_settings.enabled is False
 
 
+def test_admin_ui_https_status_reports_corrupt_saved_sans_without_crashing(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    bundles.admin_ui_https_settings.san_tokens = "https://proxyadmin.example.com/certs"
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+
+    with loaded.module.app.test_request_context("/certs"):
+        status = loaded.module._admin_ui_https_status(bundle=_bundle())
+
+    assert status["configured_sans"] == ()
+    assert "DNS names or IP addresses" in status["desired_error"]
+    assert "localhost" in status["admin_ui_sans"]
+
+
 def test_regenerate_admin_ui_https_certificate_preserves_ca_and_uses_saved_sans(
     monkeypatch, tmp_path
 ) -> None:
@@ -1301,6 +1317,86 @@ def test_certificate_publish_rejects_zero_registered_proxies_and_restores_previo
     assert len(bundles.created) == 1
     assert bundles._revisions[1] is bundles.created[0]
     assert bundles.bundle is previous
+
+
+def test_certificate_publish_does_not_regenerate_admin_https_leaf_until_queued(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=previous)
+    bundles.admin_ui_https_settings.enabled = True
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry([]),
+    )
+    _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+
+    calls = 0
+
+    def materialize_leaf(_revision):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(sans=("admin.example.test",))
+
+    monkeypatch.setattr(
+        loaded.module, "_materialize_admin_ui_https_leaf", materialize_leaf
+    )
+
+    with loaded.module.app.test_request_context("/certs/upload", method="POST"):
+        loaded.module.session["user"] = "operator"
+        ok, detail = loaded.module._publish_certificate_bundle_remote(_bundle())
+
+    assert ok is False
+    assert "no registered proxies were available" in detail
+    assert calls == 0
+    assert bundles.bundle is previous
+
+
+def test_certificate_publish_regenerates_admin_https_leaf_after_queue_success(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    previous = SimpleNamespace(
+        revision_id=9,
+        fullchain_pem="CERT\n",
+        bundle_sha256="previous-sha",
+        original_pfx_bytes=None,
+    )
+    bundles = FakeCertificateBundles(bundle=previous)
+    bundles.admin_ui_https_settings.enabled = True
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=bundles,
+        registry=FakeRegistry(["edge-a"]),
+    )
+    _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    materialized: list[int] = []
+
+    def materialize_leaf(revision):
+        materialized.append(revision.revision_id)
+        return SimpleNamespace(sans=("admin.example.test",))
+
+    monkeypatch.setattr(
+        loaded.module, "_materialize_admin_ui_https_leaf", materialize_leaf
+    )
+
+    with loaded.module.app.test_request_context("/certs/upload", method="POST"):
+        loaded.module.session["user"] = "operator"
+        ok, detail = loaded.module._publish_certificate_bundle_remote(_bundle())
+
+    assert ok is True
+    assert "Queued 1 async operation" in detail
+    assert "Admin UI HTTPS leaf certificate was regenerated" in detail
+    assert materialized == [1]
 
 
 def test_certificate_publish_rejects_zero_registered_proxies_without_previous_active(
