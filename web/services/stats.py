@@ -33,6 +33,7 @@ _CACHE_HIT_RATE_INFLIGHT = False
 _CACHE_HIT_RATE_TS = 0.0
 _CACHE_HIT_RATE_VALUE: dict[str, float | None] | None = None
 _CACHE_HIT_RATE_SOURCE_VALUE: str = ""
+_CACHE_HIT_RATE_MGR_AVAILABLE_VALUE = False
 
 _CACHE_CPU_INFLIGHT = False
 _CACHE_CPU_TS = 0.0
@@ -506,21 +507,27 @@ def get_stats() -> dict[str, Any]:
             _CACHE_HIT_RATE_INFLIGHT, \
             _CACHE_HIT_RATE_TS, \
             _CACHE_HIT_RATE_VALUE, \
-            _CACHE_HIT_RATE_SOURCE_VALUE
+            _CACHE_HIT_RATE_SOURCE_VALUE, \
+            _CACHE_HIT_RATE_MGR_AVAILABLE_VALUE
         with _CACHE_LOCK:
             cached = _CACHE_HIT_RATE_VALUE
             cached_source = _CACHE_HIT_RATE_SOURCE_VALUE
+            cached_mgr_available = _CACHE_HIT_RATE_MGR_AVAILABLE_VALUE
             age_ok = (now_mono - _CACHE_HIT_RATE_TS) < float(hit_rate_ttl)
             inflight = _CACHE_HIT_RATE_INFLIGHT
         if cached is not None and age_ok:
-            return cached, cached_source, True
+            return cached, cached_source, cached_mgr_available
         if inflight and cached is not None:
-            return cached, cached_source, True
+            return cached, cached_source, cached_mgr_available
 
         with _CACHE_LOCK:
             if _CACHE_HIT_RATE_INFLIGHT:
                 if _CACHE_HIT_RATE_VALUE is not None:
-                    return _CACHE_HIT_RATE_VALUE, _CACHE_HIT_RATE_SOURCE_VALUE, True
+                    return (
+                        _CACHE_HIT_RATE_VALUE,
+                        _CACHE_HIT_RATE_SOURCE_VALUE,
+                        _CACHE_HIT_RATE_MGR_AVAILABLE_VALUE,
+                    )
             _CACHE_HIT_RATE_INFLIGHT = True
 
         try:
@@ -539,6 +546,7 @@ def get_stats() -> dict[str, Any]:
             with _CACHE_LOCK:
                 _CACHE_HIT_RATE_VALUE = value
                 _CACHE_HIT_RATE_SOURCE_VALUE = src
+                _CACHE_HIT_RATE_MGR_AVAILABLE_VALUE = mgr_available
                 _CACHE_HIT_RATE_TS = now_mono
             return value, src, mgr_available
         finally:

@@ -18,6 +18,7 @@ def _reset_hit_rate_cache() -> None:
     stats._CACHE_HIT_RATE_TS = 0.0
     stats._CACHE_HIT_RATE_VALUE = None
     stats._CACHE_HIT_RATE_SOURCE_VALUE = ""
+    stats._CACHE_HIT_RATE_MGR_AVAILABLE_VALUE = False
 
 
 def _reset_stats_caches() -> None:
@@ -192,6 +193,61 @@ def test_get_stats_ttl_env_values_are_clamped_to_existing_minimums(monkeypatch) 
     stats.get_stats()
 
     assert calls == {"dir": 1, "disk": 1, "hit": 1, "cpu": 1, "load": 1}
+
+
+def test_get_stats_cached_access_log_hit_rate_keeps_mgr_unavailable(monkeypatch) -> None:
+    _reset_stats_caches()
+    monkeypatch.setenv("STATS_CACHE_HIT_RATE_TTL_SECONDS", "60")
+
+    calls = {"hit": 0, "mgr": 0}
+
+    def fake_mgr(section: str):
+        calls["mgr"] += 1
+        return None
+
+    def fake_hit_rate() -> dict[str, float | None]:
+        calls["hit"] += 1
+        return {"request_hit_ratio": 10.0, "byte_hit_ratio": 20.0}
+
+    monkeypatch.setattr(stats, "get_squid_mgr_text", fake_mgr)
+    monkeypatch.setattr(stats, "parse_access_log_hit_rate", fake_hit_rate)
+
+    first = stats.get_stats()["squid"]
+    second = stats.get_stats()["squid"]
+
+    assert first["hit_rate_source"] == "access-observe.log"
+    assert first["mgr_available"] is False
+    assert second["hit_rate_source"] == "access-observe.log"
+    assert second["mgr_available"] is False
+    assert calls == {"hit": 1, "mgr": 2}
+
+
+def test_get_stats_cached_cachemgr_hit_rate_keeps_mgr_available(monkeypatch) -> None:
+    _reset_stats_caches()
+    monkeypatch.setenv("STATS_CACHE_HIT_RATE_TTL_SECONDS", "60")
+
+    calls = {"mgr": 0}
+
+    def fake_mgr(section: str):
+        calls["mgr"] += 1
+        assert section == "5min"
+        return "Request Hit Ratios: 5min: 12.5%\nByte Hit Ratios: 5min: 34.5%"
+
+    monkeypatch.setattr(stats, "get_squid_mgr_text", fake_mgr)
+
+    first = stats.get_stats()["squid"]
+    second = stats.get_stats()["squid"]
+
+    assert first["hit_rate_source"] == "cachemgr"
+    assert first["mgr_available"] is True
+    assert first["hit_rate"] == {
+        "request_hit_ratio": pytest.approx(12.5),
+        "byte_hit_ratio": pytest.approx(34.5),
+    }
+    assert second["hit_rate_source"] == "cachemgr"
+    assert second["mgr_available"] is True
+    assert second["hit_rate"] == first["hit_rate"]
+    assert calls == {"mgr": 1}
 
 
 def test_cachemgr_is_opt_in(monkeypatch) -> None:
