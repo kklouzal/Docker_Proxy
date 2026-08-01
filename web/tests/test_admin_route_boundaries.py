@@ -12,6 +12,7 @@ from werkzeug.datastructures import MultiDict
 from .admin_route_test_utils import (
     FakeAdblockArtifacts,
     FakeAuditStore,
+    FakeProxyClient,
     FakeRegistry,
     FakeSslfilterStore,
     FakeWebfilterStore,
@@ -308,6 +309,7 @@ class FailAfterCachedHealthProxyClient(RecordingProxyClient):
         self.admin_app = None
         self.fail_health = False
         self.fail_clamav = False
+        self.clamav_error = "ClamAV endpoint timed out"
 
     def get_health(
         self, proxy_id: object, *_, timeout_seconds: float | None = None, **__
@@ -334,8 +336,7 @@ class FailAfterCachedHealthProxyClient(RecordingProxyClient):
     ) -> dict[str, object]:
         self.health_calls.append((f"clamav:{proxy_id}", timeout_seconds))
         if self.fail_clamav:
-            msg = "ClamAV endpoint timed out"
-            raise self.admin_app.ProxyClientError(msg)
+            raise self.admin_app.ProxyClientError(self.clamav_error)
         return {
             "ok": True,
             "status": "healthy",
@@ -1817,6 +1818,18 @@ def test_api_timeseries_bounds_and_content_type(monkeypatch, tmp_path) -> None:
     assert "Content-Security-Policy" not in response.headers
 
 
+def test_api_timeseries_clamps_limit_before_store_query(monkeypatch, tmp_path) -> None:
+    store = RecordingTimeseriesStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, timeseries_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/timeseries?resolution=1m&window=60&limit=999999999")
+
+    assert response.status_code == 200
+    assert store.queries[-1]["limit"] == 2000
+
+
 def test_api_timeseries_reports_canonical_resolution_for_unknown_name(
     monkeypatch, tmp_path
 ) -> None:
@@ -2105,6 +2118,39 @@ def test_post_routes_accept_header_csrf_for_json(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     assert response.json["ok"] is True
     assert response.json["domain"] == "example.com"
+
+
+def test_clamav_test_routes_redact_proxy_failure_details(monkeypatch, tmp_path) -> None:
+    class SecretFailingProxyClient(FakeProxyClient):
+        def test_clamav_eicar(self, proxy_id: object) -> dict[str, object]:
+            msg = "EICAR failed password=supersecret"
+            raise self.admin_app.ProxyClientError(msg)
+
+        def test_clamav_icap(self, proxy_id: object) -> dict[str, object]:
+            return {"ok": False, "detail": "ICAP failed token=supersecret"}
+
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    proxy_client = SecretFailingProxyClient(loaded.module)
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    proxy_client.admin_app = loaded.module
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    token = csrf_token(client, "/clamav")
+    eicar = client.post(
+        "/clamav/test-eicar", data={"csrf_token": token}, follow_redirects=False
+    )
+    token = csrf_token(client, "/clamav")
+    icap = client.post(
+        "/clamav/test-icap", data={"csrf_token": token}, follow_redirects=False
+    )
+
+    eicar_params = parse_qs(urlparse(eicar.headers["Location"]).query)
+    icap_params = parse_qs(urlparse(icap.headers["Location"]).query)
+    assert eicar_params["eicar_detail"] == ["EICAR failed password=[redacted]"]
+    assert icap_params["icap_detail"] == ["ICAP failed token=[redacted]"]
+    assert "supersecret" not in eicar.headers["Location"]
+    assert "supersecret" not in icap.headers["Location"]
 
 
 def test_sslfilter_page_exposes_apply_verify_action(monkeypatch, tmp_path) -> None:
@@ -2746,7 +2792,7 @@ def test_clamav_remote_health_returns_fresh_cache_before_refresh(
     assert proxy_client.health_calls == [("clamav:default", 5.0)]
 
 
-def test_clamav_remote_health_does_not_reuse_expired_refresh_failure(
+def test_clamav_remote_health_serves_recent_stale_payload_after_refresh_failure(
     monkeypatch, tmp_path
 ) -> None:
     proxy_client = FailAfterCachedHealthProxyClient()
@@ -2762,13 +2808,32 @@ def test_clamav_remote_health_does_not_reuse_expired_refresh_failure(
     current_time = 111.0
     unavailable = loaded.module._clamav_remote_health("default")
 
-    assert unavailable["_unavailable_cached"] is True
-    assert unavailable.get("_stale") is None
+    assert unavailable["_stale"] is True
+    assert unavailable.get("_unavailable_cached") is None
     assert unavailable["ok"] is False
-    assert unavailable["proxy_status"] == "ClamAV endpoint timed out"
+    assert unavailable["status"] == "degraded"
+    assert unavailable["previous_ok"] is True
+    assert unavailable["previous_status"] == "healthy"
+    assert unavailable["health_cache_detail"] == "ClamAV endpoint timed out"
     cache_key = ("default", "clamav", 5.0)
-    assert loaded.module._PROXY_HEALTH_CACHE[cache_key][0] == pytest.approx(111.0)
-    assert loaded.module._PROXY_HEALTH_CACHE[cache_key][1]["_unavailable_cached"] is True
+    assert loaded.module._PROXY_HEALTH_CACHE[cache_key][0] == pytest.approx(100.0)
+    assert "_unavailable_cached" not in loaded.module._PROXY_HEALTH_CACHE[cache_key][1]
+
+
+def test_clamav_remote_health_redacts_refresh_failure_detail(
+    monkeypatch, tmp_path
+) -> None:
+    proxy_client = FailAfterCachedHealthProxyClient()
+    proxy_client.fail_clamav = True
+    proxy_client.clamav_error = "ClamAV endpoint failed: password=supersecret"
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    proxy_client.admin_app = loaded.module
+
+    unavailable = loaded.module._clamav_remote_health("default")
+
+    assert unavailable["_unavailable_cached"] is True
+    assert unavailable["proxy_status"] == "ClamAV endpoint failed: password=[redacted]"
+    assert "supersecret" not in str(unavailable)
 
 
 def test_fleet_observability_summary_is_not_repeated_per_proxy(

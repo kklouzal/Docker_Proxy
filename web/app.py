@@ -8283,7 +8283,13 @@ def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
     except AttributeError:
         return _cached_proxy_health(proxy_id, timeout_seconds=timeout_seconds)
     except ProxyClientError as exc:
-        cached_payload = _fresh_cached_health_payload(
+        safe_detail = clean_text(
+            redact_sensitive_text(
+                str(exc or "using recent cached ClamAV health after refresh failure"),
+            ),
+            max_len=1000,
+        )
+        cached_payload = _stale_cached_health_payload(
             cached,
             now=time.monotonic(),
             ttl_seconds=_PROXY_HEALTH_TTL_SECONDS,
@@ -8296,9 +8302,7 @@ def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
             )
             stale_payload["ok"] = False
             stale_payload["status"] = "degraded"
-            stale_payload["health_cache_detail"] = str(
-                exc or "using recent cached ClamAV health after refresh failure",
-            )
+            stale_payload["health_cache_detail"] = safe_detail
             stale_payload.setdefault(
                 "detail",
                 "using recent cached ClamAV health after refresh failure",
@@ -8307,7 +8311,7 @@ def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
             return stale_payload
         proxy = get_proxy_registry().get_proxy(proxy_id)
         payload = build_unavailable_runtime_health(
-            str(exc),
+            safe_detail,
             proxy_status=proxy.status if proxy else "offline",
         )
         payload["_unavailable_cached"] = True
@@ -8456,11 +8460,15 @@ def clamav_test_eicar():
     try:
         res = get_proxy_client().test_clamav_eicar(get_proxy_id())
     except ProxyClientError as exc:
-        res = {"ok": False, "detail": str(exc)}
+        res = {
+            "ok": False,
+            "detail": clean_text(redact_sensitive_text(str(exc)), max_len=300),
+        }
+    detail = clean_text(redact_sensitive_text(res.get("detail") or ""), max_len=300)
     return _redirect_to(
         "clamav",
         eicar="ok" if res.get("ok") else "fail",
-        eicar_detail=(res.get("detail") or "")[:300],
+        eicar_detail=detail,
     )
 
 
@@ -8469,11 +8477,15 @@ def clamav_test_icap():
     try:
         res = get_proxy_client().test_clamav_icap(get_proxy_id())
     except ProxyClientError as exc:
-        res = {"ok": False, "detail": str(exc)}
+        res = {
+            "ok": False,
+            "detail": clean_text(redact_sensitive_text(str(exc)), max_len=300),
+        }
+    detail = clean_text(redact_sensitive_text(res.get("detail") or ""), max_len=300)
     return _redirect_to(
         "clamav",
         icap_sample="ok" if res.get("ok") else "fail",
-        icap_detail=(res.get("detail") or "")[:300],
+        icap_detail=detail,
     )
 
 
@@ -8894,7 +8906,7 @@ def winhttp_registry_builder():
 def api_timeseries():
     res = _canonicalize_timeseries_resolution_name(request.args.get("resolution"))
     window_i = _query_int_arg("window", default=60, minimum=10, maximum=365 * 24 * 3600)
-    limit_i = _query_int_arg("limit", default=500)
+    limit_i = _query_int_arg("limit", default=500, minimum=10, maximum=2000)
 
     since = int(time.time()) - window_i
     try:
@@ -9016,6 +9028,8 @@ def _selected_proxy_certificate_operation_conflicts(
 @app.route("/certs/proxies/<path:proxy_id>/force-reconcile", methods=["POST"])
 def force_reconcile_certificate_proxy(proxy_id: str):
     selected_proxy_id = get_proxy_id()
+    if not _is_exact_normalized_proxy_id(proxy_id):
+        return _certificate_recovery_redirect("proxy_scope")
     proxy_key = normalize_proxy_id(proxy_id)
     if proxy_key != selected_proxy_id:
         return _certificate_recovery_redirect("proxy_scope")
@@ -9251,6 +9265,12 @@ def regenerate_admin_ui_https_certificate():
         settings = _admin_ui_https_converge_leaf_settings(
             get_certificate_bundles().get_admin_ui_https_settings()
         )
+        if not bool(getattr(settings, "enabled", False)):
+            return _redirect_with_message(
+                "certs",
+                ok=False,
+                msg="Enable Admin UI HTTPS before regenerating its server certificate.",
+            )
         bundle = get_certificate_bundles().get_active_bundle()
         if bundle is None:
             return _redirect_with_message(

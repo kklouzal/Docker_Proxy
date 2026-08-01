@@ -870,6 +870,52 @@ def test_regenerate_admin_ui_https_certificate_reports_restart_failure(
     assert loaded.audit_store.records[-1]["ok"] is False
 
 
+def test_regenerate_admin_ui_https_certificate_requires_enabled_preference(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    bundles.admin_ui_https_settings = SimpleNamespace(
+        enabled=False,
+        certfile="",
+        keyfile="",
+        san_tokens="proxyadmin.example.com",
+        updated_by="admin",
+        updated_ts=1,
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    materialize_calls = []
+    restart_calls = []
+    monkeypatch.setattr(
+        loaded.module,
+        "_materialize_admin_ui_https_leaf",
+        lambda *_args, **_kwargs: materialize_calls.append(True),
+    )
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: restart_calls.append(True) or (True, "restart requested"),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https/regenerate",
+        data={"csrf_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    params = _location_params(response)
+    assert params["ok"] == ["0"]
+    assert "Enable Admin UI HTTPS" in params["msg"][0]
+    assert materialize_calls == []
+    assert restart_calls == []
+    assert bundles.admin_ui_https_settings.enabled is False
+    assert bundles.admin_ui_https_settings.certfile == ""
+    assert bundles.admin_ui_https_settings.keyfile == ""
+
+
 def test_admin_ui_https_preference_accepts_hidden_fallback_before_checkbox(
     monkeypatch, tmp_path
 ) -> None:
@@ -2531,6 +2577,37 @@ def test_force_reconcile_certificate_proxy_rejects_cross_proxy_and_no_bundle(
 
     assert "cert_recovery_error=proxy_scope" in cross_proxy.location
     assert "cert_recovery_error=no_bundle" in no_bundle.location
+    assert loaded.operation_ledger.operations == []
+
+
+def test_force_reconcile_certificate_proxy_rejects_noncanonical_route_proxy_id(
+    monkeypatch, tmp_path
+) -> None:
+    bundle = SimpleNamespace(
+        revision_id=10,
+        bundle_sha256="active-sha",
+        source_kind="manual",
+        cert_sha256="cert-sha",
+        created_ts=10,
+    )
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=FakeCertificateBundles(bundle=bundle),
+    )
+    monkeypatch.setattr(loaded.module, "get_proxy_id", lambda: "default")
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/proxies/bad..proxy/force-reconcile",
+        data={"csrf_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert "cert_recovery_error=proxy_scope" in response.location
     assert loaded.operation_ledger.operations == []
 
 
