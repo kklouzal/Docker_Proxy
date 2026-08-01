@@ -188,7 +188,11 @@ def _normalize_winhttp_hex_data(
 
 
 def hex_to_bytes(hex_value: str) -> list[int]:
-    clean = normalize_hex_only(hex_value)
+    clean = _normalize_winhttp_hex_data(
+        hex_value,
+        error_prefix="Invalid hex string",
+        allow_raw_separators=True,
+    )
     if len(clean) % 2:
         msg = "Hex string must contain an even number of characters."
         raise WinHttpBuilderError(msg)
@@ -690,7 +694,11 @@ def decode_basic_winhttp_settings_hex(hex_value: str) -> DecodedBasicWinHttpSett
 
 
 def generate_reg_file_from_hex(hex_value: str, *, bytes_per_line: int = 25) -> str:
-    clean = normalize_hex_only(hex_value)
+    clean = _normalize_winhttp_hex_data(
+        hex_value,
+        error_prefix="Invalid WinHttpSettings hex data",
+        allow_raw_separators=True,
+    )
     if len(clean) % 2:
         msg = "Hex string must contain an even number of characters."
         raise WinHttpBuilderError(msg)

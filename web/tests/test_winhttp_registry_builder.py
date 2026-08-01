@@ -14,6 +14,7 @@ from services.winhttp_registry_builder import (
     decode_basic_winhttp_settings_hex,
     generate_basic_winhttp_binary,
     generate_reg_file_from_hex,
+    hex_to_bytes,
     normalize_bypass_list,
     normalize_reg_binary_export,
 )
@@ -372,6 +373,14 @@ def test_reg_export_normalizer_rejects_raw_hex_garbage() -> None:
 
     with pytest.raises(WinHttpBuilderError, match="No WinHttpSettings REG_BINARY value was found"):
         normalize_reg_binary_export(f"{grouped} not-hex-garbage")
+
+
+def test_direct_hex_helpers_reject_non_hex_garbage_instead_of_stripping_it() -> None:
+    with pytest.raises(WinHttpBuilderError, match="Invalid hex string"):
+        hex_to_bytes("28xx0000")
+
+    with pytest.raises(WinHttpBuilderError, match="Invalid WinHttpSettings hex data"):
+        generate_reg_file_from_hex("28xx0000")
 
 
 def test_decode_round_trip_rejects_non_ascii_strings() -> None:

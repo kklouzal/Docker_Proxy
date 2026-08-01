@@ -20,6 +20,7 @@ from services.squid_config_forms import (  # type: ignore  # noqa: E402
     DEFAULT_REFRESH_PATTERNS,
     build_template_options,
     build_template_options_from_form,
+    coerce_config_bool,
     get_config_ui_field_map,
     normalize_safe_form_kind,
     parse_cache_override_form,
@@ -67,6 +68,26 @@ def test_build_template_options_parses_string_boolean_tunables() -> None:
     assert options["https_intercept_enabled_on"] is False
     assert options["https_intercept_splice_only_on"] is False
     assert options["memory_pools_on"] is False
+
+
+def test_invalid_boolean_text_falls_back_instead_of_enabling_safety_controls() -> None:
+    assert coerce_config_bool("definitely", default=False) is False
+    assert coerce_config_bool("definitely", default=True) is True
+
+    options = build_template_options(
+        {
+            "intercept_enabled": "flase",
+            "https_intercept_enabled": "maybe",
+            "https_intercept_splice_only": "maybe",
+            "range_cache_on": "maybe",
+        },
+        max_workers=4,
+    )
+
+    assert options["intercept_enabled_on"] is False
+    assert options["https_intercept_enabled_on"] is False
+    assert options["https_intercept_splice_only_on"] is False
+    assert options["range_cache_on"] is True
 
 
 def test_build_template_options_defaults_match_perf_baseline() -> None:

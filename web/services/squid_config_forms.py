@@ -193,7 +193,7 @@ def coerce_config_bool(value: Any, default: bool = False) -> bool:
         return True
     if text in _FALSE_CONFIG_BOOL_STRINGS:
         return False
-    return bool(value)
+    return bool(default)
 
 
 def _tunable_choice_or_default(
