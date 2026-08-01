@@ -349,3 +349,47 @@ def test_shared_minor_layout_utilities_have_width_contracts() -> None:
     assert ".split-grid > .split-left" in css
     assert "width: 100%;" in css
     assert "min-width: 0;" in css
+
+
+def test_presentation_post_confirmations_survive_spa_intercepts() -> None:
+    observability = (TEMPLATES / "observability.html").read_text(encoding="utf-8")
+    js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
+
+    assert "onsubmit=" not in observability
+    assert 'data-confirm-message="Clear stored MySQL observability logs' in observability
+    assert 'data-confirm-message="Run observability database maintenance now?' in observability
+    assert "const confirmRequestedAction = (trigger, form = null)" in js
+    assert "form.dataset.confirmMessage" in js
+    assert "if (!confirmRequestedAction(event.submitter, form))" in js
+
+
+def test_spa_pending_state_preserves_external_submitter_disabled_state() -> None:
+    operations = (TEMPLATES / "operations.html").read_text(encoding="utf-8")
+    js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
+
+    assert 'data-pending-label="Reverting..."' in operations
+    assert "setFormPending(form, true, event.submitter)" in js
+    assert "setFormPending(form, false, event.submitter)" in js
+    assert "!buttons.includes(submitter)" in js
+    assert "button.dataset.originalDisabled" in js
+    assert "button.disabled = button.dataset.originalDisabled === '1'" in js
+
+
+def test_operator_toast_copy_is_generic_for_non_reconcile_posts() -> None:
+    js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
+
+    assert "showToast('Submitting change…', 'pending')" in js
+    assert "Saved locally; queuing proxy reconciliation" not in js
+
+
+def test_static_templates_avoid_duplicate_literal_ids() -> None:
+    import re
+
+    # Dynamic field IDs are generated from mutually unique backend field maps; this
+    # guard catches literal copy/paste duplicates in the static template source.
+    allowed_dynamic_duplicates = {"{{ field.key }}"}
+    for template in TEMPLATES.glob("*.html"):
+        html = template.read_text(encoding="utf-8")
+        ids = re.findall(r'id="([^"]+)"', html)
+        duplicates = {value for value in ids if ids.count(value) > 1}
+        assert duplicates <= allowed_dynamic_duplicates, template.name

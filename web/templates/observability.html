@@ -24,7 +24,7 @@
       <a class="btn ghost" href="{{ url_for('observability_export', pane=pane, sort=sort, limit=limit, window=window, q=search, resolve_hostnames=('1' if resolve_hostnames else '0'), privacy=('1' if privacy else '0')) }}">Export CSV</a>
       <a class="btn ghost" href="{{ url_for('observability_export', pane=pane, sort=sort, limit=limit, window=window, q=search, resolve_hostnames=('1' if resolve_hostnames else '0'), privacy=('1' if privacy else '0'), format='json') }}">Export JSON</a>
       {% if pane == 'overview' %}
-      <form class="inline-form" method="post" action="{{ url_for('observability_clear_logs') }}" onsubmit="return confirm('Clear stored MySQL observability logs for every proxy? This cannot be undone.');">
+      <form class="inline-form" method="post" action="{{ url_for('observability_clear_logs') }}" data-confirm-message="Clear stored MySQL observability logs for every proxy? This cannot be undone.">
         {{ csrf_field() }}
         <button class="btn danger" type="submit">Clear Logs</button>
       </form>
@@ -104,7 +104,7 @@
         <a class="btn ghost" href="{{ url_for('observability', pane='settings') }}">Reset</a>
       </div>
     </form>
-    <form class="form" method="post" action="{{ url_for('observability_maintenance') }}" onsubmit="return confirm('Run observability database maintenance now? This will prune expired rows, then ANALYZE and OPTIMIZE the observability tables.');">
+    <form class="form" method="post" action="{{ url_for('observability_maintenance') }}" data-confirm-message="Run observability database maintenance now? This will prune expired rows, then ANALYZE and OPTIMIZE the observability tables.">
       {{ csrf_field() }}
       <div class="actions">
         <button class="btn secondary" type="submit">Run prune, analyze, optimize now</button>
@@ -148,33 +148,33 @@
       {% if pane == 'remediation' %}
       <div class="row-2">
         <div>
-          <label for="sort">Sort</label>
-          <select id="sort" name="sort">
+          <label for="observability-remediation-sort">Sort</label>
+          <select id="observability-remediation-sort" name="sort">
             <option value="confidence" {% if sort == 'confidence' %}selected{% endif %}>Highest confidence</option>
             <option value="count" {% if sort == 'count' %}selected{% endif %}>Most observed</option>
             <option value="recent" {% if sort == 'recent' %}selected{% endif %}>Newest activity</option>
           </select>
         </div>
         <div>
-          <label for="limit">Limit</label>
-          <input id="limit" name="limit" type="number" min="10" max="200" step="10" value="{{ limit }}" />
+          <label for="observability-remediation-limit">Limit</label>
+          <input id="observability-remediation-limit" name="limit" type="number" min="10" max="200" step="10" value="{{ limit }}" />
         </div>
       </div>
       <div class="row-2">
         <div>
-          <label for="window">Time window (seconds)</label>
-          <input id="window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
+          <label for="observability-remediation-window">Time window (seconds)</label>
+          <input id="observability-remediation-window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
         </div>
         <div>
-          <label for="q">Search</label>
-          <input id="q" name="q" type="text" placeholder="filter this pane..." value="{{ search }}" />
+          <label for="observability-remediation-q">Search</label>
+          <input id="observability-remediation-q" name="q" type="text" placeholder="filter this pane..." value="{{ search }}" />
         </div>
       </div>
       {% elif pane in ['destinations', 'clients', 'cache'] %}
       <div class="row-2">
         <div>
-          <label for="sort">Sort</label>
-          <select id="sort" name="sort">
+          <label for="observability-aggregate-sort">Sort</label>
+          <select id="observability-aggregate-sort" name="sort">
             {% if pane == 'destinations' %}
               <option value="requests" {% if sort == 'requests' %}selected{% endif %}>Top by requests</option>
               <option value="recent" {% if sort == 'recent' %}selected{% endif %}>Newest activity</option>
@@ -194,19 +194,19 @@
           </select>
         </div>
         <div>
-          <label for="limit">Limit</label>
-          <input id="limit" name="limit" type="number" min="10" max="200" step="10" value="{{ limit }}" />
+          <label for="observability-aggregate-limit">Limit</label>
+          <input id="observability-aggregate-limit" name="limit" type="number" min="10" max="200" step="10" value="{{ limit }}" />
         </div>
       </div>
       {% else %}
       <div class="row-2">
         <div>
-          <label for="limit">Rows / samples</label>
-          <input id="limit" name="limit" type="number" min="10" max="200" step="10" value="{{ limit }}" />
+          <label for="observability-sample-limit">Rows / samples</label>
+          <input id="observability-sample-limit" name="limit" type="number" min="10" max="200" step="10" value="{{ limit }}" />
         </div>
         <div>
-          <label for="window">Time window (seconds)</label>
-          <input id="window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
+          <label for="observability-sample-window">Time window (seconds)</label>
+          <input id="observability-sample-window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
         </div>
       </div>
       {% endif %}
@@ -215,13 +215,13 @@
       <div class="row-2">
         {% if pane in ['destinations', 'clients', 'cache'] %}
         <div>
-          <label for="window">Time window (seconds)</label>
-          <input id="window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
+          <label for="observability-aggregate-window">Time window (seconds)</label>
+          <input id="observability-aggregate-window" name="window" type="number" min="300" max="604800" step="60" value="{{ window }}" />
         </div>
         {% endif %}
         <div>
-          <label for="q">Search</label>
-          <input id="q" name="q" type="text" placeholder="filter this pane..." value="{{ search }}" />
+          <label for="observability-aggregate-q">Search</label>
+          <input id="observability-aggregate-q" name="q" type="text" placeholder="filter this pane..." value="{{ search }}" />
         </div>
       </div>
       {% endif %}

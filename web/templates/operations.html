@@ -96,12 +96,12 @@
                         <input type="checkbox" name="confirm_global_certificate_revert" value="1" required>
                         Confirm global CA rollback for all registered proxies
                     </label>
-                    <button class="btn danger" type="submit" {% if not op.global_revert_target_matches_active %}disabled{% endif %}>Revert global CA</button>
+                    <button class="btn danger" type="submit" data-pending-label="Reverting..." {% if not op.global_revert_target_matches_active %}disabled{% endif %}>Revert global CA</button>
                     {% if not op.global_revert_target_matches_active %}
                     <span class="small muted">Disabled because the current active certificate bundle no longer matches this failed operation target.</span>
                     {% endif %}
                     {% else %}
-                    <button class="btn danger" type="submit">Revert</button>
+                    <button class="btn danger" type="submit" data-pending-label="Reverting...">Revert</button>
                     {% endif %}
                 </form>
                 {% elif op.can_revert %}

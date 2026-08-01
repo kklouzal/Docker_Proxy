@@ -279,9 +279,10 @@
     return window.confirm(UNSAVED_CONFIG_MESSAGE);
   };
 
-  const confirmRequestedAction = (trigger) => {
-    if (!(trigger instanceof HTMLElement)) return true;
-    const message = trigger.dataset.confirmMessage || '';
+  const confirmRequestedAction = (trigger, form = null) => {
+    const message = trigger instanceof HTMLElement && trigger.dataset.confirmMessage
+      ? trigger.dataset.confirmMessage
+      : (form instanceof HTMLElement ? (form.dataset.confirmMessage || '') : '');
     if (!message) return true;
     return window.confirm(message);
   };
@@ -353,17 +354,23 @@
     }
   };
 
-  const setFormPending = (form, pending) => {
+  const setFormPending = (form, pending, submitter = null) => {
     form.classList.toggle('is-submitting', Boolean(pending));
     form.setAttribute('aria-busy', pending ? 'true' : 'false');
-    form.querySelectorAll('button').forEach((button) => {
+    const buttons = Array.from(form.querySelectorAll('button'));
+    if (submitter instanceof HTMLButtonElement && !buttons.includes(submitter)) {
+      buttons.push(submitter);
+    }
+    buttons.forEach((button) => {
       if (!(button instanceof HTMLButtonElement)) return;
       if (pending) {
+        if (!button.dataset.originalDisabled) button.dataset.originalDisabled = button.disabled ? '1' : '0';
         if (!button.dataset.originalLabel) button.dataset.originalLabel = button.textContent || '';
         button.disabled = true;
         if (button.type === 'submit') button.textContent = button.dataset.pendingLabel || 'Saving…';
       } else {
-        button.disabled = false;
+        button.disabled = button.dataset.originalDisabled === '1';
+        delete button.dataset.originalDisabled;
         if (button.dataset.originalLabel) button.textContent = button.dataset.originalLabel;
       }
     });
@@ -1388,7 +1395,7 @@
 
     event.preventDefault();
 
-    if (!confirmRequestedAction(event.submitter)) {
+    if (!confirmRequestedAction(event.submitter, form)) {
       return;
     }
 
@@ -1409,11 +1416,11 @@
     const body = enctype === 'multipart/form-data'
       ? buildSubmitFormData(form, event.submitter)
       : buildUrlEncodedSubmitBody(form, event.submitter);
-    setFormPending(form, true);
-    showToast('Saved locally; queuing proxy reconciliation…', 'pending');
+    setFormPending(form, true, event.submitter);
+    showToast('Submitting change…', 'pending');
     // For POST, avoid adding noisy history entries; the server usually redirects back.
     void fetchAndSwap(action, { push: false, method: 'POST', body }).finally(() => {
-      setFormPending(form, false);
+      setFormPending(form, false, event.submitter);
       void refreshOperationLedger({ notifyInitial: true });
     });
   };

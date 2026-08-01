@@ -205,7 +205,7 @@
           <textarea id="winhttp-normalized-hex" rows="8" readonly>{{ output.normalized_hex }}</textarea>
         {% else %}
           <div class="surface-note small">Static REG_BINARY output is intentionally disabled when PAC URL or AutoDetect is enabled. Use the advproxy JSON/commands below for those documented settings.</div>
-          <textarea id="winhttp-normalized-hex" rows="4" readonly></textarea>
+          <textarea id="winhttp-normalized-hex-empty" rows="4" readonly></textarea>
         {% endif %}
       </div>
     </section>
@@ -219,7 +219,7 @@
         {% if output.static_registry_available %}
           <textarea id="winhttp-reg-file" rows="8" readonly>{{ output.reg_file }}</textarea>
         {% else %}
-          <textarea id="winhttp-reg-file" rows="4" readonly></textarea>
+          <textarea id="winhttp-reg-file-empty" rows="4" readonly></textarea>
         {% endif %}
       </div>
     </section>
