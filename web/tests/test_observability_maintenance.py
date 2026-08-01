@@ -287,3 +287,69 @@ def test_clear_observability_logs_reports_partial_bounded_delete_fallback(
         and row["maintenance"] == "delete_fallback"
         for row in result["tables"]
     )
+
+
+def test_maintain_observability_tables_continues_after_table_probe_failure(
+    monkeypatch,
+) -> None:
+    existing = {"diagnostic_requests"}
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        maintenance,
+        "OBSERVABILITY_LOG_TABLES",
+        ("broken_table", "diagnostic_requests"),
+    )
+
+    def table_exists(table: str) -> bool:
+        if table == "broken_table":
+            msg = "metadata lookup failed password=secret"
+            raise RuntimeError(msg)
+        return table in existing
+
+    def run_table(table: str, *, analyze: bool, optimize: bool) -> str:
+        calls.append(f"{table}:{analyze}:{optimize}")
+        return "analyzed"
+
+    monkeypatch.setattr(maintenance, "_table_exists", table_exists)
+    monkeypatch.setattr(maintenance, "_run_table_maintenance", run_table)
+
+    result = maintenance.maintain_observability_tables(analyze=True, optimize=False)
+
+    assert result["ok"] is False
+    assert result["maintained_tables"] == 1
+    assert calls == ["diagnostic_requests:True:False"]
+    assert result["tables"][0]["table"] == "broken_table"
+    assert result["tables"][0]["status"] == "failed"
+    assert result["tables"][0]["maintenance"] == "table_exists"
+    assert "secret" not in result["tables"][0]["detail"]
+
+
+def test_clear_observability_logs_continues_after_table_probe_failure(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        maintenance,
+        "OBSERVABILITY_LOG_TABLES",
+        ("broken_table", "diagnostic_requests"),
+    )
+    truncated: list[str] = []
+
+    def table_exists(table: str) -> bool:
+        if table == "broken_table":
+            msg = "metadata lookup failed token=secret"
+            raise RuntimeError(msg)
+        return True
+
+    monkeypatch.setattr(maintenance, "_table_exists", table_exists)
+    monkeypatch.setattr(maintenance, "_truncate_table", truncated.append)
+
+    result = maintenance.clear_observability_logs()
+
+    assert result["ok"] is False
+    assert result["cleared_tables"] == 1
+    assert truncated == ["diagnostic_requests"]
+    assert result["tables"][0]["table"] == "broken_table"
+    assert result["tables"][0]["status"] == "failed"
+    assert result["tables"][0]["maintenance"] == "table_exists"
+    assert "secret" not in result["tables"][0]["detail"]

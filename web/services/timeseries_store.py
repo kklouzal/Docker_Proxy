@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from services.db import DATABASE_ERRORS, connect
+from services.db import DATABASE_ERRORS, connect, mysql_error_code
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.observability_backoff import DatabaseWriteBackoff, stagger_delay_from_env
 from services.proxy_context import get_proxy_id
@@ -35,6 +35,13 @@ RESOLUTIONS: list[Resolution] = [
 ]
 RESOLUTION_BY_NAME = {resolution.name: resolution for resolution in RESOLUTIONS}
 DEFAULT_RESOLUTION = RESOLUTIONS[0]
+METRIC_COUNT_COLUMNS = {
+    "cpu": "cpu_count",
+    "mem": "mem_count",
+    "disk_used": "disk_used_count",
+    "cache_dir_size": "cache_dir_size_count",
+    "hit_rate": "hit_rate_count",
+}
 
 
 def resolve_resolution(resolution: str | None) -> Resolution:
@@ -59,6 +66,44 @@ def _get_metric(stats: dict[str, Any], path: str) -> float | None:
         return float(cur)
     except (TypeError, ValueError):
         return None
+
+
+def _metric_count_expr(metric: str, *, table_alias: str = "") -> str:
+    prefix = f"{table_alias}." if table_alias else ""
+    count_column = METRIC_COUNT_COLUMNS[metric]
+    return (
+        f"COALESCE({prefix}{count_column}, "
+        f"CASE WHEN {prefix}{metric} IS NOT NULL THEN {prefix}count ELSE 0 END)"
+    )
+
+
+def _metric_count_value(value: float | None) -> int:
+    return 1 if value is not None else 0
+
+
+def _ensure_metric_count_columns(conn) -> None:
+    for resolution in RESOLUTIONS:
+        for metric, count_column in METRIC_COUNT_COLUMNS.items():
+            exists = conn.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = %s
+                  AND column_name = %s
+                LIMIT 1
+                """,
+                (resolution.table, count_column),
+            ).fetchone()
+            if exists:
+                continue
+            try:
+                conn.execute(
+                    f"ALTER TABLE {resolution.table} ADD COLUMN {count_column} BIGINT NULL DEFAULT NULL AFTER {metric}",
+                )
+            except DATABASE_ERRORS as exc:
+                if mysql_error_code(exc) != 1060:
+                    raise
 
 
 class TimeSeriesStore:
@@ -114,14 +159,20 @@ class TimeSeriesStore:
                             ts BIGINT NOT NULL,
                             count BIGINT NOT NULL,
                             cpu DOUBLE,
+                            cpu_count BIGINT NULL DEFAULT NULL,
                             mem DOUBLE,
+                            mem_count BIGINT NULL DEFAULT NULL,
                             disk_used DOUBLE,
+                            disk_used_count BIGINT NULL DEFAULT NULL,
                             cache_dir_size DOUBLE,
+                            cache_dir_size_count BIGINT NULL DEFAULT NULL,
                             hit_rate DOUBLE,
+                            hit_rate_count BIGINT NULL DEFAULT NULL,
                             PRIMARY KEY(proxy_id, ts)
                         )
                         """,
                     )
+                _ensure_metric_count_columns(conn)
             self._db_initialized = True
 
     def insert_snapshot(self, stats: dict[str, Any], ts: int | None = None) -> None:
@@ -140,17 +191,43 @@ class TimeSeriesStore:
                 with guarded_proxy_write(conn, proxy_id) as guard:
                     conn.execute(
                         """
-                        INSERT INTO ts_1s(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
-                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s) AS incoming
+                        INSERT INTO ts_1s(
+                            proxy_id, ts, count,
+                            cpu, cpu_count,
+                            mem, mem_count,
+                            disk_used, disk_used_count,
+                            cache_dir_size, cache_dir_size_count,
+                            hit_rate, hit_rate_count
+                        )
+                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AS incoming
                         ON DUPLICATE KEY UPDATE
                             count = incoming.count,
                             cpu = incoming.cpu,
+                            cpu_count = incoming.cpu_count,
                             mem = incoming.mem,
+                            mem_count = incoming.mem_count,
                             disk_used = incoming.disk_used,
+                            disk_used_count = incoming.disk_used_count,
                             cache_dir_size = incoming.cache_dir_size,
-                            hit_rate = incoming.hit_rate
+                            cache_dir_size_count = incoming.cache_dir_size_count,
+                            hit_rate = incoming.hit_rate,
+                            hit_rate_count = incoming.hit_rate_count
                         """,
-                        (guard.proxy_id, ts_i, 1, cpu, mem, disk_used, cache_dir_size, hit_rate),
+                        (
+                            guard.proxy_id,
+                            ts_i,
+                            1,
+                            cpu,
+                            _metric_count_value(cpu),
+                            mem,
+                            _metric_count_value(mem),
+                            disk_used,
+                            _metric_count_value(disk_used),
+                            cache_dir_size,
+                            _metric_count_value(cache_dir_size),
+                            hit_rate,
+                            _metric_count_value(hit_rate),
+                        ),
                     )
 
         self._with_missing_table_retry(write_snapshot)
@@ -186,29 +263,62 @@ class TimeSeriesStore:
                     range_end = min(aligned_end, range_start + (dst_seconds * bucket_limit))
                     if range_end <= range_start:
                         return
+                    src_cpu_count = _metric_count_expr("cpu")
+                    src_mem_count = _metric_count_expr("mem")
+                    src_disk_used_count = _metric_count_expr("disk_used")
+                    src_cache_dir_size_count = _metric_count_expr("cache_dir_size")
+                    src_hit_rate_count = _metric_count_expr("hit_rate")
+                    dst_cpu_count = _metric_count_expr("cpu", table_alias=dst_table)
+                    dst_mem_count = _metric_count_expr("mem", table_alias=dst_table)
+                    dst_disk_used_count = _metric_count_expr("disk_used", table_alias=dst_table)
+                    dst_cache_dir_size_count = _metric_count_expr(
+                        "cache_dir_size",
+                        table_alias=dst_table,
+                    )
+                    dst_hit_rate_count = _metric_count_expr(
+                        "hit_rate",
+                        table_alias=dst_table,
+                    )
                     conn.execute(
                         f"""
-                        INSERT INTO {dst_table}(proxy_id, ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate)
+                        INSERT INTO {dst_table}(
+                            proxy_id, ts, count,
+                            cpu, cpu_count,
+                            mem, mem_count,
+                            disk_used, disk_used_count,
+                            cache_dir_size, cache_dir_size_count,
+                            hit_rate, hit_rate_count
+                        )
                         SELECT * FROM (
                             SELECT
                                 proxy_id,
                                 FLOOR(ts / %s) * %s AS bucket_start,
                                 SUM(count) AS count,
-                                CASE WHEN SUM(CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN cpu IS NOT NULL THEN cpu * count ELSE 0 END) / SUM(CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS cpu,
-                                CASE WHEN SUM(CASE WHEN mem IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN mem IS NOT NULL THEN mem * count ELSE 0 END) / SUM(CASE WHEN mem IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS mem,
-                                CASE WHEN SUM(CASE WHEN disk_used IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN disk_used IS NOT NULL THEN disk_used * count ELSE 0 END) / SUM(CASE WHEN disk_used IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS disk_used,
-                                CASE WHEN SUM(CASE WHEN cache_dir_size IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN cache_dir_size IS NOT NULL THEN cache_dir_size * count ELSE 0 END) / SUM(CASE WHEN cache_dir_size IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS cache_dir_size,
-                                CASE WHEN SUM(CASE WHEN hit_rate IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN hit_rate IS NOT NULL THEN hit_rate * count ELSE 0 END) / SUM(CASE WHEN hit_rate IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS hit_rate
+                                CASE WHEN SUM({src_cpu_count}) > 0 THEN SUM(COALESCE(cpu, 0) * {src_cpu_count}) / SUM({src_cpu_count}) ELSE NULL END AS cpu,
+                                SUM({src_cpu_count}) AS cpu_count,
+                                CASE WHEN SUM({src_mem_count}) > 0 THEN SUM(COALESCE(mem, 0) * {src_mem_count}) / SUM({src_mem_count}) ELSE NULL END AS mem,
+                                SUM({src_mem_count}) AS mem_count,
+                                CASE WHEN SUM({src_disk_used_count}) > 0 THEN SUM(COALESCE(disk_used, 0) * {src_disk_used_count}) / SUM({src_disk_used_count}) ELSE NULL END AS disk_used,
+                                SUM({src_disk_used_count}) AS disk_used_count,
+                                CASE WHEN SUM({src_cache_dir_size_count}) > 0 THEN SUM(COALESCE(cache_dir_size, 0) * {src_cache_dir_size_count}) / SUM({src_cache_dir_size_count}) ELSE NULL END AS cache_dir_size,
+                                SUM({src_cache_dir_size_count}) AS cache_dir_size_count,
+                                CASE WHEN SUM({src_hit_rate_count}) > 0 THEN SUM(COALESCE(hit_rate, 0) * {src_hit_rate_count}) / SUM({src_hit_rate_count}) ELSE NULL END AS hit_rate,
+                                SUM({src_hit_rate_count}) AS hit_rate_count
                             FROM {src_table}
                             WHERE proxy_id = %s AND ts >= %s AND ts < %s
                             GROUP BY proxy_id, bucket_start
                         ) AS incoming
                         ON DUPLICATE KEY UPDATE
-                            cpu = CASE WHEN {dst_table}.cpu IS NULL THEN incoming.cpu WHEN incoming.cpu IS NULL THEN {dst_table}.cpu WHEN {dst_table}.count + incoming.count > 0 THEN ({dst_table}.cpu * {dst_table}.count + incoming.cpu * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                            mem = CASE WHEN {dst_table}.mem IS NULL THEN incoming.mem WHEN incoming.mem IS NULL THEN {dst_table}.mem WHEN {dst_table}.count + incoming.count > 0 THEN ({dst_table}.mem * {dst_table}.count + incoming.mem * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                            disk_used = CASE WHEN {dst_table}.disk_used IS NULL THEN incoming.disk_used WHEN incoming.disk_used IS NULL THEN {dst_table}.disk_used WHEN {dst_table}.count + incoming.count > 0 THEN ({dst_table}.disk_used * {dst_table}.count + incoming.disk_used * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                            cache_dir_size = CASE WHEN {dst_table}.cache_dir_size IS NULL THEN incoming.cache_dir_size WHEN incoming.cache_dir_size IS NULL THEN {dst_table}.cache_dir_size WHEN {dst_table}.count + incoming.count > 0 THEN ({dst_table}.cache_dir_size * {dst_table}.count + incoming.cache_dir_size * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
-                            hit_rate = CASE WHEN {dst_table}.hit_rate IS NULL THEN incoming.hit_rate WHEN incoming.hit_rate IS NULL THEN {dst_table}.hit_rate WHEN {dst_table}.count + incoming.count > 0 THEN ({dst_table}.hit_rate * {dst_table}.count + incoming.hit_rate * incoming.count) / ({dst_table}.count + incoming.count) ELSE NULL END,
+                            cpu = CASE WHEN {dst_cpu_count} + incoming.cpu_count > 0 THEN (COALESCE({dst_table}.cpu, 0) * {dst_cpu_count} + COALESCE(incoming.cpu, 0) * incoming.cpu_count) / ({dst_cpu_count} + incoming.cpu_count) ELSE NULL END,
+                            cpu_count = {dst_cpu_count} + incoming.cpu_count,
+                            mem = CASE WHEN {dst_mem_count} + incoming.mem_count > 0 THEN (COALESCE({dst_table}.mem, 0) * {dst_mem_count} + COALESCE(incoming.mem, 0) * incoming.mem_count) / ({dst_mem_count} + incoming.mem_count) ELSE NULL END,
+                            mem_count = {dst_mem_count} + incoming.mem_count,
+                            disk_used = CASE WHEN {dst_disk_used_count} + incoming.disk_used_count > 0 THEN (COALESCE({dst_table}.disk_used, 0) * {dst_disk_used_count} + COALESCE(incoming.disk_used, 0) * incoming.disk_used_count) / ({dst_disk_used_count} + incoming.disk_used_count) ELSE NULL END,
+                            disk_used_count = {dst_disk_used_count} + incoming.disk_used_count,
+                            cache_dir_size = CASE WHEN {dst_cache_dir_size_count} + incoming.cache_dir_size_count > 0 THEN (COALESCE({dst_table}.cache_dir_size, 0) * {dst_cache_dir_size_count} + COALESCE(incoming.cache_dir_size, 0) * incoming.cache_dir_size_count) / ({dst_cache_dir_size_count} + incoming.cache_dir_size_count) ELSE NULL END,
+                            cache_dir_size_count = {dst_cache_dir_size_count} + incoming.cache_dir_size_count,
+                            hit_rate = CASE WHEN {dst_hit_rate_count} + incoming.hit_rate_count > 0 THEN (COALESCE({dst_table}.hit_rate, 0) * {dst_hit_rate_count} + COALESCE(incoming.hit_rate, 0) * incoming.hit_rate_count) / ({dst_hit_rate_count} + incoming.hit_rate_count) ELSE NULL END,
+                            hit_rate_count = {dst_hit_rate_count} + incoming.hit_rate_count,
                             count = {dst_table}.count + incoming.count
                         """,
                         (
@@ -290,13 +400,16 @@ class TimeSeriesStore:
         def read_summary() -> None:
             with self._connect() as conn:
                 for label, table, since in windows:
+                    cpu_count = _metric_count_expr("cpu")
+                    mem_count = _metric_count_expr("mem")
+                    hit_rate_count = _metric_count_expr("hit_rate")
                     row = conn.execute(
                         f"""
                         SELECT
                             SUM(count) AS cnt,
-                            CASE WHEN SUM(CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN cpu IS NOT NULL THEN cpu * count ELSE 0 END)/SUM(CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS cpu,
-                            CASE WHEN SUM(CASE WHEN mem IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN mem IS NOT NULL THEN mem * count ELSE 0 END)/SUM(CASE WHEN mem IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS mem,
-                            CASE WHEN SUM(CASE WHEN hit_rate IS NOT NULL THEN count ELSE 0 END) > 0 THEN SUM(CASE WHEN hit_rate IS NOT NULL THEN hit_rate * count ELSE 0 END)/SUM(CASE WHEN hit_rate IS NOT NULL THEN count ELSE 0 END) ELSE NULL END AS hit
+                            CASE WHEN SUM({cpu_count}) > 0 THEN SUM(COALESCE(cpu, 0) * {cpu_count})/SUM({cpu_count}) ELSE NULL END AS cpu,
+                            CASE WHEN SUM({mem_count}) > 0 THEN SUM(COALESCE(mem, 0) * {mem_count})/SUM({mem_count}) ELSE NULL END AS mem,
+                            CASE WHEN SUM({hit_rate_count}) > 0 THEN SUM(COALESCE(hit_rate, 0) * {hit_rate_count})/SUM({hit_rate_count}) ELSE NULL END AS hit
                         FROM {table}
                         WHERE proxy_id = %s AND ts >= %s
                         """,

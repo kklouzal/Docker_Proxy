@@ -72,6 +72,18 @@ _REQUIRED_TABLES: tuple[str, ...] = (
     "pac_proxy_chain_settings",
 )
 
+_TIMESERIES_METRIC_COUNT_COLUMNS: tuple[tuple[str, str], ...] = tuple(
+    (table, column)
+    for table in ("ts_1s", "ts_1m", "ts_1h", "ts_1d", "ts_1w", "ts_1mo", "ts_1y")
+    for column in (
+        "cpu_count",
+        "mem_count",
+        "disk_used_count",
+        "cache_dir_size_count",
+        "hit_rate_count",
+    )
+)
+
 _REQUIRED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("proxy_config_revisions", "active_proxy_id"),
     ("proxy_config_applications", "config_sha256"),
@@ -92,6 +104,7 @@ _REQUIRED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("saml_auth_profiles", "username_attribute"),
     ("saml_auth_profiles", "groups_attribute"),
     ("saml_auth_profiles", "required_group"),
+    *_TIMESERIES_METRIC_COUNT_COLUMNS,
 )
 
 _REQUIRED_INDEXES: tuple[tuple[str, str], ...] = (

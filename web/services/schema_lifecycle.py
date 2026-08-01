@@ -27,7 +27,7 @@ from services.db import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 21
+_SCHEMA_VERSION = 22
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -685,6 +685,11 @@ def _init_live_stats_schema(_conn: Any) -> None:
 
 def _init_timeseries_schema(_conn: Any) -> None:
     importlib.import_module("services.timeseries_store").get_timeseries_store().init_db()
+
+
+def _init_timeseries_metric_count_schema(conn: Any) -> None:
+    timeseries_store = importlib.import_module("services.timeseries_store")
+    timeseries_store._ensure_metric_count_columns(conn)
 
 
 def _init_observability_schema(conn: Any) -> None:
@@ -1363,6 +1368,16 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                 SchemaDataStep(
                     "application_ledger_evidence_backfill",
                     _backfill_application_ledger_evidence,
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=22,
+            name="timeseries_metric_count_columns",
+            data_steps=(
+                SchemaDataStep(
+                    "timeseries_metric_count_columns",
+                    _init_timeseries_metric_count_schema,
                 ),
             ),
         ),

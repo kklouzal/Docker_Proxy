@@ -199,6 +199,7 @@ class _PoolState:
 
 
 _mysql_ready = False
+_mysql_ready_keys: set[tuple[str, int, str, str, str]] = set()
 _mysql_ready_lock = threading.Lock()
 _pool_condition = threading.Condition()
 _pooled_connections: dict[
@@ -504,6 +505,16 @@ def _pool_key(
     )
 
 
+def _mysql_ready_key(cfg: DatabaseConfig) -> tuple[str, int, str, str, str]:
+    return (
+        cfg.host,
+        int(cfg.port),
+        cfg.user,
+        cfg.database,
+        cfg.charset,
+    )
+
+
 def _pool_maxsize() -> int:
     raw = os.environ.get("DB_POOL_SIZE")
     if raw is not None and raw.strip():
@@ -787,10 +798,11 @@ def connect_unpooled(config: DatabaseConfig | None = None) -> CompatConnection:
 
 def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
     global _mysql_ready
-    if _mysql_ready or not cfg.create_database:
+    ready_key = _mysql_ready_key(cfg)
+    if (ready_key in _mysql_ready_keys) or not cfg.create_database:
         return
     with _mysql_ready_lock:
-        if _mysql_ready or not cfg.create_database:
+        if (ready_key in _mysql_ready_keys) or not cfg.create_database:
             return
 
         def _create_database() -> None:
@@ -821,6 +833,7 @@ def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
                 native.close()
 
         _retry_mysql_operation(_create_database)
+        _mysql_ready_keys.add(ready_key)
         _mysql_ready = True
 
 
@@ -836,4 +849,5 @@ def reset_mysql_ready_for_tests() -> None:
     global _mysql_ready
     with _mysql_ready_lock:
         _mysql_ready = False
+        _mysql_ready_keys.clear()
     _clear_pooled_connections()

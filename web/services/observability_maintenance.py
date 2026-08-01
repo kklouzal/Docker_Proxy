@@ -464,7 +464,29 @@ def maintain_observability_tables(
     failed: list[ObservabilityLogTableResult] = []
 
     for table in OBSERVABILITY_LOG_TABLES:
-        if not _table_exists(table):
+        try:
+            exists = _table_exists(table)
+        except DATABASE_ERRORS as exc:
+            row = ObservabilityLogTableResult(
+                table=table,
+                status="failed",
+                maintenance="table_exists",
+                detail=public_detail(exc),
+            )
+            table_results.append(row)
+            failed.append(row)
+            continue
+        except Exception as exc:
+            row = ObservabilityLogTableResult(
+                table=table,
+                status="failed",
+                maintenance="table_exists",
+                detail=public_detail(exc),
+            )
+            table_results.append(row)
+            failed.append(row)
+            continue
+        if not exists:
             table_results.append(
                 ObservabilityLogTableResult(table=table, status="missing"),
             )
@@ -529,7 +551,29 @@ def clear_observability_logs(*, optimize: bool = False) -> dict[str, Any]:
     total_deleted = 0
 
     for table in OBSERVABILITY_LOG_TABLES:
-        if not _table_exists(table):
+        try:
+            exists = _table_exists(table)
+        except DATABASE_ERRORS as exc:
+            row = ObservabilityLogTableResult(
+                table=table,
+                status="failed",
+                maintenance="table_exists",
+                detail=public_detail(exc),
+            )
+            table_results.append(row)
+            failed.append(row)
+            continue
+        except Exception as exc:
+            row = ObservabilityLogTableResult(
+                table=table,
+                status="failed",
+                maintenance="table_exists",
+                detail=public_detail(exc),
+            )
+            table_results.append(row)
+            failed.append(row)
+            continue
+        if not exists:
             table_results.append(
                 ObservabilityLogTableResult(table=table, status="missing"),
             )

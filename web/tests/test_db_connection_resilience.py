@@ -1019,3 +1019,38 @@ def test_ensure_mysql_database_validates_database_identifier_and_charset(monkeyp
                 host="db", user="u", password="p", database="safe_db", charset="utf8mb4;DROP"
             )
         )
+
+
+def test_mysql_database_creation_ready_cache_is_scoped_per_database(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    created: list[str] = []
+
+    class Cursor:
+        def execute(self, sql, params=()):
+            created.append(str(sql))
+
+        def close(self) -> None:
+            pass
+
+    class NativeConnection:
+        def cursor(self):
+            return Cursor()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(db.pymysql, "connect", lambda **_kwargs: NativeConnection())
+    monkeypatch.setattr(db, "_retry_mysql_operation", lambda operation, **_kwargs: operation())
+    db.reset_mysql_ready_for_tests()
+
+    cfg_a = db.DatabaseConfig(host="db", user="user", database="proxy_a")
+    cfg_b = db.DatabaseConfig(host="db", user="user", database="proxy_b")
+
+    db._ensure_mysql_database(cfg_a)
+    db._ensure_mysql_database(cfg_a)
+    db._ensure_mysql_database(cfg_b)
+
+    assert sum("CREATE DATABASE IF NOT EXISTS `proxy_a`" in sql for sql in created) == 1
+    assert sum("CREATE DATABASE IF NOT EXISTS `proxy_b`" in sql for sql in created) == 1
