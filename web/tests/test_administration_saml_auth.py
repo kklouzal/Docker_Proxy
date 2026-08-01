@@ -370,3 +370,26 @@ def test_saml_acs_rejects_missing_required_group_without_raw_response_audit(
     assert audit.records[-1]["kind"] == "saml_login_failed"
     assert "required admin group" in audit.records[-1]["detail"]
     assert "<raw xml>" not in audit.records[-1]["detail"]
+
+
+def test_saml_success_audit_redacts_username_like_secret(monkeypatch, tmp_path):
+    audit = FakeAuditStore()
+    loaded, store = _load_with_saml(monkeypatch, tmp_path, audit_store=audit)
+    store.enable_with_metadata(required_group="")
+
+    class SecretLikeUsernameToolkit(FakeSamlToolkit):
+        def get_attributes(self):
+            return {"email": ["password=supersecret\nadmin"], "groups": self.groups}
+
+    toolkit = SecretLikeUsernameToolkit()
+    monkeypatch.setattr(loaded.module, "build_saml_auth", lambda _profile, _request: toolkit)
+    client = loaded.module.app.test_client()
+
+    response = client.post("/auth/saml/acs", data={"RelayState": "/administration"})
+
+    assert response.status_code in {302, 303}
+    detail = audit.records[-1]["detail"]
+    assert audit.records[-1]["kind"] == "login_success"
+    assert "supersecret" not in detail
+    assert "\n" not in detail
+    assert "password=[redacted]" in detail

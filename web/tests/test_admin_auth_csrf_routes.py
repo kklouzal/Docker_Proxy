@@ -160,6 +160,28 @@ def test_login_records_success_and_failure_audit_events(monkeypatch, tmp_path) -
     assert audit.records[1]["ok"] is True
 
 
+def test_login_audit_details_are_single_line_and_redacted(monkeypatch, tmp_path) -> None:
+    audit = FakeAuditStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, audit_store=audit)
+    client = loaded.module.app.test_client()
+    token = csrf_token(client, "/login")
+
+    response = client.post(
+        "/login",
+        data={
+            "username": "attacker\npassword=supersecret",
+            "password": "wrong",
+            "csrf_token": token,
+        },
+    )
+
+    assert response.status_code == 200
+    detail = audit.records[-1]["detail"]
+    assert "\n" not in detail
+    assert "supersecret" not in detail
+    assert "password=[redacted]" in detail
+
+
 def test_audit_store_failure_does_not_break_login(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(
         monkeypatch, tmp_path, audit_store=FakeAuditStore(fail=True)

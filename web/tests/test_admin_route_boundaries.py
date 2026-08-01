@@ -1377,6 +1377,94 @@ def test_api_squid_config_state_prefers_runtime_drift_over_stale_apply_and_redac
     assert "supersecret" not in response.get_data(as_text=True)
 
 
+def test_api_squid_config_state_rejects_active_runtime_metadata_sha_mismatch(
+    monkeypatch, tmp_path
+) -> None:
+    class Revisions:
+        def get_active_revision_metadata(self, proxy_id):
+            assert proxy_id == "default"
+            return SimpleNamespace(
+                revision_id=5,
+                proxy_id="default",
+                config_sha256=POLICY_SHA,
+                source_kind="manual",
+                created_by="operator",
+                created_ts=10,
+                is_active=True,
+            )
+
+        def latest_apply_for_revision(self, proxy_id, revision_id):
+            assert proxy_id == "default"
+            assert revision_id == 5
+            return SimpleNamespace(
+                application_id=9,
+                proxy_id="default",
+                revision_id=5,
+                ok=True,
+                detail="proxy apply ok",
+                applied_by="proxy",
+                applied_ts=11,
+            )
+
+    class MismatchedMetadataProxyClient(RecordingProxyClient):
+        def get_health(self, proxy_id, *_, timeout_seconds=None, **kwargs):
+            payload = super().get_health(
+                proxy_id, timeout_seconds=timeout_seconds, **kwargs
+            )
+            payload.update(
+                {
+                    "active_revision_id": 5,
+                    "active_revision_sha": "previous-sha",
+                    "current_config_sha": POLICY_SHA,
+                }
+            )
+            return payload
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        config_revisions=Revisions(),
+        proxy_client=MismatchedMetadataProxyClient(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/squid-config/state?proxy_id=default")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["state"] == "drift"
+    assert data["label"] == "Saved/runtime metadata mismatch"
+    assert data["active_revision_sha"] == POLICY_SHA
+    assert data["runtime_active_revision_sha"] == "previous-sha"
+
+
+def test_cached_proxy_health_redacts_proxy_client_errors(monkeypatch, tmp_path) -> None:
+    class LeakyProxyClient(RecordingProxyClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.admin_app = None
+
+        def get_health(self, *_args, **_kwargs):
+            msg = "proxy unavailable token=supersecret"
+            raise self.admin_app.ProxyClientError(msg)
+
+    proxy_client = LeakyProxyClient()
+    loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
+    proxy_client.admin_app = loaded.module
+
+    payload = loaded.module._cached_proxy_health(
+        "default",
+        timeout_seconds=1.5,
+        ttl_seconds=0.0,
+    )
+
+    serialized = json.dumps(payload, sort_keys=True)
+    assert payload["_unavailable_cached"] is True
+    assert "supersecret" not in serialized
+    assert "token=[redacted]" in serialized
+
+
 def test_api_squid_config_state_reports_pending_desired_revision(
     monkeypatch, tmp_path
 ) -> None:
@@ -3194,6 +3282,38 @@ class UnavailableAdblockStore:
     def get_artifact_build_status(self):
         msg = "adblock unavailable"
         raise RuntimeError(msg)
+
+
+def test_adblock_build_state_redacts_last_build_detail(monkeypatch, tmp_path) -> None:
+    class Store:
+        def get_settings_version(self):
+            return 2
+
+        def get_refresh_requested(self):
+            return 0
+
+        def get_artifact_build_status(self):
+            return {
+                "ok": False,
+                "detail": "download failed token=supersecret",
+                "ts": 5,
+            }
+
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    state = loaded.module._present_adblock_build_state(
+        Store(),
+        active_artifact={
+            "available": True,
+            "settings_version": 2,
+            "enabled_lists": ["default"],
+        },
+        statuses=[{"key": "default", "enabled": True}],
+        settings={"enabled": True},
+    )
+
+    assert state["last_failed"] is True
+    assert state["last_detail"] == "download failed token=[redacted]"
 
 
 def test_observability_ssl_pane_links_to_sslfilter_without_template_error(

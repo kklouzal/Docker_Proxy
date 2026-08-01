@@ -650,6 +650,12 @@ def _cached_proxy_health(
             full=full,
         )
     except ProxyClientError as exc:
+        safe_detail = clean_text(
+            redact_sensitive_text(
+                str(exc or "using recent cached health after refresh failure"),
+            ),
+            max_len=1000,
+        )
         cached_payload = _stale_cached_health_payload(
             cached,
             now=time.monotonic(),
@@ -663,9 +669,7 @@ def _cached_proxy_health(
             )
             stale_payload["ok"] = False
             stale_payload["status"] = "degraded"
-            stale_payload["health_cache_detail"] = str(
-                exc or "using recent cached health after refresh failure",
-            )
+            stale_payload["health_cache_detail"] = safe_detail
             stale_payload.setdefault(
                 "detail",
                 "using recent cached health after refresh failure",
@@ -674,7 +678,7 @@ def _cached_proxy_health(
             return stale_payload
         proxy = get_proxy_registry().get_proxy(proxy_id)
         payload = build_unavailable_runtime_health(
-            str(exc),
+            safe_detail,
             proxy_status=proxy.status if proxy else "offline",
         )
         payload["_unavailable_cached"] = True
@@ -1195,12 +1199,18 @@ def _config_runtime_state(
     operation_status = str(getattr(latest_operation, "status", "") or "")
     operation_id = _safe_revision_id(getattr(latest_operation, "operation_id", 0))
 
-    comparison_sha = runtime_active_sha or revision_sha
+    runtime_active_sha_mismatch = bool(
+        revision_id and revision_sha and runtime_active_sha and runtime_active_sha != revision_sha
+    )
+    running_revision_id_mismatch = bool(
+        revision_id and running_revision_id and running_revision_id != revision_id
+    )
     running_matches = bool(
         revision_id
-        and comparison_sha
+        and revision_sha
         and running_sha
-        and comparison_sha == running_sha
+        and revision_sha == running_sha
+        and not runtime_active_sha_mismatch
         and (not running_revision_id or running_revision_id == revision_id)
     )
     apply_matches = bool(
@@ -1234,6 +1244,21 @@ def _config_runtime_state(
         state = "reconciled"
         label = "Saved revision running"
         detail = f"Saved revision {revision_id} matches the selected proxy runtime."
+    elif runtime_active_sha_mismatch:
+        state = "drift"
+        label = "Saved/runtime metadata mismatch"
+        detail = (
+            f"Saved revision {revision_id} ({_short_sha(revision_sha) or 'unknown sha'}) "
+            "does not match the selected proxy's active revision metadata "
+            f"({_short_sha(runtime_active_sha) or 'unknown sha'})."
+        )
+    elif running_revision_id_mismatch:
+        state = "drift"
+        label = "Saved/running revision mismatch"
+        detail = (
+            f"Saved revision {revision_id} does not match the selected proxy's "
+            f"running revision id {running_revision_id}."
+        )
     elif running_sha:
         state = "drift"
         label = "Saved/running mismatch"
@@ -3153,16 +3178,19 @@ def login():
             _record_audit_event(
                 "login_success",
                 ok=True,
-                detail=f"user={login_username} provider={login_provider}",
+                detail=(
+                    f"user={_audit_safe_detail(login_username, limit=200)} "
+                    f"provider={_audit_safe_detail(login_provider, limit=80)}"
+                ),
             )
             return redirect(next_url or url_for("index"))
         # Log failed login attempt for security auditing
-        failure_detail = f"user={username}"
+        failure_detail = f"user={_audit_safe_detail(username, limit=200)}"
         if directory_result is not None and directory_attempted:
             directory_detail = _audit_safe_detail(
                 getattr(directory_result, "detail", "")
             )
-            failure_detail += f" provider={directory_provider}"
+            failure_detail += f" provider={_audit_safe_detail(directory_provider, limit=80)}"
             if directory_detail:
                 failure_detail += f" directory_detail={directory_detail}"
         _record_audit_event("login_failed", ok=False, detail=failure_detail)
@@ -3288,7 +3316,7 @@ def auth_saml_acs():
     _record_audit_event(
         "login_success",
         ok=True,
-        detail=f"user={result.username} provider=saml",
+        detail=f"user={_audit_safe_detail(result.username, limit=200)} provider=saml",
     )
     return redirect(next_url or url_for("index"))
 
@@ -3432,7 +3460,10 @@ def _present_adblock_build_state(
         "missing_enabled_artifact": missing_enabled_artifact,
         "last_ok": ok_value is True,
         "last_failed": ok_value is False,
-        "last_detail": str(raw_status.get("detail") or ""),
+        "last_detail": clean_text(
+            redact_sensitive_text(str(raw_status.get("detail") or "")),
+            max_len=1000,
+        ),
         "last_ts": _safe_int(raw_status.get("ts")),
         "last_revision_id": _safe_int(raw_status.get("revision_id")),
         "archive_bytes": _safe_int(raw_status.get("archive_bytes")),
