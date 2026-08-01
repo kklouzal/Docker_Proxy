@@ -67,7 +67,7 @@ from services.config_revisions import (
 from services.diagnostic_store import (
     get_diagnostic_store as _default_get_diagnostic_store,
 )
-from services.directory_auth import get_directory_auth_store
+from services.directory_auth import DIRECTORY_PROVIDERS, get_directory_auth_store
 from services.error_pages import (
     list_error_pages,
     missing_template_names,
@@ -2220,6 +2220,33 @@ def _normalize_choice(
 def _form_action(*, default: str = "", lower: bool = False) -> str:
     action = (request.form.get("action") or default).strip()
     return action.lower() if lower else action
+
+
+def _record_administration_audit(
+    kind: str,
+    *,
+    ok: bool,
+    action: str,
+    username: str = "",
+    provider: str = "",
+    detail: str = "",
+) -> None:
+    parts = [f"action={_audit_safe_detail(action, limit=80)}"]
+    if username:
+        parts.append(f"username={_audit_safe_detail(username, limit=200)}")
+    if provider:
+        parts.append(f"provider={_audit_safe_detail(provider, limit=80)}")
+    if detail:
+        parts.append(f"detail={_audit_safe_detail(detail, limit=1000)}")
+    _record_audit_event(kind, ok=ok, detail=" ".join(parts))
+
+
+def _disable_directory_auth_providers() -> None:
+    disable_provider = getattr(_directory_auth_store, "disable_provider", None)
+    if not callable(disable_provider):
+        return
+    for provider in DIRECTORY_PROVIDERS:
+        disable_provider(provider)
 
 
 def _bounded_int(
@@ -5289,17 +5316,32 @@ def _handle_administration_post(store: Any, current_user: str):
         "disable_saml_provider",
     }:
         return _handle_auth_provider_post()
+    audit_kind = "administration_user_action"
     try:
         if action == "add_user":
             username = (request.form.get("username") or "").strip()
             password = request.form.get("password") or ""
             store.add_user(username, password)
+            _record_administration_audit(
+                audit_kind,
+                ok=True,
+                action=action,
+                username=username,
+                detail="User added.",
+            )
             return _redirect_with_message("administration", ok=True, msg="User added.")
 
         if action == "set_password":
             username = (request.form.get("username") or "").strip()
             new_password = request.form.get("new_password") or ""
             store.set_password(username, new_password)
+            _record_administration_audit(
+                audit_kind,
+                ok=True,
+                action=action,
+                username=username,
+                detail="Password updated.",
+            )
             return _redirect_with_message(
                 "administration",
                 ok=True,
@@ -5312,38 +5354,81 @@ def _handle_administration_post(store: Any, current_user: str):
                 username == current_user
                 or username.casefold() == current_user.casefold()
             ):
+                msg = "Cannot remove the currently signed-in user."
+                _record_administration_audit(
+                    audit_kind,
+                    ok=False,
+                    action=action,
+                    username=username,
+                    detail=msg,
+                )
                 return _redirect_with_message(
                     "administration",
                     ok=False,
-                    msg="Cannot remove the currently signed-in user.",
+                    msg=msg,
                 )
             users = store.list_users()
             if len(users) <= 1:
+                msg = "Cannot remove the last user."
+                _record_administration_audit(
+                    audit_kind,
+                    ok=False,
+                    action=action,
+                    username=username,
+                    detail=msg,
+                )
                 return _redirect_with_message(
                     "administration",
                     ok=False,
-                    msg="Cannot remove the last user.",
+                    msg=msg,
                 )
             store.delete_user(username)
+            _record_administration_audit(
+                audit_kind,
+                ok=True,
+                action=action,
+                username=username,
+                detail="User removed.",
+            )
             return _redirect_with_message(
                 "administration",
                 ok=True,
                 msg="User removed.",
             )
 
+        _record_administration_audit(
+            audit_kind,
+            ok=False,
+            action=action,
+            detail="Unknown action.",
+        )
         return _redirect_with_message("administration", ok=False, msg="Unknown action.")
     except ValueError as e:
+        detail = public_error_message(e)
+        _record_administration_audit(
+            audit_kind,
+            ok=False,
+            action=action,
+            detail=detail,
+        )
         return _redirect_with_message(
             "administration",
             ok=False,
-            msg=public_error_message(e),
+            msg=detail,
         )
     except Exception as e:
         app.logger.exception("Administration action failed")
+        detail = public_error_message(e)
+        _record_administration_audit(
+            audit_kind,
+            ok=False,
+            action=action,
+            detail=detail,
+        )
         return _redirect_with_message(
             "administration",
             ok=False,
-            msg=public_error_message(e),
+            msg=detail,
         )
 
 
@@ -5351,6 +5436,7 @@ def _handle_auth_provider_post():
     action = _form_action()
     provider = (request.form.get("provider") or "").strip()
     tab = provider if provider in {"ldap", "active_directory", "saml"} else "status"
+    audit_kind = "administration_auth_provider_action"
 
     def _submitted_directory_payload() -> dict[str, Any]:
         payload = request.form.to_dict()
@@ -5361,7 +5447,16 @@ def _handle_auth_provider_post():
 
     try:
         if action == "save_saml_provider":
-            _saml_auth_store.save_profile(request.form.to_dict())
+            profile = _saml_auth_store.save_profile(request.form.to_dict())
+            if profile.enabled:
+                _disable_directory_auth_providers()
+            _record_administration_audit(
+                audit_kind,
+                ok=True,
+                action=action,
+                provider="saml",
+                detail="SAML provider saved.",
+            )
             return _redirect_with_message(
                 "administration",
                 ok=True,
@@ -5370,6 +5465,13 @@ def _handle_auth_provider_post():
             )
         if action == "refresh_saml_metadata":
             result = _saml_auth_store.refresh_metadata()
+            _record_administration_audit(
+                audit_kind,
+                ok=result.ok,
+                action=action,
+                provider="saml",
+                detail=result.detail,
+            )
             return _redirect_with_message(
                 "administration",
                 ok=result.ok,
@@ -5378,6 +5480,13 @@ def _handle_auth_provider_post():
             )
         if action == "disable_saml_provider":
             _saml_auth_store.disable_provider()
+            _record_administration_audit(
+                audit_kind,
+                ok=True,
+                action=action,
+                provider="saml",
+                detail="SAML provider disabled.",
+            )
             return _redirect_with_message(
                 "administration",
                 ok=True,
@@ -5385,7 +5494,19 @@ def _handle_auth_provider_post():
                 tab="saml",
             )
         if action == "save_auth_provider":
-            _directory_auth_store.save_profile(provider, _submitted_directory_payload())
+            profile = _directory_auth_store.save_profile(
+                provider,
+                _submitted_directory_payload(),
+            )
+            if profile.enabled:
+                _saml_auth_store.disable_provider()
+            _record_administration_audit(
+                audit_kind,
+                ok=True,
+                action=action,
+                provider=provider,
+                detail="Authentication provider saved.",
+            )
             return _redirect_with_message(
                 "administration",
                 ok=True,
@@ -5402,7 +5523,19 @@ def _handle_auth_provider_post():
                 reenable_payload = dict(payload)
                 reenable_payload["enabled"] = "1"
                 reenable_payload["bind_password"] = ""
-                _directory_auth_store.save_profile(provider, reenable_payload)
+                reenabled_profile = _directory_auth_store.save_profile(
+                    provider,
+                    reenable_payload,
+                )
+                if reenabled_profile.enabled:
+                    _saml_auth_store.disable_provider()
+            _record_administration_audit(
+                audit_kind,
+                ok=result.ok,
+                action=action,
+                provider=provider,
+                detail=result.detail,
+            )
             return _redirect_with_message(
                 "administration",
                 ok=result.ok,
@@ -5419,13 +5552,25 @@ def _handle_auth_provider_post():
                 reenable_payload = dict(payload)
                 reenable_payload["enabled"] = "1"
                 reenable_payload["bind_password"] = ""
-                _directory_auth_store.save_profile(provider, reenable_payload)
+                reenabled_profile = _directory_auth_store.save_profile(
+                    provider,
+                    reenable_payload,
+                )
+                if reenabled_profile.enabled:
+                    _saml_auth_store.disable_provider()
             session[f"directory_scan_{provider}"] = {
                 "base_dns": list(result.base_dns),
                 "user_search_bases": list(result.user_search_bases),
                 "group_search_bases": list(result.group_search_bases),
                 "admin_groups": list(result.admin_groups),
             }
+            _record_administration_audit(
+                audit_kind,
+                ok=True,
+                action=action,
+                provider=provider,
+                detail=result.detail,
+            )
             return _redirect_with_message(
                 "administration",
                 ok=True,
@@ -5434,6 +5579,13 @@ def _handle_auth_provider_post():
             )
         if action == "disable_auth_provider":
             _directory_auth_store.disable_provider(provider)
+            _record_administration_audit(
+                audit_kind,
+                ok=True,
+                action=action,
+                provider=provider,
+                detail="Authentication provider disabled.",
+            )
             return _redirect_with_message(
                 "administration",
                 ok=True,
@@ -5441,20 +5593,43 @@ def _handle_auth_provider_post():
                 tab=tab,
             )
     except ValueError as e:
+        detail = public_error_message(e)
+        _record_administration_audit(
+            audit_kind,
+            ok=False,
+            action=action,
+            provider=provider,
+            detail=detail,
+        )
         return _redirect_with_message(
             "administration",
             ok=False,
-            msg=public_error_message(e),
+            msg=detail,
             tab=tab,
         )
     except Exception as e:
         app.logger.exception("Authentication provider action failed")
+        detail = public_error_message(e)
+        _record_administration_audit(
+            audit_kind,
+            ok=False,
+            action=action,
+            provider=provider,
+            detail=detail,
+        )
         return _redirect_with_message(
             "administration",
             ok=False,
-            msg=public_error_message(e),
+            msg=detail,
             tab=tab,
         )
+    _record_administration_audit(
+        audit_kind,
+        ok=False,
+        action=action,
+        provider=provider,
+        detail="Unknown authentication provider action.",
+    )
     return _redirect_with_message(
         "administration",
         ok=False,
@@ -9347,6 +9522,7 @@ def administration():
     try:
         users = store.list_users()
     except Exception:
+        app.logger.exception("Failed to load local administration users")
         users = []
 
     auth_status_degraded = False
@@ -9367,7 +9543,7 @@ def administration():
     except Exception:
         app.logger.exception("Failed to load SAML authentication status")
         saml_status = {
-            "profile": _saml_auth_store.default_profile(),
+            "profile": _default_saml_profile(),
             "ready": False,
             "metadata_ready": False,
             "sp": {"entity_id": "", "acs_url": "", "sls_url": ""},
@@ -9381,14 +9557,21 @@ def administration():
             "active_label": "SAML",
         }
     auth_tab = (request.args.get("tab") or "status").strip()
-    if auth_status_degraded or auth_tab not in {
-        "status",
-        "ldap",
-        "active_directory",
-        "saml",
-    }:
+    valid_auth_tabs = {"status", "ldap", "active_directory", "saml"}
+    directory_tabs = {"ldap", "active_directory"}
+    if auth_tab not in valid_auth_tabs or (
+        auth_status_degraded and auth_tab in directory_tabs
+    ):
         auth_tab = "status"
-    message = request.args.get("msg")
+    raw_message = request.args.get("msg")
+    message = clean_text(redact_sensitive_text(raw_message or ""), max_len=1000)
+    if raw_message and message != raw_message:
+        return _redirect_to(
+            "administration",
+            tab=auth_tab if auth_tab != "status" else None,
+            ok=request.args.get("ok"),
+            msg=message,
+        )
     message_ok = request.args.get("ok") == "1"
     auth_scan = (
         session.get(f"directory_scan_{auth_tab}")

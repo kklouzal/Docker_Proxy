@@ -157,6 +157,53 @@ def _load_with_saml(monkeypatch, tmp_path, store=None, **overrides):
     return loaded, store
 
 
+class FailingDirectoryStatusStore:
+    def ensure_default_profiles(self) -> None:
+        return None
+
+    def authenticate_admin(self, username: str, _password: str):
+        return SimpleNamespace(
+            ok=False,
+            provider="local",
+            username=username,
+            detail="No active directory provider.",
+        )
+
+    def get_status(self):
+        msg = "directory status unavailable"
+        raise RuntimeError(msg)
+
+
+class TrackingDirectoryDisableStore(FailingDirectoryStatusStore):
+    def __init__(self) -> None:
+        self.disabled: list[str] = []
+
+    def get_status(self):
+        return {
+            "active_provider": "local",
+            "active_label": "Local accounts",
+            "profiles": {},
+            "providers": (),
+            "provider_labels": {},
+        }
+
+    def disable_provider(self, provider: str) -> None:
+        self.disabled.append(provider)
+
+
+class FailingSamlStatusStore:
+    def ensure_default_profile(self) -> None:
+        return None
+
+    def default_profile(self):
+        msg = "default profile unavailable"
+        raise RuntimeError(msg)
+
+    def get_profile(self):
+        msg = "profile unavailable"
+        raise RuntimeError(msg)
+
+
 def test_administration_exposes_saml_tab_and_sp_endpoints(monkeypatch, tmp_path):
     loaded, store = _load_with_saml(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
@@ -171,6 +218,44 @@ def test_administration_exposes_saml_tab_and_sp_endpoints(monkeypatch, tmp_path)
     assert "Entity ID" in body
     assert "/auth/saml/metadata" in body
     assert store.profile.metadata_url in body
+
+
+def test_administration_saml_tab_survives_directory_status_degradation(
+    monkeypatch, tmp_path
+):
+    loaded, _store = _load_with_saml(
+        monkeypatch,
+        tmp_path,
+        directory_auth_store=FailingDirectoryStatusStore(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/administration?tab=saml")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "SAML provider" in body
+    assert "LDAP provider" not in body
+
+
+def test_administration_saml_status_falls_back_when_store_default_fails(
+    monkeypatch, tmp_path
+):
+    loaded, _store = _load_with_saml(
+        monkeypatch,
+        tmp_path,
+        store=FailingSamlStatusStore(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/administration?tab=saml")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "SAML provider" in body
+    assert "profile unavailable" not in body
 
 
 def test_saml_sp_metadata_is_available_before_idp_metadata_refresh(
@@ -229,6 +314,40 @@ def test_saml_admin_refresh_save_and_disable_actions(monkeypatch, tmp_path):
     )
     assert disabled.status_code in {302, 303}
     assert store.disabled == 1
+
+
+def test_enabling_saml_provider_disables_directory_providers(monkeypatch, tmp_path):
+    directory_store = TrackingDirectoryDisableStore()
+    loaded, store = _load_with_saml(
+        monkeypatch,
+        tmp_path,
+        directory_auth_store=directory_store,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    store.refresh_metadata()
+    token = csrf_token(client, "/administration?tab=saml")
+
+    response = client.post(
+        "/administration?tab=saml",
+        data={
+            "csrf_token": token,
+            "provider": "saml",
+            "action": "save_saml_provider",
+            "enabled": "1",
+            "metadata_url": store.profile.metadata_url,
+            "require_https": "1",
+            "verify_tls": "1",
+            "username_attribute": "email",
+            "groups_attribute": "groups",
+            "required_group": "AdminGroup",
+            "public_base_url": "https://admin.example.test",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    assert store.profile.enabled is True
+    assert directory_store.disabled == ["ldap", "active_directory"]
 
 
 def test_login_page_shows_saml_button_only_when_ready(monkeypatch, tmp_path):

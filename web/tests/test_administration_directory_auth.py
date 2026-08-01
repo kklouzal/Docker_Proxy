@@ -169,6 +169,47 @@ def test_administration_exposes_directory_tabs(monkeypatch, tmp_path) -> None:
     )
 
 
+def test_administration_query_message_is_redacted(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    body = client.get(
+        "/administration?ok=0&msg=password=supersecret",
+        follow_redirects=True,
+    ).get_data(as_text=True)
+
+    assert "password=[redacted]" in body
+    assert "supersecret" not in body
+
+
+def test_administration_user_post_is_audited_without_password(
+    monkeypatch, tmp_path
+) -> None:
+    audit = FakeAuditStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, audit_store=audit)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration")
+
+    response = client.post(
+        "/administration",
+        data={
+            "csrf_token": token,
+            "action": "add_user",
+            "username": "operator",
+            "password": "secret-password",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    record = audit.records[-1]
+    assert record["kind"] == "administration_user_action"
+    assert record["ok"] is True
+    assert "username=operator" in record["detail"]
+    assert "secret-password" not in record["detail"]
+
+
 def test_directory_secret_provider_prefers_flask_secret_key(
     monkeypatch, tmp_path
 ) -> None:
@@ -368,6 +409,50 @@ def test_auth_provider_certificate_upload_is_passed_to_store(
 
     assert response.status_code in {302, 303}
     assert directory_store.saved[0][1]["ca_bundle_upload"] == b"cert-bytes"
+
+
+def test_enabling_directory_provider_disables_saml_provider(
+    monkeypatch, tmp_path
+) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    saml_disabled = []
+
+    def disable_saml_provider() -> None:
+        saml_disabled.append(True)
+
+    monkeypatch.setattr(
+        loaded.module._saml_auth_store,
+        "disable_provider",
+        disable_saml_provider,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=ldap")
+
+    response = client.post(
+        "/administration?tab=ldap",
+        data={
+            "csrf_token": token,
+            "action": "save_auth_provider",
+            "provider": "ldap",
+            "enabled": "1",
+            "server_urls": "ldaps://ldap.example.org:636",
+            "bind_dn": "cn=bind,dc=example,dc=org",
+            "bind_password": "secret",
+            "base_dn": "dc=example,dc=org",
+            "user_filter": "(uid={username})",
+            "user_attribute": "uid",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "cn=admins,dc=example,dc=org",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    assert directory_store.profile_enabled["ldap"] is True
+    assert saml_disabled == [True]
 
 
 def test_auth_provider_test_saves_submitted_bind_password_first(
