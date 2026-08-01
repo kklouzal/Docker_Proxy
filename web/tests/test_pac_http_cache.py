@@ -118,6 +118,31 @@ def test_client_ip_honors_forwarded_headers_from_trusted_proxy(
     )
 
 
+def test_trusted_forwarded_headers_accept_ipv4_mapped_proxy_peer(
+    monkeypatch, pac_http
+) -> None:
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
+
+    assert pac_http.forwarded_headers_trusted("::ffff:192.0.2.10") is True
+    assert (
+        pac_http.client_ip_from_headers(
+            {"X-Forwarded-For": "10.2.3.4"},
+            "::ffff:192.0.2.10",
+        )
+        == "10.2.3.4"
+    )
+    assert (
+        pac_http.request_host_from_headers(
+            {
+                "Host": "internal-proxy.example:5000",
+                "X-Forwarded-Host": "public-proxy.example:80",
+            },
+            "::ffff:192.0.2.10",
+        )
+        == "public-proxy.example:80"
+    )
+
+
 def test_client_ip_rejects_invalid_forwarded_headers(monkeypatch, pac_http) -> None:
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
 

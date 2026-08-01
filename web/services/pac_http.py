@@ -74,7 +74,15 @@ def _remote_addr_trusts_forwarded_headers(remote_addr: str | None) -> bool:
         remote_ip = ipaddress.ip_address((remote_addr or "").strip())
     except ValueError:
         return False
-    return any(remote_ip in network for network in _trusted_pac_header_networks())
+    remote_ips = [remote_ip]
+    mapped_ipv4 = getattr(remote_ip, "ipv4_mapped", None)
+    if mapped_ipv4 is not None:
+        remote_ips.append(mapped_ipv4)
+    return any(
+        candidate.version == network.version and candidate in network
+        for candidate in remote_ips
+        for network in _trusted_pac_header_networks()
+    )
 
 
 def _first_header_value(value: object | None) -> str:
