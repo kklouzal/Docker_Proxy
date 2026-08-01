@@ -12,6 +12,7 @@ __pycache__/
 # Local temp/debug scratch space
 .tmp/
 .tmp_proxy_debug/
+.openclaw-artifacts/
 artifacts/
 
 # Virtual environments
@@ -27,6 +28,7 @@ docker-compose.local.yml
 # Logs & local data
 *.log
 *.db
+Deployment.zip
 
 # OS/editor
 .DS_Store

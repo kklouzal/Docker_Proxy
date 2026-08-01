@@ -10,9 +10,11 @@ venv/
 ENV/
 .tmp/
 .tmp_proxy_debug/
+.openclaw-artifacts/
 artifacts/
 dist/
 build/
+Deployment.zip
 *.egg-info/
 *.db
 *.log

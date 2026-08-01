@@ -28,6 +28,10 @@ ca_pair_is_valid() {
     [ -s "$CA_KEY" ] && [ -s "$CA_CERT" ] || return 1
     openssl pkey -in "$CA_KEY" -noout >/dev/null 2>&1 || return 1
     openssl x509 -in "$CA_CERT" -noout >/dev/null 2>&1 || return 1
+    key_pubkey_fingerprint="$(openssl pkey -in "$CA_KEY" -pubout -outform DER 2>/dev/null | openssl dgst -sha256 -r 2>/dev/null | awk '{print $1}')"
+    cert_pubkey_fingerprint="$(openssl x509 -in "$CA_CERT" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256 -r 2>/dev/null | awk '{print $1}')"
+    [ -n "$key_pubkey_fingerprint" ] || return 1
+    [ "$key_pubkey_fingerprint" = "$cert_pubkey_fingerprint" ] || return 1
 }
 
 install_ca_permissions() {

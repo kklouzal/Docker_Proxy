@@ -441,6 +441,15 @@ def test_repo_does_not_ship_stale_generated_clamd_mod_conf() -> None:
     assert not (REPO_ROOT / "docker" / "clamd_mod.conf").exists()
 
 
+def test_build_and_git_ignores_exclude_local_operator_artifacts() -> None:
+    dockerignore = _read(".dockerignore")
+    gitignore = _read(".gitignore")
+
+    for pattern in (".openclaw-artifacts/", "Deployment.zip"):
+        assert pattern in dockerignore
+        assert pattern in gitignore
+
+
 def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
     entrypoint = _read("docker/entrypoint.admin.sh")
     supervisord = _read("docker/supervisord.admin.conf")
