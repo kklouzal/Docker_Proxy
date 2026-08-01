@@ -3141,6 +3141,44 @@ def test_observability_metrics_returns_partial_payload_on_collector_failure(
     )
 
 
+def test_observability_metrics_emits_cache_miss_bytes_as_numeric_value(
+    monkeypatch, tmp_path
+) -> None:
+    class CacheMissBytesObservabilityQueries:
+        def summary(self, **_kwargs):
+            return {}
+
+        def cache_savings(self, **_kwargs):
+            return {"miss_bytes": 8765}
+
+        def performance_overview(self, **_kwargs):
+            return {}
+
+        def security_overview(self, **_kwargs):
+            return {"summary": {}}
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=CacheMissBytesObservabilityQueries(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability/metrics")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert (
+        "# HELP docker_proxy_observability_cache_miss_bytes "
+        "Cache miss response bytes observed in the selected window."
+    ) in body
+    assert (
+        'docker_proxy_observability_cache_miss_bytes{proxy_id="default"} 8765'
+        in body
+    )
+
+
 def test_observability_metrics_reuses_short_lived_section_cache(
     monkeypatch, tmp_path
 ) -> None:
