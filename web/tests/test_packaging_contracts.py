@@ -421,6 +421,51 @@ def test_common_compose_env_surface_is_documented_in_env_example() -> None:
     assert [name for name in compose_env_names if name not in env_example] == []
 
 
+def test_docs_config_track_schema_lifecycle_and_health_knobs() -> None:
+    compose = _read("docker-compose.common.yml")
+    env_example = _read("config/app.env.example")
+    readme = _read("README.md")
+    backup_docs = _read("docs/mysql-backup-restore-validation.md")
+    recovery_docs = _read("docs/proxy-recovery.md")
+    schema_docs = _read("docs/mysql-schema-lifecycle.md")
+    schema = _read("web/services/schema_lifecycle.py")
+    app = _read("web/app.py")
+
+    schema_versions = [int(match) for match in re.findall(r"version=(\d+),", schema)]
+    assert schema_versions
+    latest_version = str(max(schema_versions))
+
+    assert f"through version {latest_version}" in schema_docs
+    assert "application_ledger_evidence_indexes" in schema_docs
+    assert "timeseries_metric_count_columns" in schema_docs
+    assert "application_ledger_evidence_indexes" in schema
+    assert "timeseries_metric_count_columns" in schema
+    assert "proxy_config_applications.config_sha256" in backup_docs
+    assert "Timeseries metric count columns" in backup_docs
+
+    for name in ("SESSION_TIMEOUT_HOURS", "DISABLE_CSRF"):
+        assert name in app
+        assert name in env_example
+        assert name in readme
+    assert "# SESSION_TIMEOUT_HOURS=8" in env_example
+
+    assert "PROXY_HEALTH_UI_STALE_IF_ERROR_SECONDS" in app
+    assert "PROXY_HEALTH_UI_STALE_IF_ERROR_SECONDS" in env_example
+    assert "PROXY_HEALTH_UI_STALE_IF_ERROR_SECONDS" in readme
+    assert "# PROXY_HEALTH_UI_TIMEOUT_SECONDS=1.5" in env_example
+    assert "1.5 second navigation-health timeout" in readme
+
+    recovery_default = "134217728"
+    expected_compose_recovery_default = (
+        "PROXY_RECOVERY_MAX_BUNDLE_BYTES: "
+        f"${{PROXY_RECOVERY_MAX_BUNDLE_BYTES:-{recovery_default}}}"
+    )
+    assert expected_compose_recovery_default in compose
+    assert f"# PROXY_RECOVERY_MAX_BUNDLE_BYTES={recovery_default}" in env_example
+    assert recovery_default in readme
+    assert recovery_default in recovery_docs
+
+
 def test_proxy_cicap_build_enables_compression_support_and_strips_artifacts() -> None:
     proxy = _read("docker/Dockerfile.proxy")
 

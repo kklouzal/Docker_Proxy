@@ -321,14 +321,14 @@ audit depth or tighter storage bounds.
 
 ## Configuration reference
 
-The Compose files expose the common production knobs as environment variables. The most important settings are:
+The containers expose the common production knobs as environment variables, either from Compose/root `.env` interpolation or a mounted `/config/app.env`. The most important settings are:
 
 | Area | Variables |
 | --- | --- |
 | Database | `DATABASE_URL`, `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_CREATE_DATABASE`, `MYSQL_CONNECT_TIMEOUT`, `MYSQL_READ_TIMEOUT`, `MYSQL_WRITE_TIMEOUT`, `MYSQL_CONNECT_RETRIES`, `MYSQL_CONNECT_RETRY_DELAY_SECONDS`, `MYSQL_RETRY_JITTER_SECONDS`, `MYSQL_LOCK_WAIT_TIMEOUT`, `MYSQL_INNODB_LOCK_WAIT_TIMEOUT`, `MYSQL_SESSION_WAIT_TIMEOUT`, `MYSQL_TRANSACTION_ISOLATION`, `MYSQL_SCHEMA_LOCK_TIMEOUT_SECONDS`, `MYSQL_MAX_CONNECTIONS`, `MYSQL_MAX_ALLOWED_PACKET`, `DB_POOL_SIZE`, `DB_POOL_ACQUIRE_TIMEOUT_SECONDS`, `DB_POOL_MAX_IDLE_SECONDS` |
 | Container logging | `DOCKER_LOG_DRIVER`, `DOCKER_LOG_MAX_SIZE`, `DOCKER_LOG_MAX_FILE` |
 | Security | `FLASK_SECRET_KEY`, `SESSION_COOKIE_SECURE`, `SESSION_TIMEOUT_HOURS`, `PROXY_MANAGEMENT_TOKEN`, `DISABLE_CSRF` for controlled test/dev bypasses |
-| Runtime health | `PROXY_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_HEALTH_UI_CACHE_TTL_SECONDS`, `PROXY_OBSERVABILITY_UI_CACHE_TTL_SECONDS`, `PROXY_HEALTH_CACHE_TTL_SECONDS`, `PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS` |
+| Runtime health | `PROXY_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_HEALTH_UI_CACHE_TTL_SECONDS`, `PROXY_HEALTH_UI_STALE_IF_ERROR_SECONDS`, `PROXY_OBSERVABILITY_UI_CACHE_TTL_SECONDS`, `PROXY_HEALTH_CACHE_TTL_SECONDS`, `PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS` |
 | Proxy identity | `DEFAULT_PROXY_ID`, `PROXY_INSTANCE_ID`, `PROXY_DISPLAY_NAME`, `PROXY_MANAGEMENT_URL`, `PROXY_PUBLIC_HOST`, `PROXY_PUBLIC_PAC_URL` |
 | Proxy recovery | `PROXY_RECOVERY_MAX_BUNDLE_BYTES` (decimal bytes; default 134217728 / 128 MiB, hard cap 536870912 / 512 MiB) |
 | Public ports | `PROXY_PUBLIC_PAC_SCHEME`, `PROXY_PUBLIC_PAC_PORT`, `PROXY_PUBLIC_HTTP_PROXY_PORT`, `PAC_HTTP_HOST`, `PAC_HTTP_PORT`, `FORWARDING_CANARY_HOST`, `FORWARDING_CANARY_PORT`, `FORWARDING_CANARY_PATH`, `PAC_TRUSTED_PROXY_CIDRS`, `SQUID_HTTP_PORT`, `SQUID_INTERCEPT_ENABLED`, `SQUID_INTERCEPT_PORT`, `PROXY_PUBLIC_INTERCEPT_PORT`, `SQUID_HTTPS_INTERCEPT_ENABLED`, `SQUID_HTTPS_INTERCEPT_PORT`, `SQUID_HTTPS_INTERCEPT_SPLICE_ONLY`, `PROXY_PUBLIC_HTTPS_INTERCEPT_PORT` |
@@ -371,7 +371,7 @@ The bundled MySQL service mounts `config/mysql/conf.d/99-docker-proxy-bounded-lo
 
 For externally managed MySQL containers, apply equivalent MySQL settings and Docker log rotation on that host. Host-global Docker daemon rotation, if desired for every container on the host, still belongs in `/etc/docker/daemon.json`; this application can provide Compose defaults but cannot safely rewrite the host daemon policy.
 
-Older or disk-constrained hosts can legitimately take longer to answer management health requests. The Admin UI defaults to a 1.5 second navigation-health timeout, a 5 second ClamAV-health timeout, and a 10 second UI cache, while the proxy runtime caches health snapshots for 10 seconds by default. Normal navigation uses `/api/manage/health` for a lightweight supervisor/listener snapshot; remediation views can request `/api/manage/health?full=1` for the heavier policy/config/certificate/adblock/operation-ledger view. The ClamAV page uses `/api/manage/health/clamav` so AV c-icap and `clamd` status does not depend on the full runtime snapshot. Tune `PROXY_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_HEALTH_CACHE_TTL_SECONDS`, and `PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS` for slower deployments.
+Older or disk-constrained hosts can legitimately take longer to answer management health requests. The Admin UI defaults to a 1.5 second navigation-health timeout, a 5 second ClamAV-health timeout, a 10 second UI cache, and a 60 second stale-if-error fallback for previously cached health payloads, while the proxy runtime caches health snapshots for 10 seconds by default. Normal navigation uses `/api/manage/health` for a lightweight supervisor/listener snapshot; remediation views can request `/api/manage/health?full=1` for the heavier policy/config/certificate/adblock/operation-ledger view. The ClamAV page uses `/api/manage/health/clamav` so AV c-icap and `clamd` status does not depend on the full runtime snapshot. Tune `PROXY_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_CLAMAV_HEALTH_UI_TIMEOUT_SECONDS`, `PROXY_HEALTH_UI_STALE_IF_ERROR_SECONDS`, `PROXY_HEALTH_CACHE_TTL_SECONDS`, and `PROXY_CLAMAV_HEALTH_PROBE_TIMEOUT_SECONDS` for slower deployments.
 
 ## Persistence
 
