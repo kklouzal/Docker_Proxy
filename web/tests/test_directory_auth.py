@@ -931,6 +931,144 @@ def test_ldap_auth_preserves_domain_qualified_username_lookup(monkeypatch) -> No
     assert searches == ["(uid=AD\\kklouzal)", "(memberUid=AD\\kklouzal)"]
 
 
+@pytest.mark.parametrize(
+    "group_entry",
+    [
+        SimpleNamespace(
+            entry_dn="CN=Domain Admins,CN=Users,DC=example,DC=local",
+            cn="Domain Admins",
+        ),
+        SimpleNamespace(
+            entry_dn="CN=Domain\\20Admins,CN=Users,DC=example,DC=local",
+        ),
+        SimpleNamespace(entry_dn="EXAMPLE\\Domain Admins"),
+        SimpleNamespace(entry_dn="Domain Admins@example.local"),
+    ],
+)
+def test_directory_auth_allows_required_group_short_name_for_realistic_ad_forms(
+    monkeypatch, group_entry
+) -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("active_directory"),
+        bind_password=store._encrypt("bind-secret"),
+        user_filter="(sAMAccountName={username})",
+        group_filter="(member={user_dn})",
+        required_admin_group="Domain Admins",
+    )
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.entries = []
+
+        def search(self, _base, search_filter, **_kwargs):
+            if search_filter == "(sAMAccountName=alice)":
+                self.entries = [
+                    SimpleNamespace(
+                        entry_dn="CN=Alice,CN=Users,DC=example,DC=local"
+                    )
+                ]
+            elif search_filter == "(member=CN=Alice,CN=Users,DC=example,DC=local)":
+                self.entries = [group_entry]
+            else:
+                self.entries = []
+            return bool(self.entries)
+
+        def unbind(self):
+            return None
+
+    fake_ldap3 = SimpleNamespace(
+        utils=SimpleNamespace(
+            conv=SimpleNamespace(escape_filter_chars=lambda value: value)
+        )
+    )
+    monkeypatch.setattr(
+        store,
+        "_service_connection",
+        lambda _profile: (FakeConn(), fake_ldap3),
+    )
+    monkeypatch.setattr(store, "_user_bind", lambda *_args: True)
+
+    result = store.authenticate(profile, "alice", "secret")
+
+    assert result.ok is True
+    assert result.detail == "Directory authentication succeeded."
+
+
+@pytest.mark.parametrize(
+    ("required_group", "group_entry"),
+    [
+        (
+            "",
+            SimpleNamespace(entry_dn="CN=Domain Admins,CN=Users,DC=example,DC=local"),
+        ),
+        (
+            "Domain Admins",
+            SimpleNamespace(entry_dn="CN=Not Domain Admins,CN=Users,DC=example,DC=local"),
+        ),
+        (
+            "Domain Admins",
+            SimpleNamespace(
+                entry_dn="CN=Domain Admins Backup,CN=Users,DC=example,DC=local"
+            ),
+        ),
+        ("Domain Admins", SimpleNamespace(entry_dn="prefix-Domain Admins-suffix")),
+        (
+            "CN=Domain Admins,CN=Users,DC=example,DC=local",
+            SimpleNamespace(entry_dn="Domain Admins"),
+        ),
+    ],
+)
+def test_directory_auth_rejects_required_group_near_matches_and_dn_downgrade(
+    monkeypatch, required_group, group_entry
+) -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("active_directory"),
+        bind_password=store._encrypt("bind-secret"),
+        user_filter="(sAMAccountName={username})",
+        group_filter="(member={user_dn})",
+        required_admin_group=required_group,
+    )
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.entries = []
+
+        def search(self, _base, search_filter, **_kwargs):
+            if search_filter == "(sAMAccountName=alice)":
+                self.entries = [
+                    SimpleNamespace(
+                        entry_dn="CN=Alice,CN=Users,DC=example,DC=local"
+                    )
+                ]
+            elif search_filter == "(member=CN=Alice,CN=Users,DC=example,DC=local)":
+                self.entries = [group_entry]
+            else:
+                self.entries = []
+            return bool(self.entries)
+
+        def unbind(self):
+            return None
+
+    fake_ldap3 = SimpleNamespace(
+        utils=SimpleNamespace(
+            conv=SimpleNamespace(escape_filter_chars=lambda value: value)
+        )
+    )
+    monkeypatch.setattr(
+        store,
+        "_service_connection",
+        lambda _profile: (FakeConn(), fake_ldap3),
+    )
+    monkeypatch.setattr(store, "_user_bind", lambda *_args: True)
+
+    result = store.authenticate(profile, "alice", "secret")
+
+    assert result.ok is False
+    assert result.detail == "User is not in the required admin group."
+
+
 def test_plain_ldap_user_bind_does_not_require_tls(monkeypatch) -> None:
     calls = []
 

@@ -1144,10 +1144,129 @@ class DirectoryAuthStore:
         return f"{child},{base}" if base else child
 
     def _required_group_matches(self, required_group: str, groups: list[str]) -> bool:
-        required = (required_group or "").strip().casefold()
+        required = self._required_group_match_tokens(required_group)
         if not required:
             return False
-        return any(group.casefold() == required for group in groups)
+        return any(
+            bool(required.intersection(self._candidate_group_match_tokens(group)))
+            for group in groups
+        )
+
+    def _required_group_match_tokens(self, value: Any) -> set[str]:
+        text = str(value or "").strip()
+        if not text:
+            return set()
+        tokens = {self._normalize_group_match_token(text)}
+        if dn_key := self._ldap_dn_match_key(text):
+            tokens.add(f"dn:{dn_key}")
+            return {token for token in tokens if token}
+        return {token for token in tokens if token}
+
+    def _candidate_group_match_tokens(self, value: Any) -> set[str]:
+        text = str(value or "").strip()
+        if not text:
+            return set()
+
+        tokens = {self._normalize_group_match_token(text)}
+        if dn_key := self._ldap_dn_match_key(text):
+            tokens.add(f"dn:{dn_key}")
+        if rdn_value := self._first_ldap_group_rdn_value(text):
+            tokens.add(self._normalize_group_match_token(rdn_value))
+        if local_name := self._domain_group_local_name(text):
+            tokens.add(self._normalize_group_match_token(local_name))
+        return {token for token in tokens if token}
+
+    def _normalize_group_match_token(self, value: Any) -> str:
+        return str(value or "").strip().casefold()
+
+    def _ldap_dn_match_key(self, value: str) -> str:
+        text = (value or "").strip()
+        if not text:
+            return ""
+        rdns = self._split_ldap_escaped(text, ",")
+        if not rdns:
+            return ""
+        normalized: list[str] = []
+        for raw_rdn in rdns:
+            rdn = raw_rdn.strip()
+            if not rdn or "=" not in rdn:
+                return ""
+            parts = self._split_ldap_escaped(rdn, "=", maxsplit=1)
+            if len(parts) != 2:
+                return ""
+            attribute = parts[0].strip().casefold()
+            if not attribute or not re.fullmatch(r"[a-z][a-z0-9-]*|[0-9.]+", attribute):
+                return ""
+            name = self._unescape_ldap_rdn_value(parts[1].strip()).strip().casefold()
+            if not name:
+                return ""
+            normalized.append(f"{attribute}={name}")
+        return ",".join(normalized)
+
+    def _first_ldap_group_rdn_value(self, value: str) -> str:
+        text = (value or "").strip()
+        if not text:
+            return ""
+        first_rdn = self._split_ldap_escaped(text, ",", maxsplit=1)[0].strip()
+        if "=" not in first_rdn:
+            return ""
+        parts = self._split_ldap_escaped(first_rdn, "=", maxsplit=1)
+        if len(parts) != 2:
+            return ""
+        if parts[0].strip().casefold() not in {"cn", "name"}:
+            return ""
+        return self._unescape_ldap_rdn_value(parts[1].strip()).strip()
+
+    def _domain_group_local_name(self, value: str) -> str:
+        text = (value or "").strip()
+        if "\\" in text:
+            local_name = text.rsplit("\\", 1)[1].strip()
+            if local_name:
+                return local_name
+        if "@" in text:
+            local_name, domain = text.rsplit("@", 1)
+            if local_name.strip() and domain.strip():
+                return local_name.strip()
+        return ""
+
+    def _split_ldap_escaped(
+        self, value: str, delimiter: str, *, maxsplit: int = -1
+    ) -> list[str]:
+        parts: list[str] = []
+        start = 0
+        splits = 0
+        escaped = False
+        for index, char in enumerate(value):
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == delimiter and (maxsplit < 0 or splits < maxsplit):
+                parts.append(value[start:index])
+                start = index + 1
+                splits += 1
+        parts.append(value[start:])
+        return parts
+
+    def _unescape_ldap_rdn_value(self, value: str) -> str:
+        result: list[str] = []
+        index = 0
+        while index < len(value):
+            char = value[index]
+            if char != "\\" or index + 1 >= len(value):
+                result.append(char)
+                index += 1
+                continue
+            escaped = value[index + 1 : index + 3]
+            if len(escaped) == 2 and re.fullmatch(r"[0-9A-Fa-f]{2}", escaped):
+                result.append(chr(int(escaped, 16)))
+                index += 3
+            else:
+                result.append(value[index + 1])
+                index += 2
+        return "".join(result)
 
     def _public_error(self, exc: Exception) -> str:
         detail = re.sub(
