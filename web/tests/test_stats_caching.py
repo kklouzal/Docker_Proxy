@@ -203,7 +203,6 @@ def test_get_stats_cached_access_log_hit_rate_keeps_mgr_unavailable(monkeypatch)
 
     def fake_mgr(section: str):
         calls["mgr"] += 1
-        return None
 
     def fake_hit_rate() -> dict[str, float | None]:
         calls["hit"] += 1
