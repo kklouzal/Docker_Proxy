@@ -865,6 +865,58 @@ def test_revert_operation_requires_failed_status(monkeypatch, tmp_path, status) 
     assert "error=not_revertible" in response.location
 
 
+def test_revert_operation_rejects_stale_config_revision_target(
+    monkeypatch, tmp_path
+) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+
+    class Op:
+        operation_id = 9
+        proxy_id = "edge-a"
+        status = "failed"
+        can_revert = True
+        rollback_kind = "config_revision"
+        rollback_ref = "3"
+        operation_type = "config_apply"
+        target_ref = "4"
+        request_hash = "failed-revision-sha"
+
+    class Ledger:
+        def get_operation(self, operation_id):
+            assert operation_id == 9
+            return Op()
+
+    class Revisions:
+        def __init__(self) -> None:
+            self.created = []
+
+        def get_active_revision(self, _proxy_id):
+            return SimpleNamespace(revision_id=5, config_sha256="newer-revision-sha")
+
+        def get_revision(self, *_args, **_kwargs):  # pragma: no cover - guard
+            pytest.fail("stale revert must not read rollback config")
+
+        def create_revision(self, *_args, **_kwargs):  # pragma: no cover - guard
+            pytest.fail("stale revert must not create a revision")
+
+    revisions = Revisions()
+
+    def fail_reconcile(*_args, **_kwargs):  # pragma: no cover - guard
+        pytest.fail("stale revert must not queue reconcile")
+
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(admin_app, "get_operation_ledger", Ledger)
+    monkeypatch.setattr(admin_app, "get_config_revisions", lambda: revisions)
+    monkeypatch.setattr(admin_app, "request_proxy_reconcile", fail_reconcile)
+
+    with admin_app.app.test_request_context("/operations/9/revert", method="POST"):
+        response = admin_app.revert_operation(9)
+
+    assert response.status_code == 302
+    assert "error=rollback_stale" in response.location
+    assert revisions.created == []
+
+
 @pytest.mark.parametrize("queue_failure", ["raises", "failed_operation"])
 def test_revert_operation_restores_active_revision_when_queue_fails(
     monkeypatch, tmp_path, queue_failure

@@ -7,9 +7,11 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from werkzeug.datastructures import MultiDict
 
 from .admin_route_test_utils import (
     FakeAdblockArtifacts,
+    FakeAuditStore,
     FakeRegistry,
     FakeSslfilterStore,
     FakeWebfilterStore,
@@ -758,6 +760,28 @@ def test_logs_api_uses_active_proxy_and_rejects_non_allowlisted_log(
     assert proxy_client.log_calls[-1] == ("edge-2", "../../etc/passwd")
 
 
+def test_logs_api_redacts_proxy_client_error_detail(monkeypatch, tmp_path) -> None:
+    class LeakyLogProxyClient(RecordingProxyClient):
+        def get_logs(self, *_args, **_kwargs):
+            msg = "proxy failed token=supersecret"
+            raise loaded.module.ProxyClientError(msg)
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        proxy_client=LeakyLogProxyClient(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/logs?log=access")
+
+    assert response.status_code == 503
+    body = response.get_data(as_text=True)
+    assert "supersecret" not in body
+    assert "token=[redacted]" in body
+
+
 def test_logs_api_forwards_bounded_max_bytes_to_proxy_client(
     monkeypatch, tmp_path
 ) -> None:
@@ -1180,6 +1204,73 @@ def test_proxy_remove_rejects_alias_and_moves_alias_session_without_reset(
         and "deleted_rows=3" in record["detail"]
         for record in loaded.audit_store.records
     )
+
+
+def test_proxy_reconcile_records_new_identity_scoped_audit_event(
+    monkeypatch, tmp_path
+) -> None:
+    registry = FakeRegistry(proxy_ids=["Proxy-P", "Proxy-IT"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/proxies")
+
+    response = client.post(
+        "/proxies/reconcile",
+        data={
+            "csrf_token": token,
+            "old_proxy_id": "Proxy-P",
+            "new_proxy_id": "Proxy-PR",
+            "display_name": "Proxy PR",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert any(
+        record["kind"] == "proxy_reconcile"
+        and record["ok"] is True
+        and "old_proxy_id=Proxy-P" in record["detail"]
+        and "new_proxy_id=Proxy-PR" in record["detail"]
+        for record in loaded.audit_store.records
+    )
+
+
+def test_proxy_remove_records_audit_event_under_surviving_identity_context(
+    monkeypatch, tmp_path
+) -> None:
+    context_seen: list[str] = []
+
+    class ContextRecordingAuditStore(FakeAuditStore):
+        def record(self, **payload):
+            context_seen.append(loaded.module.get_proxy_id())
+            super().record(**payload)
+
+    registry = FakeRegistry(["default", "edge-2", "edge-3"])
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        registry=registry,
+        audit_store=ContextRecordingAuditStore(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/proxies")
+
+    response = client.post(
+        "/proxies/remove",
+        data={
+            "csrf_token": token,
+            "proxy_id": "edge-2",
+            "confirm_proxy_id": "edge-2",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert context_seen[-1] == "default"
+    assert loaded.audit_store.records[-1]["kind"] == "proxy_remove"
+    assert "proxy_id=edge-2" in loaded.audit_store.records[-1]["detail"]
 
 
 def test_api_squid_config_plain_text_contract(monkeypatch, tmp_path) -> None:
@@ -2407,6 +2498,132 @@ def test_observability_settings_export_returns_settings_rows_without_data_pane_q
         {"section": "maintenance_latest", "key": "finished_ts", "value": 222},
         {"section": "maintenance_latest", "key": "duration_ms", "value": 12},
     ]
+
+
+def test_observability_settings_export_degrades_when_status_sources_fail(
+    monkeypatch, tmp_path
+) -> None:
+    class SettingsExportQueries:
+        def top_destinations(self, **_kwargs):  # pragma: no cover - guard
+            msg = "settings export must not query destination rows"
+            raise AssertionError(msg)
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=SettingsExportQueries(),
+        get_observability_retention_settings=lambda: (_ for _ in ()).throw(
+            RuntimeError("retention password=secret"),
+        ),
+        get_observability_maintenance_status=lambda: (_ for _ in ()).throw(
+            RuntimeError("maintenance token=secret"),
+        ),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability/export?pane=settings&format=json")
+
+    assert response.status_code == 200
+    assert response.headers.get("Content-Type", "").startswith("application/json")
+    assert json.loads(response.get_data(as_text=True)) == [
+        {"section": "retention", "key": "retention_days", "value": 30},
+        {"section": "retention", "key": "updated_ts", "value": 0},
+    ]
+    assert "secret" not in response.get_data(as_text=True)
+
+
+def test_observability_report_schedule_checked_privacy_overrides_hidden_zero(
+    monkeypatch, tmp_path
+) -> None:
+    saved: list[dict[str, object]] = []
+
+    class ScheduleQueries:
+        def save_report_schedule(self, **kwargs):
+            saved.append(dict(kwargs))
+            return {
+                "id": 8,
+                "pane": kwargs.get("pane"),
+                "report_format": kwargs.get("report_format"),
+                "privacy": bool(kwargs.get("privacy")),
+                "recipients": kwargs.get("recipients"),
+            }
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=ScheduleQueries(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/observability/report-schedules",
+        data=MultiDict(
+            [
+                ("csrf_token", csrf_token(client, "/observability?pane=reports")),
+                ("name", "Privacy digest"),
+                ("recipients", "ops@example.com"),
+                ("cadence", "daily"),
+                ("format", "jsonl"),
+                ("privacy", "0"),
+                ("privacy", "1"),
+                ("window", "3600"),
+                ("pane", "reports"),
+            ],
+        ),
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert saved[-1]["privacy"] is True
+    assert "privacy=1" in response.headers["Location"]
+    assert "privacy=on" in loaded.audit_store.records[-1]["detail"]
+
+
+def test_observability_report_schedule_hidden_privacy_zero_is_respected(
+    monkeypatch, tmp_path
+) -> None:
+    saved: list[dict[str, object]] = []
+
+    class ScheduleQueries:
+        def save_report_schedule(self, **kwargs):
+            saved.append(dict(kwargs))
+            return {
+                "id": 7,
+                "pane": kwargs.get("pane"),
+                "report_format": kwargs.get("report_format"),
+                "privacy": bool(kwargs.get("privacy")),
+                "recipients": kwargs.get("recipients"),
+            }
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=ScheduleQueries(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/observability/report-schedules",
+        data={
+            "csrf_token": csrf_token(client, "/observability?pane=reports"),
+            "name": "Raw digest",
+            "recipients": "ops@example.com",
+            "cadence": "weekly",
+            "format": "json",
+            "privacy": "0",
+            "window": "3600",
+            "pane": "reports",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert saved[-1]["privacy"] is False
+    assert "privacy=1" not in response.headers["Location"]
+    assert "privacy=off" in loaded.audit_store.records[-1]["detail"]
 
 
 def test_observability_settings_runs_manual_database_maintenance(

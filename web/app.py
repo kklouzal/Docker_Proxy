@@ -2412,12 +2412,19 @@ def _observability_resolve_hostnames_from_request() -> bool:
     return any((value or "").strip() == "1" for value in resolve_values)
 
 
+_TRUTHY_FORM_VALUES = {"1", "true", "yes", "on", "enabled", "pseudonymized"}
+
+
+def _truthy_form_values(name: str, *, default: bool = False) -> bool:
+    values = request.form.getlist(name)
+    if not values:
+        return bool(default)
+    return any((value or "").strip().lower() in _TRUTHY_FORM_VALUES for value in values)
+
+
 def _observability_privacy_from_request() -> bool:
     values = request.args.getlist("privacy")
-    return any(
-        (value or "").strip().lower() in {"1", "true", "yes", "on", "pseudonymized"}
-        for value in values
-    )
+    return any((value or "").strip().lower() in _TRUTHY_FORM_VALUES for value in values)
 
 
 def _observability_search_from_request() -> str:
@@ -2652,8 +2659,14 @@ def _empty_observability_export_response(pane: str, export_format: str = "csv"):
 
 
 def _observability_settings_export_rows() -> list[list[object]]:
-    retention = get_observability_retention_settings()
-    maintenance = get_observability_maintenance_status()
+    try:
+        retention = get_observability_retention_settings()
+    except Exception:
+        retention = {}
+    try:
+        maintenance = get_observability_maintenance_status()
+    except Exception:
+        maintenance = {}
     rows: list[list[object]] = [
         ["retention", "retention_days", retention.get("retention_days", 30)],
         ["retention", "updated_ts", retention.get("updated_ts", 0)],
@@ -3055,6 +3068,36 @@ def _safe_resolve_registered_proxy_id(registry: Any, proxy_id: object | None) ->
         return normalize_proxy_id(registry.resolve_proxy_id(proxy_id))
     except Exception:
         return ""
+
+
+def _run_with_proxy_context(proxy_id: str, callback: Callable[[], Any]) -> Any:
+    current_proxy_id = get_proxy_id()
+    if normalize_proxy_id(current_proxy_id) == normalize_proxy_id(proxy_id):
+        return callback()
+    token = set_proxy_id(proxy_id)
+    try:
+        return callback()
+    finally:
+        reset_proxy_id(token)
+
+
+def _record_audit_event_for_proxy(
+    proxy_id: str,
+    kind: str,
+    *,
+    ok: bool,
+    detail: str = "",
+    config_text: str | None = None,
+) -> None:
+    _run_with_proxy_context(
+        proxy_id,
+        lambda: _record_audit_event(
+            kind,
+            ok=ok,
+            detail=detail,
+            config_text=config_text,
+        ),
+    )
 
 
 def _resolve_selected_proxy_context() -> tuple[str, Any, list[Any]]:
@@ -3876,10 +3919,7 @@ def _trigger_policy_sync(*, force: bool = True) -> tuple[bool, str]:
             exc,
             default="Policy reconciliation was not queued.",
         )
-    if (
-        not getattr(operation, "operation_id", 0)
-        and getattr(operation, "status", "") == "failed"
-    ):
+    if getattr(operation, "status", "") == "failed":
         return False, str(
             getattr(operation, "detail", "") or "Policy reconcile was not queued.",
         )
@@ -5460,7 +5500,7 @@ def index():
         health = {
             "ok": False,
             "status": proxy.status if proxy else "offline",
-            "proxy_status": str(exc),
+            "proxy_status": clean_text(redact_sensitive_text(exc), max_len=1000),
             "stats": {},
             "services": {
                 "icap": {"ok": False, "detail": "unavailable"},
@@ -5620,6 +5660,12 @@ def reconcile_proxy_identity():
             display_name=display_name or new_proxy_id,
         )
     except Exception as exc:
+        _record_audit_event_for_proxy(
+            old_proxy_id,
+            "proxy_reconcile",
+            ok=False,
+            detail=f"old_proxy_id={old_proxy_id} new_proxy_id={new_proxy_id} error={public_error_message(exc)}",
+        )
         return _redirect_to("proxies", error="1", msg=public_error_message(exc))
     active_after_resolved = _safe_resolve_registered_proxy_id(registry, active_before_key)
     if (
@@ -5631,6 +5677,15 @@ def reconcile_proxy_identity():
     _PROXY_HEALTH_CACHE.clear()
     _OBSERVABILITY_SUMMARY_CACHE.clear()
     _OBSERVABILITY_RESULT_CACHE.clear()
+    _record_audit_event_for_proxy(
+        renamed.proxy_id,
+        "proxy_reconcile",
+        ok=True,
+        detail=(
+            f"old_proxy_id={old_proxy_id} new_proxy_id={renamed.proxy_id} "
+            f"display_name={_audit_safe_detail(display_name or renamed.proxy_id, limit=200)}"
+        ),
+    )
     return _redirect_to("proxies", saved="1", proxy_id=renamed.proxy_id)
 
 
@@ -5677,7 +5732,10 @@ def remove_proxy():
         )
         return _redirect_to("proxies", error="1", msg=public_error_message(exc))
 
-    remaining = registry.list_proxies()
+    try:
+        remaining = registry.list_proxies()
+    except Exception:
+        remaining = []
     if active_before is None or normalized_proxy_id in {
         active_before_key,
         active_before_resolved,
@@ -5689,7 +5747,12 @@ def remove_proxy():
     _PROXY_HEALTH_CACHE.clear()
     _OBSERVABILITY_SUMMARY_CACHE.clear()
     _OBSERVABILITY_RESULT_CACHE.clear()
-    _record_audit_event(
+    audit_proxy_id = normalize_proxy_id(
+        session.get("active_proxy_id")
+        or (remaining[0].proxy_id if remaining else get_default_proxy_id()),
+    )
+    _record_audit_event_for_proxy(
+        audit_proxy_id,
         "proxy_remove",
         ok=True,
         detail=(
@@ -5734,7 +5797,7 @@ def proxies():
             live_health[active_proxy_id] = {
                 "ok": False,
                 "status": active_proxy.status if active_proxy else "unknown",
-                "detail": str(exc),
+                "detail": clean_text(redact_sensitive_text(exc), max_len=1000),
                 "listener_details": [],
                 "services": {},
             }
@@ -5818,7 +5881,7 @@ def _get_selected_log_payload(
         payload = {
             "ok": False,
             "status": "unavailable",
-            "detail": str(exc),
+            "detail": clean_text(redact_sensitive_text(exc), max_len=1000),
             "key": selected_log,
             "label": selected_log,
             "content": "",
@@ -5968,6 +6031,23 @@ def revert_operation(operation_id: int):
                         message="Failed to restore active config revision after revert queue failure",
                     )
 
+            if active_revision is not None:
+                active_revision_id = _safe_revision_id(
+                    getattr(active_revision, "revision_id", 0),
+                )
+                op_target_revision_id = _safe_revision_id(getattr(op, "target_ref", 0))
+                active_config_sha = str(
+                    getattr(active_revision, "config_sha256", "") or "",
+                ).strip()
+                op_target_sha = str(getattr(op, "request_hash", "") or "").strip()
+                if (
+                    not active_revision_id
+                    or not op_target_revision_id
+                    or active_revision_id != op_target_revision_id
+                    or (op_target_sha and active_config_sha and active_config_sha != op_target_sha)
+                ):
+                    return _redirect_to("operations_status", error="rollback_stale")
+
             previous = revisions.get_revision(op.rollback_ref, proxy_id=op.proxy_id)
             if previous is None:
                 return _redirect_to("operations_status", error="rollback_missing")
@@ -5992,10 +6072,7 @@ def revert_operation(operation_id: int):
                 created_by=str(session.get("user") or ""),
                 force=False,
             )
-            if (
-                not getattr(operation, "operation_id", 0)
-                and getattr(operation, "status", "") == "failed"
-            ):
+            if getattr(operation, "status", "") == "failed":
                 restore_active_revision_after_failure()
                 return _redirect_to("operations_status", error="revert_failed")
         except Exception:
@@ -6586,18 +6663,8 @@ def observability_report_schedules():
         ("csv", "json", "jsonl"),
         "csv",
     )
-    privacy = str(request.form.get("privacy") or "1").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    enabled = str(request.form.get("enabled") or "1").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    privacy = _truthy_form_values("privacy", default=True)
+    enabled = _truthy_form_values("enabled", default=True)
     window_i = _bounded_int(
         request.form.get("window"),
         default=OBSERVABILITY_DEFAULT_WINDOW,
