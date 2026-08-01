@@ -875,7 +875,7 @@ def test_local_pac_cache_selects_profile_from_verified_materialized_snapshot(
     assert fallback.content == fallback_pac.encode("utf-8")
 
 
-def test_local_pac_cache_rejects_manifest_referencing_missing_profile_file(
+def test_local_pac_cache_serves_fallback_when_profile_file_is_missing(
     tmp_path,
     pac_http,
 ) -> None:
@@ -897,14 +897,87 @@ def test_local_pac_cache_rejects_manifest_referencing_missing_profile_file(
 
     cache = pac_http.LocalPacCache(str(pac_dir))
 
-    assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
+    resolved = cache.resolve_with_metadata(
+        client_ip="10.1.2.3",
+        request_host="proxy.example",
+    )
+
+    assert resolved is not None
+    assert resolved.source == "materialized"
+    assert resolved.selected_file == "fallback.pac"
+    assert resolved.content == b'function FindProxyForURL(){return "PROXY fallback";}\n'
+
     resolved = pac_http.resolve_pac(
-        client_ip="192.0.2.10",
+        client_ip="10.1.2.3",
         request_host="proxy.example",
         pac_dir=str(pac_dir),
     )
-    assert resolved.source == "emergency"
-    assert b"PROXY fallback" not in resolved.content
+    assert resolved.source == "materialized"
+    assert resolved.selected_file == "fallback.pac"
+    assert resolved.content == b'function FindProxyForURL(){return "PROXY fallback";}\n'
+
+
+def test_local_pac_cache_tracks_missing_profile_file_appearance_and_deletion(
+    tmp_path,
+    pac_http,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    pac_dir.mkdir()
+    (pac_dir / ".state-sha256").write_text("state-one\n", encoding="utf-8")
+    (pac_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "fallback_file": "fallback.pac",
+                "profiles": [
+                    {
+                        "profile_id": 10,
+                        "client_cidr": "10.0.0.0/8",
+                        "file": "corp.pac",
+                    },
+                ],
+                "state_sha256": "state-one",
+            }
+        ),
+        encoding="utf-8",
+    )
+    fallback = pac_dir / "fallback.pac"
+    fallback.write_text(
+        'function FindProxyForURL(){return "PROXY fallback";}\n',
+        encoding="utf-8",
+    )
+
+    cache = pac_http.LocalPacCache(str(pac_dir))
+
+    missing = cache.resolve_with_metadata(
+        client_ip="10.1.2.3",
+        request_host="proxy.example",
+    )
+    assert missing is not None
+    assert missing.selected_file == "fallback.pac"
+    assert missing.content == b'function FindProxyForURL(){return "PROXY fallback";}\n'
+
+    (pac_dir / "corp.pac").write_text(
+        'function FindProxyForURL(){return "PROXY corp";}\n',
+        encoding="utf-8",
+    )
+
+    appeared = cache.resolve_with_metadata(
+        client_ip="10.1.2.3",
+        request_host="proxy.example",
+    )
+    assert appeared is not None
+    assert appeared.selected_file == "corp.pac"
+    assert appeared.content == b'function FindProxyForURL(){return "PROXY corp";}\n'
+
+    (pac_dir / "corp.pac").unlink()
+
+    deleted = cache.resolve_with_metadata(
+        client_ip="10.1.2.3",
+        request_host="proxy.example",
+    )
+    assert deleted is not None
+    assert deleted.selected_file == "fallback.pac"
+    assert deleted.content == b'function FindProxyForURL(){return "PROXY fallback";}\n'
 
 
 def test_local_pac_cache_invalidates_profile_deletion_in_verified_state(

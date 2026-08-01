@@ -422,10 +422,29 @@ class LocalPacCache:
             )
         return tuple(signatures)
 
+    def _manifest_pac_file_candidates(
+        self, manifest: dict[str, object]
+    ) -> tuple[str, ...]:
+        fallback_file = _safe_manifest_file_path(manifest.get("fallback_file"))
+        if not fallback_file:
+            fallback_file = "fallback.pac"
+        candidates = {fallback_file}
+        profiles = manifest.get("profiles")
+        if isinstance(profiles, list):
+            for entry in profiles:
+                if not isinstance(entry, dict):
+                    continue
+                path = _safe_manifest_file_path(entry.get("file"))
+                if path:
+                    candidates.add(path)
+        return tuple(sorted(candidates))
+
     def _load_locked(self, *, attempts: int = 2) -> bool:
         state_sha = self._read_state_sha()
         state_signatures = self._state_file_signatures()
-        cached_file_paths = tuple(self._files)
+        cached_file_paths = (
+            self._manifest_pac_file_candidates(self._manifest) if self._manifest else ()
+        )
         file_signatures: tuple[_FileSignature, ...] | None = None
         if (
             state_sha
@@ -474,20 +493,9 @@ class LocalPacCache:
                 )
 
             files: dict[str, str] = {}
-            fallback_file = _safe_manifest_file_path(manifest.get("fallback_file"))
-            if not fallback_file:
-                fallback_file = "fallback.pac"
-            candidates = {fallback_file}
-            profiles = manifest.get("profiles")
-            if isinstance(profiles, list):
-                for entry in profiles:
-                    if not isinstance(entry, dict):
-                        continue
-                    path = _safe_manifest_file_path(entry.get("file"))
-                    if path:
-                        candidates.add(path)
+            candidates = self._manifest_pac_file_candidates(manifest)
             file_signatures_before = self._pac_file_signatures(candidates)
-            for rel_path in sorted(candidates):
+            for rel_path in candidates:
                 safe_path, file_path = _safe_manifest_file(self.pac_dir, rel_path)
                 if not safe_path or file_path is None:
                     continue
@@ -507,8 +515,7 @@ class LocalPacCache:
                     reason="PAC materialized files are missing.",
                 )
 
-            loaded_file_paths = tuple(files)
-            file_signatures_after = self._pac_file_signatures(loaded_file_paths)
+            file_signatures_after = self._pac_file_signatures(candidates)
             final_state_sha = self._read_state_sha()
             final_state_signatures = self._state_file_signatures()
             if (
@@ -536,10 +543,7 @@ class LocalPacCache:
             self._manifest = manifest
             self._files = files
             self._state_signatures = state_signatures
-            same_cached_files = frozenset(loaded_file_paths) == frozenset(
-                cached_file_paths
-            )
-            if file_signatures is not None and same_cached_files:
+            if file_signatures is not None and candidates == cached_file_paths:
                 self._file_signatures = file_signatures
             else:
                 self._file_signatures = file_signatures_after
