@@ -164,6 +164,7 @@ def test_safe_browsing_checker_does_not_call_remote_without_local_prefix(
     verdict = checker.check_url("http://clean.example/")
     assert verdict.verdict == "safe"
     assert verdict.reason == "no local hash-prefix match"
+    assert checker._verdict_cache == {}
 
 
 def test_safe_browsing_checker_confirms_full_hash_after_local_prefix(
@@ -238,10 +239,32 @@ def test_safe_browsing_checker_fails_open_when_full_hash_search_raises(
     )
     assert "secret" not in verdict.reason
     assert remote_calls == [("test", (target[:4],))]
-    assert all(
-        cached_verdict.verdict == "safe"
-        for _expires, cached_verdict in checker._verdict_cache.values()
+    assert checker._verdict_cache == {}
+
+
+def test_safe_browsing_checker_does_not_cache_api_key_unavailable_verdict(
+    monkeypatch,
+) -> None:
+    checker = SafeBrowsingLocalChecker(api_key="")
+    target = expression_hashes("http://needs-confirmation.example/")[0]
+
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("mw-4b",) if prefix == target[:4] else (),
     )
+    monkeypatch.setattr(
+        checker, "_cache_lookup", lambda prefix, full_hashes, local_lists=None: None
+    )
+    monkeypatch.setattr(checker, "_api_key_from_settings", lambda: "")
+
+    verdict = checker.check_url("http://needs-confirmation.example/")
+
+    assert verdict == SafeBrowsingVerdict(
+        "safe",
+        reason="api key unavailable for full-hash confirmation",
+    )
+    assert checker._verdict_cache == {}
 
 
 def test_safe_browsing_checker_reports_matching_list_for_threat(monkeypatch) -> None:

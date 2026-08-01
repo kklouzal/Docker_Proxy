@@ -1222,6 +1222,7 @@ class SafeBrowsingLocalChecker:
         hashes = expression_hashes(canonical)
         full_set = set(hashes)
         saw_local_match = False
+        cache_final_verdict = True
         last_safe_verdict = SafeBrowsingVerdict(
             "safe",
             reason="no local hash-prefix match",
@@ -1245,6 +1246,7 @@ class SafeBrowsingLocalChecker:
             if cached_verdict is None:
                 api_key = self._api_key_from_settings()
                 if not api_key:
+                    cache_final_verdict = False
                     verdict = SafeBrowsingVerdict(
                         "safe",
                         reason="api key unavailable for full-hash confirmation",
@@ -1254,6 +1256,7 @@ class SafeBrowsingLocalChecker:
                         response, duration = self._store.search_hashes(api_key, [prefix])
                     except Exception:
                         self.close()
+                        cache_final_verdict = False
                         verdict = SafeBrowsingVerdict(
                             "safe",
                             reason="full-hash confirmation unavailable",
@@ -1292,5 +1295,8 @@ class SafeBrowsingLocalChecker:
             if saw_local_match
             else SafeBrowsingVerdict("safe", reason="no local hash-prefix match")
         )
-        self._cache_verdict(cache_key, verdict)
+        if not saw_local_match:
+            cache_final_verdict = False
+        if cache_final_verdict:
+            self._cache_verdict(cache_key, verdict)
         return verdict
