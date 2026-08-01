@@ -50,6 +50,18 @@ def test_conf_listen_address_falls_back_to_default_for_out_of_range_env(
     assert runner._conf_listen_address(str(conf)) == ("127.0.0.1", 14001)
 
 
+def test_conf_listen_address_falls_back_to_default_when_config_is_missing(
+    tmp_path, monkeypatch
+) -> None:
+    runner = _load_runner()
+    monkeypatch.setenv("CICAP_AV_PORT", "15018")
+
+    assert runner._conf_listen_address(str(tmp_path / "missing.conf")) == (
+        "127.0.0.1",
+        15018,
+    )
+
+
 def test_conf_listen_address_preserves_valid_env_fallback(tmp_path, monkeypatch) -> None:
     runner = _load_runner()
     conf = tmp_path / "c-icap-av.conf"
@@ -97,6 +109,31 @@ def test_required_unavailable_clamd_serves_fail_closed_placeholder(monkeypatch) 
     assert calls == [("/etc/c-icap/av.conf", "127.0.0.1", 3310, False)]
 
 
+def test_main_clamps_invalid_clamd_port_to_default(monkeypatch) -> None:
+    runner = _load_runner()
+    calls: list[tuple[str, str, int, bool]] = []
+    readiness_ports: list[int] = []
+
+    monkeypatch.setenv("CLAMD_PORT", "70000")
+    monkeypatch.setattr(
+        runner,
+        "clamd_ready",
+        lambda _host, port: readiness_ports.append(port) or False,
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_unavailable_placeholder",
+        lambda conf_path, *, host, port, fail_open: calls.append(
+            (conf_path, host, port, fail_open),
+        ),
+    )
+
+    assert runner.main(["cicap_av_runner.py", "/etc/c-icap/av.conf"]) == 0
+
+    assert readiness_ports == [3310]
+    assert calls == [("/etc/c-icap/av.conf", "127.0.0.1", 3310, True)]
+
+
 def test_ready_clamd_execs_c_icap(monkeypatch) -> None:
     runner = _load_runner()
     exec_calls: list[tuple[str, list[str]]] = []
@@ -119,6 +156,33 @@ def test_ready_clamd_execs_c_icap(monkeypatch) -> None:
     assert exec_calls == [
         ("/usr/bin/c-icap", ["/usr/bin/c-icap", "-N", "-f", "/etc/c-icap/av.conf"]),
     ]
+
+
+def test_ready_clamd_exec_failure_serves_policy_placeholder(
+    monkeypatch, capsys
+) -> None:
+    runner = _load_runner()
+    calls: list[tuple[str, str, int, bool]] = []
+
+    def fail_execv(_path, _argv):
+        message = "missing"
+        raise FileNotFoundError(message)
+
+    monkeypatch.setenv("CLAMAV_REQUIRED", "1")
+    monkeypatch.setattr(runner, "clamd_ready", lambda _host, _port: True)
+    monkeypatch.setattr(runner.os, "execv", fail_execv)
+    monkeypatch.setattr(
+        runner,
+        "run_unavailable_placeholder",
+        lambda conf_path, *, host, port, fail_open: calls.append(
+            (conf_path, host, port, fail_open),
+        ),
+    )
+
+    assert runner.main(["cicap_av_runner.py", "/etc/c-icap/av.conf"]) == 0
+
+    assert calls == [("/etc/c-icap/av.conf", "127.0.0.1", 3310, False)]
+    assert "failed to exec c-icap; serving placeholder" in capsys.readouterr().err
 
 
 def _with_fake_clamd(chunks: tuple[bytes, ...], *, delay: float = 0.0):

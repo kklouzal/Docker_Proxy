@@ -31,6 +31,7 @@ class _IcapHandler(socketserver.BaseRequestHandler):
             if not chunk:
                 break
             data += chunk
+        self.server.requests.append(data)
         if self.server.responses:
             response = self.server.responses[min(self.server.calls, len(self.server.responses)) - 1]
         elif self.server.ready_after_calls and self.server.calls < self.server.ready_after_calls:
@@ -60,6 +61,7 @@ class _Server(socketserver.ThreadingTCPServer):
         responses: list[ResponsePayload] | None = None,
     ) -> None:
         self.calls = 0
+        self.requests: list[bytes] = []
         self.methods = methods
         self.ready_after_calls = ready_after_calls
         self.responses = responses or []
@@ -144,6 +146,54 @@ def test_icap_readiness_skips_malformed_icap_service_ports(tmp_path) -> None:
     assert [(service.name, service.port, service.path) for service in services] == [
         ("good_req", 1344, "/adblockreq")
     ]
+
+
+def test_icap_readiness_preserves_query_and_rejects_fragmented_service_url(
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    import icap_readiness  # type: ignore
+
+    config = tmp_path / "20-icap.conf"
+    config.write_text(
+        "icap_service query_req reqmod_precache "
+        "icap://127.0.0.1:1344/adblockreq?profile=edge bypass=on\n"
+        "icap_service fragment_req reqmod_precache "
+        "icap://127.0.0.1:1345/adblockreq#ignored bypass=on\n",
+        encoding="utf-8",
+    )
+
+    services = icap_readiness.parse_services([str(config)])
+
+    assert [(service.name, service.path) for service in services] == [
+        ("query_req", "/adblockreq?profile=edge")
+    ]
+
+
+def test_icap_readiness_options_request_uses_authority_host_header(tmp_path) -> None:
+    _add_repo_paths()
+    import icap_readiness  # type: ignore
+
+    server = _start_server(methods="REQMOD")
+    try:
+        config = tmp_path / "20-icap.conf"
+        config.write_text(
+            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{server.server_address[1]}/adblockreq bypass=on\n",
+            encoding="utf-8",
+        )
+
+        ok, _detail, _payload = icap_readiness.check_once(
+            [str(config)], probe_timeout=0.5
+        )
+
+        assert ok is True
+        request = server.requests[0]
+        authority = f"127.0.0.1:{server.server_address[1]}".encode("ascii")
+        assert request.startswith(b"OPTIONS icap://" + authority + b"/adblockreq ")
+        assert b"\r\nHost: " + authority + b"\r\n" in request
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_icap_readiness_accepts_strict_options_200_status() -> None:

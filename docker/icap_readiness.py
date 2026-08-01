@@ -20,9 +20,8 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
-TRUE_VALUES = {"1", "true", "yes", "on", "enabled", "required", "strict"}
 DEFAULT_CONFIG = "/etc/squid/conf.d/20-icap.conf"
 DEFAULT_STATUS_FILE = "/var/lib/squid-flask-proxy/icap-readiness.json"
 DEFAULT_TIMEOUT_SECONDS = 75.0
@@ -55,13 +54,6 @@ class ProbeResult:
     detail: str
     status_line: str = ""
     methods: str = ""
-
-
-def _env_enabled(name: str, *, default: bool = False) -> bool:
-    raw = (os.environ.get(name) or "").strip().lower()
-    if not raw:
-        return default
-    return raw in TRUE_VALUES
 
 
 def _finite_float(value: str) -> float:
@@ -120,9 +112,9 @@ def _parse_icap_url(raw_url: str) -> tuple[str, int, str] | None:
         port = parsed.port
     except ValueError:
         return None
-    if not host or port is None or port < 1 or port > 65535:
+    if not host or port is None or port < 1 or port > 65535 or parsed.fragment:
         return None
-    path = parsed.path or "/"
+    path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
     return host, int(port), path
 
 
@@ -222,9 +214,10 @@ def probe_service(service: IcapService, *, timeout: float) -> ProbeResult:
     host_header = service.host
     if ":" in host_header and not host_header.startswith("["):
         host_header = f"[{host_header}]"
+    request_host = f"{host_header}:{service.port}"
     request = (
-        f"OPTIONS icap://{host_header}:{service.port}{service.path} ICAP/1.0\r\n"
-        f"Host: {host_header}\r\n"
+        f"OPTIONS icap://{request_host}{service.path} ICAP/1.0\r\n"
+        f"Host: {request_host}\r\n"
         "User-Agent: docker-proxy-icap-readiness\r\n"
         "Connection: close\r\n"
         "Encapsulated: null-body=0\r\n\r\n"

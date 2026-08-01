@@ -12,6 +12,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 TRUE_VALUES = {"1", "true", "yes", "on", "required", "strict"}
+DEFAULT_CLAMD_PORT = 3310
+DEFAULT_CICAP_AV_PORT = 14001
 CRLF = b"\r\n"
 HEADER_END = CRLF + CRLF
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
@@ -120,12 +122,25 @@ def clamd_ready(host: str, port: int, timeout: float = 1.0) -> bool:
             sock.settimeout(timeout)
             sock.sendall(b"PING\n")
             return _clamd_ping_reply_is_pong(_recv_clamd_ping_reply(sock))
-    except OSError:
+    except (OSError, OverflowError, ValueError):
         return False
 
 
+def _parse_port(raw_value: str | None, *, default: int) -> int:
+    try:
+        port = int((raw_value or str(default)).strip())
+    except ValueError:
+        return default
+    if 1 <= port <= 65535:
+        return port
+    return default
+
+
 def _conf_listen_address(conf_path: str) -> tuple[str, int]:
-    text = Path(conf_path).read_text(encoding="utf-8", errors="replace")
+    try:
+        text = Path(conf_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -137,14 +152,9 @@ def _conf_listen_address(conf_path: str) -> tuple[str, int]:
         port = int(match.group(2))
         if 1 <= port <= 65535:
             return host, port
-    fallback_port_raw = (os.environ.get("CICAP_AV_PORT") or "14001").strip()
-    try:
-        fallback_port = int(fallback_port_raw or "14001")
-    except ValueError:
-        fallback_port = 14001
-    if not 1 <= fallback_port <= 65535:
-        fallback_port = 14001
-    return "127.0.0.1", fallback_port
+    return "127.0.0.1", _parse_port(
+        os.environ.get("CICAP_AV_PORT"), default=DEFAULT_CICAP_AV_PORT
+    )
 
 
 def _validate_icap_field_line(line: bytes) -> tuple[str, str]:
@@ -1259,7 +1269,12 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
                 )
         except IcapProtocolError as exc:
             response = _error_response(str(exc), istag)
-        self.request.sendall(response)
+        except OSError:
+            return
+        try:
+            self.request.sendall(response)
+        except OSError:
+            return
 
 
 class _FailOpenAvServer(socketserver.ThreadingTCPServer):
@@ -1302,19 +1317,19 @@ def main(argv: list[str]) -> int:
 
     conf_path = argv[1]
     host = (os.environ.get("CLAMD_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-    try:
-        port = int((os.environ.get("CLAMD_PORT") or "3310").strip())
-    except ValueError:
-        port = 3310
+    port = _parse_port(os.environ.get("CLAMD_PORT"), default=DEFAULT_CLAMD_PORT)
     required = env_enabled(os.environ.get("CLAMAV_REQUIRED")) or env_enabled(
         os.environ.get("FILE_SECURITY_AV_REQUIRED")
     )
 
     if clamd_ready(host, port):
-        os.execv(  # noqa: S606 - replace runner with c-icap in the container.
-            "/usr/bin/c-icap",
-            ["/usr/bin/c-icap", "-N", "-f", conf_path],
-        )
+        try:
+            os.execv(  # noqa: S606 - replace runner with c-icap in the container.
+                "/usr/bin/c-icap",
+                ["/usr/bin/c-icap", "-N", "-f", conf_path],
+            )
+        except OSError as exc:
+            sys.stderr.write(f"failed to exec c-icap; serving placeholder: {exc}\n")
 
     run_unavailable_placeholder(
         conf_path,
