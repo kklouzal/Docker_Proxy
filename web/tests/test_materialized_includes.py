@@ -84,6 +84,38 @@ def test_apply_helpers_import_shared_common_when_executed_from_app_tools(
         assert out.read_text(encoding="utf-8") == safe_include
 
 
+def test_write_safe_include_uses_staged_replace_not_direct_target_write(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_tool_module("apply_common")
+    out = tmp_path / "etc" / "squid" / "conf.d" / "safe.conf"
+    replace_calls: list[tuple[Path, Path]] = []
+
+    def fail_direct_write_text(*_args, **_kwargs) -> NoReturn:
+        msg = "write_safe_include must not write directly to the live include"
+        raise AssertionError(msg)
+
+    real_replace = module.Path.replace
+
+    def recording_replace(self, target) -> Path:
+        temp_path = Path(self)
+        dst_path = Path(target)
+        assert temp_path.parent == out.parent
+        assert temp_path != out
+        replace_calls.append((temp_path, dst_path))
+        return real_replace(self, target)
+
+    monkeypatch.setattr(module.Path, "write_text", fail_direct_write_text)
+    monkeypatch.setattr(module.Path, "replace", recording_replace)
+
+    module.write_safe_include(str(out), "# safe fallback\n")
+
+    assert out.read_text(encoding="utf-8") == "# safe fallback\n"
+    assert len(replace_calls) == 1
+    assert replace_calls[0][1] == out
+    assert not replace_calls[0][0].exists()
+
+
 def test_sslfilter_apply_squid_include_writes_materialized_files(
     tmp_path, monkeypatch
 ) -> None:
