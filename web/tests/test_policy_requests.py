@@ -626,7 +626,7 @@ def test_webfilter_materialization_renders_client_scoped_exceptions(
     )
 
 
-def test_error_page_only_webfilter_has_request_form() -> None:
+def test_error_page_only_webfilter_has_exception_request_guidance() -> None:
     root = Path(__file__).resolve().parents[2]
     blocked = (root / "squid/error_pages/en/ERR_WEBFILTER_BLOCKED").read_text(
         encoding="utf-8"
@@ -634,8 +634,11 @@ def test_error_page_only_webfilter_has_request_form() -> None:
     denied = (root / "squid/error_pages/en/ERR_ACCESS_DENIED").read_text(
         encoding="utf-8"
     )
-    assert 'action="http://%h/policy-request"' in blocked
-    assert 'name="request_url" value="%U"' in blocked
+    assert "Request an exception" in blocked
+    assert "open the Docker Proxy admin UI and create a policy request" in blocked
+    assert "policy-request" not in blocked
+    assert "<form" not in blocked
+    assert "<input" not in blocked
     assert "/policy-request" not in denied
 
 

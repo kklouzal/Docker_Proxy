@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import subprocess
+from html.parser import HTMLParser
 from pathlib import Path
 
 from .admin_route_test_utils import add_web_to_path, load_admin_app, login_client
@@ -21,6 +24,79 @@ BLOCK_REASON_TEMPLATE_NAMES = {
     "ERR_TOO_BIG",
     "ERR_WEBFILTER_BLOCKED",
 }
+
+EXPECTED_SQUID_TRACKED_FILES = [
+    "squid/error_pages/README.md",
+    "squid/error_pages/en/ERR_ACCESS_DENIED",
+    "squid/error_pages/en/ERR_ACL_TIME_QUOTA_EXCEEDED",
+    "squid/error_pages/en/ERR_AGENT_CONFIGURE",
+    "squid/error_pages/en/ERR_AGENT_WPAD",
+    "squid/error_pages/en/ERR_CACHE_ACCESS_DENIED",
+    "squid/error_pages/en/ERR_CACHE_MGR_ACCESS_DENIED",
+    "squid/error_pages/en/ERR_CANNOT_FORWARD",
+    "squid/error_pages/en/ERR_CONFLICT_HOST",
+    "squid/error_pages/en/ERR_CONNECT_FAIL",
+    "squid/error_pages/en/ERR_DIR_LISTING",
+    "squid/error_pages/en/ERR_DNS_FAIL",
+    "squid/error_pages/en/ERR_ESI",
+    "squid/error_pages/en/ERR_FORWARDING_DENIED",
+    "squid/error_pages/en/ERR_FTP_DISABLED",
+    "squid/error_pages/en/ERR_FTP_FAILURE",
+    "squid/error_pages/en/ERR_FTP_FORBIDDEN",
+    "squid/error_pages/en/ERR_FTP_NOT_FOUND",
+    "squid/error_pages/en/ERR_FTP_PUT_CREATED",
+    "squid/error_pages/en/ERR_FTP_PUT_ERROR",
+    "squid/error_pages/en/ERR_FTP_PUT_MODIFIED",
+    "squid/error_pages/en/ERR_FTP_UNAVAILABLE",
+    "squid/error_pages/en/ERR_GATEWAY_FAILURE",
+    "squid/error_pages/en/ERR_ICAP_FAILURE",
+    "squid/error_pages/en/ERR_INVALID_REQ",
+    "squid/error_pages/en/ERR_INVALID_RESP",
+    "squid/error_pages/en/ERR_INVALID_URL",
+    "squid/error_pages/en/ERR_LIFETIME_EXP",
+    "squid/error_pages/en/ERR_NO_RELAY",
+    "squid/error_pages/en/ERR_ONLY_IF_CACHED_MISS",
+    "squid/error_pages/en/ERR_PRECONDITION_FAILED",
+    "squid/error_pages/en/ERR_PROTOCOL_UNKNOWN",
+    "squid/error_pages/en/ERR_READ_ERROR",
+    "squid/error_pages/en/ERR_READ_TIMEOUT",
+    "squid/error_pages/en/ERR_SECURE_CONNECT_FAIL",
+    "squid/error_pages/en/ERR_SHUTTING_DOWN",
+    "squid/error_pages/en/ERR_SOCKET_FAILURE",
+    "squid/error_pages/en/ERR_TOO_BIG",
+    "squid/error_pages/en/ERR_UNSUP_HTTPVERSION",
+    "squid/error_pages/en/ERR_UNSUP_REQ",
+    "squid/error_pages/en/ERR_URN_RESOLVE",
+    "squid/error_pages/en/ERR_WEBFILTER_BLOCKED",
+    "squid/error_pages/en/ERR_WRITE_ERROR",
+    "squid/error_pages/en/ERR_ZERO_SIZE_OBJECT",
+    "squid/squid.conf.template",
+    "squid/ssl/README.md",
+]
+
+
+class _ErrorPageAttributeScanner(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.raw_token_attributes: list[tuple[str, str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        for attr, value in attrs:
+            if value and re.search(r"%(?:[A-Za-z]|%)", value):
+                self.raw_token_attributes.append((tag, attr, value))
+
+
+def test_tracked_squid_inventory_matches_audited_contract() -> None:
+    result = subprocess.run(
+        ["git", "ls-files", "squid"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.splitlines() == EXPECTED_SQUID_TRACKED_FILES
+    assert len(EXPECTED_SQUID_TRACKED_FILES) == 46
 
 
 def test_managed_error_page_manifest_has_complete_squid_template_coverage() -> None:
@@ -60,6 +136,22 @@ def test_managed_error_page_manifest_has_complete_squid_template_coverage() -> N
             "<strong>Administrator guidance</strong>"
         )
         assert "100%" not in text
+
+
+def test_error_pages_do_not_embed_raw_squid_tokens_in_html_attributes() -> None:
+    from services.error_pages import (
+        CUSTOM_ERROR_TEMPLATE_NAMES,
+        SQUID_ERROR_TEMPLATE_NAMES,
+    )
+
+    for name in SQUID_ERROR_TEMPLATE_NAMES + CUSTOM_ERROR_TEMPLATE_NAMES:
+        text = (REPO_ROOT / "squid" / "error_pages" / "en" / name).read_text(
+            encoding="utf-8"
+        )
+        scanner = _ErrorPageAttributeScanner()
+        scanner.feed(text)
+
+        assert scanner.raw_token_attributes == [], name
 
 
 def test_missing_template_names_reports_custom_templates_by_default(

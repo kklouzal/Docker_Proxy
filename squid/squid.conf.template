@@ -252,8 +252,6 @@ cache_store_log none
 #   to HTTPS URLs and makes header-only decisions for request methods with bodies.
 acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE
 acl icap_av_scanable method GET
-acl icap_range_request req_header Range .+
-acl icap_partial_response http_status 206
 adaptation_access adblock_req_set allow icap_adblockable
 adaptation_access adblock_req_set deny all
 

@@ -665,8 +665,8 @@ def test_repo_template_includes_cache_first_defaults() -> None:
     assert "client_db on" in text
     assert "buffered_logs off" in text
     assert "icap_206_enable on" in text
-    assert "acl icap_range_request req_header Range .+" in text
-    assert "acl icap_partial_response http_status 206" in text
+    assert "acl icap_range_request" not in text
+    assert "acl icap_partial_response" not in text
     assert (
         "Antivirus scanning policy is materialized into /etc/squid/conf.d/20-icap.conf"
         in text

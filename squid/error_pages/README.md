@@ -1,20 +1,16 @@
-# This file contains documentation related to custom error pages for Squid. 
+# Docker Proxy Squid error pages
 
-Custom error pages can be configured in Squid to provide a better user experience when errors occur. This directory is intended to hold the HTML files for these custom error pages.
+This directory contains the branded Squid error-page templates that are packaged into the proxy image.
 
-To use custom error pages, you need to modify the Squid configuration file (squid.conf) to point to these pages. Here are some common error pages you might want to customize:
+## Packaging contract
 
-- **ERR_ACCESS_DENIED**: This error occurs when access to a requested resource is denied.
-- **ERR_CONNECT_FAIL**: This error occurs when Squid fails to connect to the requested server.
-- **ERR_DNS_FAIL**: This error occurs when DNS resolution fails for a requested URL.
+- Tracked templates live under `squid/error_pages/en/`.
+- The proxy image copies every tracked `ERR_*` template into Squid's runtime English error directory: `/usr/share/squid/errors/en/`.
+- `squid/squid.conf.template` points Squid at that packaged directory with `error_directory /usr/share/squid/errors/en`.
+- `ERR_WEBFILTER_BLOCKED` is Docker Proxy-specific; the other `ERR_*` files mirror the managed Squid template manifest in `web/services/error_pages.py`.
 
-To create a custom error page, follow these steps:
+## Template safety
 
-1. Create an HTML file in this directory for the specific error you want to customize.
-2. Update the Squid configuration to reference your custom error page. For example:
-   ```
-   error_directory /path/to/squid/error_pages
-   ```
-3. Reload the Squid configuration to apply the changes.
+Squid expands percent-placeholders such as `%U`, `%T`, and `%s` at render time. Keep placeholders in text content, avoid credential-bearing tokens such as `%u` and full-request tokens such as `%R`, and do not place raw request-derived placeholders into links, form actions, or hidden form values.
 
-Make sure to test your custom error pages to ensure they display correctly and provide helpful information to users.
+Run the error-page tests after changing this tree; they verify manifest coverage, placeholder usage, packaging assumptions, and preview rendering.
