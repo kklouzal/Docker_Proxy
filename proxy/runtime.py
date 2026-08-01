@@ -4961,10 +4961,13 @@ class ProxyRuntime:
 
 
 _runtime: ProxyRuntime | None = None
+_runtime_lock = threading.Lock()
 
 
 def get_runtime() -> ProxyRuntime:
     global _runtime
     if _runtime is None:
-        _runtime = ProxyRuntime()
+        with _runtime_lock:
+            if _runtime is None:
+                _runtime = ProxyRuntime()
     return _runtime

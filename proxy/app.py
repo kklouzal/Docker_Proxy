@@ -147,10 +147,11 @@ def _require_management_auth[F: Callable[..., Any]](func: F) -> F:
     @wraps(func)
     def wrapper(*args: Any, **kwargs: Any):
         expected = _expected_token()
-        if expected:
-            provided = _provided_token()
-            if not provided or not hmac.compare_digest(provided, expected):
-                abort(403)
+        if not expected:
+            abort(403)
+        provided = _provided_token()
+        if not provided or not hmac.compare_digest(provided, expected):
+            abort(403)
         return func(*args, **kwargs)
 
     return wrapper  # type: ignore[return-value]

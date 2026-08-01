@@ -170,6 +170,20 @@ def test_proxy_management_api_requires_token_for_all_management_endpoints(
         assert "PROXY_MANAGEMENT_TOKEN" in response.get_json()["detail"]
 
 
+def test_proxy_management_api_fails_closed_when_token_is_unset(monkeypatch) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.delenv("PROXY_MANAGEMENT_TOKEN", raising=False)
+    proxy_app.runtime = _Runtime()
+    client = proxy_app.app.test_client()
+
+    response = _management_get(client, "/api/manage/health")
+
+    assert response.status_code == 403
+    assert response.is_json
+    assert response.get_json()["ok"] is False
+    assert "PROXY_MANAGEMENT_TOKEN" in response.get_json()["detail"]
+
+
 def test_proxy_management_api_accepts_bearer_and_x_proxy_token(monkeypatch) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")

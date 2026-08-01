@@ -381,6 +381,64 @@ def test_proxy_runtime_construction_does_not_initialize_database_backed_stores(
     assert runtime.ssl_errors_store is not None
 
 
+def test_proxy_runtime_singleton_is_thread_safe(monkeypatch) -> None:
+    import threading
+    import time
+
+    import proxy.runtime as runtime_module  # type: ignore
+
+    created: list[object] = []
+
+    class Runtime:
+        def __init__(self) -> None:
+            time.sleep(0.01)
+            created.append(self)
+
+    monkeypatch.setattr(runtime_module, "_runtime", None)
+    monkeypatch.setattr(runtime_module, "ProxyRuntime", Runtime)
+
+    results: list[object] = []
+    threads = [
+        threading.Thread(target=lambda: results.append(runtime_module.get_runtime()))
+        for _index in range(8)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert len(results) == 8
+    assert len(created) == 1
+    assert all(result is created[0] for result in results)
+
+
+def test_proxy_runtime_singleton_lock_recovers_after_failed_initialization(
+    monkeypatch,
+) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    attempts = 0
+
+    class Runtime:
+        def __init__(self) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                msg = "first init failed"
+                raise RuntimeError(msg)
+
+    monkeypatch.setattr(runtime_module, "_runtime", None)
+    monkeypatch.setattr(runtime_module, "ProxyRuntime", Runtime)
+
+    with pytest.raises(RuntimeError, match="first init failed"):
+        runtime_module.get_runtime()
+
+    result = runtime_module.get_runtime()
+
+    assert isinstance(result, Runtime)
+    assert attempts == 2
+
+
 def test_proxy_runtime_required_initial_capture_suppresses_optional_sync_capture(
     monkeypatch,
 ) -> None:
