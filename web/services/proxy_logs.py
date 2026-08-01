@@ -33,8 +33,15 @@ def _tail_bytes(path: Path, *, max_bytes: int) -> tuple[str, int, bool]:
     with path.open("rb") as handle:
         size = os.fstat(handle.fileno()).st_size
         offset = max(0, size - max_bytes)
+        previous_byte = b""
+        if offset > 0:
+            handle.seek(offset - 1)
+            previous_byte = handle.read(1)
         handle.seek(offset)
         raw = handle.read(max_bytes)
+    if offset > 0 and previous_byte != b"\n":
+        _partial, separator, remainder = raw.partition(b"\n")
+        raw = remainder if separator else b""
     return raw.decode("utf-8", errors="replace"), size, offset > 0
 
 

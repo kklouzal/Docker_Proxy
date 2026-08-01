@@ -19,6 +19,41 @@ def test_proxy_logs_reads_only_allowlisted_current_file_tail(
     assert payload["size_bytes"] == 19
 
 
+def test_proxy_logs_drop_leading_partial_line_from_truncated_tail(
+    monkeypatch, tmp_path
+) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "access.log").write_text(
+        "first record with context\nsecond record\nthird record\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+
+    payload = proxy_logs.read_proxy_log(
+        "access", max_bytes=len("ord with context\nsecond record\nthird record\n")
+    )
+
+    assert payload["ok"] is True
+    assert payload["content"] == "second record\nthird record\n"
+    assert payload["truncated"] is True
+
+
+def test_proxy_logs_preserve_line_boundary_truncated_tail(
+    monkeypatch, tmp_path
+) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "access.log").write_text("first\nsecond\nthird\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+
+    payload = proxy_logs.read_proxy_log("access", max_bytes=len("second\nthird\n"))
+
+    assert payload["ok"] is True
+    assert payload["content"] == "second\nthird\n"
+    assert payload["truncated"] is True
+
+
 def test_proxy_log_tail_bounds_match_file_opened_after_log_grows(
     monkeypatch, tmp_path
 ) -> None:
@@ -74,7 +109,7 @@ def test_proxy_logs_clamps_unsafe_max_bytes_values(monkeypatch, tmp_path) -> Non
 
     assert tiny_payload["ok"] is True
     assert tiny_payload["max_bytes"] == 1
-    assert tiny_payload["content"] == "\n"
+    assert tiny_payload["content"] == ""
     assert invalid_payload["ok"] is True
     assert invalid_payload["max_bytes"] == proxy_logs.DEFAULT_LOG_TAIL_BYTES
     assert invalid_payload["content"] == "abc\n"
