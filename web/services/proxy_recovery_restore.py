@@ -435,7 +435,14 @@ def restore_recovery_bundle(
         raise
     finally:
         if acquired:
-            _release_lifecycle_lock(conn, lock_name)
+            try:
+                _release_lifecycle_lock(conn, lock_name)
+            except Exception:
+                # The restore transaction has already committed or rolled back.
+                # Do not mask that authoritative outcome with a best-effort
+                # connection/lock-release failure; MySQL releases named locks
+                # when the session closes.
+                pass
     return _restore_result(
         _RESTORE_STATUS_ADOPTED,
         plan,

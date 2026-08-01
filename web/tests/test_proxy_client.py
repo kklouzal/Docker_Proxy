@@ -49,7 +49,7 @@ class _Response:
     def __exit__(self, *_exc):
         return False
 
-    def read(self) -> bytes:
+    def read(self, _size: int = -1) -> bytes:
         return json.dumps(self._payload).encode("utf-8")
 
 
@@ -484,7 +484,7 @@ def test_proxy_client_sanitizes_successful_html_response(
     )
 
     class HtmlResponse(_Response):
-        def read(self) -> bytes:
+        def read(self, _size: int = -1) -> bytes:
             return b"<!doctype html><title>Wrong listener</title><h1>OK</h1>"
 
     monkeypatch.setattr(
@@ -512,7 +512,7 @@ def test_proxy_client_rejects_successful_non_object_json(
     )
 
     class ListResponse(_Response):
-        def read(self) -> bytes:
+        def read(self, _size: int = -1) -> bytes:
             return b'["not", "a", "management", "payload"]'
 
     monkeypatch.setattr(
@@ -528,6 +528,66 @@ def test_proxy_client_rejects_successful_non_object_json(
     assert "returned JSON that was not an object" in message
     assert "registered management URL" in message
     assert 'not", "a", "management' not in message
+    assert "proxy=live" in message
+
+
+def test_proxy_client_rejects_oversized_success_response(
+    monkeypatch,
+    proxy_client_module,
+) -> None:
+    proxy_client = proxy_client_module
+    monkeypatch.setattr(proxy_client, "_MAX_MANAGEMENT_RESPONSE_BYTES", 16)
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+
+    class OversizedResponse(_Response):
+        def read(self, size: int = -1) -> bytes:
+            assert size == 17
+            return b'{"ok": true, "detail": "too large"}'
+
+    monkeypatch.setattr(
+        proxy_client.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: OversizedResponse({}),
+    )
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().get_health("live")
+
+    message = str(exc_info.value)
+    assert "response exceeded 16 bytes" in message
+    assert "proxy=live" in message
+
+
+def test_proxy_client_rejects_oversized_http_error_response_without_raw_detail(
+    monkeypatch,
+    proxy_client_module,
+) -> None:
+    proxy_client = proxy_client_module
+    monkeypatch.setattr(proxy_client, "_MAX_MANAGEMENT_RESPONSE_BYTES", 16)
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+
+    def fake_urlopen(_request, timeout) -> NoReturn:
+        msg = "http://proxy-mgmt:5000/api/manage/sync"
+        raise urllib.error.HTTPError(
+            msg,
+            502,
+            "Bad Gateway",
+            {},
+            io.BytesIO(b'{"ok": false, "detail": "secret-token-value"}'),
+        )
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().sync_proxy("live")
+
+    message = str(exc_info.value)
+    assert "error response exceeded 16 bytes" in message
+    assert "secret-token-value" not in message
     assert "proxy=live" in message
 
 

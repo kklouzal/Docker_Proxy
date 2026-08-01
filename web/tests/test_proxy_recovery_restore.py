@@ -51,6 +51,7 @@ class _StrictRestoreConn:
         tombstone_action: str | None = None,
         tombstone_target: str = "",
         lock_acquired: bool = True,
+        release_lock_failure: bool = False,
         fail_on_sql: str = "",
         schema_defaults: bool = False,
     ) -> None:
@@ -66,6 +67,7 @@ class _StrictRestoreConn:
         self.tombstone_action = tombstone_action
         self.tombstone_target = tombstone_target
         self.lock_acquired = lock_acquired
+        self.release_lock_failure = release_lock_failure
         self.fail_on_sql = fail_on_sql
         self.schema_defaults = schema_defaults
         self.ops: list[tuple[str, tuple[Any, ...]]] = []
@@ -115,6 +117,9 @@ class _StrictRestoreConn:
         if text.startswith("SELECT GET_LOCK"):
             return _Result([{"acquired": 1 if self.lock_acquired else 0}])
         if text.startswith("DO RELEASE_LOCK"):
+            if self.release_lock_failure:
+                msg = "simulated release failure"
+                raise RuntimeError(msg)
             return _Result()
         if text.startswith("SELECT `key`, url, enabled FROM adblock_lists"):
             if "adblock_lists" in self.nonfresh_tables:
@@ -633,6 +638,17 @@ def test_rollback_on_mid_write_failure_and_release_lock() -> None:
     assert conn.rollbacks == 1
     assert conn.commits == 0
     assert any(sql.startswith("START TRANSACTION") for sql, _params in conn.ops)
+    assert conn.ops[-1][0].startswith("DO RELEASE_LOCK")
+
+
+def test_restore_release_lock_failure_does_not_mask_committed_result() -> None:
+    conn = _StrictRestoreConn(release_lock_failure=True)
+
+    result = restore.restore_recovery_bundle(conn, _bundle(), "edge-01", now_ts=NOW)
+
+    assert result.status == "adopted"
+    assert conn.commits == 1
+    assert conn.rollbacks == 0
     assert conn.ops[-1][0].startswith("DO RELEASE_LOCK")
 
 

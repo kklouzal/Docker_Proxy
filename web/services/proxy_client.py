@@ -24,6 +24,8 @@ class ProxyClientError(RuntimeError):
     pass
 
 
+_MAX_MANAGEMENT_RESPONSE_BYTES = 2 * 1024 * 1024
+
 _UNSAFE_EMPTY_MANAGEMENT_PATH = "Unsafe proxy management path: empty path."
 _UNSAFE_MANAGEMENT_PATH_TEXT = (
     "Unsafe proxy management path: control, whitespace, or backslash."
@@ -45,6 +47,14 @@ _UNSAFE_ENCODED_MANAGEMENT_PATH = (
     "Unsafe proxy management path: ambiguous encoded path."
 )
 _UNSAFE_QUERY_MANAGEMENT_PATH = "Unsafe proxy management path: ambiguous query string."
+
+
+def _read_management_response_text(stream: Any) -> tuple[str, bool]:
+    raw = stream.read(_MAX_MANAGEMENT_RESPONSE_BYTES + 1)
+    if len(raw) > _MAX_MANAGEMENT_RESPONSE_BYTES:
+        raw = raw[:_MAX_MANAGEMENT_RESPONSE_BYTES]
+        return raw.decode("utf-8", errors="replace"), True
+    return raw.decode("utf-8", errors="replace"), False
 
 
 def _has_unsafe_management_path_text(value: str) -> bool:
@@ -218,7 +228,14 @@ class ProxyClient:
         timeout = float(timeout_seconds or self.timeout_seconds)
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                raw = response.read().decode("utf-8", errors="replace")
+                raw, response_too_large = _read_management_response_text(response)
+                if response_too_large:
+                    msg = (
+                        "Proxy management endpoint response exceeded "
+                        f"{_MAX_MANAGEMENT_RESPONSE_BYTES} bytes "
+                        f"(proxy={normalize_proxy_id(proxy_id)}, url={url})"
+                    )
+                    raise ProxyClientError(msg)
                 try:
                     data = json.loads(raw) if raw else {}
                 except Exception as exc:
@@ -238,17 +255,24 @@ class ProxyClient:
                     data=data,
                 )
         except urllib.error.HTTPError as exc:
-            raw = (
-                exc.read().decode("utf-8", errors="replace")
-                if hasattr(exc, "read")
-                else ""
-            )
+            raw = ""
+            response_too_large = False
+            if hasattr(exc, "read"):
+                raw, response_too_large = _read_management_response_text(exc)
             try:
-                data = json.loads(raw) if raw else {}
+                data = {} if response_too_large else (json.loads(raw) if raw else {})
             except Exception:
                 data = {
                     "ok": False,
                     "detail": self._safe_error_detail(raw, status_code=int(exc.code)),
+                }
+            if response_too_large:
+                data = {
+                    "ok": False,
+                    "detail": (
+                        "Proxy management error response exceeded "
+                        f"{_MAX_MANAGEMENT_RESPONSE_BYTES} bytes."
+                    ),
                 }
             if not isinstance(data, dict):
                 data = {"ok": False, "detail": self._non_object_json_detail()}
