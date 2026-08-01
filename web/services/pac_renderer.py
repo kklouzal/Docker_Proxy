@@ -939,6 +939,12 @@ def select_manifest_file(manifest: dict[str, object], client_ip: str) -> str:
         parsed_ip = ipaddress.ip_address((client_ip or "").strip())
     except Exception:
         parsed_ip = None
+    if parsed_ip is not None and getattr(parsed_ip, "ipv4_mapped", None) is not None:
+        # Some WSGI/proxy stacks report IPv4 clients as IPv4-mapped IPv6
+        # addresses (for example ::ffff:10.2.3.4).  PAC client profiles are
+        # operator-facing source networks, so mapped IPv4 clients should select
+        # the same IPv4 CIDR profiles as their canonical dotted-quad form.
+        parsed_ip = parsed_ip.ipv4_mapped
 
     catch_all = ""
     catch_all_key: tuple[int, int, int] | None = None

@@ -1095,6 +1095,23 @@ def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback
     )
 
 
+def test_select_manifest_file_matches_ipv4_mapped_ipv6_clients_against_ipv4_profiles() -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    manifest = {
+        "fallback_file": "fallback.pac",
+        "profiles": [
+            {"client_cidr": "", "file": "catch-all.pac"},
+            {"client_cidr": "10.0.0.0/8", "file": "corp.pac"},
+            {"client_cidr": "10.2.3.0/24", "file": "branch.pac"},
+        ],
+    }
+
+    assert pac_renderer.select_manifest_file(manifest, "::ffff:10.2.3.44") == "branch.pac"
+    assert pac_renderer.select_manifest_file(manifest, "::ffff:10.9.8.7") == "corp.pac"
+
+
 def test_select_manifest_file_uses_lowest_profile_id_for_equal_prefix_matches() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
