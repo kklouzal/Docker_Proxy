@@ -312,3 +312,20 @@ def test_compose_recovery_dir_lives_on_proxy_durable_volume_only() -> None:
     assert "PROXY_RECOVERY_MAX_BUNDLE_BYTES" in text
     admin_section = text.split("  proxy:", 1)[0]
     assert "/var/lib/squid-flask-proxy" not in admin_section
+
+
+def test_compose_recovery_max_bundle_default_is_valid_and_explicit() -> None:
+    compose = Path(__file__).resolve().parents[2] / "docker-compose.common.yml"
+    text = compose.read_text(encoding="utf-8")
+
+    marker = "PROXY_RECOVERY_MAX_BUNDLE_BYTES: ${PROXY_RECOVERY_MAX_BUNDLE_BYTES:-"
+    matching_lines = [line.strip() for line in text.splitlines() if marker in line]
+
+    assert matching_lines == [
+        f"PROXY_RECOVERY_MAX_BUNDLE_BYTES: ${{PROXY_RECOVERY_MAX_BUNDLE_BYTES:-{startup.proxy_recovery.DEFAULT_MAX_BUNDLE_BYTES}}}",
+    ]
+    shipped_default = matching_lines[0].rsplit(":-", 1)[1].rstrip("}")
+    assert (
+        startup.proxy_recovery.validate_max_bundle_bytes(shipped_default)
+        == startup.proxy_recovery.DEFAULT_MAX_BUNDLE_BYTES
+    )
