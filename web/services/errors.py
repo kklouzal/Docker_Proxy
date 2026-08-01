@@ -27,6 +27,23 @@ _AUTH_VALUE_RE = re.compile(
     r"(?i)\b(?P<scheme>bearer|basic)\s+(?P<value>[^\s,;&]+)"
 )
 
+_URL_RE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s\"'<>]+")
+
+_URL_QUERY_CREDENTIAL_RE = re.compile(
+    r"""
+    (?P<prefix>
+        [?&](?:
+            password|passwd|pwd|
+            secret|client[_-]?secret|
+            token|access[_-]?token|refresh[_-]?token|
+            api[_-]?key|apikey|key
+        )=
+    )
+    (?P<value>[^&#\s,;\"'<>]*)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 _URL_USERINFO_RE = re.compile(
     r"(?i)\b(?P<scheme>[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/\s@]+)@"
 )
@@ -58,6 +75,13 @@ def _redact_sensitive_text(text: str) -> str:
 
     text = _URL_USERINFO_RE.sub(r"\g<scheme>[redacted]@", text)
     text = _AUTH_VALUE_RE.sub(r"\g<scheme> [redacted]", text)
+
+    def _replace_url_query_credentials(match: re.Match[str]) -> str:
+        return _URL_QUERY_CREDENTIAL_RE.sub(
+            lambda m: f"{m.group('prefix')}[redacted]", match.group(0)
+        )
+
+    text = _URL_RE.sub(_replace_url_query_credentials, text)
 
     def _replace_sensitive_key(match: re.Match[str]) -> str:
         quote = match.group("quote") or ""

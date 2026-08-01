@@ -1263,6 +1263,58 @@ def test_safe_browsing_update_lists_releases_db_before_network_fetch(
     assert events == ["enter", "exit", "enter", "apply", "exit"]
 
 
+def test_safe_browsing_update_lists_redacts_api_key_from_url_errors(monkeypatch) -> None:
+    class FakeResult:
+        def fetchone(self):
+            return None
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, *_args, **_kwargs):
+            return FakeResult()
+
+    store = SafeBrowsingStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", FakeConn)
+
+    class UrlError(ValueError):
+        def __str__(self) -> str:
+            return (
+                "urlopen failed: "
+                "https://safebrowsing.googleapis.com/v5/hashes:search?key=AIzaSECRET"
+                "&hashPrefixes=abcd"
+            )
+
+    def fake_request_json(*_args, **_kwargs):
+        raise UrlError
+
+    monkeypatch.setattr(store, "_request_json", fake_request_json)
+
+    ok, err, wait = store.update_lists(
+        SafeBrowsingSettings(
+            enabled=True,
+            api_key="AIzaSECRET",
+            lists=(),
+            last_success=0,
+            last_attempt=0,
+            last_error="",
+            next_run_ts=0,
+        ),
+    )
+
+    assert ok is False
+    assert wait == 1800
+    assert "AIzaSECRET" not in err
+    assert "safebrowsing.googleapis.com/v5/hashes:search" in err
+    assert "?key=[redacted]" in err
+    assert "&hashPrefixes=abcd" in err
+
+
 def test_safe_browsing_enforces_android_unwanted_software(monkeypatch) -> None:
     checker = SafeBrowsingLocalChecker(api_key="test", selected_lists=("uwsa-4b",))
     target = expression_hashes("http://bad-android.example/")[0]

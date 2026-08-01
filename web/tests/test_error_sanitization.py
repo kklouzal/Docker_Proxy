@@ -1,4 +1,4 @@
-from services.errors import clean_text, public_error_message
+from services.errors import clean_text, public_error_message, redact_sensitive_text
 
 
 def test_clean_text_strips_newlines_and_bounds_length() -> None:
@@ -7,6 +7,25 @@ def test_clean_text_strips_newlines_and_bounds_length() -> None:
     assert "\n" not in out
     assert "\r" not in out
     assert len(out) <= 20
+
+
+def test_redact_sensitive_text_redacts_url_query_credentials_without_losing_context() -> None:
+    msg = redact_sensitive_text(
+        "failed: "
+        "https://safebrowsing.googleapis.com/v5/hashes:search?key=AIzaSECRET"
+        "&hashPrefixes=abcd&prettyPrint=false "
+        "mirror=https://example.test/path?api_key=ALIASSECRET&name=keynote "
+        "cache key=ordinary"
+    )
+
+    assert "AIzaSECRET" not in msg
+    assert "ALIASSECRET" not in msg
+    assert "safebrowsing.googleapis.com/v5/hashes:search" in msg
+    assert "?key=[redacted]" in msg
+    assert "&hashPrefixes=abcd" in msg
+    assert "&prettyPrint=false" in msg
+    assert "https://example.test/path?api_key=[redacted]&name=keynote" in msg
+    assert "cache key=ordinary" in msg
 
 
 def test_public_error_message_hides_details_by_default(monkeypatch) -> None:
