@@ -3998,6 +3998,80 @@ def test_unavailable_clamd_drains_body_and_fails_open_204(monkeypatch) -> None:
     assert b"ICAP/1.0 204 No Content\r\n" in response
 
 
+def test_fail_open_unavailable_clamd_probe_does_not_stampede_burst(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+    entered_probe = threading.Event()
+    release_probe = threading.Event()
+    attempts = 0
+
+    def create_connection(_address, timeout):
+        nonlocal attempts
+        attempts += 1
+        entered_probe.set()
+        assert release_probe.wait(timeout=1)
+        message = "connection refused"
+        raise ConnectionRefusedError(message)
+
+    monkeypatch.setattr(server.socket, "create_connection", create_connection)
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.5,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=12,
+        max_scans=12,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        first_response: list[bytes] = []
+        first = threading.Thread(
+            target=lambda: first_response.append(
+                _recv_icap_response(port, _sample_respmod_request(port), timeout=2)
+            ),
+        )
+        first.start()
+        assert entered_probe.wait(timeout=1)
+
+        responses: list[bytes] = []
+        workers = [
+            threading.Thread(
+                target=lambda i=i: responses.append(
+                    _recv_icap_response(
+                        port,
+                        _sample_respmod_request(port).replace(
+                            b"hello", f"b{i:04d}".encode("ascii")
+                        ),
+                        timeout=1,
+                    )
+                )
+            )
+            for i in range(10)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=2)
+        release_probe.set()
+        first.join(timeout=2)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert attempts == 1
+    assert len(responses) == 10
+    assert all(
+        response.startswith(b"ICAP/1.0 204 No Content\r\n")
+        for response in responses
+    )
+    assert first_response
+    assert first_response[0].startswith(b"ICAP/1.0 204 No Content\r\n")
+
+
 def test_request_capacity_waits_for_fail_open_respmod_bursts() -> None:
     server = _load_server()
 

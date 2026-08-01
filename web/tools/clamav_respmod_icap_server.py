@@ -31,6 +31,7 @@ DEFAULT_CHUNK_SIZE = 1024 * 1024
 DEFAULT_CLIENT_TIMEOUT = 2.0
 DEFAULT_MAX_CONNECTIONS = 64
 DEFAULT_MAX_SCANS = 16
+DEFAULT_CLAMD_UNAVAILABLE_RETRY_SECONDS = 2.0
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 DEFAULT_SQUID_204_BACKUP_LIMIT = 64 * 1024
 _ICAP_CHUNK_SIZE_RE = re.compile(r"[0-9A-Fa-f]{1,16}")
@@ -1317,6 +1318,9 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.max_scans = max_scans
         self._request_slots = threading.BoundedSemaphore(max_connections)
         self._scan_slots = threading.BoundedSemaphore(max_scans)
+        self._scan_probe_lock = threading.Lock()
+        self._scan_unavailable_until = 0.0
+        self._scan_known_available_until = 0.0
 
     def process_request(
         self,
@@ -1352,13 +1356,50 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         thread.daemon = self.daemon_threads
         thread.start()
 
-    def open_scan(self) -> ClamdInstreamSession:
-        return ClamdInstreamSession(
+    @contextlib.contextmanager
+    def open_scan(self):
+        now = time.monotonic()
+        probe_lock_acquired = False
+        if self.fail_open:
+            if now < self._scan_unavailable_until:
+                message = "clamd INSTREAM scan skipped: backend is unavailable"
+                raise RuntimeError(message)
+            if now >= self._scan_known_available_until:
+                probe_lock_acquired = self._scan_probe_lock.acquire(blocking=False)
+                if not probe_lock_acquired:
+                    message = "clamd INSTREAM scan skipped: availability probe in flight"
+                    raise RuntimeError(message)
+
+        session = ClamdInstreamSession(
             host=self.clamd_host,
             port=self.clamd_port,
             timeout=self.clamd_timeout,
             concurrency_gate=self._scan_slots,
         )
+        try:
+            with session as scanner:
+                if self.fail_open:
+                    available_until = time.monotonic() + self.clamd_timeout
+                    self._scan_known_available_until = max(
+                        self._scan_known_available_until,
+                        available_until,
+                    )
+                    self._scan_unavailable_until = 0.0
+                yield scanner
+        except Exception:
+            if self.fail_open:
+                unavailable_until = (
+                    time.monotonic() + DEFAULT_CLAMD_UNAVAILABLE_RETRY_SECONDS
+                )
+                self._scan_unavailable_until = max(
+                    self._scan_unavailable_until,
+                    unavailable_until,
+                )
+                self._scan_known_available_until = 0.0
+            raise
+        finally:
+            if probe_lock_acquired:
+                self._scan_probe_lock.release()
 
     def scan_body(self, body: bytes) -> ClamdResult:
         with self.open_scan() as scanner:
