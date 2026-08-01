@@ -66,6 +66,7 @@ def _is_reserved_public_dns_host(value: str) -> bool:
         "localhost.localdomain",
         "ip6-localhost",
         "ip6-loopback",
+        "home.arpa",
     }:
         return True
     return candidate.endswith(
