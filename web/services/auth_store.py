@@ -19,6 +19,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_SECRET_PATH = "/var/lib/squid-flask-proxy/flask_secret.key"
 
 
+def _fsync_parent_dir(path: pathlib.Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    fd: int | None = None
+    try:
+        fd = os.open(path.parent, flags)
+        os.fsync(fd)
+    except OSError:
+        return
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 @dataclass(frozen=True)
 class UserRow:
     username: str
@@ -33,6 +51,7 @@ class AuthStore:
         )
         self._schema_ready = False
         self._schema_lock = threading.Lock()
+        self._secret_lock = threading.Lock()
 
     def _connect(self):
         return connect()
@@ -74,48 +93,53 @@ class AuthStore:
         self.add_user("admin", "admin")
 
     def get_or_create_secret_key(self) -> str:
-        secret_path = pathlib.Path(self.secret_path)
-        secret_dir = secret_path.parent
-        if secret_dir:
-            secret_dir.mkdir(exist_ok=True, parents=True)
-        try:
-            with secret_path.open(encoding="utf-8") as f:
-                val = f.read().strip()
-                if val:
-                    self._chmod_secret_file(secret_path)
-                    return val
-        except FileNotFoundError:
-            pass
+        with self._secret_lock:
+            secret_path = pathlib.Path(self.secret_path)
+            secret_dir = secret_path.parent
+            if secret_dir:
+                secret_dir.mkdir(exist_ok=True, parents=True)
+            try:
+                with secret_path.open(encoding="utf-8") as f:
+                    val = f.read().strip()
+                    if val:
+                        self._chmod_secret_file(secret_path)
+                        return val
+            except FileNotFoundError:
+                pass
 
-        secret = secrets.token_urlsafe(48)
-        tmp_path: pathlib.Path | None = None
-        replaced = False
-        try:
-            fd, raw_tmp_path = tempfile.mkstemp(
-                dir=secret_dir,
-                prefix=f".{secret_path.name}.",
-                suffix=".tmp",
-                text=True,
-            )
-            tmp_path = pathlib.Path(raw_tmp_path)
-            tmp_path.chmod(0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(secret)
-                f.write("\n")
-            tmp_path.replace(secret_path)
-            replaced = True
-        finally:
-            if tmp_path is not None and not replaced:
-                try:
-                    tmp_path.unlink(missing_ok=True)
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "auth_store.secret_tmp_cleanup",
-                        interval_seconds=300.0,
-                        message="Failed to clean up temporary Flask secret key file",
-                    )
-        return secret
+            secret = secrets.token_urlsafe(48)
+            tmp_path: pathlib.Path | None = None
+            replaced = False
+            try:
+                fd, raw_tmp_path = tempfile.mkstemp(
+                    dir=secret_dir,
+                    prefix=f".{secret_path.name}.",
+                    suffix=".tmp",
+                    text=True,
+                )
+                tmp_path = pathlib.Path(raw_tmp_path)
+                tmp_path.chmod(0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(secret)
+                    f.write("\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                tmp_path.replace(secret_path)
+                _fsync_parent_dir(secret_path)
+                replaced = True
+                self._chmod_secret_file(secret_path)
+            finally:
+                if tmp_path is not None and not replaced:
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except Exception:
+                        log_exception_throttled(
+                            logger,
+                            "auth_store.secret_tmp_cleanup",
+                            interval_seconds=300.0,
+                            message="Failed to clean up temporary Flask secret key file",
+                        )
+            return secret
 
     @staticmethod
     def _chmod_secret_file(secret_path: pathlib.Path) -> None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import stat
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -84,6 +86,44 @@ def test_auth_store_does_not_use_predictable_shared_tmp_path(
     assert secret_path.read_text(encoding="utf-8") == "new-secret\n"
     assert predictable_tmp_path.read_text(encoding="utf-8") == "do-not-clobber\n"
     assert list(tmp_path.glob(".secret.key.*.tmp")) == []
+
+
+def test_auth_store_secret_creation_is_serialized_for_concurrent_callers(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    auth_store = _auth_store_module()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def fake_token_urlsafe(_size: int) -> str:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            value = f"new-secret-{calls}"
+        time.sleep(0.02)
+        return value
+
+    monkeypatch.setattr(auth_store.secrets, "token_urlsafe", fake_token_urlsafe)
+    secret_path = tmp_path / "secret.key"
+    store = auth_store.AuthStore(secret_path=str(secret_path))
+    ready = threading.Barrier(8)
+    results: list[str] = []
+
+    def load_secret() -> None:
+        ready.wait(timeout=2)
+        results.append(store.get_or_create_secret_key())
+
+    threads = [threading.Thread(target=load_secret) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert results == ["new-secret-1"] * 8
+    assert secret_path.read_text(encoding="utf-8") == "new-secret-1\n"
+    assert calls == 1
 
 
 def test_auth_store_username_and_password_validation(tmp_path) -> None:

@@ -430,6 +430,40 @@ def test_admin_ui_leaf_generation_uses_separate_server_cert_with_sans(tmp_path) 
     assert "192.0.2.10" in [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
 
 
+def test_admin_ui_leaf_generation_rejects_non_ca_issuer_material(tmp_path) -> None:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "Not A CA")]
+    )
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    bundle = certificate_core.build_certificate_bundle(
+        cert.public_bytes(serialization.Encoding.PEM).decode(),
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode(),
+    )
+
+    with pytest.raises(ValueError, match="requires a CA certificate"):
+        certificate_core.materialize_admin_ui_server_certificate(
+            tmp_path,
+            bundle,
+            san_tokens=["admin.example.test"],
+        )
+
+
 def test_validate_tls_material_paths_rejects_expired_certificate(tmp_path) -> None:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = issuer = x509.Name(

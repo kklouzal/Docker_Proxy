@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import sys
+import threading
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -116,6 +118,44 @@ def test_bind_password_encryption_round_trips_without_plaintext() -> None:
     assert encrypted.startswith("enc:v1:")
     assert "super-secret" not in encrypted
     assert store._decrypt(encrypted) == "super-secret"
+
+
+def test_get_directory_auth_store_singleton_is_thread_safe(monkeypatch) -> None:
+    from services import directory_auth
+
+    monkeypatch.setattr(directory_auth, "_directory_auth_store", None)
+    created = 0
+    created_lock = threading.Lock()
+
+    class CountingDirectoryAuthStore(DirectoryAuthStore):
+        def __init__(self, secret_provider=None) -> None:
+            nonlocal created
+            with created_lock:
+                created += 1
+            time.sleep(0.02)
+            super().__init__(secret_provider)
+
+    monkeypatch.setattr(
+        directory_auth,
+        "DirectoryAuthStore",
+        CountingDirectoryAuthStore,
+    )
+    ready = threading.Barrier(8)
+    stores = []
+
+    def load_store() -> None:
+        ready.wait(timeout=2)
+        stores.append(directory_auth.get_directory_auth_store(lambda: "secret"))
+
+    threads = [threading.Thread(target=load_store) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len({id(store) for store in stores}) == 1
+    assert created == 1
 
 
 def test_bind_password_uses_configured_secret_across_store_reinitialization(
@@ -378,9 +418,12 @@ def test_join_dn_requires_base_dn_boundary() -> None:
         ("ldap://[2001:db8::1]:", "valid ldap:// or ldaps:// URLs"),
         ("ldap://2001:db8::1", "valid ldap:// or ldaps:// URLs"),
         ("ldap://ldap.example.org%2Fevil", "valid ldap:// or ldaps:// URLs"),
+        ("ldap://ldap.example.org%252Fevil", "valid ldap:// or ldaps:// URLs"),
         ("ldap://ldap.example.org%3Fevil", "valid ldap:// or ldaps:// URLs"),
         ("ldap://ldap.example.org%40evil.example", "valid ldap:// or ldaps:// URLs"),
         ("ldap://ldap.example.org%5Cevil", "valid ldap:// or ldaps:// URLs"),
+        ("ldap://bad_host.example.org", "valid ldap:// or ldaps:// URLs"),
+        ("ldap://[fe80::1%25eth0]:389", "valid ldap:// or ldaps:// URLs"),
     ],
 )
 def test_profile_save_rejects_invalid_server_urls(

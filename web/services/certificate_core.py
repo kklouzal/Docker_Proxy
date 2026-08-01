@@ -687,6 +687,37 @@ def _load_bundle_ca_material(
         raise ValueError(msg)
     ca_cert = _load_pem_certificate(cert_pem.encode("utf-8"))
     ca_key = _load_pem_private_key(key_pem.encode("utf-8"))
+    validity_detail = _certificate_validity_detail(ca_cert)
+    if validity_detail:
+        msg = f"Admin UI HTTPS leaf generation CA certificate {validity_detail}"
+        raise ValueError(msg)
+    try:
+        if _public_key_bytes(ca_cert) != _public_key_bytes(ca_key):
+            msg = "Admin UI HTTPS leaf generation CA certificate and private key do not match."
+            raise ValueError(msg)
+    except ValueError:
+        raise
+    except Exception as exc:
+        msg = "Admin UI HTTPS leaf generation CA certificate and private key could not be compared."
+        raise ValueError(msg) from exc
+    try:
+        basic_constraints = ca_cert.extensions.get_extension_for_class(
+            x509.BasicConstraints,
+        ).value
+    except x509.ExtensionNotFound as exc:
+        msg = "Admin UI HTTPS leaf generation requires a CA basic constraints extension."
+        raise ValueError(msg) from exc
+    if not basic_constraints.ca:
+        msg = "Admin UI HTTPS leaf generation requires a CA certificate."
+        raise ValueError(msg)
+    try:
+        key_usage = ca_cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        pass
+    else:
+        if not key_usage.key_cert_sign:
+            msg = "Admin UI HTTPS leaf generation CA key usage must allow certificate signing."
+            raise ValueError(msg)
     return ca_cert, ca_key
 
 

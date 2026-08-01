@@ -975,3 +975,22 @@ def test_saml_refresh_records_safe_detail_for_rejected_metadata(monkeypatch) -> 
     assert store.profile.last_refresh_detail == result.detail
     assert "evil.example" not in result.detail
     assert "EntityDescriptor [" not in result.detail
+
+
+def test_saml_public_error_redacts_assertions_and_secret_parameters() -> None:
+    store = MemorySamlAuthStore()
+
+    detail = store._public_error(
+        RuntimeError(
+            "failed URL ?SAMLResponse=base64assertion&RelayState=/admin "
+            "password=secret token=abc signature=deadbeef"
+        )
+    )
+
+    assert "base64assertion" not in detail
+    assert "secret" not in detail
+    assert "abc" not in detail
+    assert "deadbeef" not in detail
+    assert "SAMLResponse=[redacted]" in detail
+    assert "RelayState=[redacted]" in detail
+    assert "password=[redacted]" in detail

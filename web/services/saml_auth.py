@@ -711,6 +711,13 @@ class SamlAuthStore:
         text = str(exc).strip()
         if not text:
             text = exc.__class__.__name__
+        text = re.sub(r"(?i)SAMLResponse=[^&\s]+", "SAMLResponse=[redacted]", text)
+        text = re.sub(r"(?i)RelayState=[^&\s]+", "RelayState=[redacted]", text)
+        text = re.sub(
+            r"(?i)(password|secret|token|signature)=([^,;&\s]+)",
+            r"\1=[redacted]",
+            text,
+        )
         return re.sub(r"\s+", " ", text)[:2000]
 
 

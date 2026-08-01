@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import ipaddress
 import logging
 import re
 import threading
@@ -23,6 +24,72 @@ from services.db import connect
 from services.logutil import log_exception_throttled
 
 logger = logging.getLogger(__name__)
+
+
+def _repeatedly_unquote(value: str, *, max_passes: int = 8) -> tuple[str, bool]:
+    current = value
+    for _ in range(max_passes):
+        decoded = unquote(current)
+        if decoded == current:
+            return decoded, False
+        current = decoded
+    return current, "%" in current
+
+
+def _unsafe_ldap_url_text(value: str) -> bool:
+    return any(
+        ch.isspace() or ord(ch) < 32 or ord(ch) == 127 or ch == "\\"
+        for ch in value
+    )
+
+
+def _unsafe_ldap_authority(value: str) -> bool:
+    decoded, nested = _repeatedly_unquote(value)
+    if nested:
+        return True
+    return any(
+        ch.isspace()
+        or ord(ch) < 32
+        or ord(ch) == 127
+        or ch in "/?#@\\"
+        for ch in decoded
+    )
+
+
+def _has_empty_explicit_authority_port(value: str) -> bool:
+    authority = value.rsplit("@", 1)[-1]
+    if authority.startswith("["):
+        bracket_end = authority.find("]")
+        return bracket_end >= 0 and authority[bracket_end + 1 :] == ":"
+    return authority.endswith(":") and ":" in authority
+
+
+def _canonical_ldap_server_host(hostname: str) -> str:
+    value = (hostname or "").strip().rstrip(".")
+    if not value:
+        return ""
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        try:
+            dns = value.encode("idna").decode("ascii").lower().rstrip(".")
+        except Exception as exc:
+            msg = "Invalid LDAP server host."
+            raise ValueError(msg) from exc
+        if not dns or len(dns) > 253:
+            msg = "Invalid LDAP server host."
+            raise ValueError(msg) from None
+        labels = dns.split(".")
+        label_re = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+        if any(not label_re.fullmatch(label or "") for label in labels):
+            msg = "Invalid LDAP server host."
+            raise ValueError(msg) from None
+        return dns
+    if getattr(ip, "scope_id", None):
+        msg = "Invalid LDAP server host."
+        raise ValueError(msg)
+    return ip.compressed
+
 
 PROVIDER_LDAP = "ldap"
 PROVIDER_ACTIVE_DIRECTORY = "active_directory"
@@ -869,29 +936,12 @@ class DirectoryAuthStore:
             "and optional numeric port."
         )
 
-        def unsafe_authority(value: str) -> bool:
-            decoded = unquote(value)
-            return any(
-                ch.isspace()
-                or ord(ch) < 32
-                or ord(ch) == 127
-                or ch in "/?#@\\"
-                for ch in decoded
-            )
-
-        def has_empty_explicit_authority_port(value: str) -> bool:
-            authority = value.rsplit("@", 1)[-1]
-            if authority.startswith("["):
-                bracket_end = authority.find("]")
-                return bracket_end >= 0 and authority[bracket_end + 1 :] == ":"
-            return authority.endswith(":") and ":" in authority
-
         urls = []
         for raw_line in str(value or "").splitlines():
             source = raw_line.strip()
             if not source:
                 continue
-            if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in source):
+            if _unsafe_ldap_url_text(source):
                 raise ValueError(invalid_url_msg)
             try:
                 parsed = urlsplit(source)
@@ -899,23 +949,27 @@ class DirectoryAuthStore:
                 port = parsed.port
             except ValueError as exc:
                 raise ValueError(invalid_url_msg) from exc
-            if parsed.scheme not in {"ldap", "ldaps"}:
+            if parsed.scheme.lower() not in {"ldap", "ldaps"}:
                 msg = "Only ldap:// or ldaps:// directory server URLs are supported."
                 raise ValueError(msg)
+            try:
+                parsed_host = _canonical_ldap_server_host(hostname)
+            except ValueError as exc:
+                raise ValueError(invalid_url_msg) from exc
             if (
                 not parsed.netloc
-                or not hostname
+                or not parsed_host
                 or parsed.username
                 or parsed.password
                 or parsed.path
                 or parsed.query
                 or parsed.fragment
-                or has_empty_explicit_authority_port(parsed.netloc)
-                or unsafe_authority(parsed.netloc)
+                or _has_empty_explicit_authority_port(parsed.netloc)
+                or _unsafe_ldap_authority(parsed.netloc)
             ):
                 raise ValueError(invalid_url_msg)
-            host = f"[{hostname}]" if ":" in hostname else hostname
-            url = f"{parsed.scheme}://{host}"
+            host = f"[{parsed_host}]" if ":" in parsed_host else parsed_host
+            url = f"{parsed.scheme.lower()}://{host}"
             if port is not None:
                 url = f"{url}:{port}"
             urls.append(url)
@@ -1131,12 +1185,16 @@ class DirectoryAuthStore:
 
 
 _directory_auth_store: DirectoryAuthStore | None = None
+_directory_auth_store_lock = threading.Lock()
 
 
 def get_directory_auth_store(
     secret_provider: Callable[[], str] | None = None,
 ) -> DirectoryAuthStore:
     global _directory_auth_store
-    if _directory_auth_store is None:
-        _directory_auth_store = DirectoryAuthStore(secret_provider)
+    if _directory_auth_store is not None:
+        return _directory_auth_store
+    with _directory_auth_store_lock:
+        if _directory_auth_store is None:
+            _directory_auth_store = DirectoryAuthStore(secret_provider)
     return _directory_auth_store
