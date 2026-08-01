@@ -549,6 +549,165 @@ def test_observability_reports_privacy_export_scrubs_prefixed_raw_identifiers(
             assert token in response.data
 
 
+class ExplodingReportScheduleQueries(CountingObservabilityQueries):
+    def __init__(self, exc: Exception) -> None:
+        super().__init__()
+        self.exc = exc
+        self.save_calls = 0
+
+    def save_report_schedule(self, **_kwargs):
+        self.save_calls += 1
+        raise self.exc
+
+
+def test_observability_report_schedule_invalid_recipient_redirects_to_safe_specific_feedback(
+    monkeypatch, tmp_path
+) -> None:
+    queries = ExplodingReportScheduleQueries(
+        AssertionError("invalid recipients should not be persisted")
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    raw_recipient = "very-sensitive-user"
+    token = csrf_token(client, "/observability?pane=reports")
+    response = client.post(
+        "/observability/report-schedules",
+        data={
+            "csrf_token": token,
+            "name": "Bad recipient digest",
+            "recipients": raw_recipient,
+            "cadence": "daily",
+            "format": "jsonl",
+            "privacy": "1",
+            "window": "3600",
+            "pane": "reports",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    location = response.headers["Location"]
+    assert "schedule_error=recipient" in location
+    assert "schedule_recipient_error=invalid_email" in location
+    assert raw_recipient not in location
+    assert queries.save_calls == 0
+    record = loaded.audit_store.records[-1]
+    assert record["kind"] == "observability_report_schedule_save"
+    assert record["ok"] is False
+    assert record["detail"] == "Report recipients must be valid email addresses."
+    assert raw_recipient not in record["detail"]
+
+    rendered = client.get(location)
+
+    assert rendered.status_code == 200
+    assert b"Scheduled report was not saved. Report recipients must be valid email addresses." in rendered.data
+    assert raw_recipient.encode() not in rendered.data
+    assert b"recipient is required and the database must be reachable" not in rendered.data
+
+
+def test_observability_report_schedule_recipient_feedback_codes_are_specific_and_safe(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    cases = [
+        ("", "required", b"At least one report recipient is required."),
+        (
+            "ops@example.com, ;alerts@example.com",
+            "empty_entry",
+            b"Report recipients must not contain empty recipient entries.",
+        ),
+        (
+            "ops@example.com\r\nBcc: secret-recipient@example.com",
+            "control_chars",
+            b"Report recipients must not contain control characters or newlines.",
+        ),
+        (
+            ", ".join(f"recipient{idx:02d}@example.com" for idx in range(40)),
+            "too_long",
+            b"Report recipients must be 512 characters or fewer after normalization.",
+        ),
+    ]
+    for raw_recipient, code, message in cases:
+        response = client.post(
+            "/observability/report-schedules",
+            data={
+                "csrf_token": csrf_token(client, "/observability?pane=reports"),
+                "name": "Bad recipient digest",
+                "recipients": raw_recipient,
+                "cadence": "daily",
+                "format": "csv",
+                "privacy": "1",
+                "window": "3600",
+                "pane": "reports",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        location = response.headers["Location"]
+        assert "schedule_error=recipient" in location
+        assert f"schedule_recipient_error={code}" in location
+        if raw_recipient:
+            assert raw_recipient not in location
+        assert loaded.audit_store.records[-1]["detail"].encode() == message
+        if raw_recipient:
+            assert raw_recipient not in loaded.audit_store.records[-1]["detail"]
+
+        rendered = client.get(location)
+
+        assert rendered.status_code == 200
+        assert message in rendered.data
+        if raw_recipient:
+            assert raw_recipient.encode() not in rendered.data
+
+
+def test_observability_report_schedule_generic_save_error_stays_generic(
+    monkeypatch, tmp_path
+) -> None:
+    raw_error = "database down for sensitive-recipient@example.com"
+    queries = ExplodingReportScheduleQueries(RuntimeError(raw_error))
+    loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/observability/report-schedules",
+        data={
+            "csrf_token": csrf_token(client, "/observability?pane=reports"),
+            "name": "Daily digest",
+            "recipients": "ops@example.com",
+            "cadence": "daily",
+            "format": "json",
+            "privacy": "1",
+            "window": "3600",
+            "pane": "reports",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    location = response.headers["Location"]
+    assert "schedule_error=1" in location
+    assert "schedule_recipient_error" not in location
+    assert raw_error not in location
+    assert queries.save_calls == 1
+    assert loaded.audit_store.records[-1]["detail"] == (
+        "Operation failed. Check server logs for details."
+    )
+
+    rendered = client.get(location)
+
+    assert rendered.status_code == 200
+    assert b"Scheduled report was not saved. Check Admin UI logs for the database error." in rendered.data
+    assert raw_error.encode() not in rendered.data
+    assert b"recipient is required and the database must be reachable" not in rendered.data
+
+
 def test_observability_report_schedule_post_records_configuration(
     monkeypatch, tmp_path
 ) -> None:

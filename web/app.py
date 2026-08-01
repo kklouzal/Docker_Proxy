@@ -151,6 +151,11 @@ from services.proxy_logs import (
 )
 from services.proxy_registry import get_proxy_registry as _default_get_proxy_registry
 from services.proxy_sync import canonical_registered_proxy_id, request_proxy_reconcile
+from services.report_schedule_recipients import (
+    REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES,
+    normalize_report_schedule_recipients,
+    report_schedule_recipient_error_code,
+)
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import extract_domain as _extract_domain
 from services.safe_browsing_v5 import SafeBrowsingStore
@@ -6849,10 +6854,31 @@ def observability_report_schedules():
     name = (request.form.get("name") or "").strip()
     recipients = (request.form.get("recipients") or "").strip()
     try:
+        normalized_recipients = normalize_report_schedule_recipients(recipients)
+    except ValueError as exc:
+        recipient_error_code = report_schedule_recipient_error_code(exc)
+        detail = REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES.get(
+            recipient_error_code,
+            "Report recipients could not be validated.",
+        )
+        _record_audit_event(
+            "observability_report_schedule_save",
+            ok=False,
+            detail=detail,
+        )
+        return _redirect_to(
+            "observability",
+            pane="reports",
+            window=window_i,
+            privacy=_query_flag(privacy),
+            schedule_error="recipient",
+            schedule_recipient_error=recipient_error_code,
+        )
+    try:
         schedule = queries.save_report_schedule(
             name=name,
             cadence=cadence,
-            recipients=recipients,
+            recipients=normalized_recipients,
             pane=pane,
             report_format=report_format,
             privacy=privacy,
@@ -6882,8 +6908,8 @@ def observability_report_schedules():
             schedule_saved="1",
             schedule_id=schedule.get("id", ""),
         )
-    except Exception as exc:
-        detail = public_error_message(exc)
+    except Exception:
+        detail = "Operation failed. Check server logs for details."
         _record_audit_event(
             "observability_report_schedule_save",
             ok=False,

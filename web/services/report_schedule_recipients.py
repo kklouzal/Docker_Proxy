@@ -10,29 +10,43 @@ _REPORT_SCHEDULE_EMAIL_RE = re.compile(
 )
 _REPORT_SCHEDULE_RECIPIENT_SEPARATOR_RE = re.compile(r"[,; ]+")
 
+REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES = {
+    "required": "At least one report recipient is required.",
+    "control_chars": (
+        "Report recipients must not contain control characters or newlines."
+    ),
+    "empty_entry": "Report recipients must not contain empty recipient entries.",
+    "invalid_email": "Report recipients must be valid email addresses.",
+    "too_long": (
+        "Report recipients must be 512 characters or fewer after normalization."
+    ),
+}
+_REPORT_SCHEDULE_RECIPIENT_ERROR_CODES = {
+    message: code for code, message in REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES.items()
+}
+
+
+def report_schedule_recipient_error_code(error: object) -> str:
+    return _REPORT_SCHEDULE_RECIPIENT_ERROR_CODES.get(str(error or ""), "invalid")
+
 
 def normalize_report_schedule_recipients(value: object) -> str:
     text = str(value or "").strip()
     if not text:
-        msg = "At least one report recipient is required."
-        raise ValueError(msg)
+        raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["required"])
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
-        msg = "Report recipients must not contain control characters or newlines."
-        raise ValueError(msg)
+        raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["control_chars"])
     if re.search(r"(?:^|[,;]) *([,;]|$)", text):
-        msg = "Report recipients must not contain empty recipient entries."
-        raise ValueError(msg)
+        raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["empty_entry"])
 
     normalized: list[str] = []
     seen: set[str] = set()
     for token in _REPORT_SCHEDULE_RECIPIENT_SEPARATOR_RE.split(text):
         recipient = token.strip()
         if not recipient:
-            msg = "Report recipients must not contain empty recipient entries."
-            raise ValueError(msg)
+            raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["empty_entry"])
         if not _valid_report_schedule_email(recipient):
-            msg = "Report recipients must be valid email addresses."
-            raise ValueError(msg)
+            raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["invalid_email"])
         key = recipient.lower()
         if key not in seen:
             seen.add(key)
@@ -40,11 +54,9 @@ def normalize_report_schedule_recipients(value: object) -> str:
 
     normalized_text = ", ".join(normalized)
     if not normalized_text:
-        msg = "At least one report recipient is required."
-        raise ValueError(msg)
+        raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["required"])
     if len(normalized_text) > _REPORT_SCHEDULE_RECIPIENTS_MAX_CHARS:
-        msg = "Report recipients must be 512 characters or fewer after normalization."
-        raise ValueError(msg)
+        raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["too_long"])
     return normalized_text
 
 

@@ -46,8 +46,17 @@
 {% elif pane == 'reports' %}
   {% if request.args.get('schedule_saved') == '1' %}
   <div class="surface-note small">Scheduled report saved. It will use the selected lens, export format, window, and privacy mode.</div>
+  {% elif request.args.get('schedule_error') == 'recipient' %}
+  {% set schedule_recipient_error_messages = {
+    'required': 'At least one report recipient is required.',
+    'control_chars': 'Report recipients must not contain control characters or newlines.',
+    'empty_entry': 'Report recipients must not contain empty recipient entries.',
+    'invalid_email': 'Report recipients must be valid email addresses.',
+    'too_long': 'Report recipients must be 512 characters or fewer after normalization.'
+  } %}
+  <div class="surface-note small">Scheduled report was not saved. {{ schedule_recipient_error_messages.get(request.args.get('schedule_recipient_error'), 'Report recipients could not be validated.') }}</div>
   {% elif request.args.get('schedule_error') == '1' %}
-  <div class="surface-note small">Scheduled report was not saved. A recipient is required and the database must be reachable.</div>
+  <div class="surface-note small">Scheduled report was not saved. Check Admin UI logs for the database error.</div>
   {% endif %}
 {% endif %}
 </section>
