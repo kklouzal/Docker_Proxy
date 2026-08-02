@@ -8,6 +8,7 @@ import os
 import pathlib
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -62,6 +63,15 @@ class _NoCacheAccumulator:
     requests: int
     first_seen: int
     last_seen: int
+
+
+@dataclass(frozen=True)
+class _SeedCheckpoint:
+    source_path: str
+    device_id: int
+    inode: int
+    byte_offset: int
+    checkpoint_sha256: str
 
 
 def _pct(numer: int, denom: int) -> float:
@@ -149,6 +159,7 @@ class LiveStatsStore:
             "clients": "live_stats_clients",
             "client_domains": "live_stats_client_domains",
             "client_domain_nocache": "live_stats_client_domain_nocache",
+            "seed_state": "live_stats_seed_state",
         }
         return mapping[logical_name]
 
@@ -246,10 +257,21 @@ class LiveStatsStore:
             )
         return True
 
-    def _flush_batch_with_conn(self, conn, batch: dict[str, dict[Any, Any]]) -> int:
+    def _flush_batch_with_conn(
+        self,
+        conn,
+        batch: dict[str, dict[Any, Any]],
+        *,
+        proxy_id: str | None = None,
+    ) -> int:
         flushed = 0
-        with guarded_proxy_write(conn, get_proxy_id()) as guard:
-            proxy_id = guard.proxy_id
+        guard_context = (
+            guarded_proxy_write(conn, get_proxy_id())
+            if proxy_id is None
+            else nullcontext(proxy_id)
+        )
+        with guard_context as guard:
+            proxy_id = guard.proxy_id if proxy_id is None else guard
 
             domains = batch["domains"]
             if domains:
@@ -406,6 +428,7 @@ class LiveStatsStore:
                     clients_table = self._table(conn, "clients")
                     client_domains_table = self._table(conn, "client_domains")
                     nocache_table = self._table(conn, "client_domain_nocache")
+                    seed_state_table = self._table(conn, "seed_state")
                     conn.execute(
                         f"""
                         CREATE TABLE IF NOT EXISTS {domains_table} (
@@ -472,6 +495,20 @@ class LiveStatsStore:
                             KEY idx_{nocache_table}_last_seen (last_seen, row_key),
                             KEY idx_{nocache_table}_proxy_ip (proxy_id, ip, last_seen),
                             KEY idx_{nocache_table}_proxy_domain (proxy_id, domain, last_seen)
+                        )
+                        """,
+                    )
+                    conn.execute(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {seed_state_table} (
+                            proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                            source_path VARCHAR(1024) NOT NULL,
+                            device_id BIGINT UNSIGNED NOT NULL,
+                            inode BIGINT UNSIGNED NOT NULL,
+                            byte_offset BIGINT UNSIGNED NOT NULL,
+                            checkpoint_sha256 CHAR(64) NOT NULL,
+                            updated_ts BIGINT NOT NULL,
+                            PRIMARY KEY (proxy_id)
                         )
                         """,
                     )
@@ -642,36 +679,180 @@ class LiveStatsStore:
             if self._accumulate_line(batch, line):
                 self._flush_batch_with_conn(conn, batch)
 
-    def _read_last_lines(self, max_lines: int) -> list[str]:
-        path = self.access_log_path
-        if not pathlib.Path(path).exists():
-            return []
+    @staticmethod
+    def _checkpoint_sha256(handle, byte_offset: int) -> str:
+        checkpoint_size = 4096
+        start = max(0, int(byte_offset) - checkpoint_size)
+        handle.seek(start, os.SEEK_SET)
+        return hashlib.sha256(handle.read(int(byte_offset) - start)).hexdigest()
+
+    def _read_seed_delta(
+        self,
+        previous: _SeedCheckpoint | None,
+    ) -> tuple[list[str], _SeedCheckpoint] | None:
+        path = pathlib.Path(self.access_log_path)
+        if not path.exists():
+            return None
         try:
-            with pathlib.Path(path).open("rb") as f:
-                f.seek(0, os.SEEK_END)
-                size = f.tell()
-                read_size = min(size, max_lines * 512)
-                if read_size > 0:
-                    f.seek(-read_size, os.SEEK_END)
-                chunk = f.read().decode("utf-8", errors="replace")
-            return chunk.splitlines()[-max_lines:]
+            with path.open("rb") as handle:
+                stat = os.fstat(handle.fileno())
+                device_id = int(getattr(stat, "st_dev", 0) or 0)
+                inode = int(getattr(stat, "st_ino", 0) or 0)
+                size = int(getattr(stat, "st_size", 0) or 0)
+                start = 0
+                if (
+                    previous is not None
+                    and previous.source_path == self.access_log_path
+                    and previous.device_id == device_id
+                    and previous.inode == inode
+                    and 0 <= previous.byte_offset <= size
+                    and self._checkpoint_sha256(handle, previous.byte_offset)
+                    == previous.checkpoint_sha256
+                ):
+                    start = previous.byte_offset
+                else:
+                    start = max(0, size - (self.seed_max_lines * 512))
+                    if start > 0:
+                        handle.seek(start - 1, os.SEEK_SET)
+                        if handle.read(1) != b"\n":
+                            handle.readline()
+                            start = handle.tell()
+
+                handle.seek(start, os.SEEK_SET)
+                data = handle.read()
+                complete_size = len(data)
+                if data and not data.endswith(b"\n"):
+                    last_newline = data.rfind(b"\n")
+                    complete_size = 0 if last_newline < 0 else last_newline + 1
+                checkpoint_offset = start + complete_size
+                complete_data = data[:complete_size]
+                lines = complete_data.decode("utf-8", errors="replace").splitlines()
+                if len(lines) > self.seed_max_lines:
+                    lines = lines[-self.seed_max_lines :]
+                checkpoint = _SeedCheckpoint(
+                    source_path=self.access_log_path,
+                    device_id=device_id,
+                    inode=inode,
+                    byte_offset=checkpoint_offset,
+                    checkpoint_sha256=self._checkpoint_sha256(
+                        handle,
+                        checkpoint_offset,
+                    ),
+                )
+                return lines, checkpoint
         except Exception:
-            return []
+            return None
+
+    def _checkpoint_for_offset(
+        self,
+        byte_offset: int,
+        *,
+        expected_device_id: int,
+        expected_inode: int,
+    ) -> _SeedCheckpoint | None:
+        try:
+            with pathlib.Path(self.access_log_path).open("rb") as handle:
+                stat = os.fstat(handle.fileno())
+                device_id = int(getattr(stat, "st_dev", 0) or 0)
+                inode = int(getattr(stat, "st_ino", 0) or 0)
+                size = int(getattr(stat, "st_size", 0) or 0)
+                if (
+                    device_id != expected_device_id
+                    or inode != expected_inode
+                    or not 0 <= byte_offset <= size
+                ):
+                    return None
+                return _SeedCheckpoint(
+                    source_path=self.access_log_path,
+                    device_id=device_id,
+                    inode=inode,
+                    byte_offset=byte_offset,
+                    checkpoint_sha256=self._checkpoint_sha256(handle, byte_offset),
+                )
+        except Exception:
+            return None
+
+    def _seed_checkpoint(self, conn, proxy_id: str) -> _SeedCheckpoint | None:
+        table = self._table(conn, "seed_state")
+        row = conn.execute(
+            f"""
+            SELECT source_path, device_id, inode, byte_offset, checkpoint_sha256
+            FROM {table}
+            WHERE proxy_id = %s
+            FOR UPDATE
+            """,
+            (proxy_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return _SeedCheckpoint(
+            source_path=str(row[0]),
+            device_id=int(row[1]),
+            inode=int(row[2]),
+            byte_offset=int(row[3]),
+            checkpoint_sha256=str(row[4]),
+        )
+
+    def _save_seed_checkpoint(
+        self,
+        conn,
+        proxy_id: str,
+        checkpoint: _SeedCheckpoint,
+    ) -> None:
+        table = self._table(conn, "seed_state")
+        conn.execute(
+            f"""
+            INSERT INTO {table} (
+                proxy_id, source_path, device_id, inode, byte_offset,
+                checkpoint_sha256, updated_ts
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s) AS incoming
+            ON DUPLICATE KEY UPDATE
+                source_path = incoming.source_path,
+                device_id = incoming.device_id,
+                inode = incoming.inode,
+                byte_offset = incoming.byte_offset,
+                checkpoint_sha256 = incoming.checkpoint_sha256,
+                updated_ts = incoming.updated_ts
+            """,
+            (
+                proxy_id,
+                checkpoint.source_path,
+                checkpoint.device_id,
+                checkpoint.inode,
+                checkpoint.byte_offset,
+                checkpoint.checkpoint_sha256,
+                _now(),
+            ),
+        )
 
     def seed_from_recent_log(self) -> None:
-        lines = self._read_last_lines(self.seed_max_lines)
-        if not lines:
-            return
-        batch = self._new_batch()
-        pending = 0
-        for line in lines:
-            if self._accumulate_line(batch, line):
-                pending += 1
-        if not pending:
+        path = pathlib.Path(self.access_log_path)
+        try:
+            if not path.exists() or path.stat().st_size <= 0:
+                return
+        except Exception:
             return
         self.init_db()
         with self._connect() as conn:
-            self._flush_batch_with_conn(conn, batch)
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                previous = self._seed_checkpoint(conn, guard.proxy_id)
+                snapshot = self._read_seed_delta(previous)
+                if snapshot is None:
+                    return
+                lines, checkpoint = snapshot
+                batch = self._new_batch()
+                pending = 0
+                for line in lines:
+                    if self._accumulate_line(batch, line):
+                        pending += 1
+                if pending:
+                    self._flush_batch_with_conn(
+                        conn,
+                        batch,
+                        proxy_id=guard.proxy_id,
+                    )
+                self._save_seed_checkpoint(conn, guard.proxy_id, checkpoint)
 
     def start_background(self) -> None:
         with self._start_lock:
@@ -769,6 +950,7 @@ class LiveStatsStore:
 
                 st = os.stat(path)
                 inode = getattr(st, "st_ino", None)
+                device_id = int(getattr(st, "st_dev", 0) or 0)
                 if last_inode is None:
                     last_inode = inode
 
@@ -777,9 +959,25 @@ class LiveStatsStore:
                     if not pending:
                         last_commit = time.monotonic()
                         return
+                    checkpoint = self._checkpoint_for_offset(
+                        int(f.tell()),
+                        expected_device_id=device_id,
+                        expected_inode=int(last_inode or 0),
+                    )
                     self.init_db()
                     with self._connect() as conn:
-                        self._flush_batch_with_conn(conn, batch)
+                        with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                            self._flush_batch_with_conn(
+                                conn,
+                                batch,
+                                proxy_id=guard.proxy_id,
+                            )
+                            if checkpoint is not None:
+                                self._save_seed_checkpoint(
+                                    conn,
+                                    guard.proxy_id,
+                                    checkpoint,
+                                )
                     flush_backoff.record_success()
                     self._clear_batch(batch)
                     pending = 0

@@ -220,65 +220,69 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "application_ledger_evidence_indexes",
         "timeseries_metric_count_columns",
         "application_ledger_evidence_completion",
+        "live_stats_seed_checkpoint",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 23
-    assert specs[-8].version == 16
-    assert specs[-8].name == "control_plane_identity"
-    assert specs[-7].version == 17
-    assert specs[-7].name == "proxy_recovery_adoptions"
-    assert specs[-6].version == 18
-    assert specs[-6].name == "policy_exception_method_scope"
-    assert specs[-5].version == 19
-    assert specs[-5].name == "operation_ledger_stale_requeue_lifecycle"
-    assert specs[-4].version == 20
-    assert specs[-4].name == "webfilter_blocked_log_lifecycle_indexes"
-    assert specs[-3].version == 21
-    assert specs[-3].name == "application_ledger_evidence_indexes"
-    assert specs[-2].version == 22
-    assert specs[-2].name == "timeseries_metric_count_columns"
-    assert specs[-1].version == 23
-    assert specs[-1].name == "application_ledger_evidence_completion"
+    assert schema_lifecycle.latest_schema_version() == 24
+    assert specs[-9].version == 16
+    assert specs[-9].name == "control_plane_identity"
+    assert specs[-8].version == 17
+    assert specs[-8].name == "proxy_recovery_adoptions"
+    assert specs[-7].version == 18
+    assert specs[-7].name == "policy_exception_method_scope"
+    assert specs[-6].version == 19
+    assert specs[-6].name == "operation_ledger_stale_requeue_lifecycle"
+    assert specs[-5].version == 20
+    assert specs[-5].name == "webfilter_blocked_log_lifecycle_indexes"
+    assert specs[-4].version == 21
+    assert specs[-4].name == "application_ledger_evidence_indexes"
+    assert specs[-3].version == 22
+    assert specs[-3].name == "timeseries_metric_count_columns"
+    assert specs[-2].version == 23
+    assert specs[-2].name == "application_ledger_evidence_completion"
+    assert specs[-1].version == 24
+    assert specs[-1].name == "live_stats_seed_checkpoint"
     assert schema_lifecycle.latest_schema_checksum() == specs[-1].checksum
-    assert specs[-8].tables[0].table == "control_plane_identity"
-    assert "control_plane_id CHAR(36) NOT NULL" in specs[-8].tables[0].create_sql
-    assert specs[-7].tables[0].table == "proxy_recovery_adoptions"
-    assert "proxy_id VARCHAR(64) NOT NULL" in specs[-7].tables[0].create_sql
-    assert "PRIMARY KEY(proxy_id, target_control_plane_id)" in specs[-7].tables[0].create_sql
-    assert specs[-6].columns[0].table == "policy_exceptions"
-    assert specs[-6].columns[0].name == "method"
-    assert specs[-5].columns[0].table == "proxy_operations"
-    assert specs[-5].columns[0].name == "stale_requeue_count"
-    assert [index.name for index in specs[-5].indexes] == [
+    assert specs[-9].tables[0].table == "control_plane_identity"
+    assert "control_plane_id CHAR(36) NOT NULL" in specs[-9].tables[0].create_sql
+    assert specs[-8].tables[0].table == "proxy_recovery_adoptions"
+    assert "proxy_id VARCHAR(64) NOT NULL" in specs[-8].tables[0].create_sql
+    assert "PRIMARY KEY(proxy_id, target_control_plane_id)" in specs[-8].tables[0].create_sql
+    assert specs[-7].columns[0].table == "policy_exceptions"
+    assert specs[-7].columns[0].name == "method"
+    assert specs[-6].columns[0].table == "proxy_operations"
+    assert specs[-6].columns[0].name == "stale_requeue_count"
+    assert [index.name for index in specs[-6].indexes] == [
         "idx_proxy_operations_proxy_status_created_id",
         "idx_proxy_operations_proxy_started_id",
         "idx_proxy_operations_proxy_updated_id",
         "uniq_proxy_operations_active_request",
     ]
-    assert specs[-5].indexes[-1].unique is True
-    assert specs[-5].data_steps[0].name == "operation_ledger_active_request_key_backfill"
-    assert specs[-4].columns[0].table == "webfilter_blocked_log"
-    assert specs[-4].columns[0].name == "proxy_id"
-    assert [index.name for index in specs[-4].indexes] == [
+    assert specs[-6].indexes[-1].unique is True
+    assert specs[-6].data_steps[0].name == "operation_ledger_active_request_key_backfill"
+    assert specs[-5].columns[0].table == "webfilter_blocked_log"
+    assert specs[-5].columns[0].name == "proxy_id"
+    assert [index.name for index in specs[-5].indexes] == [
         "idx_webfilter_blocked_log_ts_id",
         "idx_webfilter_blocked_log_proxy_ts",
     ]
-    assert specs[-3].columns[0].table == "proxy_config_applications"
-    assert specs[-3].columns[0].name == "config_sha256"
-    assert [index.name for index in specs[-3].indexes] == [
+    assert specs[-4].columns[0].table == "proxy_config_applications"
+    assert specs[-4].columns[0].name == "config_sha256"
+    assert [index.name for index in specs[-4].indexes] == [
         "idx_proxy_config_applications_proxy_revision_ts",
     ]
-    assert specs[-2].data_steps[0].name == "timeseries_metric_count_columns"
-    assert [(column.table, column.name) for column in specs[-1].columns] == [
+    assert specs[-3].data_steps[0].name == "timeseries_metric_count_columns"
+    assert [(column.table, column.name) for column in specs[-2].columns] == [
         ("proxy_config_applications", "config_sha256"),
         ("proxy_certificate_applications", "bundle_sha256"),
         ("proxy_adblock_artifact_applications", "artifact_sha256"),
     ]
-    assert [(index.table, index.name) for index in specs[-1].indexes] == [
+    assert [(index.table, index.name) for index in specs[-2].indexes] == [
         ("proxy_config_applications", "idx_proxy_config_applications_proxy_revision_ts"),
         ("proxy_certificate_applications", "idx_proxy_certificate_applications_proxy_revision_ts"),
         ("proxy_adblock_artifact_applications", "idx_proxy_adblock_artifact_apply_proxy_revision_ts"),
     ]
-    assert specs[-1].data_steps[0].name == "application_ledger_evidence_completion_backfill"
+    assert specs[-2].data_steps[0].name == "application_ledger_evidence_completion_backfill"
+    assert specs[-1].tables[0].table == "live_stats_seed_state"
 
 
 class _ApplicationLedgerEvidenceBackfillConn:

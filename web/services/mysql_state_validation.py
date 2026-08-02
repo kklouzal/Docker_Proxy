@@ -51,6 +51,7 @@ _REQUIRED_TABLES: tuple[str, ...] = (
     "live_stats_clients",
     "live_stats_client_domains",
     "live_stats_client_domain_nocache",
+    "live_stats_seed_state",
     "ts_1s",
     "ts_1m",
     "ts_1h",

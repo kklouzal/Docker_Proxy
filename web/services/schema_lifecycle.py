@@ -27,7 +27,7 @@ from services.db import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 23
+_SCHEMA_VERSION = 24
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -1434,6 +1434,27 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                 SchemaDataStep(
                     "application_ledger_evidence_completion_backfill",
                     _backfill_application_ledger_evidence,
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=24,
+            name="live_stats_seed_checkpoint",
+            tables=(
+                SchemaObjectSpec(
+                    "live_stats_seed_state",
+                    """
+                    CREATE TABLE IF NOT EXISTS live_stats_seed_state (
+                        proxy_id VARCHAR(64) NOT NULL DEFAULT 'default',
+                        source_path VARCHAR(1024) NOT NULL,
+                        device_id BIGINT UNSIGNED NOT NULL,
+                        inode BIGINT UNSIGNED NOT NULL,
+                        byte_offset BIGINT UNSIGNED NOT NULL,
+                        checkpoint_sha256 CHAR(64) NOT NULL,
+                        updated_ts BIGINT NOT NULL,
+                        PRIMARY KEY (proxy_id)
+                    )
+                    """,
                 ),
             ),
         ),

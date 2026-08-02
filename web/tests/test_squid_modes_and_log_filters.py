@@ -39,6 +39,36 @@ def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(
     assert rows[0]["count"] == 1
 
 
+def test_live_stats_seed_checkpoint_skips_restarts_and_recovers_appends(
+    tmp_path,
+) -> None:
+    _add_web_to_path()
+    configure_test_mysql_env(tmp_path / "live-stats-seed")
+
+    from services.live_stats import LiveStatsStore  # type: ignore
+
+    access_log = tmp_path / "access.log"
+    access_log.write_text(
+        "1777770000.1\t-\t192.0.2.10\tGET\thttps://first.example/a"
+        "\tTCP_MISS/200\t100\n",
+        encoding="utf-8",
+    )
+
+    LiveStatsStore(access_log_path=str(access_log)).seed_from_recent_log()
+    LiveStatsStore(access_log_path=str(access_log)).seed_from_recent_log()
+    with access_log.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "1777770001.2\t-\t192.0.2.10\tGET\thttps://second.example/b"
+            "\tTCP_HIT/200\t200\n"
+        )
+    store = LiveStatsStore(access_log_path=str(access_log))
+    store.seed_from_recent_log()
+
+    totals = store.get_totals()
+    assert totals["domain_requests"] == 2
+    assert totals["domain_hit_requests"] == 1
+
+
 def test_ssl_errors_store_ignores_startup_noise(tmp_path) -> None:
     _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors")

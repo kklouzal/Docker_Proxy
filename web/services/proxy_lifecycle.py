@@ -110,6 +110,7 @@ PROXY_LIFECYCLE_TABLES: tuple[ProxyLifecycleTable, ...] = (
     ProxyLifecycleTable("live_stats_clients", order_columns=("proxy_id", "ip")),
     ProxyLifecycleTable("live_stats_client_domains", order_columns=("proxy_id", "ip", "domain")),
     ProxyLifecycleTable("live_stats_client_domain_nocache", order_columns=("proxy_id", "last_seen", "row_key")),
+    ProxyLifecycleTable("live_stats_seed_state", order_columns=("proxy_id",)),
     ProxyLifecycleTable("observability_report_schedules", order_columns=("proxy_id", "updated_ts", "id")),
     ProxyLifecycleTable("pac_backup_proxies", order_columns=("proxy_id", "position", "id")),
     ProxyLifecycleTable("pac_proxy_chain_settings", order_columns=("proxy_id",)),

@@ -142,6 +142,7 @@ def test_live_stats_global_last_seen_indexes_bootstrap(monkeypatch):
     assert "KEY idx_live_stats_clients_last_seen (last_seen, ip)" in sql
     assert "KEY idx_live_stats_client_domains_last_seen (last_seen, ip, domain)" in sql
     assert "KEY idx_live_stats_client_domain_nocache_last_seen (last_seen, row_key)" in sql
+    assert "CREATE TABLE IF NOT EXISTS live_stats_seed_state" in sql
     assert "ALTER TABLE live_stats_domains ADD INDEX idx_live_stats_domains_last_seen (last_seen, domain)" in sql
     assert "ALTER TABLE live_stats_clients ADD INDEX idx_live_stats_clients_last_seen (last_seen, ip)" in sql
     assert "ALTER TABLE live_stats_client_domains ADD INDEX idx_live_stats_client_domains_last_seen (last_seen, ip, domain)" in sql

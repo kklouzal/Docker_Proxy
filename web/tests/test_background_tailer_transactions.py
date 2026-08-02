@@ -76,6 +76,75 @@ def test_live_stats_tailer_does_not_open_db_connection_while_idle(
         store._tail_loop()
 
 
+def test_live_stats_seed_checkpoint_skips_restarts_and_recovers_appends(
+    monkeypatch, tmp_path, live_stats
+) -> None:
+    log_path = tmp_path / "access.log"
+    first_line = (
+        "1777770000.1\t-\t192.0.2.10\tGET\thttps://first.example/a"
+        "\tTCP_MISS/200\t100\n"
+    )
+    second_line = (
+        "1777770001.2\t-\t192.0.2.10\tGET\thttps://second.example/b"
+        "\tTCP_HIT/200\t200\n"
+    )
+    log_path.write_text(first_line, encoding="utf-8")
+    state: tuple[object, ...] | None = None
+    flushed_requests: list[dict[str, int]] = []
+
+    class Result:
+        def __init__(self, row=None) -> None:
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql: str, params=()):
+            nonlocal state
+            if "SELECT source_path" in sql:
+                return Result(state)
+            if "INSERT INTO live_stats_seed_state" in sql:
+                state = tuple(params[1:6])
+                return Result()
+            message = f"unexpected SQL: {sql}"
+            raise AssertionError(message)
+
+    def flush_batch(_conn, batch, **_kwargs) -> None:
+        flushed_requests.append(
+            {
+                domain: entry.requests
+                for domain, entry in batch["domains"].items()
+            }
+        )
+
+    def make_store():
+        store = live_stats.LiveStatsStore(access_log_path=str(log_path))
+        monkeypatch.setattr(store, "init_db", lambda: None)
+        monkeypatch.setattr(store, "_connect", Conn)
+        monkeypatch.setattr(store, "_flush_batch_with_conn", flush_batch)
+        return store
+
+    make_store().seed_from_recent_log()
+    make_store().seed_from_recent_log()
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(second_line)
+    make_store().seed_from_recent_log()
+
+    assert flushed_requests == [
+        {"first.example": 1},
+        {"second.example": 1},
+    ]
+    assert state is not None
+    assert state[3] == log_path.stat().st_size
+
+
 def test_live_stats_tailer_retains_batch_across_rotation_and_backoff(
     monkeypatch, tmp_path, live_stats
 ) -> None:
@@ -137,7 +206,7 @@ def test_live_stats_tailer_retains_batch_across_rotation_and_backoff(
         batch["domains"]["example.test"] = batch["domains"].get("example.test", 0) + 1
         return True
 
-    def flush_batch(_conn, batch) -> None:
+    def flush_batch(_conn, batch, **_kwargs) -> None:
         flushed_batches.append({bucket: dict(values) for bucket, values in batch.items()})
 
     outage_logs: list[tuple[str, str]] = []
@@ -157,6 +226,7 @@ def test_live_stats_tailer_retains_batch_across_rotation_and_backoff(
     monkeypatch.setattr(store, "_connect", connect)
     monkeypatch.setattr(store, "_accumulate_line", accumulate)
     monkeypatch.setattr(store, "_flush_batch_with_conn", flush_batch)
+    monkeypatch.setattr(store, "_checkpoint_for_offset", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(live_stats.time, "monotonic", lambda: next(times, 999.0))
     monkeypatch.setattr(live_stats.time, "sleep", stop_after_retry)
     monkeypatch.setattr(live_stats.pathlib.Path, "exists", lambda _self: True)
@@ -216,6 +286,14 @@ def test_live_stats_commit_cadence_uses_monotonic_time(
     store = live_stats.LiveStatsStore(access_log_path=str(log_path))
     store._db_initialized = True
     flush_sizes: list[int] = []
+    saved_checkpoints: list[object] = []
+    checkpoint = live_stats._SeedCheckpoint(
+        source_path=str(log_path),
+        device_id=1,
+        inode=2,
+        byte_offset=10,
+        checkpoint_sha256="a" * 64,
+    )
 
     class Conn:
         def __enter__(self):
@@ -248,7 +326,7 @@ def test_live_stats_commit_cadence_uses_monotonic_time(
         batch["domains"]["example.test"] = 1
         return True
 
-    def flush_batch(_conn, batch) -> None:
+    def flush_batch(_conn, batch, **_kwargs) -> None:
         flush_sizes.append(len(batch["domains"]))
 
     monotonic_times = iter([100.0, 100.1, 101.2])
@@ -258,6 +336,16 @@ def test_live_stats_commit_cadence_uses_monotonic_time(
     monkeypatch.setattr(store, "_connect", Conn)
     monkeypatch.setattr(store, "_accumulate_line", accumulate)
     monkeypatch.setattr(store, "_flush_batch_with_conn", flush_batch)
+    monkeypatch.setattr(
+        store,
+        "_checkpoint_for_offset",
+        lambda *_args, **_kwargs: checkpoint,
+    )
+    monkeypatch.setattr(
+        store,
+        "_save_seed_checkpoint",
+        lambda _conn, _proxy_id, value: saved_checkpoints.append(value),
+    )
     monkeypatch.setattr(live_stats.time, "monotonic", lambda: next(monotonic_times, 101.2))
     monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
     monkeypatch.setattr(
@@ -272,6 +360,7 @@ def test_live_stats_commit_cadence_uses_monotonic_time(
         store._tail_loop()
 
     assert flush_sizes == [1]
+    assert saved_checkpoints == [checkpoint]
 
 
 def test_diagnostic_tailer_does_not_open_db_connection_while_idle(
