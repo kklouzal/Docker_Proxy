@@ -325,6 +325,70 @@ def test_request_host_preserves_valid_authority_shapes(monkeypatch, pac_http) ->
     )
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1",
+        "0.0.0.0:3128",
+        "169.254.10.20",
+        "224.0.0.1:8080",
+        "[::1]:8080",
+        "::",
+        "[fe80::1]:3128",
+        "ff02::1",
+        "[::ffff:127.0.0.1]:8080",
+    ],
+)
+def test_request_host_rejects_unsafe_ip_literal_authorities(
+    pac_http, host: str
+) -> None:
+    assert pac_http._normalize_request_authority(host) == ""
+    assert pac_http.request_host_from_headers({"Host": host}) == "127.0.0.1"
+
+
+@pytest.mark.parametrize(
+    "forwarded_host",
+    [
+        "127.0.0.1:3128",
+        "0.0.0.0",  # noqa: S104 - verifies wildcard authorities are rejected.
+        "169.254.10.20:8080",
+        "239.1.2.3",
+        "[::1]:8080",
+        "[::]:3128",
+        "fe80::1",
+        "[ff02::1]:8080",
+    ],
+)
+def test_request_host_falls_back_from_unsafe_trusted_forwarded_ip_authority(
+    monkeypatch, pac_http, forwarded_host: str
+) -> None:
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
+
+    assert (
+        pac_http.request_host_from_headers(
+            {
+                "Host": "public-proxy.example:5000",
+                "X-Forwarded-Host": forwarded_host,
+            },
+            "198.51.100.10",
+        )
+        == "public-proxy.example:5000"
+    )
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("192.168.10.20:3128", "192.168.10.20:3128"),
+        ("[fd00::20]:8080", "[fd00::20]:8080"),
+    ],
+)
+def test_request_host_preserves_private_lan_ip_authorities(
+    pac_http, host: str, expected: str
+) -> None:
+    assert pac_http.request_host_from_headers({"Host": host}) == expected
+
+
 def test_request_host_rejects_scoped_ipv6_authority_values(
     monkeypatch, pac_http
 ) -> None:

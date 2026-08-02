@@ -126,6 +126,22 @@ def _valid_dns_host(value: str) -> bool:
     )
 
 
+def _is_unsafe_request_authority_ip(
+    parsed_ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    if getattr(parsed_ip, "scope_id", None):
+        return True
+    mapped_ipv4 = getattr(parsed_ip, "ipv4_mapped", None)
+    candidates = (parsed_ip, mapped_ipv4) if mapped_ipv4 is not None else (parsed_ip,)
+    return any(
+        candidate.is_loopback
+        or candidate.is_unspecified
+        or candidate.is_multicast
+        or candidate.is_link_local
+        for candidate in candidates
+    )
+
+
 def _normalize_request_authority_host(value: str) -> str:
     try:
         parsed_ip = ipaddress.ip_address(value)
@@ -137,6 +153,8 @@ def _normalize_request_authority_host(value: str) -> str:
         ):
             return ""
         return value.lower()
+    if _is_unsafe_request_authority_ip(parsed_ip):
+        return ""
     return str(parsed_ip)
 
 
@@ -174,7 +192,7 @@ def _normalize_request_authority(value: object | None) -> str:
             parsed_ip = ipaddress.ip_address(host)
         except ValueError:
             return ""
-        if getattr(parsed_ip, "scope_id", None):
+        if _is_unsafe_request_authority_ip(parsed_ip):
             return ""
         if parsed_ip.version != 6:
             return ""
@@ -185,7 +203,7 @@ def _normalize_request_authority(value: object | None) -> str:
             parsed_ip = ipaddress.ip_address(candidate)
         except ValueError:
             return ""
-        if getattr(parsed_ip, "scope_id", None):
+        if _is_unsafe_request_authority_ip(parsed_ip):
             return ""
         return str(parsed_ip) if parsed_ip.version == 6 else ""
 
