@@ -284,6 +284,36 @@ def test_install_pfx_happy_path_writes_files(tmp_path) -> None:
     assert (tmp_path / "uploaded_ca.pfx").exists()
 
 
+def test_parse_pfx_uses_password_file_instead_of_command_arg() -> None:
+    m = _import_cert_manager_module()
+    cert_pem, key_pem = _pem_ca_material()
+    delegate = _fake_pfx_runner(cert_pem, key_pem)
+    secret = "high-value-pfx-password"
+    passin_values: list[str] = []
+
+    def fake_run_checked(args, *, timeout: int = 30):
+        joined = " ".join(str(arg) for arg in args)
+        assert secret not in joined
+        assert "pass:" + secret not in joined
+        passin = args[args.index("-passin") + 1]
+        passin_values.append(passin)
+        assert passin.startswith("file:")
+        pass_path = pathlib.Path(passin.removeprefix("file:"))
+        assert pass_path.read_text(encoding="utf-8") == secret
+        assert (pass_path.stat().st_mode & 0o777) == 0o600
+        return delegate(args, timeout=timeout)
+
+    r = m.parse_pfx_bundle(
+        b"pfx-bytes",
+        password=secret,
+        run_checked=fake_run_checked,
+    )
+
+    assert r.ok is True
+    assert len(passin_values) == 3
+    assert len(set(passin_values)) == 1
+
+
 def test_parse_pfx_reports_missing_certificate(tmp_path) -> None:
     m = _import_cert_manager_module()
 

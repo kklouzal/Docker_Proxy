@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import pathlib
@@ -449,8 +450,23 @@ def _validated_ordered_chain_certificates(
     return [chain_cert_pem for chain_cert_pem, _cert, _identity in ordered]
 
 
-def _passin_arg(password: str) -> str:
-    return f"pass:{password or ''}"
+def _passin_arg(password: str, *, tmpdir: str | None = None) -> str:
+    if not password:
+        return "pass:"
+    if tmpdir is None:
+        msg = "A temporary directory is required for non-empty PFX passwords."
+        raise ValueError(msg)
+    fd, pass_path = tempfile.mkstemp(prefix="pfx_pass_", dir=tmpdir)
+    try:
+        with os.fdopen(fd, "wb") as pass_file:
+            pass_file.write(password.encode("utf-8"))
+        with contextlib.suppress(OSError):
+            pathlib.Path(pass_path).chmod(0o600)
+    except Exception:
+        with contextlib.suppress(OSError):
+            pathlib.Path(pass_path).unlink()
+        raise
+    return f"file:{pass_path}"
 
 
 def generate_self_signed_ca_bundle(
@@ -507,7 +523,7 @@ def parse_pfx_bundle(
 
             pathlib.Path(pfx_path).write_bytes(pfx_bytes)
 
-            passin = _passin_arg(password)
+            passin = _passin_arg(password, tmpdir=tmpdir)
 
             runner(
                 [
