@@ -9,6 +9,7 @@ from typing import Any, Final, Literal
 
 from services import proxy_recovery
 from services.db import connect
+from services.pac_profiles_store import _normalize_proxy_host_port
 from services.proxy_recovery_db import recovery_export_query_plans
 from services.proxy_write_guard import (
     ProxyLifecycleWriteError,
@@ -519,6 +520,8 @@ def _validate_rows(
             )
             for column in expected_columns
         )
+        if table_name == "pac_backup_proxies":
+            normalized = _normalize_pac_backup_proxy_row(normalized, expected_columns)
         by_col = dict(zip(expected_columns, normalized, strict=True))
         if natural_key:
             key = tuple(by_col[column] for column in natural_key)
@@ -537,6 +540,25 @@ def _validate_rows(
     if table_name == "observability_report_schedules":
         _validate_observability_report_schedule_rows(rows, expected_columns)
     return tuple(rows)
+
+
+def _normalize_pac_backup_proxy_row(
+    row: tuple[Any, ...],
+    columns: tuple[str, ...],
+) -> tuple[Any, ...]:
+    by_col = dict(zip(columns, row, strict=True))
+    host, port, error = _normalize_proxy_host_port(
+        by_col["proxy_host"],
+        by_col["proxy_port"],
+    )
+    if host is None or port is None:
+        raise ProxyRecoveryRestoreError(
+            f"pac_backup_proxies proxy host/port is invalid: {error}",
+        )
+    normalized = list(row)
+    normalized[columns.index("proxy_host")] = host
+    normalized[columns.index("proxy_port")] = port
+    return tuple(normalized)
 
 
 def _validate_observability_report_schedule_rows(

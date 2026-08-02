@@ -469,6 +469,63 @@ def test_restore_report_schedule_uses_shared_recipient_normalization_contract() 
     assert schedule_table.rows[0][recipients_index] == "Ops@example.com, alerts@example.com"
 
 
+@pytest.mark.parametrize(
+    "proxy_host",
+    [
+        "localhost",
+        "backup.example;DIRECT",
+    ],
+)
+def test_restore_rejects_unsafe_pac_backup_proxy_hosts(proxy_host: str) -> None:
+    row = {
+        "proxy_id": "edge-01",
+        "proxy_host": proxy_host,
+        "proxy_port": 3128,
+        "position": 1,
+    }
+    bundle = _bundle_with_table_rows("pac_backup_proxies", (row,))
+
+    with pytest.raises(
+        restore.ProxyRecoveryRestoreError,
+        match="pac_backup_proxies proxy host/port is invalid: Invalid proxy host",
+    ):
+        restore.build_restore_plan(bundle, "edge-01", now_ts=NOW)
+
+
+@pytest.mark.parametrize("proxy_port", [0, 65_536])
+def test_restore_rejects_invalid_pac_backup_proxy_ports(proxy_port: int) -> None:
+    row = {
+        "proxy_id": "edge-01",
+        "proxy_host": "backup.example",
+        "proxy_port": proxy_port,
+        "position": 1,
+    }
+    bundle = _bundle_with_table_rows("pac_backup_proxies", (row,))
+
+    with pytest.raises(
+        restore.ProxyRecoveryRestoreError,
+        match="pac_backup_proxies proxy host/port is invalid: Proxy port must be between 1 and 65535",
+    ):
+        restore.build_restore_plan(bundle, "edge-01", now_ts=NOW)
+
+
+def test_restore_normalizes_valid_pac_backup_proxy_url() -> None:
+    row = {
+        "proxy_id": "edge-01",
+        "proxy_host": "https://Backup.Example.:8443",
+        "proxy_port": 8443,
+        "position": 1,
+    }
+    bundle = _bundle_with_table_rows("pac_backup_proxies", (row,))
+
+    plan = restore.build_restore_plan(bundle, "edge-01", now_ts=NOW)
+    backup_table = next(
+        table for table in plan.tables if table.table_name == "pac_backup_proxies"
+    )
+
+    assert backup_table.rows == (("edge-01", "backup.example", 8443, 1),)
+
+
 def test_restore_rejects_report_schedule_with_invalid_or_sensitive_recipient() -> None:
     row = {
         **_base_recovery_row("observability_report_schedules"),
