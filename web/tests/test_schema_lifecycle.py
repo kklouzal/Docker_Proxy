@@ -219,52 +219,122 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "webfilter_blocked_log_lifecycle_indexes",
         "application_ledger_evidence_indexes",
         "timeseries_metric_count_columns",
+        "application_ledger_evidence_completion",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 22
-    assert specs[-7].version == 16
-    assert specs[-7].name == "control_plane_identity"
-    assert specs[-6].version == 17
-    assert specs[-6].name == "proxy_recovery_adoptions"
-    assert specs[-5].version == 18
-    assert specs[-5].name == "policy_exception_method_scope"
-    assert specs[-4].version == 19
-    assert specs[-4].name == "operation_ledger_stale_requeue_lifecycle"
-    assert specs[-3].version == 20
-    assert specs[-3].name == "webfilter_blocked_log_lifecycle_indexes"
-    assert specs[-2].version == 21
-    assert specs[-2].name == "application_ledger_evidence_indexes"
-    assert specs[-1].version == 22
-    assert specs[-1].name == "timeseries_metric_count_columns"
+    assert schema_lifecycle.latest_schema_version() == 23
+    assert specs[-8].version == 16
+    assert specs[-8].name == "control_plane_identity"
+    assert specs[-7].version == 17
+    assert specs[-7].name == "proxy_recovery_adoptions"
+    assert specs[-6].version == 18
+    assert specs[-6].name == "policy_exception_method_scope"
+    assert specs[-5].version == 19
+    assert specs[-5].name == "operation_ledger_stale_requeue_lifecycle"
+    assert specs[-4].version == 20
+    assert specs[-4].name == "webfilter_blocked_log_lifecycle_indexes"
+    assert specs[-3].version == 21
+    assert specs[-3].name == "application_ledger_evidence_indexes"
+    assert specs[-2].version == 22
+    assert specs[-2].name == "timeseries_metric_count_columns"
+    assert specs[-1].version == 23
+    assert specs[-1].name == "application_ledger_evidence_completion"
     assert schema_lifecycle.latest_schema_checksum() == specs[-1].checksum
-    assert specs[-7].tables[0].table == "control_plane_identity"
-    assert "control_plane_id CHAR(36) NOT NULL" in specs[-7].tables[0].create_sql
-    assert specs[-6].tables[0].table == "proxy_recovery_adoptions"
-    assert "proxy_id VARCHAR(64) NOT NULL" in specs[-6].tables[0].create_sql
-    assert "PRIMARY KEY(proxy_id, target_control_plane_id)" in specs[-6].tables[0].create_sql
-    assert specs[-5].columns[0].table == "policy_exceptions"
-    assert specs[-5].columns[0].name == "method"
-    assert specs[-4].columns[0].table == "proxy_operations"
-    assert specs[-4].columns[0].name == "stale_requeue_count"
-    assert [index.name for index in specs[-4].indexes] == [
+    assert specs[-8].tables[0].table == "control_plane_identity"
+    assert "control_plane_id CHAR(36) NOT NULL" in specs[-8].tables[0].create_sql
+    assert specs[-7].tables[0].table == "proxy_recovery_adoptions"
+    assert "proxy_id VARCHAR(64) NOT NULL" in specs[-7].tables[0].create_sql
+    assert "PRIMARY KEY(proxy_id, target_control_plane_id)" in specs[-7].tables[0].create_sql
+    assert specs[-6].columns[0].table == "policy_exceptions"
+    assert specs[-6].columns[0].name == "method"
+    assert specs[-5].columns[0].table == "proxy_operations"
+    assert specs[-5].columns[0].name == "stale_requeue_count"
+    assert [index.name for index in specs[-5].indexes] == [
         "idx_proxy_operations_proxy_status_created_id",
         "idx_proxy_operations_proxy_started_id",
         "idx_proxy_operations_proxy_updated_id",
         "uniq_proxy_operations_active_request",
     ]
-    assert specs[-4].indexes[-1].unique is True
-    assert specs[-4].data_steps[0].name == "operation_ledger_active_request_key_backfill"
-    assert specs[-3].columns[0].table == "webfilter_blocked_log"
-    assert specs[-3].columns[0].name == "proxy_id"
-    assert [index.name for index in specs[-3].indexes] == [
+    assert specs[-5].indexes[-1].unique is True
+    assert specs[-5].data_steps[0].name == "operation_ledger_active_request_key_backfill"
+    assert specs[-4].columns[0].table == "webfilter_blocked_log"
+    assert specs[-4].columns[0].name == "proxy_id"
+    assert [index.name for index in specs[-4].indexes] == [
         "idx_webfilter_blocked_log_ts_id",
         "idx_webfilter_blocked_log_proxy_ts",
     ]
-    assert specs[-2].columns[0].table == "proxy_config_applications"
-    assert specs[-2].columns[0].name == "config_sha256"
-    assert [index.name for index in specs[-2].indexes] == [
+    assert specs[-3].columns[0].table == "proxy_config_applications"
+    assert specs[-3].columns[0].name == "config_sha256"
+    assert [index.name for index in specs[-3].indexes] == [
         "idx_proxy_config_applications_proxy_revision_ts",
     ]
-    assert specs[-1].data_steps[0].name == "timeseries_metric_count_columns"
+    assert specs[-2].data_steps[0].name == "timeseries_metric_count_columns"
+    assert [(column.table, column.name) for column in specs[-1].columns] == [
+        ("proxy_config_applications", "config_sha256"),
+        ("proxy_certificate_applications", "bundle_sha256"),
+        ("proxy_adblock_artifact_applications", "artifact_sha256"),
+    ]
+    assert [(index.table, index.name) for index in specs[-1].indexes] == [
+        ("proxy_config_applications", "idx_proxy_config_applications_proxy_revision_ts"),
+        ("proxy_certificate_applications", "idx_proxy_certificate_applications_proxy_revision_ts"),
+        ("proxy_adblock_artifact_applications", "idx_proxy_adblock_artifact_apply_proxy_revision_ts"),
+    ]
+    assert specs[-1].data_steps[0].name == "application_ledger_evidence_completion_backfill"
+
+
+class _ApplicationLedgerEvidenceBackfillConn:
+    def __init__(self) -> None:
+        self.columns: set[tuple[str, str]] = {
+            ("proxy_config_applications", "config_sha256"),
+        }
+        self.ops: list[str] = []
+
+    def execute(self, sql: str, params=()):
+        text = " ".join(str(sql).split())
+        params = tuple(params or ())
+        self.ops.append(text)
+        if "FROM information_schema.columns" in text:
+            return _Result([{"1": 1}] if (str(params[0]), str(params[1])) in self.columns else [])
+        if text.startswith("ALTER TABLE") and "ADD COLUMN" in text:
+            if text.startswith("ALTER TABLE proxy_config_applications ADD COLUMN config_sha256"):
+                self.columns.add(("proxy_config_applications", "config_sha256"))
+                return _Result()
+            if text.startswith("ALTER TABLE proxy_certificate_applications ADD COLUMN bundle_sha256"):
+                self.columns.add(("proxy_certificate_applications", "bundle_sha256"))
+                return _Result()
+            if text.startswith("ALTER TABLE proxy_adblock_artifact_applications ADD COLUMN artifact_sha256"):
+                self.columns.add(("proxy_adblock_artifact_applications", "artifact_sha256"))
+                return _Result()
+        if text.startswith("UPDATE proxy_config_applications app"):
+            return _Result(rowcount=1)
+        if text.startswith("UPDATE proxy_certificate_applications app"):
+            return _Result(rowcount=1)
+        if text.startswith("UPDATE proxy_adblock_artifact_applications app"):
+            return _Result(rowcount=1)
+        msg = f"unexpected SQL: {text}"
+        raise AssertionError(msg)
+
+
+def test_application_ledger_evidence_backfill_repairs_all_missing_evidence_columns() -> None:
+    conn = _ApplicationLedgerEvidenceBackfillConn()
+
+    schema_lifecycle._backfill_application_ledger_evidence(conn)
+
+    assert conn.columns == {
+        ("proxy_config_applications", "config_sha256"),
+        ("proxy_certificate_applications", "bundle_sha256"),
+        ("proxy_adblock_artifact_applications", "artifact_sha256"),
+    }
+    assert any(
+        op.startswith("ALTER TABLE proxy_certificate_applications ADD COLUMN bundle_sha256")
+        for op in conn.ops
+    )
+    assert any(
+        op.startswith("ALTER TABLE proxy_adblock_artifact_applications ADD COLUMN artifact_sha256")
+        for op in conn.ops
+    )
+    assert any(op.startswith("UPDATE proxy_config_applications app") for op in conn.ops)
+    assert any(op.startswith("UPDATE proxy_certificate_applications app") for op in conn.ops)
+    assert any(op.startswith("UPDATE proxy_adblock_artifact_applications app") for op in conn.ops)
 
 
 class _IdentityConn:

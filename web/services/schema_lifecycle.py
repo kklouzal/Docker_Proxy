@@ -27,7 +27,7 @@ from services.db import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 22
+_SCHEMA_VERSION = 23
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -1099,6 +1099,18 @@ def _backfill_application_ledger_evidence(conn: Any) -> None:
         column_name="config_sha256",
         ddl="ALTER TABLE proxy_config_applications ADD COLUMN config_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts",
     )
+    ensure_column(
+        conn,
+        table_name="proxy_certificate_applications",
+        column_name="bundle_sha256",
+        ddl="ALTER TABLE proxy_certificate_applications ADD COLUMN bundle_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts",
+    )
+    ensure_column(
+        conn,
+        table_name="proxy_adblock_artifact_applications",
+        column_name="artifact_sha256",
+        ddl="ALTER TABLE proxy_adblock_artifact_applications ADD COLUMN artifact_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts",
+    )
     if column_exists(conn, "proxy_config_applications", "config_sha256"):
         conn.execute(
             """
@@ -1378,6 +1390,50 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                 SchemaDataStep(
                     "timeseries_metric_count_columns",
                     _init_timeseries_metric_count_schema,
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=23,
+            name="application_ledger_evidence_completion",
+            columns=(
+                SchemaColumnSpec(
+                    "proxy_config_applications",
+                    "config_sha256",
+                    "ALTER TABLE proxy_config_applications ADD COLUMN config_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts",
+                ),
+                SchemaColumnSpec(
+                    "proxy_certificate_applications",
+                    "bundle_sha256",
+                    "ALTER TABLE proxy_certificate_applications ADD COLUMN bundle_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts",
+                ),
+                SchemaColumnSpec(
+                    "proxy_adblock_artifact_applications",
+                    "artifact_sha256",
+                    "ALTER TABLE proxy_adblock_artifact_applications ADD COLUMN artifact_sha256 CHAR(64) NOT NULL DEFAULT '' AFTER applied_ts",
+                ),
+            ),
+            indexes=(
+                SchemaIndexSpec(
+                    "proxy_config_applications",
+                    "idx_proxy_config_applications_proxy_revision_ts",
+                    "ALTER TABLE proxy_config_applications ADD INDEX idx_proxy_config_applications_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)",
+                ),
+                SchemaIndexSpec(
+                    "proxy_certificate_applications",
+                    "idx_proxy_certificate_applications_proxy_revision_ts",
+                    "ALTER TABLE proxy_certificate_applications ADD INDEX idx_proxy_certificate_applications_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)",
+                ),
+                SchemaIndexSpec(
+                    "proxy_adblock_artifact_applications",
+                    "idx_proxy_adblock_artifact_apply_proxy_revision_ts",
+                    "ALTER TABLE proxy_adblock_artifact_applications ADD INDEX idx_proxy_adblock_artifact_apply_proxy_revision_ts (proxy_id, revision_id, applied_ts, id)",
+                ),
+            ),
+            data_steps=(
+                SchemaDataStep(
+                    "application_ledger_evidence_completion_backfill",
+                    _backfill_application_ledger_evidence,
                 ),
             ),
         ),
