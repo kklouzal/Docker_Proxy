@@ -1726,9 +1726,6 @@ def test_save_report_schedule_returns_inserted_row_instead_of_sorted_first(
                 "jsonl",
                 1,
                 86400,
-                0,
-                0,
-                "saved preset",
                 123400,
             )
 
@@ -1836,9 +1833,6 @@ def test_save_report_schedule_normalizes_and_deduplicates_recipients(monkeypatch
                 self.insert_params[6],
                 self.insert_params[7],
                 self.insert_params[8],
-                0,
-                0,
-                "saved preset",
                 self.insert_params[10],
             )
 
@@ -1864,7 +1858,9 @@ def test_save_report_schedule_normalizes_and_deduplicates_recipients(monkeypatch
     assert conn.insert_params[4] == saved["recipients"]
 
 
-def test_report_schedules_present_manual_export_only_runtime_fields(monkeypatch) -> None:
+def test_report_schedules_exclude_persisted_runtime_state_from_manual_presets(
+    monkeypatch,
+) -> None:
     _add_web_to_path()
 
     from services import observability_queries  # type: ignore
@@ -1882,9 +1878,6 @@ def test_report_schedules_present_manual_export_only_runtime_fields(monkeypatch)
                     "csv",
                     1,
                     3600,
-                    999999,
-                    888888,
-                    "configured",
                     777777,
                 )
             ]
@@ -1899,6 +1892,10 @@ def test_report_schedules_present_manual_export_only_runtime_fields(monkeypatch)
         def execute(self, sql: str, params=()):
             text = " ".join(str(sql).split())
             assert "ORDER BY enabled DESC, updated_ts DESC, id DESC" in text
+            projection = text.split(" FROM observability_report_schedules", maxsplit=1)[0]
+            assert "next_run_ts" not in projection
+            assert "last_run_ts" not in projection
+            assert "last_status" not in projection
             assert tuple(params or ()) == ("default", 20)
             return FetchResult()
 

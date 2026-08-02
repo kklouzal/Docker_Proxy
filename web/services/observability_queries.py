@@ -1341,7 +1341,7 @@ class ObservabilityQueries:
             "last_run_ts": 0,
             "last_status": "saved preset",
             "delivery_status": "manual_export_only",
-            "updated_ts": int(row[12] or 0),
+            "updated_ts": int(row[9] or 0),
         }
 
     def report_schedules(self, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -1352,7 +1352,7 @@ class ObservabilityQueries:
             rows = conn.execute(
                 """
                 SELECT id, enabled, name, cadence, recipients, pane, report_format, privacy,
-                       window_seconds, next_run_ts, last_run_ts, last_status, updated_ts
+                       window_seconds, updated_ts
                 FROM observability_report_schedules
                 WHERE proxy_id = %s
                 ORDER BY enabled DESC, updated_ts DESC, id DESC
@@ -1429,7 +1429,7 @@ class ObservabilityQueries:
                     row = conn.execute(
                         """
                         SELECT id, enabled, name, cadence, recipients, pane, report_format, privacy,
-                               window_seconds, next_run_ts, last_run_ts, last_status, updated_ts
+                               window_seconds, updated_ts
                         FROM observability_report_schedules
                         WHERE proxy_id = %s AND id = %s
                         LIMIT 1
