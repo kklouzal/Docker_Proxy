@@ -260,6 +260,14 @@ def build_unavailable_runtime_health(
     icap = unavailable_service(detail)
     av_icap = unavailable_service(detail, service="/avrespmod")
     clamd = unavailable_service(detail)
+    forwarding_port = _proxy_http_port()
+    forwarding = annotate_service_target(
+        {"ok": False, "detail": str(detail or "unavailable")},
+        host="127.0.0.1",
+        port=forwarding_port,
+        service="explicit-forwarding",
+    )
+    forwarding["traffic_scope"] = "local-only"
     return {
         "ok": False,
         "status": proxy_status,
@@ -277,6 +285,7 @@ def build_unavailable_runtime_health(
                     "clamd": clamd,
                 },
             },
+            "forwarding": forwarding,
         },
     }
 

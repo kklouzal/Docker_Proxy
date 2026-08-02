@@ -1191,6 +1191,27 @@ def test_remote_clamav_view_malformed_payload_shapes_degrade_to_unavailable(
     assert view["health_source"] == "malformed remote health payload"
 
 
+def test_unavailable_runtime_health_includes_explicit_forwarding(monkeypatch) -> None:
+    proxy_health = _proxy_health_module()
+
+    monkeypatch.setenv("SQUID_HTTP_PORT", "43128")
+
+    payload = proxy_health.build_unavailable_runtime_health(
+        "proxy management request timed out",
+    )
+
+    forwarding = payload["services"]["forwarding"]
+    assert forwarding == {
+        "ok": False,
+        "detail": "proxy management request timed out",
+        "host": "127.0.0.1",
+        "port": 43128,
+        "target": "127.0.0.1:43128",
+        "service": "explicit-forwarding",
+        "traffic_scope": "local-only",
+    }
+
+
 def test_remote_clamav_view_preserves_split_av_icap_components() -> None:
     proxy_health = _proxy_health_module()
 
@@ -1279,6 +1300,7 @@ def test_local_runtime_services_uses_tcp_timeout_for_clamd(monkeypatch) -> None:
 
     assert calls == {"adblock": 0.9, "av_icap": 0.9, "clamd": 0.2}
     assert result["clamd"] == {"ok": True, "detail": "clamd ok"}
+    assert result["forwarding"] == {"ok": True, "detail": "forwarding ok"}
     assert result["clamav"]["ok"] is True
 
 
