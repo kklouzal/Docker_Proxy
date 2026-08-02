@@ -98,9 +98,10 @@ class CountingObservabilityQueries:
             "report_format": kwargs.get("report_format") or "csv",
             "privacy": bool(kwargs.get("privacy")),
             "window_seconds": int(kwargs.get("window_seconds") or 86400),
-            "next_run_ts": 123456,
+            "next_run_ts": 0,
             "last_run_ts": 0,
-            "last_status": "configured",
+            "last_status": "saved preset",
+            "delivery_status": "manual_export_only",
             "updated_ts": 123400,
         }
 
@@ -452,7 +453,7 @@ def test_observability_reports_pane_json_export_and_metrics_routes_render(
     assert b"Top users by bandwidth" in page.data
     assert b"Generate report" in page.data
     assert b"Report presets" in page.data
-    assert b"Saved presets" in page.data
+    assert b"Saved manual presets" in page.data
     assert export.status_code == 200
     assert export.headers.get("Content-Type", "").startswith("application/json")
     assert b'"mode":"pseudonymized"' in export.data
@@ -602,7 +603,7 @@ def test_observability_report_schedule_invalid_recipient_redirects_to_safe_speci
     rendered = client.get(location)
 
     assert rendered.status_code == 200
-    assert b"Scheduled report was not saved. Report recipients must be valid email addresses." in rendered.data
+    assert b"Report preset was not saved. Report recipients must be valid email addresses." in rendered.data
     assert raw_recipient.encode() not in rendered.data
     assert b"recipient is required and the database must be reachable" not in rendered.data
 
@@ -703,7 +704,7 @@ def test_observability_report_schedule_generic_save_error_stays_generic(
     rendered = client.get(location)
 
     assert rendered.status_code == 200
-    assert b"Scheduled report was not saved. Check Admin UI logs for the database error." in rendered.data
+    assert b"Report preset was not saved. Check Admin UI logs for the database error." in rendered.data
     assert raw_error.encode() not in rendered.data
     assert b"recipient is required and the database must be reachable" not in rendered.data
 
@@ -737,6 +738,7 @@ def test_observability_report_schedule_post_records_configuration(
     record = loaded.audit_store.records[-1]
     assert record["kind"] == "observability_report_schedule_save"
     assert record["ok"] is True
+    assert "saved manual daily reports observability report preset" in record["detail"]
     assert "recipients=1" in record["detail"]
     assert "privacy=on" in record["detail"]
     assert "ops@example.com" not in record["detail"]

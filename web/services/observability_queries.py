@@ -141,12 +141,6 @@ def _correlate_policy_events_with_requests(
     return rows
 
 
-def _next_schedule_run_ts(cadence: str, now: int | None = None) -> int:
-    base = int(now if now is not None else time.time())
-    interval = 7 * 24 * 3600 if str(cadence or "").lower() == "weekly" else 24 * 3600
-    return base + interval
-
-
 class ObservabilityQueries:
     def __init__(self) -> None:
         self._schedule_schema_ready = False
@@ -1343,9 +1337,10 @@ class ObservabilityQueries:
             "report_format": str(row[6] or "csv"),
             "privacy": bool(row[7]),
             "window_seconds": int(row[8] or 86400),
-            "next_run_ts": int(row[9] or 0),
-            "last_run_ts": int(row[10] or 0),
-            "last_status": str(row[11] or ""),
+            "next_run_ts": 0,
+            "last_run_ts": 0,
+            "last_status": "saved preset",
+            "delivery_status": "manual_export_only",
             "updated_ts": int(row[12] or 0),
         }
 
@@ -1360,7 +1355,7 @@ class ObservabilityQueries:
                        window_seconds, next_run_ts, last_run_ts, last_status, updated_ts
                 FROM observability_report_schedules
                 WHERE proxy_id = %s
-                ORDER BY enabled DESC, next_run_ts ASC, updated_ts DESC
+                ORDER BY enabled DESC, updated_ts DESC, id DESC
                 LIMIT %s
                 """,
                 (proxy_id, lim),
@@ -1412,7 +1407,7 @@ class ObservabilityQueries:
                         proxy_id, enabled, name, cadence, recipients, pane, report_format, privacy,
                         window_seconds, created_ts, updated_ts, next_run_ts, last_run_ts, last_status
                     )
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,'configured')
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,'saved preset')
                     """,
                     (
                         guard.proxy_id,
@@ -1426,7 +1421,6 @@ class ObservabilityQueries:
                         window_i,
                         now,
                         now,
-                        _next_schedule_run_ts(cadence_s, now),
                     ),
                 )
                 inserted_id = int(getattr(result, "lastrowid", 0) or 0)
@@ -2398,9 +2392,10 @@ class ObservabilityQueries:
                     "endpoint": "/observability/export?pane=security&format=jsonl",
                 },
                 {
-                    "name": "Scheduled email",
-                    "status": "configured" if schedules else "ready",
+                    "name": "Manual report presets",
+                    "status": "saved" if schedules else "ready",
                     "endpoint": "/observability/report-schedules",
+                    "delivery": "manual_export_only",
                 },
             ],
             "privacy": {

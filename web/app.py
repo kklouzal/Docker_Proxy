@@ -6891,7 +6891,7 @@ def observability_report_schedules():
         saved_privacy = bool(schedule.get("privacy", privacy))
         recipient_count = _recipient_count_for_audit(schedule.get("recipients"))
         detail = (
-            f"saved {cadence} {saved_pane} observability report preset; "
+            f"saved manual {cadence} {saved_pane} observability report preset; "
             f"format={saved_format}; privacy={'on' if saved_privacy else 'off'}; "
             f"recipients={recipient_count}"
         )

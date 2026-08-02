@@ -1726,9 +1726,9 @@ def test_save_report_schedule_returns_inserted_row_instead_of_sorted_first(
                 "jsonl",
                 1,
                 86400,
-                123456,
                 0,
-                "configured",
+                0,
+                "saved preset",
                 123400,
             )
 
@@ -1836,9 +1836,9 @@ def test_save_report_schedule_normalizes_and_deduplicates_recipients(monkeypatch
                 self.insert_params[6],
                 self.insert_params[7],
                 self.insert_params[8],
-                self.insert_params[11],
                 0,
-                "configured",
+                0,
+                "saved preset",
                 self.insert_params[10],
             )
 
@@ -1862,6 +1862,70 @@ def test_save_report_schedule_normalizes_and_deduplicates_recipients(monkeypatch
     )
     assert conn.insert_params is not None
     assert conn.insert_params[4] == saved["recipients"]
+
+
+def test_report_schedules_present_manual_export_only_runtime_fields(monkeypatch) -> None:
+    _add_web_to_path()
+
+    from services import observability_queries  # type: ignore
+
+    class FetchResult:
+        def fetchall(self):
+            return [
+                (
+                    41,
+                    1,
+                    "Legacy scheduled-looking preset",
+                    "daily",
+                    "ops@example.com",
+                    "reports",
+                    "csv",
+                    1,
+                    3600,
+                    999999,
+                    888888,
+                    "configured",
+                    777777,
+                )
+            ]
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def execute(self, sql: str, params=()):
+            text = " ".join(str(sql).split())
+            assert "ORDER BY enabled DESC, updated_ts DESC, id DESC" in text
+            assert tuple(params or ()) == ("default", 20)
+            return FetchResult()
+
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_ensure_report_schedule_db", lambda: None)
+    monkeypatch.setattr(queries, "_connect", FakeConnection)
+
+    rows = queries.report_schedules()
+
+    assert rows == [
+        {
+            "id": 41,
+            "enabled": True,
+            "name": "Legacy scheduled-looking preset",
+            "cadence": "daily",
+            "recipients": "ops@example.com",
+            "pane": "reports",
+            "report_format": "csv",
+            "privacy": True,
+            "window_seconds": 3600,
+            "next_run_ts": 0,
+            "last_run_ts": 0,
+            "last_status": "saved preset",
+            "delivery_status": "manual_export_only",
+            "updated_ts": 777777,
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -2081,10 +2145,13 @@ def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_
         row["name"] == "SIEM/syslog" and row["status"] == "ready"
         for row in payload["export_contracts"]
     )
-    assert any(
-        row["name"] == "Scheduled email" and row["status"] == "configured"
+    preset_contract = next(
+        row
         for row in payload["export_contracts"]
+        if row["name"] == "Manual report presets"
     )
+    assert preset_contract["status"] == "saved"
+    assert preset_contract["delivery"] == "manual_export_only"
 
 
 def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
