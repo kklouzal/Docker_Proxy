@@ -394,9 +394,13 @@ def test_validate_download_url_rejects_percent_encoded_authority_before_dns(
         "https://public.example/feed.csv;name=%255Csecret",
         "https://public.example/feed.csv?next=%250d%250aHost:evil",
         "https://public.example/feed.csv?name=%255Csecret",
+        "https://public.example/feed%.csv",
+        "https://public.example/feed%zz.csv",
+        "https://public.example/feed.csv;v=%",
+        "https://public.example/feed.csv?name=%q",
     ],
 )
-def test_validate_download_url_rejects_percent_encoded_unsafe_path_params_query_before_dns(
+def test_validate_download_url_rejects_malformed_or_unsafe_percent_encoded_path_params_query_before_dns(
     source_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1123,6 +1127,58 @@ def test_open_download_url_rejects_percent_encoded_unsafe_redirect_location_befo
 
     redirect_headers = Message()
     redirect_headers["Location"] = "/feed.csv%0d%0aHost:evil"
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            raise download_safety.urllib.error.HTTPError(
+                req.full_url,
+                302,
+                "Found",
+                redirect_headers,
+                None,
+            )
+
+    monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(ValueError, match="valid HTTP URI reference"):
+        download_safety.open_download_url(
+            "https://public.example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+        )
+
+    assert lookups == ["public.example", "public.example"]
+
+
+def test_open_download_url_rejects_malformed_percent_encoded_redirect_location_before_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    lookups: list[str] = []
+
+    def fake_getaddrinfo(host: str, *_args, **_kwargs):
+        lookups.append(host)
+        if host != "public.example":
+            msg = "malformed percent-encoded redirect location should not reach DNS"
+            raise AssertionError(msg)
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                ("93.184.216.34", 0),
+            ),
+        ]
+
+    redirect_headers = Message()
+    redirect_headers["Location"] = "/feed%.csv"
 
     class _Opener:
         def open(self, req, **_kwargs):

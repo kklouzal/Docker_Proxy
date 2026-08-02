@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.client
 import ipaddress
 import socket
+import string
 import time
 import urllib.error
 import urllib.request
@@ -295,6 +296,20 @@ def _has_http_header_control_chars(value: str) -> bool:
 
 
 _DOWNLOAD_PERCENT_DECODE_LIMIT = 4
+_DOWNLOAD_PERCENT_HEX_DIGITS = frozenset(string.hexdigits)
+
+
+def _has_malformed_percent_escape(value: str) -> bool:
+    index = value.find("%")
+    while index >= 0:
+        if (
+            index + 2 >= len(value)
+            or value[index + 1] not in _DOWNLOAD_PERCENT_HEX_DIGITS
+            or value[index + 2] not in _DOWNLOAD_PERCENT_HEX_DIGITS
+        ):
+            return True
+        index = value.find("%", index + 3)
+    return False
 
 
 def _has_percent_decoded_download_unsafe_chars(value: str) -> bool:
@@ -344,6 +359,7 @@ def _validate_download_redirect_location(location: str) -> None:
         not location
         or "\\" in location
         or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in location)
+        or _has_malformed_percent_escape(location)
         or _has_percent_decoded_download_unsafe_chars(location)
     ):
         msg = "Download redirect Location must be a valid HTTP URI reference."
@@ -381,7 +397,8 @@ def validate_download_url(
     if not parsed.netloc or not hostname or parsed.fragment:
         raise ValueError(invalid_url_msg)
     if any(
-        _has_percent_decoded_download_unsafe_chars(component)
+        _has_malformed_percent_escape(component)
+        or _has_percent_decoded_download_unsafe_chars(component)
         for component in (parsed.path, parsed.params, parsed.query)
     ):
         raise ValueError(invalid_url_msg)
