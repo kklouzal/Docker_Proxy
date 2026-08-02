@@ -583,6 +583,45 @@ def test_pac_or_autodetect_disables_basic_registry_binary() -> None:
     )
 
 
+@pytest.mark.parametrize("false_value", ["0", "false"])
+def test_contract_output_treats_explicit_false_strings_as_false(false_value: str) -> None:
+    result = build_contract_output(
+        {
+            "proxy_host": "proxy.example",
+            "proxy_port": 3128,
+            "destination_schemes": ["http"],
+            "autodetect": false_value,
+            "include_local_bypass": false_value,
+        },
+    )
+
+    parsed = json.loads(result.advproxy_json)
+    assert parsed["AutoDetect"] is False
+    assert result.static_registry_available is True
+    assert result.bypass_string == ""
+    assert result.decoded is not None
+    assert result.decoded.bypass_string == ""
+
+
+@pytest.mark.parametrize("true_value", ["1", "true", "on"])
+def test_contract_output_treats_checked_true_strings_as_true(true_value: str) -> None:
+    result = build_contract_output(
+        {
+            "proxy_host": "proxy.example",
+            "proxy_port": 3128,
+            "destination_schemes": ["http"],
+            "autodetect": true_value,
+            "include_local_bypass": true_value,
+        },
+    )
+
+    parsed = json.loads(result.advproxy_json)
+    assert parsed["AutoDetect"] is True
+    assert result.static_registry_available is False
+    assert result.bypass_string == "<local>"
+    assert result.normalized_hex == ""
+
+
 def test_advproxy_contract_allows_pac_only_without_static_proxy() -> None:
     result = build_contract_output(
         {

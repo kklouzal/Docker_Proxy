@@ -943,7 +943,14 @@ def build_tracing_command(
 
 
 def _form_bool(form: dict[str, Any], key: str) -> bool:
-    return bool(form.get(key))
+    value = form.get(key)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "no", "off"}:
+            return False
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+    return bool(value)
 
 
 def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
