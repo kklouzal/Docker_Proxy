@@ -266,8 +266,10 @@ def test_read_validate_and_restore_uses_operator_max_bundle_bytes(monkeypatch) -
 
 
 def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
-    sha = "a" * 64
-    cert_sha = "b" * 64
+    cert_pem = "CERT"
+    key_pem = "KEY"
+    chain_pem = "CHAIN"
+    sha, cert_sha = _certificate_bundle_hashes(cert_pem, key_pem, chain_pem)
     cfg_text = "http_port 3128"
     cfg_sha = hashlib.sha256(cfg_text.encode("utf-8", errors="replace")).hexdigest()
     return {
@@ -286,9 +288,9 @@ def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
             {
                 "bundle_sha256": sha,
                 "cert_sha256": cert_sha,
-                "cert_pem": "CERT",
-                "key_pem": "KEY",
-                "chain_pem": "CHAIN",
+                "cert_pem": cert_pem,
+                "key_pem": key_pem,
+                "chain_pem": chain_pem,
             },
         ),
         "admin_ui_https_settings": (
@@ -376,6 +378,18 @@ def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
             },
         ),
     }
+
+
+def _certificate_bundle_hashes(
+    cert_pem: str,
+    key_pem: str,
+    chain_pem: str,
+) -> tuple[str, str]:
+    cert_sha = hashlib.sha256(cert_pem.encode("utf-8", errors="replace")).hexdigest()
+    bundle_sha = hashlib.sha256(
+        f"{cert_pem}\0{chain_pem}\0{key_pem}".encode("utf-8", errors="replace"),
+    ).hexdigest()
+    return bundle_sha, cert_sha
 
 
 def _base_recovery_row(table_name: str, proxy_id: str = "edge-01") -> dict[str, Any]:
@@ -693,3 +707,64 @@ def test_config_revision_restore_recomputes_declared_sha_before_writes() -> None
         and params == ("edge-01", expected_sha, config_text, NOW)
         for sql, params in conn.ops
     )
+
+
+def test_certificate_bundle_revision_restore_recomputes_declared_digests_before_writes() -> None:
+    cert_pem = "-----BEGIN CERTIFICATE-----\nrestored-cert\n-----END CERTIFICATE-----\n"
+    key_pem = "-----BEGIN PRIVATE KEY-----\nrestored-key\n-----END PRIVATE KEY-----\n"
+    chain_pem = "-----BEGIN CERTIFICATE-----\nrestored-chain\n-----END CERTIFICATE-----\n"
+    bundle_sha, cert_sha = _certificate_bundle_hashes(cert_pem, key_pem, chain_pem)
+    bundle = _bundle(
+        overrides={
+            "certificate_bundle_revisions": (
+                {
+                    "bundle_sha256": bundle_sha,
+                    "cert_sha256": cert_sha,
+                    "cert_pem": cert_pem,
+                    "key_pem": key_pem,
+                    "chain_pem": chain_pem,
+                },
+            ),
+        },
+    )
+    conn = _StrictRestoreConn()
+
+    result = restore.restore_recovery_bundle(conn, bundle, "edge-01", now_ts=NOW)
+
+    assert result.status == "adopted"
+    assert any(
+        sql.startswith("INSERT INTO certificate_bundle_revisions")
+        and params == (bundle_sha, cert_sha, cert_pem, key_pem, chain_pem, NOW)
+        for sql, params in conn.ops
+    )
+
+
+def test_certificate_bundle_revision_restore_rejects_mismatched_digests_before_writes() -> None:
+    cert_pem = "-----BEGIN CERTIFICATE-----\nrestored-cert\n-----END CERTIFICATE-----\n"
+    key_pem = "-----BEGIN PRIVATE KEY-----\nrestored-key\n-----END PRIVATE KEY-----\n"
+    chain_pem = "-----BEGIN CERTIFICATE-----\nrestored-chain\n-----END CERTIFICATE-----\n"
+    bundle_sha, cert_sha = _certificate_bundle_hashes(cert_pem, key_pem, chain_pem)
+    cases = (
+        ({"cert_sha256": "0" * 64}, "cert digest"),
+        ({"bundle_sha256": "1" * 64}, "bundle digest"),
+    )
+
+    for digest_override, expected in cases:
+        row = {
+            "bundle_sha256": bundle_sha,
+            "cert_sha256": cert_sha,
+            "cert_pem": cert_pem,
+            "key_pem": key_pem,
+            "chain_pem": chain_pem,
+            **digest_override,
+        }
+        conn = _StrictRestoreConn()
+
+        with pytest.raises(restore.ProxyRecoveryRestoreError, match=expected):
+            restore.restore_recovery_bundle(
+                conn,
+                _bundle(overrides={"certificate_bundle_revisions": (row,)}),
+                "edge-01",
+                now_ts=NOW,
+            )
+        assert conn.ops == []

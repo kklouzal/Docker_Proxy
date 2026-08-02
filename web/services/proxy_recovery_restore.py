@@ -517,6 +517,8 @@ def _validate_rows(
         rows.append(normalized)
     if table_name == "proxy_config_revisions":
         _validate_proxy_config_revision_digests(rows, expected_columns)
+    if table_name == "certificate_bundle_revisions":
+        _validate_certificate_bundle_revision_digests(rows, expected_columns)
     if table_name == "webfilter_settings":
         keys = {dict(zip(expected_columns, row, strict=True))["k"] for row in rows}
         if not keys.issubset(_EXACT_WEBFILTER_KEYS):
@@ -556,13 +558,47 @@ def _validate_proxy_config_revision_digests(
     text_index = columns.index("config_text")
     for row in rows:
         config_text = str(row[text_index] or "")
-        expected_sha = hashlib.sha256(
-            config_text.encode("utf-8", errors="replace"),
-        ).hexdigest()
+        expected_sha = _sha256_text(config_text)
         if str(row[sha_index] or "") != expected_sha:
             raise ProxyRecoveryRestoreError(
                 "proxy config revision digest does not match config text",
             )
+
+
+def _validate_certificate_bundle_revision_digests(
+    rows: tuple[tuple[Any, ...], ...],
+    columns: tuple[str, ...],
+) -> None:
+    if not rows:
+        return
+    bundle_sha_index = columns.index("bundle_sha256")
+    cert_sha_index = columns.index("cert_sha256")
+    cert_pem_index = columns.index("cert_pem")
+    key_pem_index = columns.index("key_pem")
+    chain_pem_index = columns.index("chain_pem")
+    for row in rows:
+        cert_pem = str(row[cert_pem_index] or "")
+        key_pem = str(row[key_pem_index] or "")
+        chain_pem = str(row[chain_pem_index] or "")
+        expected_cert_sha = _sha256_text(cert_pem)
+        expected_bundle_sha = _certificate_bundle_sha256(cert_pem, key_pem, chain_pem)
+        if str(row[cert_sha_index] or "") != expected_cert_sha:
+            raise ProxyRecoveryRestoreError(
+                "certificate bundle revision cert digest does not match certificate PEM",
+            )
+        if str(row[bundle_sha_index] or "") != expected_bundle_sha:
+            raise ProxyRecoveryRestoreError(
+                "certificate bundle revision bundle digest does not match certificate material",
+            )
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8", errors="replace")).hexdigest()
+
+
+def _certificate_bundle_sha256(cert_pem: str, key_pem: str, chain_pem: str) -> str:
+    payload = "\0".join([cert_pem or "", chain_pem or "", key_pem or ""])
+    return _sha256_text(payload)
 
 
 def _normalize_column_value(
