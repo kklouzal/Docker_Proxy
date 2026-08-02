@@ -8,7 +8,18 @@ from typing import Any
 from services import schema_lifecycle as _schema_lifecycle
 
 _ADVISORY_LOCK_TIMEOUT_SECONDS = 10
+_SCOPED_LOCK_PREFIX = "docker_proxy"
+_SCOPED_LOCK_DIGEST_HEX_LENGTH = 24
+_SCOPED_LOCK_MAX_BYTES = 64
+_SCOPED_LOCK_MAX_READABLE_PREFIX = (
+    _SCOPED_LOCK_MAX_BYTES
+    - len(_SCOPED_LOCK_PREFIX.encode("ascii"))
+    - 2  # separating colons
+    - _SCOPED_LOCK_DIGEST_HEX_LENGTH
+)
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_LOCK_PREFIX_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_LOCK_PREFIX_SEPARATORS_RE = re.compile(r"_+")
 
 
 def _safe_identifier(value: str) -> str:
@@ -59,11 +70,25 @@ def ensure_index(
     _schema_lifecycle.ensure_index(conn, table_name=table_name, index_name=index_name, ddl=ddl)
 
 
+def _lock_readable_prefix(namespace: str) -> str:
+    normalized = _LOCK_PREFIX_UNSAFE_RE.sub("_", namespace)
+    normalized = _LOCK_PREFIX_SEPARATORS_RE.sub("_", normalized).strip("_")
+    if not normalized:
+        normalized = "lock"
+    return normalized[:_SCOPED_LOCK_MAX_READABLE_PREFIX]
+
+
 def scoped_lock_name(namespace: str, scope: object | None = None) -> str:
     raw = f"{namespace}:{'' if scope is None else str(scope)}"
-    digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:24]
-    prefix = namespace.replace("`", "").replace(" ", "_")[:32]
-    return f"docker_proxy:{prefix}:{digest}"[:64]
+    digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[
+        :_SCOPED_LOCK_DIGEST_HEX_LENGTH
+    ]
+    prefix = _lock_readable_prefix(namespace)
+    name = f"{_SCOPED_LOCK_PREFIX}:{prefix}:{digest}"
+    if len(name.encode("ascii")) > _SCOPED_LOCK_MAX_BYTES:
+        msg = f"MySQL lifecycle lock name exceeded {_SCOPED_LOCK_MAX_BYTES} bytes: {name!r}"
+        raise AssertionError(msg)
+    return name
 
 
 @contextmanager

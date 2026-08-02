@@ -34,6 +34,70 @@ class _SqlResult:
         return list(self._rows)
 
 
+def _lock_digest(lock_name: str) -> str:
+    return lock_name.rsplit(":", 1)[1]
+
+
+def _lock_readable_prefix(lock_name: str) -> str:
+    return lock_name.split(":", 2)[1]
+
+
+def test_scoped_lock_name_keeps_fixed_digest_for_long_namespace() -> None:
+    namespace = "revision_lifecycle_namespace_" + ("segment_" * 12)
+    scope = "edge-a"
+
+    lock_name = revision_lifecycle.scoped_lock_name(namespace, scope)
+
+    assert lock_name.startswith("docker_proxy:revision_lifecycle_namespa:")
+    assert len(lock_name) == 64
+    assert len(_lock_digest(lock_name)) == 24
+
+
+def test_scoped_lock_name_long_inputs_do_not_collapse() -> None:
+    shared_prefix = "revision_lifecycle_namespace_" + ("segment_" * 8)
+
+    lock_a = revision_lifecycle.scoped_lock_name(shared_prefix + "a", "scope-a")
+    lock_b = revision_lifecycle.scoped_lock_name(shared_prefix + "b", "scope-a")
+    lock_c = revision_lifecycle.scoped_lock_name(shared_prefix + "a", "scope-b")
+
+    assert lock_a != lock_b
+    assert lock_a != lock_c
+    assert lock_b != lock_c
+    assert len({_lock_digest(lock_a), _lock_digest(lock_b), _lock_digest(lock_c)}) == 3
+    assert all(len(_lock_digest(lock_name)) == 24 for lock_name in (lock_a, lock_b, lock_c))
+
+
+def test_scoped_lock_name_sanitizes_unsafe_readable_prefix() -> None:
+    namespace = " `bad namespace`\nwith\tcontrols/and\x00emoji🚀 "
+
+    lock_name = revision_lifecycle.scoped_lock_name(namespace, "edge-a")
+    readable_prefix = _lock_readable_prefix(lock_name)
+
+    assert readable_prefix == "bad_namespace_with_control"
+    assert "`" not in readable_prefix
+    assert " " not in readable_prefix
+    assert "\n" not in readable_prefix
+    assert "\t" not in readable_prefix
+    assert "/" not in readable_prefix
+    assert "\x00" not in readable_prefix
+    assert "🚀" not in readable_prefix
+
+
+def test_scoped_lock_name_is_always_within_mysql_name_limit() -> None:
+    cases = [
+        ("revision_lifecycle", None),
+        ("revision_lifecycle", "edge-a"),
+        ("x" * 512, "y" * 512),
+        ("unsafe namespace ` with controls\n\t and emoji 🚀" * 8, object()),
+        ("` \n\t/\x00🚀", "scope"),
+    ]
+
+    for namespace, scope in cases:
+        lock_name = revision_lifecycle.scoped_lock_name(namespace, scope)
+        assert len(lock_name.encode("utf-8")) <= 64
+        assert len(_lock_digest(lock_name)) == 24
+
+
 def test_duplicate_active_repair_uses_deterministic_partition_update() -> None:
     calls: list[str] = []
 
