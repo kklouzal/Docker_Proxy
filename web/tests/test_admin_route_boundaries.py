@@ -30,15 +30,16 @@ PAC_SHA_OLD = "f" * 64
 
 
 class RecordingTimeseriesStore:
-    def __init__(self) -> None:
+    def __init__(self, points: list[dict[str, object]] | None = None) -> None:
         self.queries: list[dict[str, object]] = []
+        self.points = points or []
 
     def summary(self) -> dict[str, object]:
         return {}
 
     def query(self, **kwargs: object) -> list[object]:
         self.queries.append(kwargs)
-        return []
+        return list(self.points)
 
 
 class FailingTimeseriesStore(RecordingTimeseriesStore):
@@ -1816,6 +1817,27 @@ def test_api_timeseries_bounds_and_content_type(monkeypatch, tmp_path) -> None:
     assert isinstance(response.json["points"], list)
     assert store.queries[-1]["resolution"] == "1m"
     assert "Content-Security-Policy" not in response.headers
+
+
+def test_api_timeseries_passes_through_storage_metrics(monkeypatch, tmp_path) -> None:
+    point = {
+        "ts": 1_700_000_000,
+        "count": 1,
+        "cpu": 10.0,
+        "mem": 20.0,
+        "disk_used": 30.0,
+        "cache_dir_size": 40.0,
+        "hit_rate": 50.0,
+    }
+    store = RecordingTimeseriesStore(points=[point])
+    loaded = load_admin_app(monkeypatch, tmp_path, timeseries_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/timeseries?resolution=1m&window=60&limit=25")
+
+    assert response.status_code == 200
+    assert response.json["points"] == [point]
 
 
 def test_api_timeseries_clamps_limit_before_store_query(monkeypatch, tmp_path) -> None:

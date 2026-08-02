@@ -441,7 +441,7 @@ class TimeSeriesStore:
         def read_rows():
             with self._connect() as conn:
                 return conn.execute(
-                    f"SELECT ts, count, cpu, mem, hit_rate FROM {res.table} WHERE proxy_id = %s AND ts >= %s ORDER BY ts ASC LIMIT %s",
+                    f"SELECT ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate FROM {res.table} WHERE proxy_id = %s AND ts >= %s ORDER BY ts ASC LIMIT %s",
                     (proxy_id, int(since), lim),
                 ).fetchall()
 
@@ -453,7 +453,9 @@ class TimeSeriesStore:
                 "count": int(r[1]),
                 "cpu": r[2],
                 "mem": r[3],
-                "hit_rate": r[4],
+                "disk_used": r[4],
+                "cache_dir_size": r[5],
+                "hit_rate": r[6],
             }
             for r in rows
         ]

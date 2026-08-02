@@ -25,7 +25,7 @@ class _QueryConn:
 
 class _QueryResult:
     def fetchall(self):
-        return [(123, 1, 2.0, 3.0, 4.0)]
+        return [(123, 1, 2.0, 3.0, 5.0, 6.0, 4.0)]
 
 
 class _SummaryConn:
@@ -113,7 +113,7 @@ def _insert_hourly(
         )
 
 
-def test_query_resolution_canonicalization_preserves_valid_and_falls_back_unknown(
+def test_query_canonicalizes_resolution_and_returns_persisted_metrics(
     monkeypatch,
 ) -> None:
     store = TimeSeriesStore.__new__(TimeSeriesStore)
@@ -129,8 +129,18 @@ def test_query_resolution_canonicalization_preserves_valid_and_falls_back_unknow
     assert canonicalize_resolution_name("bogus") == "1s"
     assert "FROM ts_1m" in calls[0][0]
     assert "FROM ts_1s" in calls[1][0]
+    assert "disk_used" in calls[0][0]
+    assert "cache_dir_size" in calls[0][0]
     assert valid_points == unknown_points == [
-        {"ts": 123, "count": 1, "cpu": 2.0, "mem": 3.0, "hit_rate": 4.0}
+        {
+            "ts": 123,
+            "count": 1,
+            "cpu": 2.0,
+            "mem": 3.0,
+            "disk_used": 5.0,
+            "cache_dir_size": 6.0,
+            "hit_rate": 4.0,
+        }
     ]
 
 
