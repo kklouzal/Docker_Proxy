@@ -17,6 +17,7 @@ DEFAULT_GITHUB_REPOSITORY = "kklouzal/Docker_Proxy"
 _GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 _GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 _GITHUB_BRANCH_FORBIDDEN_CHARS = frozenset(" ~^:?*[\\")
+_MAX_GITHUB_API_RESPONSE_BYTES = 512 * 1024
 
 
 def _clean(value: object | None) -> str:
@@ -180,8 +181,14 @@ class VersionStatusClient:
             headers["Authorization"] = f"Bearer {self.token}"
         request = urllib.request.Request(url, headers=headers)
         with self.urlopen(request, timeout=self.timeout_seconds) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-        data = json.loads(raw) if raw else {}
+            raw = response.read(_MAX_GITHUB_API_RESPONSE_BYTES + 1)
+        if len(raw) > _MAX_GITHUB_API_RESPONSE_BYTES:
+            msg = (
+                f"GitHub API response exceeded {_MAX_GITHUB_API_RESPONSE_BYTES} bytes."
+            )
+            raise RuntimeError(msg)
+        text = raw.decode("utf-8", errors="replace")
+        data = json.loads(text) if text else {}
         if not isinstance(data, dict):
             msg = "GitHub API returned a non-object response."
             raise RuntimeError(msg)

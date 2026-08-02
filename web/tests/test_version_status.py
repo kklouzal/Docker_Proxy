@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from services.version_status import (
+    _MAX_GITHUB_API_RESPONSE_BYTES,
     VersionStatusClient,
     build_component_version_status,
     current_component_metadata,
@@ -19,6 +20,16 @@ class _Response(io.BytesIO):
 
     def __exit__(self, *_args: object) -> None:
         self.close()
+
+
+class _TrackingResponse(_Response):
+    def __init__(self, payload: bytes) -> None:
+        super().__init__(payload)
+        self.read_sizes: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        return super().read(size)
 
 
 def _json_response(payload: dict[str, Any]) -> _Response:
@@ -99,6 +110,29 @@ def test_compare_revision_identical_main_is_ok() -> None:
     assert status.state == "ok"
     assert status.commits_behind == 0
     assert status.latest_revision == "abc123"
+
+
+def test_compare_revision_oversized_github_response_is_bounded_unknown() -> None:
+    secret_body = b'{"detail":"ghp_secret-token should not leak", "padding":"'
+    response = _TrackingResponse(
+        secret_body + (b"x" * (_MAX_GITHUB_API_RESPONSE_BYTES + 1))
+    )
+
+    def urlopen(_request, *, timeout):
+        return response
+
+    client = VersionStatusClient(repository="owner/repo", urlopen=urlopen)
+
+    status = client.compare_revision("abc123")
+
+    assert status.state == "unknown"
+    assert status.commits_behind is None
+    assert "GitHub version check failed" in status.detail
+    assert "exceeded" in status.detail
+    assert str(_MAX_GITHUB_API_RESPONSE_BYTES) in status.detail
+    assert "ghp_secret-token" not in status.detail
+    assert "padding" not in status.detail
+    assert response.read_sizes == [_MAX_GITHUB_API_RESPONSE_BYTES + 1]
 
 
 def test_compare_revision_running_commit_ahead_of_main_warns() -> None:
