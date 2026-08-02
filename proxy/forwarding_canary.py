@@ -84,10 +84,11 @@ class ForwardingCanaryHandler(BaseHTTPRequestHandler):
             return
         query = parse_qs(parsed.query, keep_blank_values=True)
         probe = (query.get("probe") or [""])[-1]
+        safe_probe = _probe_header_value(probe)
         payload = {
             "ok": True,
             "service": CANARY_SERVICE,
-            "probe": probe,
+            "probe": safe_probe,
         }
         body = (
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
@@ -100,7 +101,7 @@ class ForwardingCanaryHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store, no-cache, max-age=0")
         self.send_header("Pragma", "no-cache")
-        self.send_header("X-Docker-Proxy-Forwarding-Canary", _probe_header_value(probe))
+        self.send_header("X-Docker-Proxy-Forwarding-Canary", safe_probe)
         self.end_headers()
         if include_body:
             self.wfile.write(body)

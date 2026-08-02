@@ -107,7 +107,36 @@ def test_forwarding_canary_probe_header_cannot_inject_response_headers() -> None
         headers = header_block.decode("iso-8859-1")
         assert "\r\nX-Injected:" not in headers
         assert "X-Docker-Proxy-Forwarding-Canary: ok??X-Injected: yes" in headers
-        assert json.loads(body.decode("utf-8"))["probe"] == "ok\r\nX-Injected: yes"
+        assert json.loads(body.decode("utf-8"))["probe"] == "ok??X-Injected: yes"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_forwarding_canary_probe_body_uses_bounded_header_representation() -> None:
+    _add_repo_paths()
+    from http.server import ThreadingHTTPServer
+
+    from proxy.forwarding_canary import (
+        MAX_PROBE_HEADER_VALUE_LEN,
+        ForwardingCanaryHandler,
+    )
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ForwardingCanaryHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        probe = "x" * (MAX_PROBE_HEADER_VALUE_LEN + 10)
+        with urlopen(
+            f"http://127.0.0.1:{port}/__docker_proxy_forwarding_canary?probe={probe}",
+            timeout=2,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            header_probe = response.headers["X-Docker-Proxy-Forwarding-Canary"]
+
+        assert payload["probe"] == header_probe == "x" * MAX_PROBE_HEADER_VALUE_LEN
     finally:
         server.shutdown()
         server.server_close()
