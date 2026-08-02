@@ -290,6 +290,25 @@ def test_packaged_virus_scan_config_matches_schema_streaming_defaults() -> None:
     )
 
 
+def test_cicap_alias_does_not_override_schema_allow_204_policy() -> None:
+    _add_web_path()
+    from services.clamav_config_forms import render_virus_scan_config
+
+    rendered = render_virus_scan_config({"virus_scan_allow_204_on": False})
+    cicap_config = (_repo_root() / "docker" / "c-icap.conf").read_text(
+        encoding="utf-8"
+    )
+    alias = next(
+        line
+        for line in cicap_config.splitlines()
+        if line.startswith("ServiceAlias avrespmod ")
+    )
+
+    assert "virus_scan.Allow204Responces off" in rendered
+    assert "allow204=" not in alias
+    assert alias == "ServiceAlias avrespmod virus_scan?sizelimit=off&mode=simple"
+
+
 def test_squid_controller_materializes_clamav_runtime_files(
     tmp_path, monkeypatch
 ) -> None:
