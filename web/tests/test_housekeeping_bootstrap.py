@@ -114,8 +114,11 @@ class _TimeseriesResult:
         return (0, None, None, None)
 
     def fetchall(self):
-        if "SELECT ts, count, cpu, mem, hit_rate" in self.sql:
-            return [(123, 1, 2.5, 50.0, 75.0)]
+        if (
+            "SELECT ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate"
+            in self.sql
+        ):
+            return [(123, 1, 2.5, 50.0, 30.0, 40.0, 75.0)]
         return []
 
 
@@ -191,7 +194,17 @@ def test_timeseries_query_reinitializes_after_external_schema_wipe(monkeypatch) 
 
     rows = store.query("1s", since=0, limit=25)
 
-    assert rows == [{"ts": 123, "count": 1, "cpu": 2.5, "mem": 50.0, "hit_rate": 75.0}]
+    assert rows == [
+        {
+            "ts": 123,
+            "count": 1,
+            "cpu": 2.5,
+            "mem": 50.0,
+            "disk_used": 30.0,
+            "cache_dir_size": 40.0,
+            "hit_rate": 75.0,
+        }
+    ]
     assert store._db_initialized is True
     assert sum(1 for call in calls if "CREATE TABLE IF NOT EXISTS" in call) == 7
 
