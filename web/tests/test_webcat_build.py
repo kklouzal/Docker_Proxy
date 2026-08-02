@@ -282,12 +282,65 @@ def test_zip_extraction_preserves_positive_extract_byte_limit(
 
     with tempfile.TemporaryDirectory(prefix="webcat_zip_limit_") as td:
         zip_path = Path(td) / "payload.zip"
+        out_dir = Path(td) / "out"
         with zipfile.ZipFile(zip_path, "w") as archive:
             archive.writestr("blacklists/adult/domains", "example.com\n")
 
         monkeypatch.setenv("WEBCAT_MAX_EXTRACT_BYTES", "5")
         with pytest.raises(ValueError, match="Extracted data exceeded limit"):
-            webcat_build._extract_zip(zip_path, Path(td) / "out")
+            webcat_build._extract_zip(zip_path, out_dir)
+
+        assert not out_dir.exists()
+
+
+def test_zip_extraction_enforces_limit_against_streamed_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    webcat_build = _import_webcat_build()
+
+    class UnderreportedZipFile:
+        def __init__(self, _path: Path, _mode: str) -> None:
+            self._info = zipfile.ZipInfo("blacklists/adult/domains")
+            self._info.file_size = 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def infolist(self) -> list[zipfile.ZipInfo]:
+            return [self._info]
+
+        def open(self, _info: zipfile.ZipInfo, _mode: str):
+            return io.BytesIO(b"abcdef")
+
+    with tempfile.TemporaryDirectory(prefix="webcat_zip_stream_limit_") as td:
+        out_dir = Path(td) / "out"
+
+        monkeypatch.setattr(webcat_build.zipfile, "ZipFile", UnderreportedZipFile)
+        monkeypatch.setenv("WEBCAT_MAX_EXTRACT_BYTES", "5")
+        with pytest.raises(ValueError, match="Extracted data exceeded limit"):
+            webcat_build._extract_zip(Path(td) / "payload.zip", out_dir)
+
+        assert not out_dir.exists()
+
+
+def test_zip_extraction_allows_normal_archive_within_actual_byte_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_zip_ok_limit_") as td:
+        zip_path = Path(td) / "payload.zip"
+        out_dir = Path(td) / "out"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("blacklists/adult/domains", "abcde")
+
+        monkeypatch.setenv("WEBCAT_MAX_EXTRACT_BYTES", "5")
+        webcat_build._extract_zip(zip_path, out_dir)
+
+        assert (out_dir / "blacklists/adult/domains").read_text() == "abcde"
 
 
 def test_zip_extraction_removes_partial_output_when_member_fails_crc() -> None:

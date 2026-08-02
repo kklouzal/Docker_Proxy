@@ -482,7 +482,9 @@ def _extract_zip_into(zip_path: Path, out_dir: Path) -> None:
             if not ok:
                 continue
 
-            # Prevent zip bombs / runaway extraction.
+            # Prevent zip bombs / runaway extraction.  Count the advertised
+            # size first, then add any extra bytes if the member stream yields
+            # more decompressed data than declared.
             file_size = int(getattr(info, "file_size", 0) or 0)
             total += file_size
             if total > max_bytes:
@@ -495,7 +497,18 @@ def _extract_zip_into(zip_path: Path, out_dir: Path) -> None:
 
             target.parent.mkdir(parents=True, exist_ok=True)
             with z.open(info, "r") as src, Path(target).open("wb") as dst:
-                shutil.copyfileobj(src, dst, length=512 * 1024)
+                remaining_declared = file_size
+                while True:
+                    chunk = src.read(512 * 1024)
+                    if not chunk:
+                        break
+                    extra = max(0, len(chunk) - remaining_declared)
+                    remaining_declared = max(0, remaining_declared - len(chunk))
+                    total += extra
+                    if total > max_bytes:
+                        msg = f"Extracted data exceeded limit ({max_bytes} bytes)."
+                        raise ValueError(msg)
+                    dst.write(chunk)
 
 
 def _extract_tar(tar_path: Path, out_dir: Path) -> None:
