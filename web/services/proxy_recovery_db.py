@@ -240,14 +240,15 @@ EXPORT_QUERY_PLANS: Final = (
             "client_ip",
             "domain",
             "category",
+            "method",
             "admin_note",
             "expires_ts",
         ),
         """
-        SELECT proxy_id, block_type, client_ip, domain, category, admin_note, expires_ts
+        SELECT proxy_id, block_type, client_ip, domain, category, method, admin_note, expires_ts
         FROM policy_exceptions
         WHERE proxy_id=%s AND status='active' AND (expires_ts=0 OR expires_ts>%s)
-        ORDER BY domain ASC, client_ip ASC, block_type ASC, category ASC, expires_ts ASC, id ASC
+        ORDER BY domain ASC, client_ip ASC, block_type ASC, category ASC, method ASC, expires_ts ASC, id ASC
         """,
         _PARAM_PROXY_NOW,
     ),

@@ -147,6 +147,7 @@ _NATURAL_KEYS: Final = MappingProxyType(
             "client_ip",
             "domain",
             "category",
+            "method",
             "expires_ts",
         ),
         "sslfilter_domains": ("proxy_id", "policy", "domain"),
@@ -502,10 +503,20 @@ def _validate_rows(
         if not hasattr(raw, "keys"):
             raise ProxyRecoveryRestoreError(f"recovery row for {table_name} is not a mapping")
         raw_keys = tuple(raw.keys())
-        if set(raw_keys) != set(expected_columns):
+        legacy_policy_exception = (
+            table_name == "policy_exceptions"
+            and set(raw_keys) == set(expected_columns) - {"method"}
+        )
+        if set(raw_keys) != set(expected_columns) and not legacy_policy_exception:
             raise ProxyRecoveryRestoreError(f"recovery row columns for {table_name} do not match restore contract")
         normalized = tuple(
-            _normalize_column_value(table_name, column, raw[column], proxy_key, now_ts)
+            _normalize_column_value(
+                table_name,
+                column,
+                "" if legacy_policy_exception and column == "method" else raw[column],
+                proxy_key,
+                now_ts,
+            )
             for column in expected_columns
         )
         by_col = dict(zip(expected_columns, normalized, strict=True))
@@ -1269,15 +1280,26 @@ def _insert_pac_proxy_chain_settings(conn: Any, rows: tuple[tuple[Any, ...], ...
 
 
 def _insert_policy_exceptions(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
-    for proxy_id, block_type, client_ip, domain, category, admin_note, expires_ts in rows:
+    for proxy_id, block_type, client_ip, domain, category, method, admin_note, expires_ts in rows:
         conn.execute(
             """
             INSERT INTO policy_exceptions(
-                proxy_id, status, block_type, client_ip, domain, category, created_ts,
+                proxy_id, status, block_type, client_ip, domain, category, method, created_ts,
                 updated_ts, created_by, admin_note, expires_ts, revoked_ts, revoked_by, source_request_id
-            ) VALUES(%s,'active',%s,%s,%s,%s,%s,%s,'proxy-recovery',%s,%s,0,'',NULL)
+            ) VALUES(%s,'active',%s,%s,%s,%s,%s,%s,%s,'proxy-recovery',%s,%s,0,'',NULL)
             """,
-            (proxy_id, block_type, client_ip, domain, category, now_ts, now_ts, admin_note, expires_ts),
+            (
+                proxy_id,
+                block_type,
+                client_ip,
+                domain,
+                category,
+                method,
+                now_ts,
+                now_ts,
+                admin_note,
+                expires_ts,
+            ),
         )
 
 

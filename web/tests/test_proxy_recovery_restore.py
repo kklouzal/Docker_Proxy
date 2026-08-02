@@ -351,6 +351,7 @@ def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
                 "client_ip": "10.0.0.5",
                 "domain": "allowed.example",
                 "category": "work",
+                "method": "GET",
                 "admin_note": "temporary",
                 "expires_ts": NOW + 3600,
             },
@@ -510,6 +511,62 @@ def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adop
     assert any(b"\x00exact-archive-bytes\xff" in params for _sql_text, params in conn.ops)
     assert not any("UPDATE control_plane_identity" in sql for sql in sqls)
     assert sqls[-1].startswith("DO RELEASE_LOCK")
+
+    policy_insert = next(
+        (sql, params)
+        for sql, params in conn.ops
+        if sql.startswith("INSERT INTO policy_exceptions")
+    )
+    assert "category, method, created_ts" in policy_insert[0]
+    assert policy_insert[1][5] == "GET"
+
+
+def test_restore_keeps_method_scoped_policy_exceptions_distinct_and_accepts_legacy_broad_rows() -> None:
+    base = dict(_base_rows("edge-01")["policy_exceptions"][0])
+    method_scoped = _bundle(
+        overrides={
+            "policy_exceptions": (
+                {**base, "method": "GET"},
+                {**base, "method": "POST"},
+            ),
+        },
+    )
+
+    method_conn = _StrictRestoreConn()
+    assert (
+        restore.restore_recovery_bundle(
+            method_conn,
+            method_scoped,
+            "edge-01",
+            now_ts=NOW,
+        ).status
+        == "adopted"
+    )
+    method_inserts = [
+        params
+        for sql, params in method_conn.ops
+        if sql.startswith("INSERT INTO policy_exceptions")
+    ]
+    assert [params[5] for params in method_inserts] == ["GET", "POST"]
+
+    legacy_row = dict(base)
+    legacy_row.pop("method")
+    legacy_conn = _StrictRestoreConn()
+    assert (
+        restore.restore_recovery_bundle(
+            legacy_conn,
+            _bundle(overrides={"policy_exceptions": (legacy_row,)}),
+            "edge-01",
+            now_ts=NOW,
+        ).status
+        == "adopted"
+    )
+    legacy_insert = next(
+        params
+        for sql, params in legacy_conn.ops
+        if sql.startswith("INSERT INTO policy_exceptions")
+    )
+    assert legacy_insert[5] == ""
 
 
 def test_identity_mismatch_same_identity_and_missing_identity_fail_closed() -> None:
