@@ -1033,6 +1033,50 @@ def test_admin_ui_https_preference_treats_hidden_fallback_only_as_disabled(
     assert restart_calls == [True]
 
 
+def test_admin_ui_https_preference_disables_with_invalid_posted_sans(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    bundles.admin_ui_https_settings = SimpleNamespace(
+        enabled=True,
+        certfile="/etc/squid/ssl/certs/admin-ui.crt",
+        keyfile="/etc/squid/ssl/certs/admin-ui.key",
+        san_tokens="proxyadmin.example.com",
+        updated_by="admin",
+        updated_ts=1,
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    restart_calls = []
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: restart_calls.append(True) or (True, "restart requested"),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={
+            "csrf_token": token,
+            "enabled": "0",
+            "san_tokens": "https://proxyadmin.example.com/certs",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    params = _location_params(response)
+    assert params["ok"] == ["1"]
+    assert "DNS names or IP addresses" not in params["msg"][0]
+    assert bundles.admin_ui_https_settings.enabled is False
+    assert bundles.admin_ui_https_settings.certfile == ""
+    assert bundles.admin_ui_https_settings.keyfile == ""
+    assert bundles.admin_ui_https_settings.san_tokens == ""
+    assert restart_calls == [True]
+
+
 def test_certificates_page_ignores_https_redirect_query(monkeypatch, tmp_path) -> None:
     loaded = load_admin_app(
         monkeypatch,

@@ -9365,12 +9365,22 @@ def upload_certificate_pfx():
 @app.route("/certs/admin-ui-https", methods=["POST"])
 def update_admin_ui_https():
     enabled = "1" in request.form.getlist("enabled")
-    try:
-        configured_san_tokens = _admin_ui_https_configured_san_tokens(
-            request.form.get("san_tokens", ""),
-        )
-    except ValueError as exc:
-        return _redirect_with_message("certs", ok=False, msg=str(exc))
+    configured_san_tokens: tuple[str, ...] = ()
+    raw_configured_san_tokens = request.form.get("san_tokens", "")
+    if enabled:
+        try:
+            configured_san_tokens = _admin_ui_https_configured_san_tokens(
+                raw_configured_san_tokens,
+            )
+        except ValueError as exc:
+            return _redirect_with_message("certs", ok=False, msg=str(exc))
+    elif str(raw_configured_san_tokens or "").strip():
+        try:
+            configured_san_tokens = _admin_ui_https_configured_san_tokens(
+                raw_configured_san_tokens,
+            )
+        except ValueError:
+            configured_san_tokens = ()
     bundle = get_certificate_bundles().get_active_bundle()
     if enabled and bundle is None:
         return _redirect_with_message(
