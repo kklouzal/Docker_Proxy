@@ -304,7 +304,8 @@ class VersionStatusClient:
                 f"GitHub version check failed: {exc}",
             )
 
-        self._cache[key] = (now, result)
+        if result.state != "unknown":
+            self._cache[key] = (now, result)
         return result
 
 

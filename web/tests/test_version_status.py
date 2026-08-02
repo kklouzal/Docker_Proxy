@@ -135,6 +135,29 @@ def test_compare_revision_oversized_github_response_is_bounded_unknown() -> None
     assert response.read_sizes == [_MAX_GITHUB_API_RESPONSE_BYTES + 1]
 
 
+def test_compare_revision_first_oversized_failure_is_not_ttl_cached() -> None:
+    calls = {"count": 0}
+
+    def urlopen(_request, *, timeout):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _Response(b"x" * (_MAX_GITHUB_API_RESPONSE_BYTES + 1))
+        return _json_response({"status": "identical"})
+
+    client = VersionStatusClient(
+        repository="owner/repo",
+        urlopen=urlopen,
+        monotonic=lambda: 1.0,
+    )
+
+    first = client.compare_revision("abc123", ttl_seconds=3600)
+    second = client.compare_revision("abc123", ttl_seconds=3600)
+
+    assert first.state == "unknown"
+    assert second.state == "ok"
+    assert calls["count"] == 2
+
+
 def test_compare_revision_running_commit_ahead_of_main_warns() -> None:
     def urlopen(_request, *, timeout):
         return _json_response(
