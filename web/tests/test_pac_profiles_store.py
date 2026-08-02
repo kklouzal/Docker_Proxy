@@ -392,6 +392,21 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
         3128,
         "",
     )
+    assert mod._normalize_proxy_host_port("10.20.30.40", None) == (
+        "10.20.30.40",
+        3128,
+        "",
+    )
+    assert mod._normalize_proxy_host_port("[fd12:3456:789a::10]:3129", None) == (
+        "fd12:3456:789a::10",
+        3129,
+        "",
+    )
+    assert mod._normalize_proxy_host_port("proxy.internal", None) == (
+        "proxy.internal",
+        3128,
+        "",
+    )
 
 
 def test_backup_proxy_host_port_normalization_accepts_scheme_url_without_port() -> None:
@@ -451,6 +466,34 @@ def test_backup_proxy_host_port_normalization_rejects_loopback_hosts() -> None:
         "::1",
         "[::1]:3128",
         "http://[::1]:3128",
+    ):
+        assert mod._normalize_proxy_host_port(host, None) == (
+            None,
+            None,
+            "Invalid proxy host.",
+        )
+
+
+def test_backup_proxy_rejects_unroutable_ip_literals() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    for host in (
+        "0.0.0.0",  # noqa: S104 - Validation fixture, not a bind address.
+        "http://0.0.0.0:8080",
+        "::",
+        "[::]:3128",
+        "http://[::]:3128",
+        "224.0.0.1",
+        "http://224.0.0.1:8080",
+        "ff02::1",
+        "[ff02::1]:3128",
+        "http://[ff02::1]:3128",
+        "169.254.1.1",
+        "http://169.254.1.1:8080",
+        "fe80::1",
+        "[fe80::1]:3128",
+        "http://[fe80::1]:3128",
     ):
         assert mod._normalize_proxy_host_port(host, None) == (
             None,

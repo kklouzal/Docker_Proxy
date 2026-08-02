@@ -163,6 +163,9 @@ def _is_valid_proxy_host(host: str) -> bool:
         parsed_ip = ip_address(host)
         return not bool(getattr(parsed_ip, "scope_id", None)) and not (
             parsed_ip.is_loopback
+            or parsed_ip.is_unspecified
+            or parsed_ip.is_multicast
+            or parsed_ip.is_link_local
         )
     except Exception:
         pass
