@@ -27,7 +27,7 @@ from services.db import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 24
+_SCHEMA_VERSION = 25
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -1455,6 +1455,47 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                         PRIMARY KEY (proxy_id)
                     )
                     """,
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=25,
+            name="diagnostic_icap_extended_metadata",
+            columns=(
+                SchemaColumnSpec(
+                    "diagnostic_icap_events",
+                    "icap_service",
+                    "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_service VARCHAR(128) NOT NULL DEFAULT '' AFTER service_family",
+                ),
+                SchemaColumnSpec(
+                    "diagnostic_icap_events",
+                    "icap_outcome",
+                    "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_outcome VARCHAR(64) NOT NULL DEFAULT '' AFTER icap_service",
+                ),
+                SchemaColumnSpec(
+                    "diagnostic_icap_events",
+                    "icap_status",
+                    "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_status INT NOT NULL DEFAULT 0 AFTER icap_outcome",
+                ),
+                SchemaColumnSpec(
+                    "diagnostic_icap_events",
+                    "icap_response_time_ms",
+                    "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_response_time_ms INT NOT NULL DEFAULT 0 AFTER icap_status",
+                ),
+                SchemaColumnSpec(
+                    "diagnostic_icap_events",
+                    "icap_io_time_ms",
+                    "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_io_time_ms INT NOT NULL DEFAULT 0 AFTER icap_response_time_ms",
+                ),
+                SchemaColumnSpec(
+                    "diagnostic_icap_events",
+                    "icap_bytes_sent",
+                    "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_bytes_sent BIGINT NOT NULL DEFAULT 0 AFTER icap_io_time_ms",
+                ),
+                SchemaColumnSpec(
+                    "diagnostic_icap_events",
+                    "icap_bytes_received",
+                    "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_bytes_received BIGINT NOT NULL DEFAULT 0 AFTER icap_bytes_sent",
                 ),
             ),
         ),

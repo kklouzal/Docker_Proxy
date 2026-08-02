@@ -1,4 +1,5 @@
 import ipaddress
+from contextlib import nullcontext
 
 from services.diagnostic_store import (
     DiagnosticStore,
@@ -76,6 +77,13 @@ def _candidate_icap_row(
         "",
         "",
         "av",
+        "av_resp",
+        "ICAP_ERR_GONE",
+        500,
+        12,
+        10,
+        512,
+        64,
         row_id,
     )
 
@@ -366,6 +374,8 @@ def test_policy_and_icap_candidate_queries_order_ties_by_id(monkeypatch) -> None
         "tx-icap-after",
     ]
     assert [row["correlation_kind"] for row in icap_candidates] == ["domain_time"] * 3
+    assert icap_candidates[0]["icap_service"] == "av_resp"
+    assert icap_candidates[0]["icap_outcome"] == "ICAP_ERR_GONE"
 
 
 def test_read_last_lines_drops_partial_leading_seed_line(tmp_path) -> None:
@@ -650,6 +660,192 @@ def test_normalized_icap_row_exposes_extended_service_fields() -> None:
     assert row["icap_service"] == "av_resp"
     assert row["icap_outcome"] == "ICAP_ERR_GONE"
     assert row["icap_status"] == 500
+
+
+def test_normalized_icap_row_defaults_extended_fields_for_legacy_rows() -> None:
+    row = _normalize_icap_row(
+        [
+            1777000002,
+            "tx-legacy",
+            "192.0.2.10",
+            "GET",
+            "http://example.com/file.bin",
+            "example.com",
+            11,
+            "-",
+            "-",
+            "example.com",
+            "curl/8.19.0",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "av",
+        ]
+    )
+
+    assert row["icap_service"] == ""
+    assert row["icap_outcome"] == ""
+    assert row["icap_status"] == 0
+    assert row["icap_response_time_ms"] == 0
+    assert row["icap_io_time_ms"] == 0
+    assert row["icap_bytes_sent"] == 0
+    assert row["icap_bytes_received"] == 0
+
+
+def test_extended_icap_metadata_survives_flush_listing_and_enrichment(
+    monkeypatch,
+) -> None:
+    store = DiagnosticStore()
+    line = (
+        "1777000002\ttx-resp\t192.0.2.10\tGET\thttp://example.com/file.bin\t11"
+        "\t-\t-\texample.com\tcurl/8.19.0\t-\t-\t-\t-\t-"
+        "\tav_resp\tICAP_ERR_GONE\t500\t12\t10\t512\t64"
+    )
+    inserted_sql: list[str] = []
+
+    class FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeConnection:
+        persisted: tuple[object, ...] | None = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def executemany(self, sql, rows):
+            materialized = tuple(tuple(row) for row in rows)
+            assert len(materialized) == 1
+            self.persisted = materialized[0]
+            inserted_sql.append(str(sql))
+
+        def execute(self, sql, _params):
+            assert self.persisted is not None
+            sql_text = str(sql)
+            selected = tuple(self.persisted[2:26])
+            if "FORCE INDEX" in sql_text:
+                if "ORDER BY ts ASC" in sql_text:
+                    return FakeCursor([])
+                return FakeCursor([(*selected, 1)])
+            return FakeCursor([selected])
+
+    connection = FakeConnection()
+    monkeypatch.setattr(store, "_connect", lambda: connection)
+    monkeypatch.setattr(store, "init_db", lambda: None)
+
+    assert store._ingest_icap_line_with_conn(connection, line) is True
+    assert connection.persisted is not None
+    assert "icap_service, icap_outcome, icap_status" in inserted_sql[0]
+    assert inserted_sql[0].count("%s") == 28
+    assert len(connection.persisted) == 28
+
+    recent = store.list_recent_icap(search="ICAP_ERR_GONE", limit=1)
+    assert recent[0]["icap_service"] == "av_resp"
+    assert recent[0]["icap_outcome"] == "ICAP_ERR_GONE"
+    assert recent[0]["icap_status"] == 500
+    assert recent[0]["icap_response_time_ms"] == 12
+    assert recent[0]["icap_io_time_ms"] == 10
+    assert recent[0]["icap_bytes_sent"] == 512
+    assert recent[0]["icap_bytes_received"] == 64
+
+    slowest = store.slowest_icap_events(limit=1)
+    assert slowest[0]["icap_outcome"] == "ICAP_ERR_GONE"
+    assert slowest[0]["icap_io_time_ms"] == 10
+
+    monkeypatch.setattr(
+        store,
+        "list_recent_requests",
+        lambda **_kwargs: [{"master_xaction": "tx-resp"}],
+    )
+    transactions = store.list_recent_transactions(limit=1)
+    assert transactions[0]["related_icap"][0]["icap_outcome"] == "ICAP_ERR_GONE"
+    assert transactions[0]["related_icap"][0]["icap_bytes_sent"] == 512
+
+    candidates = store.list_icap_candidates_for_domain_near_ts(
+        domain="example.com",
+        around_ts=1777000002,
+        limit=1,
+    )
+    assert candidates[0]["icap_service"] == "av_resp"
+    assert candidates[0]["icap_response_time_ms"] == 12
+
+
+def test_icap_schema_creates_and_additively_migrates_extended_columns(
+    monkeypatch,
+) -> None:
+    statements: list[str] = []
+
+    class FakeCursor:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, params=()):
+            sql_text = str(sql)
+            statements.append(sql_text)
+            if "information_schema.columns" in sql_text:
+                if "diagnostic_requests" in sql_text:
+                    return FakeCursor((1,))
+                assert params[0].startswith("icap_")
+                return FakeCursor(None)
+            if "information_schema.statistics" in sql_text:
+                return FakeCursor((1,))
+            return FakeCursor()
+
+    connection = FakeConnection()
+    monkeypatch.setattr(
+        "services.diagnostic_store.run_mysql_operation_with_retry",
+        lambda operation: operation(),
+    )
+    monkeypatch.setattr(
+        "services.diagnostic_store.mysql_advisory_lock",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        "services.schema_lifecycle.runtime_schema_ready_for_lazy_store",
+        lambda _conn: False,
+    )
+    store = DiagnosticStore()
+    monkeypatch.setattr(store, "_connect", lambda: connection)
+
+    store.init_db()
+
+    create_icap = next(
+        sql
+        for sql in statements
+        if "CREATE TABLE IF NOT EXISTS diagnostic_icap_events" in sql
+    )
+    for column in (
+        "icap_service",
+        "icap_outcome",
+        "icap_status",
+        "icap_response_time_ms",
+        "icap_io_time_ms",
+        "icap_bytes_sent",
+        "icap_bytes_received",
+    ):
+        assert column in create_icap
+        assert any(
+            f"ALTER TABLE diagnostic_icap_events ADD COLUMN {column}" in sql
+            for sql in statements
+        )
 
 
 def test_parse_icap_log_line_ignores_rows_shorter_than_legacy_base() -> None:

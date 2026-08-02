@@ -622,6 +622,13 @@ class DiagnosticStore:
                                 webfilter_allow VARCHAR(64) NOT NULL,
                                 cache_bypass VARCHAR(64) NOT NULL,
                                 service_family VARCHAR(32) NOT NULL,
+                                icap_service VARCHAR(128) NOT NULL DEFAULT '',
+                                icap_outcome VARCHAR(64) NOT NULL DEFAULT '',
+                                icap_status INT NOT NULL DEFAULT 0,
+                                icap_response_time_ms INT NOT NULL DEFAULT 0,
+                                icap_io_time_ms INT NOT NULL DEFAULT 0,
+                                icap_bytes_sent BIGINT NOT NULL DEFAULT 0,
+                                icap_bytes_received BIGINT NOT NULL DEFAULT 0,
                                 raw TEXT NOT NULL,
                                 created_ts BIGINT NOT NULL,
                                 UNIQUE KEY idx_diagnostic_icap_proxy_event (proxy_id, event_key),
@@ -659,6 +666,53 @@ class DiagnosticStore:
                                 FROM information_schema.columns
                                 WHERE table_schema = DATABASE()
                                   AND table_name = 'diagnostic_requests'
+                                  AND column_name = %s
+                                LIMIT 1
+                                """,
+                                (column_name,),
+                            ).fetchone()
+                            if not exists:
+                                try:
+                                    conn.execute(ddl)
+                                except DATABASE_ERRORS as exc:
+                                    if mysql_error_code(exc) != 1060:
+                                        raise
+                        for column_name, ddl in (
+                            (
+                                "icap_service",
+                                "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_service VARCHAR(128) NOT NULL DEFAULT '' AFTER service_family",
+                            ),
+                            (
+                                "icap_outcome",
+                                "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_outcome VARCHAR(64) NOT NULL DEFAULT '' AFTER icap_service",
+                            ),
+                            (
+                                "icap_status",
+                                "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_status INT NOT NULL DEFAULT 0 AFTER icap_outcome",
+                            ),
+                            (
+                                "icap_response_time_ms",
+                                "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_response_time_ms INT NOT NULL DEFAULT 0 AFTER icap_status",
+                            ),
+                            (
+                                "icap_io_time_ms",
+                                "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_io_time_ms INT NOT NULL DEFAULT 0 AFTER icap_response_time_ms",
+                            ),
+                            (
+                                "icap_bytes_sent",
+                                "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_bytes_sent BIGINT NOT NULL DEFAULT 0 AFTER icap_io_time_ms",
+                            ),
+                            (
+                                "icap_bytes_received",
+                                "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_bytes_received BIGINT NOT NULL DEFAULT 0 AFTER icap_bytes_sent",
+                            ),
+                        ):
+                            exists = conn.execute(
+                                """
+                                SELECT 1
+                                FROM information_schema.columns
+                                WHERE table_schema = DATABASE()
+                                  AND table_name = 'diagnostic_icap_events'
                                   AND column_name = %s
                                 LIMIT 1
                                 """,
@@ -1410,6 +1464,13 @@ class DiagnosticStore:
             str(row["webfilter_allow"]),
             str(row["cache_bypass"]),
             str(row["service_family"]),
+            str(row["icap_service"]),
+            str(row["icap_outcome"]),
+            int(row["icap_status"]),
+            int(row["icap_response_time_ms"]),
+            int(row["icap_io_time_ms"]),
+            int(row["icap_bytes_sent"]),
+            int(row["icap_bytes_received"]),
             str(row["raw"]),
             int(_now()),
         )
@@ -1482,8 +1543,9 @@ class DiagnosticStore:
             INSERT IGNORE INTO diagnostic_icap_events (
                 proxy_id, event_key, ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
                 adapt_summary, adapt_details, host, user_agent, sni, exclusion_rule, ssl_exception,
-                webfilter_allow, cache_bypass, service_family, raw, created_ts
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                webfilter_allow, cache_bypass, service_family, icap_service, icap_outcome, icap_status,
+                icap_response_time_ms, icap_io_time_ms, icap_bytes_sent, icap_bytes_received, raw, created_ts
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             batch.rows,
         )
@@ -1598,10 +1660,10 @@ class DiagnosticStore:
             like = f"%{_escape_like(search.strip().lower())}%"
             where.append(
                 "("
-                "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(host) LIKE %s ESCAPE '\\\\' OR LOWER(sni) LIKE %s ESCAPE '\\\\' OR LOWER(master_xaction) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\'"
+                "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(host) LIKE %s ESCAPE '\\\\' OR LOWER(sni) LIKE %s ESCAPE '\\\\' OR LOWER(master_xaction) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_summary) LIKE %s ESCAPE '\\\\' OR LOWER(adapt_details) LIKE %s ESCAPE '\\\\' OR LOWER(icap_service) LIKE %s ESCAPE '\\\\' OR LOWER(icap_outcome) LIKE %s ESCAPE '\\\\'"
                 ")",
             )
-            params.extend([like] * 8)
+            params.extend([like] * 10)
         where_sql = "WHERE " + " AND ".join(where)
         lim = max(1, min(200, int(limit)))
 
@@ -1611,7 +1673,9 @@ class DiagnosticStore:
                 SELECT
                     ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
                     adapt_summary, adapt_details, host, user_agent, sni,
-                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family
+                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family,
+                    icap_service, icap_outcome, icap_status, icap_response_time_ms,
+                    icap_io_time_ms, icap_bytes_sent, icap_bytes_received
                 FROM diagnostic_icap_events
                 {where_sql}
                 ORDER BY ts DESC, id DESC
@@ -1658,7 +1722,9 @@ class DiagnosticStore:
                 SELECT
                     ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
                     adapt_summary, adapt_details, host, user_agent, sni,
-                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family
+                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family,
+                    icap_service, icap_outcome, icap_status, icap_response_time_ms,
+                    icap_io_time_ms, icap_bytes_sent, icap_bytes_received
                 FROM diagnostic_icap_events
                 {where_sql}
                 ORDER BY ts DESC, id DESC
@@ -1932,7 +1998,9 @@ class DiagnosticStore:
                 SELECT
                     ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
                     adapt_summary, adapt_details, host, user_agent, sni,
-                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family, id
+                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family,
+                    icap_service, icap_outcome, icap_status, icap_response_time_ms,
+                    icap_io_time_ms, icap_bytes_sent, icap_bytes_received, id
                 FROM diagnostic_icap_events FORCE INDEX (idx_diagnostic_icap_proxy_domain_service_ts_id)
                 WHERE {base_where_sql}
                   AND {{window_predicate}}
@@ -1961,7 +2029,7 @@ class DiagnosticStore:
             list(before_rows) + list(after_rows),
             center=center,
             limit=lim,
-            id_index=17,
+            id_index=24,
         ):
             normalized = _normalize_icap_row(row)
             normalized["time_delta_seconds"] = abs(
@@ -2235,7 +2303,9 @@ class DiagnosticStore:
                 SELECT
                     ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
                     adapt_summary, adapt_details, host, user_agent, sni,
-                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family
+                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family,
+                    icap_service, icap_outcome, icap_status, icap_response_time_ms,
+                    icap_io_time_ms, icap_bytes_sent, icap_bytes_received
                 FROM diagnostic_icap_events
                 {where_sql}
                 ORDER BY icap_time_ms DESC, ts DESC, id DESC

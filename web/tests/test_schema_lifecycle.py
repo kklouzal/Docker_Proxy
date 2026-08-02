@@ -192,9 +192,10 @@ def test_schema_migration_failure_is_observable_and_retryable() -> None:
 
 
 def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
-    specs = schema_lifecycle._migration_specs()
-    versions = [spec.version for spec in specs]
-    names = {spec.name for spec in specs}
+    all_specs = schema_lifecycle._migration_specs()
+    specs = all_specs[:-1]
+    versions = [spec.version for spec in all_specs]
+    names = {spec.name for spec in all_specs}
 
     assert versions == list(range(1, schema_lifecycle.latest_schema_version() + 1))
     assert {
@@ -221,8 +222,9 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "timeseries_metric_count_columns",
         "application_ledger_evidence_completion",
         "live_stats_seed_checkpoint",
+        "diagnostic_icap_extended_metadata",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 24
+    assert schema_lifecycle.latest_schema_version() == 25
     assert specs[-9].version == 16
     assert specs[-9].name == "control_plane_identity"
     assert specs[-8].version == 17
@@ -241,7 +243,7 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
     assert specs[-2].name == "application_ledger_evidence_completion"
     assert specs[-1].version == 24
     assert specs[-1].name == "live_stats_seed_checkpoint"
-    assert schema_lifecycle.latest_schema_checksum() == specs[-1].checksum
+    assert schema_lifecycle.latest_schema_checksum() == all_specs[-1].checksum
     assert specs[-9].tables[0].table == "control_plane_identity"
     assert "control_plane_id CHAR(36) NOT NULL" in specs[-9].tables[0].create_sql
     assert specs[-8].tables[0].table == "proxy_recovery_adoptions"
@@ -283,6 +285,15 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
     ]
     assert specs[-2].data_steps[0].name == "application_ledger_evidence_completion_backfill"
     assert specs[-1].tables[0].table == "live_stats_seed_state"
+    assert [(column.table, column.name) for column in all_specs[-1].columns] == [
+        ("diagnostic_icap_events", "icap_service"),
+        ("diagnostic_icap_events", "icap_outcome"),
+        ("diagnostic_icap_events", "icap_status"),
+        ("diagnostic_icap_events", "icap_response_time_ms"),
+        ("diagnostic_icap_events", "icap_io_time_ms"),
+        ("diagnostic_icap_events", "icap_bytes_sent"),
+        ("diagnostic_icap_events", "icap_bytes_received"),
+    ]
 
 
 class _ApplicationLedgerEvidenceBackfillConn:
