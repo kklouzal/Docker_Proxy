@@ -657,6 +657,15 @@ class WebFilterStoreBase:
                 )
             except Exception:
                 exceptions = []
+        selected_categories = set(selected)
+        enforced_exceptions = []
+        for exception in exceptions:
+            category = _normalize_category_name(getattr(exception, "category", ""))
+            if category and category not in selected_categories:
+                continue
+            # Empty categories predate category-aware requests and remain broad.
+            enforced_exceptions.append(exception)
+        exceptions = enforced_exceptions
         helper_name = self._webcat_helper_name(
             settings=settings,
             categories=selected,

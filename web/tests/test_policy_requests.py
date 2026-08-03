@@ -552,7 +552,7 @@ def test_policy_request_store_bounds_direct_approval_durations(tmp_path) -> None
     assert indefinite.expires_ts == 0
 
 
-def test_webfilter_materialization_renders_client_scoped_exceptions(
+def test_webfilter_materialization_scopes_exceptions_to_enforced_categories(
     monkeypatch, tmp_path
 ) -> None:
     ensure_web_import_path()
@@ -564,10 +564,36 @@ def test_webfilter_materialization_renders_client_scoped_exceptions(
 
     class Store(core.WebFilterStoreBase):
         def get_settings(self):
-            return core.WebFilterSettings(True, "", ["adult"], [], 0, 0, "", 0)
+            return core.WebFilterSettings(
+                True,
+                "",
+                ["adult"],
+                [],
+                0,
+                0,
+                "",
+                0,
+                safe_browsing_enabled=True,
+                safe_browsing_api_key="test-key",
+            )
 
         def _resolve_category_aliases(self, categories):
             return categories
+
+    class SafeBrowsingOnlyStore(Store):
+        def get_settings(self):
+            return core.WebFilterSettings(
+                True,
+                "",
+                [],
+                [],
+                0,
+                0,
+                "",
+                0,
+                safe_browsing_enabled=True,
+                safe_browsing_api_key="test-key",
+            )
 
     class RequestStore:
         def active_webfilter_exceptions(self, *, proxy_id=None, at_ts=None, limit=5000):
@@ -607,12 +633,50 @@ def test_webfilter_materialization_renders_client_scoped_exceptions(
                     "",
                     2,
                 ),
+                PolicyException(
+                    9,
+                    proxy_id or "edge-a",
+                    "active",
+                    "webfilter",
+                    "192.168.1.57",
+                    "stale.example",
+                    "malware",
+                    1,
+                    1,
+                    "admin",
+                    "",
+                    0,
+                    0,
+                    "",
+                    3,
+                    method="POST",
+                ),
+                PolicyException(
+                    10,
+                    proxy_id or "edge-a",
+                    "active",
+                    "webfilter",
+                    "192.168.1.58",
+                    "legacy.example",
+                    "",
+                    1,
+                    1,
+                    "admin",
+                    "",
+                    0,
+                    0,
+                    "",
+                    4,
+                ),
             ]
 
     monkeypatch.setattr(core, "get_policy_request_store", RequestStore)
     token = set_proxy_id("edge-a")
     try:
         text = Store().render_materialized_state().include_text
+        safe_browsing_only_text = (
+            SafeBrowsingOnlyStore().render_materialized_state().include_text
+        )
     finally:
         reset_proxy_id(token)
     assert "acl webfilter_exception_src_7 src 192.168.1.55" in text
@@ -621,8 +685,22 @@ def test_webfilter_materialization_renders_client_scoped_exceptions(
     assert "http_access allow webfilter_exception_src_7 webfilter_exception_dst_7 webfilter_exception_method_7" in text
     assert "webfilter_exception_src_8" not in text
     assert "bad domain.example" not in text
+    assert "webfilter_exception_src_9" not in text
+    assert "stale.example" not in text
+    assert "webfilter_exception_src_10 src 192.168.1.58" in text
+    assert "webfilter_exception_dst_10 dstdomain legacy.example .legacy.example" in text
     assert text.index("http_access allow webfilter_exception_src_7") < text.index(
         "http_access deny webfilter_block_adult"
+    )
+    assert "http_access deny webfilter_block_google_safe_browsing" in text
+
+    assert "webfilter_exception_src_7" not in safe_browsing_only_text
+    assert "webfilter_exception_src_9" not in safe_browsing_only_text
+    assert "acl webfilter_exception_src_10 src 192.168.1.58" in safe_browsing_only_text
+    assert safe_browsing_only_text.index(
+        "http_access allow webfilter_exception_src_10"
+    ) < safe_browsing_only_text.index(
+        "http_access deny webfilter_block_google_safe_browsing"
     )
 
 
