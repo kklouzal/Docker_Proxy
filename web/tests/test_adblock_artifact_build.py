@@ -1756,6 +1756,58 @@ def test_adblock_cicap_access_parser_normalizes_invalid_timestamp_to_ingest_time
     assert first_values[2] > prune_calls[0][1][0]
 
 
+def test_adblock_cicap_future_timestamp_is_bounded_without_changing_event_key(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store_module = _import_adblock_store_module()
+    ingest_ts = 1_800_000_000
+    future_ts = ingest_ts + 30 * 24 * 3600
+    monkeypatch.setattr(store_module, "_now", lambda: ingest_ts)
+    store = store_module.AdblockStore(lists_dir=str(tmp_path / "lists"))
+    line = (
+        f"{future_ts}\t192.0.2.10\t198.51.100.20\tREQMOD\t/adblockreq\t200\t"
+        "GET http://ads.example/ HTTP/1.1\thttp://ads.example/\t"
+        "HTTP/1.1 403 Forbidden\t-"
+    )
+
+    blocked = store._parse_cicap_access_line(line)
+
+    assert blocked is not None
+    assert blocked["ts"] == future_ts
+    values = store._event_values("proxy-a", blocked, ingest_ts)
+    assert values[1] == store_module._event_key(
+        future_ts,
+        "192.0.2.10",
+        "http://ads.example/",
+        403,
+    )
+    assert values[2] == ingest_ts
+    assert values[10] == ingest_ts
+    replayed_values = store._event_values("proxy-a", blocked, future_ts + 1)
+    assert replayed_values[1] == values[1]
+
+    historical = {**blocked, "ts": ingest_ts - 1}
+    historical_values = store._event_values("proxy-a", historical, ingest_ts)
+    assert historical_values[2] == ingest_ts - 1
+    legitimate_later = {**blocked, "ts": ingest_ts + 1}
+    later_values = store._event_values("proxy-a", legitimate_later, ingest_ts + 1)
+    assert later_values[2] > values[2]
+
+    prune_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Conn:
+        def execute(self, sql, params=()):
+            prune_calls.append((" ".join(str(sql).split()), tuple(params)))
+
+    after_retention = ingest_ts + 30 * 24 * 3600 + 1
+    monkeypatch.setattr(store_module, "_now", lambda: after_retention)
+    store._prune_events(Conn())
+
+    assert prune_calls[0][1][0] == ingest_ts + 1
+    assert values[2] < prune_calls[0][1][0]
+
+
 def test_adblock_cicap_access_parser_accepts_quoted_tabs_and_scaled_service_path(
     tmp_path,
 ) -> None:

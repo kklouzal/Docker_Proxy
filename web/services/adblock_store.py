@@ -669,8 +669,15 @@ class AdblockStore:
         row: dict[str, Any],
         created_ts: int,
     ) -> tuple[object, ...]:
+        source_ts = int(row.get("ts") or 0)
+        # The local ICAP helper writes its wall-clock timestamp immediately before
+        # appending the line. A completed event cannot legitimately be newer than
+        # its same-host ingestion time. Keep the source timestamp in the dedupe key
+        # so replay remains stable after a clock correction, but bound the stored
+        # timestamp used by recent-event ordering and retention.
+        persisted_ts = min(source_ts, int(created_ts))
         dedupe_key = _event_key(
-            int(row.get("ts") or 0),
+            source_ts,
             str(row.get("src_ip") or "-"),
             str(row.get("url") or ""),
             int(row.get("http_status") or 0),
@@ -678,7 +685,7 @@ class AdblockStore:
         return (
             proxy_id,
             dedupe_key,
-            int(row.get("ts") or 0),
+            persisted_ts,
             str(row.get("src_ip") or "-"),
             str(row.get("method") or "-"),
             str(row.get("url") or ""),
