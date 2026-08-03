@@ -100,6 +100,32 @@ def test_normalize_hostish_rejects_malformed_dns_labels_and_wildcards() -> None:
         assert extract_domain(value) == ""
 
 
+def test_normalize_hostish_rejects_leading_and_repeated_trailing_root_dots() -> None:
+    for value in (
+        ".example.com",
+        "...example.com",
+        "example.com..",
+        "example.com...:443",
+        "https://.example.com/path",
+        "http://example.com../path",
+    ):
+        assert normalize_hostish(value) == ""
+        assert extract_domain(value) == ""
+
+
+def test_normalize_hostish_allows_one_trailing_root_dot() -> None:
+    for value in (
+        "Example.COM.",
+        "example.com.:443",
+        "https://Example.COM./path",
+    ):
+        assert normalize_hostish(value) == "example.com"
+        assert extract_domain(value) == "example.com"
+
+    assert normalize_hostish("Bücher.Example.") == "xn--bcher-kva.example"
+    assert extract_domain("https://Bücher.Example./path") == "xn--bcher-kva.example"
+
+
 def test_normalize_hostish_rejects_bracketed_ipv4_authorities() -> None:
     for value in (
         "[127.0.0.1]:443",

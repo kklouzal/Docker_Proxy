@@ -69,7 +69,7 @@ def _valid_dns_hostname(value: str) -> bool:
 
 
 def _normalize_host_token(host: str) -> str:
-    candidate = host.strip().strip(".")
+    candidate = host.strip()
     if not candidate:
         return ""
     try:
@@ -83,6 +83,9 @@ def _normalize_host_token(host: str) -> str:
         candidate = candidate.encode("idna").decode("ascii").lower()
     except Exception:
         return ""
+    if candidate.startswith(".") or candidate.endswith(".."):
+        return ""
+    candidate = candidate.removesuffix(".")
     if _is_ambiguous_ipv4_host(candidate):
         return ""
     return candidate if _valid_dns_hostname(candidate) else ""
@@ -97,7 +100,7 @@ def _parsed_netloc_has_empty_port(netloc: str) -> bool:
 
 
 def normalize_hostish(value: object | None) -> str:
-    host = str(value or "").strip().lower().lstrip(".")
+    host = str(value or "").strip().lower()
     if not host or host in {"-", "(nil)", "none", "null"}:
         return ""
     if "\\" in host or _decoded_hostish_has_delimiters(host):
