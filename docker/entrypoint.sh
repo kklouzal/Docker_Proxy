@@ -114,6 +114,28 @@ sanitize_bind_host() {
     esac
 }
 
+sanitize_forwarding_canary_path() {
+    FORWARDING_CANARY_PATH_CANDIDATE="$1" python3 - <<'PY'
+import os
+
+default = "/__docker_proxy_forwarding_canary"
+candidate = os.environ.get("FORWARDING_CANARY_PATH_CANDIDATE") or default
+if (
+    not candidate.startswith("/")
+    or "?" in candidate
+    or "#" in candidate
+    or "\\" in candidate
+    or "//" in candidate
+    or any(
+        char.isspace() or ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
+        for char in candidate
+    )
+):
+    candidate = default
+print(candidate)
+PY
+}
+
 config_has_directive() {
     file_path="$1"
     key="$2"
@@ -213,15 +235,7 @@ case "${FORWARDING_CANARY_HOST}" in
     *) FORWARDING_CANARY_HOST=127.0.0.1 ;;
 esac
 export FORWARDING_CANARY_HOST="${FORWARDING_CANARY_HOST:-127.0.0.1}"
-FORWARDING_CANARY_PATH="${FORWARDING_CANARY_PATH:-/__docker_proxy_forwarding_canary}"
-case "${FORWARDING_CANARY_PATH}" in
-    /*)
-        case "${FORWARDING_CANARY_PATH}" in
-            *[?]*|*[#]*|*[\\]*|*//*) FORWARDING_CANARY_PATH=/__docker_proxy_forwarding_canary ;;
-        esac
-        ;;
-    *) FORWARDING_CANARY_PATH=/__docker_proxy_forwarding_canary ;;
-esac
+FORWARDING_CANARY_PATH="$(sanitize_forwarding_canary_path "${FORWARDING_CANARY_PATH:-/__docker_proxy_forwarding_canary}")"
 export FORWARDING_CANARY_PATH
 WEB_WORKERS="$(sanitize_positive_int "${WEB_WORKERS:-1}")"
 export WEB_WORKERS="${WEB_WORKERS:-1}"

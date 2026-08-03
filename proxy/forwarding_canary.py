@@ -54,12 +54,19 @@ def _canary_port() -> int:
 
 
 def _canary_path() -> str:
-    candidate = (
-        os.environ.get("FORWARDING_CANARY_PATH") or DEFAULT_CANARY_PATH
-    ).strip()
+    candidate = os.environ.get("FORWARDING_CANARY_PATH") or DEFAULT_CANARY_PATH
     if not candidate.startswith("/"):
         return DEFAULT_CANARY_PATH
-    if "?" in candidate or "#" in candidate or "\\" in candidate or "//" in candidate:
+    if (
+        "?" in candidate
+        or "#" in candidate
+        or "\\" in candidate
+        or "//" in candidate
+        or any(
+            char.isspace() or ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
+            for char in candidate
+        )
+    ):
         return DEFAULT_CANARY_PATH
     return candidate
 

@@ -78,6 +78,36 @@ def _healthcheck_forwarding_canary_port(**env_overrides: str) -> str:
     return result.stdout.strip()
 
 
+def _entrypoint_forwarding_canary_path_script() -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    entrypoint = (repo_root / "docker" / "entrypoint.sh").read_text(
+        encoding="utf-8",
+    )
+    match = re.search(
+        r"^sanitize_forwarding_canary_path\(\) \{\n.*?^\}\n",
+        entrypoint,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None
+    return (
+        match.group(0)
+        + '\nFORWARDING_CANARY_PATH="$(sanitize_forwarding_canary_path '
+        + '"${FORWARDING_CANARY_PATH:-/__docker_proxy_forwarding_canary}")"\n'
+        + "printf '%s\\n' \"$FORWARDING_CANARY_PATH\"\n"
+    )
+
+
+def _entrypoint_forwarding_canary_path(**env_overrides: str) -> str:
+    result = subprocess.run(
+        ["sh", "-c", _entrypoint_forwarding_canary_path_script()],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **env_overrides},
+    )
+    return result.stdout.strip()
+
+
 def _add_repo_paths() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     web_root = repo_root / "web"
@@ -4778,6 +4808,31 @@ def test_packaged_proxy_healthcheck_normalizes_forwarding_canary_path_like_runti
     assert (
         _healthcheck_forwarding_canary_url(FORWARDING_CANARY_PATH="/custom-canary")
         == "http://127.0.0.1:18080/custom-canary?probe=squid-respmod"
+    )
+    assert (
+        _entrypoint_forwarding_canary_path(FORWARDING_CANARY_PATH="/custom-canary")
+        == "/custom-canary"
+    )
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [" /custom-canary", "/custom canary", "/custom\tcanary", "/custom\x7fcanary"],
+    ids=["leading-space", "embedded-space", "tab", "delete-control"],
+)
+def test_packaged_proxy_scripts_reject_unsafe_forwarding_canary_path(
+    unsafe_path: str,
+) -> None:
+    default_path = "/__docker_proxy_forwarding_canary"
+    default_url = f"http://127.0.0.1:18080{default_path}?probe=squid-respmod"
+
+    assert (
+        _healthcheck_forwarding_canary_url(FORWARDING_CANARY_PATH=unsafe_path)
+        == default_url
+    )
+    assert (
+        _entrypoint_forwarding_canary_path(FORWARDING_CANARY_PATH=unsafe_path)
+        == default_path
     )
 
 

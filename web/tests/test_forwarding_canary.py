@@ -67,6 +67,23 @@ def test_forwarding_canary_env_hardening_keeps_listener_loopback_only(
     assert forwarding_canary._canary_path() == "/__docker_proxy_forwarding_canary"
 
 
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [" /custom-canary", "/custom canary", "/custom\tcanary", "/custom\x7fcanary"],
+    ids=["leading-space", "embedded-space", "tab", "delete-control"],
+)
+def test_forwarding_canary_path_rejects_whitespace_and_control_characters(
+    monkeypatch,
+    unsafe_path: str,
+) -> None:
+    _add_repo_paths()
+    from proxy import forwarding_canary
+
+    monkeypatch.setenv("FORWARDING_CANARY_PATH", unsafe_path)
+
+    assert forwarding_canary._canary_path() == "/__docker_proxy_forwarding_canary"
+
+
 def test_forwarding_canary_rejects_dns_names_that_look_like_loopback(
     monkeypatch,
 ) -> None:

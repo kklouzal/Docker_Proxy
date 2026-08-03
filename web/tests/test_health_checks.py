@@ -1415,6 +1415,27 @@ def test_forwarding_path_health_rejects_canary_paths_with_double_slash(
     )
 
 
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [" /custom-canary", "/custom canary", "/custom\tcanary", "/custom\x7fcanary"],
+    ids=["leading-space", "embedded-space", "tab", "delete-control"],
+)
+def test_forwarding_canary_path_normalizers_reject_whitespace_and_control(
+    monkeypatch,
+    unsafe_path: str,
+) -> None:
+    health_checks = _health_checks_module()
+    proxy_health = _proxy_health_module()
+    monkeypatch.setenv("FORWARDING_CANARY_PATH", unsafe_path)
+
+    assert health_checks._forwarding_canary_path() == (
+        "/__docker_proxy_forwarding_canary"
+    )
+    assert proxy_health._forwarding_canary_target_url() == (
+        "http://127.0.0.1:18080/__docker_proxy_forwarding_canary"
+    )
+
+
 def test_forwarding_path_success_contract_cannot_include_stale_error(
     monkeypatch,
 ) -> None:

@@ -2,6 +2,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 from .mysql_test_utils import configure_test_mysql_env
 
 
@@ -812,6 +814,28 @@ def test_squid_controller_forwarding_canary_path_rejects_double_slash(
 
     assert "^/__docker_proxy_forwarding_canary([?].*)?$" in text
     assert "/bad//canary" not in text
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [" /custom-canary", "/custom canary", "/custom\tcanary", "/custom\x7fcanary"],
+    ids=["leading-space", "embedded-space", "tab", "delete-control"],
+)
+def test_squid_controller_forwarding_canary_path_rejects_whitespace_and_control(
+    monkeypatch,
+    unsafe_path: str,
+) -> None:
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    monkeypatch.setenv("FORWARDING_CANARY_PATH", unsafe_path)
+
+    ctl = SquidController()
+    text = ctl._forwarding_canary_access_block()
+
+    assert "^/__docker_proxy_forwarding_canary([?].*)?$" in text
+    assert unsafe_path not in text
 
 
 def test_squid_controller_normalize_config_text_keeps_includes_outside_canary_block() -> (

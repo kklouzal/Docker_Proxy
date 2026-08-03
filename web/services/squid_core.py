@@ -393,13 +393,17 @@ class SquidController:
         path = (
             os.environ.get("FORWARDING_CANARY_PATH")
             or "/__docker_proxy_forwarding_canary"
-        ).strip()
+        )
         if (
             not path.startswith("/")
             or "?" in path
             or "#" in path
             or "\\" in path
             or "//" in path
+            or any(
+                char.isspace() or ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
+                for char in path
+            )
         ):
             return "/__docker_proxy_forwarding_canary"
         return path
