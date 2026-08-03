@@ -3,7 +3,9 @@ from __future__ import annotations
 # ruff: noqa: I001
 
 import hashlib
+import io
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -266,10 +268,13 @@ def test_read_validate_and_restore_uses_operator_max_bundle_bytes(monkeypatch) -
 
 
 def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
+    artifact_sha, archive_blob = _adblock_artifact(
+        {"report.json": b"{}\n", "rules.db": b"compiled-rules"},
+    )
     cert_pem = "CERT"
     key_pem = "KEY"
     chain_pem = "CHAIN"
-    sha, cert_sha = _certificate_bundle_hashes(cert_pem, key_pem, chain_pem)
+    bundle_sha, cert_sha = _certificate_bundle_hashes(cert_pem, key_pem, chain_pem)
     cfg_text = "http_port 3128"
     cfg_sha = hashlib.sha256(cfg_text.encode("utf-8", errors="replace")).hexdigest()
     return {
@@ -277,8 +282,8 @@ def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
         "adblock_settings": ({"k": "enabled", "v": "1"},),
         "adblock_artifact_revisions": (
             {
-                "artifact_sha256": sha,
-                "archive_blob": b"\x00exact-archive-bytes\xff",
+                "artifact_sha256": artifact_sha,
+                "archive_blob": archive_blob,
                 "report_json": "{}",
                 "settings_version": 2,
                 "enabled_lists_json": "[\"easylist\"]",
@@ -286,7 +291,7 @@ def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
         ),
         "certificate_bundle_revisions": (
             {
-                "bundle_sha256": sha,
+                "bundle_sha256": bundle_sha,
                 "cert_sha256": cert_sha,
                 "cert_pem": cert_pem,
                 "key_pem": key_pem,
@@ -391,6 +396,27 @@ def _certificate_bundle_hashes(
         f"{cert_pem}\0{chain_pem}\0{key_pem}".encode("utf-8", errors="replace"),
     ).hexdigest()
     return bundle_sha, cert_sha
+
+
+def _adblock_artifact(file_map: dict[str, bytes]) -> tuple[str, bytes]:
+    digest = hashlib.sha256()
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(
+        archive_buffer,
+        mode="w",
+        compression=zipfile.ZIP_DEFLATED,
+    ) as archive:
+        for name in sorted(file_map):
+            digest.update(name.encode("utf-8", errors="replace"))
+            digest.update(b"\0")
+            digest.update(file_map[name])
+            digest.update(b"\0")
+            info = zipfile.ZipInfo(name)
+            info.date_time = (2020, 1, 1, 0, 0, 0)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, file_map[name])
+    return digest.hexdigest(), archive_buffer.getvalue()
 
 
 def _base_recovery_row(table_name: str, proxy_id: str = "edge-01") -> dict[str, Any]:
@@ -542,6 +568,9 @@ def test_restore_rejects_report_schedule_with_invalid_or_sensitive_recipient() -
 
 
 def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adoption() -> None:
+    _artifact_sha, expected_archive_blob = _adblock_artifact(
+        {"report.json": b"{}\n", "rules.db": b"compiled-rules"},
+    )
     conn = _StrictRestoreConn()
 
     result = restore.restore_recovery_bundle(conn, _bundle(), "EDGE-01", now_ts=NOW)
@@ -565,7 +594,7 @@ def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adop
     assert any(sql.startswith("INSERT INTO adblock_artifact_revisions") for sql in mutation_sqls)
     assert any(sql.startswith("INSERT INTO proxy_recovery_adoptions") for sql in mutation_sqls)
     assert any(params and params[0] == 101 and params[1] == "direct.example" for _sql_text, params in conn.ops)
-    assert any(b"\x00exact-archive-bytes\xff" in params for _sql_text, params in conn.ops)
+    assert any(expected_archive_blob in params for _sql_text, params in conn.ops)
     assert not any("UPDATE control_plane_identity" in sql for sql in sqls)
     assert sqls[-1].startswith("DO RELEASE_LOCK")
 
@@ -821,6 +850,69 @@ def test_config_revision_restore_recomputes_declared_sha_before_writes() -> None
         and params == ("edge-01", expected_sha, config_text, NOW)
         for sql, params in conn.ops
     )
+
+
+def test_adblock_artifact_revision_restore_recomputes_declared_digest_before_writes() -> None:
+    artifact_sha, archive_blob = _adblock_artifact(
+        {
+            "report.json": b'{"rules": 42}\n',
+            "squid/adblock.acl": b".ads.example\n",
+        },
+    )
+    bundle = _bundle(
+        overrides={
+            "adblock_artifact_revisions": (
+                {
+                    "artifact_sha256": artifact_sha,
+                    "archive_blob": archive_blob,
+                    "report_json": '{"rules": 42}',
+                    "settings_version": 2,
+                    "enabled_lists_json": '["easylist"]',
+                },
+            ),
+        },
+    )
+    conn = _StrictRestoreConn()
+
+    result = restore.restore_recovery_bundle(conn, bundle, "edge-01", now_ts=NOW)
+
+    assert result.status == "adopted"
+    assert any(
+        sql.startswith("INSERT INTO adblock_artifact_revisions")
+        and params
+        == (
+            artifact_sha,
+            archive_blob,
+            '{"rules": 42}',
+            2,
+            '["easylist"]',
+            NOW,
+        )
+        for sql, params in conn.ops
+    )
+
+
+def test_adblock_artifact_revision_restore_rejects_mismatched_digest_before_writes() -> None:
+    _artifact_sha, archive_blob = _adblock_artifact(
+        {"report.json": b"{}\n", "squid/adblock.acl": b".ads.example\n"},
+    )
+    row = {
+        "artifact_sha256": "0" * 64,
+        "archive_blob": archive_blob,
+        "report_json": "{}",
+        "settings_version": 2,
+        "enabled_lists_json": '["easylist"]',
+    }
+    conn = _StrictRestoreConn()
+
+    with pytest.raises(restore.ProxyRecoveryRestoreError, match="artifact revision digest"):
+        restore.restore_recovery_bundle(
+            conn,
+            _bundle(overrides={"adblock_artifact_revisions": (row,)}),
+            "edge-01",
+            now_ts=NOW,
+        )
+    assert conn.ops == []
 
 
 def test_certificate_bundle_revision_restore_recomputes_declared_digests_before_writes() -> None:
