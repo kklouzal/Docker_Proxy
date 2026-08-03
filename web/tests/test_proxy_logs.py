@@ -63,18 +63,17 @@ def test_proxy_log_tail_bounds_match_file_opened_after_log_grows(
     log_path.write_text("old\n", encoding="utf-8")
     monkeypatch.setenv("LOG_DIR", str(log_dir))
 
-    real_open = proxy_logs.Path.open
+    real_open = proxy_logs.os.open
     grew = False
 
-    def growing_open(self, *args, **kwargs):
+    def growing_open(path, flags, *args, **kwargs):
         nonlocal grew
-        if self == log_path and not grew:
+        if path == "access.log" and kwargs.get("dir_fd") is not None and not grew:
             grew = True
-            with real_open(self, "w", encoding="utf-8") as handle:
-                handle.write("old\nfresh-tail\n")
-        return real_open(self, *args, **kwargs)
+            log_path.write_text("old\nfresh-tail\n", encoding="utf-8")
+        return real_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(proxy_logs.Path, "open", growing_open)
+    monkeypatch.setattr(proxy_logs.os, "open", growing_open)
 
     payload = proxy_logs.read_proxy_log("access", max_bytes=len("fresh-tail\n"))
 
@@ -147,6 +146,40 @@ def test_proxy_logs_rejects_allowlisted_symlink_outside_log_dir(
     assert "content" not in payload
     assert access_log["available"] is False
     assert access_log["path"] == str(log_dir / "access.log")
+
+
+def test_proxy_logs_rejects_symlink_swap_between_validation_and_open(
+    monkeypatch, tmp_path
+) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    log_path = log_dir / "access.log"
+    log_path.write_text("safe\n", encoding="utf-8")
+    outside = tmp_path / "outside.log"
+    outside.write_text("secret\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+
+    real_open = proxy_logs.os.open
+    swapped = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == "access.log" and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            log_path.unlink()
+            log_path.symlink_to(outside)
+            assert flags & proxy_logs.os.O_NOFOLLOW
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(proxy_logs.os, "open", swapping_open)
+
+    payload = proxy_logs.read_proxy_log("access")
+
+    assert swapped is True
+    assert payload["ok"] is False
+    assert payload["status"] == "unavailable"
+    assert payload["content"] == ""
+    assert "secret" not in str(payload)
 
 
 def test_proxy_logs_missing_allowlisted_file_is_graceful(monkeypatch, tmp_path) -> None:

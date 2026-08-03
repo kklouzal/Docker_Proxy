@@ -29,8 +29,24 @@ def _log_dir() -> Path:
     )
 
 
-def _tail_bytes(path: Path, *, max_bytes: int) -> tuple[str, int, bool]:
-    with path.open("rb") as handle:
+def _tail_bytes(
+    base: Path,
+    relative_path: str,
+    *,
+    max_bytes: int,
+) -> tuple[str, int, bool]:
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_fd = os.open(base, directory_flags)
+    try:
+        fd = os.open(
+            relative_path,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=directory_fd,
+        )
+    finally:
+        os.close(directory_fd)
+
+    with os.fdopen(fd, "rb", closefd=True) as handle:
         size = os.fstat(handle.fileno()).st_size
         offset = max(0, size - max_bytes)
         previous_byte = b""
@@ -126,7 +142,7 @@ def read_proxy_log(
         }
 
     try:
-        content, size, truncated = _tail_bytes(path, max_bytes=cap)
+        content, size, truncated = _tail_bytes(base, spec.path, max_bytes=cap)
     except OSError as exc:
         return {
             "ok": False,
