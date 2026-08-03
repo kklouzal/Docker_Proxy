@@ -6852,7 +6852,7 @@ def observability_report_schedules():
         maximum=7 * 24 * 3600,
     )
     name = (request.form.get("name") or "").strip()
-    recipients = (request.form.get("recipients") or "").strip()
+    recipients = request.form.get("recipients") or ""
     try:
         normalized_recipients = normalize_report_schedule_recipients(recipients)
     except ValueError as exc:

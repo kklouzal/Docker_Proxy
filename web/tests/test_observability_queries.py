@@ -1858,6 +1858,32 @@ def test_save_report_schedule_normalizes_and_deduplicates_recipients(monkeypatch
     assert conn.insert_params[4] == saved["recipients"]
 
 
+@pytest.mark.parametrize(
+    "recipients",
+    [
+        "\nops@example.com",
+        "ops@example.com\n",
+        "\tops@example.com",
+        "ops@example.com\x7f",
+    ],
+)
+def test_report_schedule_recipient_normalization_rejects_outer_control_characters(
+    recipients: str,
+) -> None:
+    _add_web_to_path()
+
+    from services.report_schedule_recipients import (  # type: ignore
+        REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES,
+        normalize_report_schedule_recipients,
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        normalize_report_schedule_recipients(recipients)
+
+    assert str(excinfo.value) == REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["control_chars"]
+    assert recipients not in str(excinfo.value)
+
+
 def test_report_schedules_exclude_persisted_runtime_state_from_manual_presets(
     monkeypatch,
 ) -> None:
@@ -1932,6 +1958,10 @@ def test_report_schedules_exclude_persisted_runtime_state_from_manual_presets(
         "ops@example.com, ;alerts@example.com",
         "not-an-email",
         "ops@example.com\r\nBcc: attacker@example.com",
+        "\nops@example.com",
+        "ops@example.com\n",
+        "\tops@example.com",
+        "ops@example.com\x7f",
         "ops@example.com, alerts@",
         ",ops@example.com",
         "ops@example.com;",

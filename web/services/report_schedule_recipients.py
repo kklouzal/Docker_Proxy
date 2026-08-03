@@ -31,11 +31,12 @@ def report_schedule_recipient_error_code(error: object) -> str:
 
 
 def normalize_report_schedule_recipients(value: object) -> str:
-    text = str(value or "").strip()
+    raw_text = str(value or "")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw_text):
+        raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["control_chars"])
+    text = raw_text.strip()
     if not text:
         raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["required"])
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
-        raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["control_chars"])
     if re.search(r"(?:^|[,;]) *([,;]|$)", text):
         raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["empty_entry"])
 

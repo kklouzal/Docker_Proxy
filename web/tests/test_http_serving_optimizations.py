@@ -628,6 +628,16 @@ def test_observability_report_schedule_recipient_feedback_codes_are_specific_and
             b"Report recipients must not contain control characters or newlines.",
         ),
         (
+            "\nops@example.com",
+            "control_chars",
+            b"Report recipients must not contain control characters or newlines.",
+        ),
+        (
+            "ops@example.com\n",
+            "control_chars",
+            b"Report recipients must not contain control characters or newlines.",
+        ),
+        (
             ", ".join(f"recipient{idx:02d}@example.com" for idx in range(40)),
             "too_long",
             b"Report recipients must be 512 characters or fewer after normalization.",
