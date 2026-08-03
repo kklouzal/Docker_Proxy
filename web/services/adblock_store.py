@@ -616,6 +616,8 @@ class AdblockStore:
             ts = int(float(ts_s))
         except Exception:
             ts = 0
+        if ts <= 0:
+            ts = _now()
 
         src_ip = (
             http_client_ip if http_client_ip and http_client_ip != "-" else remote_ip

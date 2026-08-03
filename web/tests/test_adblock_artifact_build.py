@@ -1715,6 +1715,47 @@ def test_adblock_cicap_access_parser_requires_http_403_status(tmp_path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "timestamp",
+    ["not-a-timestamp", "nan", "inf", "0", "-1"],
+)
+def test_adblock_cicap_access_parser_normalizes_invalid_timestamp_to_ingest_time(
+    tmp_path,
+    monkeypatch,
+    timestamp: str,
+) -> None:
+    store_module = _import_adblock_store_module()
+    ingest_ts = 1_800_000_000
+    monkeypatch.setattr(store_module, "_now", lambda: ingest_ts)
+    store = store_module.AdblockStore(lists_dir=str(tmp_path / "lists"))
+    line = (
+        f"{timestamp}\t192.0.2.10\t198.51.100.20\tREQMOD\t/adblockreq\t200\t"
+        "GET http://ads.example/ HTTP/1.1\thttp://ads.example/\t"
+        "HTTP/1.1 403 Forbidden\t-"
+    )
+
+    blocked = store._parse_cicap_access_line(line)
+
+    assert blocked is not None
+    assert blocked["ts"] == ingest_ts
+    first_values = store._event_values("proxy-a", blocked, ingest_ts)
+    second_values = store._event_values("proxy-a", blocked, ingest_ts)
+    assert first_values[2] == ingest_ts
+    assert first_values[1] == second_values[1]
+
+    prune_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class Conn:
+        def execute(self, sql, params=()):
+            prune_calls.append((" ".join(str(sql).split()), tuple(params)))
+
+    store._prune_events(Conn())
+
+    assert prune_calls[0][0].startswith("DELETE FROM adblock_events WHERE ts < %s")
+    assert prune_calls[0][1][0] == ingest_ts - 30 * 24 * 3600
+    assert first_values[2] > prune_calls[0][1][0]
+
+
 def test_adblock_cicap_access_parser_accepts_quoted_tabs_and_scaled_service_path(
     tmp_path,
 ) -> None:
