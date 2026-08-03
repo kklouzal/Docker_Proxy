@@ -843,37 +843,14 @@ class SafeBrowsingStore:
         ]
         if not partial:
             current = []
-        removals = sorted(
-            decode_rice_delta_32(
-                item.get("compressedRemovals")
-                if isinstance(item.get("compressedRemovals"), dict)
-                else None,
-            ),
-            reverse=True,
-        )
-        removed_prefixes: list[bytes] = []
-        for index in removals:
-            if 0 <= index < len(current):
-                removed_prefixes.append(current[index])
-                del current[index]
-        additions_payload = item.get("additionsFourBytes")
-        additions = _ints_to_prefixes(
-            decode_rice_delta_32(
-                additions_payload if isinstance(additions_payload, dict) else None,
-            ),
-        )
-        merged = sorted(set(current).union(additions))
         batch_size = _env_int(
             "SAFE_BROWSING_PREFIX_WRITE_BATCH_SIZE",
             5000,
             minimum=100,
             maximum=50000,
         )
-        checksum = _decode_b64(item.get("sha256Checksum"))
-        if checksum and _checksum_for_prefixes(merged) != checksum:
-            # The v5 local database spec requires a full refresh whenever the
-            # post-update checksum disagrees. Drop local state/version for this
-            # list so the next scheduler pass requests a complete replacement.
+
+        def require_full_refresh(reason: str) -> None:
             while True:
                 result = conn.execute(
                     "DELETE FROM safe_browsing_hash_prefixes WHERE list_name=%s ORDER BY prefix ASC LIMIT %s",
@@ -884,8 +861,39 @@ class SafeBrowsingStore:
             conn.execute("DELETE FROM safe_browsing_hash_lists WHERE name=%s", (name,))
             with contextlib.suppress(Exception):
                 conn.commit()
-            msg = f"Google Safe Browsing checksum mismatch for {name}; full refresh required"
+            msg = f"Google Safe Browsing {reason} for {name}; full refresh required"
             raise ValueError(msg)
+
+        removals_payload = item.get("compressedRemovals")
+        if removals_payload is not None and not isinstance(removals_payload, dict):
+            require_full_refresh("compressed removals are invalid")
+        try:
+            removals = decode_rice_delta_32(
+                removals_payload if isinstance(removals_payload, dict) else None,
+            )
+        except (OverflowError, TypeError, ValueError):
+            require_full_refresh("compressed removals are invalid")
+        if len(removals) != len(set(removals)):
+            require_full_refresh("removal indices contain duplicates")
+        if any(index < 0 or index >= len(current) for index in removals):
+            require_full_refresh("removal index is out of range")
+        removed_prefixes: list[bytes] = []
+        for index in sorted(removals, reverse=True):
+            removed_prefixes.append(current[index])
+            del current[index]
+        additions_payload = item.get("additionsFourBytes")
+        additions = _ints_to_prefixes(
+            decode_rice_delta_32(
+                additions_payload if isinstance(additions_payload, dict) else None,
+            ),
+        )
+        merged = sorted(set(current).union(additions))
+        checksum = _decode_b64(item.get("sha256Checksum"))
+        if checksum and _checksum_for_prefixes(merged) != checksum:
+            # The v5 local database spec requires a full refresh whenever the
+            # post-update checksum disagrees. Drop local state/version for this
+            # list so the next scheduler pass requests a complete replacement.
+            require_full_refresh("checksum mismatch")
         version = _decode_b64(item.get("version"))
         now = _now()
         generation = int(time.time_ns())

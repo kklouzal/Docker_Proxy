@@ -1149,6 +1149,302 @@ def test_safe_browsing_status_filters_positive_cache_to_selected_lists(
     assert status.cache_entries == 7
 
 
+def _urlsafe_test_b64(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _rice_removals(indices: list[int], *, rice_parameter: int = 3) -> dict[str, object]:
+    assert indices == sorted(indices)
+    assert indices
+    bits: list[int] = []
+    for index in range(1, len(indices)):
+        delta = indices[index] - indices[index - 1]
+        quotient, remainder = divmod(delta, 1 << rice_parameter)
+        bits.extend([1] * quotient)
+        bits.append(0)
+        bits.extend((remainder >> offset) & 1 for offset in range(rice_parameter))
+    encoded = bytearray((len(bits) + 7) // 8)
+    for index, bit in enumerate(bits):
+        encoded[index // 8] |= bit << (index % 8)
+    return {
+        "firstValue": indices[0],
+        "entriesCount": len(indices) - 1,
+        "riceParameter": rice_parameter,
+        "encodedData": base64.urlsafe_b64encode(encoded).decode("ascii"),
+    }
+
+
+class _HashListResult:
+    def __init__(self, rows=(), *, rowcount: int = 0) -> None:
+        self.rows = list(rows)
+        self.rowcount = rowcount
+
+    def fetchall(self):
+        return self.rows
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+
+class _TransactionalHashListConn:
+    def __init__(self, prefixes: list[bytes], version: bytes = b"v1") -> None:
+        self.persisted_prefixes = set(prefixes)
+        self.persisted_version = version
+        self.prefixes = set(prefixes)
+        self.version = version
+        self.commit_count = 0
+        self.rollback_count = 0
+        self.fail_version_write = False
+
+    def __enter__(self):
+        self.prefixes = set(self.persisted_prefixes)
+        self.version = self.persisted_version
+        return self
+
+    def __exit__(self, exc_type, *_args):
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
+        return False
+
+    def commit(self) -> None:
+        self.persisted_prefixes = set(self.prefixes)
+        self.persisted_version = self.version
+        self.commit_count += 1
+
+    def rollback(self) -> None:
+        self.prefixes = set(self.persisted_prefixes)
+        self.version = self.persisted_version
+        self.rollback_count += 1
+
+    def execute(self, sql, params=None):
+        if sql.startswith("SELECT version"):
+            rows = [(self.version,)] if self.version is not None else []
+            return _HashListResult(rows)
+        if sql.startswith("SELECT prefix"):
+            return _HashListResult((prefix,) for prefix in sorted(self.prefixes))
+        if sql.startswith("DELETE FROM safe_browsing_hash_prefixes"):
+            before = len(self.prefixes)
+            if "prefix IN" in sql:
+                self.prefixes.difference_update(params[1:])
+            elif "generation <>" in sql:
+                generation = params[1]
+                self.prefixes = {
+                    prefix
+                    for prefix in self.prefixes
+                    if getattr(self, "generations", {}).get(prefix) == generation
+                }
+            else:
+                self.prefixes.clear()
+            return _HashListResult(rowcount=before - len(self.prefixes))
+        if sql.startswith("DELETE FROM safe_browsing_hash_lists"):
+            self.version = None
+            return _HashListResult(rowcount=1)
+        if sql.startswith("INSERT INTO safe_browsing_hash_lists"):
+            if self.fail_version_write:
+                msg = "simulated version write failure"
+                raise RuntimeError(msg)
+            self.version = params[1]
+            return _HashListResult(rowcount=1)
+        raise AssertionError(sql)
+
+    def executemany(self, sql, params):
+        assert sql.startswith("INSERT INTO safe_browsing_hash_prefixes")
+        if not hasattr(self, "generations"):
+            self.generations = {}
+        for _name, prefix, generation in params:
+            self.prefixes.add(prefix)
+            self.generations[prefix] = generation
+        return _HashListResult()
+
+
+def _run_hash_list_update(monkeypatch, item, prefixes):
+    store = SafeBrowsingStore()
+    conn = _TransactionalHashListConn(prefixes)
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "init_schema", lambda _conn: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(
+        store,
+        "_request_json",
+        lambda *_args, **_kwargs: {"hashLists": [item]},
+    )
+    settings = SafeBrowsingSettings(
+        enabled=True,
+        api_key="test",
+        lists=("mw-4b",),
+        last_success=0,
+        last_attempt=0,
+        last_error="",
+        next_run_ts=0,
+    )
+    result = store.update_lists(settings)
+    return result, conn
+
+
+@pytest.mark.parametrize(
+    "compressed_removals",
+    [
+        pytest.param(
+            {"firstValue": -1, "entriesCount": 0},
+            id="negative",
+        ),
+        pytest.param(_rice_removals([3]), id="past-end"),
+    ],
+)
+def test_safe_browsing_invalid_removal_without_checksum_requires_full_refresh(
+    monkeypatch,
+    compressed_removals,
+) -> None:
+    prefixes = [(value).to_bytes(4, "big") for value in (1, 2, 3)]
+    (ok, error, wait), conn = _run_hash_list_update(
+        monkeypatch,
+        {
+            "name": "mw-4b",
+            "version": _urlsafe_test_b64(b"v2"),
+            "partialUpdate": True,
+            "compressedRemovals": compressed_removals,
+        },
+        prefixes,
+    )
+
+    assert ok is False
+    assert "full refresh required" in error
+    assert wait == 1800
+    assert conn.persisted_prefixes == set()
+    assert conn.persisted_version is None
+    assert conn.rollback_count == 1
+
+
+def test_safe_browsing_duplicate_removal_requires_full_refresh(monkeypatch) -> None:
+    prefixes = [(value).to_bytes(4, "big") for value in (1, 2, 3)]
+    (ok, error, _wait), conn = _run_hash_list_update(
+        monkeypatch,
+        {
+            "name": "mw-4b",
+            "version": _urlsafe_test_b64(b"v2"),
+            "partialUpdate": True,
+            "compressedRemovals": _rice_removals([1, 1]),
+        },
+        prefixes,
+    )
+
+    assert ok is False
+    assert "full refresh required" in error
+    assert conn.persisted_prefixes == set()
+    assert conn.persisted_version is None
+
+
+def test_safe_browsing_valid_removals_use_original_sorted_indices(monkeypatch) -> None:
+    prefixes = [(value).to_bytes(4, "big") for value in (1, 2, 3, 4)]
+    expected = {prefixes[1], prefixes[3]}
+    checksum = base64.urlsafe_b64encode(
+        _checksum_for_prefixes(sorted(expected))
+    ).decode("ascii")
+    (ok, error, _wait), conn = _run_hash_list_update(
+        monkeypatch,
+        {
+            "name": "mw-4b",
+            "version": _urlsafe_test_b64(b"v2"),
+            "partialUpdate": True,
+            "compressedRemovals": _rice_removals([0, 2]),
+            "sha256Checksum": checksum,
+        },
+        prefixes,
+    )
+
+    assert ok is True
+    assert error == ""
+    assert conn.persisted_prefixes == expected
+    assert conn.persisted_version == b"v2"
+
+
+def test_safe_browsing_noop_update_may_omit_checksum(monkeypatch) -> None:
+    prefixes = [(value).to_bytes(4, "big") for value in (1, 2)]
+    (ok, error, _wait), conn = _run_hash_list_update(
+        monkeypatch,
+        {
+            "name": "mw-4b",
+            "version": _urlsafe_test_b64(b"v2"),
+            "partialUpdate": True,
+        },
+        prefixes,
+    )
+
+    assert ok is True
+    assert error == ""
+    assert conn.persisted_prefixes == set(prefixes)
+    assert conn.persisted_version == b"v2"
+
+
+def test_safe_browsing_partial_write_failure_rolls_back_list_and_version(
+    monkeypatch,
+) -> None:
+    prefixes = [(value).to_bytes(4, "big") for value in (1, 2, 3)]
+    checksum = base64.urlsafe_b64encode(
+        _checksum_for_prefixes([prefixes[0], prefixes[2]])
+    ).decode("ascii")
+    store = SafeBrowsingStore()
+    conn = _TransactionalHashListConn(prefixes)
+    conn.fail_version_write = True
+    monkeypatch.setattr(store, "init_schema", lambda _conn: None)
+
+    with pytest.raises(RuntimeError, match="simulated version write failure"):
+        with conn:
+            store._apply_hash_list(
+                conn,
+                {
+                    "name": "mw-4b",
+                    "version": _urlsafe_test_b64(b"v2"),
+                    "partialUpdate": True,
+                    "compressedRemovals": _rice_removals([1]),
+                    "sha256Checksum": checksum,
+                },
+            )
+
+    assert conn.persisted_prefixes == set(prefixes)
+    assert conn.persisted_version == b"v1"
+    assert conn.rollback_count == 1
+
+
+@pytest.mark.parametrize(
+    "compressed_removals",
+    [
+        pytest.param(
+            {
+                "firstValue": 1,
+                "entriesCount": 1,
+                "riceParameter": 3,
+                "encodedData": "",
+            },
+            id="truncated",
+        ),
+        pytest.param([1], id="wrong-type"),
+    ],
+)
+def test_safe_browsing_malformed_removal_requires_full_refresh(
+    monkeypatch,
+    compressed_removals,
+) -> None:
+    prefixes = [(value).to_bytes(4, "big") for value in (1, 2, 3)]
+    (ok, error, _wait), conn = _run_hash_list_update(
+        monkeypatch,
+        {
+            "name": "mw-4b",
+            "version": _urlsafe_test_b64(b"v2"),
+            "partialUpdate": True,
+            "compressedRemovals": compressed_removals,
+        },
+        prefixes,
+    )
+
+    assert ok is False
+    assert "full refresh required" in error
+    assert conn.persisted_prefixes == set()
+    assert conn.persisted_version is None
+
+
 def test_safe_browsing_apply_hash_list_rejects_checksum_mismatch() -> None:
     class Result:
         def __init__(self, rows=()) -> None:
