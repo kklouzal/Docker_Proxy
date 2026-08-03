@@ -88,6 +88,7 @@ def test_admin_dockerfile_copies_only_admin_control_plane_payload() -> None:
         "web/services/diagnostic_store.py",
         "web/services/error_pages.py",
         "web/services/helper_runtime.py",
+        "web/services/pac_http.py",
         "web/services/policy_requests.py",
         "web/services/proxy_client.py",
         "web/services/saml_auth.py",
@@ -112,7 +113,6 @@ def test_admin_dockerfile_copies_only_admin_control_plane_payload() -> None:
     assert "web/services/policy_materializer.py" in text
 
     for excluded_copy in (
-        "web/services/pac_http.py",
         "web/tools/pac_http_server.py",
         "web/tools/webfilter_apply.py",
         "web/tools/sslfilter_apply.py",
