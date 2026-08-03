@@ -234,6 +234,11 @@ def _normalize_proxy_host_port(
             if parsed_port and parsed_port != suffix[1:]:
                 return None, None, "Conflicting proxy ports."
             parsed_port = suffix[1:]
+        try:
+            if ip_address(host).version != 6:
+                return None, None, "Invalid proxy host."
+        except ValueError:
+            return None, None, "Invalid proxy host."
     elif host.count(":") == 1:
         candidate_host, candidate_port = host.rsplit(":", 1)
         if not parsed_port:

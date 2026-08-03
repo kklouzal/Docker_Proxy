@@ -425,6 +425,23 @@ def test_backup_proxy_host_port_normalization_accepts_scheme_url_without_port() 
     )
 
 
+def test_backup_proxy_host_port_normalization_rejects_bracketed_non_ipv6() -> None:
+    _add_web_path()
+    import services.pac_profiles_store as mod
+
+    for host in (
+        "[backup.example]",
+        "[backup.example]:3128",
+        "[192.0.2.10]",
+        "[192.0.2.10]:3128",
+    ):
+        assert mod._normalize_proxy_host_port(host, None) == (
+            None,
+            None,
+            "Invalid proxy host.",
+        )
+
+
 def test_backup_proxy_host_port_normalization_rejects_scheme_url_empty_port() -> None:
     _add_web_path()
     import services.pac_profiles_store as mod
