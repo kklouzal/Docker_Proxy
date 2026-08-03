@@ -508,6 +508,8 @@ def test_certificates_page_empty_admin_ui_sans_are_examples_not_defaults(
     assert "admin-public.example.test" in html
     assert "localhost" in html
     assert "127.0.0.1" in html
+    assert "Saving also records valid request-host" in html
+    assert "PAC_TRUSTED_PROXY_CIDRS" in html
 
 
 def test_certificates_page_converges_stale_ca_paths_to_leaf_paths(
@@ -540,6 +542,7 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
     monkeypatch, tmp_path
 ) -> None:
     monkeypatch.setenv("ADMIN_UI_PUBLIC_HOST", "admin-public.example.test")
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "127.0.0.0/8")
     bundles = FakeCertificateBundles(bundle=_bundle())
     loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
     certfile, keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
@@ -597,6 +600,40 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
     assert "admin-public.example.test" in sans.get_values_for_type(x509.DNSName)
     assert "admin-request.example.test" in sans.get_values_for_type(x509.DNSName)
     assert "127.0.0.1" in [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
+
+
+def test_admin_ui_https_preference_ignores_untrusted_forwarded_host(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.delenv("PAC_TRUSTED_PROXY_CIDRS", raising=False)
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile, _keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    monkeypatch.setattr(
+        loaded.module,
+        "_restart_admin_ui_web_process",
+        lambda: (True, "restart requested"),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={"csrf_token": token, "enabled": "1"},
+        headers={"X-Forwarded-Host": "attacker-controlled.example.test"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert "attacker-controlled.example.test" not in (
+        bundles.admin_ui_https_settings.san_tokens
+    )
+    leaf = x509.load_pem_x509_certificate(Path(certfile).read_bytes())
+    sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert "attacker-controlled.example.test" not in sans.get_values_for_type(
+        x509.DNSName
+    )
 
 
 def test_admin_ui_https_preference_persists_configured_sans_in_leaf(

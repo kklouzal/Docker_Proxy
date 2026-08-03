@@ -208,7 +208,7 @@ window.setTimeout(function () {
                         <textarea name="san_tokens" rows="3" placeholder="proxyadmin.example.com&#10;192.0.2.10">{{ admin_ui_https.configured_san_tokens }}</textarea>
                     </label>
                     <div class="surface-note small">
-                        Saving stores only the DNS/IP SANs entered above. Computed SANs such as localhost, loopback IPs, the Admin UI container name, request host, and configured public host are added when the certificate is generated.
+                        Saving also records valid request-host, configured-public-host, and trusted forwarded-host SANs so they survive restart. Forwarded hosts are trusted only when the immediate peer is allowed by <code class="mono">PAC_TRUSTED_PROXY_CIDRS</code>. Localhost, loopback IPs, and Admin UI container names are added when the certificate is generated.
                         {% if admin_ui_https_env_lines %}
                             <div><code class="mono">{{ admin_ui_https_env_lines|join(' · ') }}</code></div>
                         {% endif %}

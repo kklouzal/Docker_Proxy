@@ -107,6 +107,7 @@ from services.operation_ledger import (
     get_operation_ledger,
     normalize_operation_target_ref,
 )
+from services.pac_http import forwarded_headers_trusted
 from services.pac_private_local import pac_private_local_destination_metadata
 from services.pac_profiles_store import (
     get_pac_profiles_store as _default_get_pac_profiles_store,
@@ -4538,9 +4539,10 @@ def _admin_ui_https_request_san_tokens() -> tuple[str, ...]:
             [
                 request.host,
                 sanitize_admin_ui_certificate_san_token(request.host),
-                request.headers.get("X-Forwarded-Host", ""),
             ],
         )
+        if forwarded_headers_trusted(request.remote_addr):
+            tokens.append(request.headers.get("X-Forwarded-Host", ""))
     public_host = os.environ.get("ADMIN_UI_PUBLIC_HOST") or os.environ.get(
         "PROXY_PUBLIC_HOST",
     )
