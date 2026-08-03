@@ -435,6 +435,10 @@ class TimeSeriesStore:
         res = resolve_resolution(resolution)
 
         lim = max(10, min(2000, int(limit)))
+        # Bucket timestamps mark half-open interval starts. For integer-second
+        # timestamps, ``ts + seconds > since`` is indexably equivalent to this
+        # inclusive lower bound; for 1s it remains exactly ``ts >= since``.
+        overlap_since = int(since) - (res.seconds - 1)
         proxy_id = get_proxy_id()
         self.init_db()
 
@@ -442,7 +446,7 @@ class TimeSeriesStore:
             with self._connect() as conn:
                 return conn.execute(
                     f"SELECT ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate FROM {res.table} WHERE proxy_id = %s AND ts >= %s ORDER BY ts ASC LIMIT %s",
-                    (proxy_id, int(since), lim),
+                    (proxy_id, overlap_since, lim),
                 ).fetchall()
 
         rows = self._with_missing_table_retry(read_rows)

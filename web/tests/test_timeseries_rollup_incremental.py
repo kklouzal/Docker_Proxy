@@ -28,6 +28,41 @@ class _QueryResult:
         return [(123, 1, 2.0, 3.0, 5.0, 6.0, 4.0)]
 
 
+class _FilteringQueryConn:
+    def __init__(
+        self,
+        rows: list[tuple[str, int, int, float, float, float, float, float]],
+        calls: list[tuple[str, object]],
+    ) -> None:
+        self.rows = rows
+        self.calls = calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=None):
+        text = str(sql)
+        self.calls.append((text, params))
+        proxy_id, overlap_since, limit = params
+        matching = [
+            row[1:]
+            for row in self.rows
+            if row[0] == proxy_id and row[1] >= overlap_since
+        ][:limit]
+        return _FilteringQueryResult(matching)
+
+
+class _FilteringQueryResult:
+    def __init__(self, rows: list[tuple[int, int, float, float, float, float, float]]) -> None:
+        self.rows = rows
+
+    def fetchall(self):
+        return self.rows
+
+
 class _SummaryConn:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
@@ -129,6 +164,8 @@ def test_query_canonicalizes_resolution_and_returns_persisted_metrics(
     assert canonicalize_resolution_name("bogus") == "1s"
     assert "FROM ts_1m" in calls[0][0]
     assert "FROM ts_1s" in calls[1][0]
+    assert calls[0][1] == ("default", 41, 25)
+    assert calls[1][1] == ("default", 100, 25)
     assert "disk_used" in calls[0][0]
     assert "cache_dir_size" in calls[0][0]
     assert valid_points == unknown_points == [
@@ -142,6 +179,39 @@ def test_query_canonicalizes_resolution_and_returns_persisted_metrics(
             "hit_rate": 4.0,
         }
     ]
+
+
+@pytest.mark.parametrize(("resolution", "seconds"), [("1m", 60), ("1h", 3600)])
+def test_query_includes_only_rollup_buckets_overlapping_since(
+    monkeypatch,
+    resolution: str,
+    seconds: int,
+) -> None:
+    store = TimeSeriesStore.__new__(TimeSeriesStore)
+    store._db_initialized = True
+    store._db_init_lock = threading.Lock()
+    bucket_start = (1_777_000_000 // seconds) * seconds
+    since = bucket_start + seconds // 2
+    metric_row = (1, 2.0, 3.0, 5.0, 6.0, 4.0)
+    rows = [
+        ("proxy-a", bucket_start - seconds, *metric_row),
+        ("proxy-a", bucket_start, *metric_row),
+        ("proxy-a", bucket_start + seconds, *metric_row),
+        ("proxy-b", bucket_start, *metric_row),
+    ]
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: _FilteringQueryConn(rows, calls),
+    )
+    monkeypatch.setattr("services.timeseries_store.get_proxy_id", lambda: "proxy-a")
+
+    points = store.query(resolution=resolution, since=since, limit=25)
+
+    assert [point["ts"] for point in points] == [bucket_start, bucket_start + seconds]
+    assert f"FROM ts_{resolution}" in calls[0][0]
+    assert calls[0][1] == ("proxy-a", since - (seconds - 1), 25)
 
 
 def test_rollup_sql_combines_late_buckets_with_metric_sample_counts(
