@@ -1770,6 +1770,27 @@ def test_substitute_request_host_preserves_valid_public_fallback_hosts() -> None
     )
 
 
+@pytest.mark.parametrize(
+    ("request_host", "expected_host"),
+    [
+        ("192.168.10.20:8080", "192.168.10.20"),
+        ("[fd00::20]:8080", "[fd00::20]"),
+    ],
+)
+def test_substitute_request_host_preserves_private_lan_fallback_hosts(
+    request_host: str,
+    expected_host: str,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    content = f'return "PROXY {pac_renderer.PAC_HOST_PLACEHOLDER}:3128; DIRECT";'
+
+    assert pac_renderer.substitute_request_host(content, request_host) == (
+        f'return "PROXY {expected_host}:3128; DIRECT";'
+    )
+
+
 def test_render_proxy_pac_for_request_replaces_invalid_request_host() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore

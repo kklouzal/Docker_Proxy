@@ -43,6 +43,7 @@ from services.proxy_registry import (
 from services.public_endpoint import (
     _is_ambiguous_ipv4_host,
     _is_reserved_public_dns_host,
+    _is_unsafe_request_host_ip,
 )
 from services.public_endpoint import (
     coerce_public_port as _coerce_port,
@@ -312,7 +313,7 @@ def _valid_proxy_dns_host(value: str) -> bool:
     )
 
 
-def _normalize_proxy_host_only(host: str) -> str:
+def _normalize_proxy_host_only(host: str, *, allow_private: bool = False) -> str:
     candidate = str(host or "").strip()
     if not candidate:
         return "127.0.0.1"
@@ -329,6 +330,8 @@ def _normalize_proxy_host_only(host: str) -> str:
         return normalized_dns
     if getattr(parsed_ip, "scope_id", None):
         return "127.0.0.1"
+    if allow_private and not _is_unsafe_request_host_ip(parsed_ip):
+        return str(parsed_ip)
     if parsed_ip.is_multicast or not parsed_ip.is_global:
         return "127.0.0.1"
     return str(parsed_ip)
@@ -336,6 +339,14 @@ def _normalize_proxy_host_only(host: str) -> str:
 
 def format_proxy_host(raw_host: str) -> str:
     host = _normalize_proxy_host_only(_request_host_only(raw_host))
+    return _format_host_only_for_pac(host)
+
+
+def _format_request_proxy_host(raw_host: str) -> str:
+    host = _normalize_proxy_host_only(
+        _request_host_only(raw_host),
+        allow_private=True,
+    )
     return _format_host_only_for_pac(host)
 
 
@@ -995,7 +1006,7 @@ def _pac_string_literal_fragment(value: str) -> str:
 def substitute_request_host(content: str, request_host: str) -> str:
     return str(content or "").replace(
         PAC_HOST_PLACEHOLDER,
-        _pac_string_literal_fragment(format_proxy_host(request_host)),
+        _pac_string_literal_fragment(_format_request_proxy_host(request_host)),
     )
 
 

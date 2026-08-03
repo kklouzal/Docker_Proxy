@@ -80,6 +80,22 @@ def _is_reserved_public_dns_host(value: str) -> bool:
     )
 
 
+def _is_unsafe_request_host_ip(
+    parsed_ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    if getattr(parsed_ip, "scope_id", None):
+        return True
+    mapped_ipv4 = getattr(parsed_ip, "ipv4_mapped", None)
+    candidates = (parsed_ip, mapped_ipv4) if mapped_ipv4 is not None else (parsed_ip,)
+    return any(
+        candidate.is_loopback
+        or candidate.is_unspecified
+        or candidate.is_multicast
+        or candidate.is_link_local
+        for candidate in candidates
+    )
+
+
 def normalize_public_host(
     value: object | None,
     default: str = "",
