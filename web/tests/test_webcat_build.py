@@ -236,6 +236,28 @@ def test_zip_extraction_blocks_path_traversal() -> None:
         assert not Path(pwned_path).exists()
 
 
+def test_zip_extraction_rejects_duplicate_normalized_member_path() -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_zip_duplicate_") as td:
+        zip_path = Path(td) / "payload.zip"
+        out_dir = Path(td) / "out"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("blacklists/adult/domains", "first.example\n")
+            archive.writestr(
+                "blacklists/./adult//domains",
+                "second.example\n",
+            )
+
+        with pytest.raises(
+            ValueError,
+            match=r"duplicate normalized member path.*blacklists/adult/domains",
+        ):
+            webcat_build._extract_zip(zip_path, out_dir)
+
+        assert not out_dir.exists()
+
+
 def test_zip_extraction_skips_windows_drive_and_unc_members() -> None:
     webcat_build = _import_webcat_build()
 
@@ -594,6 +616,30 @@ def test_tar_extraction_blocks_traversal_and_enforces_size_limit(
         with pytest.raises(ValueError, match="Extracted data exceeded limit"):
             webcat_build._extract_tar(tar_path, Path(td) / "out")
         assert not pwned_path.exists()
+
+
+def test_tar_extraction_rejects_duplicate_normalized_member_path() -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_tar_duplicate_") as td:
+        tar_path = Path(td) / "payload.tar"
+        out_dir = Path(td) / "out"
+        with tarfile.open(tar_path, "w") as archive:
+            for name, data in (
+                ("blacklists/adult/domains", b"first.example\n"),
+                ("blacklists/adult/domains", b"second.example\n"),
+            ):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+
+        with pytest.raises(
+            ValueError,
+            match=r"duplicate normalized member path.*blacklists/adult/domains",
+        ):
+            webcat_build._extract_tar(tar_path, out_dir)
+
+        assert not out_dir.exists()
 
 
 def test_tar_extraction_removes_partial_output_when_limit_exceeded(

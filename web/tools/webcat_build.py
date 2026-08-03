@@ -466,11 +466,16 @@ def _extract_zip_into(zip_path: Path, out_dir: Path) -> None:
     max_bytes = _extract_max_bytes()
 
     total = 0
+    seen_names: set[str] = set()
     with zipfile.ZipFile(zip_path, "r") as z:
         for info in z.infolist():
             name = _safe_archive_member_name(info.filename or "")
             if name is None:
                 continue
+            if name in seen_names:
+                msg = f"Archive contains duplicate normalized member path: {name!r}."
+                raise ValueError(msg)
+            seen_names.add(name)
 
             target = (out_dir / name).resolve()
             try:
@@ -537,6 +542,7 @@ def _extract_tar_into(tar_path: Path, out_dir: Path) -> None:
     # Supports .tar, .tar.gz, .tgz
     max_bytes = _extract_max_bytes()
     total = 0
+    seen_names: set[str] = set()
     with tarfile.open(tar_path, "r|*") as t:
         for m in t:
             # Preserve data-filter behavior: only directories and regular files are extracted.
@@ -547,6 +553,10 @@ def _extract_tar_into(tar_path: Path, out_dir: Path) -> None:
             name = _safe_archive_member_name(m.name or "")
             if name is None:
                 continue
+            if name in seen_names:
+                msg = f"Archive contains duplicate normalized member path: {name!r}."
+                raise ValueError(msg)
+            seen_names.add(name)
 
             target = (out_dir / name).resolve()
             try:
