@@ -91,6 +91,20 @@ class _SummaryResult:
         return (3, 90.0, 40.0, 60.0)
 
 
+class _SnapshotConn:
+    def __init__(self, calls: list[tuple[str, object]]) -> None:
+        self.calls = calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.calls.append((str(sql), params))
+
+
 class _FilteringSummaryConn:
     def __init__(
         self,
@@ -208,6 +222,62 @@ def _insert_hourly(
                 0.0,
             ),
         )
+
+
+@pytest.mark.parametrize(
+    ("supplied_ts", "expected_ts", "expected_clock_calls"),
+    [(0, 0, 0), (None, 123, 1)],
+)
+def test_insert_snapshot_timestamp_contract_reaches_sql(
+    monkeypatch,
+    supplied_ts: int | None,
+    expected_ts: int,
+    expected_clock_calls: int,
+) -> None:
+    store = TimeSeriesStore.__new__(TimeSeriesStore)
+    store._db_initialized = True
+    store._db_init_lock = threading.Lock()
+    calls: list[tuple[str, object]] = []
+    clock_calls: list[None] = []
+
+    def application_clock() -> int:
+        clock_calls.append(None)
+        return 123
+
+    monkeypatch.setattr(store, "_connect", lambda: _SnapshotConn(calls))
+    monkeypatch.setattr(
+        "services.timeseries_store.guarded_proxy_write",
+        lambda _conn, proxy_id: _Guard(proxy_id),
+    )
+    monkeypatch.setattr("services.timeseries_store.get_proxy_id", lambda: "proxy-a")
+    monkeypatch.setattr("services.timeseries_store._now", application_clock)
+
+    store.insert_snapshot({}, ts=supplied_ts)
+
+    assert len(clock_calls) == expected_clock_calls
+    assert len(calls) == 1
+    sql, params = calls[0]
+    assert "INSERT INTO ts_1s" in sql
+    assert params[0:3] == ("proxy-a", expected_ts, 1)
+
+
+def test_rollup_and_prune_at_explicit_zero_does_not_mutate_db(monkeypatch) -> None:
+    store = TimeSeriesStore.__new__(TimeSeriesStore)
+    store._db_initialized = True
+    store._db_init_lock = threading.Lock()
+
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: pytest.fail("an epoch-zero cutoff must not issue retention SQL"),
+    )
+    monkeypatch.setattr("services.timeseries_store.get_proxy_id", lambda: "proxy-a")
+    monkeypatch.setattr(
+        "services.timeseries_store._now",
+        lambda: pytest.fail("explicit timestamps must not read the application clock"),
+    )
+
+    store.rollup_and_prune(ts=0)
 
 
 def test_query_canonicalizes_resolution_and_returns_persisted_metrics(

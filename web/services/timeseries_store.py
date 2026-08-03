@@ -184,7 +184,7 @@ class TimeSeriesStore:
 
     def insert_snapshot(self, stats: dict[str, Any], ts: int | None = None) -> None:
         self.init_db()
-        ts_i = int(ts or _now())
+        ts_i = int(_now() if ts is None else ts)
 
         cpu = _get_metric(stats, "cpu.util_percent")
         mem = _get_metric(stats, "memory.used_percent")
@@ -346,7 +346,7 @@ class TimeSeriesStore:
 
     def rollup_and_prune(self, ts: int | None = None) -> None:
         self.init_db()
-        now = int(ts or _now())
+        now = int(_now() if ts is None else ts)
         proxy_id = get_proxy_id()
 
         # Retention cutoffs (seconds): keep finer data for these windows.
