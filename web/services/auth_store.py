@@ -3,6 +3,7 @@ import os
 import pathlib
 import re
 import secrets
+import stat
 import tempfile
 import threading
 import time
@@ -98,14 +99,9 @@ class AuthStore:
             secret_dir = secret_path.parent
             if secret_dir:
                 secret_dir.mkdir(exist_ok=True, parents=True)
-            try:
-                with secret_path.open(encoding="utf-8") as f:
-                    val = f.read().strip()
-                    if val:
-                        self._chmod_secret_file(secret_path)
-                        return val
-            except FileNotFoundError:
-                pass
+            val = self._read_existing_secret_file(secret_path)
+            if val:
+                return val
 
             secret = secrets.token_urlsafe(48)
             tmp_path: pathlib.Path | None = None
@@ -118,8 +114,8 @@ class AuthStore:
                     text=True,
                 )
                 tmp_path = pathlib.Path(raw_tmp_path)
-                tmp_path.chmod(0o600)
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    os.fchmod(f.fileno(), 0o600)
                     f.write(secret)
                     f.write("\n")
                     f.flush()
@@ -127,7 +123,6 @@ class AuthStore:
                 tmp_path.replace(secret_path)
                 _fsync_parent_dir(secret_path)
                 replaced = True
-                self._chmod_secret_file(secret_path)
             finally:
                 if tmp_path is not None and not replaced:
                     try:
@@ -142,16 +137,54 @@ class AuthStore:
             return secret
 
     @staticmethod
-    def _chmod_secret_file(secret_path: pathlib.Path) -> None:
+    def _read_existing_secret_file(secret_path: pathlib.Path) -> str | None:
         try:
-            secret_path.chmod(0o600)
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "auth_store.secret_chmod",
-                interval_seconds=300.0,
-                message="Failed to chmod Flask secret key file",
-            )
+            path_stat = secret_path.lstat()
+        except FileNotFoundError:
+            return None
+        if stat.S_ISLNK(path_stat.st_mode):
+            msg = f"Flask secret key path must not be a symlink: {secret_path}"
+            raise RuntimeError(msg)
+        if not stat.S_ISREG(path_stat.st_mode):
+            msg = f"Flask secret key path must be a regular file: {secret_path}"
+            raise RuntimeError(msg)
+
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_NONBLOCK"):
+            flags |= os.O_NONBLOCK
+        try:
+            fd = os.open(secret_path, flags)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            msg = f"Unable to open Flask secret key safely: {secret_path}"
+            raise RuntimeError(msg) from exc
+
+        with os.fdopen(fd, encoding="utf-8") as f:
+            opened_stat = os.fstat(f.fileno())
+            if not stat.S_ISREG(opened_stat.st_mode):
+                msg = f"Flask secret key path must be a regular file: {secret_path}"
+                raise RuntimeError(msg)
+            if (opened_stat.st_dev, opened_stat.st_ino) != (
+                path_stat.st_dev,
+                path_stat.st_ino,
+            ):
+                msg = f"Flask secret key path changed while opening: {secret_path}"
+                raise RuntimeError(msg)
+            val = f.read().strip()
+            if val:
+                try:
+                    os.fchmod(f.fileno(), 0o600)
+                except Exception:
+                    log_exception_throttled(
+                        logger,
+                        "auth_store.secret_chmod",
+                        interval_seconds=300.0,
+                        message="Failed to chmod Flask secret key file",
+                    )
+            return val
 
     def any_users(self) -> bool:
         self.ensure_schema()

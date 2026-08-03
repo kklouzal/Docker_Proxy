@@ -55,6 +55,52 @@ def test_auth_store_repairs_existing_secret_permissions(tmp_path) -> None:
     assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
 
 
+def test_auth_store_refuses_existing_secret_symlink_without_following(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    auth_store = _auth_store_module()
+    target_path = tmp_path / "outside.key"
+    target_path.write_text("outside-secret\n", encoding="utf-8")
+    target_path.chmod(0o644)
+    secret_path = tmp_path / "secret.key"
+    secret_path.symlink_to(target_path)
+    path_calls = {"open": 0, "chmod": 0}
+    original_open = Path.open
+    original_chmod = Path.chmod
+
+    def tracked_open(path, *args, **kwargs):
+        if path == secret_path:
+            path_calls["open"] += 1
+        return original_open(path, *args, **kwargs)
+
+    def tracked_chmod(path, *args, **kwargs):
+        if path == secret_path:
+            path_calls["chmod"] += 1
+        return original_chmod(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+    monkeypatch.setattr(Path, "chmod", tracked_chmod)
+    store = auth_store.AuthStore(secret_path=str(secret_path))
+
+    with pytest.raises(RuntimeError, match="must not be a symlink"):
+        store.get_or_create_secret_key()
+
+    assert path_calls == {"open": 0, "chmod": 0}
+    assert target_path.read_text(encoding="utf-8") == "outside-secret\n"
+    assert stat.S_IMODE(target_path.stat().st_mode) == 0o644
+
+
+def test_auth_store_refuses_existing_non_regular_secret_path(tmp_path) -> None:
+    auth_store = _auth_store_module()
+    secret_path = tmp_path / "secret.key"
+    secret_path.mkdir()
+    store = auth_store.AuthStore(secret_path=str(secret_path))
+
+    with pytest.raises(RuntimeError, match="must be a regular file"):
+        store.get_or_create_secret_key()
+
+
 def test_auth_store_creates_secret_with_owner_only_permissions(
     tmp_path,
     monkeypatch,
