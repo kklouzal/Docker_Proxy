@@ -3,7 +3,11 @@ from __future__ import annotations
 import threading
 
 import pytest
-from services.timeseries_store import TimeSeriesStore, canonicalize_resolution_name
+from services.timeseries_store import (
+    TimeSeriesStore,
+    canonicalize_resolution_name,
+    resolve_resolution,
+)
 
 from .mysql_test_utils import configure_test_mysql_env
 
@@ -81,6 +85,60 @@ class _SummaryConn:
 class _SummaryResult:
     def fetchone(self):
         return (3, 90.0, 40.0, 60.0)
+
+
+class _FilteringSummaryConn:
+    def __init__(
+        self,
+        rows_by_table: dict[str, list[tuple]],
+        calls: list[tuple[str, object]],
+    ) -> None:
+        self.rows_by_table = rows_by_table
+        self.calls = calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=None):
+        text = str(sql)
+        self.calls.append((text, params))
+        table = next(
+            table
+            for table in ("ts_1s", "ts_1m", "ts_1h", "ts_1d")
+            if f"FROM {table}" in text
+        )
+        proxy_id, overlap_since = params
+        matching = [
+            row
+            for row in self.rows_by_table.get(table, [])
+            if row[0] == proxy_id and row[1] >= overlap_since
+        ]
+        return _FilteringSummaryResult(matching)
+
+
+class _FilteringSummaryResult:
+    def __init__(self, rows: list[tuple]) -> None:
+        self.rows = rows
+
+    def fetchone(self):
+        def weighted_average(value_index: int, count_index: int) -> float | None:
+            denominator = sum(row[count_index] for row in self.rows)
+            if not denominator:
+                return None
+            return (
+                sum(row[value_index] * row[count_index] for row in self.rows)
+                / denominator
+            )
+
+        return (
+            sum(row[2] for row in self.rows),
+            weighted_average(3, 4),
+            weighted_average(5, 6),
+            weighted_average(7, 8),
+        )
 
 
 class _RollupSqlResult:
@@ -212,6 +270,79 @@ def test_query_includes_only_rollup_buckets_overlapping_since(
     assert [point["ts"] for point in points] == [bucket_start, bucket_start + seconds]
     assert f"FROM ts_{resolution}" in calls[0][0]
     assert calls[0][1] == ("proxy-a", since - (seconds - 1), 25)
+
+
+@pytest.mark.parametrize(
+    ("label", "resolution_name", "window_seconds"),
+    [
+        ("60s", "1s", 60),
+        ("1h", "1m", 60 * 60),
+        ("24h", "1h", 60 * 60 * 24),
+        ("7d", "1d", 60 * 60 * 24 * 7),
+    ],
+)
+def test_summary_includes_only_buckets_overlapping_lower_bound(
+    monkeypatch,
+    label: str,
+    resolution_name: str,
+    window_seconds: int,
+) -> None:
+    store = TimeSeriesStore.__new__(TimeSeriesStore)
+    store._db_initialized = True
+    store._db_init_lock = threading.Lock()
+    now = 1_777_000_180
+    resolution = resolve_resolution(resolution_name)
+    since = now - window_seconds
+    bucket_start = (since // resolution.seconds) * resolution.seconds
+    rows = [
+        (
+            "proxy-a",
+            bucket_start - resolution.seconds,
+            100,
+            100.0,
+            100,
+            100.0,
+            100,
+            100.0,
+            100,
+        ),
+        ("proxy-a", bucket_start, 2, 20.0, 2, 20.0, 2, 20.0, 2),
+        (
+            "proxy-a",
+            bucket_start + resolution.seconds,
+            3,
+            40.0,
+            3,
+            40.0,
+            3,
+            40.0,
+            3,
+        ),
+        ("proxy-b", bucket_start, 200, 200.0, 200, 200.0, 200, 200.0, 200),
+    ]
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: _FilteringSummaryConn({resolution.table: rows}, calls),
+    )
+    monkeypatch.setattr("services.timeseries_store._now", lambda: now)
+    monkeypatch.setattr("services.timeseries_store.get_proxy_id", lambda: "proxy-a")
+
+    summary = store.summary()[label]
+
+    assert summary == {
+        "count": 5,
+        "cpu_avg": pytest.approx(32.0),
+        "mem_avg": pytest.approx(32.0),
+        "hit_rate_avg": pytest.approx(32.0),
+    }
+    sql, params = next(call for call in calls if f"FROM {resolution.table}" in call[0])
+    overlap_since = since - (resolution.seconds - 1)
+    assert bucket_start - resolution.seconds < overlap_since <= bucket_start
+    assert params == ("proxy-a", overlap_since)
+    assert "WHERE proxy_id = %s AND ts >= %s" in sql
+    assert "ts + " not in sql
 
 
 def test_rollup_sql_combines_late_buckets_with_metric_sample_counts(

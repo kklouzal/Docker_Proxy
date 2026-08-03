@@ -53,6 +53,13 @@ def canonicalize_resolution_name(resolution: str | None) -> str:
     return resolve_resolution(resolution).name
 
 
+def _overlap_since(since: int, resolution: Resolution) -> int:
+    # Bucket timestamps mark half-open interval starts. For integer-second
+    # timestamps, ``ts + seconds > since`` is indexably equivalent to this
+    # inclusive lower bound; for 1s it remains exactly ``ts >= since``.
+    return int(since) - (resolution.seconds - 1)
+
+
 def _get_metric(stats: dict[str, Any], path: str) -> float | None:
     # path like "cpu.util_percent"
     cur: Any = stats
@@ -388,10 +395,10 @@ class TimeSeriesStore:
         now = _now()
 
         windows = [
-            ("60s", "ts_1s", now - 60),
-            ("1h", "ts_1m", now - 60 * 60),
-            ("24h", "ts_1h", now - 60 * 60 * 24),
-            ("7d", "ts_1d", now - 60 * 60 * 24 * 7),
+            ("60s", resolve_resolution("1s"), now - 60),
+            ("1h", resolve_resolution("1m"), now - 60 * 60),
+            ("24h", resolve_resolution("1h"), now - 60 * 60 * 24),
+            ("7d", resolve_resolution("1d"), now - 60 * 60 * 24 * 7),
         ]
         proxy_id = get_proxy_id()
 
@@ -399,7 +406,7 @@ class TimeSeriesStore:
 
         def read_summary() -> None:
             with self._connect() as conn:
-                for label, table, since in windows:
+                for label, resolution, since in windows:
                     cpu_count = _metric_count_expr("cpu")
                     mem_count = _metric_count_expr("mem")
                     hit_rate_count = _metric_count_expr("hit_rate")
@@ -410,10 +417,10 @@ class TimeSeriesStore:
                             CASE WHEN SUM({cpu_count}) > 0 THEN SUM(COALESCE(cpu, 0) * {cpu_count})/SUM({cpu_count}) ELSE NULL END AS cpu,
                             CASE WHEN SUM({mem_count}) > 0 THEN SUM(COALESCE(mem, 0) * {mem_count})/SUM({mem_count}) ELSE NULL END AS mem,
                             CASE WHEN SUM({hit_rate_count}) > 0 THEN SUM(COALESCE(hit_rate, 0) * {hit_rate_count})/SUM({hit_rate_count}) ELSE NULL END AS hit
-                        FROM {table}
+                        FROM {resolution.table}
                         WHERE proxy_id = %s AND ts >= %s
                         """,
-                        (proxy_id, int(since)),
+                        (proxy_id, _overlap_since(since, resolution)),
                     ).fetchone()
                     out[label] = {
                         "count": int(row[0] or 0),
@@ -435,10 +442,7 @@ class TimeSeriesStore:
         res = resolve_resolution(resolution)
 
         lim = max(10, min(2000, int(limit)))
-        # Bucket timestamps mark half-open interval starts. For integer-second
-        # timestamps, ``ts + seconds > since`` is indexably equivalent to this
-        # inclusive lower bound; for 1s it remains exactly ``ts >= since``.
-        overlap_since = int(since) - (res.seconds - 1)
+        overlap_since = _overlap_since(since, res)
         proxy_id = get_proxy_id()
         self.init_db()
 
