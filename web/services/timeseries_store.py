@@ -418,9 +418,9 @@ class TimeSeriesStore:
                             CASE WHEN SUM({mem_count}) > 0 THEN SUM(COALESCE(mem, 0) * {mem_count})/SUM({mem_count}) ELSE NULL END AS mem,
                             CASE WHEN SUM({hit_rate_count}) > 0 THEN SUM(COALESCE(hit_rate, 0) * {hit_rate_count})/SUM({hit_rate_count}) ELSE NULL END AS hit
                         FROM {resolution.table}
-                        WHERE proxy_id = %s AND ts >= %s
+                        WHERE proxy_id = %s AND ts >= %s AND ts <= %s
                         """,
-                        (proxy_id, _overlap_since(since, resolution)),
+                        (proxy_id, _overlap_since(since, resolution), now),
                     ).fetchone()
                     out[label] = {
                         "count": int(row[0] or 0),
@@ -443,14 +443,15 @@ class TimeSeriesStore:
 
         lim = max(10, min(2000, int(limit)))
         overlap_since = _overlap_since(since, res)
+        now = _now()
         proxy_id = get_proxy_id()
         self.init_db()
 
         def read_rows():
             with self._connect() as conn:
                 return conn.execute(
-                    f"SELECT ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate FROM {res.table} WHERE proxy_id = %s AND ts >= %s ORDER BY ts ASC LIMIT %s",
-                    (proxy_id, overlap_since, lim),
+                    f"SELECT ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate FROM {res.table} WHERE proxy_id = %s AND ts >= %s AND ts <= %s ORDER BY ts ASC LIMIT %s",
+                    (proxy_id, overlap_since, now, lim),
                 ).fetchall()
 
         rows = self._with_missing_table_retry(read_rows)

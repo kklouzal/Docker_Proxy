@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from operator import itemgetter
 
 import pytest
 from services.timeseries_store import (
@@ -50,12 +51,15 @@ class _FilteringQueryConn:
     def execute(self, sql, params=None):
         text = str(sql)
         self.calls.append((text, params))
-        proxy_id, overlap_since, limit = params
-        matching = [
-            row[1:]
-            for row in self.rows
-            if row[0] == proxy_id and row[1] >= overlap_since
-        ][:limit]
+        proxy_id, overlap_since, now, limit = params
+        matching = sorted(
+            (
+                row[1:]
+                for row in self.rows
+                if row[0] == proxy_id and overlap_since <= row[1] <= now
+            ),
+            key=itemgetter(0),
+        )[:limit]
         return _FilteringQueryResult(matching)
 
 
@@ -110,11 +114,11 @@ class _FilteringSummaryConn:
             for table in ("ts_1s", "ts_1m", "ts_1h", "ts_1d")
             if f"FROM {table}" in text
         )
-        proxy_id, overlap_since = params
+        proxy_id, overlap_since, now = params
         matching = [
             row
             for row in self.rows_by_table.get(table, [])
-            if row[0] == proxy_id and row[1] >= overlap_since
+            if row[0] == proxy_id and overlap_since <= row[1] <= now
         ]
         return _FilteringSummaryResult(matching)
 
@@ -214,6 +218,7 @@ def test_query_canonicalizes_resolution_and_returns_persisted_metrics(
     store._db_init_lock = threading.Lock()
     calls: list[tuple[str, object]] = []
     monkeypatch.setattr(store, "_connect", lambda: _QueryConn(calls))
+    monkeypatch.setattr("services.timeseries_store._now", lambda: 200)
 
     valid_points = store.query(resolution="1m", since=100, limit=25)
     unknown_points = store.query(resolution="bogus", since=100, limit=25)
@@ -222,8 +227,9 @@ def test_query_canonicalizes_resolution_and_returns_persisted_metrics(
     assert canonicalize_resolution_name("bogus") == "1s"
     assert "FROM ts_1m" in calls[0][0]
     assert "FROM ts_1s" in calls[1][0]
-    assert calls[0][1] == ("default", 41, 25)
-    assert calls[1][1] == ("default", 100, 25)
+    assert calls[0][1] == ("default", 41, 200, 25)
+    assert calls[1][1] == ("default", 100, 200, 25)
+    assert "ts >= %s AND ts <= %s" in calls[0][0]
     assert "disk_used" in calls[0][0]
     assert "cache_dir_size" in calls[0][0]
     assert valid_points == unknown_points == [
@@ -239,8 +245,19 @@ def test_query_canonicalizes_resolution_and_returns_persisted_metrics(
     ]
 
 
-@pytest.mark.parametrize(("resolution", "seconds"), [("1m", 60), ("1h", 3600)])
-def test_query_includes_only_rollup_buckets_overlapping_since(
+@pytest.mark.parametrize(
+    ("resolution", "seconds"),
+    [
+        ("1s", 1),
+        ("1m", 60),
+        ("1h", 60 * 60),
+        ("1d", 60 * 60 * 24),
+        ("1w", 60 * 60 * 24 * 7),
+        ("1mo", 60 * 60 * 24 * 30),
+        ("1y", 60 * 60 * 24 * 365),
+    ],
+)
+def test_query_includes_only_buckets_overlapping_since_through_now(
     monkeypatch,
     resolution: str,
     seconds: int,
@@ -250,11 +267,13 @@ def test_query_includes_only_rollup_buckets_overlapping_since(
     store._db_init_lock = threading.Lock()
     bucket_start = (1_777_000_000 // seconds) * seconds
     since = bucket_start + seconds // 2
+    now = bucket_start + seconds
     metric_row = (1, 2.0, 3.0, 5.0, 6.0, 4.0)
     rows = [
         ("proxy-a", bucket_start - seconds, *metric_row),
         ("proxy-a", bucket_start, *metric_row),
-        ("proxy-a", bucket_start + seconds, *metric_row),
+        ("proxy-a", now, *metric_row),
+        ("proxy-a", now + seconds, *metric_row),
         ("proxy-b", bucket_start, *metric_row),
     ]
     calls: list[tuple[str, object]] = []
@@ -263,13 +282,19 @@ def test_query_includes_only_rollup_buckets_overlapping_since(
         "_connect",
         lambda: _FilteringQueryConn(rows, calls),
     )
+    monkeypatch.setattr("services.timeseries_store._now", lambda: now)
     monkeypatch.setattr("services.timeseries_store.get_proxy_id", lambda: "proxy-a")
 
     points = store.query(resolution=resolution, since=since, limit=25)
 
-    assert [point["ts"] for point in points] == [bucket_start, bucket_start + seconds]
+    # A rollup bucket beginning exactly at now is current, not future. Only a
+    # bucket whose start is later than now must be excluded.
+    assert [point["ts"] for point in points] == [bucket_start, now]
     assert f"FROM ts_{resolution}" in calls[0][0]
-    assert calls[0][1] == ("proxy-a", since - (seconds - 1), 25)
+    assert calls[0][1] == ("proxy-a", since - (seconds - 1), now, 25)
+    assert "ts >= %s AND ts <= %s ORDER BY ts ASC LIMIT %s" in calls[0][0]
+    if resolution == "1s":
+        assert calls[0][1][1] == since
 
 
 @pytest.mark.parametrize(
@@ -281,7 +306,7 @@ def test_query_includes_only_rollup_buckets_overlapping_since(
         ("7d", "1d", 60 * 60 * 24 * 7),
     ],
 )
-def test_summary_includes_only_buckets_overlapping_lower_bound(
+def test_summary_includes_only_buckets_overlapping_window_through_now(
     monkeypatch,
     label: str,
     resolution_name: str,
@@ -294,6 +319,7 @@ def test_summary_includes_only_buckets_overlapping_lower_bound(
     resolution = resolve_resolution(resolution_name)
     since = now - window_seconds
     bucket_start = (since // resolution.seconds) * resolution.seconds
+    current_bucket_start = (now // resolution.seconds) * resolution.seconds
     rows = [
         (
             "proxy-a",
@@ -318,6 +344,28 @@ def test_summary_includes_only_buckets_overlapping_lower_bound(
             40.0,
             3,
         ),
+        (
+            "proxy-a",
+            current_bucket_start,
+            5,
+            50.0,
+            5,
+            50.0,
+            5,
+            50.0,
+            5,
+        ),
+        (
+            "proxy-a",
+            current_bucket_start + resolution.seconds,
+            100,
+            100.0,
+            100,
+            100.0,
+            100,
+            100.0,
+            100,
+        ),
         ("proxy-b", bucket_start, 200, 200.0, 200, 200.0, 200, 200.0, 200),
     ]
     calls: list[tuple[str, object]] = []
@@ -332,16 +380,17 @@ def test_summary_includes_only_buckets_overlapping_lower_bound(
     summary = store.summary()[label]
 
     assert summary == {
-        "count": 5,
-        "cpu_avg": pytest.approx(32.0),
-        "mem_avg": pytest.approx(32.0),
-        "hit_rate_avg": pytest.approx(32.0),
+        "count": 10,
+        "cpu_avg": pytest.approx(41.0),
+        "mem_avg": pytest.approx(41.0),
+        "hit_rate_avg": pytest.approx(41.0),
     }
     sql, params = next(call for call in calls if f"FROM {resolution.table}" in call[0])
     overlap_since = since - (resolution.seconds - 1)
     assert bucket_start - resolution.seconds < overlap_since <= bucket_start
-    assert params == ("proxy-a", overlap_since)
-    assert "WHERE proxy_id = %s AND ts >= %s" in sql
+    assert current_bucket_start <= now < current_bucket_start + resolution.seconds
+    assert params == ("proxy-a", overlap_since, now)
+    assert "WHERE proxy_id = %s AND ts >= %s AND ts <= %s" in sql
     assert "ts + " not in sql
 
 
