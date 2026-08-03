@@ -29,7 +29,7 @@ def _canonical_public_dns_host(
     *,
     allow_single_label: bool = False,
 ) -> str:
-    candidate = value.rstrip(".").lower()
+    candidate = value.removesuffix(".").lower()
     if not candidate:
         return ""
     try:
