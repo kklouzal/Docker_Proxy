@@ -998,6 +998,8 @@ class SafeBrowsingLocalChecker:
         self._verdict_cache: dict[
             tuple[str, tuple[str, ...]], tuple[float, SafeBrowsingVerdict]
         ] = {}
+        self._list_version_state: tuple[tuple[str, bytes | None], ...] | None = None
+        self._list_version_state_verified = False
         self._cache_max = cache_max_entries or _env_int(
             "SAFE_BROWSING_HELPER_CACHE_ENTRIES",
             200000,
@@ -1101,6 +1103,57 @@ class SafeBrowsingLocalChecker:
                 lists = cached[1]
         self._selected_lists_cache = (now_mono + self._selected_lists_ttl, lists)
         return lists
+
+    def _list_versions_for_lookup(
+        self,
+        selected_lists: tuple[str, ...],
+    ) -> tuple[tuple[str, bytes | None], ...] | None:
+        try:
+            placeholders = ",".join(["%s"] * len(selected_lists))
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT name, version FROM safe_browsing_hash_lists "
+                    f"WHERE name IN ({placeholders})",
+                    selected_lists,
+                ).fetchall()
+            versions: dict[str, bytes] = {}
+            for row in rows:
+                if not row or not row[0]:
+                    continue
+                value = row[1]
+                if isinstance(value, bytes):
+                    version = value
+                elif isinstance(value, memoryview):
+                    version = value.tobytes()
+                else:
+                    version = str(value or "").encode("utf-8")
+                versions[str(row[0])] = version
+            return tuple((name, versions.get(name)) for name in selected_lists)
+        except Exception:
+            self.close()
+            return None
+
+    def _synchronize_local_cache_versions(
+        self,
+        selected_lists: tuple[str, ...],
+    ) -> None:
+        # The updater commits each hash-list version with its prefix mutation.
+        # Only helper-local caches depend on that snapshot; Google's persistent
+        # full-hash cache remains valid until its provider-supplied expiration.
+        current = self._list_versions_for_lookup(selected_lists)
+        if (
+            current is None
+            or not self._list_version_state_verified
+            or current != self._list_version_state
+        ):
+            self._prefix_cache.clear()
+            self._verdict_cache.clear()
+        if current is None:
+            self._list_version_state = None
+            self._list_version_state_verified = False
+            return
+        self._list_version_state = current
+        self._list_version_state_verified = True
 
     def _local_lists_for_prefix(self, prefix: bytes) -> tuple[str, ...]:
         selected_lists = self._selected_lists_for_lookup()
@@ -1215,6 +1268,7 @@ class SafeBrowsingLocalChecker:
         if not canonical:
             return SafeBrowsingVerdict("safe", reason="invalid or empty url")
         selected_lists = self._selected_lists_for_lookup()
+        self._synchronize_local_cache_versions(selected_lists)
         cache_key = (canonical, selected_lists)
         cached = self._verdict_cache.get(cache_key)
         if cached and cached[0] > time.monotonic():

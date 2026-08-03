@@ -340,6 +340,130 @@ def test_safe_browsing_request_json_reports_response_size_limit(monkeypatch) -> 
         raise AssertionError(msg)
 
 
+def _stateful_local_list_checker(url: str, *, prefix_present: bool):
+    target = expression_hashes(url)[0]
+    state = {
+        "version": b"v1",
+        "prefixes": {target[:4]} if prefix_present else set(),
+        "version_queries": 0,
+        "prefix_queries": 0,
+        "full_hash_queries": 0,
+        "fail_version_query": False,
+    }
+
+    class Result:
+        def __init__(self, rows=()):
+            self.rows = list(rows)
+
+        def fetchall(self):
+            return self.rows
+
+    class DatabaseUnavailableError(RuntimeError):
+        pass
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params=None):
+            normalized = " ".join(str(sql).split())
+            if "FROM safe_browsing_hash_lists" in normalized:
+                state["version_queries"] += 1
+                if state["fail_version_query"]:
+                    raise DatabaseUnavailableError
+                return Result([("mw-4b", state["version"])])
+            if "FROM safe_browsing_hash_prefixes" in normalized:
+                state["prefix_queries"] += 1
+                prefix = params[0]
+                return Result(
+                    [("mw-4b",)] if prefix in state["prefixes"] else []
+                )
+            if "FROM safe_browsing_full_hash_cache" in normalized:
+                state["full_hash_queries"] += 1
+                return Result([(target, "MALWARE", "mw-4b")])
+            raise AssertionError(normalized)
+
+    checker = SafeBrowsingLocalChecker(
+        api_key="test",
+        selected_lists=("mw-4b",),
+    )
+    checker._connect = Conn
+    return checker, target, state
+
+
+@pytest.mark.parametrize("clear_verdict", [False, True], ids=["verdict", "prefix"])
+def test_safe_browsing_list_version_change_invalidates_unsafe_local_caches(
+    clear_verdict,
+) -> None:
+    url = "http://removed-threat.example/"
+    checker, _target, state = _stateful_local_list_checker(
+        url,
+        prefix_present=True,
+    )
+
+    assert checker.check_url(url).verdict == "unsafe"
+    state["version"] = b"v2"
+    state["prefixes"] = set()
+    if clear_verdict:
+        checker._verdict_cache.clear()
+
+    verdict = checker.check_url(url)
+
+    assert verdict == SafeBrowsingVerdict("safe", reason="no local hash-prefix match")
+    assert state["prefix_queries"] == 2
+
+
+def test_safe_browsing_list_version_change_invalidates_prefix_misses() -> None:
+    url = "http://new-threat.example/"
+    checker, target, state = _stateful_local_list_checker(
+        url,
+        prefix_present=False,
+    )
+
+    assert checker.check_url(url).verdict == "safe"
+    state["version"] = b"v2"
+    state["prefixes"] = {target[:4]}
+
+    verdict = checker.check_url(url)
+
+    assert verdict.verdict == "unsafe"
+    assert state["prefix_queries"] > len(expression_hashes(url))
+
+
+def test_safe_browsing_unchanged_list_version_retains_local_caches() -> None:
+    url = "http://cached-threat.example/"
+    checker, _target, state = _stateful_local_list_checker(
+        url,
+        prefix_present=True,
+    )
+
+    assert checker.check_url(url).verdict == "unsafe"
+    assert checker.check_url(url).verdict == "unsafe"
+
+    assert state["version_queries"] == 2
+    assert state["prefix_queries"] == 1
+    assert state["full_hash_queries"] == 1
+
+
+def test_safe_browsing_list_version_error_does_not_reuse_unsafe_local_cache() -> None:
+    url = "http://unavailable-list-state.example/"
+    checker, _target, state = _stateful_local_list_checker(
+        url,
+        prefix_present=True,
+    )
+
+    assert checker.check_url(url).verdict == "unsafe"
+    state["fail_version_query"] = True
+    state["prefixes"] = set()
+
+    verdict = checker.check_url(url)
+
+    assert verdict == SafeBrowsingVerdict("safe", reason="no local hash-prefix match")
+
+
 def test_safe_browsing_prefix_miss_cache_uses_short_ttl(monkeypatch) -> None:
     from services import safe_browsing_v5
 
