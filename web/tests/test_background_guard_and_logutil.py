@@ -23,6 +23,13 @@ def _reset_logutil_state() -> None:
     logutil._last_prune = 0.0
 
 
+def _reset_background_guard(monkeypatch) -> None:
+    monkeypatch.delenv("BACKGROUND_FORCE", raising=False)
+    monkeypatch.setattr(background_guard, "_LOCK_FD", None)
+    monkeypatch.setattr(background_guard, "_LOCK_PID", None)
+    _reset_logutil_state()
+
+
 def test_acquire_background_lock_force_skips_filesystem(monkeypatch) -> None:
     monkeypatch.setenv("BACKGROUND_FORCE", "1")
     monkeypatch.setattr(
@@ -34,38 +41,163 @@ def test_acquire_background_lock_force_skips_filesystem(monkeypatch) -> None:
     assert background_guard.acquire_background_lock() is True
 
 
-def test_acquire_background_lock_allows_when_lock_directory_cannot_be_created(
-    monkeypatch,
-) -> None:
-    monkeypatch.delenv("BACKGROUND_FORCE", raising=False)
-    monkeypatch.setenv("BACKGROUND_LOCK_PATH", "/unwritable/background.lock")
+def test_acquire_background_lock_denies_unexpected_guard_failure(monkeypatch) -> None:
+    logged: list[str] = []
+    _reset_background_guard(monkeypatch)
     monkeypatch.setattr(
         background_guard.os,
-        "makedirs",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("nope")),
+        "getpid",
+        lambda: (_ for _ in ()).throw(RuntimeError("token=unexpected-secret")),
+    )
+    monkeypatch.setattr(
+        background_guard.logger,
+        "error",
+        lambda message, *args: logged.append(message % args if args else message),
     )
 
-    assert background_guard.acquire_background_lock() is True
+    assert background_guard.acquire_background_lock() is False
+    assert logged == [
+        "Unexpected background lock guard failure; background tasks disabled"
+    ]
+    assert "unexpected-secret" not in logged[0]
 
 
-def test_acquire_background_lock_non_posix_allows_and_closes_fd(monkeypatch) -> None:
+def test_acquire_background_lock_denies_when_lock_directory_cannot_be_created(
+    monkeypatch,
+) -> None:
+    logged: list[str] = []
+    _reset_background_guard(monkeypatch)
+    monkeypatch.setenv(
+        "BACKGROUND_LOCK_PATH", "/password=directory-secret/background.lock"
+    )
+    monkeypatch.setattr(
+        background_guard.pathlib.Path,
+        "mkdir",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("password=exception-secret")
+        ),
+    )
+    monkeypatch.setattr(
+        background_guard.logger,
+        "error",
+        lambda message, *args: logged.append(message % args if args else message),
+    )
+
+    assert background_guard.acquire_background_lock() is False
+    assert background_guard.acquire_background_lock() is False
+    assert logged == [
+        "Failed to create background lock directory; background tasks disabled"
+    ]
+    assert "secret" not in logged[0]
+
+
+def test_acquire_background_lock_denies_when_lock_file_cannot_be_opened(
+    monkeypatch, tmp_path
+) -> None:
+    logged: list[str] = []
+    _reset_background_guard(monkeypatch)
+    monkeypatch.setenv("BACKGROUND_LOCK_PATH", str(tmp_path / "background.lock"))
+    monkeypatch.setattr(
+        background_guard.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("token=open-secret")),
+    )
+    monkeypatch.setattr(
+        background_guard.logger,
+        "error",
+        lambda message, *args: logged.append(message % args if args else message),
+    )
+
+    assert background_guard.acquire_background_lock() is False
+    assert logged == ["Failed to open background lock file; background tasks disabled"]
+    assert "open-secret" not in logged[0]
+
+
+def test_acquire_background_lock_denies_when_locking_import_fails_and_closes_fd(
+    monkeypatch,
+) -> None:
     closed: list[int] = []
+    logged: list[str] = []
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
         if name == "fcntl":
-            msg = "no fcntl"
+            msg = "token=import-secret"
             raise ImportError(msg)
         return real_import(name, *args, **kwargs)
 
-    monkeypatch.delenv("BACKGROUND_FORCE", raising=False)
+    _reset_background_guard(monkeypatch)
     monkeypatch.setenv("BACKGROUND_LOCK_PATH", "background.lock")
     monkeypatch.setattr(background_guard.os, "open", lambda *_args, **_kwargs: 42)
     monkeypatch.setattr(background_guard.os, "close", closed.append)
     monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(
+        background_guard.logger,
+        "error",
+        lambda message, *args: logged.append(message % args if args else message),
+    )
 
-    assert background_guard.acquire_background_lock() is True
+    assert background_guard.acquire_background_lock() is False
     assert closed == [42]
+    assert logged == [
+        "Background file locking is unavailable; background tasks disabled"
+    ]
+    assert "import-secret" not in logged[0]
+
+
+def test_acquire_background_lock_denies_when_flock_fails_and_closes_fd(
+    monkeypatch,
+) -> None:
+    import fcntl
+
+    closed: list[int] = []
+    logged: list[str] = []
+    _reset_background_guard(monkeypatch)
+    monkeypatch.setenv("BACKGROUND_LOCK_PATH", "background.lock")
+    monkeypatch.setattr(background_guard.os, "open", lambda *_args, **_kwargs: 43)
+    monkeypatch.setattr(background_guard.os, "close", closed.append)
+    monkeypatch.setattr(
+        fcntl,
+        "flock",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("password=flock-secret")
+        ),
+    )
+    monkeypatch.setattr(
+        background_guard.logger,
+        "error",
+        lambda message, *args: logged.append(message % args if args else message),
+    )
+
+    assert background_guard.acquire_background_lock() is False
+    assert closed == [43]
+    assert logged == ["Failed to acquire background lock; background tasks disabled"]
+    assert "flock-secret" not in logged[0]
+
+
+def test_acquire_background_lock_contention_denies_and_closes_fd(monkeypatch) -> None:
+    import fcntl
+
+    closed: list[int] = []
+    logged: list[str] = []
+    _reset_background_guard(monkeypatch)
+    monkeypatch.setenv("BACKGROUND_LOCK_PATH", "background.lock")
+    monkeypatch.setattr(background_guard.os, "open", lambda *_args, **_kwargs: 44)
+    monkeypatch.setattr(background_guard.os, "close", closed.append)
+    monkeypatch.setattr(
+        fcntl,
+        "flock",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(BlockingIOError),
+    )
+    monkeypatch.setattr(
+        background_guard.logger,
+        "error",
+        lambda message, *args: logged.append(message % args if args else message),
+    )
+
+    assert background_guard.acquire_background_lock() is False
+    assert closed == [44]
+    assert logged == []
 
 
 def test_acquire_background_lock_is_idempotent_for_current_process(monkeypatch, tmp_path) -> None:
@@ -76,10 +208,8 @@ def test_acquire_background_lock_is_idempotent_for_current_process(monkeypatch, 
     fds = iter([101, 102])
     lock_path = tmp_path / "background.lock"
 
-    monkeypatch.delenv("BACKGROUND_FORCE", raising=False)
+    _reset_background_guard(monkeypatch)
     monkeypatch.setenv("BACKGROUND_LOCK_PATH", str(lock_path))
-    monkeypatch.setattr(background_guard, "_LOCK_FD", None)
-    monkeypatch.setattr(background_guard, "_LOCK_PID", None)
 
     def fake_open(path, *_args, **_kwargs):
         opened.append(path)

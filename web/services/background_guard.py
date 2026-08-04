@@ -4,7 +4,7 @@ import logging
 import os
 import pathlib
 
-from services.logutil import log_exception_throttled
+from services.logutil import log_exception_throttled, should_log
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +25,18 @@ def _close_lock_fd(fd: int, *, log_key: str, message: str) -> None:
         )
 
 
+def _log_guard_failure(log_key: str, message: str) -> None:
+    """Report a guard failure without exposing exception or path details."""
+    try:
+        if should_log(log_key, interval_seconds=300.0):
+            logger.error("%s; background tasks disabled", message)
+    except Exception:
+        # Logging must not prevent application startup.
+        pass
+
+
 def acquire_background_lock() -> bool:
-    """Best-effort multi-process guard for background workers.
+    """Multi-process guard for background workers.
 
     In production, app servers may spawn multiple processes (e.g., gunicorn workers).
     Without a guard, each process would start its own tailers/samplers and contend
@@ -38,12 +48,24 @@ def acquire_background_lock() -> bool:
       - BACKGROUND_FORCE=1: always start background tasks (no locking)
       - BACKGROUND_LOCK_PATH: lock file path (default: /var/lib/squid-flask-proxy/background.lock)
     """
-    global _LOCK_FD, _LOCK_PID
-
     if (os.environ.get("BACKGROUND_FORCE") or "").strip() == "1":
         return True
 
-    if _LOCK_FD is not None and os.getpid() == _LOCK_PID:
+    try:
+        return _acquire_background_lock_unforced()
+    except Exception:
+        _log_guard_failure(
+            "background_guard.unexpected",
+            "Unexpected background lock guard failure",
+        )
+        return False
+
+
+def _acquire_background_lock_unforced() -> bool:
+    global _LOCK_FD, _LOCK_PID
+
+    current_pid = os.getpid()
+    if _LOCK_FD is not None and current_pid == _LOCK_PID:
         return True
 
     lock_path = (
@@ -54,19 +76,20 @@ def acquire_background_lock() -> bool:
         try:
             pathlib.Path(lock_dir).mkdir(exist_ok=True, parents=True)
         except Exception:
-            # If we can't create directories, don't block startup.
-            log_exception_throttled(
-                logger,
+            _log_guard_failure(
                 "background_guard.makedirs",
-                interval_seconds=300.0,
-                message="Failed to create BACKGROUND_LOCK_PATH directory; allowing background tasks to start",
+                "Failed to create background lock directory",
             )
-            return True
+            return False
 
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
     except Exception:
-        return True
+        _log_guard_failure(
+            "background_guard.open",
+            "Failed to open background lock file",
+        )
+        return False
 
     try:
         import fcntl  # type: ignore[import-not-found]
@@ -86,16 +109,23 @@ def acquire_background_lock() -> bool:
                 log_key="background_guard.close.flock_error",
                 message="Failed to close background lock fd after flock error",
             )
-            return True
+            _log_guard_failure(
+                "background_guard.flock",
+                "Failed to acquire background lock",
+            )
+            return False
     except Exception:
-        # Non-POSIX environment (or locking unavailable): allow background.
         _close_lock_fd(
             fd,
             log_key="background_guard.close.non_posix",
-            message="Failed to close background lock fd in non-POSIX environment",
+            message="Failed to close background lock fd when locking was unavailable",
         )
-        return True
+        _log_guard_failure(
+            "background_guard.locking_unavailable",
+            "Background file locking is unavailable",
+        )
+        return False
 
     _LOCK_FD = fd
-    _LOCK_PID = os.getpid()
+    _LOCK_PID = current_pid
     return True
