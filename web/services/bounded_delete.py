@@ -91,6 +91,7 @@ def delete_where_in_chunks(
 
     total = 0
     iterations = 0
+    remaining = None
     while total < per_run:
         limit = min(per_chunk, per_run - total)
         with connect_factory() as conn:
@@ -99,12 +100,19 @@ def delete_where_in_chunks(
                 (*tuple(params), int(limit)),
             )
             deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
+            # Probe after the cap-reaching delete in the same short transaction so
+            # ``truncated`` means matching rows remain, not merely that the cap hit.
+            if total + deleted >= per_run:
+                remaining = conn.execute(
+                    f"SELECT 1 FROM {safe_table} WHERE {predicate} LIMIT 1",
+                    tuple(params),
+                ).fetchone()
         total += deleted
         iterations += 1
         if deleted < limit:
             break
 
-    truncated = total >= per_run
+    truncated = total >= per_run and remaining is not None
     if truncated and log_key:
         logger.warning(
             "%s reached max_rows=%s; remaining rows will be cleaned up later.",

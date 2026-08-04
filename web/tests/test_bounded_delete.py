@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 from services.bounded_delete import delete_where_in_chunks
 
 
 class _Result:
-    def __init__(self, rowcount: int) -> None:
+    def __init__(self, rowcount: int, *, row: object | None = None) -> None:
         self.rowcount = rowcount
+        self.row = row
+
+    def fetchone(self):
+        return self.row
 
 
 class _Conn:
@@ -28,17 +34,27 @@ class _Conn:
         return False
 
     def execute(self, sql, params=()):
-        self.queries.append((" ".join(str(sql).split()), tuple(params or ())))
+        normalized_sql = " ".join(str(sql).split())
+        self.queries.append((normalized_sql, tuple(params or ())))
         if self.fail:
             msg = "delete failed"
             raise RuntimeError(msg)
+        if normalized_sql.upper().startswith("SELECT 1 FROM"):
+            return _Result(0, row=(1,) if self.owner.remaining_match else None)
         return _Result(self.owner.rowcounts.pop(0))
 
 
 class _Factory:
-    def __init__(self, rowcounts: list[int], *, fail_on_call: int | None = None) -> None:
+    def __init__(
+        self,
+        rowcounts: list[int],
+        *,
+        fail_on_call: int | None = None,
+        remaining_match: bool = False,
+    ) -> None:
         self.rowcounts = rowcounts
         self.fail_on_call = fail_on_call
+        self.remaining_match = remaining_match
         self.calls = 0
         self.conns: list[_Conn] = []
 
@@ -49,25 +65,64 @@ class _Factory:
         return conn
 
 
-def test_delete_where_in_chunks_progresses_without_offset_and_honors_max_rows() -> None:
+def test_delete_where_in_chunks_exact_cap_without_remainder_is_not_truncated(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     factory = _Factory([2, 2, 1])
 
-    result = delete_where_in_chunks(
-        factory,
-        table="audit_events",
-        where_sql="ts < %s",
-        params=(123,),
-        order_by_columns=("ts", "id"),
-        chunk_size=2,
-        max_rows=5,
+    with caplog.at_level(logging.WARNING, logger="services.bounded_delete"):
+        result = delete_where_in_chunks(
+            factory,
+            table="audit_events",
+            where_sql="ts < %s",
+            params=(123,),
+            order_by_columns=("ts", "id"),
+            chunk_size=2,
+            max_rows=5,
+            log_key="audit.prune",
+        )
+
+    assert result.deleted_rows == 5
+    assert result.iterations == 3
+    assert result.truncated is False
+    assert factory.calls == 3
+    assert [conn.queries[0][1][-1] for conn in factory.conns] == [2, 2, 1]
+    assert all(" OFFSET " not in conn.queries[0][0].upper() for conn in factory.conns)
+    assert all(
+        "ORDER BY `ts` ASC, `id` ASC" in conn.queries[0][0] for conn in factory.conns
     )
+    assert factory.conns[2].queries[1] == (
+        "SELECT 1 FROM `audit_events` WHERE ts < %s LIMIT 1",
+        (123,),
+    )
+    assert "remaining rows will be cleaned up later" not in caplog.text
+
+
+def test_delete_where_in_chunks_exact_cap_with_remainder_is_truncated(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    factory = _Factory([2, 2, 1], remaining_match=True)
+
+    with caplog.at_level(logging.WARNING, logger="services.bounded_delete"):
+        result = delete_where_in_chunks(
+            factory,
+            table="audit_events",
+            where_sql="ts < %s",
+            params=(123,),
+            order_by_columns=("ts", "id"),
+            chunk_size=2,
+            max_rows=5,
+            log_key="audit.prune",
+            log_label="Audit prune",
+        )
 
     assert result.deleted_rows == 5
     assert result.iterations == 3
     assert result.truncated is True
-    assert [conn.queries[0][1][-1] for conn in factory.conns] == [2, 2, 1]
-    assert all(" OFFSET " not in conn.queries[0][0].upper() for conn in factory.conns)
-    assert all("ORDER BY `ts` ASC, `id` ASC" in conn.queries[0][0] for conn in factory.conns)
+    assert factory.calls == 3
+    assert len(factory.conns[2].queries) == 2
+    assert "Audit prune reached max_rows=5" in caplog.text
+    assert "remaining rows will be cleaned up later" in caplog.text
 
 
 def test_delete_where_in_chunks_stops_on_short_chunk() -> None:
