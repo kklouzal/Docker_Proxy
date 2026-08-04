@@ -15,9 +15,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 _REVERSE_DNS_LOOKUP_THREAD_LIMIT = 4
-_REVERSE_DNS_LOOKUP_SLOTS = threading.BoundedSemaphore(
-    _REVERSE_DNS_LOOKUP_THREAD_LIMIT
-)
+_REVERSE_DNS_LOOKUP_SLOTS = threading.BoundedSemaphore(_REVERSE_DNS_LOOKUP_THREAD_LIMIT)
 _DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 _IDNA_DOT_TRANSLATION = str.maketrans(
     {
@@ -106,6 +104,7 @@ class ClientIdentityCache:
         )
         self.max_entries = max(64, int(max_entries or 1024))
         self._cache: dict[str, _CacheEntry] = {}
+        self._inflight: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
 
     def _normalize_ip(self, value: object) -> str:
@@ -136,8 +135,7 @@ class ClientIdentityCache:
         if not 1 <= len(labels) <= 4:
             return False
         return all(
-            label.isdecimal()
-            or bool(re.fullmatch(r"0x[0-9a-f]+", label))
+            label.isdecimal() or bool(re.fullmatch(r"0x[0-9a-f]+", label))
             for label in labels
         )
 
@@ -195,16 +193,18 @@ class ClientIdentityCache:
             return "", "", "unresolved"
         return cleaned, "rdns", "resolved"
 
+    def _get_cached_locked(self, ip: str, *, now: float) -> _CacheEntry | None:
+        cached = self._cache.get(ip)
+        if cached is None:
+            return None
+        if cached.expires_at <= now:
+            self._cache.pop(ip, None)
+            return None
+        return cached
+
     def _get_cached(self, ip: str) -> _CacheEntry | None:
-        now = time.time()
         with self._lock:
-            cached = self._cache.get(ip)
-            if cached is None:
-                return None
-            if cached.expires_at <= now:
-                self._cache.pop(ip, None)
-                return None
-            return cached
+            return self._get_cached_locked(ip, now=time.time())
 
     def _store(
         self,
@@ -232,23 +232,54 @@ class ClientIdentityCache:
         return entry
 
     def _resolve_normalized(self, normalized: str) -> dict[str, str]:
-        cached = self._get_cached(normalized)
-        if cached is not None:
+        with self._lock:
+            cached = self._get_cached_locked(normalized, now=time.time())
+            if cached is not None:
+                return {
+                    "hostname": cached.hostname,
+                    "hostname_source": cached.source,
+                    "hostname_status": cached.status,
+                }
+
+            inflight = self._inflight.get(normalized)
+            if inflight is None:
+                inflight = threading.Event()
+                self._inflight[normalized] = inflight
+                owns_lookup = True
+            else:
+                owns_lookup = False
+
+        if not owns_lookup:
+            inflight.wait(timeout=self.lookup_timeout_seconds)
+            cached = self._get_cached(normalized)
+            if cached is None:
+                return {
+                    "hostname": "",
+                    "hostname_source": "",
+                    "hostname_status": "unresolved",
+                }
             return {
                 "hostname": cached.hostname,
                 "hostname_source": cached.source,
                 "hostname_status": cached.status,
             }
 
-        hostname, source, status = self._lookup_hostname(normalized)
-        ttl = self.success_ttl_seconds if hostname else self.failure_ttl_seconds
-        entry = self._store(
-            normalized,
-            hostname=hostname,
-            source=source,
-            status=status,
-            ttl_seconds=ttl,
-        )
+        try:
+            hostname, source, status = self._lookup_hostname(normalized)
+            ttl = self.success_ttl_seconds if hostname else self.failure_ttl_seconds
+            entry = self._store(
+                normalized,
+                hostname=hostname,
+                source=source,
+                status=status,
+                ttl_seconds=ttl,
+            )
+        finally:
+            with self._lock:
+                if self._inflight.get(normalized) is inflight:
+                    self._inflight.pop(normalized, None)
+                    inflight.set()
+
         return {
             "hostname": entry.hostname,
             "hostname_source": entry.source,
