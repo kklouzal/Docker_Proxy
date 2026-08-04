@@ -1626,6 +1626,182 @@ def test_safe_browsing_ignores_canary_full_hash_detail(monkeypatch) -> None:
     assert checker.check_url("http://bad.example/").verdict == "safe"
 
 
+def _batch_update_settings(
+    lists: tuple[str, ...] = ("mw-4b",),
+) -> SafeBrowsingSettings:
+    return SafeBrowsingSettings(
+        enabled=True,
+        api_key="key",
+        lists=lists,
+        last_success=0,
+        last_attempt=0,
+        last_error="",
+        next_run_ts=0,
+    )
+
+
+class _BatchUpdateConn:
+    def __init__(self, versions: dict[str, bytes] | None = None) -> None:
+        self.versions = versions or {}
+        self.persisted_applied: list[str] = []
+        self.applied: list[str] = []
+
+    def __enter__(self):
+        self.applied = list(self.persisted_applied)
+        return self
+
+    def __exit__(self, exc_type, *_args):
+        if exc_type is None:
+            self.persisted_applied = list(self.applied)
+        else:
+            self.applied = list(self.persisted_applied)
+        return False
+
+    def execute(self, sql, params=None):
+        assert sql.startswith("SELECT version")
+        version = self.versions.get(params[0])
+        return _HashListResult([(version,)] if version else [])
+
+
+def _run_batch_response(monkeypatch, response, *, lists=("mw-4b",), versions=None):
+    store = SafeBrowsingStore()
+    conn = _BatchUpdateConn(versions)
+    request_calls = []
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+
+    def fake_request_json(path, api_key, params, timeout):
+        request_calls.append((path, api_key, params, timeout))
+        return response
+
+    def fake_apply(active_conn, item):
+        active_conn.applied.append(item["name"])
+
+    monkeypatch.setattr(store, "_request_json", fake_request_json)
+    monkeypatch.setattr(store, "_apply_hash_list", fake_apply)
+    result = store.update_lists(_batch_update_settings(lists))
+    return result, conn, request_calls
+
+
+@pytest.mark.parametrize(
+    ("response", "error_fragment"),
+    [
+        pytest.param([], "object", id="non-object-response"),
+        pytest.param({}, "hashLists", id="missing-array"),
+        pytest.param({"hashLists": {}}, "hashLists", id="non-array"),
+        pytest.param({"hashLists": [None]}, "object", id="null-entry"),
+        pytest.param({"hashLists": ["mw-4b"]}, "object", id="string-entry"),
+        pytest.param({"hashLists": [{}]}, "name", id="missing-name"),
+        pytest.param(
+            {"hashLists": [{"name": 42}]},
+            "name",
+            id="non-string-name",
+        ),
+    ],
+)
+def test_safe_browsing_update_lists_rejects_malformed_batch_without_mutation(
+    monkeypatch,
+    response,
+    error_fragment,
+) -> None:
+    (ok, error, wait), conn, _calls = _run_batch_response(monkeypatch, response)
+
+    assert ok is False
+    assert error_fragment in error
+    assert wait == 1800
+    assert conn.persisted_applied == []
+
+
+@pytest.mark.parametrize(
+    ("response_names", "error_fragment"),
+    [
+        pytest.param(["mw-4b"], "requested", id="missing"),
+        pytest.param(
+            ["mw-4b", "mw-4b", "se-4b"],
+            "duplicate",
+            id="duplicate",
+        ),
+        pytest.param(
+            ["mw-4b", "uws-4b"],
+            "unexpected",
+            id="unexpected",
+        ),
+        pytest.param(
+            ["se-4b", "mw-4b"],
+            "order",
+            id="out-of-order",
+        ),
+    ],
+)
+def test_safe_browsing_update_lists_rejects_invalid_batch_names_atomically(
+    monkeypatch,
+    response_names,
+    error_fragment,
+) -> None:
+    response = {"hashLists": [{"name": name} for name in response_names]}
+    (ok, error, wait), conn, _calls = _run_batch_response(
+        monkeypatch,
+        response,
+        lists=("mw-4b", "se-4b"),
+    )
+
+    assert ok is False
+    assert error_fragment in error
+    assert wait == 1800
+    assert conn.persisted_applied == []
+
+
+def test_safe_browsing_update_lists_applies_valid_batch_and_pairs_versions(
+    monkeypatch,
+) -> None:
+    response = {
+        "hashLists": [
+            {"name": "se-4b", "minimumWaitDuration": "7200s"},
+            {"name": "mw-4b", "minimumWaitDuration": "1800s"},
+            {"name": "uws-4b", "minimumWaitDuration": "3600s"},
+        ],
+    }
+    (ok, error, wait), conn, calls = _run_batch_response(
+        monkeypatch,
+        response,
+        lists=("se-4b", "mw-4b", "uws-4b"),
+        versions={"se-4b": b"se-v1", "uws-4b": b"uws-v3"},
+    )
+
+    assert (ok, error, wait) == (True, "", 1800)
+    assert conn.persisted_applied == ["se-4b", "mw-4b", "uws-4b"]
+    assert calls == [
+        (
+            "/hashLists:batchGet",
+            "key",
+            [
+                ("names", "se-4b"),
+                ("names", "mw-4b"),
+                ("names", "uws-4b"),
+                ("version", _urlsafe_test_b64(b"se-v1")),
+                ("version", _urlsafe_test_b64(b"uws-v3")),
+            ],
+            120,
+        ),
+    ]
+
+
+def test_safe_browsing_update_lists_rejects_duplicate_requested_names(
+    monkeypatch,
+) -> None:
+    (ok, error, wait), conn, calls = _run_batch_response(
+        monkeypatch,
+        {"hashLists": []},
+        lists=("mw-4b", "mw-4b"),
+    )
+
+    assert ok is False
+    assert "duplicate" in error
+    assert wait == 1800
+    assert conn.persisted_applied == []
+    assert calls == []
+
+
 def test_safe_browsing_update_lists_releases_db_before_network_fetch(
     monkeypatch,
 ) -> None:

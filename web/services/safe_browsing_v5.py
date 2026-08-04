@@ -714,9 +714,14 @@ class SafeBrowsingStore:
         _now()
         min_wait = 24 * 60 * 60
         try:
+            requested_names = tuple(settings.lists)
+            if len(requested_names) != len(set(requested_names)):
+                msg = "Google Safe Browsing request contains duplicate hash list names"
+                raise ValueError(msg)
+
             versions: dict[str, str] = {}
             with self._connect() as conn:
-                for name in settings.lists:
+                for name in requested_names:
                     row = conn.execute(
                         "SELECT version FROM safe_browsing_hash_lists WHERE name=%s",
                         (name,),
@@ -726,7 +731,7 @@ class SafeBrowsingStore:
                         if isinstance(version, bytes):
                             version = _urlsafe_b64(version)
                         versions[name] = str(version)
-            params: list[tuple[str, str]] = [("names", name) for name in settings.lists]
+            params: list[tuple[str, str]] = [("names", name) for name in requested_names]
             params.extend(("version", version) for version in versions.values())
             response = self._request_json(
                 "/hashLists:batchGet",
@@ -734,10 +739,40 @@ class SafeBrowsingStore:
                 params,
                 timeout=120,
             )
+            if not isinstance(response, dict):
+                msg = "Google Safe Browsing batch response must be an object"
+                raise ValueError(msg)
+            items = response.get("hashLists")
+            if not isinstance(items, list):
+                msg = "Google Safe Browsing batch response hashLists must be an array"
+                raise ValueError(msg)
+
+            response_names: list[str] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    msg = "Google Safe Browsing batch hashLists entries must be objects"
+                    raise ValueError(msg)
+                name = item.get("name")
+                if not isinstance(name, str) or not name:
+                    msg = "Google Safe Browsing batch hash list name must be a string"
+                    raise ValueError(msg)
+                response_names.append(name)
+
+            if len(response_names) != len(set(response_names)):
+                msg = "Google Safe Browsing batch response contains duplicate names"
+                raise ValueError(msg)
+            if any(name not in requested_names for name in response_names):
+                msg = "Google Safe Browsing batch response contains an unexpected name"
+                raise ValueError(msg)
+            if any(name not in response_names for name in requested_names):
+                msg = "Google Safe Browsing batch response omitted a requested name"
+                raise ValueError(msg)
+            if tuple(response_names) != requested_names:
+                msg = "Google Safe Browsing batch response order does not match the request"
+                raise ValueError(msg)
+
             with self._connect() as conn:
-                for item in response.get("hashLists", []) or []:
-                    if not isinstance(item, dict):
-                        continue
+                for item in items:
                     self._apply_hash_list(conn, item)
                     wait = parse_duration_seconds(
                         item.get("minimumWaitDuration"),
