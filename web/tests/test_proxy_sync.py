@@ -181,3 +181,50 @@ def test_request_proxy_reconcile_sanitizes_failed_ephemeral_operation_detail(
     assert "token=[redacted]" in operation.detail
     assert "abc123" not in operation.detail
     assert "hunter2" not in operation.detail
+
+
+@pytest.mark.parametrize(
+    ("ledger_error", "failure_reason"),
+    [
+        (RuntimeError("password=ledger-secret"), "operation ledger is unavailable"),
+        (
+            ValueError("invalid identity token=ledger-secret"),
+            "operation identity is invalid",
+        ),
+    ],
+)
+def test_request_proxy_reconcile_sanitizes_and_bounds_failed_operation_metadata(
+    monkeypatch,
+    proxy_sync_module,
+    ledger_error,
+    failure_reason,
+) -> None:
+    class _FailingLedger:
+        def create_operation(self, _proxy_id, **_kwargs):
+            raise ledger_error
+
+    monkeypatch.setattr(
+        proxy_sync_module,
+        "get_operation_ledger",
+        _FailingLedger,
+    )
+
+    operation = proxy_sync_module.request_proxy_reconcile(
+        "live",
+        operation_type="config_apply",
+        subject="Squid config",
+        summary=f"Apply config with token=summary-secret. {'s' * 600}",
+        detail=f"Revision saved with password=detail-secret. {'d' * 5000}",
+    )
+    payload = operation.to_dict()
+
+    assert payload["operation_id"] == 0
+    assert payload["status"] == "failed"
+    assert failure_reason in payload["detail"]
+    assert "token=[redacted]" in payload["summary"]
+    assert "password=[redacted]" in payload["detail"]
+    assert "summary-secret" not in payload["summary"]
+    assert "detail-secret" not in payload["detail"]
+    assert "ledger-secret" not in f"{payload['summary']}\n{payload['detail']}"
+    assert len(payload["summary"]) == 512
+    assert len(payload["detail"]) == 4000

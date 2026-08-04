@@ -49,13 +49,13 @@ def _ephemeral_operation(
         status=status,
         operation_type=(operation_type or "sync")[:64],
         subject=(subject or "")[:255],
-        summary=(summary or "")[:512],
+        summary=redact_sensitive_text(summary or "")[:512],
         target_kind=(target_kind or "")[:64],
         target_ref=normalized_target_ref,
         rollback_kind=(rollback_kind or "")[:64],
         rollback_ref=str(rollback_ref or "")[:255],
         request_hash=normalized_request_hash,
-        detail=(detail or "")[:4000],
+        detail=redact_sensitive_text(detail or "")[:4000],
         created_by=(created_by or "")[:255],
         created_ts=now,
         started_ts=0,
@@ -109,11 +109,15 @@ def request_proxy_reconcile(
             default="The operation identity is invalid.",
             max_len=500,
         )
-        failure_detail = "Proxy reconcile was not queued because the operation identity is invalid."
+        failure_detail = (
+            "Proxy reconcile was not queued because the operation identity is invalid."
+        )
         if error_detail:
             failure_detail = f"{failure_detail} {error_detail}"
         if detail:
-            failure_detail = f"{redact_sensitive_text(detail)}\n{failure_detail}".strip()
+            failure_detail = (
+                f"{failure_detail}\n{redact_sensitive_text(detail)}".strip()
+            )
         return _ephemeral_operation(
             proxy_id,
             status="failed",
@@ -135,13 +139,13 @@ def request_proxy_reconcile(
             default="The operation ledger is unavailable.",
             max_len=500,
         )
-        failure_detail = (
-            "Proxy reconcile was not queued because the operation ledger is unavailable."
-        )
+        failure_detail = "Proxy reconcile was not queued because the operation ledger is unavailable."
         if error_detail:
             failure_detail = f"{failure_detail} {error_detail}"
         if detail:
-            failure_detail = f"{redact_sensitive_text(detail)}\n{failure_detail}".strip()
+            failure_detail = (
+                f"{failure_detail}\n{redact_sensitive_text(detail)}".strip()
+            )
         return _ephemeral_operation(
             proxy_id,
             status="failed",
@@ -208,7 +212,8 @@ def nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
             logger.warning(
                 "Proxy reconciliation nudge was not queued for %s: %s",
                 proxy_id,
-                getattr(op, "detail", "") or "operation ledger returned a failed operation",
+                getattr(op, "detail", "")
+                or "operation ledger returned a failed operation",
             )
         else:
             logger.warning(
