@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import contextlib
 import hashlib
 import ipaddress
@@ -74,6 +75,26 @@ def _decode_b64(text: object) -> bytes:
         return b""
     raw += "=" * (-len(raw) % 4)
     return base64.urlsafe_b64decode(raw.encode("ascii"))
+
+
+def _decode_search_full_hash(value: object) -> bytes:
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[A-Za-z0-9+/_-]+={0,2}",
+        value,
+    ):
+        msg = "Google Safe Browsing hash search fullHash must be base64-encoded"
+        raise ValueError(msg)
+    try:
+        encoded = value.encode("ascii")
+        encoded += b"=" * (-len(encoded) % 4)
+        full_hash = base64.b64decode(encoded, altchars=b"-_", validate=True)
+    except (binascii.Error, UnicodeEncodeError, ValueError) as exc:
+        msg = "Google Safe Browsing hash search fullHash must be base64-encoded"
+        raise ValueError(msg) from exc
+    if len(full_hash) != 32:
+        msg = "Google Safe Browsing hash search fullHash must be exactly 32 bytes"
+        raise ValueError(msg)
+    return full_hash
 
 
 def _strip_control_url_chars(value: str) -> str:
@@ -438,21 +459,28 @@ def _checksum_for_prefixes(prefixes: Sequence[bytes]) -> bytes:
 
 def _enforceable_threat(
     details: object,
-    fallback: str = "",
     allowed: set[str] | None = None,
 ) -> str:
     if not isinstance(details, list):
-        if fallback in _VALID_THREAT_TYPES and (allowed is None or fallback in allowed):
-            return fallback
         return ""
     for detail in details:
         if not isinstance(detail, dict):
             continue
-        threat = str(detail.get("threatType") or "")
-        attrs = {str(a or "") for a in (detail.get("attributes") or [])}
+        threat = detail.get("threatType")
+        attributes = detail.get("attributes", [])
+        if not isinstance(threat, str) or not isinstance(attributes, list):
+            continue
+        if any(not isinstance(attribute, str) for attribute in attributes):
+            continue
+        attrs = set(attributes)
         if threat not in _VALID_THREAT_TYPES:
             continue
         if allowed is not None and threat not in allowed:
+            continue
+        # Unknown enum values are forward-compatible protocol data, but the v5
+        # contract requires clients to disregard the enclosing detail until
+        # they understand every attribute in it.
+        if any(attribute not in _IGNORED_THREAT_ATTRIBUTES for attribute in attrs):
             continue
         if attrs & _IGNORED_THREAT_ATTRIBUTES:
             continue
@@ -976,12 +1004,74 @@ class SafeBrowsingStore:
     ) -> tuple[list[dict[str, object]], int]:
         if not api_key or not prefixes:
             return [], 0
-        params = [("hashPrefixes", _urlsafe_b64(prefix)) for prefix in prefixes[:30]]
+        requested_prefixes = tuple(prefixes[:30])
+        if any(
+            not isinstance(prefix, bytes) or len(prefix) != 4
+            for prefix in requested_prefixes
+        ):
+            msg = "Google Safe Browsing hash search request prefixes must be 4 bytes"
+            raise ValueError(msg)
+        params = [
+            ("hashPrefixes", _urlsafe_b64(prefix)) for prefix in requested_prefixes
+        ]
         response = self._request_json("/hashes:search", api_key, params, timeout=8)
-        return list(response.get("fullHashes", []) or []), parse_duration_seconds(
-            response.get("cacheDuration"),
-            default=300,
-        )
+        if not isinstance(response, dict):
+            msg = "Google Safe Browsing hash search response must be an object"
+            raise ValueError(msg)
+        items = response.get("fullHashes", [])
+        if not isinstance(items, list):
+            msg = "Google Safe Browsing hash search response fullHashes must be an array"
+            raise ValueError(msg)
+
+        details_by_hash: dict[bytes, list[object]] = {}
+        normalized_items: list[dict[str, object]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                msg = "Google Safe Browsing hash search fullHashes entries must be objects"
+                raise ValueError(msg)
+            full_hash = _decode_search_full_hash(item.get("fullHash"))
+            if not any(full_hash.startswith(prefix) for prefix in requested_prefixes):
+                msg = "Google Safe Browsing hash search returned an unrequested prefix"
+                raise ValueError(msg)
+            details = item.get("fullHashDetails", [])
+            if not isinstance(details, list):
+                msg = "Google Safe Browsing hash search fullHashDetails must be an array"
+                raise ValueError(msg)
+            for detail in details:
+                if not isinstance(detail, dict):
+                    msg = "Google Safe Browsing hash search details must be objects"
+                    raise ValueError(msg)
+                threat = detail.get("threatType")
+                if not isinstance(threat, str) or not threat:
+                    msg = "Google Safe Browsing hash search threatType must be a string"
+                    raise ValueError(msg)
+                attributes = detail.get("attributes", [])
+                if not isinstance(attributes, list) or any(
+                    not isinstance(attribute, str) for attribute in attributes
+                ):
+                    msg = "Google Safe Browsing hash search attributes must be strings"
+                    raise ValueError(msg)
+
+            existing_details = details_by_hash.get(full_hash)
+            if existing_details is not None:
+                existing_details.extend(
+                    detail for detail in details if detail not in existing_details
+                )
+                continue
+            normalized_details: list[object] = list(details)
+            normalized_item = dict(item)
+            normalized_item["fullHashDetails"] = normalized_details
+            details_by_hash[full_hash] = normalized_details
+            normalized_items.append(normalized_item)
+
+        cache_duration = response.get("cacheDuration")
+        if cache_duration is not None and (
+            not isinstance(cache_duration, str)
+            or re.fullmatch(r"\d+(?:\.\d{1,9})?s", cache_duration) is None
+        ):
+            msg = "Google Safe Browsing hash search cacheDuration is invalid"
+            raise ValueError(msg)
+        return normalized_items, parse_duration_seconds(cache_duration, default=300)
 
     def start_background(self, get_settings, set_status) -> None:
         with self._lock:
@@ -1269,16 +1359,22 @@ class SafeBrowsingLocalChecker:
     def _cache_search_response(
         self,
         prefix: bytes,
-        response: Sequence[dict[str, object]],
+        response: Sequence[object],
         cache_duration: int,
         local_lists: Sequence[str] | None = None,
     ) -> None:
         expires = _now() + max(60, min(24 * 60 * 60, int(cache_duration or 300)))
         try:
             with self._connect() as conn:
+                seen_hashes: set[bytes] = set()
                 for item in response:
-                    full = _decode_b64(item.get("fullHash"))
-                    if len(full) != 32:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        full = _decode_search_full_hash(item.get("fullHash"))
+                    except ValueError:
+                        continue
+                    if not full.startswith(prefix) or full in seen_hashes:
                         continue
                     threat = _enforceable_threat(
                         item.get("fullHashDetails") or [],
@@ -1288,6 +1384,7 @@ class SafeBrowsingLocalChecker:
                     )
                     if not threat:
                         continue
+                    seen_hashes.add(full)
                     list_name = _list_name_for_threat(local_lists or (), threat)
                     conn.execute(
                         "INSERT INTO safe_browsing_full_hash_cache(prefix, full_hash, threat_type, list_name, expires_ts) VALUES(%s,%s,%s,%s,%s) AS incoming "
@@ -1366,12 +1463,16 @@ class SafeBrowsingLocalChecker:
                         reason="full hash not returned",
                     )
                     for item in response:
-                        returned = _decode_b64(item.get("fullHash"))
-                        if returned in full_set:
+                        if not isinstance(item, dict):
+                            continue
+                        try:
+                            returned = _decode_search_full_hash(item.get("fullHash"))
+                        except ValueError:
+                            continue
+                        if returned.startswith(prefix) and returned in full_set:
                             threat = _enforceable_threat(
                                 item.get("fullHashDetails") or [],
-                                _threat_type_for_list(local_lists[0]),
-                                local_threat_types,
+                                allowed=local_threat_types,
                             )
                             if not threat or threat not in local_threat_types:
                                 continue

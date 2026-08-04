@@ -340,6 +340,328 @@ def test_safe_browsing_request_json_reports_response_size_limit(monkeypatch) -> 
         raise AssertionError(msg)
 
 
+def _search_hash_item(
+    full_hash: bytes,
+    details: object | None = None,
+) -> dict[str, object]:
+    return {
+        "fullHash": base64.urlsafe_b64encode(full_hash).decode("ascii").rstrip("="),
+        "fullHashDetails": details
+        if details is not None
+        else [{"threatType": "MALWARE"}],
+    }
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param([], id="non-object-response"),
+        pytest.param({"fullHashes": None}, id="null-full-hashes"),
+        pytest.param({"fullHashes": {}}, id="non-array-full-hashes"),
+        pytest.param({"fullHashes": [None]}, id="null-entry"),
+        pytest.param({"fullHashes": ["hash"]}, id="non-object-entry"),
+        pytest.param(
+            {"fullHashes": [{"fullHashDetails": []}]},
+            id="missing-full-hash",
+        ),
+        pytest.param(
+            {"fullHashes": [_search_hash_item(b"a" * 31)]},
+            id="wrong-hash-length",
+        ),
+        pytest.param(
+            {
+                "fullHashes": [
+                    {"fullHash": "!!!!", "fullHashDetails": []},
+                ],
+            },
+            id="invalid-base64",
+        ),
+        pytest.param(
+            {"fullHashes": [_search_hash_item(b"wxyz" + b"b" * 28)]},
+            id="unrequested-prefix",
+        ),
+        pytest.param(
+            {
+                "fullHashes": [
+                    _search_hash_item(b"abcd" + b"a" * 28, {}),
+                ],
+            },
+            id="non-array-details",
+        ),
+        pytest.param(
+            {
+                "fullHashes": [
+                    _search_hash_item(b"abcd" + b"a" * 28, [None]),
+                ],
+            },
+            id="non-object-detail",
+        ),
+        pytest.param(
+            {
+                "fullHashes": [
+                    _search_hash_item(b"abcd" + b"a" * 28, [{}]),
+                ],
+            },
+            id="missing-threat-type",
+        ),
+        pytest.param(
+            {
+                "fullHashes": [
+                    _search_hash_item(
+                        b"abcd" + b"a" * 28,
+                        [{"threatType": "MALWARE", "attributes": "CANARY"}],
+                    ),
+                ],
+            },
+            id="non-array-attributes",
+        ),
+        pytest.param(
+            {"fullHashes": [], "cacheDuration": {"seconds": 300}},
+            id="invalid-cache-duration",
+        ),
+    ],
+)
+def test_safe_browsing_search_hashes_rejects_malformed_response(
+    monkeypatch,
+    response,
+) -> None:
+    store = SafeBrowsingStore()
+    monkeypatch.setattr(store, "_request_json", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ValueError, match="hash search"):
+        store.search_hashes("key", [b"abcd"])
+
+
+def test_safe_browsing_search_hashes_accepts_valid_multi_prefix_multi_threat(
+    monkeypatch,
+) -> None:
+    first = b"abcd" + b"a" * 28
+    second = bytes.fromhex("fbfffefd") + b"b" * 28
+    response = {
+        "fullHashes": [
+            _search_hash_item(
+                first,
+                [
+                    {"threatType": "MALWARE"},
+                    {"threatType": "SOCIAL_ENGINEERING"},
+                ],
+            ),
+            {
+                "fullHash": base64.b64encode(second).decode("ascii"),
+                "fullHashDetails": [
+                    {"threatType": "FUTURE_THREAT_TYPE", "attributes": []},
+                ],
+            },
+        ],
+        "cacheDuration": "3.5s",
+    }
+    calls = []
+    store = SafeBrowsingStore()
+
+    def request_json(path, api_key, params, timeout):
+        calls.append((path, api_key, params, timeout))
+        return response
+
+    monkeypatch.setattr(store, "_request_json", request_json)
+
+    full_hashes, duration = store.search_hashes("key", [first[:4], second[:4]])
+
+    assert full_hashes == response["fullHashes"]
+    assert duration == 3
+    assert calls == [
+        (
+            "/hashes:search",
+            "key",
+            [("hashPrefixes", "YWJjZA"), ("hashPrefixes", "-__-_Q")],
+            8,
+        ),
+    ]
+
+
+def test_safe_browsing_search_hashes_coalesces_duplicate_full_hash_details(
+    monkeypatch,
+) -> None:
+    target = b"abcd" + b"a" * 28
+    response = {
+        "fullHashes": [
+            _search_hash_item(target, [{"threatType": "MALWARE"}]),
+            _search_hash_item(
+                target,
+                [
+                    {"threatType": "MALWARE"},
+                    {"threatType": "SOCIAL_ENGINEERING"},
+                ],
+            ),
+        ],
+        "cacheDuration": "300s",
+    }
+    store = SafeBrowsingStore()
+    monkeypatch.setattr(store, "_request_json", lambda *_args, **_kwargs: response)
+
+    full_hashes, duration = store.search_hashes("key", [target[:4]])
+
+    assert full_hashes == [
+        _search_hash_item(
+            target,
+            [
+                {"threatType": "MALWARE"},
+                {"threatType": "SOCIAL_ENGINEERING"},
+            ],
+        ),
+    ]
+    assert duration == 300
+
+
+def test_safe_browsing_checker_fails_open_for_malformed_hash_search_response(
+    monkeypatch,
+) -> None:
+    from services import safe_browsing_v5
+
+    checker = SafeBrowsingLocalChecker(api_key="test", selected_lists=("mw-4b",))
+    target = b"abcd" + b"a" * 28
+    monkeypatch.setattr(safe_browsing_v5, "expression_hashes", lambda _url: [target])
+    monkeypatch.setattr(checker, "_synchronize_local_cache_versions", lambda _lists: None)
+    monkeypatch.setattr(checker, "_local_lists_for_prefix", lambda _prefix: ("mw-4b",))
+    monkeypatch.setattr(
+        checker, "_cache_lookup", lambda _prefix, _hashes, _lists=None: None
+    )
+    monkeypatch.setattr(
+        checker._store,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "fullHashes": [None],
+            "cacheDuration": "300s",
+        },
+    )
+
+    def fail_cache(*_args, **_kwargs) -> NoReturn:
+        msg = "malformed provider data must not reach the cache writer"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(checker, "_cache_search_response", fail_cache)
+
+    assert checker.check_url("http://malformed-response.example/") == SafeBrowsingVerdict(
+        "safe",
+        reason="full-hash confirmation unavailable",
+    )
+    assert checker._verdict_cache == {}
+
+
+def test_safe_browsing_checker_rejects_full_hash_for_unrequested_prefix(
+    monkeypatch,
+) -> None:
+    from services import safe_browsing_v5
+
+    checker = SafeBrowsingLocalChecker(api_key="test", selected_lists=("mw-4b",))
+    requested = b"abcd" + b"a" * 28
+    other_expression = b"wxyz" + b"b" * 28
+    monkeypatch.setattr(
+        safe_browsing_v5,
+        "expression_hashes",
+        lambda _url: [requested, other_expression],
+    )
+    monkeypatch.setattr(checker, "_synchronize_local_cache_versions", lambda _lists: None)
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("mw-4b",) if prefix == requested[:4] else (),
+    )
+    monkeypatch.setattr(
+        checker, "_cache_lookup", lambda _prefix, _hashes, _lists=None: None
+    )
+    monkeypatch.setattr(
+        checker._store,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "fullHashes": [_search_hash_item(other_expression)],
+            "cacheDuration": "300s",
+        },
+    )
+
+    cache_calls = []
+    monkeypatch.setattr(
+        checker,
+        "_cache_search_response",
+        lambda *args, **kwargs: cache_calls.append((args, kwargs)),
+    )
+
+    assert checker.check_url("http://cross-prefix.example/") == SafeBrowsingVerdict(
+        "safe",
+        reason="full-hash confirmation unavailable",
+    )
+    assert cache_calls == []
+    assert checker._verdict_cache == {}
+
+
+def test_safe_browsing_cache_skips_wrong_prefix_and_duplicate_full_hash() -> None:
+    requested = b"abcd" + b"a" * 28
+    wrong_prefix = b"wxyz" + b"b" * 28
+    executed = []
+
+    class FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+
+    checker = SafeBrowsingLocalChecker(api_key="test")
+    checker._connect = FakeConn
+    checker._cache_search_response(
+        requested[:4],
+        [
+            _search_hash_item(requested),
+            _search_hash_item(requested),
+            _search_hash_item(wrong_prefix),
+        ],
+        300,
+        local_lists=("mw-4b",),
+    )
+
+    inserts = [
+        params
+        for sql, params in executed
+        if "safe_browsing_full_hash_cache" in sql
+    ]
+    assert len(inserts) == 1
+    assert inserts[0][0:4] == (requested[:4], requested, "MALWARE", "mw-4b")
+
+
+def test_safe_browsing_checker_ignores_unknown_threat_attribute(monkeypatch) -> None:
+    checker = SafeBrowsingLocalChecker(api_key="test")
+    target = expression_hashes("http://future-attribute.example/")[0]
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("mw-4b",) if prefix == target[:4] else (),
+    )
+    monkeypatch.setattr(
+        checker, "_cache_lookup", lambda _prefix, _hashes, local_lists=None: None
+    )
+    monkeypatch.setattr(checker, "_cache_search_response", _ignore_cache_response)
+    monkeypatch.setattr(
+        checker._store,
+        "search_hashes",
+        lambda _api_key, _prefixes: (
+            [
+                _search_hash_item(
+                    target,
+                    [{"threatType": "MALWARE", "attributes": ["FUTURE_ATTRIBUTE"]}],
+                ),
+            ],
+            300,
+        ),
+    )
+
+    assert checker.check_url("http://future-attribute.example/") == SafeBrowsingVerdict(
+        "safe",
+        reason="full hash not returned",
+    )
+
+
 def _stateful_local_list_checker(url: str, *, prefix_present: bool):
     target = expression_hashes(url)[0]
     state = {
