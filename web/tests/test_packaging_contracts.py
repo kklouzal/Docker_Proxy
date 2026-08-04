@@ -26,6 +26,33 @@ def _load_start_admin_ui_module():
     return module
 
 
+def _assert_staged_wsgi_import(
+    stage,
+    *,
+    entrypoint_module: str,
+    application_module: str,
+) -> None:
+    script = f"""
+import importlib
+from flask import Flask
+
+entrypoint = importlib.import_module({entrypoint_module!r})
+application_module = importlib.import_module({application_module!r})
+assert isinstance(entrypoint.app, Flask)
+assert entrypoint.app is application_module.app
+assert entrypoint.application is entrypoint.app
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=stage,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def _entrypoint_listener_normalizer_script() -> str:
     text = _read("docker/entrypoint.sh")
     start_marker = "SQUID_CFG_PATH=\"$file_path\" python3 - <<'PY' || true\n"
@@ -192,6 +219,59 @@ def test_proxy_and_admin_dockerfiles_keep_runtime_payloads_separated() -> None:
     assert "ARG GIT_COMMIT=" in admin
     assert "GIT_COMMIT=${GIT_COMMIT}" in proxy
     assert "GIT_COMMIT=${GIT_COMMIT}" in admin
+
+
+def test_proxy_wsgi_imports_packaged_proxy_application(tmp_path) -> None:
+    dockerfile = _read("docker/Dockerfile.proxy")
+    supervisord = _read("docker/supervisord.proxy.conf")
+    package = tmp_path / "proxy"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text(
+        'from flask import Flask\napp = Flask("packaged-proxy-app")\n',
+        encoding="utf-8",
+    )
+    (package / "wsgi.py").write_text(_read("proxy/wsgi.py"), encoding="utf-8")
+
+    assert "WORKDIR /app" in dockerfile
+    assert "COPY proxy /app/proxy" in dockerfile
+    assert "directory=/app" in supervisord
+    assert "proxy.wsgi:app" in supervisord
+    _assert_staged_wsgi_import(
+        tmp_path,
+        entrypoint_module="proxy.wsgi",
+        application_module="proxy.app",
+    )
+
+
+def test_admin_wsgi_imports_flat_packaged_application(tmp_path) -> None:
+    dockerfile = _read("docker/Dockerfile.admin")
+    supervisord = _read("docker/supervisord.admin.conf")
+    launcher = _load_start_admin_ui_module()
+    (tmp_path / "app.py").write_text(
+        'from flask import Flask\napp = Flask("packaged-admin-app")\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "wsgi.py").write_text(_read("web/wsgi.py"), encoding="utf-8")
+
+    assert "WORKDIR /app" in dockerfile
+    assert "COPY web/app.py /app/app.py" in dockerfile
+    assert "COPY web/wsgi.py /app/wsgi.py" in dockerfile
+    assert "directory=/app" in supervisord
+    assert "wsgi:app" in launcher.build_gunicorn_argv(
+        {},
+        launcher.AdminUiHttpsRuntimeConfig(
+            enabled=False,
+            certfile="",
+            keyfile="",
+            source="test",
+        ),
+    )
+    _assert_staged_wsgi_import(
+        tmp_path,
+        entrypoint_module="wsgi",
+        application_module="app",
+    )
 
 
 def test_proxy_dockerfile_includes_direct_service_import_dependencies() -> None:
