@@ -52,6 +52,17 @@ _NON_BLOCKING_MODIFIER_OPTIONS = {
     "specifichide",
 }
 _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
+# uBO's method= option is limited to the DNR request-method set.
+_SUPPORTED_METHOD_OPTIONS = {
+    "CONNECT",
+    "DELETE",
+    "GET",
+    "HEAD",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+}
 
 
 @dataclass(frozen=True)
@@ -112,6 +123,10 @@ def _is_third_party(request_host: str, source_host: str) -> bool | None:
     return request_site != source_site
 
 
+def _normalize_method(method: Any) -> str:
+    return str(method or "").strip().upper()
+
+
 def _header_value(headers: dict[str, str], key: str) -> str:
     key_lower = key.lower()
     for candidate, value in headers.items():
@@ -146,7 +161,7 @@ def infer_resource_type(
     method: str, url: str, headers: dict[str, str] | None = None
 ) -> str:
     headers = headers or {}
-    normalized_method = (method or "").strip().upper()
+    normalized_method = _normalize_method(method)
     lower_headers = {str(k).lower(): str(v) for k, v in headers.items()}
     if lower_headers.get("upgrade", "").lower() == "websocket":
         return "websocket"
@@ -262,7 +277,7 @@ class AdblockDecisionEngine:
         effective_source_url = source_url or source_url_from_headers(headers)
         effective_third_party_hint = third_party_hint_from_headers(headers)
         cache_key = (
-            (method or "").strip().upper(),
+            _normalize_method(method),
             url or "",
             effective_resource_type,
             effective_source_url,
@@ -483,11 +498,33 @@ class AdblockDecisionEngine:
         source_host: str,
         third_party_hint: bool | None,
     ) -> bool:
-        method_values = (rule.get("value_options") or {}).get("method") or []
-        if method_values and (method or "").strip().upper() not in {
-            str(item).upper() for item in method_values
-        }:
+        value_options = rule.get("value_options") or {}
+        if not isinstance(value_options, dict):
             return False
+        if "method" in value_options:
+            method_values = value_options["method"]
+            # An explicitly present but malformed method= must not become an
+            # unrestricted rule merely because it has no usable values.
+            if not isinstance(method_values, list) or not method_values:
+                return False
+            included_methods: set[str] = set()
+            excluded_methods: set[str] = set()
+            for item in method_values:
+                option_value = str(item or "").strip().upper()
+                excluded = option_value.startswith("~")
+                option_method = option_value[1:] if excluded else option_value
+                if option_method not in _SUPPORTED_METHOD_OPTIONS:
+                    return False
+                target = excluded_methods if excluded else included_methods
+                target.add(option_method)
+
+            request_method = _normalize_method(method)
+            if request_method not in _SUPPORTED_METHOD_OPTIONS:
+                return False
+            if included_methods and request_method not in included_methods:
+                return False
+            if request_method in excluded_methods:
+                return False
 
         resource_types = {str(item) for item in rule.get("resource_types") or []}
         excluded_resource_types = {

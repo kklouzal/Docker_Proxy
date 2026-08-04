@@ -352,6 +352,50 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
     )
 
 
+def test_adblock_decision_enforces_method_contract_without_cache_leakage(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "||negated-method.example^$method=~get",
+            "||positive-method.example^$method=post|put",
+            "||empty-method.example^$method=",
+            "||unsupported-method.example^$method=trace",
+        ],
+    )
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=60, cache_max=10)
+
+    negated_url = "https://negated-method.example/collect"
+    [hydrated_rule] = engine.lookup.candidate_rules(negated_url)
+    assert hydrated_rule["value_options"]["method"] == ["~GET"]
+    assert engine.decide(negated_url, method="GET").blocked is False
+    post_decision = engine.decide(negated_url, method=" post ")
+    assert post_decision.blocked is True
+    assert post_decision.raw == "||negated-method.example^$method=~get"
+    assert engine.decide(negated_url, method="GET").blocked is False
+
+    positive_url = "https://positive-method.example/collect"
+    assert engine.decide(positive_url, method="put").blocked is True
+    assert engine.decide(positive_url, method="GET").blocked is False
+
+    assert (
+        engine.decide("https://empty-method.example/collect", method="POST").blocked
+        is False
+    )
+    assert (
+        engine.decide(
+            "https://unsupported-method.example/collect",
+            method="TRACE",
+        ).blocked
+        is False
+    )
+
+
 def test_adblock_decision_treats_escaped_abp_metacharacters_as_literals(
     tmp_path: Path,
 ) -> None:
@@ -611,7 +655,9 @@ def test_adblock_icap_parse_http_request_rejects_malformed_connect_authority(
     assert headers["host"] == "fallback.example:443"
 
 
-def test_adblock_icap_parse_http_request_allows_bracketed_ipv6_connect_authority() -> None:
+def test_adblock_icap_parse_http_request_allows_bracketed_ipv6_connect_authority() -> (
+    None
+):
     _add_web_to_path()
     from tools.adblock_icap_server import _parse_http_request
 
@@ -667,10 +713,7 @@ def test_adblock_icap_parse_http_request_preserves_scheme_relative_authority() -
             "https://ads.example:8080/banner.js",
         ),
         (
-            (
-                b"GET /banner.js HTTP/1.1\r\n"
-                b"Host: [2001:db8::20]:443\r\n\r\n"
-            ),
+            (b"GET /banner.js HTTP/1.1\r\nHost: [2001:db8::20]:443\r\n\r\n"),
             "http://[2001:db8::20]:443/banner.js",
         ),
         (
@@ -743,13 +786,9 @@ def test_adblock_icap_rejects_duplicate_encapsulated_offsets() -> None:
     _add_web_to_path()
     from tools.adblock_icap_server import _encapsulated_http_request
 
-    blocked = (
-        b"GET http://ads.example/banner.js HTTP/1.1\r\n"
-        b"Host: ads.example\r\n\r\n"
-    )
+    blocked = b"GET http://ads.example/banner.js HTTP/1.1\r\nHost: ads.example\r\n\r\n"
     later_allowed = (
-        b"GET http://allowed.example/page HTTP/1.1\r\n"
-        b"Host: allowed.example\r\n\r\n"
+        b"GET http://allowed.example/page HTTP/1.1\r\nHost: allowed.example\r\n\r\n"
     )
     icap = (
         b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
@@ -786,10 +825,7 @@ def test_adblock_icap_rejects_req_hdr_without_body_boundary() -> None:
     _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
-    http = (
-        b"GET http://ads.example/banner.js HTTP/1.1\r\n"
-        b"Host: ads.example\r\n\r\n"
-    )
+    http = b"GET http://ads.example/banner.js HTTP/1.1\r\nHost: ads.example\r\n\r\n"
     next_req = (
         b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
         b"Host: 127.0.0.1\r\n"
@@ -798,9 +834,7 @@ def test_adblock_icap_rejects_req_hdr_without_body_boundary() -> None:
     request = (
         b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
         b"Host: 127.0.0.1\r\n"
-        b"Encapsulated: req-hdr=0\r\n\r\n"
-        + http
-        + next_req
+        b"Encapsulated: req-hdr=0\r\n\r\n" + http + next_req
     )
 
     message, pending, force_close = _read_icap_message(
@@ -819,10 +853,7 @@ def test_adblock_icap_rejects_duplicate_encapsulated_header_fields() -> None:
     _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
-    http = (
-        b"GET http://ads.example/banner.js HTTP/1.1\r\n"
-        b"Host: ads.example\r\n\r\n"
-    )
+    http = b"GET http://ads.example/banner.js HTTP/1.1\r\nHost: ads.example\r\n\r\n"
     next_req = (
         b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
         b"Host: 127.0.0.1\r\n"
@@ -834,13 +865,8 @@ def test_adblock_icap_rejects_duplicate_encapsulated_header_fields() -> None:
         b"Encapsulated: req-hdr=0, null-body="
         + str(len(http)).encode("ascii")
         + b"\r\n"
-        b"Encapsulated: req-hdr=0, req-body="
-        + str(len(http)).encode("ascii")
-        + b"\r\n"
-        b"Preview: 0\r\n\r\n"
-        + http
-        + b"0\r\n\r\n"
-        + next_req
+        b"Encapsulated: req-hdr=0, req-body=" + str(len(http)).encode("ascii") + b"\r\n"
+        b"Preview: 0\r\n\r\n" + http + b"0\r\n\r\n" + next_req
     )
 
     message, pending, force_close = _read_icap_message(
@@ -872,10 +898,7 @@ def test_adblock_icap_rejects_malformed_general_header_before_pipeline(
     _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
-    http = (
-        b"GET http://allowed.example/page HTTP/1.1\r\n"
-        b"Host: allowed.example\r\n\r\n"
-    )
+    http = b"GET http://allowed.example/page HTTP/1.1\r\nHost: allowed.example\r\n\r\n"
     next_req = (
         b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
         b"Host: 127.0.0.1\r\n"
@@ -883,9 +906,7 @@ def test_adblock_icap_rejects_malformed_general_header_before_pipeline(
     )
     request = (
         b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
-        b"Host: 127.0.0.1\r\n"
-        + malformed_header
-        + b"\r\n"
+        b"Host: 127.0.0.1\r\n" + malformed_header + b"\r\n"
         b"Encapsulated: req-hdr=0, null-body="
         + str(len(http)).encode("ascii")
         + b"\r\n\r\n"
