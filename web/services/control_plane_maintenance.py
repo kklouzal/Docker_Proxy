@@ -276,9 +276,26 @@ def _delete_retained_rows_in_chunks(
     )
     newer_where = " AND ".join(newer_predicates)
     candidate_where = " AND ".join(candidate_predicates)
+    eligibility_params = (
+        *tuple(params_prefix),
+        *tuple(newer_params),
+        int(keep_rows),
+    )
+    eligibility_sql = f"""
+        SELECT 1
+        FROM {safe_table} AS candidate
+        WHERE {candidate_where}
+          AND (
+              SELECT COUNT(*)
+              FROM {safe_table} AS newer
+              WHERE {newer_where}
+          ) >= %s
+        LIMIT 1
+    """
 
     total = 0
     iterations = 0
+    remaining = None
     while total < per_run:
         limit = min(per_chunk, per_run - total)
         sql = f"""
@@ -298,21 +315,23 @@ def _delete_retained_rows_in_chunks(
                 ) AS limited_victims
             ) AS victims ON victims.victim_id = target.{id_col}
         """
-        params = (
-            *tuple(params_prefix),
-            *tuple(newer_params),
-            int(keep_rows),
-            int(limit),
-        )
+        params = (*eligibility_params, int(limit))
         with connect() as conn:
             result = conn.execute(sql, params)
             deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
+            # Read after the cap-reaching DELETE in the same short transaction so
+            # ``truncated`` reports an eligible victim, not merely an exact cap hit.
+            if total + deleted >= per_run:
+                remaining = conn.execute(
+                    eligibility_sql,
+                    eligibility_params,
+                ).fetchone()
         total += deleted
         iterations += 1
         if deleted < limit:
             break
 
-    truncated = total >= per_run
+    truncated = total >= per_run and remaining is not None
     return BoundedDeleteResult(
         table=table,
         deleted_rows=total,
@@ -406,7 +425,9 @@ def _queue_policy_exception_expiry_policy_sync(proxy_id: str) -> bool:
     from services.proxy_sync import request_proxy_reconcile
 
     desired_policy_sha = ""
-    detail = "Policy exceptions expired; proxy should refresh materialized policy files."
+    detail = (
+        "Policy exceptions expired; proxy should refresh materialized policy files."
+    )
     try:
         desired_policy_sha = normalize_operation_target_ref(
             "policy_state",
@@ -701,9 +722,8 @@ def _run_one_prune(
         )
     if table in {"safe_browsing_full_hash_cache", "safe_browsing_negative_cache"}:
         deleted = _delete_expired_cache(table, now_ts=now_ts)
-        detail = (
-            f"iterations={deleted.iterations}"
-            + (" truncated=true" if deleted.truncated else "")
+        detail = f"iterations={deleted.iterations}" + (
+            " truncated=true" if deleted.truncated else ""
         )
         return ControlPlaneMaintenanceResult(
             table=table,

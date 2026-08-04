@@ -12,11 +12,12 @@ class _CleanupResult:
 
 
 class _Result:
-    def __init__(self, rowcount: int = 0) -> None:
+    def __init__(self, rowcount: int = 0, *, row=None) -> None:
         self.rowcount = rowcount
+        self.row = row
 
     def fetchone(self):
-        return None
+        return self.row
 
     def fetchall(self):
         return [
@@ -271,8 +272,26 @@ class _SequencedConnection:
         return _Result(self.rowcounts.pop(0) if self.rowcounts else 0)
 
 
-def test_control_plane_keep_n_delete_is_bounded_and_partitioned(monkeypatch) -> None:
-    pending = [_SequencedConnection([2]), _SequencedConnection([1])]
+class _RetentionDeleteConnection(_SequencedConnection):
+    def __init__(self, rowcounts: list[int], *, remaining_victim: bool) -> None:
+        super().__init__(rowcounts)
+        self.remaining_victim = remaining_victim
+
+    def execute(self, sql, params=()):
+        compact = " ".join(str(sql).split())
+        if compact.startswith("SELECT 1 FROM"):
+            self.queries.append((compact, tuple(params or ())))
+            return _Result(0, row=(1,) if self.remaining_victim else None)
+        return super().execute(sql, params)
+
+
+def test_control_plane_keep_n_exact_cap_with_remaining_victim_is_truncated(
+    monkeypatch,
+) -> None:
+    pending = [
+        _SequencedConnection([2]),
+        _RetentionDeleteConnection([1], remaining_victim=True),
+    ]
     used: list[_SequencedConnection] = []
 
     def connect():
@@ -302,9 +321,51 @@ def test_control_plane_keep_n_delete_is_bounded_and_partitioned(monkeypatch) -> 
     assert "ROW_NUMBER" not in first_sql.upper()
     assert " OFFSET " not in first_sql.upper()
     assert "newer.`proxy_id` = candidate.`proxy_id`" in first_sql
-    assert "ORDER BY candidate.`updated_ts` ASC, candidate.`id` ASC LIMIT %s" in first_sql
+    assert (
+        "ORDER BY candidate.`updated_ts` ASC, candidate.`id` ASC LIMIT %s" in first_sql
+    )
     assert first_params == (1234, 5, 2)
+    probe_sql, probe_params = used[1].queries[1]
+    assert probe_sql.startswith("SELECT 1 FROM `proxy_operations` AS candidate")
+    assert "newer.`proxy_id` = candidate.`proxy_id`" in probe_sql
+    assert "candidate.status IN ('applied','superseded','failed')" in probe_sql
+    assert "newer.status IN ('applied','superseded','failed')" in probe_sql
+    assert " OFFSET " not in probe_sql.upper()
+    assert "ROW_NUMBER" not in probe_sql.upper()
+    assert probe_params == (1234, 5)
     assert [conn.committed for conn in used] == [True, True]
+
+
+def test_control_plane_keep_n_exact_cap_without_remaining_victim_is_not_truncated(
+    monkeypatch,
+) -> None:
+    conn = _RetentionDeleteConnection([2], remaining_victim=False)
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 2)
+    monkeypatch.setattr(maintenance, "default_max_rows", lambda: 2)
+
+    result = maintenance._delete_revision_rows(
+        table="proxy_config_revisions",
+        timestamp_column="created_ts",
+        active_column="is_active",
+        cutoff_ts=100,
+        keep_rows=25,
+        partition_column="proxy_id",
+    )
+
+    assert result.deleted_rows == 2
+    assert result.iterations == 1
+    assert result.truncated is False
+    assert len(conn.queries) == 2
+    delete_sql, delete_params = conn.queries[0]
+    probe_sql, probe_params = conn.queries[1]
+    assert "candidate.`is_active` = 0" in delete_sql
+    assert delete_params == (100, 25, 2)
+    assert probe_sql.startswith("SELECT 1 FROM `proxy_config_revisions` AS candidate")
+    assert "candidate.`is_active` = 0" in probe_sql
+    assert "newer.`proxy_id` = candidate.`proxy_id`" in probe_sql
+    assert probe_params == (100, 25)
+    assert conn.committed is True
 
 
 def test_control_plane_keep_n_low_row_noop(monkeypatch) -> None:
@@ -435,7 +496,9 @@ class _PolicyExpiryConnection:
         return _PolicyExpiryResult(rowcount=0)
 
 
-def test_policy_exception_expiry_queues_policy_sync_deduped_by_proxy(monkeypatch) -> None:
+def test_policy_exception_expiry_queues_policy_sync_deduped_by_proxy(
+    monkeypatch,
+) -> None:
     pending = [
         _PolicyExpiryConnection(
             [
@@ -481,7 +544,9 @@ def test_policy_exception_expiry_queues_policy_sync_deduped_by_proxy(monkeypatch
     assert first_update_params == (999, 1, 2)
 
 
-def test_policy_exception_expiry_does_not_queue_without_expired_rows(monkeypatch) -> None:
+def test_policy_exception_expiry_does_not_queue_without_expired_rows(
+    monkeypatch,
+) -> None:
     conn = _PolicyExpiryConnection([])
     queued: list[str] = []
 
@@ -506,7 +571,9 @@ def test_policy_exception_expiry_does_not_queue_without_expired_rows(monkeypatch
     assert conn.queries[0][0].startswith("SELECT id, proxy_id FROM policy_exceptions")
 
 
-def test_policy_exception_expiry_reports_policy_sync_queue_failures(monkeypatch) -> None:
+def test_policy_exception_expiry_reports_policy_sync_queue_failures(
+    monkeypatch,
+) -> None:
     conn = _PolicyExpiryConnection([{"id": 1, "proxy_id": "edge-a"}])
 
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
@@ -571,7 +638,7 @@ def test_control_plane_prune_reports_truncated_backlog(monkeypatch) -> None:
     conns = [
         _SequencedConnection([0]),  # index exists lookup
         _SequencedConnection([1]),
-        _SequencedConnection([1]),
+        _RetentionDeleteConnection([1], remaining_victim=True),
         _SequencedConnection([0]),  # webcat cleanup
     ]
     used: list[_SequencedConnection] = []
