@@ -473,6 +473,43 @@ def test_saml_profile_rejects_parser_ambiguous_metadata_urls(
 
 
 @pytest.mark.parametrize(
+    "url",
+    [
+        "https://idp.example%/metadata.xml",
+        "https://idp.example%2/metadata.xml",
+        "https://idp.example%GG/metadata.xml",
+    ],
+)
+def test_saml_url_normalizers_reject_malformed_authority_percent_encoding(
+    url: str,
+) -> None:
+    store = MemorySamlAuthStore()
+
+    with pytest.raises(ValueError, match="malformed percent-encoding"):
+        saml_auth._normalize_saml_url(url, label="metadata")
+    with pytest.raises(ValueError, match="malformed percent-encoding"):
+        store._normalize_public_base_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://idp.example.test:8080/saml",
+        "https://93.184.216.34:8443/saml",
+        "https://[2001:4860:4860::8888]:8443/saml",
+        "https://[fe80::1%25eth0]:8443/saml",
+    ],
+)
+def test_saml_url_normalizers_preserve_valid_dns_ipv4_and_ipv6_authorities(
+    url: str,
+) -> None:
+    store = MemorySamlAuthStore()
+
+    assert saml_auth._normalize_saml_url(url, label="metadata") == url
+    assert store._normalize_public_base_url(url) == url
+
+
+@pytest.mark.parametrize(
     "metadata_url",
     [
         "https://adfs.example.local:0/metadata.xml",

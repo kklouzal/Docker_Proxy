@@ -70,7 +70,20 @@ def _decoded_url_component_is_unsafe(value: str) -> bool:
     )
 
 
+def _has_malformed_percent_encoding(value: str) -> bool:
+    start = 0
+    while True:
+        index = value.find("%", start)
+        if index == -1:
+            return False
+        if _PERCENT_ENCODED_OCTET_RE.match(value, index) is None:
+            return True
+        start = index + 3
+
+
 def _decoded_authority_component_is_unsafe(value: str) -> bool:
+    if _has_malformed_percent_encoding(value):
+        return True
     decoded_values, is_excessively_nested = _repeatedly_decode_url_component(value)
     return is_excessively_nested or any(
         _has_unsafe_url_text(decoded)
@@ -111,7 +124,7 @@ def _normalize_saml_url(value: Any, *, label: str) -> str:
         _decoded_url_component_is_unsafe(component)
         for component in (parsed.path, parsed.query)
     ):
-        msg = f"SAML {label} URL must not include encoded whitespace, control characters, or backslashes, or encoded authority delimiters."
+        msg = f"SAML {label} URL must not include encoded whitespace, control characters, or backslashes, encoded authority delimiters, or malformed percent-encoding."
         raise ValueError(msg)
     return parsed.geturl()
 
@@ -684,7 +697,7 @@ class SamlAuthStore:
         if _decoded_authority_component_is_unsafe(parsed.netloc) or any(
             _decoded_url_component_is_unsafe(component) for component in (parsed.path,)
         ):
-            msg = "SAML public base URL must not include encoded whitespace, control characters, or backslashes, or encoded authority delimiters."
+            msg = "SAML public base URL must not include encoded whitespace, control characters, or backslashes, encoded authority delimiters, or malformed percent-encoding."
             raise ValueError(msg)
         return parsed.geturl().rstrip("/")
 
