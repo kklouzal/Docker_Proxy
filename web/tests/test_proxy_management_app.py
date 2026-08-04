@@ -708,8 +708,11 @@ def test_proxy_management_sync_operation_id_records_current_config_apply(
     ]
 
 
-def test_proxy_runtime_targeted_operation_sync_requires_claim(monkeypatch) -> None:
-    _add_repo_paths()
+def test_proxy_management_targeted_sync_reports_concurrent_operation_owner(
+    monkeypatch,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = runtime_module.ProxyRuntime.__new__(runtime_module.ProxyRuntime)
@@ -732,15 +735,32 @@ def test_proxy_runtime_targeted_operation_sync_requires_claim(monkeypatch) -> No
             raise AssertionError(msg)
 
     runtime.controller = Controller()
-    runtime._current_config_sha = lambda: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    runtime._current_config_sha = lambda: (
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
     monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    proxy_app.runtime = runtime
 
-    result = runtime.sync_from_db(operation_id=42)
+    response = _management_post(
+        proxy_app.app.test_client(),
+        "/api/manage/sync",
+        json={"force": True, "operation_id": 42},
+        headers={"Authorization": "Bearer secret"},
+    )
 
-    assert result["ok"] is False
-    assert result["changed"] is False
-    assert "was not claimed" in result["detail"]
-    assert result["executed_operation_types"] == []
+    assert response.status_code == 409
+    assert response.get_json() == {
+        "ok": False,
+        "proxy_id": "edge-a",
+        "changed": False,
+        "detail": (
+            "Proxy operation #42 was not claimed; it may already be running, "
+            "completed, superseded, or assigned to another proxy."
+        ),
+        "current_config_sha": "a" * 64,
+        "executed_operation_types": [],
+        "unsupported_operation_types": [],
+    }
 
 
 def test_proxy_management_sync_exception_returns_sanitized_json(monkeypatch) -> None:

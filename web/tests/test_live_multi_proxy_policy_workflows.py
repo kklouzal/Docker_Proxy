@@ -57,6 +57,30 @@ def _sync_remote_proxy(client: LiveStackClient, *, force: bool = True) -> dict:
     return payload
 
 
+def _request_remote_policy_operation_sync(
+    client: LiveStackClient,
+    operation_id: int,
+) -> tuple[int, dict[str, Any]]:
+    response = client.remote_proxy_management_post_json(
+        "/api/manage/sync",
+        {"force": True, "operation_id": operation_id},
+        timeout_seconds=120.0,
+    )
+    assert response.status in {200, 409}, response.text
+    payload = response.json()
+    if response.status == 200:
+        assert payload.get("ok") is True, payload
+    else:
+        assert payload.get("ok") is False, payload
+        assert payload.get("executed_operation_types") == [], payload
+        assert (
+            f"operation #{operation_id} was not claimed"
+            in str(payload.get("detail") or "").lower()
+        ), payload
+    wait_for_remote_proxy_management_payload()
+    return response.status, payload
+
+
 def _operation_ledger():
     from services.operation_ledger import get_operation_ledger  # type: ignore
 
@@ -206,15 +230,17 @@ def test_live_remote_sslfilter_policy_mutation_operation_converges_selected_prox
         None,
     )
     assert latest_operation is not None
-    assert latest_operation.status in {"pending", "applying"}
     if latest_operation.status == "applying":
         assert latest_operation.started_ts > 0
     assert latest_operation.proxy_id == selected_proxy_id
 
-    sync_payload = _sync_remote_proxy(multi_proxy_admin)
-    assert sync_payload.get("executed_operation_types") == ["policy_sync"]
-    assert sync_payload.get("policy_sha256") == desired_sha
-    assert sync_payload.get("current_policy_sha") == desired_sha
+    # The background proxy agent can claim this row after the ledger read. Targeting
+    # the operation makes the outcome explicit: this request either owns the apply,
+    # or terminal ledger and runtime SHA evidence below must prove the other owner did.
+    sync_status, sync_payload = _request_remote_policy_operation_sync(
+        multi_proxy_admin,
+        latest_operation.operation_id,
+    )
 
     terminal_operation = _wait_for_operation_terminal(
         selected_proxy_id,
@@ -224,6 +250,10 @@ def test_live_remote_sslfilter_policy_mutation_operation_converges_selected_prox
     assert terminal_operation.status == "applied"
     health = _wait_for_remote_policy_health(desired_sha)
     assert health.get("desired_policy_sha") == health.get("current_policy_sha")
+    if sync_status == 200:
+        assert sync_payload.get("executed_operation_types") == ["policy_sync"]
+        assert sync_payload.get("policy_sha256") == desired_sha
+        assert sync_payload.get("current_policy_sha") == desired_sha
 
     other_after_sha = _build_policy_sha(other_proxy_id)
     assert other_after_sha == other_before_sha
