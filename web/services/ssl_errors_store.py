@@ -679,18 +679,45 @@ class SslErrorsStore:
             )
 
     def _read_last_lines(self, max_lines: int) -> list[str]:
-        path = self.cache_log_path
-        if not pathlib.Path(path).exists():
+        path = pathlib.Path(self.cache_log_path)
+        if max_lines <= 0 or not path.exists():
             return []
         try:
-            with pathlib.Path(path).open("rb") as f:
+            with path.open("rb") as f:
                 f.seek(0, os.SEEK_END)
                 size = f.tell()
                 read_size = min(size, max_lines * 260)
-                if read_size > 0:
-                    f.seek(-read_size, os.SEEK_END)
-                chunk = f.read().decode("utf-8", errors="replace")
-            return chunk.splitlines()[-max_lines:]
+                start = size - read_size
+                f.seek(start)
+                chunk = f.read(read_size)
+
+                if start > 0:
+                    f.seek(start - 1)
+                    previous = f.read(1)
+                    starts_at_boundary = previous == b"\n" or (
+                        previous == b"\r" and not chunk.startswith(b"\n")
+                    )
+                    if not starts_at_boundary:
+                        lf = chunk.find(b"\n")
+                        cr = chunk.find(b"\r")
+                        boundaries = [pos for pos in (lf, cr) if pos >= 0]
+                        if not boundaries:
+                            return []
+                        boundary = min(boundaries)
+                        boundary_end = boundary + 1
+                        if chunk[boundary : boundary + 2] == b"\r\n":
+                            boundary_end += 1
+                        chunk = chunk[boundary_end:]
+
+            # A writer may be between writing a record and its line ending.
+            # Decode and ingest only records complete at the size snapshot above.
+            if chunk and not chunk.endswith((b"\n", b"\r")):
+                boundary = max(chunk.rfind(b"\n"), chunk.rfind(b"\r"))
+                if boundary < 0:
+                    return []
+                chunk = chunk[: boundary + 1]
+
+            return chunk.decode("utf-8", errors="replace").splitlines()[-max_lines:]
         except Exception:
             return []
 
