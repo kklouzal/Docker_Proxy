@@ -450,7 +450,7 @@ class TimeSeriesStore:
         def read_rows():
             with self._connect() as conn:
                 return conn.execute(
-                    f"SELECT ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate FROM {res.table} WHERE proxy_id = %s AND ts >= %s AND ts <= %s ORDER BY ts ASC LIMIT %s",
+                    f"SELECT ts, count, cpu, mem, disk_used, cache_dir_size, hit_rate FROM {res.table} WHERE proxy_id = %s AND ts >= %s AND ts <= %s ORDER BY ts DESC LIMIT %s",
                     (proxy_id, overlap_since, now, lim),
                 ).fetchall()
 
@@ -466,7 +466,7 @@ class TimeSeriesStore:
                 "cache_dir_size": r[5],
                 "hit_rate": r[6],
             }
-            for r in rows
+            for r in reversed(rows)
         ]
 
     def start_background(self, get_stats_func) -> None:

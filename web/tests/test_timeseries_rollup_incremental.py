@@ -59,6 +59,7 @@ class _FilteringQueryConn:
                 if row[0] == proxy_id and overlap_since <= row[1] <= now
             ),
             key=itemgetter(0),
+            reverse="ORDER BY ts DESC" in text,
         )[:limit]
         return _FilteringQueryResult(matching)
 
@@ -315,6 +316,28 @@ def test_query_canonicalizes_resolution_and_returns_persisted_metrics(
     ]
 
 
+def test_query_returns_latest_bounded_proxy_points_in_chronological_order(
+    monkeypatch,
+) -> None:
+    store = TimeSeriesStore.__new__(TimeSeriesStore)
+    store._db_initialized = True
+    store._db_init_lock = threading.Lock()
+    metric_row = (1, 2.0, 3.0, 5.0, 6.0, 4.0)
+    rows = [("proxy-a", ts, *metric_row) for ts in range(99, 116)] + [
+        ("proxy-b", ts, *metric_row) for ts in range(100, 115)
+    ]
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(store, "_connect", lambda: _FilteringQueryConn(rows, calls))
+    monkeypatch.setattr("services.timeseries_store._now", lambda: 114)
+    monkeypatch.setattr("services.timeseries_store.get_proxy_id", lambda: "proxy-a")
+
+    points = store.query(resolution="1s", since=100, limit=3)
+
+    assert [point["ts"] for point in points] == list(range(105, 115))
+    assert calls[0][1] == ("proxy-a", 100, 114, 10)
+    assert "ORDER BY ts DESC LIMIT %s" in calls[0][0]
+
+
 @pytest.mark.parametrize(
     ("resolution", "seconds"),
     [
@@ -362,7 +385,7 @@ def test_query_includes_only_buckets_overlapping_since_through_now(
     assert [point["ts"] for point in points] == [bucket_start, now]
     assert f"FROM ts_{resolution}" in calls[0][0]
     assert calls[0][1] == ("proxy-a", since - (seconds - 1), now, 25)
-    assert "ts >= %s AND ts <= %s ORDER BY ts ASC LIMIT %s" in calls[0][0]
+    assert "ts >= %s AND ts <= %s ORDER BY ts DESC LIMIT %s" in calls[0][0]
     if resolution == "1s":
         assert calls[0][1][1] == since
 
