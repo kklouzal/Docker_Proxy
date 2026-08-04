@@ -14,9 +14,18 @@ def _add_web_to_path() -> None:
 
 
 _add_web_to_path()
-AdblockArtifactStore = importlib.import_module("services.adblock_artifacts").AdblockArtifactStore
-CertificateBundleStore = importlib.import_module("services.certificate_bundles").CertificateBundleStore
-ConfigRevisionStore = importlib.import_module("services.config_revisions").ConfigRevisionStore
+AdblockArtifactStore = importlib.import_module(
+    "services.adblock_artifacts"
+).AdblockArtifactStore
+CertificateBundleStore = importlib.import_module(
+    "services.certificate_bundles"
+).CertificateBundleStore
+ConfigRevisionStore = importlib.import_module(
+    "services.config_revisions"
+).ConfigRevisionStore
+application_ledgers = importlib.import_module("services.application_ledgers")
+normalize_application_actor = application_ledgers.normalize_application_actor
+normalize_application_detail = application_ledgers.normalize_application_detail
 
 
 class _Result:
@@ -47,11 +56,17 @@ class _LedgerConn:
     def execute(self, sql, params=()):
         text = " ".join(str(sql).split())
         params = tuple(params or ())
-        if self.kind == "config" and text.startswith("SELECT id, config_sha256 FROM proxy_config_revisions"):
+        if self.kind == "config" and text.startswith(
+            "SELECT id, config_sha256 FROM proxy_config_revisions"
+        ):
             return _Result([{"id": params[1], "config_sha256": self.revision_sha}])
-        if self.kind == "certificate" and text.startswith("SELECT id, bundle_sha256 FROM certificate_bundle_revisions"):
+        if self.kind == "certificate" and text.startswith(
+            "SELECT id, bundle_sha256 FROM certificate_bundle_revisions"
+        ):
             return _Result([{"id": params[0], "bundle_sha256": self.revision_sha}])
-        if self.kind == "adblock" and text.startswith("SELECT id, artifact_sha256 FROM adblock_artifact_revisions"):
+        if self.kind == "adblock" and text.startswith(
+            "SELECT id, artifact_sha256 FROM adblock_artifact_revisions"
+        ):
             return _Result([{"id": params[0], "artifact_sha256": self.revision_sha}])
         if text.startswith("INSERT INTO proxy_config_applications"):
             self.insert_params = params
@@ -63,51 +78,67 @@ class _LedgerConn:
             self.insert_params = params
             return _Result(lastrowid=46, rowcount=1)
         if text.startswith("SELECT * FROM proxy_config_applications WHERE id"):
-            proxy_id, revision_id, ok, detail, applied_by, applied_ts, config_sha = self.insert_params or ()
-            return _Result([
-                {
-                    "id": 44,
-                    "proxy_id": proxy_id,
-                    "revision_id": revision_id,
-                    "ok": ok,
-                    "detail": detail,
-                    "applied_by": applied_by,
-                    "applied_ts": applied_ts,
-                    "config_sha256": config_sha,
-                },
-            ])
+            proxy_id, revision_id, ok, detail, applied_by, applied_ts, config_sha = (
+                self.insert_params or ()
+            )
+            return _Result(
+                [
+                    {
+                        "id": 44,
+                        "proxy_id": proxy_id,
+                        "revision_id": revision_id,
+                        "ok": ok,
+                        "detail": detail,
+                        "applied_by": applied_by,
+                        "applied_ts": applied_ts,
+                        "config_sha256": config_sha,
+                    },
+                ]
+            )
         if text.startswith("SELECT * FROM proxy_certificate_applications WHERE id"):
-            proxy_id, revision_id, ok, detail, applied_by, applied_ts, bundle_sha = self.insert_params or ()
-            return _Result([
-                {
-                    "id": 45,
-                    "proxy_id": proxy_id,
-                    "revision_id": revision_id,
-                    "ok": ok,
-                    "detail": detail,
-                    "applied_by": applied_by,
-                    "applied_ts": applied_ts,
-                    "bundle_sha256": bundle_sha,
-                },
-            ])
-        if text.startswith("SELECT * FROM proxy_adblock_artifact_applications WHERE id"):
-            proxy_id, revision_id, ok, detail, applied_by, applied_ts, artifact_sha = self.insert_params or ()
-            return _Result([
-                {
-                    "id": 46,
-                    "proxy_id": proxy_id,
-                    "revision_id": revision_id,
-                    "ok": ok,
-                    "detail": detail,
-                    "applied_by": applied_by,
-                    "applied_ts": applied_ts,
-                    "artifact_sha256": artifact_sha,
-                },
-            ])
+            proxy_id, revision_id, ok, detail, applied_by, applied_ts, bundle_sha = (
+                self.insert_params or ()
+            )
+            return _Result(
+                [
+                    {
+                        "id": 45,
+                        "proxy_id": proxy_id,
+                        "revision_id": revision_id,
+                        "ok": ok,
+                        "detail": detail,
+                        "applied_by": applied_by,
+                        "applied_ts": applied_ts,
+                        "bundle_sha256": bundle_sha,
+                    },
+                ]
+            )
+        if text.startswith(
+            "SELECT * FROM proxy_adblock_artifact_applications WHERE id"
+        ):
+            proxy_id, revision_id, ok, detail, applied_by, applied_ts, artifact_sha = (
+                self.insert_params or ()
+            )
+            return _Result(
+                [
+                    {
+                        "id": 46,
+                        "proxy_id": proxy_id,
+                        "revision_id": revision_id,
+                        "ok": ok,
+                        "detail": detail,
+                        "applied_by": applied_by,
+                        "applied_ts": applied_ts,
+                        "artifact_sha256": artifact_sha,
+                    },
+                ]
+            )
         return _Result()
 
 
-def test_config_application_records_revision_sha_and_redacts_detail(monkeypatch) -> None:
+def test_config_application_records_revision_sha_and_redacts_detail(
+    monkeypatch,
+) -> None:
     sha = "a" * 64
     conn = _LedgerConn(kind="config", revision_sha=sha)
     store = ConfigRevisionStore()
@@ -118,16 +149,31 @@ def test_config_application_records_revision_sha_and_redacts_detail(monkeypatch)
         "edge-a",
         7,
         ok=True,
-        detail="apply failed token=supersecret",
-        applied_by="proxy password=hunter2",
+        detail="apply failed token=supersecret\nretry\tqueued",
+        applied_by=("deploy\tbot\r\npassword=hunter2\x00\x7f\u0085\u2028\u2029\u200b"),
     )
 
     assert application.config_sha256 == sha
-    assert application.detail == "apply failed token=[redacted]"
-    assert application.applied_by == "proxy password=[redacted]"
+    assert application.detail == "apply failed token=[redacted]\nretry\tqueued"
+    assert application.applied_by == "deploy bot password=[redacted]"
 
 
-def test_certificate_application_success_evidence_must_match_revision(monkeypatch) -> None:
+def test_application_actor_falls_back_when_only_invisible_separators_remain() -> None:
+    invisible = "\t\r\n\x00\x1f\x7f\u0085\u2028\u2029\u200b"
+
+    assert normalize_application_actor(invisible) == "proxy"
+    assert len(normalize_application_actor("operator-" + ("x" * 300))) == 255
+
+
+def test_application_detail_preserves_useful_line_and_tab_structure() -> None:
+    detail = "first line\nsecond line\tqueued"
+
+    assert normalize_application_detail(detail) == detail
+
+
+def test_certificate_application_success_evidence_must_match_revision(
+    monkeypatch,
+) -> None:
     sha = "b" * 64
     conn = _LedgerConn(kind="certificate", revision_sha=sha)
     store = CertificateBundleStore()
@@ -141,7 +187,9 @@ def test_certificate_application_success_evidence_must_match_revision(monkeypatc
         store.record_apply_result("edge-a", 8, ok=True, bundle_sha256="c" * 64)
 
 
-def test_certificate_failure_preserves_different_valid_runtime_evidence(monkeypatch) -> None:
+def test_certificate_failure_preserves_different_valid_runtime_evidence(
+    monkeypatch,
+) -> None:
     revision_sha = "d" * 64
     current_sha = "e" * 64
     conn = _LedgerConn(kind="certificate", revision_sha=revision_sha)

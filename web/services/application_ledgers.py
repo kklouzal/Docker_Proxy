@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 from services.errors import redact_sensitive_text
@@ -8,6 +9,7 @@ from services.errors import redact_sensitive_text
 APPLICATION_DETAIL_MAX = 4000
 APPLICATION_ACTOR_MAX = 255
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_INVISIBLE_ACTOR_CATEGORIES = {"Cc", "Cf"}
 
 
 def row_value(row: Any, key: str, default: object = "") -> object:
@@ -17,7 +19,9 @@ def row_value(row: Any, key: str, default: object = "") -> object:
         return default
 
 
-def normalize_application_detail(value: object, *, max_len: int = APPLICATION_DETAIL_MAX) -> str:
+def normalize_application_detail(
+    value: object, *, max_len: int = APPLICATION_DETAIL_MAX
+) -> str:
     """Redact and bound operator-visible apply details without flattening useful lines."""
     text = redact_sensitive_text("" if value is None else str(value))
     text = text.replace("\r", "\n")
@@ -26,8 +30,18 @@ def normalize_application_detail(value: object, *, max_len: int = APPLICATION_DE
 
 
 def normalize_application_actor(value: object, *, default: str = "proxy") -> str:
-    actor = normalize_application_detail(value, max_len=APPLICATION_ACTOR_MAX).strip()
-    return (actor or default)[:APPLICATION_ACTOR_MAX]
+    def _single_line_actor(candidate: object) -> str:
+        text = "" if candidate is None else str(candidate)
+        text = "".join(
+            " "
+            if ch.isspace() or unicodedata.category(ch) in _INVISIBLE_ACTOR_CATEGORIES
+            else ch
+            for ch in text
+        )
+        return redact_sensitive_text(re.sub(r" +", " ", text).strip())
+
+    actor = _single_line_actor(value) or _single_line_actor(default) or "proxy"
+    return actor[:APPLICATION_ACTOR_MAX]
 
 
 def normalize_sha256_evidence(
