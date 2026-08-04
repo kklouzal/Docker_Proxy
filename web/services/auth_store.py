@@ -1,3 +1,4 @@
+import fcntl
 import logging
 import os
 import pathlib
@@ -105,7 +106,6 @@ class AuthStore:
 
             secret = secrets.token_urlsafe(48)
             tmp_path: pathlib.Path | None = None
-            replaced = False
             try:
                 fd, raw_tmp_path = tempfile.mkstemp(
                     dir=secret_dir,
@@ -120,11 +120,46 @@ class AuthStore:
                     f.write("\n")
                     f.flush()
                     os.fsync(f.fileno())
-                tmp_path.replace(secret_path)
+
+                try:
+                    os.link(tmp_path, secret_path, follow_symlinks=False)
+                except FileExistsError:
+                    val = self._read_existing_secret_file(secret_path)
+                    if val:
+                        return val
+
+                    # Preserve replacement of an existing empty regular file. This
+                    # uncommon path needs an inter-process lock because hard-link
+                    # publication can only claim a missing destination.
+                    lock_flags = os.O_RDONLY
+                    if hasattr(os, "O_DIRECTORY"):
+                        lock_flags |= os.O_DIRECTORY
+                    lock_fd = os.open(secret_dir, lock_flags)
+                    try:
+                        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                        val = self._read_existing_secret_file(secret_path)
+                        if val:
+                            return val
+                        tmp_path.replace(secret_path)
+                        _fsync_parent_dir(secret_path)
+                        return secret
+                    finally:
+                        os.close(lock_fd)
+
+                try:
+                    tmp_path.unlink()
+                    tmp_path = None
+                except Exception:
+                    log_exception_throttled(
+                        logger,
+                        "auth_store.secret_tmp_cleanup",
+                        interval_seconds=300.0,
+                        message="Failed to clean up temporary Flask secret key file",
+                    )
                 _fsync_parent_dir(secret_path)
-                replaced = True
+                return secret
             finally:
-                if tmp_path is not None and not replaced:
+                if tmp_path is not None:
                     try:
                         tmp_path.unlink(missing_ok=True)
                     except Exception:
@@ -134,7 +169,6 @@ class AuthStore:
                             interval_seconds=300.0,
                             message="Failed to clean up temporary Flask secret key file",
                         )
-            return secret
 
     @staticmethod
     def _read_existing_secret_file(secret_path: pathlib.Path) -> str | None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing
 import stat
 import sys
 import threading
@@ -116,6 +117,19 @@ def test_auth_store_creates_secret_with_owner_only_permissions(
     assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
 
 
+def test_auth_store_replaces_existing_empty_secret_file(tmp_path, monkeypatch) -> None:
+    auth_store = _auth_store_module()
+    monkeypatch.setattr(auth_store.secrets, "token_urlsafe", lambda size: "new-secret")
+    secret_path = tmp_path / "secret.key"
+    secret_path.touch(mode=0o644)
+
+    store = auth_store.AuthStore(secret_path=str(secret_path))
+
+    assert store.get_or_create_secret_key() == "new-secret"
+    assert secret_path.read_text(encoding="utf-8") == "new-secret\n"
+    assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
+
+
 def test_auth_store_does_not_use_predictable_shared_tmp_path(
     tmp_path,
     monkeypatch,
@@ -170,6 +184,61 @@ def test_auth_store_secret_creation_is_serialized_for_concurrent_callers(
     assert results == ["new-secret-1"] * 8
     assert secret_path.read_text(encoding="utf-8") == "new-secret-1\n"
     assert calls == 1
+
+
+def _load_secret_in_process(secret_path, ready, result_queue, worker_id: int) -> None:
+    auth_store = _auth_store_module()
+    original_read = auth_store.AuthStore._read_existing_secret_file
+
+    def synchronized_initial_read(path: Path) -> str | None:
+        value = original_read(path)
+        if value is None:
+            ready.wait(timeout=5)
+        return value
+
+    auth_store.AuthStore._read_existing_secret_file = staticmethod(
+        synchronized_initial_read,
+    )
+    auth_store.secrets.token_urlsafe = lambda _size: f"process-secret-{worker_id}"
+    try:
+        result = auth_store.AuthStore(secret_path=secret_path).get_or_create_secret_key()
+        result_queue.put(("ok", result))
+    except BaseException as exc:
+        result_queue.put(("error", repr(exc)))
+
+
+def test_auth_store_secret_creation_is_atomic_across_processes(tmp_path) -> None:
+    context = multiprocessing.get_context("fork")
+    secret_path = tmp_path / "secret.key"
+    ready = context.Barrier(4)
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_load_secret_in_process,
+            args=(str(secret_path), ready, result_queue, worker_id),
+        )
+        for worker_id in range(4)
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+
+    stuck_processes = [process for process in processes if process.is_alive()]
+    for process in stuck_processes:
+        process.terminate()
+        process.join(timeout=2)
+    assert not stuck_processes
+    assert all(process.exitcode == 0 for process in processes)
+    results = [result_queue.get(timeout=2) for _ in processes]
+    result_queue.close()
+    result_queue.join_thread()
+    assert all(status == "ok" for status, _result in results)
+    returned_secrets = [result for _status, result in results]
+    assert returned_secrets == [returned_secrets[0]] * len(returned_secrets)
+    assert secret_path.read_text(encoding="utf-8") == f"{returned_secrets[0]}\n"
+    assert list(tmp_path.glob(".secret.key.*.tmp")) == []
 
 
 def test_auth_store_username_and_password_validation(tmp_path) -> None:
