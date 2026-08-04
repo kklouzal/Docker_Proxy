@@ -549,6 +549,7 @@ class SafeBrowsingStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._started = False
+        self._pending_status: tuple[bool, str, int] | None = None
 
     def _connect(self):
         return connect()
@@ -740,7 +741,7 @@ class SafeBrowsingStore:
             return False, "Google Safe Browsing API key is required", 3600
         self.init_db()
         _now()
-        min_wait = 24 * 60 * 60
+        waits: list[int] = []
         try:
             requested_names = tuple(settings.lists)
             if len(requested_names) != len(set(requested_names)):
@@ -802,13 +803,17 @@ class SafeBrowsingStore:
             with self._connect() as conn:
                 for item in items:
                     self._apply_hash_list(conn, item)
-                    wait = parse_duration_seconds(
-                        item.get("minimumWaitDuration"),
-                        default=24 * 60 * 60,
+                    waits.append(
+                        parse_duration_seconds(
+                            item.get("minimumWaitDuration"),
+                            default=0,
+                        ),
                     )
-                    if wait > 0:
-                        min_wait = min(min_wait, wait)
-                return True, "", min_wait
+                # Each wait applies to fetching its hash list again. Because the
+                # next request refreshes every selected list, its batch schedule
+                # must honor the strictest per-list minimum. Omitted/zero waits
+                # intentionally permit an immediate follow-up update.
+                return True, "", max(waits, default=0)
         except Exception as exc:
             return (
                 False,
@@ -1086,19 +1091,53 @@ class SafeBrowsingStore:
             thread.start()
             self._started = True
 
+    def _persist_updater_status(self, set_status, status: tuple[bool, str, int]) -> None:
+        self._pending_status = status
+        set_status(*status)
+        self._pending_status = None
+
+    def _run_updater_once(self, get_settings, set_status) -> None:
+        if self._pending_status is not None:
+            self._persist_updater_status(set_status, self._pending_status)
+
+        settings = get_settings()
+        now = _now()
+        if not (
+            settings.enabled
+            and settings.api_key
+            and (settings.next_run_ts <= 0 or now >= settings.next_run_ts)
+        ):
+            return
+
+        failure_wait = 1800
+        # Persist the attempt and a retry floor before provider/database work.
+        # If final status persistence fails, this durable reservation prevents
+        # every scheduler poll from repeating the provider request.
+        self._persist_updater_status(
+            set_status,
+            (False, settings.last_error, now + failure_wait),
+        )
+        try:
+            ok, err, wait = self.update_lists(settings)
+        except Exception as exc:
+            ok = False
+            err = public_error_message(
+                exc,
+                default="Google Safe Browsing list update failed.",
+                max_len=500,
+            )
+            wait = failure_wait
+        finished_at = _now()
+        self._persist_updater_status(
+            set_status,
+            (ok, err, finished_at + max(60, int(wait or failure_wait))),
+        )
+
     def _loop(self, get_settings, set_status) -> None:
         poll = _env_int("SAFE_BROWSING_POLL_SECONDS", 300, minimum=30, maximum=3600)
         while True:
             try:
-                settings = get_settings()
-                now = _now()
-                if (
-                    settings.enabled
-                    and settings.api_key
-                    and (settings.next_run_ts <= 0 or now >= settings.next_run_ts)
-                ):
-                    ok, err, wait = self.update_lists(settings)
-                    set_status(ok, err, now + max(60, int(wait or 1800)))
+                self._run_updater_once(get_settings, set_status)
             except DATABASE_ERRORS as exc:
                 log_database_unavailable(
                     logger,

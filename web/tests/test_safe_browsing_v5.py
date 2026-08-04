@@ -3,6 +3,7 @@ import hashlib
 from typing import NoReturn
 
 import pytest
+from services import safe_browsing_v5
 from services.safe_browsing_v5 import (
     SafeBrowsingLocalChecker,
     SafeBrowsingSettings,
@@ -2090,7 +2091,7 @@ def test_safe_browsing_update_lists_applies_valid_batch_and_pairs_versions(
         versions={"se-4b": b"se-v1", "uws-4b": b"uws-v3"},
     )
 
-    assert (ok, error, wait) == (True, "", 1800)
+    assert (ok, error, wait) == (True, "", 7200)
     assert conn.persisted_applied == ["se-4b", "mw-4b", "uws-4b"]
     assert calls == [
         (
@@ -2106,6 +2107,44 @@ def test_safe_browsing_update_lists_applies_valid_batch_and_pairs_versions(
             120,
         ),
     ]
+
+
+def test_safe_browsing_update_lists_uses_immediate_wait_only_when_all_lists_allow_it(
+    monkeypatch,
+) -> None:
+    response = {
+        "hashLists": [
+            {"name": "se-4b", "minimumWaitDuration": "0s"},
+            {"name": "mw-4b"},
+            {"name": "uws-4b", "minimumWaitDuration": "3600s"},
+        ],
+    }
+    (ok, error, wait), conn, _calls = _run_batch_response(
+        monkeypatch,
+        response,
+        lists=("se-4b", "mw-4b", "uws-4b"),
+    )
+
+    assert (ok, error, wait) == (True, "", 3600)
+    assert conn.persisted_applied == ["se-4b", "mw-4b", "uws-4b"]
+
+
+def test_safe_browsing_update_lists_preserves_immediate_multi_list_refresh(
+    monkeypatch,
+) -> None:
+    response = {
+        "hashLists": [
+            {"name": "se-4b", "minimumWaitDuration": "0s"},
+            {"name": "mw-4b"},
+        ],
+    }
+    result, _conn, _calls = _run_batch_response(
+        monkeypatch,
+        response,
+        lists=("se-4b", "mw-4b"),
+    )
+
+    assert result == (True, "", 0)
 
 
 def test_safe_browsing_update_lists_rejects_duplicate_requested_names(
@@ -2179,6 +2218,131 @@ def test_safe_browsing_update_lists_releases_db_before_network_fetch(
     assert wait == 3600
     assert closed_before_request == [True]
     assert events == ["enter", "exit", "enter", "apply", "exit"]
+
+
+def test_safe_browsing_updater_retries_failed_status_write_without_refetching(
+    monkeypatch,
+) -> None:
+    state = {
+        "last_success": 900,
+        "last_attempt": 0,
+        "last_error": "",
+        "next_run_ts": 0,
+    }
+    provider_calls: list[int] = []
+    status_calls: list[tuple[bool, str, int]] = []
+    failed_final_write = False
+
+    class StatusDatabaseUnavailableError(RuntimeError):
+        pass
+
+    class StopLoopError(Exception):
+        pass
+
+    def get_settings() -> SafeBrowsingSettings:
+        return SafeBrowsingSettings(
+            enabled=True,
+            api_key="key",
+            lists=("mw-4b",),
+            **state,
+        )
+
+    def set_status(ok: bool, error: str, next_run_ts: int) -> None:
+        nonlocal failed_final_write
+        status_calls.append((ok, error, next_run_ts))
+        if error == "malformed provider response" and not failed_final_write:
+            failed_final_write = True
+            raise StatusDatabaseUnavailableError
+        state["last_attempt"] = 1000
+        if ok:
+            state["last_success"] = 1000
+            state["last_error"] = ""
+        else:
+            state["last_error"] = error
+        state["next_run_ts"] = next_run_ts
+
+    store = SafeBrowsingStore()
+
+    def update_lists(_settings):
+        provider_calls.append(1)
+        return False, "malformed provider response", 1800
+
+    sleeps = 0
+
+    def stop_after_retry(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise StopLoopError
+
+    monkeypatch.setattr(store, "update_lists", update_lists)
+    monkeypatch.setattr(safe_browsing_v5, "_now", lambda: 1000)
+    monkeypatch.setattr(safe_browsing_v5.time, "sleep", stop_after_retry)
+
+    with pytest.raises(StopLoopError):
+        store._loop(get_settings, set_status)
+
+    assert provider_calls == [1]
+    assert status_calls == [
+        (False, "", 2800),
+        (False, "malformed provider response", 2800),
+        (False, "malformed provider response", 2800),
+    ]
+    assert state == {
+        "last_success": 900,
+        "last_attempt": 1000,
+        "last_error": "malformed provider response",
+        "next_run_ts": 2800,
+    }
+
+
+def test_safe_browsing_updater_reports_success_only_after_update(
+    monkeypatch,
+) -> None:
+    store = SafeBrowsingStore()
+    status_calls: list[tuple[bool, str, int]] = []
+    monkeypatch.setattr(store, "update_lists", lambda _settings: (True, "", 7200))
+    monkeypatch.setattr(safe_browsing_v5, "_now", lambda: 1000)
+
+    store._run_updater_once(_batch_update_settings, lambda *args: status_calls.append(args))
+
+    assert status_calls == [
+        (False, "", 2800),
+        (True, "", 8200),
+    ]
+
+
+def test_safe_browsing_updater_reports_unexpected_provider_failure(
+    monkeypatch,
+) -> None:
+    store = SafeBrowsingStore()
+    settings = _batch_update_settings()
+    status_calls: list[tuple[bool, str, int]] = []
+
+    class UnexpectedProviderError(ValueError):
+        pass
+
+    class StopLoopError(Exception):
+        pass
+
+    def fail_provider(_settings):
+        raise UnexpectedProviderError
+
+    monkeypatch.setattr(store, "update_lists", fail_provider)
+    monkeypatch.setattr(safe_browsing_v5, "_now", lambda: 1000)
+    monkeypatch.setattr(
+        safe_browsing_v5.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(StopLoopError),
+    )
+
+    with pytest.raises(StopLoopError):
+        store._loop(lambda: settings, lambda *args: status_calls.append(args))
+
+    assert status_calls == [
+        (False, "", 2800),
+        (False, "Google Safe Browsing list update failed.", 2800),
+    ]
 
 
 def test_safe_browsing_update_lists_redacts_api_key_from_url_errors(monkeypatch) -> None:
