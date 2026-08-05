@@ -179,6 +179,8 @@ def _effective_preset_domains(preset: CompatibilityPreset) -> _EffectivePresetDo
         for squid_domain in _dedupe_squid_domains(canonical_domains)
         if (rule := _domain_rule_from_squid_domain(squid_domain))
     ]
+    if not effective_domains and not invalid:
+        invalid.append(("", "Preset has no effective domains."))
     return _EffectivePresetDomains(domains=effective_domains, invalid=invalid)
 
 
@@ -540,13 +542,20 @@ class SslFilterStore:
         )
         if not presets:
             return 0, 0, "Unknown compatibility preset."
+        evaluated = [(preset, _effective_preset_domains(preset)) for preset in presets]
+        catalog_errors = [
+            f"{preset.id}: {domain or 'catalog'}: {err}"
+            for preset, effective in evaluated
+            for domain, err in effective.invalid
+        ]
+        if catalog_errors:
+            return 0, 0, "; ".join(catalog_errors[:3])
+
         current = _dedupe_squid_domains(self.list_all().no_bump_domains)
         added = 0
         attempted = 0
         errors: list[str] = []
-        for preset in presets:
-            effective = _effective_preset_domains(preset)
-            errors.extend(f"{domain}: {err}" for domain, err in effective.invalid)
+        for _preset, effective in evaluated:
             for domain in effective.domains:
                 if _squid_domain_is_effectively_configured(domain, current):
                     continue

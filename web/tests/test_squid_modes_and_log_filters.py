@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1490,6 +1491,137 @@ def test_sslfilter_materialized_config_deduplicates_domains_covered_by_wildcards
     assert "cache deny sslfilter_nocache_domains" in rendered
 
 
+def test_empty_compatibility_preset_is_incomplete_and_rejected(monkeypatch) -> None:
+    _add_web_to_path()
+
+    import services.sslfilter_store as module  # type: ignore
+
+    monkeypatch.setattr(
+        module,
+        "COMPATIBILITY_PRESETS",
+        (
+            module.CompatibilityPreset(
+                id="empty",
+                title="Empty",
+                description="Malformed empty catalog entry",
+                domains=(),
+            ),
+        ),
+    )
+    store = module.SslFilterStore()
+    monkeypatch.setattr(
+        store,
+        "list_all",
+        lambda: SimpleNamespace(no_bump_domains=[]),
+    )
+
+    preset = store.list_compatibility_presets()[0]
+    added, attempted, error = store.install_compatibility_preset("empty")
+
+    assert preset["catalog_errors"] == [
+        {"domain": "", "error": "Preset has no effective domains."},
+    ]
+    assert preset["complete"] is False
+    assert (added, attempted) == (0, 0)
+    assert "empty: catalog: Preset has no effective domains." in error
+
+
+def test_all_compatibility_presets_preflight_catalog_before_writes(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    import services.sslfilter_store as module  # type: ignore
+
+    monkeypatch.setattr(
+        module,
+        "COMPATIBILITY_PRESETS",
+        (
+            module.CompatibilityPreset(
+                id="valid",
+                title="Valid",
+                description="Valid catalog entry",
+                domains=("good.example",),
+            ),
+            module.CompatibilityPreset(
+                id="malformed",
+                title="Malformed",
+                description="Partially malformed catalog entry",
+                domains=("also-good.example", "bad domain"),
+            ),
+        ),
+    )
+    store = module.SslFilterStore()
+    monkeypatch.setattr(
+        store,
+        "list_all",
+        lambda: SimpleNamespace(no_bump_domains=[]),
+    )
+    added_domains: list[str] = []
+    monkeypatch.setattr(
+        store,
+        "add_domain",
+        lambda _policy, domain: (
+            added_domains.append(domain) or True,
+            "",
+            domain,
+        ),
+    )
+
+    added, attempted, error = store.install_compatibility_preset("all")
+
+    assert (added, attempted) == (0, 0)
+    assert added_domains == []
+    assert "malformed: bad domain: Invalid domain length." in error
+
+
+def test_all_compatibility_presets_remains_effectively_deduped_and_idempotent(
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+
+    import services.sslfilter_store as module  # type: ignore
+
+    monkeypatch.setattr(
+        module,
+        "COMPATIBILITY_PRESETS",
+        (
+            module.CompatibilityPreset(
+                id="parent",
+                title="Parent wildcard",
+                description="Parent coverage",
+                domains=("example.com", "*.example.com"),
+            ),
+            module.CompatibilityPreset(
+                id="children",
+                title="Covered child",
+                description="Cross-preset coverage",
+                domains=("api.example.com", "other.example"),
+            ),
+        ),
+    )
+    store = module.SslFilterStore()
+    current_domains: list[str] = []
+    added_domains: list[str] = []
+    monkeypatch.setattr(
+        store,
+        "list_all",
+        lambda: SimpleNamespace(no_bump_domains=list(current_domains)),
+    )
+
+    def fake_add_domain(_policy: str, domain: str) -> tuple[bool, str, str]:
+        current_domains.append(domain)
+        added_domains.append(domain)
+        return True, "", domain
+
+    monkeypatch.setattr(store, "add_domain", fake_add_domain)
+
+    assert store.install_compatibility_preset("all") == (2, 2, "")
+    assert added_domains == ["*.example.com", "other.example"]
+    assert store.install_compatibility_preset("all") == (0, 0, "")
+    assert added_domains == ["*.example.com", "other.example"]
+
+
 def test_compatibility_presets_include_source_backed_collaboration_sslfilter_domains(
     tmp_path,
 ) -> None:
@@ -1536,10 +1668,12 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
     added, attempted, error = store.install_compatibility_preset("all")
     status_by_id = {preset["id"]: preset for preset in store.list_compatibility_presets()}
     effective_total = sum(preset["total"] for preset in status_by_id.values())
+    installed_domains = store.list_all().no_bump_domains
 
     assert effective_total < sum(len(preset.domains) for preset in COMPATIBILITY_PRESETS)
-    assert attempted == effective_total
-    assert added == effective_total
+    assert attempted == len(installed_domains)
+    assert added == attempted
+    assert attempted < effective_total
     assert added > 100
     assert error == ""
     assert all(preset["complete"] for preset in status_by_id.values())
