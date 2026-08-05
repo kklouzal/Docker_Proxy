@@ -482,7 +482,10 @@ def test_restore_report_schedule_uses_shared_recipient_normalization_contract() 
 
     row = {
         **_base_recovery_row("observability_report_schedules"),
-        "recipients": " Ops@example.com; alerts@example.com ops@example.com ",
+        "recipients": (
+            " Ops@example.com; alerts@Example.COM Ops@EXAMPLE.COM "
+            "ops@example.com ops@example.com "
+        ),
     }
     bundle = _bundle_with_table_rows("observability_report_schedules", (row,))
 
@@ -494,7 +497,9 @@ def test_restore_report_schedule_uses_shared_recipient_normalization_contract() 
     )
     recipients_index = schedule_table.columns.index("recipients")
 
-    assert schedule_table.rows[0][recipients_index] == "Ops@example.com, alerts@example.com"
+    assert schedule_table.rows[0][recipients_index] == (
+        "Ops@example.com, alerts@Example.COM, ops@example.com"
+    )
 
 
 @pytest.mark.parametrize(
