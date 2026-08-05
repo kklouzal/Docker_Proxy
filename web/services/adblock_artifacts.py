@@ -8,7 +8,6 @@ import logging
 import os
 import shutil
 import sqlite3
-import subprocess
 import tempfile
 import threading
 import time
@@ -1694,79 +1693,6 @@ def materialize_archive_to_directory(
         raise
     finally:
         shutil.rmtree(stage_root, ignore_errors=True)
-
-
-def _restart_local_adblock_service() -> tuple[bool, str]:
-    try:
-        proc = subprocess.run(
-            [
-                "supervisorctl",
-                "-c",
-                "/etc/supervisord.conf",
-                "restart",
-                "cicap_adblock",
-            ],
-            capture_output=True,
-            timeout=30,
-        )
-    except Exception as exc:
-        return False, public_error_message(
-            exc,
-            default="Failed to restart the adblock ICAP helper.",
-        )
-
-    stdout = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
-    stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
-    detail = (
-        "\n".join(part for part in (stdout, stderr) if part).strip()
-        or "Adblock ICAP helper restarted."
-    )
-    return proc.returncode == 0, detail
-
-
-def apply_active_artifact_locally(
-    *,
-    force: bool = False,
-    clear_cache: bool = False,
-    compiled_dir: str | os.PathLike[str] | None = None,
-) -> tuple[bool, str]:
-    from services.adblock_store import get_adblock_store
-
-    store = get_adblock_store()
-    artifacts = get_adblock_artifacts()
-    revision = artifacts.get_active_artifact()
-    target_dir = str(compiled_dir or artifacts.compiled_dir)
-    flush_requested = bool(clear_cache or store.get_cache_flush_requested())
-    current_sha = read_materialized_artifact_sha(target_dir)
-    changed = False
-
-    if revision is not None and current_sha != revision.artifact_sha256:
-        materialize_archive_to_directory(
-            target_dir,
-            archive_blob=revision.archive_blob,
-            artifact_sha256=revision.artifact_sha256,
-        )
-        changed = True
-
-    if revision is None and not flush_requested and not changed:
-        return True, "No active adblock artifact is available."
-    if not changed and not flush_requested:
-        return True, "Adblock runtime is already current."
-
-    ok, detail = _restart_local_adblock_service()
-    if ok and flush_requested:
-        try:
-            store.mark_cache_flushed(size=0)
-        except Exception as exc:
-            clear_detail = public_error_message(
-                exc,
-                default="Failed to clear adblock cache flush request.",
-            )
-            detail = "\n".join(
-                part for part in (detail.strip(), clear_detail) if part
-            ).strip()
-            return False, detail
-    return ok, detail
 
 
 _store: AdblockArtifactStore | None = None
