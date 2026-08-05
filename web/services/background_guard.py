@@ -37,6 +37,25 @@ def _log_guard_failure(log_key: str, message: str) -> None:
         pass
 
 
+def _release_background_lock_for_force() -> bool:
+    global _LOCK_FD, _LOCK_PID
+
+    if _LOCK_FD is None:
+        _LOCK_PID = None
+        return True
+
+    if not _close_lock_fd(
+        _LOCK_FD,
+        log_key="background_guard.close.force",
+        message="Failed to close background lock fd for forced mode",
+    ):
+        return False
+
+    _LOCK_FD = None
+    _LOCK_PID = None
+    return True
+
+
 def acquire_background_lock() -> bool:
     """Multi-process guard for background workers.
 
@@ -50,10 +69,9 @@ def acquire_background_lock() -> bool:
       - BACKGROUND_FORCE=1: always start background tasks (no locking)
       - BACKGROUND_LOCK_PATH: lock file path (default: /var/lib/squid-flask-proxy/background.lock)
     """
-    if (os.environ.get("BACKGROUND_FORCE") or "").strip() == "1":
-        return True
-
     try:
+        if (os.environ.get("BACKGROUND_FORCE") or "").strip() == "1":
+            return _release_background_lock_for_force()
         return _acquire_background_lock_unforced()
     except Exception:
         _log_guard_failure(
