@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -72,6 +73,8 @@ class DatabaseWriteBackoff:
                 rand_value = float(self._rand())  # type: ignore[misc]
             except Exception:
                 rand_value = 0.5
+            if not math.isfinite(rand_value) or not 0.0 <= rand_value <= 1.0:
+                rand_value = 0.5
             # Apply symmetric jitter without violating the configured maximum.
             jitter = (rand_value * 2.0 - 1.0) * self.jitter_ratio * delay
             delay = min(self.max_seconds, max(0.0, delay + jitter))
@@ -85,6 +88,9 @@ def stagger_delay_from_env(env_name: str, default_seconds: float, *, maximum: fl
     if span <= 0.0:
         return 0.0
     try:
-        return random.uniform(0.0, span)  # noqa: S311
+        delay = float(random.uniform(0.0, span))  # noqa: S311
     except Exception:
         return 0.0
+    if not math.isfinite(delay) or not 0.0 <= delay <= span:
+        return 0.0
+    return delay

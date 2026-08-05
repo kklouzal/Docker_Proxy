@@ -56,6 +56,21 @@ def test_database_write_backoff_jitter_keeps_delay_within_configured_max() -> No
     assert backoff.next_attempt_at == pytest.approx(60.0)
 
 
+@pytest.mark.parametrize("rand_value", [float("nan"), float("inf"), -0.1, 1.1])
+def test_database_write_backoff_invalid_random_value_uses_neutral_jitter(
+    rand_value: float,
+) -> None:
+    backoff = DatabaseWriteBackoff(
+        base_seconds=5.0,
+        max_seconds=20.0,
+        jitter_ratio=0.5,
+        _rand=lambda: rand_value,
+    )
+
+    assert backoff.record_failure(10.0) == pytest.approx(5.0)
+    assert backoff.next_attempt_at == pytest.approx(15.0)
+
+
 def test_stagger_delay_uses_env_span_and_random(monkeypatch) -> None:
     monkeypatch.setenv("TIMESERIES_STARTUP_JITTER_SECONDS", "12")
     monkeypatch.setattr("services.observability_backoff.random.uniform", lambda a, b: (a, b, 7.0)[2])
@@ -63,6 +78,22 @@ def test_stagger_delay_uses_env_span_and_random(monkeypatch) -> None:
     assert stagger_delay_from_env(
         "TIMESERIES_STARTUP_JITTER_SECONDS", 15.0, maximum=300.0
     ) == pytest.approx(7.0)
+
+
+@pytest.mark.parametrize("random_delay", [float("nan"), float("inf"), -1.0, 13.0])
+def test_stagger_delay_invalid_random_value_uses_zero_fallback(
+    monkeypatch,
+    random_delay: float,
+) -> None:
+    monkeypatch.setenv("TIMESERIES_STARTUP_JITTER_SECONDS", "12")
+    monkeypatch.setattr(
+        "services.observability_backoff.random.uniform",
+        lambda _minimum, _maximum: random_delay,
+    )
+
+    assert stagger_delay_from_env(
+        "TIMESERIES_STARTUP_JITTER_SECONDS", 15.0, maximum=300.0
+    ) == pytest.approx(0.0)
 
 
 def test_live_stats_background_starts_even_when_initial_db_is_down(monkeypatch, tmp_path) -> None:
