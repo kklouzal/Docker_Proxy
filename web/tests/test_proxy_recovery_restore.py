@@ -3,6 +3,7 @@ from __future__ import annotations
 # ruff: noqa: I001
 
 import hashlib
+import importlib
 import io
 import sys
 import zipfile
@@ -15,6 +16,7 @@ WEB_ROOT = Path(__file__).resolve().parents[1]
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
+from services import adblock_artifacts  # type: ignore  # noqa: E402
 from services import proxy_recovery  # type: ignore  # noqa: E402
 from services import proxy_recovery_restore as restore  # type: ignore  # noqa: E402
 
@@ -892,6 +894,7 @@ def test_adblock_artifact_revision_restore_recomputes_declared_digest_before_wri
     )
 
 
+@pytest.mark.parametrize("reload_artifact_module", [False, True])
 @pytest.mark.parametrize(
     ("limit_env", "limit", "file_map"),
     [
@@ -916,7 +919,14 @@ def test_adblock_artifact_revision_restore_enforces_materialization_limits_befor
     limit_env: str,
     limit: str,
     file_map: dict[str, bytes],
+    *,
+    reload_artifact_module: bool,
 ) -> None:
+    if reload_artifact_module:
+        previous_error = adblock_artifacts.AdblockArtifactArchiveError
+        importlib.reload(adblock_artifacts)
+        assert adblock_artifacts.AdblockArtifactArchiveError is not previous_error
+
     artifact_sha, archive_blob = _adblock_artifact(file_map)
     monkeypatch.setenv(limit_env, limit)
     row = {
@@ -942,7 +952,16 @@ def test_adblock_artifact_revision_restore_enforces_materialization_limits_befor
     assert conn.ops == []
 
 
-def test_adblock_artifact_revision_restore_rejects_truncated_archive_before_writes() -> None:
+@pytest.mark.parametrize("reload_artifact_module", [False, True])
+def test_adblock_artifact_revision_restore_rejects_truncated_archive_before_writes(
+    *,
+    reload_artifact_module: bool,
+) -> None:
+    if reload_artifact_module:
+        previous_error = adblock_artifacts.AdblockArtifactArchiveError
+        importlib.reload(adblock_artifacts)
+        assert adblock_artifacts.AdblockArtifactArchiveError is not previous_error
+
     artifact_sha, archive_blob = _adblock_artifact({"rules.jsonl": b"compiled-rules"})
     row = {
         "artifact_sha256": artifact_sha,

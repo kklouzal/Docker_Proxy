@@ -7,11 +7,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final, Literal
 
-from services import proxy_recovery
-from services.adblock_artifacts import (
-    AdblockArtifactArchiveError,
-    adblock_archive_artifact_sha256,
-)
+from services import adblock_artifacts, proxy_recovery
 from services.db import connect
 from services.pac_profiles_store import _normalize_proxy_host_port
 from services.proxy_recovery_db import recovery_export_query_plans
@@ -614,8 +610,10 @@ def _validate_adblock_artifact_revision_digests(
     archive_index = columns.index("archive_blob")
     for row in rows:
         try:
-            expected_sha = adblock_archive_artifact_sha256(row[archive_index])
-        except AdblockArtifactArchiveError as exc:
+            expected_sha = adblock_artifacts.adblock_archive_artifact_sha256(
+                row[archive_index],
+            )
+        except adblock_artifacts.AdblockArtifactArchiveError as exc:
             raise ProxyRecoveryRestoreError(
                 "adblock artifact revision archive is invalid",
             ) from exc
