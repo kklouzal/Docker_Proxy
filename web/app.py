@@ -2031,9 +2031,12 @@ if _env_secret:
 else:
     try:
         app.secret_key = _auth_store.get_or_create_secret_key()
-    except Exception:
-        # Fallback: sessions will reset on restart.
-        app.secret_key = secrets.token_urlsafe(48)
+    except Exception as exc:
+        msg = (
+            "Failed to initialize persistent Flask session secret. "
+            "Set FLASK_SECRET_KEY or make FLASK_SECRET_PATH writable."
+        )
+        raise RuntimeError(msg) from exc
 
 # Cookie hardening. Defaults chosen to avoid breaking common HTTP deployments.
 # Note: use explicit assignment (not setdefault) so the Set-Cookie attributes are
