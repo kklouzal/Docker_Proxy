@@ -13,7 +13,7 @@ _LOCK_FD: int | None = None
 _LOCK_PID: int | None = None
 
 
-def _close_lock_fd(fd: int, *, log_key: str, message: str) -> None:
+def _close_lock_fd(fd: int, *, log_key: str, message: str) -> bool:
     try:
         os.close(fd)
     except Exception:
@@ -23,6 +23,8 @@ def _close_lock_fd(fd: int, *, log_key: str, message: str) -> None:
             interval_seconds=300.0,
             message=message,
         )
+        return False
+    return True
 
 
 def _log_guard_failure(log_key: str, message: str) -> None:
@@ -67,6 +69,18 @@ def _acquire_background_lock_unforced() -> bool:
     current_pid = os.getpid()
     if _LOCK_FD is not None and current_pid == _LOCK_PID:
         return True
+    if _LOCK_FD is not None:
+        inherited_fd = _LOCK_FD
+        # Forked descriptors share flock state; close this process's copy rather
+        # than explicitly unlocking the parent's open file description.
+        if not _close_lock_fd(
+            inherited_fd,
+            log_key="background_guard.close.inherited",
+            message="Failed to close inherited background lock fd",
+        ):
+            return False
+        _LOCK_FD = None
+        _LOCK_PID = None
 
     lock_path = (
         os.environ.get("BACKGROUND_LOCK_PATH") or ""

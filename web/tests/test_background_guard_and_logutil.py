@@ -200,6 +200,98 @@ def test_acquire_background_lock_contention_denies_and_closes_fd(monkeypatch) ->
     assert logged == []
 
 
+def test_acquire_background_lock_replaces_inherited_fd_after_pid_change(
+    monkeypatch,
+) -> None:
+    import fcntl
+
+    events: list[tuple[str, int | str]] = []
+    _reset_background_guard(monkeypatch)
+    monkeypatch.setenv("BACKGROUND_LOCK_PATH", "background.lock")
+    monkeypatch.setattr(background_guard, "_LOCK_FD", 201)
+    monkeypatch.setattr(background_guard, "_LOCK_PID", 100)
+    monkeypatch.setattr(background_guard.os, "getpid", lambda: 200)
+    monkeypatch.setattr(
+        background_guard.os,
+        "close",
+        lambda fd: events.append(("close", fd)),
+    )
+    monkeypatch.setattr(
+        background_guard.os,
+        "open",
+        lambda path, *_args: events.append(("open", path)) or 202,
+    )
+    monkeypatch.setattr(
+        fcntl,
+        "flock",
+        lambda fd, _flags: events.append(("flock", fd)),
+    )
+
+    assert background_guard.acquire_background_lock() is True
+    assert events == [
+        ("close", 201),
+        ("open", "background.lock"),
+        ("flock", 202),
+    ]
+    assert background_guard._LOCK_FD == 202
+    assert background_guard._LOCK_PID == 200
+
+
+def test_acquire_background_lock_denies_pid_change_when_inherited_close_fails(
+    monkeypatch,
+) -> None:
+    _reset_background_guard(monkeypatch)
+    monkeypatch.setattr(background_guard, "_LOCK_FD", 301)
+    monkeypatch.setattr(background_guard, "_LOCK_PID", 100)
+    monkeypatch.setattr(background_guard.os, "getpid", lambda: 200)
+    monkeypatch.setattr(
+        background_guard.os,
+        "close",
+        lambda _fd: (_ for _ in ()).throw(OSError("token=close-secret")),
+    )
+    monkeypatch.setattr(
+        background_guard.os,
+        "open",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("open called")),
+    )
+    monkeypatch.setattr(
+        background_guard.logger,
+        "exception",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("logging failed")
+        ),
+    )
+
+    assert background_guard.acquire_background_lock() is False
+    assert background_guard._LOCK_FD == 301
+    assert background_guard._LOCK_PID == 100
+
+
+def test_acquire_background_lock_pid_change_contention_closes_both_fds(
+    monkeypatch,
+) -> None:
+    import fcntl
+
+    closed: list[int] = []
+    _reset_background_guard(monkeypatch)
+    monkeypatch.setenv("BACKGROUND_LOCK_PATH", "background.lock")
+    monkeypatch.setattr(background_guard, "_LOCK_FD", 401)
+    monkeypatch.setattr(background_guard, "_LOCK_PID", 100)
+    monkeypatch.setattr(background_guard.os, "getpid", lambda: 200)
+    monkeypatch.setattr(background_guard.os, "close", closed.append)
+    monkeypatch.setattr(background_guard.os, "open", lambda *_args: 402)
+    monkeypatch.setattr(
+        fcntl,
+        "flock",
+        lambda *_args: (_ for _ in ()).throw(BlockingIOError),
+    )
+
+    assert background_guard.acquire_background_lock() is False
+    assert closed == [401, 402]
+    assert background_guard._LOCK_FD is None
+    assert background_guard._LOCK_PID is None
+
+
 def test_acquire_background_lock_is_idempotent_for_current_process(monkeypatch, tmp_path) -> None:
     import fcntl
 
