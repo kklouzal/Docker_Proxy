@@ -633,6 +633,78 @@ def test_policy_exception_expiry_policy_sync_uses_operation_ledger(monkeypatch) 
     ]
 
 
+def test_control_plane_prune_reports_policy_sync_failure_and_continues(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        maintenance,
+        "CONTROL_PLANE_MAINTENANCE_TABLES",
+        ("policy_exceptions", "safe_browsing_negative_cache"),
+    )
+    monkeypatch.setattr(maintenance, "_table_exists", lambda _table: True)
+    monkeypatch.setattr(
+        maintenance,
+        "_ensure_control_plane_retention_indexes",
+        lambda _table: None,
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "_expire_policy_exceptions",
+        lambda **_kwargs: maintenance.PolicyExceptionExpiryResult(
+            table="policy_exceptions",
+            deleted_rows=1,
+            iterations=1,
+            truncated=False,
+            queue_attempts=1,
+            queue_failures=1,
+            queue_failure_detail="proxy reconcile unavailable",
+        ),
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "_delete_ranked_rows",
+        lambda **_kwargs: maintenance.BoundedDeleteResult(
+            table="policy_exceptions",
+            deleted_rows=2,
+            iterations=1,
+            truncated=False,
+        ),
+    )
+
+    def delete_expired_cache(table: str, *, now_ts: int):
+        assert now_ts == 1_000_000
+        calls.append(table)
+        return maintenance.BoundedDeleteResult(
+            table=table,
+            deleted_rows=3,
+            iterations=1,
+            truncated=False,
+        )
+
+    monkeypatch.setattr(maintenance, "_delete_expired_cache", delete_expired_cache)
+    monkeypatch.setattr(maintenance.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(
+        maintenance,
+        "_cleanup_stale_webcat_build_tables_result",
+        lambda **_kwargs: maintenance.ControlPlaneMaintenanceResult(
+            table=maintenance.WEBCAT_BUILD_TABLE_CLEANUP_TABLE,
+            status="noop",
+        ),
+    )
+
+    result = maintenance.prune_control_plane_tables(retention_days=1)
+
+    assert result["ok"] is False
+    assert result["deleted_rows"] == 5
+    assert result["updated_rows"] == 1
+    assert calls == ["safe_browsing_negative_cache"]
+    assert result["tables"][0]["status"] == "failed"
+    assert "failed=1" in result["tables"][0]["detail"]
+    assert "proxy reconcile unavailable" in result["tables"][0]["detail"]
+    assert result["tables"][1]["status"] == "pruned"
+
+
 def test_control_plane_prune_reports_truncated_backlog(monkeypatch) -> None:
     tables = ("proxy_config_applications",)
     conns = [

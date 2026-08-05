@@ -714,7 +714,7 @@ def _run_one_prune(
                 details.append(f"queue_detail={updated.queue_failure_detail[:200]}")
         return ControlPlaneMaintenanceResult(
             table=table,
-            status="pruned",
+            status="failed" if updated.queue_failures else "pruned",
             deleted_rows=deleted.deleted_rows,
             updated_rows=updated.deleted_rows,
             maintenance="bounded_retention_delete",
@@ -767,7 +767,6 @@ def prune_control_plane_tables(*, retention_days: object = None) -> dict[str, An
                 maintenance="failed",
                 detail=public_detail(exc),
             )
-            failed.append(result)
         except Exception as exc:
             result = ControlPlaneMaintenanceResult(
                 table=table,
@@ -775,6 +774,7 @@ def prune_control_plane_tables(*, retention_days: object = None) -> dict[str, An
                 maintenance="failed",
                 detail=public_detail(exc),
             )
+        if result.status == "failed":
             failed.append(result)
         table_results.append(result)
 
