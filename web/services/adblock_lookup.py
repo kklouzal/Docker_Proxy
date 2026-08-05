@@ -137,9 +137,11 @@ class AdblockLookupIndex:
         self._host_patterns: dict[str, _HostPatternCandidate] | None = None
         self._host_patterns_lock = threading.Lock()
         self._host_pattern_token_index_available: bool | None = None
+        self._host_pattern_token_fallback_ids: set[str] | None = None
         self._regex_candidates: dict[str, _RegexCandidate] | None = None
         self._regex_candidates_lock = threading.Lock()
         self._regex_token_index_available: bool | None = None
+        self._regex_token_fallback_ids: set[str] | None = None
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
@@ -198,8 +200,17 @@ class AdblockLookupIndex:
             missing,
         ):
             payload: dict[str, Any] | None = None
-            if not _row_payload_json(row):
-                payload = self._payload_by_id().get(str(row["rule_id"] or ""))
+            rule_id = str(row["rule_id"] or "")
+            try:
+                parsed_payload = json.loads(_row_payload_json(row))
+                if isinstance(parsed_payload, dict) and str(
+                    parsed_payload.get("id") or parsed_payload.get("rule_id") or "",
+                ) == rule_id:
+                    payload = parsed_payload
+            except Exception:
+                pass
+            if payload is None:
+                payload = self._payload_by_id().get(rule_id)
             rule = _row_to_rule(row, payload=payload)
             loaded[str(rule["rule_id"])] = rule
 
@@ -284,11 +295,16 @@ class AdblockLookupIndex:
                     )
                 )
             else:
+                # Legacy indexes did not distinguish exact absolute-URL hosts
+                # from host-anchored rules. Query every host suffix so the
+                # lookup remains a candidate superset; final matching removes
+                # the possible absolute-URL false positives.
                 rule_ids.update(
                     str(row["rule_id"])
-                    for row in conn.execute(
-                        "SELECT rule_id FROM host_index WHERE host=?",
-                        (host,),
+                    for row in _query_by_values(
+                        conn,
+                        "SELECT rule_id FROM host_index WHERE host IN ",
+                        host_suffixes,
                     )
                 )
 
@@ -312,7 +328,11 @@ class AdblockLookupIndex:
             )
         )
 
-        if _table_exists(conn, "resource_type_index"):
+        if _table_has_columns(
+            conn,
+            "resource_type_index",
+            {"rule_id", "resource_type", "negated"},
+        ):
             return _filter_by_resource_type(conn, rule_ids, resource_type)
         return rule_ids
 
@@ -324,7 +344,11 @@ class AdblockLookupIndex:
         candidates_by_id = self._load_host_patterns(conn)
         if not candidates_by_id:
             return set()
-        candidate_ids = self._host_pattern_candidate_ids(conn, host)
+        candidate_ids = self._host_pattern_candidate_ids(
+            conn,
+            host,
+            candidates_by_id,
+        )
         candidates = (
             candidates_by_id.values()
             if candidate_ids is None
@@ -344,13 +368,15 @@ class AdblockLookupIndex:
         self,
         conn: sqlite3.Connection,
         host: str,
+        candidates_by_id: dict[str, _HostPatternCandidate],
     ) -> set[str] | None:
         if self._host_pattern_token_index_available is False:
             return None
         if self._host_pattern_token_index_available is None:
-            self._host_pattern_token_index_available = _table_exists(
+            self._host_pattern_token_index_available = _table_has_columns(
                 conn,
                 "host_pattern_token_index",
+                {"literal_key", "rule_id"},
             )
             if not self._host_pattern_token_index_available:
                 return None
@@ -369,6 +395,20 @@ class AdblockLookupIndex:
                 "SELECT rule_id FROM host_pattern_token_index WHERE literal_key=''",
             )
         )
+        if self._host_pattern_token_fallback_ids is None:
+            keys_by_id = _token_keys_by_rule_id(conn, "host_pattern_token_index")
+            self._host_pattern_token_fallback_ids = {
+                rule_id
+                for rule_id, candidate in candidates_by_id.items()
+                if not _single_token_key_is_safe(
+                    keys_by_id.get(rule_id, []),
+                    lambda key: _host_pattern_token_key_is_safe(
+                        candidate.host_pattern,
+                        key,
+                    ),
+                )
+            }
+        rule_ids.update(self._host_pattern_token_fallback_ids)
         return rule_ids
 
     def _load_host_patterns(
@@ -404,7 +444,7 @@ class AdblockLookupIndex:
         candidates_by_id = self._load_regex_candidates(conn)
         if not candidates_by_id:
             return set()
-        candidate_ids = self._regex_candidate_ids(conn, url)
+        candidate_ids = self._regex_candidate_ids(conn, url, candidates_by_id)
         candidates = (
             candidates_by_id.values()
             if candidate_ids is None
@@ -424,13 +464,15 @@ class AdblockLookupIndex:
         self,
         conn: sqlite3.Connection,
         url: str,
+        candidates_by_id: dict[str, _RegexCandidate],
     ) -> set[str] | None:
         if self._regex_token_index_available is False:
             return None
         if self._regex_token_index_available is None:
-            self._regex_token_index_available = _table_exists(
+            self._regex_token_index_available = _table_has_columns(
                 conn,
                 "regex_token_index",
+                {"literal_key", "rule_id"},
             )
             if not self._regex_token_index_available:
                 return None
@@ -449,6 +491,20 @@ class AdblockLookupIndex:
                 "SELECT rule_id FROM regex_token_index WHERE literal_key=''",
             )
         )
+        if self._regex_token_fallback_ids is None:
+            keys_by_id = _token_keys_by_rule_id(conn, "regex_token_index")
+            self._regex_token_fallback_ids = {
+                rule_id
+                for rule_id, candidate in candidates_by_id.items()
+                if not _single_token_key_is_safe(
+                    keys_by_id.get(rule_id, []),
+                    lambda key: _regex_token_key_is_safe(
+                        candidate.regex.pattern if candidate.regex is not None else "",
+                        key,
+                    ),
+                )
+            }
+        rule_ids.update(self._regex_token_fallback_ids)
         return rule_ids
 
     def _load_regex_candidates(
@@ -496,16 +552,109 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+def _table_has_columns(
+    conn: sqlite3.Connection,
+    table_name: str,
+    required_columns: set[str],
+) -> bool:
+    if not _table_exists(conn, table_name):
+        return False
+    try:
+        columns = {
+            str(row["name"] or "")
+            for row in conn.execute(f"PRAGMA table_info({table_name})")
+        }
+    except sqlite3.DatabaseError:
+        return False
+    return required_columns.issubset(columns)
+
+
+def _token_keys_by_rule_id(
+    conn: sqlite3.Connection,
+    table_name: str,
+) -> dict[str, list[str]]:
+    keys_by_id: dict[str, list[str]] = {}
+    if table_name == "host_pattern_token_index":
+        rows = conn.execute(
+            "SELECT literal_key, rule_id FROM host_pattern_token_index",
+        )
+    elif table_name == "regex_token_index":
+        rows = conn.execute("SELECT literal_key, rule_id FROM regex_token_index")
+    else:
+        raise ValueError(table_name)
+    for row in rows:
+        rule_id = str(row["rule_id"] or "")
+        if rule_id:
+            keys_by_id.setdefault(rule_id, []).append(str(row["literal_key"] or ""))
+    return keys_by_id
+
+
+def _single_token_key_is_safe(
+    keys: list[str],
+    is_safe: Any,
+) -> bool:
+    return len(keys) == 1 and bool(is_safe(keys[0]))
+
+
+def _indexed_literal_key(pattern: str) -> str:
+    tokens = [
+        token.strip(".")
+        for token in _TOKEN_RE.findall(pattern or "")
+        if token.strip(".")
+    ]
+    if not tokens:
+        return ""
+    return max((token.lower() for token in tokens), key=lambda item: (len(item), item))
+
+
+def _host_pattern_token_key_is_safe(host_pattern: str, key: str) -> bool:
+    pattern = (host_pattern or "").lower()
+    if key != _indexed_literal_key(pattern):
+        return False
+    if not key:
+        return True
+    start = 0
+    while True:
+        start = pattern.find(key, start)
+        if start < 0:
+            return False
+        end = start + len(key)
+        starts_at_label_boundary = start == 0 or pattern[start - 1] == "."
+        ends_at_label_boundary = end == len(pattern) or pattern[end] == "."
+        if starts_at_label_boundary and (
+            ("." not in key and ends_at_label_boundary) or end == len(pattern)
+        ):
+            return True
+        start += 1
+
+
+def _regex_token_key_is_safe(pattern: str, key: str) -> bool:
+    expected_key = (
+        ""
+        if any(marker in (pattern or "") for marker in ("|", "?"))
+        or "{0" in (pattern or "")
+        else _indexed_literal_key(pattern)
+    )
+    if key != expected_key:
+        return False
+    # A non-empty regex literal can match within a larger URL token (for
+    # example, /tracker.*/ matches "trackerxyz"), so equality against the URL
+    # token set is not a sound prefilter. Empty keys are unconditional and safe.
+    return not key
+
+
 def _host_pattern_matches_candidate(
     host: str,
     candidate: _HostPatternCandidate,
 ) -> bool:
-    if candidate.pattern_kind == "host_anchored_pattern":
-        return any(
-            fnmatch.fnmatchcase(host_suffix, candidate.host_pattern)
-            for host_suffix in _host_suffix_candidates(host)
-        )
-    return fnmatch.fnmatchcase(host, candidate.host_pattern)
+    if candidate.pattern_kind == "absolute_url_pattern":
+        return fnmatch.fnmatchcase(host, candidate.host_pattern)
+    # Legacy rows have no pattern_kind. Treating them as host-anchored may add
+    # candidates for absolute-URL rules, but cannot omit a true match.
+    return any(
+        fnmatch.fnmatchcase(host_suffix, candidate.host_pattern)
+        for host_suffix in _host_suffix_candidates(host)
+    )
 
 
 def _table_column_exists(

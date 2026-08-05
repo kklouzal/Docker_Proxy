@@ -212,6 +212,74 @@ def test_lookup_returns_domain_anchored_wildcard_host_subdomain_candidates(
     assert "||google.*/pagead/lvz?$script" in candidates
 
 
+def test_token_prefilters_preserve_host_pattern_and_regex_candidate_superset(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "||ad*server.example^",
+            "/tracker*/",
+            "/tracker.*/",
+            "/tracker[.]example/",
+        ],
+    )
+
+    _add_web_to_path()
+    from services.adblock_lookup import AdblockLookupIndex
+
+    urls = [
+        "https://adXYZserver.example/banner.js",
+        "https://static.example/tracke",
+        "https://static.example/trackerxyz",
+        "https://static.example/tracker.example/pixel",
+    ]
+    indexed_lookup = AdblockLookupIndex(db_path)
+    indexed_candidates = {
+        url: _raws(indexed_lookup.candidate_rules(url)) for url in urls
+    }
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(
+            """
+            DELETE FROM host_pattern_token_index;
+            DELETE FROM regex_token_index;
+            """,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    missing_rows_lookup = AdblockLookupIndex(db_path)
+    missing_rows_candidates = {
+        url: _raws(missing_rows_lookup.candidate_rules(url)) for url in urls
+    }
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(
+            """
+            DROP TABLE host_pattern_token_index;
+            DROP TABLE regex_token_index;
+            """,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    unfiltered_lookup = AdblockLookupIndex(db_path)
+    unfiltered_candidates = {
+        url: _raws(unfiltered_lookup.candidate_rules(url)) for url in urls
+    }
+
+    assert indexed_candidates == missing_rows_candidates == unfiltered_candidates
+    assert "||ad*server.example^" in indexed_candidates[urls[0]]
+    assert "/tracker*/" in indexed_candidates[urls[1]]
+    assert "/tracker.*/" in indexed_candidates[urls[2]]
+    assert "/tracker[.]example/" in indexed_candidates[urls[3]]
+
+
 def test_adblock_lookup_rejects_malformed_authority_candidates(
     tmp_path: Path,
 ) -> None:
@@ -306,6 +374,36 @@ def test_lookup_hydrates_payload_from_jsonl_for_legacy_sqlite_schema(
         conn.execute(
             "INSERT INTO domain_index VALUES(?,?,?)", ("ads.example", "block", "r1")
         )
+        for rule_id, pattern_kind, raw in (
+            ("r2", "host_anchored", "||cdn.example/assets^"),
+            ("r3", "host_anchored_pattern", "||google.*/pagead^"),
+        ):
+            conn.execute(
+                "INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    rule_id,
+                    "sample",
+                    "block",
+                    0,
+                    pattern_kind,
+                    raw,
+                    raw,
+                    "{}",
+                    "[]",
+                    "[]",
+                    "any",
+                    "[]",
+                    "{}",
+                ),
+            )
+        conn.execute(
+            "INSERT INTO host_index VALUES(?,?,?)",
+            ("cdn.example", "block", "r2"),
+        )
+        conn.execute(
+            "INSERT INTO host_pattern_index VALUES(?,?,?)",
+            ("google.*", "block", "r3"),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -320,6 +418,32 @@ def test_lookup_hydrates_payload_from_jsonl_for_legacy_sqlite_schema(
                 "pattern": "||ads.example^",
                 "pattern_kind": "domain_only",
                 "host": "ads.example",
+            },
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "id": "r2",
+                "list_key": "sample",
+                "action": "block",
+                "exception": False,
+                "raw": "||cdn.example/assets^",
+                "pattern": "||cdn.example/assets^",
+                "pattern_kind": "host_anchored",
+                "host": "cdn.example",
+            },
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "id": "r3",
+                "list_key": "sample",
+                "action": "block",
+                "exception": False,
+                "raw": "||google.*/pagead^",
+                "pattern": "||google.*/pagead^",
+                "pattern_kind": "host_anchored_pattern",
+                "host_pattern": "google.*",
             },
         )
         + "\n",
@@ -338,6 +462,65 @@ def test_lookup_hydrates_payload_from_jsonl_for_legacy_sqlite_schema(
 
     assert rules[0]["host"] == "ads.example"
     assert rules[0]["raw"] == "||ads.example^"
+    assert "||cdn.example/assets^" in _raws(
+        lookup.candidate_rules("https://sub.cdn.example/assets/banner.js"),
+    )
+    assert "||google.*/pagead^" in _raws(
+        lookup.candidate_rules("https://www.google.com/pagead/banner.js"),
+    )
+
+
+def test_lookup_uses_jsonl_payload_when_embedded_payload_is_incomplete(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^$script"])
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("UPDATE rules SET payload_json='{}'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    _add_web_to_path()
+    from services.adblock_lookup import AdblockLookupIndex
+
+    lookup = AdblockLookupIndex(db_path)
+    [rule] = lookup.candidate_rules(
+        "https://ads.example/banner.js",
+        resource_type="script",
+    )
+
+    assert rule["host"] == "ads.example"
+    assert rule["raw"] == "||ads.example^$script"
+
+
+def test_lookup_ignores_malformed_resource_type_prefilter_schema(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["resource-token$script"])
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(
+            """
+            DROP TABLE resource_type_index;
+            CREATE TABLE resource_type_index(rule_id TEXT);
+            """,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _add_web_to_path()
+    from services.adblock_lookup import AdblockLookupIndex
+
+    lookup = AdblockLookupIndex(db_path)
+
+    assert "resource-token$script" in _raws(
+        lookup.candidate_rules(
+            "https://static.example/resource-token.png",
+            resource_type="image",
+        ),
+    )
 
 
 def test_adblock_lookup_chunks_large_sqlite_in_queries(
