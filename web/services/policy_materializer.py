@@ -26,25 +26,6 @@ class ProxyPolicyState:
     files: tuple[MaterializedPolicyFile, ...]
 
 
-def calculate_policy_sha(
-    files: Sequence[MaterializedPolicyFile] | Iterable[MaterializedPolicyFile],
-) -> str:
-    items = sorted(
-        [
-            MaterializedPolicyFile(path=str(f.path), content=str(f.content or ""))
-            for f in files
-        ],
-        key=lambda item: item.path,
-    )
-    digest = hashlib.sha256()
-    for item in items:
-        digest.update(item.path.encode("utf-8", errors="replace"))
-        digest.update(b"\0")
-        digest.update(item.content.encode("utf-8", errors="replace"))
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
 def _materialized_policy_path_key(path: str) -> str:
     return str(pathlib.Path(path).resolve(strict=False))
 
@@ -68,13 +49,30 @@ def _validated_materialized_policy_files(
             by_target[target_key] = item
             validated.append(item)
             continue
-        if existing.content != item.content:
-            msg = (
-                "Materialized policy file target renders conflicting content: "
-                f"{existing.path!r} and {item.path!r}"
-            )
-            raise ValueError(msg)
+        conflict = "conflicting content" if existing.content != item.content else "duplicate target"
+        msg = (
+            f"Materialized policy file target has {conflict}: "
+            f"{existing.path!r} and {item.path!r}"
+        )
+        raise ValueError(msg)
     return tuple(validated)
+
+
+def calculate_policy_sha(
+    files: Sequence[MaterializedPolicyFile] | Iterable[MaterializedPolicyFile],
+) -> str:
+    items = sorted(
+        _validated_materialized_policy_files(files),
+        key=lambda item: _materialized_policy_path_key(item.path),
+    )
+    digest = hashlib.sha256()
+    for item in items:
+        target_key = _materialized_policy_path_key(item.path)
+        digest.update(target_key.encode("utf-8", errors="replace"))
+        digest.update(b"\0")
+        digest.update(item.content.encode("utf-8", errors="replace"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def build_proxy_policy_state_from_stores(
