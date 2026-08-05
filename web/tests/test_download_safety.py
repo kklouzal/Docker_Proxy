@@ -821,6 +821,47 @@ def test_download_connection_uses_vetted_ipv6_sockaddr(
     assert seen_connections == [("2001:4860:4860::8888", 80, 0, 0)]
 
 
+def test_download_connection_shares_timeout_across_vetted_address_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+    addresses = (
+        download_safety._ResolvedDownloadAddress(
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            0,
+            ("93.184.216.34", 80),
+        ),
+        download_safety._ResolvedDownloadAddress(
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            0,
+            ("93.184.216.35", 80),
+        ),
+    )
+    seen_timeouts: list[float] = []
+    connected_socket = object()
+    ticks = iter([100.0, 100.6])
+
+    def fake_create_connection(address, timeout, _source_address):
+        seen_timeouts.append(timeout)
+        if address == ("93.184.216.34", 80):
+            raise TimeoutError
+        return connected_socket
+
+    class _Clock:
+        def monotonic(self):
+            return next(ticks)
+
+    monkeypatch.setattr(download_safety.socket, "create_connection", fake_create_connection)
+    monkeypatch.setitem(download_safety.__dict__, "time", _Clock())
+
+    create_connection = download_safety._create_download_connection(addresses)
+
+    assert create_connection(("public.example", 80), timeout=1) is connected_socket
+    assert seen_timeouts == [1, pytest.approx(0.4)]
+
+
 def test_open_download_url_drops_malformed_conditional_headers_before_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

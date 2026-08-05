@@ -206,18 +206,27 @@ def _create_download_connection(
         source_address=None,
     ):
         last_error: OSError | None = None
-        for address in addresses:
+        deadline = None
+        if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT and timeout is not None:
+            deadline = time.monotonic() + float(timeout)
+        for attempt, address in enumerate(addresses):
+            attempt_timeout = timeout
+            if attempt and deadline is not None:
+                attempt_timeout = deadline - time.monotonic()
+                if attempt_timeout <= 0:
+                    msg = "timed out while connecting to vetted download addresses"
+                    raise TimeoutError(msg) from last_error
             sock = None
             try:
                 if len(address.sockaddr) == 2:
                     return socket.create_connection(
                         address.sockaddr,
-                        timeout,
+                        attempt_timeout,
                         source_address,
                     )
                 sock = socket.socket(address.family, address.socktype, address.proto)
-                if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
-                    sock.settimeout(timeout)
+                if attempt_timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                    sock.settimeout(attempt_timeout)
                 if source_address:
                     sock.bind(source_address)
                 sock.connect(address.sockaddr)
