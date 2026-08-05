@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import threading
 import time
 from types import SimpleNamespace
@@ -1374,6 +1375,92 @@ def test_restart_squid_serializes_concurrent_lifecycle_requests(
     assert len(results) == 2
     assert all(ok for ok, _detail in results)
     assert calls == [*expected_chunk, *expected_chunk]
+
+
+def test_restart_squid_fails_closed_when_lifecycle_locking_is_unavailable(
+    monkeypatch,
+    tmp_path,
+    caplog,
+) -> None:
+    from services import squid_core, squidctl  # type: ignore
+
+    monkeypatch.setenv("SQUID_LIFECYCLE_LOCK_DIR", str(tmp_path))
+    opened_handles = []
+    real_open = squid_core.Path.open
+
+    def tracking_open(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        opened_handles.append(handle)
+        return handle
+
+    real_import = builtins.__import__
+
+    def fail_fcntl_import(name, *args, **kwargs):
+        if name == "fcntl":
+            message = "token=import-secret"
+            raise ImportError(message)
+        return real_import(name, *args, **kwargs)
+
+    calls: list[list[str]] = []
+    controller = squidctl.SquidController(
+        cmd_run=lambda args, **_kwargs: calls.append(list(args)),
+    )
+    monkeypatch.setattr(squid_core.Path, "open", tracking_open)
+    monkeypatch.setattr(builtins, "__import__", fail_fcntl_import)
+
+    with pytest.raises(squid_core.SquidLifecycleLockError) as exc_info:
+        controller.restart_squid()
+
+    assert calls == []
+    assert opened_handles
+    assert all(handle.closed for handle in opened_handles)
+    assert "refusing to mutate Squid" in str(exc_info.value)
+    assert "import-secret" not in str(exc_info.value)
+    assert "import-secret" not in caplog.text
+
+
+def test_start_squid_fails_closed_when_lifecycle_flock_fails(
+    monkeypatch,
+    tmp_path,
+    caplog,
+) -> None:
+    import fcntl
+
+    from services import squid_core, squidctl  # type: ignore
+
+    monkeypatch.setenv("SQUID_LIFECYCLE_LOCK_DIR", str(tmp_path))
+    opened_handles = []
+    real_open = squid_core.Path.open
+
+    def tracking_open(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        opened_handles.append(handle)
+        return handle
+
+    flock_operations: list[int] = []
+
+    def fail_flock(_fd, operation):
+        flock_operations.append(operation)
+        message = "password=flock-secret"
+        raise OSError(message)
+
+    calls: list[list[str]] = []
+    controller = squidctl.SquidController(
+        cmd_run=lambda args, **_kwargs: calls.append(list(args)),
+    )
+    monkeypatch.setattr(squid_core.Path, "open", tracking_open)
+    monkeypatch.setattr(fcntl, "flock", fail_flock)
+
+    with pytest.raises(squid_core.SquidLifecycleLockError) as exc_info:
+        controller.start_squid()
+
+    assert calls == []
+    assert flock_operations == [fcntl.LOCK_EX]
+    assert opened_handles
+    assert all(handle.closed for handle in opened_handles)
+    assert "refusing to mutate Squid" in str(exc_info.value)
+    assert "flock-secret" not in str(exc_info.value)
+    assert "flock-secret" not in caplog.text
 
 
 def test_restart_squid_accepts_supervisor_auto_restart_race(monkeypatch) -> None:

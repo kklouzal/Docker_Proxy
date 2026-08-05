@@ -169,6 +169,19 @@ def _cached_virus_scan_config_path() -> Path:
 CommandRunner = Callable[..., Any]
 
 
+class SquidLifecycleLockError(ValueError):
+    """Raised when Squid lifecycle serialization cannot be established."""
+
+    _MESSAGE = (
+        "Unable to establish the Squid lifecycle file lock; refusing to mutate "
+        "Squid. Check that the lock directory is writable and POSIX flock is "
+        "available."
+    )
+
+    def __init__(self) -> None:
+        super().__init__(self._MESSAGE)
+
+
 @contextlib.contextmanager
 def _exclusive_squid_lifecycle_lock():
     """Serialize Squid stop/start/reconfigure mutations across UI/API workers.
@@ -182,28 +195,36 @@ def _exclusive_squid_lifecycle_lock():
     with _SQUID_LIFECYCLE_LOCK:
         handle = None
         fcntl_mod = None
+        file_lock_acquired = False
         try:
-            lock_dir = (
-                os.environ.get("SQUID_LIFECYCLE_LOCK_DIR")
-                or os.environ.get("PROXY_RUNTIME_LOCK_DIR")
-                or tempfile.gettempdir()
-            ).strip() or tempfile.gettempdir()
-            Path(lock_dir).mkdir(exist_ok=True, parents=True)
-            handle = (Path(lock_dir) / "docker-proxy-squid-lifecycle.lock").open(
-                "a+",
-                encoding="utf-8",
-            )
             try:
+                lock_dir = (
+                    os.environ.get("SQUID_LIFECYCLE_LOCK_DIR")
+                    or os.environ.get("PROXY_RUNTIME_LOCK_DIR")
+                    or tempfile.gettempdir()
+                ).strip() or tempfile.gettempdir()
+                Path(lock_dir).mkdir(exist_ok=True, parents=True)
+                handle = (
+                    Path(lock_dir) / "docker-proxy-squid-lifecycle.lock"
+                ).open(
+                    "a+",
+                    encoding="utf-8",
+                )
                 import fcntl as fcntl_mod  # type: ignore
 
                 fcntl_mod.flock(handle.fileno(), fcntl_mod.LOCK_EX)
             except Exception:
-                fcntl_mod = None
+                logger.error(  # noqa: TRY400 - traceback could expose lock errors
+                    "Unable to establish the Squid lifecycle file lock; "
+                    "refusing to mutate Squid",
+                )
+                raise SquidLifecycleLockError from None
+            file_lock_acquired = True
             yield
         finally:
             if handle is not None:
                 try:
-                    if fcntl_mod is not None:
+                    if file_lock_acquired and fcntl_mod is not None:
                         fcntl_mod.flock(handle.fileno(), fcntl_mod.LOCK_UN)
                 except Exception:
                     pass
