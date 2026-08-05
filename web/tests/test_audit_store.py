@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pytest
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -11,6 +13,7 @@ WEB_DIR = Path(__file__).resolve().parents[1]
 if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
 
+from services import audit_store  # type: ignore  # noqa: E402
 from services.audit_store import AuditStore  # type: ignore  # noqa: E402
 
 
@@ -33,7 +36,9 @@ class _FakeAuditConnection:
     def __exit__(self, *_exc: object) -> bool:
         return False
 
-    def execute(self, sql: str, params: tuple[object, ...] | None = None) -> _FakeResult:
+    def execute(
+        self, sql: str, params: tuple[object, ...] | None = None
+    ) -> _FakeResult:
         compact_sql = " ".join(str(sql).split())
         params = tuple(params or ())
         if compact_sql.startswith("SELECT DISTINCT proxy_id FROM audit_events"):
@@ -45,7 +50,9 @@ class _FakeAuditConnection:
             proxy_id = str(params[0])
             limit = int(params[1])
             matching = [row for row in self.rows if row["proxy_id"] == proxy_id]
-            matching.sort(key=lambda row: (int(row["ts"]), int(row["id"])), reverse=True)
+            matching.sort(
+                key=lambda row: (int(row["ts"]), int(row["id"])), reverse=True
+            )
             return _FakeResult(dict(row) for row in matching[:limit])
         if compact_sql.startswith("DELETE FROM `audit_events` WHERE proxy_id = %s"):
             proxy_id = str(params[0])
@@ -62,7 +69,13 @@ class _FakeAuditConnection:
                     or (int(row["ts"]) == tie_ts and int(row["id"]) < boundary_id)
                 )
             ]
-            delete_indexes.sort(key=lambda index: (self.rows[index]["proxy_id"], int(self.rows[index]["ts"]), int(self.rows[index]["id"])))
+            delete_indexes.sort(
+                key=lambda index: (
+                    self.rows[index]["proxy_id"],
+                    int(self.rows[index]["ts"]),
+                    int(self.rows[index]["id"]),
+                )
+            )
             delete_indexes = delete_indexes[:limit]
             for index in reversed(delete_indexes):
                 self.rows.pop(index)
@@ -78,7 +91,144 @@ def _store_with_rows(rows: list[dict[str, object]]) -> AuditStore:
     return store
 
 
-def test_prune_to_last_events_preserves_quiet_proxy_when_another_proxy_is_noisy() -> None:
+class _SchemaInitResult:
+    def __init__(self, row: object | None = None) -> None:
+        self._row = row
+
+    def fetchone(self) -> object | None:
+        return self._row
+
+
+class _SchemaInitConnection:
+    def __init__(
+        self,
+        *,
+        migration_status: str | None = None,
+        probe_error: Exception | None = None,
+    ) -> None:
+        self.migration_status = migration_status
+        self.probe_error = probe_error
+        self.ops: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params=()) -> _SchemaInitResult:
+        text = " ".join(str(sql).split())
+        self.ops.append(text)
+        if text.startswith(
+            "SELECT version, name, checksum, status, error FROM schema_migrations"
+        ):
+            if self.probe_error is not None:
+                raise self.probe_error
+            row = (
+                {"status": self.migration_status}
+                if self.migration_status is not None
+                else None
+            )
+            return _SchemaInitResult(row)
+        if text.startswith("CREATE TABLE IF NOT EXISTS audit_events"):
+            return _SchemaInitResult()
+        msg = f"Unexpected schema-init SQL: {text!r} params={tuple(params or ())!r}"
+        raise AssertionError(msg)
+
+
+def _patch_schema_fallback_index(monkeypatch) -> list[tuple[object, str, str, str]]:
+    calls: list[tuple[object, str, str, str]] = []
+
+    def record_index(conn, *, table_name: str, index_name: str, ddl: str) -> None:
+        calls.append((conn, table_name, index_name, ddl))
+
+    monkeypatch.setattr(audit_store, "ensure_index", record_index)
+    return calls
+
+
+def test_init_db_skips_runtime_ddl_when_lifecycle_schema_is_current(
+    monkeypatch,
+) -> None:
+    conn = _SchemaInitConnection(migration_status="applied")
+    store = AuditStore()
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    index_calls = _patch_schema_fallback_index(monkeypatch)
+
+    store.init_db()
+
+    assert store._schema_ready is True
+    assert len(conn.ops) == 1
+    assert "schema_migrations" in conn.ops[0]
+    assert index_calls == []
+
+
+def test_init_db_uses_runtime_ddl_when_lifecycle_schema_is_not_current(
+    monkeypatch,
+) -> None:
+    conn = _SchemaInitConnection()
+    store = AuditStore()
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    index_calls = _patch_schema_fallback_index(monkeypatch)
+
+    store.init_db()
+
+    assert store._schema_ready is True
+    assert "schema_migrations" in conn.ops[0]
+    assert any(
+        op.startswith("CREATE TABLE IF NOT EXISTS audit_events") for op in conn.ops
+    )
+    assert index_calls == [
+        (
+            conn,
+            "audit_events",
+            "idx_audit_ts_id",
+            "ALTER TABLE audit_events ADD INDEX idx_audit_ts_id (ts, id)",
+        )
+    ]
+
+
+def test_init_db_uses_runtime_ddl_when_lifecycle_helper_is_unavailable(
+    monkeypatch,
+) -> None:
+    conn = _SchemaInitConnection()
+    store = AuditStore()
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setitem(sys.modules, "services.schema_lifecycle", None)
+    index_calls = _patch_schema_fallback_index(monkeypatch)
+
+    store.init_db()
+
+    assert store._schema_ready is True
+    assert not any("schema_migrations" in op for op in conn.ops)
+    assert any(
+        op.startswith("CREATE TABLE IF NOT EXISTS audit_events") for op in conn.ops
+    )
+    assert len(index_calls) == 1
+
+
+def test_init_db_propagates_lifecycle_probe_failure_without_runtime_ddl(
+    monkeypatch,
+) -> None:
+    probe_error = RuntimeError("schema readiness query failed")
+    conn = _SchemaInitConnection(probe_error=probe_error)
+    store = AuditStore()
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    index_calls = _patch_schema_fallback_index(monkeypatch)
+
+    with pytest.raises(RuntimeError) as caught:
+        store.init_db()
+
+    assert caught.value is probe_error
+    assert store._schema_ready is False
+    assert len(conn.ops) == 1
+    assert "schema_migrations" in conn.ops[0]
+    assert not any(op.startswith(("CREATE TABLE", "ALTER TABLE")) for op in conn.ops)
+    assert index_calls == []
+
+
+def test_prune_to_last_events_preserves_quiet_proxy_when_another_proxy_is_noisy() -> (
+    None
+):
     rows = [
         {"id": 1, "proxy_id": "quiet", "ts": 10, "kind": "config_apply_manual"},
         {"id": 2, "proxy_id": "quiet", "ts": 20, "kind": "config_apply_manual"},

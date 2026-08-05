@@ -47,12 +47,14 @@ class AuditStore:
                     from services.schema_lifecycle import (
                         runtime_schema_ready_for_lazy_store,
                     )
-
-                    if runtime_schema_ready_for_lazy_store(conn):
-                        self._schema_ready = True
-                        return
-                except Exception:
-                    pass
+                except ImportError:
+                    runtime_schema_ready_for_lazy_store = None
+                if (
+                    runtime_schema_ready_for_lazy_store is not None
+                    and runtime_schema_ready_for_lazy_store(conn)
+                ):
+                    self._schema_ready = True
+                    return
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS audit_events (
@@ -149,7 +151,9 @@ class AuditStore:
         max_rows: int | None = None,
     ) -> int:
         keep = max(1, int(max_events or 200))
-        remaining_rows = default_max_rows() if max_rows is None else max(0, int(max_rows))
+        remaining_rows = (
+            default_max_rows() if max_rows is None else max(0, int(max_rows))
+        )
         if remaining_rows <= 0:
             return 0
 
