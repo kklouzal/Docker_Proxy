@@ -39,11 +39,41 @@ def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     return max(int(minimum), min(int(maximum), value))
 
 
-def _int_or_zero(value: object | None) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
+def _validated_compare_summary(compare: dict[str, Any]) -> tuple[str, int, int]:
+    status = compare.get("status")
+    if not isinstance(status, str) or status not in {
+        "identical",
+        "ahead",
+        "behind",
+        "diverged",
+    }:
+        msg = "GitHub compare response has an invalid status."
+        raise RuntimeError(msg)
+
+    counts: dict[str, int] = {}
+    for field in ("ahead_by", "behind_by", "total_commits"):
+        value = compare.get(field)
+        if type(value) is not int or value < 0:
+            msg = "GitHub compare response has invalid commit counts."
+            raise RuntimeError(msg)
+        counts[field] = value
+
+    ahead_by = counts["ahead_by"]
+    behind_by = counts["behind_by"]
+    if counts["total_commits"] != ahead_by:
+        msg = "GitHub compare response has inconsistent commit counts."
+        raise RuntimeError(msg)
+
+    counts_match_status = {
+        "identical": ahead_by == 0 and behind_by == 0,
+        "ahead": ahead_by > 0 and behind_by == 0,
+        "behind": ahead_by == 0 and behind_by > 0,
+        "diverged": ahead_by > 0 and behind_by > 0,
+    }
+    if not counts_match_status[status]:
+        msg = "GitHub compare response has inconsistent status and counts."
+        raise RuntimeError(msg)
+    return status, ahead_by, behind_by
 
 
 def _normalize_github_repository(value: object | None) -> tuple[str, str]:
@@ -243,17 +273,14 @@ class VersionStatusClient:
                 + "..."
                 + urllib.parse.quote(self.branch, safe="")
             )
-            status = _clean(compare.get("status"))
-            behind_by = compare.get("behind_by")
-            ahead_by = compare.get("ahead_by")
-            total_commits = compare.get("total_commits")
+            status, main_commits_ahead, running_commits_ahead = (
+                _validated_compare_summary(compare)
+            )
             commits = compare.get("commits")
             latest_commit = commits[-1] if isinstance(commits, list) and commits else {}
             latest_revision = _clean(
                 latest_commit.get("sha") if isinstance(latest_commit, dict) else ""
             )
-            main_commits_ahead = _int_or_zero(ahead_by or total_commits)
-            running_commits_ahead = _int_or_zero(behind_by)
             if status == "identical":
                 result = CompareResult(
                     "ok", 0, current, f"Running commit matches {self.branch}."

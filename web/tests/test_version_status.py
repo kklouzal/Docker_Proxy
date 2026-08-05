@@ -142,7 +142,14 @@ def test_compare_revision_first_oversized_failure_is_not_ttl_cached() -> None:
         calls["count"] += 1
         if calls["count"] == 1:
             return _Response(b"x" * (_MAX_GITHUB_API_RESPONSE_BYTES + 1))
-        return _json_response({"status": "identical"})
+        return _json_response(
+            {
+                "status": "identical",
+                "ahead_by": 0,
+                "behind_by": 0,
+                "total_commits": 0,
+            }
+        )
 
     client = VersionStatusClient(
         repository="owner/repo",
@@ -156,6 +163,26 @@ def test_compare_revision_first_oversized_failure_is_not_ttl_cached() -> None:
     assert first.state == "unknown"
     assert second.state == "ok"
     assert calls["count"] == 2
+
+
+def test_compare_revision_rejects_status_count_contradiction() -> None:
+    def urlopen(_request, *, timeout):
+        return _json_response(
+            {
+                "status": "identical",
+                "ahead_by": 1,
+                "behind_by": 0,
+                "total_commits": 1,
+            }
+        )
+
+    client = VersionStatusClient(repository="owner/repo", urlopen=urlopen)
+
+    status = client.compare_revision("abc123")
+
+    assert status.state == "unknown"
+    assert status.commits_behind is None
+    assert "inconsistent status and counts" in status.detail
 
 
 def test_compare_revision_running_commit_ahead_of_main_warns() -> None:
@@ -242,7 +269,14 @@ def test_compare_revision_preserves_safe_configured_branch_in_compare_url() -> N
 
     def urlopen(request, *, timeout):
         seen_urls.append(request.full_url)
-        return _json_response({"status": "identical"})
+        return _json_response(
+            {
+                "status": "identical",
+                "ahead_by": 0,
+                "behind_by": 0,
+                "total_commits": 0,
+            }
+        )
 
     client = VersionStatusClient(
         repository="owner/repo",
@@ -264,7 +298,14 @@ def test_compare_cache_survives_later_github_failure() -> None:
     def urlopen(_request, *, timeout):
         calls["count"] += 1
         if calls["count"] == 1:
-            return _json_response({"status": "identical"})
+            return _json_response(
+                {
+                    "status": "identical",
+                    "ahead_by": 0,
+                    "behind_by": 0,
+                    "total_commits": 0,
+                }
+            )
         msg = "network down"
         raise OSError(msg)
 
