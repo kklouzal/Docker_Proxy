@@ -393,6 +393,107 @@ def test_admin_html_responses_respect_wildcard_quality_zero(
     assert b"Squid" in response.get_data()
 
 
+def test_gzip_negotiation_varies_identity_and_encoded_representations() -> None:
+    app = Flask(__name__)
+
+    from web.services.http_optimizations import install_http_optimizations
+
+    install_http_optimizations(app, compress_min_size=1)
+
+    @app.get("/vary.txt")
+    def vary_text():
+        return Response(
+            b"a" * 1000,
+            mimetype="text/plain",
+            headers={"ETag": '"identity"', "Vary": "Origin"},
+        )
+
+    client = app.test_client()
+
+    identity = client.get("/vary.txt")
+    encoded = client.get("/vary.txt", headers={"Accept-Encoding": "gzip"})
+
+    assert identity.headers.get("Content-Encoding") is None
+    assert identity.headers.get("ETag") == '"identity"'
+    assert set(identity.headers.get("Vary", "").split(", ")) == {
+        "Origin",
+        "Accept-Encoding",
+    }
+    assert encoded.headers.get("Content-Encoding") == "gzip"
+    assert encoded.headers.get("ETag") is None
+    assert set(encoded.headers.get("Vary", "").split(", ")) == {
+        "Origin",
+        "Accept-Encoding",
+    }
+    assert gzip.decompress(encoded.get_data()) == identity.get_data()
+
+
+def test_gzip_negotiation_rejects_invalid_and_duplicate_refusal_quality() -> None:
+    app = Flask(__name__)
+
+    from web.services.http_optimizations import install_http_optimizations
+
+    install_http_optimizations(app, compress_min_size=1)
+
+    @app.get("/quality.txt")
+    def quality_text():
+        return Response(b"a" * 1000, mimetype="text/plain")
+
+    client = app.test_client()
+
+    valid = client.get(
+        "/quality.txt",
+        headers={"Accept-Encoding": "gzip;q=0.5"},
+    )
+    duplicate_positive = client.get(
+        "/quality.txt",
+        headers={"Accept-Encoding": "gzip;q=0.5, gzip;q=1"},
+    )
+    invalid = client.get(
+        "/quality.txt",
+        headers={"Accept-Encoding": "gzip;q=1.5"},
+    )
+    duplicate_refusal = client.get(
+        "/quality.txt",
+        headers={"Accept-Encoding": "*;q=0, *;q=1"},
+    )
+
+    assert valid.headers.get("Content-Encoding") == "gzip"
+    assert duplicate_positive.headers.get("Content-Encoding") == "gzip"
+    assert invalid.headers.get("Content-Encoding") is None
+    assert duplicate_refusal.headers.get("Content-Encoding") is None
+
+
+def test_conditional_identity_response_keeps_encoding_vary_metadata() -> None:
+    app = Flask(__name__)
+
+    from flask import request
+
+    from web.services.http_optimizations import install_http_optimizations
+
+    install_http_optimizations(app, compress_min_size=1)
+
+    @app.get("/conditional.txt")
+    def conditional_text():
+        response = Response(b"a" * 1000, mimetype="text/plain")
+        response.set_etag("identity")
+        return response.make_conditional(request)
+
+    client = app.test_client()
+
+    initial = client.get("/conditional.txt")
+    revalidated = client.get(
+        "/conditional.txt",
+        headers={"If-None-Match": initial.headers["ETag"]},
+    )
+
+    assert initial.status_code == 200
+    assert initial.headers.get("Vary") == "Accept-Encoding"
+    assert revalidated.status_code == 304
+    assert revalidated.headers.get("ETag") == initial.headers.get("ETag")
+    assert revalidated.headers.get("Vary") == "Accept-Encoding"
+
+
 def test_partial_content_responses_are_not_gzip_transformed() -> None:
     app = Flask(__name__)
 
@@ -798,9 +899,13 @@ def test_proxy_pac_emergency_responses_are_private_no_store_and_conditional_etag
 
     assert first.status_code == 200
     assert first.headers.get("Cache-Control") == "no-store, private"
-    assert (
-        first.headers.get("Vary")
-        == "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
-    )
+    assert set(first.headers.get("Vary", "").split(", ")) == {
+        "Host",
+        "X-Forwarded-For",
+        "X-Forwarded-Host",
+        "X-Real-IP",
+        "Accept-Encoding",
+    }
     assert etag
     assert second.status_code == 304
+    assert second.headers.get("Vary") == first.headers.get("Vary")

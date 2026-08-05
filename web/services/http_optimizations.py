@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import os
+import re
 from typing import Any
 
 from flask import request
@@ -20,6 +21,7 @@ _COMPRESSIBLE_MIMETYPES = frozenset(
         "text/xml",
     },
 )
+_QVALUE_PATTERN = re.compile(r"(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)\Z")
 
 
 def _bool_env(value: str | None, *, default: bool) -> bool:
@@ -35,8 +37,10 @@ def _bool_env(value: str | None, *, default: bool) -> bool:
 
 def _client_accepts_gzip() -> bool:
     header = request.headers.get("Accept-Encoding", "")
-    gzip_quality: float | None = None
-    wildcard_quality: float | None = None
+    gzip_seen = False
+    gzip_accepted = True
+    wildcard_seen = False
+    wildcard_accepted = True
     for part in header.split(","):
         bits = [bit.strip().lower() for bit in part.split(";")]
         if not bits or bits[0] not in {"gzip", "*"}:
@@ -45,30 +49,35 @@ def _client_accepts_gzip() -> bool:
         for parameter in bits[1:]:
             if not parameter.startswith("q="):
                 continue
-            try:
-                quality = float(parameter.split("=", 1)[1])
-            except ValueError:
-                quality = 0.0
+            raw_quality = parameter.split("=", 1)[1]
+            quality = float(raw_quality) if _QVALUE_PATTERN.fullmatch(raw_quality) else 0.0
             break
         if bits[0] == "gzip":
-            if quality <= 0.0:
-                return False
-            gzip_quality = quality
+            gzip_seen = True
+            gzip_accepted = gzip_accepted and quality > 0.0
         else:
-            wildcard_quality = quality
-    if gzip_quality is not None:
-        return gzip_quality > 0.0
-    return wildcard_quality is not None and wildcard_quality > 0.0
+            wildcard_seen = True
+            wildcard_accepted = wildcard_accepted and quality > 0.0
+    if gzip_seen:
+        return gzip_accepted
+    return wildcard_seen and wildcard_accepted
+
+
+def _ensure_accept_encoding_vary(response: Any) -> None:
+    vary_tokens = {
+        token.strip().lower()
+        for value in response.headers.getlist("Vary")
+        for token in value.split(",")
+        if token.strip()
+    }
+    if "*" not in vary_tokens and "accept-encoding" not in vary_tokens:
+        response.vary.add("Accept-Encoding")
 
 
 def _compressed_body_candidate(response: Any, *, min_size: int) -> bytes | None:
-    if request.method == "HEAD":
+    if response.status_code != 304 and not 200 <= response.status_code < 300:
         return None
-    if not _client_accepts_gzip():
-        return None
-    if response.status_code < 200 or response.status_code >= 300:
-        return None
-    if response.status_code == 206 or response.headers.get("Content-Range"):
+    if response.status_code in {204, 205, 206} or response.headers.get("Content-Range"):
         return None
     if response.direct_passthrough:
         return None
@@ -83,7 +92,14 @@ def _compressed_body_candidate(response: Any, *, min_size: int) -> bytes | None:
         data = response.get_data()
     except Exception:
         return None
-    return data if len(data or b"") >= max(1, int(min_size)) else None
+    if len(data or b"") < max(1, int(min_size)):
+        return None
+    _ensure_accept_encoding_vary(response)
+    if request.method == "HEAD" or response.status_code == 304:
+        return None
+    if not _client_accepts_gzip():
+        return None
+    return data
 
 
 def _compress_response(response: Any, *, min_size: int, compresslevel: int) -> Any:
@@ -96,7 +112,6 @@ def _compress_response(response: Any, *, min_size: int, compresslevel: int) -> A
     response.set_data(compressed)
     response.headers["Content-Encoding"] = "gzip"
     response.headers["Content-Length"] = str(len(compressed))
-    response.headers.add("Vary", "Accept-Encoding")
     # Strong validators no longer apply after representation transformation.
     response.headers.pop("ETag", None)
     return response
