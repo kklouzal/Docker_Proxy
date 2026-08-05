@@ -502,6 +502,57 @@ def test_restore_report_schedule_uses_shared_recipient_normalization_contract() 
     )
 
 
+def test_restore_report_schedule_maps_normalized_values_and_recovery_metadata_to_insert() -> None:
+    row = {
+        **_base_recovery_row("observability_report_schedules"),
+        "enabled": 0,
+        "name": " Weekly executive ",
+        "cadence": " WEEKLY ",
+        "recipients": " Ops@example.com; alerts@Example.COM Ops@EXAMPLE.COM ",
+        "pane": " Security ",
+        "report_format": " JSONL ",
+        "privacy": 0,
+        "window_seconds": 604800,
+    }
+    conn = _StrictRestoreConn()
+
+    result = restore.restore_recovery_bundle(
+        conn,
+        _bundle_with_table_rows("observability_report_schedules", (row,)),
+        "edge-01",
+        now_ts=NOW,
+    )
+
+    assert result.status == "adopted"
+    expected_insert_sql = (
+        "INSERT INTO observability_report_schedules( proxy_id, enabled, name, cadence, recipients, pane, "
+        "report_format, privacy, window_seconds, created_ts, updated_ts, next_run_ts, last_run_ts, last_status "
+        ") VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,'recovered')"
+    )
+    assert [
+        (sql, params)
+        for sql, params in conn.ops
+        if sql.startswith("INSERT INTO observability_report_schedules")
+    ] == [
+        (
+            expected_insert_sql,
+            (
+                "edge-01",
+                0,
+                "Weekly executive",
+                "weekly",
+                "Ops@example.com, alerts@Example.COM",
+                "security",
+                "jsonl",
+                0,
+                604800,
+                NOW,
+                NOW,
+            ),
+        ),
+    ]
+
+
 @pytest.mark.parametrize(
     "proxy_host",
     [
