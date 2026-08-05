@@ -41,14 +41,16 @@ def normalize_report_schedule_recipients(value: object) -> str:
         raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["empty_entry"])
 
     normalized: list[str] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for token in _REPORT_SCHEDULE_RECIPIENT_SEPARATOR_RE.split(text):
         recipient = token.strip()
         if not recipient:
             raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["empty_entry"])
         if not _valid_report_schedule_email(recipient):
             raise ValueError(REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["invalid_email"])
-        key = recipient.lower()
+        local, domain = recipient.rsplit("@", 1)
+        # SMTP preserves local-part case; DNS domain comparisons ignore case.
+        key = (local, domain.lower())
         if key not in seen:
             seen.add(key)
             normalized.append(recipient)

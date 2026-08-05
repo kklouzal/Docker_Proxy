@@ -1846,16 +1846,38 @@ def test_save_report_schedule_normalizes_and_deduplicates_recipients(monkeypatch
         cadence="daily",
         recipients=(
             " Ops@example.com; alerts@example.com "
-            "ops@example.com reports+daily@example.co.uk "
+            "Ops@EXAMPLE.COM ops@example.com ops@example.com "
+            "reports+daily@example.co.uk "
         ),
         report_format="json",
     )
 
     assert saved["recipients"] == (
-        "Ops@example.com, alerts@example.com, reports+daily@example.co.uk"
+        "Ops@example.com, alerts@example.com, ops@example.com, "
+        "reports+daily@example.co.uk"
     )
     assert conn.insert_params is not None
     assert conn.insert_params[4] == saved["recipients"]
+
+
+@pytest.mark.parametrize(
+    ("recipients", "expected"),
+    [
+        ("ops@example.com ops@example.com", "ops@example.com"),
+        ("ops@Example.COM ops@example.com", "ops@Example.COM"),
+        ("Ops@example.com ops@example.com", "Ops@example.com, ops@example.com"),
+    ],
+)
+def test_report_schedule_recipient_deduplication_uses_mailbox_semantics(
+    recipients: str, expected: str
+) -> None:
+    _add_web_to_path()
+
+    from services.report_schedule_recipients import (  # type: ignore
+        normalize_report_schedule_recipients,
+    )
+
+    assert normalize_report_schedule_recipients(recipients) == expected
 
 
 @pytest.mark.parametrize(
