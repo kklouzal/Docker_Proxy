@@ -114,6 +114,22 @@ def _spec(version: int = 1, *, fn=None) -> schema_lifecycle.SchemaMigrationSpec:
     )
 
 
+def test_runtime_schema_readiness_propagates_probe_failure() -> None:
+    class SchemaReadinessProbeError(RuntimeError):
+        pass
+
+    probe_error = SchemaReadinessProbeError("schema readiness query failed")
+
+    class FailingProbeConnection:
+        def execute(self, _sql: str, _params=()):
+            raise probe_error
+
+    with pytest.raises(SchemaReadinessProbeError) as caught:
+        schema_lifecycle.runtime_schema_current_applied(FailingProbeConnection())
+
+    assert caught.value is probe_error
+
+
 def test_schema_migration_records_applied_and_skips_already_applied() -> None:
     conn = _Conn()
     calls = 0

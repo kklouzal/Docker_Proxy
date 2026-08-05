@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -166,6 +167,107 @@ def _saml_request(url: str, *, scheme: str = "https", server_port: str = ""):
         query_string=b"",
         environ={"SERVER_PORT": server_port} if server_port else {},
     )
+
+
+def test_ensure_schema_propagates_lifecycle_probe_failure_without_runtime_ddl(
+    monkeypatch,
+) -> None:
+    class SchemaReadinessProbeError(RuntimeError):
+        pass
+
+    probe_error = SchemaReadinessProbeError("schema readiness query failed")
+
+    class FailingProbeConnection:
+        def __init__(self) -> None:
+            self.ops: list[str] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, params=()):
+            text = " ".join(str(sql).split())
+            self.ops.append(text)
+            if text.startswith(
+                "SELECT version, name, checksum, status, error FROM schema_migrations"
+            ):
+                raise probe_error
+            msg = f"fallback DDL must not follow a failed readiness probe: {text}"
+            raise AssertionError(msg)
+
+    conn = FailingProbeConnection()
+    store = SamlAuthStore()
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+
+    with pytest.raises(SchemaReadinessProbeError) as caught:
+        store.ensure_schema()
+
+    assert caught.value is probe_error
+    assert store._schema_ready is False
+    assert len(conn.ops) == 1
+    assert not any(op.startswith(("CREATE TABLE", "ALTER TABLE")) for op in conn.ops)
+
+
+class _FallbackSchemaConnection:
+    def __init__(self) -> None:
+        self.ops: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=()):
+        text = " ".join(str(sql).split())
+        self.ops.append(text)
+        if text.startswith(
+            "SELECT version, name, checksum, status, error FROM schema_migrations"
+        ):
+            return SimpleNamespace(fetchone=lambda: None)
+        if text.startswith("CREATE TABLE IF NOT EXISTS saml_auth_profiles"):
+            return SimpleNamespace(fetchone=lambda: None)
+        if "FROM information_schema.columns" in text:
+            return SimpleNamespace(fetchone=lambda: {"exists": 1})
+        msg = f"unexpected fallback schema SQL: {text}"
+        raise AssertionError(msg)
+
+
+def test_ensure_schema_preserves_fallback_when_lifecycle_is_not_current(
+    monkeypatch,
+) -> None:
+    conn = _FallbackSchemaConnection()
+    store = SamlAuthStore()
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+
+    store.ensure_schema()
+
+    assert store._schema_ready is True
+    assert any(
+        op.startswith("CREATE TABLE IF NOT EXISTS saml_auth_profiles")
+        for op in conn.ops
+    )
+    assert not any(op.startswith("ALTER TABLE") for op in conn.ops)
+
+
+def test_ensure_schema_preserves_fallback_when_lifecycle_module_is_unavailable(
+    monkeypatch,
+) -> None:
+    conn = _FallbackSchemaConnection()
+    store = SamlAuthStore()
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setitem(sys.modules, "services.schema_lifecycle", None)
+
+    store.ensure_schema()
+
+    assert store._schema_ready is True
+    assert any(
+        op.startswith("CREATE TABLE IF NOT EXISTS saml_auth_profiles")
+        for op in conn.ops
+    )
+    assert not any("schema_migrations" in op for op in conn.ops)
 
 
 class FakeSamlToolkit:

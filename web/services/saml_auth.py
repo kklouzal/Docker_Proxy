@@ -233,12 +233,14 @@ class SamlAuthStore:
                     from services.schema_lifecycle import (
                         runtime_schema_ready_for_lazy_store,
                     )
-
-                    if runtime_schema_ready_for_lazy_store(conn):
-                        self._schema_ready = True
-                        return
-                except Exception:
-                    pass
+                except ImportError:
+                    runtime_schema_ready_for_lazy_store = None
+                if (
+                    runtime_schema_ready_for_lazy_store is not None
+                    and runtime_schema_ready_for_lazy_store(conn)
+                ):
+                    self._schema_ready = True
+                    return
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS saml_auth_profiles (

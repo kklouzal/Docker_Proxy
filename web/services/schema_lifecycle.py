@@ -176,10 +176,7 @@ def schema_migration_in_progress() -> bool:
 
 
 def runtime_schema_current_applied(conn: Any) -> bool:
-    try:
-        row = _existing_migration(conn, _SCHEMA_VERSION)
-    except Exception:
-        return False
+    row = _existing_migration(conn, _SCHEMA_VERSION)
     return row is not None and str(_row_value(row, "status", 3) or "") == "applied"
 
 
