@@ -970,7 +970,7 @@ def test_fleet_selection_stores_only_registered_canonical_proxy_ids(
         ("", "default"),
         ("   ", "default"),
         ("edge-2", "edge-2"),
-        ("../../edge 2!!", "edge-2"),
+        ("../../edge 2!!", "default"),
         ("renamed-edge", "edge-2"),
         ("removed-edge", "default"),
         ("unknown", "default"),
@@ -1942,17 +1942,19 @@ def test_winhttp_registry_builder_normalizes_exported_reg_binary(
     assert "2800000000000000030000000000000000000000" in response.get_data(as_text=True)
 
 
-def test_proxy_id_query_is_normalized_and_bound_to_session(
+def test_lossy_proxy_id_query_does_not_select_colliding_registered_id(
     monkeypatch, tmp_path
 ) -> None:
     registry = FakeRegistry(["default", "bad-value"])
     loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
     client = loaded.module.app.test_client()
     login_client(client)
+
     response = client.get("/api/squid-config?proxy_id=../../bad value!!")
+
     assert response.status_code == 200
     with client.session_transaction() as sess:
-        assert sess["active_proxy_id"] == "bad-value"
+        assert sess["active_proxy_id"] == "default"
 
 
 def test_invalid_proxy_id_falls_back_to_registry_default(monkeypatch, tmp_path) -> None:

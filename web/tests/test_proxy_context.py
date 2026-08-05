@@ -31,10 +31,23 @@ def test_normalize_proxy_id_strips_delimiters_and_rejects_traversal() -> None:
     assert proxy_context.normalize_proxy_id("a" * 62 + "-tail") == "a" * 62
 
 
-def test_normalize_route_proxy_id_canonicalizes_url_selection_without_raw_traversal() -> None:
-    assert proxy_context.normalize_route_proxy_id("../../bad value!!") == "bad-value"
-    assert proxy_context.normalize_route_proxy_id("../evil") == "evil"
-    assert proxy_context.normalize_proxy_id("../../bad value!!") == "default"
+def test_normalize_route_proxy_id_accepts_only_exact_safe_selectors() -> None:
+    assert proxy_context.normalize_route_proxy_id("  edge-2  ") == "edge-2"
+    assert (
+        proxy_context.normalize_route_proxy_id("proxy.name:blue_01")
+        == "proxy.name:blue_01"
+    )
+
+    lossy_selectors = (
+        "edge 2",
+        "edge/2",
+        "--edge-2::",
+        "../../edge-2",
+        "a" * 63 + "-other",
+    )
+    for selector in lossy_selectors:
+        assert proxy_context.normalize_proxy_id(selector) != selector.strip()
+        assert proxy_context.normalize_route_proxy_id(selector) == "default"
 
 
 def test_get_default_proxy_id_env_precedence_and_context_reset(monkeypatch) -> None:

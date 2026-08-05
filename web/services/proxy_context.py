@@ -20,19 +20,22 @@ def normalize_proxy_id(value: object | None) -> str:
 
 
 def normalize_route_proxy_id(value: object | None) -> str:
-    """Normalize a proxy selector from a URL route/query parameter.
+    """Return an exact, syntactically safe proxy ID from a route selector.
 
-    Route links historically tolerated pasted/display proxy labels with spaces or
-    other delimiters and canonicalized them before matching the registered proxy
-    inventory.  Keep the generic proxy-id normalizer strict for raw IDs used in
-    stateful or destructive contexts, but allow URL selection to resolve only to
-    a syntactically safe canonical ID.
+    Route selection must not rewrite labels, traversal-shaped values, or
+    overlong values into a different registered ID.  Exact IDs and historical
+    aliases remain resolvable by the registry; lossy selectors fail safely to
+    the default proxy.
     """
     raw = "" if value is None else str(value).strip()
-    if not raw:
+    if (
+        not raw
+        or _PROXY_ID_TRAVERSAL_TOKEN_RE.search(raw)
+        or not _PROXY_ID_RE.fullmatch(raw)
+    ):
         return _DEFAULT_PROXY_ID
 
-    return _sanitize_proxy_id(raw)
+    return raw
 
 
 def _sanitize_proxy_id(raw: str) -> str:
