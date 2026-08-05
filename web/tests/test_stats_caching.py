@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import threading
 import time
-from typing import NoReturn
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, NoReturn
 
 import pytest
 from services import stats
@@ -30,6 +32,193 @@ def _reset_stats_caches() -> None:
     stats._CACHE_DISK_USAGE_VALUE = None
     _reset_hit_rate_cache()
     _reset_cpu_cache()
+
+
+def _assert_stats_schema(result: dict[str, Any]) -> None:
+    assert set(result["cpu"]) == {"util_percent", "loadavg"}
+    assert set(result["squid"]) == {
+        "hit_rate",
+        "mgr_available",
+        "hit_rate_source",
+    }
+    assert set(result["squid"]["hit_rate"]) == {
+        "request_hit_ratio",
+        "byte_hit_ratio",
+    }
+
+
+def _get_stats_during_refresh(
+    collector_started: threading.Event,
+    release_collector: threading.Event,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        refreshing = executor.submit(stats.get_stats)
+        assert collector_started.wait(timeout=2)
+        concurrent = executor.submit(stats.get_stats)
+        try:
+            concurrent_result = concurrent.result(timeout=1)
+        finally:
+            release_collector.set()
+        refreshed_result = refreshing.result(timeout=2)
+    return refreshed_result, concurrent_result
+
+
+def test_get_stats_cold_hit_rate_refresh_is_single_flight(monkeypatch) -> None:
+    _reset_stats_caches()
+    monkeypatch.setenv("STATS_CACHE_HIT_RATE_TTL_SECONDS", "60")
+
+    collector_started = threading.Event()
+    release_collector = threading.Event()
+    collector_lock = threading.Lock()
+    calls = 0
+
+    def fake_mgr(section: str) -> str:
+        nonlocal calls
+        assert section == "5min"
+        with collector_lock:
+            calls += 1
+            call_number = calls
+        if call_number > 1:
+            msg = "hit-rate collector ran concurrently"
+            raise AssertionError(msg)
+        collector_started.set()
+        assert release_collector.wait(timeout=2)
+        return "Request Hit Ratios: 5min: 12.5%\nByte Hit Ratios: 5min: 34.5%"
+
+    monkeypatch.setattr(stats, "get_squid_mgr_text", fake_mgr)
+    monkeypatch.setattr(stats, "get_cpu_utilization_percent", lambda **kwargs: 1.0)
+    monkeypatch.setattr(stats, "get_loadavg", lambda: None)
+
+    collecting_result, concurrent_result = _get_stats_during_refresh(
+        collector_started,
+        release_collector,
+    )
+
+    assert calls == 1
+    _assert_stats_schema(collecting_result)
+    _assert_stats_schema(concurrent_result)
+    assert collecting_result["squid"]["hit_rate_source"] == "cachemgr"
+    assert concurrent_result["squid"]["hit_rate"] == {
+        "request_hit_ratio": None,
+        "byte_hit_ratio": None,
+    }
+
+
+def test_get_stats_cold_cpu_refresh_is_single_flight(monkeypatch) -> None:
+    _reset_stats_caches()
+    monkeypatch.setenv("STATS_CACHE_CPU_TTL_SECONDS", "60")
+    stats._CACHE_HIT_RATE_VALUE = {
+        "request_hit_ratio": 10.0,
+        "byte_hit_ratio": 20.0,
+    }
+    stats._CACHE_HIT_RATE_SOURCE_VALUE = "access-observe.log"
+    stats._CACHE_HIT_RATE_TS = time.monotonic()
+
+    collector_started = threading.Event()
+    release_collector = threading.Event()
+    collector_lock = threading.Lock()
+    calls = 0
+
+    def fake_cpu(sample_seconds: float = 0.15) -> float:
+        nonlocal calls
+        with collector_lock:
+            calls += 1
+            call_number = calls
+        if call_number > 1:
+            msg = "CPU collector ran concurrently"
+            raise AssertionError(msg)
+        collector_started.set()
+        assert release_collector.wait(timeout=2)
+        return 12.34
+
+    monkeypatch.setattr(stats, "get_cpu_utilization_percent", fake_cpu)
+    monkeypatch.setattr(stats, "get_loadavg", lambda: None)
+
+    collecting_result, concurrent_result = _get_stats_during_refresh(
+        collector_started,
+        release_collector,
+    )
+
+    assert calls == 1
+    _assert_stats_schema(collecting_result)
+    _assert_stats_schema(concurrent_result)
+    assert collecting_result["cpu"]["util_percent"] == pytest.approx(12.34)
+    assert concurrent_result["cpu"] == {"util_percent": None, "loadavg": None}
+
+
+def test_get_stats_hit_rate_refresh_serves_stale_cache(monkeypatch) -> None:
+    _reset_stats_caches()
+    monkeypatch.setenv("STATS_CACHE_HIT_RATE_TTL_SECONDS", "1")
+    stale_hit_rate = {"request_hit_ratio": 1.0, "byte_hit_ratio": 2.0}
+    stats._CACHE_HIT_RATE_VALUE = stale_hit_rate
+    stats._CACHE_HIT_RATE_SOURCE_VALUE = "access-observe.log"
+    stats._CACHE_HIT_RATE_TS = time.monotonic() - 10
+
+    collector_started = threading.Event()
+    release_collector = threading.Event()
+    calls = 0
+
+    def fake_mgr(section: str) -> str:
+        nonlocal calls
+        calls += 1
+        assert calls == 1
+        assert section == "5min"
+        collector_started.set()
+        assert release_collector.wait(timeout=2)
+        return "Request Hit Ratios: 5min: 12.5%\nByte Hit Ratios: 5min: 34.5%"
+
+    monkeypatch.setattr(stats, "get_squid_mgr_text", fake_mgr)
+    monkeypatch.setattr(stats, "get_cpu_utilization_percent", lambda **kwargs: 1.0)
+    monkeypatch.setattr(stats, "get_loadavg", lambda: None)
+
+    refreshed_result, concurrent_result = _get_stats_during_refresh(
+        collector_started,
+        release_collector,
+    )
+
+    assert calls == 1
+    assert concurrent_result["squid"]["hit_rate"] == stale_hit_rate
+    assert concurrent_result["squid"]["hit_rate_source"] == "access-observe.log"
+    assert refreshed_result["squid"]["hit_rate"]["request_hit_ratio"] == pytest.approx(
+        12.5,
+    )
+
+
+def test_get_stats_cpu_refresh_serves_stale_cache(monkeypatch) -> None:
+    _reset_stats_caches()
+    monkeypatch.setenv("STATS_CACHE_CPU_TTL_SECONDS", "1")
+    stats._CACHE_CPU_VALUE = {"util_percent": 7.0, "loadavg": None}
+    stats._CACHE_CPU_TS = time.monotonic() - 10
+    stats._CACHE_HIT_RATE_VALUE = {
+        "request_hit_ratio": 10.0,
+        "byte_hit_ratio": 20.0,
+    }
+    stats._CACHE_HIT_RATE_SOURCE_VALUE = "access-observe.log"
+    stats._CACHE_HIT_RATE_TS = time.monotonic()
+
+    collector_started = threading.Event()
+    release_collector = threading.Event()
+    calls = 0
+
+    def fake_cpu(sample_seconds: float = 0.15) -> float:
+        nonlocal calls
+        calls += 1
+        assert calls == 1
+        collector_started.set()
+        assert release_collector.wait(timeout=2)
+        return 12.34
+
+    monkeypatch.setattr(stats, "get_cpu_utilization_percent", fake_cpu)
+    monkeypatch.setattr(stats, "get_loadavg", lambda: None)
+
+    refreshed_result, concurrent_result = _get_stats_during_refresh(
+        collector_started,
+        release_collector,
+    )
+
+    assert calls == 1
+    assert concurrent_result["cpu"] == {"util_percent": 7.0, "loadavg": None}
+    assert refreshed_result["cpu"]["util_percent"] == pytest.approx(12.34)
 
 
 def test_get_stats_caches_cpu(monkeypatch) -> None:

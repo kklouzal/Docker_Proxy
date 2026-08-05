@@ -517,17 +517,22 @@ def get_stats() -> dict[str, Any]:
             inflight = _CACHE_HIT_RATE_INFLIGHT
         if cached is not None and age_ok:
             return cached, cached_source, cached_mgr_available
-        if inflight and cached is not None:
-            return cached, cached_source, cached_mgr_available
+        if inflight:
+            return (
+                cached
+                or {"request_hit_ratio": None, "byte_hit_ratio": None},
+                cached_source,
+                cached_mgr_available,
+            )
 
         with _CACHE_LOCK:
             if _CACHE_HIT_RATE_INFLIGHT:
-                if _CACHE_HIT_RATE_VALUE is not None:
-                    return (
-                        _CACHE_HIT_RATE_VALUE,
-                        _CACHE_HIT_RATE_SOURCE_VALUE,
-                        _CACHE_HIT_RATE_MGR_AVAILABLE_VALUE,
-                    )
+                return (
+                    _CACHE_HIT_RATE_VALUE
+                    or {"request_hit_ratio": None, "byte_hit_ratio": None},
+                    _CACHE_HIT_RATE_SOURCE_VALUE,
+                    _CACHE_HIT_RATE_MGR_AVAILABLE_VALUE,
+                )
             _CACHE_HIT_RATE_INFLIGHT = True
 
         try:
@@ -563,12 +568,15 @@ def get_stats() -> dict[str, Any]:
             inflight = _CACHE_CPU_INFLIGHT
         if cached is not None and age_ok:
             return cached
-        if inflight and cached is not None:
-            return cached
+        if inflight:
+            return cached or {"util_percent": None, "loadavg": None}
 
         with _CACHE_LOCK:
-            if _CACHE_CPU_INFLIGHT and _CACHE_CPU_VALUE is not None:
-                return _CACHE_CPU_VALUE
+            if _CACHE_CPU_INFLIGHT:
+                return _CACHE_CPU_VALUE or {
+                    "util_percent": None,
+                    "loadavg": None,
+                }
             _CACHE_CPU_INFLIGHT = True
 
         try:
