@@ -902,7 +902,9 @@ def test_rendered_pac_strips_ipv6_url_brackets_before_local_and_proxy_matching()
 
     assert "function normalizePacHost(value)" in rendered
     assert host_normalizer in rendered
-    assert rendered.index(host_normalizer) < rendered.index("host === '::1'")
+    assert rendered.index(host_normalizer) < rendered.index(
+        "isIpv6LoopbackAddress(host)"
+    )
     assert rendered.index(host_normalizer) < rendered.index(
         "host === normalizedProxyHost"
     )
@@ -1214,6 +1216,40 @@ def test_rendered_pac_always_bypasses_loopback_ipv4_literals() -> None:
     assert "var ip = hostIp();" not in rendered
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "::1",
+        "0:0:0:0:0:0:0:1",
+        "0000:0000:0000:0000:0000:0000:0000:0001",
+        "0:0:0::0:1",
+        "[0:0:0:0:0:0:0:1]",
+    ],
+)
+def test_rendered_pac_always_bypasses_equivalent_ipv6_loopback_literals(
+    host: str,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_fallback_pac(
+        pac_renderer.ProxyPacTarget(
+            proxy_id="default",
+            public_host="proxy.example",
+            pac_scheme="http",
+            pac_port=80,
+            http_proxy_port=3128,
+            direct_enabled=False,
+        ),
+        include_private=False,
+    )
+
+    assert _evaluate_pac(rendered, host) == "DIRECT"
+    assert _evaluate_pac(rendered, "0:0:0:0:0:0:0:2") == (
+        "PROXY proxy.example:3128"
+    )
+
+
 def test_private_local_destination_metadata_tracks_rendered_pac_direct_rules() -> None:
     _add_web_to_path()
     from services import pac_renderer  # type: ignore
@@ -1246,7 +1282,7 @@ def test_private_local_destination_metadata_tracks_rendered_pac_direct_rules() -
             elif value == "localhost":
                 assert "host === 'localhost'" in rendered_private
             elif value == "::1/128":
-                assert "host === '::1'" in rendered_private
+                assert "isIpv6LoopbackAddress(host)" in rendered_private
             elif value == "fc00::/7":
                 assert "ipv6FirstHextetValue >= 0xfc00" in rendered_private
                 assert "ipv6FirstHextetValue <= 0xfdff" in rendered_private

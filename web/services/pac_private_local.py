@@ -31,7 +31,13 @@ PAC_ALWAYS_DIRECT_DESTINATION_CLASSES = (
     PacDirectDestinationClass(
         label="Always DIRECT local hostnames and loopback",
         values=("localhost", "plain hostnames", PAC_IPV4_LOOPBACK_CIDR, "::1/128"),
-        sample_hosts=("localhost", "printer", "127.5.6.7", "::1"),
+        sample_hosts=(
+            "localhost",
+            "printer",
+            "127.5.6.7",
+            "::1",
+            "0:0:0:0:0:0:0:1",
+        ),
         requires_private_toggle=False,
     ),
     PacDirectDestinationClass(
