@@ -2,14 +2,16 @@ from __future__ import annotations
 
 # ruff: noqa: EM101, EM102, TRY003
 import hashlib
-import io
 import time
-import zipfile
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final, Literal
 
 from services import proxy_recovery
+from services.adblock_artifacts import (
+    AdblockArtifactArchiveError,
+    adblock_archive_artifact_sha256,
+)
 from services.db import connect
 from services.pac_profiles_store import _normalize_proxy_host_port
 from services.proxy_recovery_db import recovery_export_query_plans
@@ -612,8 +614,8 @@ def _validate_adblock_artifact_revision_digests(
     archive_index = columns.index("archive_blob")
     for row in rows:
         try:
-            expected_sha = _adblock_archive_artifact_sha256(row[archive_index])
-        except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
+            expected_sha = adblock_archive_artifact_sha256(row[archive_index])
+        except AdblockArtifactArchiveError as exc:
             raise ProxyRecoveryRestoreError(
                 "adblock artifact revision archive is invalid",
             ) from exc
@@ -621,23 +623,6 @@ def _validate_adblock_artifact_revision_digests(
             raise ProxyRecoveryRestoreError(
                 "adblock artifact revision digest does not match archive contents",
             )
-
-
-def _adblock_archive_artifact_sha256(archive_blob: bytes) -> str:
-    digest = hashlib.sha256()
-    with zipfile.ZipFile(io.BytesIO(archive_blob)) as archive:
-        members = [info for info in archive.infolist() if not info.is_dir()]
-        member_names = [info.filename for info in members]
-        if len(member_names) != len(set(member_names)):
-            raise ValueError("duplicate adblock artifact archive member")
-        for info in sorted(members, key=lambda item: item.filename):
-            digest.update(info.filename.encode("utf-8", errors="replace"))
-            digest.update(b"\0")
-            with archive.open(info) as source:
-                while chunk := source.read(1024 * 1024):
-                    digest.update(chunk)
-            digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def _validate_certificate_bundle_revision_digests(

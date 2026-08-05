@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -61,6 +62,60 @@ _ARTIFACT_PRUNE_LOCK_TIMEOUT_SECONDS = 0
 
 _ARTIFACT_EXTRACT_MAX_BYTES = 256 * 1024 * 1024
 _ARTIFACT_EXTRACT_MAX_MEMBERS = 256
+
+
+class AdblockArtifactArchiveError(ValueError):
+    """Raised when an adblock artifact archive is unsafe or invalid."""
+
+
+_ADBLOCK_ARCHIVE_READ_ERRORS = (
+    OSError,
+    RuntimeError,
+    ValueError,
+    EOFError,
+    NotImplementedError,
+    zipfile.BadZipFile,
+    zlib.error,
+)
+
+
+@dataclass
+class _AdblockArchiveBudget:
+    max_bytes: int
+    max_members: int
+    member_count: int = 0
+    total_declared_bytes: int = 0
+    total_read_bytes: int = 0
+
+    def add_member(self, info: zipfile.ZipInfo) -> None:
+        self.member_count += 1
+        if self.member_count > self.max_members:
+            msg = (
+                "Adblock artifact archive exceeded member limit "
+                f"({self.max_members})."
+            )
+            raise AdblockArtifactArchiveError(msg)
+
+        declared_size = int(getattr(info, "file_size", 0) or 0)
+        if declared_size < 0:
+            msg = "Adblock artifact archive contains an invalid member size."
+            raise AdblockArtifactArchiveError(msg)
+        self.total_declared_bytes += declared_size
+        if self.total_declared_bytes > self.max_bytes:
+            msg = (
+                "Adblock artifact archive exceeded extract limit "
+                f"({self.max_bytes} bytes)."
+            )
+            raise AdblockArtifactArchiveError(msg)
+
+    def add_chunk(self, chunk: bytes) -> None:
+        self.total_read_bytes += len(chunk)
+        if self.total_read_bytes > self.max_bytes:
+            msg = (
+                "Adblock artifact archive exceeded extract limit "
+                f"({self.max_bytes} bytes)."
+            )
+            raise AdblockArtifactArchiveError(msg)
 
 
 def _is_builder_retryable_mysql_error(exc: BaseException) -> bool:
@@ -1506,8 +1561,88 @@ def _safe_adblock_archive_member_name(name: str) -> str | None:
     norm = os.path.normpath(normalized).replace("\\", "/")
     if norm.startswith(("../", "/")) or norm == "..":
         msg = f"Refusing to extract unsafe archive member: {normalized}"
-        raise ValueError(msg)
+        raise AdblockArtifactArchiveError(msg)
     return norm
+
+
+def _open_adblock_artifact_archive(archive_blob: bytes) -> zipfile.ZipFile:
+    try:
+        return zipfile.ZipFile(io.BytesIO(bytes(archive_blob or b"")))
+    except _ADBLOCK_ARCHIVE_READ_ERRORS as exc:
+        msg = "Adblock artifact archive is invalid."
+        raise AdblockArtifactArchiveError(msg) from exc
+
+
+def _validated_adblock_archive_members(
+    archive: zipfile.ZipFile,
+    budget: _AdblockArchiveBudget,
+) -> tuple[tuple[zipfile.ZipInfo, str], ...]:
+    members: list[tuple[zipfile.ZipInfo, str]] = []
+    member_names: set[str] = set()
+    for info in archive.infolist():
+        normalized = _safe_adblock_archive_member_name(info.filename or "")
+        if normalized is None:
+            continue
+        if info.filename in member_names:
+            msg = "Adblock artifact archive contains a duplicate member."
+            raise AdblockArtifactArchiveError(msg)
+        member_names.add(info.filename)
+        budget.add_member(info)
+        members.append((info, normalized))
+    return tuple(members)
+
+
+def _read_adblock_archive_member(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    budget: _AdblockArchiveBudget,
+    consume: Callable[[bytes], object],
+) -> None:
+    member_bytes = 0
+    try:
+        source = archive.open(info, "r")
+    except _ADBLOCK_ARCHIVE_READ_ERRORS as exc:
+        msg = "Adblock artifact archive is invalid."
+        raise AdblockArtifactArchiveError(msg) from exc
+    with source:
+        while True:
+            try:
+                chunk = source.read(512 * 1024)
+            except _ADBLOCK_ARCHIVE_READ_ERRORS as exc:
+                msg = "Adblock artifact archive is invalid."
+                raise AdblockArtifactArchiveError(msg) from exc
+            if not chunk:
+                break
+            member_bytes += len(chunk)
+            budget.add_chunk(chunk)
+            consume(chunk)
+    if member_bytes != int(getattr(info, "file_size", 0) or 0):
+        msg = "Adblock artifact archive contains a truncated member."
+        raise AdblockArtifactArchiveError(msg)
+
+
+def _adblock_archive_budget() -> _AdblockArchiveBudget:
+    return _AdblockArchiveBudget(
+        max_bytes=_adblock_artifact_extract_max_bytes(),
+        max_members=_adblock_artifact_extract_max_members(),
+    )
+
+
+def adblock_archive_artifact_sha256(archive_blob: bytes) -> str:
+    """Validate an artifact archive and hash its deterministic file payload."""
+    digest = hashlib.sha256()
+    with _open_adblock_artifact_archive(archive_blob) as archive:
+        budget = _adblock_archive_budget()
+        members = _validated_adblock_archive_members(archive, budget)
+        for info, _normalized in sorted(
+            members,
+            key=lambda member: member[0].filename,
+        ):
+            digest.update(info.filename.encode("utf-8", errors="replace"))
+            digest.update(b"\0")
+            _read_adblock_archive_member(archive, info, budget, digest.update)
+            digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def materialize_archive_to_directory(
@@ -1526,42 +1661,14 @@ def materialize_archive_to_directory(
     backup_dir: Path | None = None
 
     try:
-        max_bytes = _adblock_artifact_extract_max_bytes()
-        max_members = _adblock_artifact_extract_max_members()
-        total_declared_bytes = 0
-        total_written_bytes = 0
-        member_count = 0
-        with zipfile.ZipFile(io.BytesIO(bytes(archive_blob or b""))) as zf:
-            for info in zf.infolist():
-                norm = _safe_adblock_archive_member_name(info.filename or "")
-                if norm is None:
-                    continue
-                member_count += 1
-                if member_count > max_members:
-                    msg = f"Adblock artifact archive exceeded member limit ({max_members})."
-                    raise ValueError(msg)
-
-                declared_size = int(getattr(info, "file_size", 0) or 0)
-                total_declared_bytes += declared_size
-                if total_declared_bytes > max_bytes:
-                    msg = f"Adblock artifact archive exceeded extract limit ({max_bytes} bytes)."
-                    raise ValueError(msg)
-
+        with _open_adblock_artifact_archive(archive_blob) as zf:
+            budget = _adblock_archive_budget()
+            members = _validated_adblock_archive_members(zf, budget)
+            for info, norm in members:
                 dest = payload_dir / norm
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(info, "r") as src, Path(dest).open("wb") as dst:
-                    while True:
-                        chunk = src.read(512 * 1024)
-                        if not chunk:
-                            break
-                        total_written_bytes += len(chunk)
-                        if total_written_bytes > max_bytes:
-                            msg = (
-                                "Adblock artifact archive exceeded extract limit "
-                                f"({max_bytes} bytes)."
-                            )
-                            raise ValueError(msg)
-                        dst.write(chunk)
+                with Path(dest).open("wb") as dst:
+                    _read_adblock_archive_member(zf, info, budget, dst.write)
 
         if artifact_sha256:
             (payload_dir / _ARTIFACT_SHA_FILENAME).write_text(

@@ -892,6 +892,81 @@ def test_adblock_artifact_revision_restore_recomputes_declared_digest_before_wri
     )
 
 
+@pytest.mark.parametrize(
+    ("limit_env", "limit", "file_map"),
+    [
+        (
+            "ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES",
+            "1024",
+            {"rules.jsonl": b"0" * (64 * 1024)},
+        ),
+        (
+            "ADBLOCK_ARTIFACT_EXTRACT_MAX_MEMBERS",
+            "2",
+            {
+                "report.json": b"{}",
+                "rules.jsonl": b"",
+                "settings.json": b"{}",
+            },
+        ),
+    ],
+)
+def test_adblock_artifact_revision_restore_enforces_materialization_limits_before_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    limit_env: str,
+    limit: str,
+    file_map: dict[str, bytes],
+) -> None:
+    artifact_sha, archive_blob = _adblock_artifact(file_map)
+    monkeypatch.setenv(limit_env, limit)
+    row = {
+        "artifact_sha256": artifact_sha,
+        "archive_blob": archive_blob,
+        "report_json": "{}",
+        "settings_version": 2,
+        "enabled_lists_json": '["easylist"]',
+    }
+    conn = _StrictRestoreConn()
+
+    with pytest.raises(
+        restore.ProxyRecoveryRestoreError,
+        match="artifact revision archive is invalid",
+    ):
+        restore.restore_recovery_bundle(
+            conn,
+            _bundle(overrides={"adblock_artifact_revisions": (row,)}),
+            "edge-01",
+            now_ts=NOW,
+        )
+
+    assert conn.ops == []
+
+
+def test_adblock_artifact_revision_restore_rejects_truncated_archive_before_writes() -> None:
+    artifact_sha, archive_blob = _adblock_artifact({"rules.jsonl": b"compiled-rules"})
+    row = {
+        "artifact_sha256": artifact_sha,
+        "archive_blob": archive_blob[:-8],
+        "report_json": "{}",
+        "settings_version": 2,
+        "enabled_lists_json": '["easylist"]',
+    }
+    conn = _StrictRestoreConn()
+
+    with pytest.raises(
+        restore.ProxyRecoveryRestoreError,
+        match="artifact revision archive is invalid",
+    ):
+        restore.restore_recovery_bundle(
+            conn,
+            _bundle(overrides={"adblock_artifact_revisions": (row,)}),
+            "edge-01",
+            now_ts=NOW,
+        )
+
+    assert conn.ops == []
+
+
 def test_adblock_artifact_revision_restore_rejects_mismatched_digest_before_writes() -> None:
     _artifact_sha, archive_blob = _adblock_artifact(
         {"report.json": b"{}\n", "squid/adblock.acl": b".ads.example\n"},
