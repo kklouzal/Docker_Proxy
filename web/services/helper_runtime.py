@@ -74,6 +74,15 @@ def _json_safe_event_key(value: object) -> str:
         return _unserializable_event_value(value)
 
 
+def _unique_event_key(key: str, existing: Mapping[str, object]) -> str:
+    if key not in existing:
+        return key
+    suffix = 2
+    while f"{key}#{suffix}" in existing:
+        suffix += 1
+    return f"{key}#{suffix}"
+
+
 def _json_safe_event_value(value: object, *, depth: int = 0) -> object:
     if value is None or isinstance(value, str | bool | int):
         return value
@@ -87,9 +96,10 @@ def _json_safe_event_value(value: object, *, depth: int = 0) -> object:
         sanitized: dict[str, object] = {}
         for index, (item_key, item_value) in enumerate(value.items()):
             if index >= _MAX_HELPER_EVENT_COLLECTION_ITEMS:
-                sanitized["..."] = "truncated"
+                sanitized[_unique_event_key("...", sanitized)] = "truncated"
                 break
-            sanitized[_json_safe_event_key(item_key)] = _json_safe_event_value(
+            safe_key = _unique_event_key(_json_safe_event_key(item_key), sanitized)
+            sanitized[safe_key] = _json_safe_event_value(
                 item_value,
                 depth=depth + 1,
             )

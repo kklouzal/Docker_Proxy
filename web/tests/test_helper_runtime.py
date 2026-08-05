@@ -50,6 +50,19 @@ def test_helper_event_preserves_event_with_unserializable_field(capsys) -> None:
     assert payload["cache_key"] == "<non-json-serializable:object>"
 
 
+def test_helper_event_preserves_nested_fields_with_colliding_json_keys(capsys) -> None:
+    helper_event(
+        "sample",
+        "startup",
+        details={7: "numeric key", "7": "string key"},
+    )
+
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["helper"] == "sample"
+    assert payload["event"] == "startup"
+    assert payload["details"] == {"7": "numeric key", "7#2": "string key"}
+
+
 def test_helper_failure_event_sanitizes_non_validation_errors(capsys) -> None:
     msg = "database password=secret unavailable"
     helper_failure_event("sample", "apply_failed", RuntimeError(msg))
