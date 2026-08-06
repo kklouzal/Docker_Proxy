@@ -1,5 +1,6 @@
 import pytest
 from services.runtime_helpers import (
+    authority_has_empty_explicit_port,
     decode_bytes,
     env_float,
     env_int,
@@ -7,6 +8,30 @@ from services.runtime_helpers import (
     normalize_hostish,
     not_cached_reason,
 )
+
+
+@pytest.mark.parametrize(
+    ("netloc", "expected"),
+    [
+        ("", False),
+        ("proxy.example", False),
+        ("proxy.example:443", False),
+        ("proxy.example:", True),
+        ("user:secret@proxy.example:", True),
+        ("[2001:db8::1]", False),
+        ("[2001:db8::1]:443", False),
+        ("[2001:db8::1]:", True),
+        ("user:secret@[2001:db8::1]:", True),
+        ("[2001:db8::1", False),
+        ("2001:db8::1", False),
+        ("2001:db8::", True),
+        ("proxy.example:0", False),
+        ("proxy.example:not-a-port", False),
+        ("proxy.example:65536", False),
+    ],
+)
+def test_authority_has_empty_explicit_port(netloc: str, expected: bool) -> None:
+    assert authority_has_empty_explicit_port(netloc) is expected
 
 
 def test_decode_bytes_handles_bytes_strings_and_none() -> None:

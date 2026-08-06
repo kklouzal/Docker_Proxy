@@ -91,12 +91,13 @@ def _normalize_host_token(host: str) -> str:
     return candidate if _valid_dns_hostname(candidate) else ""
 
 
-def _parsed_netloc_has_empty_port(netloc: str) -> bool:
-    authority = netloc.rsplit("@", 1)[-1]
+def authority_has_empty_explicit_port(netloc: str) -> bool:
+    """Return whether a parsed URL authority explicitly ends with an empty port."""
+    authority = str(netloc or "").rsplit("@", 1)[-1]
     if authority.startswith("["):
         closing_bracket = authority.find("]")
         return authority[closing_bracket + 1 :] == ":" if closing_bracket >= 0 else False
-    return authority.count(":") == 1 and authority.endswith(":")
+    return authority.endswith(":") and ":" in authority
 
 
 def normalize_hostish(value: object | None) -> str:
@@ -109,7 +110,7 @@ def normalize_hostish(value: object | None) -> str:
     try:
         parsed = urlsplit(host)
         if (parsed.scheme or parsed.netloc) and parsed.hostname:
-            if _parsed_netloc_has_empty_port(parsed.netloc):
+            if authority_has_empty_explicit_port(parsed.netloc):
                 return ""
             try:
                 parsed_port = parsed.port
@@ -169,7 +170,7 @@ def extract_domain(
     try:
         parsed = urlsplit(raw)
         if parsed.hostname:
-            if _parsed_netloc_has_empty_port(parsed.netloc):
+            if authority_has_empty_explicit_port(parsed.netloc):
                 return ""
             try:
                 parsed_port = parsed.port

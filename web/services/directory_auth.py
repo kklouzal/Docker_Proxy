@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives import serialization
 
 from services.db import connect
 from services.logutil import log_exception_throttled
+from services.runtime_helpers import authority_has_empty_explicit_port
 
 logger = logging.getLogger(__name__)
 
@@ -54,14 +55,6 @@ def _unsafe_ldap_authority(value: str) -> bool:
         or ch in "/?#@\\"
         for ch in decoded
     )
-
-
-def _has_empty_explicit_authority_port(value: str) -> bool:
-    authority = value.rsplit("@", 1)[-1]
-    if authority.startswith("["):
-        bracket_end = authority.find("]")
-        return bracket_end >= 0 and authority[bracket_end + 1 :] == ":"
-    return authority.endswith(":") and ":" in authority
 
 
 def _canonical_ldap_server_host(hostname: str) -> str:
@@ -964,7 +957,7 @@ class DirectoryAuthStore:
                 or parsed.path
                 or parsed.query
                 or parsed.fragment
-                or _has_empty_explicit_authority_port(parsed.netloc)
+                or authority_has_empty_explicit_port(parsed.netloc)
                 or _unsafe_ldap_authority(parsed.netloc)
             ):
                 raise ValueError(invalid_url_msg)

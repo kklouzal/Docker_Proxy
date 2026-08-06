@@ -26,6 +26,7 @@ except ImportError:  # pragma: no cover - production image installs defusedxml.
 
 from services.db import connect
 from services.logutil import log_exception_throttled
+from services.runtime_helpers import authority_has_empty_explicit_port
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +94,6 @@ def _decoded_authority_component_is_unsafe(value: str) -> bool:
     )
 
 
-def _has_empty_explicit_authority_port(netloc: str) -> bool:
-    return netloc.endswith(":")
-
-
 def _normalize_saml_url(value: Any, *, label: str) -> str:
     url = str(value or "").strip()
     if not url:
@@ -117,7 +114,7 @@ def _normalize_saml_url(value: Any, *, label: str) -> str:
     except ValueError as exc:
         msg = f"SAML {label} URL includes an invalid port."
         raise ValueError(msg) from exc
-    if _has_empty_explicit_authority_port(parsed.netloc) or port == 0:
+    if authority_has_empty_explicit_port(parsed.netloc) or port == 0:
         msg = f"SAML {label} URL includes an invalid port."
         raise ValueError(msg)
     if _decoded_authority_component_is_unsafe(parsed.netloc) or any(
@@ -693,7 +690,7 @@ class SamlAuthStore:
         except ValueError as exc:
             msg = "SAML public base URL includes an invalid port."
             raise ValueError(msg) from exc
-        if _has_empty_explicit_authority_port(parsed.netloc) or port == 0:
+        if authority_has_empty_explicit_port(parsed.netloc) or port == 0:
             msg = "SAML public base URL includes an invalid port."
             raise ValueError(msg)
         if _decoded_authority_component_is_unsafe(parsed.netloc) or any(

@@ -10,6 +10,8 @@ import urllib.request
 from dataclasses import dataclass
 from urllib.parse import quote, unquote_to_bytes, urljoin, urlparse
 
+from services.runtime_helpers import authority_has_empty_explicit_port
+
 _ALLOWED_DOWNLOAD_REQUEST_HEADERS = {
     "if-modified-since": "If-Modified-Since",
     "if-none-match": "If-None-Match",
@@ -187,14 +189,6 @@ def _download_url_port(parsed) -> int:
     if port is None:
         return 443 if parsed.scheme == "https" else 80
     return port
-
-
-def _has_empty_explicit_authority_port(netloc: str) -> bool:
-    authority = netloc.rsplit("@", 1)[-1]
-    if authority.startswith("["):
-        bracket_end = authority.find("]")
-        return bracket_end >= 0 and authority[bracket_end + 1 :] == ":"
-    return authority.endswith(":") and ":" in authority
 
 
 def _create_download_connection(
@@ -394,7 +388,7 @@ def validate_download_url(
         raise ValueError(invalid_url_msg) from exc
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(scheme_error)
-    if _has_empty_explicit_authority_port(parsed.netloc) or "%" in parsed.netloc:
+    if authority_has_empty_explicit_port(parsed.netloc) or "%" in parsed.netloc:
         raise ValueError(invalid_url_msg)
     try:
         hostname = parsed.hostname or ""

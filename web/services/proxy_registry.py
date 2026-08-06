@@ -46,6 +46,7 @@ from services.public_endpoint import (
 from services.public_endpoint import (
     normalize_public_scheme as _normalize_public_scheme,
 )
+from services.runtime_helpers import authority_has_empty_explicit_port
 
 
 def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
@@ -67,14 +68,6 @@ def _has_unsafe_url_text(value: str) -> bool:
 
 def _has_unsafe_query_text(value: str) -> bool:
     return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
-
-
-def _has_empty_explicit_authority_port(netloc: str) -> bool:
-    authority = netloc.rsplit("@", 1)[-1]
-    if authority.startswith("["):
-        bracket_end = authority.find("]")
-        return bracket_end >= 0 and authority[bracket_end + 1 :] == ":"
-    return authority.endswith(":") and ":" in authority
 
 
 _MAX_PERCENT_DECODE_PASSES = 8
@@ -214,7 +207,7 @@ def normalize_management_url(value: object | None) -> str:
         candidate = f"http://{candidate}"
     try:
         parsed = urlsplit(candidate)
-        if _has_empty_explicit_authority_port(parsed.netloc):
+        if authority_has_empty_explicit_port(parsed.netloc):
             return ""
         parsed_port = parsed.port
     except Exception:
@@ -290,7 +283,7 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
         parsed = urlsplit(candidate)
     except Exception:
         return "", "http", 80, "/proxy.pac"
-    if _has_empty_explicit_authority_port(parsed.netloc):
+    if authority_has_empty_explicit_port(parsed.netloc):
         return "", "http", 80, "/proxy.pac"
     if (
         parsed.netloc

@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote_to_bytes, urlsplit, urlunsplit
 
 from services.errors import public_error_message
+from services.runtime_helpers import authority_has_empty_explicit_port
 
 ErrorFormatter = Callable[[Exception], str]
 
@@ -506,14 +507,6 @@ def _is_local_forwarding_probe_host(host: str) -> bool:
     return address.is_loopback
 
 
-def _has_empty_explicit_authority_port(netloc: str) -> bool:
-    authority = str(netloc or "").rsplit("@", 1)[-1]
-    if authority.startswith("["):
-        bracket_end = authority.find("]")
-        return bracket_end >= 0 and authority[bracket_end + 1 :] == ":"
-    return authority.endswith(":") and ":" in authority
-
-
 def _has_percent_decoded_forwarding_probe_unsafe_chars(value: str) -> bool:
     decoded = unquote_to_bytes(value)
     return any(byte < 32 or byte == 127 or byte == ord("\\") for byte in decoded)
@@ -534,7 +527,7 @@ def _safe_forwarding_probe_url(target_url: str) -> tuple[str, str]:
         return "", "unsafe forwarding probe target URL: malformed"
     if parsed.scheme.lower() != "http" or not parsed.netloc or not parsed.hostname:
         return "", "unsafe forwarding probe target URL: expected absolute http URL"
-    if _has_empty_explicit_authority_port(parsed.netloc):
+    if authority_has_empty_explicit_port(parsed.netloc):
         return "", "unsafe forwarding probe target URL: empty explicit port"
     if parsed.username is not None or parsed.password is not None:
         return "", "unsafe forwarding probe target URL: embedded credentials"

@@ -3,6 +3,8 @@ from __future__ import annotations
 import ipaddress
 from urllib.parse import urlsplit
 
+from services.runtime_helpers import authority_has_empty_explicit_port
+
 
 def _is_ambiguous_ipv4_host(value: str) -> bool:
     candidate = value.rstrip(".").lower()
@@ -51,10 +53,6 @@ def _canonical_public_dns_host(
     ):
         return ""
     return candidate
-
-
-def _has_empty_explicit_authority_port(netloc: str) -> bool:
-    return netloc.endswith(":")
 
 
 def _is_reserved_public_dns_host(value: str) -> bool:
@@ -120,7 +118,7 @@ def normalize_public_host(
             return fallback
         if parsed.username is not None or parsed.password is not None:
             return fallback
-        if _has_empty_explicit_authority_port(parsed.netloc):
+        if authority_has_empty_explicit_port(parsed.netloc):
             return fallback
         if port == 0:
             return fallback
@@ -135,7 +133,7 @@ def normalize_public_host(
             return fallback
         if parsed.username is not None or parsed.password is not None:
             return fallback
-        if _has_empty_explicit_authority_port(parsed.netloc):
+        if authority_has_empty_explicit_port(parsed.netloc):
             return fallback
         if port == 0:
             return fallback
