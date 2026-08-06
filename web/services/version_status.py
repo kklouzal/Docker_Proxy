@@ -323,7 +323,15 @@ class VersionStatusClient:
             json.JSONDecodeError,
         ) as exc:
             if cached is not None:
-                return cached[1]
+                cached_result = cached[1]
+                return CompareResult(
+                    "warn",
+                    cached_result.commits_behind,
+                    cached_result.latest_revision,
+                    "GitHub version check failed; showing stale cached result. "
+                    f"Last successful result: {cached_result.detail} "
+                    f"Refresh error: {exc}",
+                )
             result = CompareResult(
                 "unknown",
                 None,

@@ -292,7 +292,7 @@ def test_compare_revision_preserves_safe_configured_branch_in_compare_url() -> N
     ]
 
 
-def test_compare_cache_survives_later_github_failure() -> None:
+def test_compare_cache_marks_expired_success_stale_until_github_recovers() -> None:
     calls = {"count": 0}
 
     def urlopen(_request, *, timeout):
@@ -306,8 +306,21 @@ def test_compare_cache_survives_later_github_failure() -> None:
                     "total_commits": 0,
                 }
             )
-        msg = "network down"
-        raise OSError(msg)
+        if calls["count"] == 2:
+            msg = "network down"
+            raise OSError(msg)
+        if calls["count"] == 3:
+            msg = "request timed out"
+            raise TimeoutError(msg)
+        return _json_response(
+            {
+                "status": "ahead",
+                "ahead_by": 2,
+                "behind_by": 0,
+                "total_commits": 2,
+                "commits": [{"sha": "new-main-revision"}],
+            }
+        )
 
     now = {"value": 1.0}
     client = VersionStatusClient(
@@ -316,13 +329,35 @@ def test_compare_cache_survives_later_github_failure() -> None:
         monotonic=lambda: now["value"],
     )
 
-    first = client.compare_revision("abc123", ttl_seconds=1)
+    current = client.compare_revision("abc123", ttl_seconds=1)
+    now["value"] = 1.5
+    current_cache_hit = client.compare_revision("abc123", ttl_seconds=1)
+    now["value"] = 3.0
+    stale_after_failure = client.compare_revision("abc123", ttl_seconds=1)
+    now["value"] = 4.0
+    stale_after_repeated_failure = client.compare_revision("abc123", ttl_seconds=1)
     now["value"] = 5.0
-    second = client.compare_revision("abc123", ttl_seconds=1)
+    recovered = client.compare_revision("abc123", ttl_seconds=1)
+    now["value"] = 5.5
+    recovered_cache_hit = client.compare_revision("abc123", ttl_seconds=1)
 
-    assert first.state == "ok"
-    assert second.state == "ok"
-    assert calls["count"] == 2
+    assert current.state == "ok"
+    assert current_cache_hit == current
+    assert stale_after_failure.state == "warn"
+    assert stale_after_failure.commits_behind == 0
+    assert stale_after_failure.latest_revision == "abc123"
+    assert "showing stale cached result" in stale_after_failure.detail
+    assert "Running commit matches main" in stale_after_failure.detail
+    assert "network down" in stale_after_failure.detail
+    assert stale_after_repeated_failure.state == "warn"
+    assert "showing stale cached result" in stale_after_repeated_failure.detail
+    assert "request timed out" in stale_after_repeated_failure.detail
+    assert recovered.state == "outdated"
+    assert recovered.commits_behind == 2
+    assert recovered.latest_revision == "new-main-revision"
+    assert "stale" not in recovered.detail
+    assert recovered_cache_hit == recovered
+    assert calls["count"] == 4
 
 
 def test_missing_running_commit_is_unknown_without_github_call() -> None:
