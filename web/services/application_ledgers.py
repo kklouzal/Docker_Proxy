@@ -24,7 +24,7 @@ def normalize_application_detail(
 ) -> str:
     """Redact and bound operator-visible apply details without flattening useful lines."""
     text = redact_sensitive_text("" if value is None else str(value))
-    text = text.replace("\r", "\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = "".join(ch if ch in {"\n", "\t"} or ch >= " " else " " for ch in text)
     return text[: max(0, int(max_len))]
 

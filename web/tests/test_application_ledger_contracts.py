@@ -171,6 +171,20 @@ def test_application_detail_preserves_useful_line_and_tab_structure() -> None:
     assert normalize_application_detail(detail) == detail
 
 
+def test_application_detail_canonicalizes_crlf_and_lone_cr() -> None:
+    detail = "apply started\r\nreload queued\rhealth check\tpending"
+
+    assert normalize_application_detail(detail) == (
+        "apply started\nreload queued\nhealth check\tpending"
+    )
+
+
+def test_application_detail_normalizes_newlines_before_bounding() -> None:
+    assert normalize_application_detail("step one\r\nstep two", max_len=10) == (
+        "step one\ns"
+    )
+
+
 def test_certificate_application_success_evidence_must_match_revision(
     monkeypatch,
 ) -> None:
