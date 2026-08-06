@@ -582,6 +582,64 @@ def test_ssl_errors_tailer_does_not_open_db_connection_while_idle(
         store._tail_loop()
 
 
+def test_ssl_errors_tailer_restarts_at_zero_after_copytruncate_regrowth(
+    monkeypatch, tmp_path, ssl_errors_store
+) -> None:
+    log_path = tmp_path / "cache.log"
+    log_path.write_text("", encoding="utf-8")
+    original_inode = log_path.stat().st_ino
+    store = ssl_errors_store.SslErrorsStore(cache_log_path=str(log_path))
+    original_line = (
+        "2026/08/06 07:00:00| TLS handshake failed host=old.example detail="
+        + ("x" * 200)
+        + "\n"
+    )
+    replacement_line = (
+        "2026/08/06 07:00:01| TLS handshake failed host=replacement.example\n"
+    )
+    replacement_content = replacement_line + ("cache filler " + ("x" * 300) + "\n")
+    assert len(replacement_line) < len(original_line) < len(replacement_content)
+    sleep_calls = 0
+    domains: list[str] = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def sleep(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            log_path.write_text(original_line, encoding="utf-8")
+            return
+        if sleep_calls == 2:
+            assert log_path.stat().st_size == len(original_line)
+            log_path.write_text(replacement_content, encoding="utf-8")
+            assert log_path.stat().st_ino == original_inode
+            assert log_path.stat().st_size > len(original_line)
+            return
+        raise StopLoop
+
+    monkeypatch.setenv("SSL_ERRORS_COMMIT_INTERVAL_SECONDS", "10")
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_tailer_connect", Conn)
+    monkeypatch.setattr(
+        store,
+        "_upsert",
+        lambda _conn, domain, _category, _reason, _ts, _sample: domains.append(domain),
+    )
+    monkeypatch.setattr(ssl_errors_store.time, "time", lambda: 100.0)
+    monkeypatch.setattr(ssl_errors_store.time, "sleep", sleep)
+
+    with pytest.raises(StopLoop):
+        store._tail_loop()
+
+    assert domains == ["old.example", "replacement.example"]
+
+
 def test_ssl_errors_tailer_does_not_initialize_db_when_log_missing(
     monkeypatch, tmp_path, ssl_errors_store
 ) -> None:
