@@ -19,15 +19,34 @@ from services.config_revisions import ConfigRevisionStore  # type: ignore  # noq
 
 
 class _ConfigRevisionConn:
-    def __init__(self, calls: list[str], *, fail_insert_once: bool) -> None:
+    def __init__(
+        self,
+        calls: list[str],
+        *,
+        fail_insert_once: bool,
+        fail_commit_once: bool = False,
+    ) -> None:
         self.calls = calls
         self.fail_insert_once = fail_insert_once
+        self.fail_commit_once = fail_commit_once
 
     def __enter__(self):
         return self
 
     def __exit__(self, *_exc):
         return False
+
+    def commit(self) -> None:
+        self.calls.append("COMMIT")
+        if self.fail_commit_once:
+            self.fail_commit_once = False
+            raise pymysql.OperationalError(
+                1213,
+                "Deadlock found when trying to get lock; try restarting transaction",
+            )
+
+    def rollback(self) -> None:
+        self.calls.append("ROLLBACK")
 
     def execute(self, sql, params=None):
         text = str(sql)
@@ -80,6 +99,34 @@ def test_config_revision_create_retries_transient_deadlock(monkeypatch) -> None:
 
     assert revision.revision_id == 42
     assert sum(1 for call in calls if "INSERT INTO proxy_config_revisions" in call) == 2
+
+
+def test_config_revision_create_retries_transient_commit_deadlock(monkeypatch) -> None:
+    store = ConfigRevisionStore()
+    calls: list[str] = []
+    first = _ConfigRevisionConn(
+        calls,
+        fail_insert_once=False,
+        fail_commit_once=True,
+    )
+    second = _ConfigRevisionConn(calls, fail_insert_once=False)
+    connections = iter([first, second])
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: next(connections))
+    monkeypatch.setattr("services.config_revisions.time.sleep", lambda _seconds: None)
+
+    revision = store.create_revision(
+        "edge-a", "workers 1\n", created_by="system", source_kind="bootstrap"
+    )
+
+    assert revision.revision_id == 42
+    assert sum(1 for call in calls if "INSERT INTO proxy_config_revisions" in call) == 2
+    assert calls.count("COMMIT") == 2
+    assert calls.count("ROLLBACK") == 1
+    assert calls.index("ROLLBACK") < next(
+        i for i, call in enumerate(calls) if "RELEASE_LOCK" in call
+    )
 
 
 def test_config_revision_lock_retry_exhaustion_preserves_exception(monkeypatch) -> None:

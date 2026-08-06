@@ -120,8 +120,14 @@ def mysql_advisory_lock(
             conn.rollback()
         raise
     else:
-        with suppress(Exception):
-            conn.commit()
+        commit = getattr(conn, "commit", None)
+        if callable(commit):
+            try:
+                commit()
+            except Exception:
+                with suppress(Exception):
+                    conn.rollback()
+                raise
     finally:
         try:
             conn.execute("DO RELEASE_LOCK(%s)", (name,))
