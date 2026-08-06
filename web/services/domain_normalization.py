@@ -97,12 +97,12 @@ def normalize_domain(value: object) -> str:
     if raw.startswith("[") and "]" in raw:
         suffix = raw[raw.index("]") + 1 :].strip()
         if suffix:
-            if not suffix.startswith(":") or not suffix[1:].isdigit():
+            if not suffix.startswith(":") or not _is_valid_port(suffix[1:]):
                 return ""
         raw = raw[1 : raw.index("]")]
     elif ":" in raw and raw.count(":") == 1:
         host, port = raw.rsplit(":", 1)
-        if port.isdigit():
+        if _is_valid_port(port):
             raw = host
         else:
             return ""

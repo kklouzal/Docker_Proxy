@@ -35,6 +35,18 @@ def test_normalize_domain_rejects_malformed_named_ports() -> None:
     assert normalize_domain("http://example.com:http/path") == ""
 
 
+def test_normalize_domain_rejects_out_of_range_bare_authority_ports() -> None:
+    for port in ("0", "65536"):
+        assert normalize_domain(f"example.com:{port}") == ""
+        assert normalize_domain(f"[2001:db8::1]:{port}") == ""
+
+
+def test_normalize_domain_preserves_valid_bare_authority_ports() -> None:
+    for port in ("1", "443", "65535"):
+        assert normalize_domain(f"example.com:{port}") == "example.com"
+        assert normalize_domain(f"[2001:db8::1]:{port}") == "2001:db8::1"
+
+
 def test_normalize_domain_rejects_raw_userinfo_or_email_like_hosts() -> None:
     for value in (
         "user@example.com",
