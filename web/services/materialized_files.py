@@ -172,26 +172,32 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
                     os.replace(temp_path, path)  # noqa: PTH105
                     _fsync_parent_dir(path)
                     replaced_paths.append((target_key, path))
-            except Exception:
+            except Exception as publish_error:
                 for target_key, path in reversed(replaced_paths):
                     backup = backups.get(target_key, _FileBackup(existed=False))
-                    if backup.existed:
-                        temp_path = _write_staged_file(
-                            path,
-                            backup.content,
-                            mode=backup.mode,
-                            owner=backup.owner,
-                        )
-                        temp_paths.append(temp_path)
-                        os.replace(temp_path, path)  # noqa: PTH105
-                        _fsync_parent_dir(path)
-                    else:
-                        unlinked = False
-                        with contextlib.suppress(FileNotFoundError):
-                            pathlib.Path(path).unlink()
-                            unlinked = True
-                        if unlinked:
+                    try:
+                        if backup.existed:
+                            temp_path = _write_staged_file(
+                                path,
+                                backup.content,
+                                mode=backup.mode,
+                                owner=backup.owner,
+                            )
+                            temp_paths.append(temp_path)
+                            os.replace(temp_path, path)  # noqa: PTH105
                             _fsync_parent_dir(path)
+                        else:
+                            unlinked = False
+                            with contextlib.suppress(FileNotFoundError):
+                                pathlib.Path(path).unlink()
+                                unlinked = True
+                            if unlinked:
+                                _fsync_parent_dir(path)
+                    except Exception as rollback_error:
+                        publish_error.add_note(
+                            f"Rollback failed for managed file {path!r}: "
+                            f"{rollback_error!r}"
+                        )
                 raise
     finally:
         for temp_path in temp_paths:

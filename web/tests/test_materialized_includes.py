@@ -1106,6 +1106,67 @@ def test_write_managed_text_files_restores_previous_file_mode_on_rollback(
     assert second.stat().st_mode & 0o777 == 0o640
 
 
+def test_write_managed_text_files_continues_rollback_after_restore_failure(
+    tmp_path, monkeypatch
+) -> None:
+    materialized_files = _import_materialized_files_module()
+
+    targets = [tmp_path / f"{name}.conf" for name in ("first", "second", "third", "fourth")]
+    modes = (0o600, 0o620, 0o640, 0o660)
+    original_owners: dict[Path, tuple[int, int]] = {}
+    for target, mode in zip(targets, modes, strict=True):
+        target.write_text(f"old {target.stem}\n", encoding="utf-8")
+        target.chmod(mode)
+        stat = target.stat()
+        original_owners[target] = (stat.st_uid, stat.st_gid)
+
+    first, second, third, fourth = targets
+    real_replace = materialized_files.os.replace
+    chown_calls: list[tuple[bytes, int, int]] = []
+
+    def deny_second_restore_owner(path, uid, gid) -> None:
+        content = Path(path).read_bytes()
+        chown_calls.append((content, uid, gid))
+        if content == b"old second\n":
+            msg = "rollback ownership denied for second.conf"
+            raise PermissionError(msg)
+
+    def fail_fourth_publish(src, dst):
+        if Path(dst) == fourth and Path(src).read_bytes() == b"new fourth\n":
+            msg = "publish failed for fourth.conf"
+            raise OSError(msg)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(materialized_files.os, "chown", deny_second_restore_owner)
+    monkeypatch.setattr(materialized_files.os, "replace", fail_fourth_publish)
+
+    try:
+        materialized_files.write_managed_text_files(
+            *((str(target), f"new {target.stem}\n") for target in targets)
+        )
+    except OSError as exc:
+        assert str(exc) == "publish failed for fourth.conf"
+        notes = getattr(exc, "__notes__", [])
+        assert len(notes) == 1
+        assert str(second) in notes[0]
+        assert "PermissionError" in notes[0]
+        assert "rollback ownership denied for second.conf" in notes[0]
+    else:  # pragma: no cover - defensive assertion
+        msg = "expected fourth publish failure"
+        raise AssertionError(msg)
+
+    assert first.read_text(encoding="utf-8") == "old first\n"
+    assert second.read_text(encoding="utf-8") == "new second\n"
+    assert third.read_text(encoding="utf-8") == "old third\n"
+    assert fourth.read_text(encoding="utf-8") == "old fourth\n"
+    for target, mode in zip(targets, modes, strict=True):
+        assert target.stat().st_mode & 0o777 == mode
+    for restored_target in (first, third):
+        owner = original_owners[restored_target]
+        assert (f"old {restored_target.stem}\n".encode(), *owner) in chown_calls
+    assert list(tmp_path.glob(".managed-*")) == []
+
+
 def test_write_managed_text_files_preserves_existing_mode_on_rewrite(
     tmp_path, monkeypatch
 ) -> None:
