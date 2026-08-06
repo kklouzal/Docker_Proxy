@@ -47,6 +47,17 @@ def test_normalize_domain_preserves_valid_bare_authority_ports() -> None:
         assert normalize_domain(f"[2001:db8::1]:{port}") == "2001:db8::1"
 
 
+def test_normalize_domain_rejects_malformed_bracket_delimiters() -> None:
+    for value in (
+        "[2001:db8::1",
+        "2001:db8::1]",
+        "[[2001:db8::1]",
+        "[2001:db8::1]]",
+        "[2001:db8::1]:443]",
+    ):
+        assert normalize_domain(value) == ""
+
+
 def test_normalize_domain_rejects_raw_userinfo_or_email_like_hosts() -> None:
     for value in (
         "user@example.com",

@@ -94,7 +94,9 @@ def normalize_domain(value: object) -> str:
     raw = _strip_bare_userinfo_authority(raw)
     if not raw:
         return ""
-    if raw.startswith("[") and "]" in raw:
+    if "[" in raw or "]" in raw:
+        if not raw.startswith("[") or raw.count("[") != 1 or raw.count("]") != 1:
+            return ""
         suffix = raw[raw.index("]") + 1 :].strip()
         if suffix:
             if not suffix.startswith(":") or not _is_valid_port(suffix[1:]):
@@ -106,7 +108,7 @@ def normalize_domain(value: object) -> str:
             raw = host
         else:
             return ""
-    raw = raw.strip().strip("[]").rstrip(".")
+    raw = raw.strip().rstrip(".")
     if not raw:
         return ""
     try:
