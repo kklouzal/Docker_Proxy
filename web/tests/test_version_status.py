@@ -385,6 +385,74 @@ class _VersionedProxyClient(FakeProxyClient):
         return payload
 
 
+def test_admin_version_status_retries_failure_without_shortening_success_cache(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    loaded.module._ADMIN_VERSION_STATUS_CACHE = None
+    monkeypatch.setenv("VERSION_STATUS_CACHE_TTL_SECONDS", "3600")
+    now = {"value": 100.0}
+    monkeypatch.setattr(loaded.module.time, "monotonic", lambda: now["value"])
+    results = iter(
+        [
+            {
+                "component": "admin-ui",
+                "state": "unknown",
+                "detail": "GitHub version check failed: temporary outage",
+            },
+            {
+                "component": "admin-ui",
+                "state": "warn",
+                "detail": (
+                    "GitHub version check failed; showing stale cached result. "
+                    "Last successful result: Running commit matches main."
+                ),
+            },
+            {
+                "component": "admin-ui",
+                "state": "warn",
+                "detail": "Running commit is ahead of main (1 commit(s) ahead).",
+            },
+            {
+                "component": "admin-ui",
+                "state": "outdated",
+                "detail": "Running commit is 1 commit(s) behind main.",
+            },
+        ]
+    )
+    calls = {"count": 0}
+
+    def build_status(_metadata: dict[str, Any]) -> dict[str, Any]:
+        calls["count"] += 1
+        return next(results)
+
+    monkeypatch.setattr(loaded.module, "build_component_version_status", build_status)
+
+    failed = loaded.module._cached_admin_version_status()
+    failed["state"] = "mutated-by-caller"
+    now["value"] = 159.0
+    cached_failure = loaded.module._cached_admin_version_status()
+    now["value"] = 161.0
+    stale_failure = loaded.module._cached_admin_version_status()
+    now["value"] = 220.0
+    cached_stale_failure = loaded.module._cached_admin_version_status()
+    now["value"] = 222.0
+    successful_warning = loaded.module._cached_admin_version_status()
+    now["value"] = 3821.0
+    cached_successful_warning = loaded.module._cached_admin_version_status()
+    now["value"] = 3823.0
+    refreshed_success = loaded.module._cached_admin_version_status()
+
+    assert cached_failure["state"] == "unknown"
+    assert stale_failure["state"] == "warn"
+    assert cached_stale_failure["state"] == "warn"
+    assert successful_warning["state"] == "warn"
+    assert cached_successful_warning["detail"].startswith("Running commit is ahead")
+    assert refreshed_success["state"] == "outdated"
+    assert calls["count"] == 4
+
+
 def test_api_version_status_uses_selected_proxy_health_metadata(
     monkeypatch,
     tmp_path,

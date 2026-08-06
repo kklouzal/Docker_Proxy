@@ -238,6 +238,7 @@ _asset_version = str(int(time.time()))
 OBSERVABILITY_DEFAULT_WINDOW = 24 * 60 * 60
 _PROXY_HEALTH_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 _ADMIN_VERSION_STATUS_CACHE: tuple[float, dict[str, Any]] | None = None
+_VERSION_STATUS_FAILURE_RETRY_SECONDS = 60.0
 
 
 _PROXY_HEALTH_TTL_SECONDS = _env_float(
@@ -1805,7 +1806,20 @@ def _cached_admin_version_status() -> dict[str, Any]:
     )
     if _ADMIN_VERSION_STATUS_CACHE is not None:
         cached_at, cached_payload = _ADMIN_VERSION_STATUS_CACHE
-        if now - cached_at <= ttl_seconds:
+        cached_state = str(cached_payload.get("state") or "unknown")
+        cached_detail = str(cached_payload.get("detail") or "")
+        refresh_failed = cached_state == "unknown" or (
+            cached_state == "warn"
+            and cached_detail.startswith(
+                "GitHub version check failed; showing stale cached result."
+            )
+        )
+        cache_ttl_seconds = (
+            min(ttl_seconds, _VERSION_STATUS_FAILURE_RETRY_SECONDS)
+            if refresh_failed
+            else ttl_seconds
+        )
+        if now - cached_at <= cache_ttl_seconds:
             return dict(cached_payload)
     payload = build_component_version_status(current_component_metadata("admin-ui"))
     _ADMIN_VERSION_STATUS_CACHE = (now, dict(payload))
