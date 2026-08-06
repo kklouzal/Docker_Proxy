@@ -30,6 +30,7 @@ class _FakeConn:
         profile_ids: set[int] | None = None,
         backup_proxy_rows: list[dict[str, object]] | None = None,
         backup_proxy_ids: list[int] | None = None,
+        direct_enabled: int | None = 0,
     ) -> None:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
         self.direct_domain_rows = direct_domain_rows
@@ -39,6 +40,7 @@ class _FakeConn:
         self.backup_proxy_ids = (
             backup_proxy_ids if backup_proxy_ids is not None else [21, 22]
         )
+        self.direct_enabled = direct_enabled
 
     def execute(self, sql: str, params: tuple[object, ...] = ()):
         self.calls.append((sql, params))
@@ -101,7 +103,11 @@ class _FakeConn:
         if sql.startswith("SELECT 1 FROM pac_profiles"):
             return _FakeResult([{"1": 1}] if int(params[0]) in self.profile_ids else [])
         if sql.startswith("SELECT direct_enabled FROM pac_proxy_chain_settings"):
-            return _FakeResult([{"direct_enabled": 0}])
+            return _FakeResult(
+                []
+                if self.direct_enabled is None
+                else [{"direct_enabled": self.direct_enabled}]
+            )
         return _FakeResult([])
 
 
@@ -302,13 +308,48 @@ def test_list_proxy_chain_settings_filters_stale_invalid_backup_rows(
 
 
 def test_backup_proxy_mutations_report_changed_status(monkeypatch) -> None:
-    _, _, store = _patched_store(monkeypatch)
+    _, conn, store = _patched_store(monkeypatch)
 
     assert store.move_backup_proxy(22, "up") is True
     assert store.move_backup_proxy(22, "down") is False
     assert store.move_backup_proxy(999, "up") is False
     assert store.delete_backup_proxy(21) is True
     assert store.delete_backup_proxy(999) is False
+    position_updates = [
+        params
+        for sql, params in conn.calls
+        if sql.startswith("UPDATE pac_backup_proxies SET position=")
+    ]
+    assert position_updates
+    assert all(params[-1] == "default" for params in position_updates)
+
+
+def test_backup_proxy_move_noop_does_not_resequence(monkeypatch) -> None:
+    _, conn, store = _patched_store(monkeypatch)
+
+    assert store.move_backup_proxy(21, "up") is False
+    assert store.move_backup_proxy(999, "down") is False
+    assert store.move_backup_proxy(21, "sideways") is False
+
+    assert not any(
+        sql.startswith("UPDATE pac_backup_proxies SET position=")
+        for sql, _params in conn.calls
+    )
+
+
+def test_direct_toggle_absent_default_reports_no_effective_change(monkeypatch) -> None:
+    _, conn, store = _patched_store(
+        monkeypatch,
+        _FakeConn(direct_enabled=None),
+    )
+
+    mutation = store.set_direct_enabled(True)
+
+    assert mutation.changed is False
+    assert not any(
+        sql.lstrip().startswith("INSERT INTO pac_proxy_chain_settings")
+        for sql, _params in conn.calls
+    )
 
 
 def test_delete_profile_reports_changed_status(monkeypatch) -> None:

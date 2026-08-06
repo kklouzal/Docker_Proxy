@@ -488,16 +488,19 @@ class PacProfilesStore:
                 )
                 return PacBackupProxyMutation(True, "", int(cur.lastrowid), True)
 
-    def _resequence_backup_proxies(self, conn, proxy_id: str) -> list[int]:
+    def _ordered_backup_proxy_ids(self, conn, proxy_id: str) -> list[int]:
         rows = conn.execute(
             "SELECT id FROM pac_backup_proxies WHERE proxy_id=%s ORDER BY position ASC, id ASC",
             (proxy_id,),
         ).fetchall()
-        ordered_ids = [int(row["id"]) for row in rows]
+        return [int(row["id"]) for row in rows]
+
+    def _resequence_backup_proxies(self, conn, proxy_id: str) -> list[int]:
+        ordered_ids = self._ordered_backup_proxy_ids(conn, proxy_id)
         for idx, proxy_id_value in enumerate(ordered_ids, start=1):
             conn.execute(
-                "UPDATE pac_backup_proxies SET position=%s WHERE id=%s",
-                (idx, proxy_id_value),
+                "UPDATE pac_backup_proxies SET position=%s WHERE id=%s AND proxy_id=%s",
+                (idx, proxy_id_value, proxy_id),
             )
         return ordered_ids
 
@@ -527,7 +530,7 @@ class PacProfilesStore:
         with self._connect() as conn:
             with guarded_proxy_write(conn, get_proxy_id()) as guard:
                 proxy_id = guard.proxy_id
-                ordered_ids = self._resequence_backup_proxies(conn, proxy_id)
+                ordered_ids = self._ordered_backup_proxy_ids(conn, proxy_id)
                 if bid not in ordered_ids:
                     return False
                 index = ordered_ids.index(bid)
@@ -545,8 +548,8 @@ class PacProfilesStore:
                     return False
                 for idx, proxy_id_value in enumerate(ordered_ids, start=1):
                     conn.execute(
-                        "UPDATE pac_backup_proxies SET position=%s WHERE id=%s",
-                        (idx, proxy_id_value),
+                        "UPDATE pac_backup_proxies SET position=%s WHERE id=%s AND proxy_id=%s",
+                        (idx, proxy_id_value, proxy_id),
                     )
                 return True
 
@@ -559,7 +562,12 @@ class PacProfilesStore:
                     "SELECT direct_enabled FROM pac_proxy_chain_settings WHERE proxy_id=%s LIMIT 1",
                     (guard.proxy_id,),
                 ).fetchone()
-                if current is not None and int(current["direct_enabled"] or 0) == normalized_enabled:
+                current_enabled = (
+                    1
+                    if current is None
+                    else int(current["direct_enabled"] or 0)
+                )
+                if current_enabled == normalized_enabled:
                     return PacBooleanMutation(False)
                 conn.execute(
                     """
