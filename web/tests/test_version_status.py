@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import io
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from services import version_status
 from services.version_status import (
     _MAX_GITHUB_API_RESPONSE_BYTES,
     VersionStatusClient,
@@ -162,6 +165,36 @@ def test_compare_revision_first_oversized_failure_is_not_ttl_cached() -> None:
 
     assert first.state == "unknown"
     assert second.state == "ok"
+    assert calls["count"] == 2
+
+
+def test_default_client_failure_is_retried_and_can_recover(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("VERSION_STATUS_GITHUB_REPOSITORY", "retry/repo")
+    calls = {"count": 0}
+
+    def urlopen(_request, *, timeout):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            msg = "temporary outage"
+            raise OSError(msg)
+        return _json_response(
+            {
+                "status": "identical",
+                "ahead_by": 0,
+                "behind_by": 0,
+                "total_commits": 0,
+            }
+        )
+
+    monkeypatch.setattr(version_status.urllib.request, "urlopen", urlopen)
+
+    failed = build_component_version_status({"revision": "retry-revision"})
+    recovered = build_component_version_status({"revision": "retry-revision"})
+
+    assert failed["state"] == "unknown"
+    assert recovered["state"] == "ok"
     assert calls["count"] == 2
 
 
@@ -360,6 +393,88 @@ def test_compare_cache_marks_expired_success_stale_until_github_recovers() -> No
     assert calls["count"] == 4
 
 
+def test_concurrent_compare_requests_for_one_revision_share_github_call() -> None:
+    calls = {"count": 0}
+    request_started = threading.Event()
+    release_request = threading.Event()
+
+    def urlopen(_request, *, timeout):
+        calls["count"] += 1
+        request_started.set()
+        assert release_request.wait(timeout=2)
+        return _json_response(
+            {
+                "status": "identical",
+                "ahead_by": 0,
+                "behind_by": 0,
+                "total_commits": 0,
+            }
+        )
+
+    client = VersionStatusClient(repository="owner/repo", urlopen=urlopen)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(client.compare_revision, "abc123")
+        assert request_started.wait(timeout=2)
+        second = executor.submit(client.compare_revision, "abc123")
+        release_request.set()
+        results = [first.result(timeout=2), second.result(timeout=2)]
+
+    assert [result.state for result in results] == ["ok", "ok"]
+    assert calls["count"] == 1
+
+
+def test_default_client_cache_isolates_revisions_and_tracks_config_changes(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("VERSION_STATUS_GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("VERSION_STATUS_GITHUB_BRANCH", "main")
+    seen_urls: list[str] = []
+
+    def urlopen(request, *, timeout):
+        seen_urls.append(request.full_url)
+        if "revision-a" in request.full_url:
+            return _json_response(
+                {
+                    "status": "identical",
+                    "ahead_by": 0,
+                    "behind_by": 0,
+                    "total_commits": 0,
+                }
+            )
+        return _json_response(
+            {
+                "status": "ahead",
+                "ahead_by": 2,
+                "behind_by": 0,
+                "total_commits": 2,
+                "commits": [{"sha": "latest-revision"}],
+            }
+        )
+
+    monkeypatch.setattr(version_status.urllib.request, "urlopen", urlopen)
+
+    revision_a = build_component_version_status({"revision": "revision-a"})
+    revision_a["detail"] = "mutated by caller"
+    revision_b = build_component_version_status({"revision": "revision-b"})
+    revision_a_again = build_component_version_status({"revision": "revision-a"})
+    revision_b_again = build_component_version_status({"revision": "revision-b"})
+    monkeypatch.setenv("VERSION_STATUS_GITHUB_BRANCH", "release/next")
+    after_config_change = build_component_version_status({"revision": "revision-a"})
+
+    assert revision_a_again["state"] == "ok"
+    assert revision_a_again["detail"] == "Running commit matches main."
+    assert revision_b["state"] == "outdated"
+    assert revision_b_again == revision_b
+    assert after_config_change["state"] == "ok"
+    assert after_config_change["detail"] == "Running commit matches release/next."
+    assert seen_urls == [
+        "https://api.github.com/repos/owner/repo/compare/revision-a...main",
+        "https://api.github.com/repos/owner/repo/compare/revision-b...main",
+        "https://api.github.com/repos/owner/repo/compare/revision-a...release%2Fnext",
+    ]
+
+
 def test_missing_running_commit_is_unknown_without_github_call() -> None:
     def urlopen(_request, *, timeout):
         msg = "GitHub should not be called"
@@ -383,6 +498,67 @@ class _VersionedProxyClient(FakeProxyClient):
             "revision_short": "abc123",
         }
         return payload
+
+
+def test_api_version_status_reuses_compare_cache_across_admin_and_proxy(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("GIT_COMMIT", "abc123")
+    monkeypatch.setenv("VERSION_STATUS_GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("VERSION_STATUS_GITHUB_BRANCH", "main")
+    monkeypatch.setenv("VERSION_STATUS_CACHE_TTL_SECONDS", "60")
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    loaded.module._ADMIN_VERSION_STATUS_CACHE = None
+    monkeypatch.setattr(
+        loaded.module,
+        "get_proxy_client",
+        lambda: _VersionedProxyClient(loaded.module),
+    )
+    now = {"value": 100.0}
+    monkeypatch.setattr(loaded.module.time, "monotonic", lambda: now["value"])
+    calls = {"count": 0}
+
+    def urlopen(_request, *, timeout):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            return _json_response(
+                {
+                    "status": "ahead",
+                    "ahead_by": 1,
+                    "behind_by": 0,
+                    "total_commits": 1,
+                    "commits": [{"sha": "new-main-revision"}],
+                }
+            )
+        return _json_response(
+            {
+                "status": "identical",
+                "ahead_by": 0,
+                "behind_by": 0,
+                "total_commits": 0,
+            }
+        )
+
+    monkeypatch.setattr(version_status.urllib.request, "urlopen", urlopen)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    first = client.get("/api/version-status")
+    second = client.get("/api/version-status")
+    now["value"] = 161.0
+    refreshed = client.get("/api/version-status")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert refreshed.status_code == 200
+    assert first.json["admin"]["state"] == "ok"
+    assert first.json["proxy"]["state"] == "ok"
+    assert second.json["admin"]["state"] == "ok"
+    assert second.json["proxy"]["state"] == "ok"
+    assert refreshed.json["admin"]["state"] == "outdated"
+    assert refreshed.json["proxy"]["state"] == "outdated"
+    assert calls["count"] == 2
 
 
 def test_admin_version_status_retries_failure_without_shortening_success_cache(

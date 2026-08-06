@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -18,6 +19,7 @@ _GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$"
 _GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 _GITHUB_BRANCH_FORBIDDEN_CHARS = frozenset(" ~^:?*[\\")
 _MAX_GITHUB_API_RESPONSE_BYTES = 512 * 1024
+_CACHE_LOCK_STRIPES = 16
 
 
 def _clean(value: object | None) -> str:
@@ -199,6 +201,10 @@ class VersionStatusClient:
         self.urlopen = urlopen or urllib.request.urlopen  # noqa: S310
         self.monotonic = monotonic or time.monotonic
         self._cache: dict[str, tuple[float, CompareResult]] = {}
+        self._cache_lock = threading.Lock()
+        self._request_locks = tuple(
+            threading.Lock() for _ in range(_CACHE_LOCK_STRIPES)
+        )
 
     def _api_get(self, path: str) -> dict[str, Any]:
         url = f"https://api.github.com/repos/{self.repository}/{path.lstrip('/')}"
@@ -261,8 +267,20 @@ class VersionStatusClient:
             )
         )
         key = f"{self.repository}:{self.branch}:{current}"
+        request_lock = self._request_locks[hash(key) % len(self._request_locks)]
+        with request_lock:
+            return self._compare_revision_locked(current, key=key, ttl=ttl)
+
+    def _compare_revision_locked(
+        self,
+        current: str,
+        *,
+        key: str,
+        ttl: float,
+    ) -> CompareResult:
         now = float(self.monotonic())
-        cached = self._cache.get(key)
+        with self._cache_lock:
+            cached = self._cache.get(key)
         if cached is not None and now - cached[0] <= max(0.0, ttl):
             return cached[1]
 
@@ -340,8 +358,35 @@ class VersionStatusClient:
             )
 
         if result.state != "unknown":
-            self._cache[key] = (now, result)
+            with self._cache_lock:
+                self._cache[key] = (now, result)
         return result
+
+
+_DEFAULT_CLIENT_LOCK = threading.Lock()
+_DEFAULT_CLIENT: VersionStatusClient | None = None
+
+
+def _default_version_status_client() -> VersionStatusClient:
+    """Return the shared client for the process's current GitHub configuration."""
+    global _DEFAULT_CLIENT
+    with _DEFAULT_CLIENT_LOCK:
+        configured = VersionStatusClient()
+        current = _DEFAULT_CLIENT
+        if current is None or any(
+            (
+                current.repository != configured.repository,
+                current.repository_error != configured.repository_error,
+                current.branch != configured.branch,
+                current.branch_error != configured.branch_error,
+                current.token != configured.token,
+                current.timeout_seconds != configured.timeout_seconds,
+                current.urlopen is not configured.urlopen,
+                current.monotonic is not configured.monotonic,
+            )
+        ):
+            _DEFAULT_CLIENT = configured
+        return _DEFAULT_CLIENT
 
 
 def build_component_version_status(
@@ -351,7 +396,7 @@ def build_component_version_status(
 ) -> dict[str, Any]:
     meta = dict(metadata or {})
     revision = _clean(meta.get("revision"))
-    compare = (client or VersionStatusClient()).compare_revision(revision)
+    compare = (client or _default_version_status_client()).compare_revision(revision)
     return {
         "component": _clean(meta.get("component")) or "unknown",
         "version": _clean(meta.get("version")) or UNKNOWN_VALUE,
