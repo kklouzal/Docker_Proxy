@@ -333,6 +333,14 @@ def test_client_identity_cache_distinct_misses_respect_global_lookup_limit(
     assert set(calls) == set(active_ips)
     assert all(results[ip]["hostname_status"] == "resolved" for ip in active_ips)
 
+    retried = cache.resolve(overflow_ips[0])
+    assert retried == {
+        "hostname": f"host-{overflow_ips[0]}.example",
+        "hostname_source": "rdns",
+        "hostname_status": "resolved",
+    }
+    assert calls.count(overflow_ips[0]) == 1
+
 
 def test_client_identity_cache_normalizes_valid_rdns_hostname(monkeypatch) -> None:
     cache = ClientIdentityCache(success_ttl_seconds=30.0)

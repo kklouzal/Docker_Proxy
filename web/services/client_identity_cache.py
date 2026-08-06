@@ -32,6 +32,10 @@ _RESERVED_RDNS_HOSTNAMES = {
 }
 
 
+class _ReverseDNSLookupCapacityError(RuntimeError):
+    """Indicate that no bounded reverse-DNS worker slot was available."""
+
+
 @dataclass
 class _CacheEntry:
     hostname: str
@@ -52,9 +56,11 @@ def _gethostbyaddr_with_timeout(
     can leak the temporary DNS timeout into unrelated socket creation in other
     Admin UI threads. If libc/NSS blocks past the deadline, return ``None`` and
     let the daemon lookup thread release its slot if it eventually finishes.
+    Raise ``_ReverseDNSLookupCapacityError`` when no worker slot is available so
+    transient local saturation is not cached as a DNS failure.
     """
     if not _REVERSE_DNS_LOOKUP_SLOTS.acquire(blocking=False):
-        return None
+        raise _ReverseDNSLookupCapacityError
 
     completed = threading.Event()
     result: list[tuple[str, list[str], list[str]]] = []
@@ -66,8 +72,8 @@ def _gethostbyaddr_with_timeout(
         except Exception as exc:  # propagate synchronous failures below
             errors.append(exc)
         finally:
-            completed.set()
             _REVERSE_DNS_LOOKUP_SLOTS.release()
+            completed.set()
 
     worker = threading.Thread(
         target=lookup,
@@ -265,21 +271,31 @@ class ClientIdentityCache:
             }
 
         try:
-            hostname, source, status = self._lookup_hostname(normalized)
-            ttl = self.success_ttl_seconds if hostname else self.failure_ttl_seconds
-            entry = self._store(
-                normalized,
-                hostname=hostname,
-                source=source,
-                status=status,
-                ttl_seconds=ttl,
-            )
+            try:
+                hostname, source, status = self._lookup_hostname(normalized)
+            except _ReverseDNSLookupCapacityError:
+                entry = None
+            else:
+                ttl = self.success_ttl_seconds if hostname else self.failure_ttl_seconds
+                entry = self._store(
+                    normalized,
+                    hostname=hostname,
+                    source=source,
+                    status=status,
+                    ttl_seconds=ttl,
+                )
         finally:
             with self._lock:
                 if self._inflight.get(normalized) is inflight:
                     self._inflight.pop(normalized, None)
                     inflight.set()
 
+        if entry is None:
+            return {
+                "hostname": "",
+                "hostname_source": "",
+                "hostname_status": "unresolved",
+            }
         return {
             "hostname": entry.hostname,
             "hostname_source": entry.source,
