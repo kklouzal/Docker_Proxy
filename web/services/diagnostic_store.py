@@ -1027,7 +1027,53 @@ class DiagnosticStore:
                         reopen_from_start = False
                     else:
                         handle.seek(0, os.SEEK_END)
+                    last_complete_line_pos: int | None = None
+                    last_complete_line: str | None = None
+                    cursor_file_version: tuple[int, int, int] | None = None
+                    verify_cursor = False
+
+                    def open_file_version() -> tuple[int, int, int] | None:
+                        try:
+                            open_stat = os.fstat(handle.fileno())
+                            return (
+                                int(open_stat.st_size),
+                                int(open_stat.st_mtime_ns),
+                                int(open_stat.st_ctime_ns),
+                            )
+                        except Exception:
+                            return None
+
                     while True:
+                        if verify_cursor:
+                            verify_cursor = False
+                            current_file_version = open_file_version()
+                            if (
+                                current_file_version != cursor_file_version
+                                and last_complete_line_pos is not None
+                                and last_complete_line is not None
+                            ):
+                                resume_pos = handle.tell()
+                                try:
+                                    handle.seek(last_complete_line_pos, os.SEEK_SET)
+                                    cursor_line = handle.readline()
+                                    if cursor_line != last_complete_line:
+                                        # copytruncate can regrow past the old
+                                        # cursor between polls, so size alone
+                                        # does not prove the cursor is valid.
+                                        handle.seek(0, os.SEEK_SET)
+                                        last_complete_line_pos = None
+                                        last_complete_line = None
+                                    else:
+                                        handle.seek(resume_pos, os.SEEK_SET)
+                                except Exception:
+                                    with contextlib.suppress(Exception):
+                                        handle.seek(resume_pos, os.SEEK_SET)
+                                    log_exception_throttled(
+                                        logger,
+                                        f"diagnostic_store.cursor.{loop_name}",
+                                        interval_seconds=300.0,
+                                        message=f"Diagnostic tailer cursor validation failed for {loop_name}",
+                                    )
                         line_pos = handle.tell()
                         line = handle.readline()
                         if line:
@@ -1065,6 +1111,8 @@ class DiagnosticStore:
                                     break
                                 time.sleep(poll_interval)
                                 continue
+                            last_complete_line_pos = line_pos
+                            last_complete_line = line
                             try:
                                 row = build_row_fn(line)
                                 if row is not None:
@@ -1140,6 +1188,8 @@ class DiagnosticStore:
                         try:
                             if pathlib.Path(path).stat().st_size < handle.tell():
                                 handle.seek(0, os.SEEK_SET)
+                                last_complete_line_pos = None
+                                last_complete_line = None
                                 continue
                         except Exception:
                             log_exception_throttled(
@@ -1180,6 +1230,8 @@ class DiagnosticStore:
                             reopen_from_start = True
                             break
 
+                        cursor_file_version = open_file_version()
+                        verify_cursor = True
                         time.sleep(poll_interval)
             except DATABASE_ERRORS as exc:
                 log_database_unavailable(

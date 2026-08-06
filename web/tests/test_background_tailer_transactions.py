@@ -450,6 +450,52 @@ def test_diagnostic_tailer_keeps_partial_line_until_newline(
     assert flushed_rows == [("row", partial + suffix)]
 
 
+def test_diagnostic_tailer_restarts_at_zero_after_copytruncate_regrowth(
+    monkeypatch, tmp_path, diagnostic_store
+) -> None:
+    log_path = tmp_path / "diagnostic.log"
+    log_path.write_text("", encoding="utf-8")
+    store = diagnostic_store.DiagnosticStore(
+        access_log_path=str(log_path), icap_log_path=str(tmp_path / "icap.log")
+    )
+    store._db_initialized = True
+    original_line = "old record\n"
+    replacement_line = "replacement record\n"
+    sleep_calls = 0
+    build_calls: list[str] = []
+
+    def sleep(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            log_path.write_text(original_line, encoding="utf-8")
+            return
+        if sleep_calls == 2:
+            # Model copytruncate plus rapid regrowth past the old cursor before
+            # the tailer's next poll.
+            log_path.write_text(replacement_line, encoding="utf-8")
+            return
+        raise StopLoop
+
+    def build_row(line: str):
+        build_calls.append(line)
+        return ("row", line)
+
+    monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "10")
+    monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(diagnostic_store.time, "sleep", sleep)
+
+    with pytest.raises(StopLoop):
+        store._tail_file_loop(
+            str(log_path),
+            build_row,
+            lambda _conn, _rows: None,
+            "test-diagnostic",
+        )
+
+    assert build_calls == [original_line, replacement_line]
+
+
 def test_diagnostic_tailer_recovers_when_partial_line_rotates(
     monkeypatch, tmp_path, diagnostic_store
 ) -> None:
