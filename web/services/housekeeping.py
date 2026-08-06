@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import threading
 import time
 from datetime import datetime, timedelta
@@ -396,13 +397,10 @@ def start_housekeeping(
 ) -> None:
     """Start scheduled database housekeeping."""
     global _started
-    with _lock:
-        if _started:
-            return
-        _started = True
+    normalized_interval_seconds: float | None = None
 
     def loop() -> None:
-        if interval_seconds is not None:
+        if normalized_interval_seconds is not None:
             while True:
                 try:
                     result = run_housekeeping_once(
@@ -416,7 +414,7 @@ def start_housekeeping(
                         interval_seconds=300,
                         message="Housekeeping run failed",
                     )
-                time.sleep(float(interval_seconds))
+                time.sleep(normalized_interval_seconds)
 
         next_daily = _next_local_run(hour=daily_hour)
         next_weekly = _next_local_run(hour=weekly_hour, weekday=weekly_weekday)
@@ -434,5 +432,22 @@ def start_housekeeping(
                 weekly_hour=weekly_hour,
             )
 
-    t = threading.Thread(target=loop, name="db-housekeeping", daemon=True)
-    t.start()
+    with _lock:
+        if _started:
+            return
+        if interval_seconds is not None:
+            try:
+                normalized_interval_seconds = float(interval_seconds)
+            except (TypeError, ValueError) as exc:
+                msg = "interval_seconds must be a finite positive number"
+                raise ValueError(msg) from exc
+            if (
+                not math.isfinite(normalized_interval_seconds)
+                or normalized_interval_seconds <= 0
+            ):
+                msg = "interval_seconds must be a finite positive number"
+                raise ValueError(msg)
+
+        t = threading.Thread(target=loop, name="db-housekeeping", daemon=True)
+        t.start()
+        _started = True

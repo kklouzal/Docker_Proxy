@@ -632,6 +632,94 @@ def test_housekeeping_interval_loop_logs_structured_failed_result_once(
     assert "control-plane prune failed" in caplog.records[0].message
 
 
+def test_housekeeping_thread_start_failure_allows_retry(
+    monkeypatch, housekeeping
+) -> None:
+    starts: list[str] = []
+
+    class RetryableThread:
+        def __init__(self, *, target, name: str, daemon: bool) -> None:
+            assert callable(target)
+            assert name == "db-housekeeping"
+            assert daemon is True
+
+        def start(self) -> None:
+            starts.append("start")
+            if len(starts) == 1:
+                msg = "thread unavailable"
+                raise RuntimeError(msg)
+
+    monkeypatch.setattr(housekeeping, "_started", False)
+    monkeypatch.setattr(housekeeping.threading, "Thread", RetryableThread)
+
+    with pytest.raises(RuntimeError, match="thread unavailable"):
+        housekeeping.start_housekeeping(interval_seconds=60)
+
+    assert housekeeping._started is False
+
+    housekeeping.start_housekeeping(interval_seconds=60)
+
+    assert starts == ["start", "start"]
+    assert housekeeping._started is True
+
+
+def test_housekeeping_thread_creation_failure_allows_retry(
+    monkeypatch, housekeeping
+) -> None:
+    creations = 0
+
+    class StartedThread:
+        def start(self) -> None:
+            pass
+
+    def create_thread(*, target, name: str, daemon: bool):
+        nonlocal creations
+        creations += 1
+        assert callable(target)
+        assert name == "db-housekeeping"
+        assert daemon is True
+        if creations == 1:
+            msg = "thread allocation failed"
+            raise RuntimeError(msg)
+        return StartedThread()
+
+    monkeypatch.setattr(housekeeping, "_started", False)
+    monkeypatch.setattr(housekeeping.threading, "Thread", create_thread)
+
+    with pytest.raises(RuntimeError, match="thread allocation failed"):
+        housekeeping.start_housekeeping(interval_seconds=60)
+
+    assert housekeeping._started is False
+
+    housekeeping.start_housekeeping(interval_seconds=60)
+
+    assert creations == 2
+    assert housekeeping._started is True
+
+
+@pytest.mark.parametrize(
+    "interval_seconds",
+    [0, -1, float("nan"), float("inf"), "not-a-number"],
+)
+def test_housekeeping_rejects_invalid_interval_before_start(
+    monkeypatch, housekeeping, interval_seconds
+) -> None:
+    def unexpected_thread(**_kwargs):
+        msg = "thread must not be created for an invalid interval"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(housekeeping, "_started", False)
+    monkeypatch.setattr(housekeeping.threading, "Thread", unexpected_thread)
+
+    with pytest.raises(
+        ValueError,
+        match="interval_seconds must be a finite positive number",
+    ):
+        housekeeping.start_housekeeping(interval_seconds=interval_seconds)
+
+    assert housekeeping._started is False
+
+
 def test_housekeeping_scheduled_due_weekly_only_preserved(
     monkeypatch, housekeeping
 ) -> None:
