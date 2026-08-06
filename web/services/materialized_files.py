@@ -97,8 +97,7 @@ def _write_staged_file(
             handle.close()
         pathlib.Path(temp_path).chmod(mode)
         if owner is not None:
-            with contextlib.suppress(Exception):
-                os.chown(temp_path, owner[0], owner[1])
+            os.chown(temp_path, owner[0], owner[1])
         _fsync_parent_dir(temp_path)
         return temp_path
     except Exception:

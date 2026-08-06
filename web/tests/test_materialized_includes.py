@@ -1133,6 +1133,58 @@ def test_write_managed_text_files_preserves_existing_mode_on_rewrite(
     assert chown_calls[0][1:] == (original_stat.st_uid, original_stat.st_gid)
 
 
+def test_write_managed_text_files_aborts_when_owner_cannot_be_preserved(
+    tmp_path, monkeypatch
+) -> None:
+    materialized_files = _import_materialized_files_module()
+
+    first = tmp_path / "first.conf"
+    second = tmp_path / "second.conf"
+    first.write_text("old first\n", encoding="utf-8")
+    second.write_text("old second\n", encoding="utf-8")
+    first.chmod(0o600)
+    second.chmod(0o640)
+    real_replace = materialized_files.os.replace
+    chown_calls = 0
+    replace_calls: list[tuple[str, str]] = []
+
+    def fail_second_chown(*_args, **_kwargs) -> None:
+        nonlocal chown_calls
+        chown_calls += 1
+        if chown_calls == 2:
+            msg = "ownership preservation denied"
+            raise PermissionError(msg)
+
+    def record_replace(src, dst):
+        replace_calls.append((str(src), str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(materialized_files.os, "chown", fail_second_chown)
+    monkeypatch.setattr(materialized_files.os, "replace", record_replace)
+
+    try:
+        materialized_files.write_managed_text_files(
+            (str(first), "new first\n"), (str(second), "new second\n")
+        )
+    except PermissionError as exc:
+        assert "ownership preservation denied" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        msg = "expected ownership preservation failure"
+        raise AssertionError(msg)
+
+    assert replace_calls == []
+    assert first.read_text(encoding="utf-8") == "old first\n"
+    assert second.read_text(encoding="utf-8") == "old second\n"
+    assert first.stat().st_mode & 0o777 == 0o600
+    assert second.stat().st_mode & 0o777 == 0o640
+    assert list(tmp_path.glob(".managed-*")) == []
+
+    new_target = tmp_path / "new.conf"
+    materialized_files.write_managed_text_files((str(new_target), "new content\n"))
+    assert new_target.read_text(encoding="utf-8") == "new content\n"
+    assert chown_calls == 2
+
+
 def test_write_managed_text_files_serializes_overlapping_rollback(
     tmp_path, monkeypatch
 ) -> None:
