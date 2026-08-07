@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import sys
 from typing import TYPE_CHECKING
 
@@ -26,6 +25,13 @@ def _write_safe_include(path: str) -> None:
     write_safe_include(path, SAFE_INCLUDE_TEXT)
 
 
+def _publish_safe_include(path: str) -> None:
+    try:
+        _write_safe_include(path)
+    except Exception as exc:
+        _emit_failure("safe_include_publish_failed", exc)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Generate /etc/squid/conf.d/10-sslfilter.conf from UI settings",
@@ -38,18 +44,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         from services.sslfilter_store import SslFilterStore  # type: ignore
     except Exception as exc:
         _emit_failure("import_failed", exc)
-        with contextlib.suppress(Exception):
-            _write_safe_include(args.out)
+        _publish_safe_include(args.out)
         return 2
 
-    store = SslFilterStore(squid_include_path=args.out)
     try:
+        store = SslFilterStore(squid_include_path=args.out)
         store.apply_squid_include()
         return 0
     except Exception as exc:
         _emit_failure("apply_failed", exc)
-        with contextlib.suppress(Exception):
-            _write_safe_include(args.out)
+        _publish_safe_include(args.out)
         return 3
 
 
