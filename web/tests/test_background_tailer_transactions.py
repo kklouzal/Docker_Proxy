@@ -873,6 +873,87 @@ def test_adblock_tailer_keeps_partial_line_until_newline(
     assert meta["cicap_access_pos"] == str(log_path.stat().st_size)
 
 
+def test_adblock_seed_ignores_syntactically_valid_partial_trailing_record(
+    monkeypatch, tmp_path, adblock_store
+) -> None:
+    log_path = tmp_path / "cicap-access.log"
+    complete = (
+        "1710000000\t10.0.0.5\t127.0.0.1\tREQMOD\t/adblockreq\t200\t"
+        "GET http://ads.example/complete.js HTTP/1.1\t"
+        "http://ads.example/complete.js\tHTTP/1.1 403 Forbidden\teasylist\trule"
+    )
+    partial = (
+        "1710000001\t10.0.0.5\t127.0.0.1\tREQMOD\t/adblockreq\t200\t"
+        "GET http://ads.example/partial.js HTTP/1.1\t"
+        "http://ads.example/partial.js\tHTTP/1.1 403 Forbidden"
+    )
+    log_path.write_text(complete + "\n" + partial, encoding="utf-8")
+    inserted: list[dict[str, object]] = []
+    store = adblock_store.AdblockStore(cicap_access_log_path=str(log_path))
+    assert store._parse_cicap_access_line(partial) is not None
+    monkeypatch.setattr(store, "_insert_event", lambda _conn, row: inserted.append(row))
+    monkeypatch.setattr(store, "_prune_events", lambda _conn: None)
+
+    store._seed_from_recent_log(object())
+
+    assert [row["url"] for row in inserted] == ["http://ads.example/complete.js"]
+
+
+def _pad_cicap_record(base: bytes, *, total_size: int, newline: bool) -> bytes:
+    body_size = total_size - int(newline)
+    remaining = body_size - len(base)
+    chunks: list[bytes] = []
+    while remaining > 1001:
+        chunks.append(b"\t" + (b"x" * 1000))
+        remaining -= 1001
+    if remaining:
+        chunks.append(b"\t" + (b"x" * (remaining - 1)))
+    return base + b"".join(chunks) + (b"\n" if newline else b"")
+
+
+def test_adblock_seed_reader_drops_plausible_truncated_suffix_without_newline(
+    tmp_path, adblock_store
+) -> None:
+    log_path = tmp_path / "cicap-access.log"
+    plausible_suffix = (
+        b"1710000002\t10.0.0.5\t127.0.0.1\tREQMOD\t/adblockreq\t200\t"
+        b"GET http://ads.example/truncated.js HTTP/1.1\t"
+        b"http://ads.example/truncated.js\tHTTP/1.1 403 Forbidden\t"
+    )
+    plausible_suffix = _pad_cicap_record(
+        plausible_suffix,
+        total_size=1_000_000,
+        newline=False,
+    )
+    assert len(plausible_suffix) == 1_000_000
+    log_path.write_bytes(b"oversized-record-prefix" + plausible_suffix)
+    store = adblock_store.AdblockStore(cicap_access_log_path=str(log_path))
+    assert store._parse_cicap_access_line(plausible_suffix.decode()) is not None
+
+    lines = store._read_last_lines(str(log_path), max_lines=10)
+
+    assert lines == []
+
+
+def test_adblock_seed_reader_keeps_line_when_window_starts_at_boundary(
+    tmp_path, adblock_store
+) -> None:
+    log_path = tmp_path / "cicap-access.log"
+    base = (
+        b"1710000003\t10.0.0.5\t127.0.0.1\tREQMOD\t/adblockreq\t200\t"
+        b"GET http://ads.example/boundary.js HTTP/1.1\t"
+        b"http://ads.example/boundary.js\tHTTP/1.1 403 Forbidden\t"
+    )
+    tailed_record = _pad_cicap_record(base, total_size=1_000_000, newline=True)
+    assert len(tailed_record) == 1_000_000
+    log_path.write_bytes(b"earlier-record\n" + tailed_record)
+    store = adblock_store.AdblockStore(cicap_access_log_path=str(log_path))
+
+    lines = store._read_last_lines(str(log_path), max_lines=1)
+
+    assert lines == [tailed_record.decode().rstrip("\n")]
+
+
 def test_adblock_meta_insert_duplicate_falls_back_to_update(
     monkeypatch, adblock_store
 ) -> None:

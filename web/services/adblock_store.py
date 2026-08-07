@@ -419,16 +419,21 @@ class AdblockStore:
             with pathlib.Path(path).open("rb") as f:
                 f.seek(0, os.SEEK_END)
                 end = f.tell()
-                # Read up to ~1MB from the end and split to lines.
+                # Read up to ~1MB from the end and split to complete lines.
                 start = max(0, end - 1_000_000)
+                starts_on_line_boundary = start == 0
+                if start > 0:
+                    f.seek(start - 1, os.SEEK_SET)
+                    starts_on_line_boundary = f.read(1) in {b"\n", b"\r"}
                 f.seek(start, os.SEEK_SET)
                 data = f.read()
-            if start > 0:
-                nl = data.find(b"\n")
-                if nl >= 0:
-                    data = data[nl + 1 :]
             text = data.decode("utf-8", errors="replace")
-            lines = [ln for ln in text.splitlines() if ln.strip()]
+            lines = text.splitlines()
+            if not starts_on_line_boundary and lines:
+                lines = lines[1:]
+            if data and not data.endswith((b"\n", b"\r")) and lines:
+                lines = lines[:-1]
+            lines = [ln for ln in lines if ln.strip()]
             return lines[-max_lines:]
         except Exception:
             return []
