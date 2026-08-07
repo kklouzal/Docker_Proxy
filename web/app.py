@@ -2099,14 +2099,27 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
 # Ensure there is at least one login.
 with contextlib.suppress(Exception):
     _auth_store.ensure_default_admin()
+_database_runtime_configured = any(
+    (os.environ.get(name) or "").strip()
+    for name in ("DATABASE_URL", "MYSQL_HOST", "MYSQL_DATABASE", "MYSQL_USER")
+)
+_auth_provider_bootstrap_errors: list[tuple[str, Exception]] = []
 try:
     _directory_auth_store.ensure_default_profiles()
-except Exception:
+except Exception as exc:
     app.logger.exception("Failed to initialize directory auth provider profiles")
+    _auth_provider_bootstrap_errors.append(("directory", exc))
 try:
     _saml_auth_store.ensure_default_profile()
-except Exception:
+except Exception as exc:
     app.logger.exception("Failed to initialize SAML auth provider profile")
+    _auth_provider_bootstrap_errors.append(("SAML", exc))
+if _auth_provider_bootstrap_errors and _database_runtime_configured:
+    failed_providers = ", ".join(
+        provider for provider, _exc in _auth_provider_bootstrap_errors
+    )
+    msg = f"Failed to initialize default auth provider profiles: {failed_providers}."
+    raise RuntimeError(msg) from _auth_provider_bootstrap_errors[0][1]
 
 
 def _is_logged_in() -> bool:
