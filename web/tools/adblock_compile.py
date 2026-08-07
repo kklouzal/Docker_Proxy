@@ -25,13 +25,13 @@ from services.adblock_hosts import (  # noqa: E402
 from services.adblock_hosts import (  # noqa: E402
     normalize_adblock_host as _normalize_host,
 )
-from services.adblock_patterns import abp_to_regex as _abp_to_regex  # noqa: E402
 from services.adblock_patterns import (  # noqa: E402
     abp_host_anchored_to_regex as _abp_host_anchored_to_regex,
 )
 from services.adblock_patterns import (  # noqa: E402
     abp_suffix_to_regex as _abp_suffix_to_regex,
 )
+from services.adblock_patterns import abp_to_regex as _abp_to_regex  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
