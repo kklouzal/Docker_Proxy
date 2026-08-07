@@ -25,13 +25,62 @@ def _reset_hit_rate_cache() -> None:
 
 def _reset_stats_caches() -> None:
     stats._CACHE_DIR_SIZE_INFLIGHT = False
+    stats._CACHE_DIR_SIZE_VALID = False
     stats._CACHE_DIR_SIZE_TS = 0.0
     stats._CACHE_DIR_SIZE_VALUE = None
     stats._CACHE_DISK_USAGE_INFLIGHT = False
+    stats._CACHE_DISK_USAGE_VALID = False
     stats._CACHE_DISK_USAGE_TS = 0.0
     stats._CACHE_DISK_USAGE_VALUE = None
     _reset_hit_rate_cache()
     _reset_cpu_cache()
+
+
+def test_get_stats_negatively_caches_failed_storage_probes_until_ttl(
+    monkeypatch,
+) -> None:
+    _reset_stats_caches()
+    monkeypatch.setenv("STATS_CACHE_DIR_SIZE_TTL_SECONDS", "5")
+    monkeypatch.setenv("STATS_CACHE_DISK_USAGE_TTL_SECONDS", "5")
+
+    now = 100.0
+    calls = {"dir": 0, "disk": 0}
+
+    monkeypatch.setattr(stats.time, "monotonic", lambda: now)
+    monkeypatch.setattr(stats, "get_meminfo", lambda: {"total": 10, "available": 4})
+    monkeypatch.setattr(
+        stats,
+        "get_directory_size_bytes",
+        lambda path: calls.__setitem__("dir", calls["dir"] + 1),
+    )
+    monkeypatch.setattr(
+        stats,
+        "get_disk_usage",
+        lambda path: calls.__setitem__("disk", calls["disk"] + 1),
+    )
+    monkeypatch.setattr(stats, "get_squid_mgr_text", lambda section: None)
+    monkeypatch.setattr(
+        stats,
+        "parse_access_log_hit_rate",
+        lambda: {"request_hit_ratio": None, "byte_hit_ratio": None},
+    )
+    monkeypatch.setattr(stats, "get_cpu_utilization_percent", lambda **kwargs: None)
+    monkeypatch.setattr(stats, "get_loadavg", lambda: None)
+
+    first = stats.get_stats()
+    now += 1.0
+    within_ttl = stats.get_stats()
+
+    assert first["storage"]["cache_dir_size_bytes"] is None
+    assert first["storage"]["cache_fs_total_bytes"] is None
+    assert within_ttl["storage"] == first["storage"]
+    assert calls == {"dir": 1, "disk": 1}
+
+    now += 5.0
+    after_expiry = stats.get_stats()
+
+    assert after_expiry["storage"] == first["storage"]
+    assert calls == {"dir": 2, "disk": 2}
 
 
 def _assert_stats_schema(result: dict[str, Any]) -> None:
@@ -45,6 +94,18 @@ def _assert_stats_schema(result: dict[str, Any]) -> None:
         "request_hit_ratio",
         "byte_hit_ratio",
     }
+
+
+def _stub_non_storage_collectors(monkeypatch) -> None:
+    monkeypatch.setattr(stats, "get_meminfo", lambda: {"total": 10, "available": 4})
+    monkeypatch.setattr(stats, "get_squid_mgr_text", lambda section: None)
+    monkeypatch.setattr(
+        stats,
+        "parse_access_log_hit_rate",
+        lambda: {"request_hit_ratio": None, "byte_hit_ratio": None},
+    )
+    monkeypatch.setattr(stats, "get_cpu_utilization_percent", lambda **kwargs: None)
+    monkeypatch.setattr(stats, "get_loadavg", lambda: None)
 
 
 def _get_stats_during_refresh(
@@ -61,6 +122,136 @@ def _get_stats_during_refresh(
             release_collector.set()
         refreshed_result = refreshing.result(timeout=2)
     return refreshed_result, concurrent_result
+
+
+@pytest.mark.parametrize("probe", ["disk", "dir"])
+def test_get_stats_cold_storage_refresh_is_single_flight(monkeypatch, probe) -> None:
+    _reset_stats_caches()
+    monkeypatch.setenv("STATS_CACHE_DIR_SIZE_TTL_SECONDS", "60")
+    monkeypatch.setenv("STATS_CACHE_DISK_USAGE_TTL_SECONDS", "60")
+    _stub_non_storage_collectors(monkeypatch)
+
+    collector_started = threading.Event()
+    release_collector = threading.Event()
+    calls = 0
+
+    def collect(value):
+        nonlocal calls
+        calls += 1
+        collector_started.set()
+        assert release_collector.wait(timeout=2)
+        return value
+
+    if probe == "disk":
+        monkeypatch.setattr(
+            stats,
+            "get_disk_usage",
+            lambda path: collect(
+                stats.DiskUsage(total_bytes=100, used_bytes=40, free_bytes=60),
+            ),
+        )
+        monkeypatch.setattr(stats, "get_directory_size_bytes", lambda path: 25)
+        storage_key = "cache_fs_total_bytes"
+        expected = 100
+    else:
+        monkeypatch.setattr(
+            stats,
+            "get_disk_usage",
+            lambda path: stats.DiskUsage(
+                total_bytes=100,
+                used_bytes=40,
+                free_bytes=60,
+            ),
+        )
+        monkeypatch.setattr(
+            stats,
+            "get_directory_size_bytes",
+            lambda path: collect(25),
+        )
+        storage_key = "cache_dir_size_bytes"
+        expected = 25
+
+    refreshed_result, concurrent_result = _get_stats_during_refresh(
+        collector_started,
+        release_collector,
+    )
+
+    assert calls == 1
+    assert concurrent_result["storage"][storage_key] is None
+    assert refreshed_result["storage"][storage_key] == expected
+
+
+@pytest.mark.parametrize("probe", ["disk", "dir"])
+def test_get_stats_storage_refresh_serves_stale_good_value(
+    monkeypatch,
+    probe,
+) -> None:
+    _reset_stats_caches()
+    monkeypatch.setenv("STATS_CACHE_DIR_SIZE_TTL_SECONDS", "5")
+    monkeypatch.setenv("STATS_CACHE_DISK_USAGE_TTL_SECONDS", "5")
+    monkeypatch.setattr(stats.time, "monotonic", lambda: 100.0)
+    _stub_non_storage_collectors(monkeypatch)
+
+    collector_started = threading.Event()
+    release_collector = threading.Event()
+    calls = 0
+
+    def collect(value):
+        nonlocal calls
+        calls += 1
+        collector_started.set()
+        assert release_collector.wait(timeout=2)
+        return value
+
+    if probe == "disk":
+        stats._CACHE_DISK_USAGE_VALID = True
+        stats._CACHE_DISK_USAGE_TS = 90.0
+        stats._CACHE_DISK_USAGE_VALUE = stats.DiskUsage(
+            total_bytes=100,
+            used_bytes=40,
+            free_bytes=60,
+        )
+        monkeypatch.setattr(
+            stats,
+            "get_disk_usage",
+            lambda path: collect(
+                stats.DiskUsage(total_bytes=200, used_bytes=80, free_bytes=120),
+            ),
+        )
+        monkeypatch.setattr(stats, "get_directory_size_bytes", lambda path: 25)
+        storage_key = "cache_fs_total_bytes"
+        stale_value = 100
+        refreshed_value = 200
+    else:
+        stats._CACHE_DIR_SIZE_VALID = True
+        stats._CACHE_DIR_SIZE_TS = 90.0
+        stats._CACHE_DIR_SIZE_VALUE = 25
+        monkeypatch.setattr(
+            stats,
+            "get_disk_usage",
+            lambda path: stats.DiskUsage(
+                total_bytes=100,
+                used_bytes=40,
+                free_bytes=60,
+            ),
+        )
+        monkeypatch.setattr(
+            stats,
+            "get_directory_size_bytes",
+            lambda path: collect(50),
+        )
+        storage_key = "cache_dir_size_bytes"
+        stale_value = 25
+        refreshed_value = 50
+
+    refreshed_result, concurrent_result = _get_stats_during_refresh(
+        collector_started,
+        release_collector,
+    )
+
+    assert calls == 1
+    assert concurrent_result["storage"][storage_key] == stale_value
+    assert refreshed_result["storage"][storage_key] == refreshed_value
 
 
 def test_get_stats_cold_hit_rate_refresh_is_single_flight(monkeypatch) -> None:

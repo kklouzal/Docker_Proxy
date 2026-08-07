@@ -22,10 +22,12 @@ logger = logging.getLogger(__name__)
 
 _CACHE_LOCK = threading.Lock()
 _CACHE_DIR_SIZE_INFLIGHT = False
+_CACHE_DIR_SIZE_VALID = False
 _CACHE_DIR_SIZE_TS = 0.0
 _CACHE_DIR_SIZE_VALUE: int | None = None
 
 _CACHE_DISK_USAGE_INFLIGHT = False
+_CACHE_DISK_USAGE_VALID = False
 _CACHE_DISK_USAGE_TS = 0.0
 _CACHE_DISK_USAGE_VALUE: DiskUsage | None = None
 
@@ -450,12 +452,17 @@ def get_stats() -> dict[str, Any]:
     now_mono = time.monotonic()
 
     def _maybe_get_disk_usage() -> DiskUsage | None:
-        global _CACHE_DISK_USAGE_INFLIGHT, _CACHE_DISK_USAGE_TS, _CACHE_DISK_USAGE_VALUE
+        global \
+            _CACHE_DISK_USAGE_INFLIGHT, \
+            _CACHE_DISK_USAGE_VALID, \
+            _CACHE_DISK_USAGE_TS, \
+            _CACHE_DISK_USAGE_VALUE
         with _CACHE_LOCK:
             cached = _CACHE_DISK_USAGE_VALUE
+            cache_valid = _CACHE_DISK_USAGE_VALID
             age_ok = (now_mono - _CACHE_DISK_USAGE_TS) < float(disk_usage_ttl)
             inflight = _CACHE_DISK_USAGE_INFLIGHT
-        if cached is not None and age_ok:
+        if cache_valid and age_ok:
             return cached
         if inflight:
             return cached
@@ -468,6 +475,7 @@ def get_stats() -> dict[str, Any]:
             value = get_disk_usage(cache_dir)
             with _CACHE_LOCK:
                 _CACHE_DISK_USAGE_VALUE = value
+                _CACHE_DISK_USAGE_VALID = True
                 _CACHE_DISK_USAGE_TS = now_mono
             return value
         finally:
@@ -475,12 +483,17 @@ def get_stats() -> dict[str, Any]:
                 _CACHE_DISK_USAGE_INFLIGHT = False
 
     def _maybe_get_dir_size() -> int | None:
-        global _CACHE_DIR_SIZE_INFLIGHT, _CACHE_DIR_SIZE_TS, _CACHE_DIR_SIZE_VALUE
+        global \
+            _CACHE_DIR_SIZE_INFLIGHT, \
+            _CACHE_DIR_SIZE_VALID, \
+            _CACHE_DIR_SIZE_TS, \
+            _CACHE_DIR_SIZE_VALUE
         with _CACHE_LOCK:
             cached = _CACHE_DIR_SIZE_VALUE
+            cache_valid = _CACHE_DIR_SIZE_VALID
             age_ok = (now_mono - _CACHE_DIR_SIZE_TS) < float(dir_size_ttl)
             inflight = _CACHE_DIR_SIZE_INFLIGHT
-        if cached is not None and age_ok:
+        if cache_valid and age_ok:
             return cached
         if inflight:
             return cached
@@ -493,6 +506,7 @@ def get_stats() -> dict[str, Any]:
             value = get_directory_size_bytes(cache_dir)
             with _CACHE_LOCK:
                 _CACHE_DIR_SIZE_VALUE = value
+                _CACHE_DIR_SIZE_VALID = True
                 _CACHE_DIR_SIZE_TS = now_mono
             return value
         finally:
