@@ -48,11 +48,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     store = ProxyWebFilterStore(squid_include_path=args.out)
     try:
         store.apply_squid_include()
-        _snapshot_ok, _snapshot_detail = getattr(
+        snapshot_ok, snapshot_detail = getattr(
             store,
             "last_webcat_snapshot_status",
             (True, ""),
         )
+        if not snapshot_ok:
+            _emit_failure(
+                "snapshot_publish_failed",
+                ValueError(snapshot_detail or "Web category snapshot publish failed."),
+            )
+            return 4
         return 0
     except Exception as exc:
         _emit_failure("apply_failed", exc)

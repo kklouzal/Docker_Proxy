@@ -454,6 +454,46 @@ def test_sslfilter_apply_writes_safe_include_when_store_import_fails(
     assert payload["reason"] == "Operation failed. Check server logs for details."
 
 
+def test_webfilter_apply_reports_snapshot_publish_failure_without_replacing_policy(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    module = _import_tool_module("webfilter_apply")
+    out = tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"
+    policy = (
+        "external_acl_type webcat_deadbeef children=2 ttl=0 negative_ttl=0 "
+        "%SRC %DST %URI /usr/bin/python3 /app/tools/webcat_acl.py --fail open\n"
+        "acl webfilter_block_adult external webcat_deadbeef adult\n"
+        "http_access deny webfilter_block_adult\n"
+    )
+    detail = (
+        "Failed to publish local web category snapshot; helper will use the last "
+        "usable snapshot if present."
+    )
+
+    class DegradedStore:
+        def __init__(self, *, squid_include_path: str) -> None:
+            self.squid_include_path = squid_include_path
+            self.last_webcat_snapshot_status = (False, detail)
+
+        def apply_squid_include(self) -> None:
+            out.parent.mkdir(parents=True)
+            out.write_text(policy, encoding="utf-8")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "services.webfilter_core",
+        SimpleNamespace(ProxyWebFilterStore=DegradedStore),
+    )
+
+    assert module.main(["--out", str(out)]) == 4
+    assert out.read_text(encoding="utf-8") == policy
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["helper"] == "webfilter_apply"
+    assert payload["event"] == "snapshot_publish_failed"
+    assert payload["error_type"] == "ValueError"
+    assert payload["reason"] == detail
+
+
 def test_webfilter_apply_logs_safe_failure_and_writes_safe_include(
     tmp_path, monkeypatch, capsys
 ) -> None:
