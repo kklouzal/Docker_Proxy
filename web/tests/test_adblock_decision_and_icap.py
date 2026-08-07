@@ -421,6 +421,59 @@ def test_adblock_decision_treats_escaped_abp_metacharacters_as_literals(
     assert engine.decide("https://static.example/escaped").blocked is False
 
 
+def test_adblock_decision_preserves_absolute_and_host_authority_boundaries(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "|https://absolute.example/ads.js|",
+            "||host.example/ads.js|",
+            "||port.example:8443/ads.js|",
+            "||bare.example|",
+        ],
+    )
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+
+    assert engine.decide("https://absolute.example/ads.js").blocked is True
+    assert engine.decide("https://absolute.example:8443/ads.js").blocked is False
+    assert engine.decide("https://user@absolute.example/ads.js").blocked is False
+
+    assert engine.decide("https://host.example/ads.js").blocked is True
+    assert engine.decide("https://sub.host.example/ads.js").blocked is True
+    assert engine.decide("https://host.example:8443/ads.js").blocked is False
+
+    assert engine.decide("https://port.example:8443/ads.js").blocked is True
+    assert engine.decide("https://port.example/ads.js").blocked is False
+    assert engine.decide("https://port.example:9443/ads.js").blocked is False
+
+    assert engine.decide("https://bare.example").blocked is True
+    assert engine.decide("https://bare.example/").blocked is False
+
+    [compiled_host_rule] = [
+        rule
+        for rule in engine.lookup.candidate_rules("https://host.example/ads.js")
+        if rule["raw"] == "||host.example/ads.js|"
+    ]
+    fallback_host_rule = dict(compiled_host_rule)
+    fallback_host_rule.pop("compiled_regex")
+    assert (
+        engine._rule_matches(
+            fallback_host_rule,
+            "https://host.example:8443/ads.js",
+            method="GET",
+            resource_type="other",
+            source_url="",
+            third_party_hint=None,
+        )
+        is False
+    )
+
+
 @pytest.mark.parametrize(
     "url",
     [

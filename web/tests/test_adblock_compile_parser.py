@@ -231,7 +231,7 @@ def test_abp_options_split_ignores_escaped_literal_dollars() -> None:
 
 def test_abp_regex_compilation_honors_escaped_pattern_metacharacters() -> None:
     _add_web_to_path()
-    from services.adblock_patterns import abp_to_regex
+    from services.adblock_patterns import abp_suffix_to_regex, abp_to_regex
 
     wildcard_regex = abp_to_regex(r"ad\*token")
     assert re.search(wildcard_regex, "https://static.example/ad*token.js")
@@ -248,6 +248,8 @@ def test_abp_regex_compilation_honors_escaped_pattern_metacharacters() -> None:
     assert re.search(abp_to_regex("ad*token"), "https://static.example/adXYZtoken.js")
     assert re.search(abp_to_regex("ad^token"), "https://static.example/ad/token.js")
     assert re.search(abp_to_regex("ad|"), "https://static.example/ad")
+    assert re.match(abp_suffix_to_regex("|"), "")
+    assert not re.match(abp_suffix_to_regex("|"), "/")
 
 
 def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
@@ -261,6 +263,7 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
             ),
             "@@||youtube.com/get_video_info?$xmlhttprequest,domain=music.youtube.com|tv.youtube.com",
             "||example.com/ad/path|$script,~third-party",
+            "||port.example:8443/ad/path|",
             "|https://left.example/ad^$image",
             "wss://loader.*.com/ws^$websocket,third-party",
             "ads.js|",
@@ -286,8 +289,11 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
     assert by_host["example.com"]["suffix_right_anchored"] is True
     assert by_host["example.com"]["path_pattern"] == "/ad/path"
     assert by_host["example.com"]["query_pattern"] == ""
+    assert by_host["example.com"]["compiled_regex"].endswith(r"/ad/path$")
     assert by_host["example.com"]["resource_types"] == ["script"]
     assert by_host["example.com"]["third_party"] == "exclude"
+    assert by_host["port.example"]["suffix"] == ":8443/ad/path|"
+    assert ":8443/ad/path$" in by_host["port.example"]["compiled_regex"]
     assert by_host["left.example"]["pattern_kind"] == "absolute_url"
     assert by_host["left.example"]["url_scheme_pattern"] == "https"
     assert by_host["left.example"]["url_left_anchored"] is True

@@ -14,6 +14,9 @@ from services.adblock_hosts import adblock_host_matches as _host_matches
 from services.adblock_hosts import normalize_adblock_host as _normalize_host
 from services.adblock_hosts import safe_adblock_urlsplit as _safe_urlsplit
 from services.adblock_lookup import AdblockLookupIndex
+from services.adblock_patterns import (
+    abp_host_anchored_to_regex as _abp_host_anchored_to_regex,
+)
 from services.adblock_patterns import abp_to_regex as _abp_to_regex
 
 if TYPE_CHECKING:
@@ -146,15 +149,6 @@ def _compile_regex(pattern: str, *, ignore_case: bool) -> re.Pattern[str] | None
 
 def _unescape_abp_literal(pattern: str) -> str:
     return re.sub(r"\\(.)", r"\1", pattern or "")
-
-
-def _request_suffix(parsed: Any) -> str:
-    suffix = parsed.path or "/"
-    if parsed.query:
-        suffix += "?" + parsed.query
-    if parsed.fragment:
-        suffix += "#" + parsed.fragment
-    return suffix
 
 
 def infer_resource_type(
@@ -427,21 +421,22 @@ class AdblockDecisionEngine:
             return True
         if kind == "domain_only":
             return _host_matches(request_host, str(rule.get("host") or ""))
-        if kind in {"host_anchored", "absolute_url"}:
+        if kind == "absolute_url":
+            compiled_regex = str(rule.get("compiled_regex") or _abp_to_regex(pattern))
+            compiled = _compile_regex(compiled_regex, ignore_case=not case_sensitive)
+            return bool(compiled and compiled.search(url))
+        if kind == "host_anchored":
             if not _host_matches(request_host, str(rule.get("host") or "")):
                 return False
-            if kind == "absolute_url":
-                scheme_pattern = str(rule.get("url_scheme_pattern") or "").lower()
-                if scheme_pattern and not fnmatch.fnmatchcase(
-                    parsed.scheme.lower(),
-                    scheme_pattern,
-                ):
-                    return False
-            return self._suffix_matches(
-                rule,
-                _request_suffix(parsed),
-                case_sensitive=case_sensitive,
+            compiled_regex = str(
+                rule.get("compiled_regex")
+                or _abp_host_anchored_to_regex(
+                    str(rule.get("host") or ""),
+                    str(rule.get("suffix") or ""),
+                )
             )
+            compiled = _compile_regex(compiled_regex, ignore_case=not case_sensitive)
+            return bool(compiled and compiled.search(url))
         if kind in {"host_anchored_pattern", "absolute_url_pattern"}:
             compiled_regex = str(rule.get("compiled_regex") or "")
             compiled = _compile_regex(compiled_regex, ignore_case=not case_sensitive)
@@ -464,29 +459,6 @@ class AdblockDecisionEngine:
                 haystack = haystack.lower()
             return needle in haystack
         return False
-
-    def _suffix_matches(
-        self,
-        rule: dict[str, Any],
-        suffix: str,
-        *,
-        case_sensitive: bool = False,
-    ) -> bool:
-        raw_suffix = str(rule.get("suffix") or "")
-        if not raw_suffix:
-            return True
-        suffix_regex = str(rule.get("suffix_regex") or "")
-        if suffix_regex:
-            compiled = _compile_regex(suffix_regex, ignore_case=not case_sensitive)
-            return bool(compiled and compiled.match(suffix))
-        expected = _unescape_abp_literal(
-            str(rule.get("path_pattern") or "") + str(rule.get("query_pattern") or "")
-        )
-        haystack = suffix or ""
-        if not case_sensitive:
-            expected = expected.lower()
-            haystack = haystack.lower()
-        return bool(expected and haystack.startswith(expected))
 
     def _options_match(
         self,

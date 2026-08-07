@@ -26,6 +26,12 @@ from services.adblock_hosts import (  # noqa: E402
     normalize_adblock_host as _normalize_host,
 )
 from services.adblock_patterns import abp_to_regex as _abp_to_regex  # noqa: E402
+from services.adblock_patterns import (  # noqa: E402
+    abp_host_anchored_to_regex as _abp_host_anchored_to_regex,
+)
+from services.adblock_patterns import (  # noqa: E402
+    abp_suffix_to_regex as _abp_suffix_to_regex,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -449,16 +455,6 @@ def _host_pattern_to_regex(host_pattern: str) -> str:
     return _abp_to_regex(host)
 
 
-def _host_anchored_pattern_to_regex(host_pattern: str, suffix: str) -> str:
-    host_regex = _host_pattern_to_regex(host_pattern)
-    suffix_regex = _abp_to_regex(suffix)
-    if not host_regex:
-        return suffix_regex
-    return (
-        r"^[a-z][a-z0-9+.-]*://(?:[^/?#@]*@)?(?:[^/?#]*\.)?" + host_regex + suffix_regex
-    )
-
-
 def _suffix_fields(suffix: str) -> dict[str, Any]:
     suffix_right_anchored = suffix.endswith("|")
     suffix_body = suffix[:-1] if suffix_right_anchored else suffix
@@ -466,7 +462,7 @@ def _suffix_fields(suffix: str) -> dict[str, Any]:
         "suffix": suffix,
         "suffix_body": suffix_body,
         "suffix_right_anchored": suffix_right_anchored,
-        "suffix_regex": _abp_to_regex(suffix),
+        "suffix_regex": _abp_suffix_to_regex(suffix),
         **_split_suffix_parts(suffix_body),
     }
 
@@ -570,9 +566,18 @@ def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
                 suffix = rest[i:]
                 break
         raw_host = host
-        if "*" in raw_host:
-            star_index = raw_host.find("*")
-            prefix = raw_host[:star_index]
+        if raw_host.startswith("["):
+            bracket_end = raw_host.find("]")
+            if bracket_end >= 0 and raw_host[bracket_end + 1 :].startswith(":"):
+                host = raw_host[: bracket_end + 1]
+                suffix = raw_host[bracket_end + 1 :] + suffix
+        elif raw_host.count(":") == 1:
+            host, port_suffix = raw_host.split(":", 1)
+            suffix = ":" + port_suffix + suffix
+        host_pattern = host
+        if "*" in host_pattern:
+            star_index = host_pattern.find("*")
+            prefix = host_pattern[:star_index]
             normalized_prefix = _normalize_host(prefix)
             if (
                 prefix
@@ -580,7 +585,7 @@ def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
                 and _looks_like_host(normalized_prefix)
             ):
                 host = normalized_prefix
-                suffix = raw_host[star_index:] + suffix
+                suffix = host_pattern[star_index:] + suffix
         host = _normalize_host(host)
         suffix_fields = _suffix_fields(suffix)
         if _looks_like_host(host):
@@ -589,15 +594,16 @@ def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
             return "host_anchored", {
                 "host": host,
                 "anchor": "domain",
+                "compiled_regex": _abp_host_anchored_to_regex(host, suffix),
                 **suffix_fields,
             }
-        normalized_pattern = _normalize_host(raw_host)
+        normalized_pattern = _normalize_host(host_pattern)
         return "host_anchored_pattern", {
             "host": host,
             "host_pattern": normalized_pattern,
             "host_pattern_regex": _host_pattern_to_regex(normalized_pattern),
             "anchor": "domain_pattern",
-            "compiled_regex": _host_anchored_pattern_to_regex(
+            "compiled_regex": _abp_host_anchored_to_regex(
                 normalized_pattern,
                 suffix,
             ),

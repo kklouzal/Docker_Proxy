@@ -15,9 +15,11 @@ def _is_escaped(text: str, index: int) -> bool:
     return backslashes % 2 == 1
 
 
-def abp_to_regex(pattern: str) -> str:
+def _abp_to_regex(pattern: str, *, recognize_left_anchor: bool) -> str:
     p = pattern or ""
-    left_anchored = p.startswith("|") and not p.startswith("||")
+    left_anchored = (
+        recognize_left_anchor and p.startswith("|") and not p.startswith("||")
+    )
     right_anchored = p.endswith("|") and not _is_escaped(p, len(p) - 1)
     if left_anchored:
         p = p[1:]
@@ -49,3 +51,24 @@ def abp_to_regex(pattern: str) -> str:
     if right_anchored:
         body += "$"
     return body
+
+
+def abp_to_regex(pattern: str) -> str:
+    return _abp_to_regex(pattern, recognize_left_anchor=True)
+
+
+def abp_suffix_to_regex(pattern: str) -> str:
+    return _abp_to_regex(pattern, recognize_left_anchor=False)
+
+
+def abp_host_anchored_to_regex(host_pattern: str, suffix: str) -> str:
+    host = (host_pattern or "").strip().lower().rstrip(".")
+    host_regex = abp_to_regex(host)
+    suffix_regex = abp_suffix_to_regex(suffix)
+    if not host_regex:
+        return suffix_regex
+    return (
+        r"^[a-z][a-z0-9+.-]*://(?:[^/?#@]*@)?(?:[^/?#]*\.)?"
+        + host_regex
+        + suffix_regex
+    )
