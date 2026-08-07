@@ -97,7 +97,6 @@ def start_agent() -> None:
     with _start_lock:
         if _started:
             return
-        _started = True
 
         runtime = get_runtime()
         startup_recovery = None
@@ -195,6 +194,7 @@ def start_agent() -> None:
             name="proxy-sync-loop",
             daemon=True,
         ).start()
+        _started = True
 
 
 def main() -> None:
