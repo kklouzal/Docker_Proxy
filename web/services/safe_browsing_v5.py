@@ -1172,6 +1172,10 @@ class SafeBrowsingLocalChecker:
         ] = {}
         self._list_version_state: tuple[tuple[str, bytes | None], ...] | None = None
         self._list_version_state_verified = False
+        # Prevent an old concurrent lookup from repopulating helper caches after
+        # another lookup observes a newly committed hash-list version.
+        self._local_cache_generation = 0
+        self._local_cache_lock = threading.RLock()
         self._cache_max = cache_max_entries or _env_int(
             "SAFE_BROWSING_HELPER_CACHE_ENTRIES",
             200000,
@@ -1256,25 +1260,26 @@ class SafeBrowsingLocalChecker:
     def _selected_lists_for_lookup(self) -> tuple[str, ...]:
         if self._configured_selected_lists is not None:
             return self._configured_selected_lists
-        now_mono = time.monotonic()
-        cached = self._selected_lists_cache
-        if cached and cached[0] > now_mono:
-            return cached[1]
-        lists = SafeBrowsingStore.normalize_lists(None)
-        try:
-            with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT v FROM webfilter_settings WHERE proxy_id=%s AND k=%s",
-                    ("__global__", "safe_browsing_lists"),
-                ).fetchone()
-            if row and row[0] is not None:
-                lists = SafeBrowsingStore.normalize_lists(str(row[0] or ""))
-        except Exception:
-            self.close()
-            if cached:
-                lists = cached[1]
-        self._selected_lists_cache = (now_mono + self._selected_lists_ttl, lists)
-        return lists
+        with self._local_cache_lock:
+            now_mono = time.monotonic()
+            cached = self._selected_lists_cache
+            if cached and cached[0] > now_mono:
+                return cached[1]
+            lists = SafeBrowsingStore.normalize_lists(None)
+            try:
+                with self._connect() as conn:
+                    row = conn.execute(
+                        "SELECT v FROM webfilter_settings WHERE proxy_id=%s AND k=%s",
+                        ("__global__", "safe_browsing_lists"),
+                    ).fetchone()
+                if row and row[0] is not None:
+                    lists = SafeBrowsingStore.normalize_lists(str(row[0] or ""))
+            except Exception:
+                self.close()
+                if cached:
+                    lists = cached[1]
+            self._selected_lists_cache = (now_mono + self._selected_lists_ttl, lists)
+            return lists
 
     def _list_versions_for_lookup(
         self,
@@ -1308,32 +1313,37 @@ class SafeBrowsingLocalChecker:
     def _synchronize_local_cache_versions(
         self,
         selected_lists: tuple[str, ...],
-    ) -> None:
+    ) -> int:
         # The updater commits each hash-list version with its prefix mutation.
         # Only helper-local caches depend on that snapshot; Google's persistent
         # full-hash cache remains valid until its provider-supplied expiration.
-        current = self._list_versions_for_lookup(selected_lists)
-        if (
-            current is None
-            or not self._list_version_state_verified
-            or current != self._list_version_state
-        ):
-            self._prefix_cache.clear()
-            self._verdict_cache.clear()
-        if current is None:
-            self._list_version_state = None
-            self._list_version_state_verified = False
-            return
-        self._list_version_state = current
-        self._list_version_state_verified = True
+        with self._local_cache_lock:
+            current = self._list_versions_for_lookup(selected_lists)
+            if (
+                current is None
+                or not self._list_version_state_verified
+                or current != self._list_version_state
+            ):
+                self._prefix_cache.clear()
+                self._verdict_cache.clear()
+                self._local_cache_generation += 1
+            if current is None:
+                self._list_version_state = None
+                self._list_version_state_verified = False
+                return self._local_cache_generation
+            self._list_version_state = current
+            self._list_version_state_verified = True
+            return self._local_cache_generation
 
     def _local_lists_for_prefix(self, prefix: bytes) -> tuple[str, ...]:
         selected_lists = self._selected_lists_for_lookup()
         cache_key = (prefix, selected_lists)
-        cached = self._prefix_cache.get(cache_key)
         now_mono = time.monotonic()
-        if cached and cached[0] > now_mono:
-            return cached[1]
+        with self._local_cache_lock:
+            cache_generation = self._local_cache_generation
+            cached = self._prefix_cache.get(cache_key)
+            if cached and cached[0] > now_mono:
+                return cached[1]
         try:
             placeholders = ",".join(["%s"] * len(selected_lists))
             with self._connect() as conn:
@@ -1347,9 +1357,11 @@ class SafeBrowsingLocalChecker:
             self.close()
             lists = ()
         ttl = self._prefix_hit_ttl if lists else self._prefix_miss_ttl
-        self._prefix_cache[cache_key] = (now_mono + ttl, lists)
-        if len(self._prefix_cache) > self._cache_max:
-            self._prefix_cache.clear()
+        with self._local_cache_lock:
+            if cache_generation == self._local_cache_generation:
+                self._prefix_cache[cache_key] = (now_mono + ttl, lists)
+                if len(self._prefix_cache) > self._cache_max:
+                    self._prefix_cache.clear()
         return lists
 
     def _cache_lookup(
@@ -1437,21 +1449,33 @@ class SafeBrowsingLocalChecker:
         self,
         key: tuple[str, tuple[str, ...]],
         verdict: SafeBrowsingVerdict,
+        cache_generation: int | None = None,
     ) -> None:
-        self._verdict_cache[key] = (time.monotonic() + 300, verdict)
-        if len(self._verdict_cache) > self._cache_max:
-            self._verdict_cache.clear()
+        with self._local_cache_lock:
+            if (
+                cache_generation is not None
+                and cache_generation != self._local_cache_generation
+            ):
+                return
+            self._verdict_cache[key] = (time.monotonic() + 300, verdict)
+            if len(self._verdict_cache) > self._cache_max:
+                self._verdict_cache.clear()
 
     def check_url(self, url: str) -> SafeBrowsingVerdict:
         canonical = canonicalize_url(url)
         if not canonical:
             return SafeBrowsingVerdict("safe", reason="invalid or empty url")
         selected_lists = self._selected_lists_for_lookup()
-        self._synchronize_local_cache_versions(selected_lists)
+        cache_generation = self._synchronize_local_cache_versions(selected_lists)
         cache_key = (canonical, selected_lists)
-        cached = self._verdict_cache.get(cache_key)
-        if cached and cached[0] > time.monotonic():
-            return cached[1]
+        with self._local_cache_lock:
+            cached = self._verdict_cache.get(cache_key)
+            if (
+                cache_generation == self._local_cache_generation
+                and cached
+                and cached[0] > time.monotonic()
+            ):
+                return cached[1]
         hashes = expression_hashes(canonical)
         full_set = set(hashes)
         saw_local_match = False
@@ -1524,7 +1548,7 @@ class SafeBrowsingLocalChecker:
                             )
                             break
             if verdict.verdict == "unsafe":
-                self._cache_verdict(cache_key, verdict)
+                self._cache_verdict(cache_key, verdict, cache_generation)
                 return verdict
             last_safe_verdict = verdict
         verdict = (
@@ -1535,5 +1559,5 @@ class SafeBrowsingLocalChecker:
         if not saw_local_match:
             cache_final_verdict = False
         if cache_final_verdict:
-            self._cache_verdict(cache_key, verdict)
+            self._cache_verdict(cache_key, verdict, cache_generation)
         return verdict

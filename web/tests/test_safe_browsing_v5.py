@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import threading
 from typing import NoReturn
 
 import pytest
@@ -737,6 +738,60 @@ def test_safe_browsing_list_version_change_invalidates_unsafe_local_caches(
 
     assert verdict == SafeBrowsingVerdict("safe", reason="no local hash-prefix match")
     assert state["prefix_queries"] == 2
+
+
+def test_safe_browsing_concurrent_old_version_cannot_repopulate_verdict_cache(
+    monkeypatch,
+) -> None:
+    url = "http://concurrent-removed-threat.example/"
+    checker, _target, state = _stateful_local_list_checker(
+        url,
+        prefix_present=True,
+    )
+    cache_write_ready = threading.Event()
+    release_cache_write = threading.Event()
+    results = []
+    errors = []
+    original_cache_verdict = checker._cache_verdict
+
+    def delayed_cache_verdict(key, verdict, *args):
+        if threading.current_thread() is stale_thread:
+            cache_write_ready.set()
+            if not release_cache_write.wait(timeout=5):
+                msg = "timed out waiting to release stale cache write"
+                raise AssertionError(msg)
+        return original_cache_verdict(key, verdict, *args)
+
+    monkeypatch.setattr(checker, "_cache_verdict", delayed_cache_verdict)
+
+    def stale_lookup() -> None:
+        try:
+            results.append(checker.check_url(url))
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    stale_thread = threading.Thread(target=stale_lookup)
+    stale_thread.start()
+    assert cache_write_ready.wait(timeout=5)
+
+    state["version"] = b"v2"
+    state["prefixes"] = set()
+    assert checker.check_url(url) == SafeBrowsingVerdict(
+        "safe",
+        reason="no local hash-prefix match",
+    )
+
+    release_cache_write.set()
+    stale_thread.join(timeout=5)
+    assert not stale_thread.is_alive()
+    assert errors == []
+    assert results
+    assert results[0].verdict == "unsafe"
+
+    assert checker.check_url(url) == SafeBrowsingVerdict(
+        "safe",
+        reason="no local hash-prefix match",
+    )
 
 
 def test_safe_browsing_list_version_change_invalidates_prefix_misses() -> None:
