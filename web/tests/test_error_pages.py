@@ -5,6 +5,8 @@ import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
 
+import pytest
+
 from .admin_route_test_utils import add_web_to_path, load_admin_app, login_client
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -164,7 +166,6 @@ def test_missing_template_names_reports_custom_templates_by_default(
     )
 
     error_page_directory.cache_clear()
-    missing_template_names.cache_clear()
     monkeypatch.setattr(error_pages, "error_page_directory", lambda: tmp_path)
     for name in SQUID_ERROR_TEMPLATE_NAMES:
         (tmp_path / name).write_text("placeholder", encoding="utf-8")
@@ -173,7 +174,6 @@ def test_missing_template_names_reports_custom_templates_by_default(
         assert missing_template_names() == ["ERR_WEBFILTER_BLOCKED"]
         assert missing_template_names(include_custom=False) == []
     finally:
-        missing_template_names.cache_clear()
         error_page_directory.cache_clear()
 
 
@@ -273,9 +273,6 @@ def test_admin_error_pages_route_surfaces_missing_template_in_manifest(
             )
 
     error_pages.error_page_directory.cache_clear()
-    error_pages.missing_template_names.cache_clear()
-    error_pages.read_template.cache_clear()
-    error_pages.render_preview.cache_clear()
     monkeypatch.setattr(error_pages, "error_page_directory", lambda: template_dir)
 
     loaded = load_admin_app(monkeypatch, tmp_path)
@@ -295,8 +292,31 @@ def test_admin_error_pages_route_surfaces_missing_template_in_manifest(
     assert preview.status_code == 404
 
 
-def test_read_template_is_cached_within_process(monkeypatch) -> None:
-    error_pages.read_template.cache_clear()
+def test_non_regular_and_symlink_templates_are_unavailable(
+    monkeypatch, tmp_path
+) -> None:
+    template_path = tmp_path / "ERR_DNS_FAIL"
+    template_path.mkdir()
+    monkeypatch.setattr(error_pages, "error_page_directory", lambda: tmp_path)
+
+    assert "ERR_DNS_FAIL" in error_pages.missing_template_names()
+    with pytest.raises(OSError, match="not a regular file"):
+        error_pages.read_template("ERR_DNS_FAIL")
+
+    template_path.rmdir()
+    target = tmp_path / "outside-template"
+    target.write_text("outside content", encoding="utf-8")
+    template_path.symlink_to(target)
+
+    assert "ERR_DNS_FAIL" in error_pages.missing_template_names()
+    with pytest.raises(OSError, match="not a regular file"):
+        error_pages.render_preview("ERR_DNS_FAIL")
+
+
+def test_template_file_cache_refreshes_after_replacement(monkeypatch, tmp_path) -> None:
+    template_path = tmp_path / "ERR_DNS_FAIL"
+    template_path.write_text("original %U", encoding="utf-8")
+    monkeypatch.setattr(error_pages, "error_page_directory", lambda: tmp_path)
 
     calls: list[str] = []
     original = Path.read_text
@@ -309,29 +329,41 @@ def test_read_template_is_cached_within_process(monkeypatch) -> None:
 
     first = error_pages.read_template("ERR_DNS_FAIL")
     second = error_pages.read_template("ERR_DNS_FAIL")
+    template_path.write_text("replacement content %T", encoding="utf-8")
+    third = error_pages.read_template("ERR_DNS_FAIL")
 
     assert first == second
-    assert calls.count("ERR_DNS_FAIL") == 1
+    assert third == "replacement content %T"
+    assert calls == ["ERR_DNS_FAIL", "ERR_DNS_FAIL"]
 
 
-def test_template_tokens_and_preview_are_cached(monkeypatch) -> None:
+def test_missing_template_and_preview_follow_filesystem_changes(
+    monkeypatch, tmp_path
+) -> None:
+    template_path = tmp_path / "ERR_DNS_FAIL"
+    template_path.write_text("original %U", encoding="utf-8")
+    monkeypatch.setattr(error_pages, "error_page_directory", lambda: tmp_path)
+
+    assert (
+        error_pages.render_preview("ERR_DNS_FAIL")
+        == "original https://example.invalid/report.pdf"
+    )
+
+    template_path.write_text("replacement %T", encoding="utf-8")
+    assert (
+        error_pages.render_preview("ERR_DNS_FAIL")
+        == "replacement Sun, 10 May 2026 15:15:30 GMT"
+    )
+
+    template_path.unlink()
+    assert "ERR_DNS_FAIL" in error_pages.missing_template_names()
+
+
+def test_template_tokens_are_cached() -> None:
     error_pages.template_tokens.cache_clear()
-    error_pages.render_preview.cache_clear()
-
-    read_calls: list[str] = []
-    original_read_template = error_pages.read_template
-
-    def fake_read_template(name: str) -> str:
-        read_calls.append(name)
-        return original_read_template(name)
-
-    monkeypatch.setattr(error_pages, "read_template", fake_read_template)
 
     tokens_1 = error_pages.template_tokens("A %U B %T")
     tokens_2 = error_pages.template_tokens("A %U B %T")
-    preview_1 = error_pages.render_preview("ERR_DNS_FAIL")
-    preview_2 = error_pages.render_preview("ERR_DNS_FAIL")
 
     assert tokens_1 == tokens_2 == ("%T", "%U")
-    assert preview_1 == preview_2
-    assert read_calls == ["ERR_DNS_FAIL"]
+    assert error_pages.template_tokens.cache_info().hits == 1

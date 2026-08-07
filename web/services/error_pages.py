@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import stat
 from dataclasses import dataclass
 from functools import lru_cache
 from html import escape
@@ -534,11 +535,32 @@ def error_page_directory() -> Path:
 
 
 @lru_cache(maxsize=128)
+def _read_template_file(
+    path: Path, _fingerprint: tuple[int, int, int, int, int]
+) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _template_fingerprint(path: Path) -> tuple[int, int, int, int, int]:
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode):
+        message = f"Error page template is not a regular file: {path}"
+        raise OSError(message)
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
 def read_template(name: str) -> str:
     info = get_error_page(name)
     if info is None:
         raise KeyError(name)
-    return (error_page_directory() / info.name).read_text(encoding="utf-8")
+    path = error_page_directory() / info.name
+    return _read_template_file(path, _template_fingerprint(path))
 
 
 @lru_cache(maxsize=128)
@@ -546,20 +568,23 @@ def template_tokens(text: str) -> tuple[str, ...]:
     return tuple(sorted(set(_TOKEN_RE.findall(text or ""))))
 
 
-@lru_cache(maxsize=2)
 def missing_template_names(*, include_custom: bool = True) -> list[str]:
     base = error_page_directory()
     names: Iterable[str] = SQUID_ERROR_TEMPLATE_NAMES + (
         CUSTOM_ERROR_TEMPLATE_NAMES if include_custom else ()
     )
-    return [name for name in names if not (base / name).is_file()]
+    missing = []
+    for name in names:
+        try:
+            _template_fingerprint(base / name)
+        except OSError:
+            missing.append(name)
+    return missing
 
 
 @lru_cache(maxsize=128)
-def render_preview(name: str) -> str:
-    info = get_error_page(name)
-    if info is None:
-        raise KeyError(name)
+def _render_preview(name: str, text: str) -> str:
+    info = _INFO[name]
     values = dict(_SAMPLE_VALUES)
     values["%c"] = info.name
     values["%x"] = info.family.lower().replace(" ", "-")
@@ -568,4 +593,11 @@ def render_preview(name: str) -> str:
         token = match.group(0)
         return escape(values.get(token, token))
 
-    return _TOKEN_RE.sub(replace, read_template(info.name))
+    return _TOKEN_RE.sub(replace, text)
+
+
+def render_preview(name: str) -> str:
+    info = get_error_page(name)
+    if info is None:
+        raise KeyError(name)
+    return _render_preview(info.name, read_template(info.name))
