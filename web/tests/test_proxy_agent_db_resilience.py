@@ -136,6 +136,87 @@ def test_proxy_agent_runtime_construction_failure_allows_one_successful_retry(
     assert agent._started is True
 
 
+@pytest.mark.parametrize(
+    ("failed_start_name", "expected_start_attempts"),
+    [
+        (
+            "proxy-heartbeat",
+            ["proxy-heartbeat", "proxy-heartbeat", "proxy-sync-loop"],
+        ),
+        (
+            "proxy-sync-loop",
+            ["proxy-heartbeat", "proxy-sync-loop", "proxy-sync-loop"],
+        ),
+    ],
+)
+def test_proxy_agent_thread_start_failure_retries_only_missing_loops(
+    monkeypatch,
+    failed_start_name,
+    expected_start_attempts,
+) -> None:
+    from proxy import agent  # type: ignore
+
+    runtime_attempts = 0
+    start_attempts: list[str] = []
+    successful_starts: list[str] = []
+    failure_raised = False
+
+    class Runtime:
+        def ensure_registered(self) -> None:
+            pass
+
+        def bootstrap_revision_if_missing(self) -> None:
+            pass
+
+        def start_background_tasks(self) -> None:
+            pass
+
+        def sync_from_db(self, *, force=False):
+            return {"ok": True}
+
+        def heartbeat(self) -> None:
+            pass
+
+    def get_runtime():
+        nonlocal runtime_attempts
+        runtime_attempts += 1
+        return Runtime()
+
+    class FakeThread:
+        def __init__(self, *, target, args=(), name, daemon) -> None:
+            assert callable(target)
+            assert daemon is True
+            self.name = name
+
+        def start(self) -> None:
+            nonlocal failure_raised
+            start_attempts.append(self.name)
+            if self.name == failed_start_name and not failure_raised:
+                failure_raised = True
+                msg = f"simulated {self.name} start failure"
+                raise RuntimeError(msg)
+            successful_starts.append(self.name)
+
+    monkeypatch.setattr(agent, "_started", False)
+    monkeypatch.setattr(agent, "_started_loop_names", set())
+    monkeypatch.setattr(agent, "get_runtime", get_runtime)
+    monkeypatch.setattr(agent.threading, "Thread", FakeThread)
+    monkeypatch.setattr(agent, "_env_float", lambda *_args, **_kwargs: 1.0)
+
+    with pytest.raises(RuntimeError, match=f"simulated {failed_start_name}"):
+        agent.start_agent()
+
+    assert agent._started is False
+
+    agent.start_agent()
+    agent.start_agent()
+
+    assert runtime_attempts == 2
+    assert start_attempts == expected_start_attempts
+    assert successful_starts == ["proxy-heartbeat", "proxy-sync-loop"]
+    assert agent._started is True
+
+
 def test_proxy_agent_runs_schema_when_runtime_has_no_recovery_hook(monkeypatch) -> None:
     from proxy import agent  # type: ignore
 

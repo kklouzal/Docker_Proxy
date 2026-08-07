@@ -14,6 +14,7 @@ from proxy.runtime import get_runtime
 logger = logging.getLogger(__name__)
 
 _started = False
+_started_loop_names: set[str] = set()
 _start_lock = threading.Lock()
 
 
@@ -182,19 +183,26 @@ def start_agent() -> None:
             maximum=3600.0,
         )
 
-        threading.Thread(
-            target=_loop,
-            args=(heartbeat_interval, runtime.heartbeat),
-            name="proxy-heartbeat",
-            daemon=True,
-        ).start()
-        threading.Thread(
-            target=_loop,
-            args=(sync_interval, lambda: _sync_loop(runtime, force=False)),
-            name="proxy-sync-loop",
-            daemon=True,
-        ).start()
+        loops = (
+            ("proxy-heartbeat", heartbeat_interval, runtime.heartbeat),
+            (
+                "proxy-sync-loop",
+                sync_interval,
+                lambda: _sync_loop(runtime, force=False),
+            ),
+        )
+        for name, interval, func in loops:
+            if name in _started_loop_names:
+                continue
+            threading.Thread(
+                target=_loop,
+                args=(interval, func),
+                name=name,
+                daemon=True,
+            ).start()
+            _started_loop_names.add(name)
         _started = True
+        _started_loop_names.clear()
 
 
 def main() -> None:
