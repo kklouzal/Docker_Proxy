@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+import stat
 import sys
 import threading
 import time
@@ -276,6 +278,35 @@ def test_restore_certificate_material_snapshot_fsyncs_rollback_replaces_and_unli
     assert (tmp_path / "ca.key").read_bytes() == b"restored-key"
     assert not (tmp_path / "uploaded_ca.pfx").exists()
     assert (tmp_path / ".ca-material.json").read_bytes() == b"{}\n"
+
+
+def test_materialize_certificate_bundle_surfaces_publish_directory_fsync_io_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        certificate_core, "_extract_certificate_metadata", lambda _cert: ("", "", "")
+    )
+    bundle = certificate_core.build_certificate_bundle(CERT_A, KEY_A)
+    real_fsync = certificate_core.os.fsync
+    directory_fsync_count = 0
+
+    def fail_first_publish_directory_fsync(fd: int) -> None:
+        nonlocal directory_fsync_count
+        if stat.S_ISDIR(certificate_core.os.fstat(fd).st_mode):
+            directory_fsync_count += 1
+            if directory_fsync_count == 3:
+                raise OSError(errno.EIO, "directory fsync failed")
+        real_fsync(fd)
+
+    monkeypatch.setattr(certificate_core.os, "fsync", fail_first_publish_directory_fsync)
+
+    with pytest.raises(OSError, match="directory fsync failed"):
+        certificate_core.materialize_certificate_bundle(tmp_path, bundle)
+
+    assert (tmp_path / "ca.crt").read_text(encoding="utf-8") == CERT_A
+    assert not (tmp_path / "ca.key").exists()
+    assert not (tmp_path / ".ca-material.json").exists()
 
 
 def test_materialize_and_load_certificate_bundle_round_trip_and_manage_pfx_file(

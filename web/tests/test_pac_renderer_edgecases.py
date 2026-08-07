@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import errno
 import json
+import stat
 import subprocess
 import sys
 import threading
@@ -1543,6 +1545,41 @@ def test_materialize_proxy_pac_state_fsyncs_parent_directories_during_rollback(
 
     assert parent_fsyncs == ["payload", tmp_path.name, tmp_path.name, tmp_path.name]
     assert (target / "fallback.pac").read_text(encoding="utf-8") == "original\n"
+
+
+def test_materialize_proxy_pac_state_surfaces_directory_fsync_io_failure_and_rolls_back(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _add_web_to_path()
+    from services import pac_renderer  # type: ignore
+
+    target = tmp_path / "pac"
+    target.mkdir()
+    (target / "fallback.pac").write_text("original\n", encoding="utf-8")
+    state = pac_renderer.ProxyPacState(
+        proxy_id="live",
+        state_sha256="sha",
+        files=(pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="A"),),
+    )
+    real_fsync = pac_renderer.os.fsync
+    directory_fsync_count = 0
+
+    def fail_backup_publish_directory_fsync(fd: int) -> None:
+        nonlocal directory_fsync_count
+        if stat.S_ISDIR(pac_renderer.os.fstat(fd).st_mode):
+            directory_fsync_count += 1
+            if directory_fsync_count == 3:
+                raise OSError(errno.EIO, "directory fsync failed")
+        real_fsync(fd)
+
+    monkeypatch.setattr(pac_renderer.os, "fsync", fail_backup_publish_directory_fsync)
+
+    with pytest.raises(OSError, match="directory fsync failed"):
+        pac_renderer.materialize_proxy_pac_state(target, state=state)
+
+    assert (target / "fallback.pac").read_text(encoding="utf-8") == "original\n"
+    assert not list(tmp_path.glob(".pac-backup-*"))
 
 
 def test_materialize_proxy_pac_state_serializes_overlapping_same_target(

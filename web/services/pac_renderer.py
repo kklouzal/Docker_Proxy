@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import inspect
 import ipaddress
@@ -63,6 +64,13 @@ PAC_HOST_PLACEHOLDER = "__PAC_PROXY_HOST__"
 PAC_MANIFEST_FILENAME = "manifest.json"
 PAC_STATE_SHA_FILENAME = ".state-sha256"
 PAC_RENDER_DIR = "/var/lib/squid-flask-proxy/pac"
+_UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
+    errno.EBADF,
+    errno.EINVAL,
+    errno.ENOSYS,
+    getattr(errno, "ENOTSUP", errno.EINVAL),
+    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+}
 _PAC_MATERIALIZATION_TARGET_LOCKS_GUARD = threading.Lock()
 _PAC_MATERIALIZATION_TARGET_LOCKS: dict[str, threading.Lock] = {}
 
@@ -102,9 +110,11 @@ def _fsync_parent_dir(path: str | os.PathLike[str]) -> None:
     try:
         fd = os.open(directory, flags)
         os.fsync(fd)
-    except OSError:
+    except OSError as exc:
         # Some platforms/filesystems do not support opening or fsyncing dirs.
-        return
+        if exc.errno is None or exc.errno in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
+            return
+        raise
     finally:
         if fd is not None:
             with contextlib.suppress(OSError):
@@ -121,8 +131,10 @@ def _fsync_dir(path: str | os.PathLike[str]) -> None:
     try:
         fd = os.open(directory, flags)
         os.fsync(fd)
-    except OSError:
-        return
+    except OSError as exc:
+        if exc.errno is None or exc.errno in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
+            return
+        raise
     finally:
         if fd is not None:
             with contextlib.suppress(OSError):

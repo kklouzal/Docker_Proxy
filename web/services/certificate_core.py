@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import hashlib
 import ipaddress
@@ -27,6 +28,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
 logger = logging.getLogger(__name__)
+_UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
+    errno.EBADF,
+    errno.EINVAL,
+    errno.ENOSYS,
+    getattr(errno, "ENOTSUP", errno.EINVAL),
+    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+}
 
 
 def _fsync_parent_dir(path: str | os.PathLike[str]) -> None:
@@ -39,9 +47,11 @@ def _fsync_parent_dir(path: str | os.PathLike[str]) -> None:
     try:
         fd = os.open(directory, flags)
         os.fsync(fd)
-    except OSError:
+    except OSError as exc:
         # Some platforms/filesystems do not support opening or fsyncing dirs.
-        return
+        if exc.errno is None or exc.errno in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
+            return
+        raise
     finally:
         if fd is not None:
             with contextlib.suppress(OSError):

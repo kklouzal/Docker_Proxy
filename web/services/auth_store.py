@@ -1,3 +1,4 @@
+import errno
 import fcntl
 import logging
 import os
@@ -19,6 +20,13 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_SECRET_PATH = "/var/lib/squid-flask-proxy/flask_secret.key"
+_UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
+    errno.EBADF,
+    errno.EINVAL,
+    errno.ENOSYS,
+    getattr(errno, "ENOTSUP", errno.EINVAL),
+    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+}
 
 
 def _fsync_parent_dir(path: pathlib.Path) -> None:
@@ -29,8 +37,10 @@ def _fsync_parent_dir(path: pathlib.Path) -> None:
     try:
         fd = os.open(path.parent, flags)
         os.fsync(fd)
-    except OSError:
-        return
+    except OSError as exc:
+        if exc.errno is None or exc.errno in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
+            return
+        raise
     finally:
         if fd is not None:
             try:

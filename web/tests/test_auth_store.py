@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import multiprocessing
 import stat
 import sys
@@ -174,6 +175,28 @@ def test_auth_store_fsyncs_parent_after_failed_secret_publish_cleanup(
     assert raised.value is publish_error
     assert parent_fsyncs == [tmp_path]
     assert not secret_path.exists()
+    assert list(tmp_path.glob(".secret.key.*.tmp")) == []
+
+
+def test_auth_store_surfaces_directory_fsync_io_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    auth_store = _auth_store_module()
+    real_fsync = auth_store.os.fsync
+
+    def fail_directory_fsync(fd: int) -> None:
+        if stat.S_ISDIR(auth_store.os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "directory fsync failed")
+        real_fsync(fd)
+
+    monkeypatch.setattr(auth_store.os, "fsync", fail_directory_fsync)
+    secret_path = tmp_path / "secret.key"
+
+    with pytest.raises(OSError, match="directory fsync failed"):
+        auth_store.AuthStore(secret_path=str(secret_path)).get_or_create_secret_key()
+
+    assert secret_path.exists()
     assert list(tmp_path.glob(".secret.key.*.tmp")) == []
 
 
