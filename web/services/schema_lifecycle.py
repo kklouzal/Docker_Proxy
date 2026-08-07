@@ -23,6 +23,7 @@ from services.db import (
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
 )
+from services.sql_identifiers import normalize_mysql_identifier
 
 if False:  # pragma: no cover - type checkers only
     pass
@@ -31,7 +32,6 @@ _SCHEMA_VERSION = 25
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _CONTROL_PLANE_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
 )
@@ -106,14 +106,6 @@ class SchemaMigrationSpec:
 
 def _normalize_sql(sql: str) -> str:
     return " ".join(str(sql or "").split())
-
-
-def _safe_identifier(identifier: str) -> str:
-    value = str(identifier or "").strip()
-    if not _IDENTIFIER_RE.fullmatch(value):
-        msg = f"Unsafe MySQL identifier: {identifier!r}"
-        raise ValueError(msg)
-    return value
 
 
 def normalize_control_plane_identity(value: str) -> str:
@@ -254,7 +246,7 @@ def ensure_index(conn: Any, *, table_name: str, index_name: str, ddl: str) -> bo
 
 def require_migration_privileges(conn: Any) -> None:
     probe = f"schema_privilege_probe_{int(time.time() * 1000)}"
-    table = _safe_identifier(probe)
+    table = normalize_mysql_identifier(probe)
     try:
         conn.execute(f"CREATE TABLE {table} (id INT PRIMARY KEY)")
         conn.execute(f"ALTER TABLE {table} ADD COLUMN touched INT NOT NULL DEFAULT 0")
@@ -440,8 +432,8 @@ def repair_duplicate_active_rows(
     table_name: str,
     scope_column: str | None = None,
 ) -> int:
-    safe_table = _safe_identifier(table_name)
-    safe_scope = _safe_identifier(scope_column) if scope_column else ""
+    safe_table = normalize_mysql_identifier(table_name)
+    safe_scope = normalize_mysql_identifier(scope_column) if scope_column else ""
     partition = f"PARTITION BY {safe_scope}" if safe_scope else ""
     sql = f"""
         UPDATE {safe_table} target

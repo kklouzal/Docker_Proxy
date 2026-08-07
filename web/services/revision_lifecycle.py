@@ -17,16 +17,8 @@ _SCOPED_LOCK_MAX_READABLE_PREFIX = (
     - 2  # separating colons
     - _SCOPED_LOCK_DIGEST_HEX_LENGTH
 )
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _LOCK_PREFIX_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _LOCK_PREFIX_SEPARATORS_RE = re.compile(r"_+")
-
-
-def _safe_identifier(value: str) -> str:
-    if not _IDENTIFIER_RE.fullmatch(value or ""):
-        msg = f"Unsafe MySQL identifier: {value!r}"
-        raise ValueError(msg)
-    return value
 
 
 def column_exists(conn: Any, table_name: str, column_name: str) -> bool:
