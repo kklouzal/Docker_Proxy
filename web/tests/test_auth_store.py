@@ -148,6 +148,35 @@ def test_auth_store_does_not_use_predictable_shared_tmp_path(
     assert list(tmp_path.glob(".secret.key.*.tmp")) == []
 
 
+def test_auth_store_fsyncs_parent_after_failed_secret_publish_cleanup(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    auth_store = _auth_store_module()
+    monkeypatch.setattr(auth_store.secrets, "token_urlsafe", lambda size: "new-secret")
+    publish_error = OSError("secret publication failed")
+
+    def fail_secret_publish(*_args, **_kwargs) -> None:
+        raise publish_error
+
+    monkeypatch.setattr(auth_store.os, "link", fail_secret_publish)
+    parent_fsyncs: list[Path] = []
+    monkeypatch.setattr(
+        auth_store,
+        "_fsync_parent_dir",
+        lambda path: parent_fsyncs.append(Path(path).parent),
+    )
+    secret_path = tmp_path / "secret.key"
+
+    with pytest.raises(OSError, match="secret publication failed") as raised:
+        auth_store.AuthStore(secret_path=str(secret_path)).get_or_create_secret_key()
+
+    assert raised.value is publish_error
+    assert parent_fsyncs == [tmp_path]
+    assert not secret_path.exists()
+    assert list(tmp_path.glob(".secret.key.*.tmp")) == []
+
+
 def test_auth_store_secret_creation_is_serialized_for_concurrent_callers(
     tmp_path,
     monkeypatch,

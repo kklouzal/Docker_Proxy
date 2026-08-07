@@ -169,6 +169,8 @@ class AuthStore:
                             interval_seconds=300.0,
                             message="Failed to clean up temporary Flask secret key file",
                         )
+                    else:
+                        _fsync_parent_dir(tmp_path)
 
     @staticmethod
     def _read_existing_secret_file(secret_path: pathlib.Path) -> str | None:
