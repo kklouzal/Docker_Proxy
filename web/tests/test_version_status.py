@@ -9,6 +9,7 @@ from typing import Any
 from services import version_status
 from services.version_status import (
     _MAX_GITHUB_API_RESPONSE_BYTES,
+    _MAX_VERSION_STATUS_CACHE_ENTRIES,
     VersionStatusClient,
     build_component_version_status,
     current_component_metadata,
@@ -422,6 +423,40 @@ def test_concurrent_compare_requests_for_one_revision_share_github_call() -> Non
 
     assert [result.state for result in results] == ["ok", "ok"]
     assert calls["count"] == 1
+
+
+def test_compare_cache_evicts_least_recently_used_revision_at_fixed_bound() -> None:
+    calls: list[str] = []
+
+    def urlopen(request, *, timeout):
+        calls.append(request.full_url)
+        return _json_response(
+            {
+                "status": "identical",
+                "ahead_by": 0,
+                "behind_by": 0,
+                "total_commits": 0,
+            }
+        )
+
+    client = VersionStatusClient(repository="owner/repo", urlopen=urlopen)
+
+    for index in range(_MAX_VERSION_STATUS_CACHE_ENTRIES):
+        client.compare_revision(f"revision-{index}")
+
+    client.compare_revision("revision-0")
+    client.compare_revision("overflow-revision")
+
+    assert len(client._cache) == _MAX_VERSION_STATUS_CACHE_ENTRIES
+    assert len(calls) == _MAX_VERSION_STATUS_CACHE_ENTRIES + 1
+    assert "owner/repo:main:revision-0" in client._cache
+    assert "owner/repo:main:revision-1" not in client._cache
+    assert "owner/repo:main:overflow-revision" in client._cache
+
+    client.compare_revision("revision-1")
+
+    assert len(client._cache) == _MAX_VERSION_STATUS_CACHE_ENTRIES
+    assert len(calls) == _MAX_VERSION_STATUS_CACHE_ENTRIES + 2
 
 
 def test_default_client_cache_isolates_revisions_and_tracks_config_changes(

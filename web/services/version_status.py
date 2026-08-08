@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +20,7 @@ _GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$"
 _GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 _GITHUB_BRANCH_FORBIDDEN_CHARS = frozenset(" ~^:?*[\\")
 _MAX_GITHUB_API_RESPONSE_BYTES = 512 * 1024
+_MAX_VERSION_STATUS_CACHE_ENTRIES = 128
 _CACHE_LOCK_STRIPES = 16
 
 
@@ -200,7 +202,7 @@ class VersionStatusClient:
         )
         self.urlopen = urlopen or urllib.request.urlopen  # noqa: S310
         self.monotonic = monotonic or time.monotonic
-        self._cache: dict[str, tuple[float, CompareResult]] = {}
+        self._cache: OrderedDict[str, tuple[float, CompareResult]] = OrderedDict()
         self._cache_lock = threading.Lock()
         self._request_locks = tuple(
             threading.Lock() for _ in range(_CACHE_LOCK_STRIPES)
@@ -281,6 +283,8 @@ class VersionStatusClient:
         now = float(self.monotonic())
         with self._cache_lock:
             cached = self._cache.get(key)
+            if cached is not None:
+                self._cache.move_to_end(key)
         if cached is not None and now - cached[0] <= max(0.0, ttl):
             return cached[1]
 
@@ -360,6 +364,9 @@ class VersionStatusClient:
         if result.state != "unknown":
             with self._cache_lock:
                 self._cache[key] = (now, result)
+                self._cache.move_to_end(key)
+                while len(self._cache) > _MAX_VERSION_STATUS_CACHE_ENTRIES:
+                    self._cache.popitem(last=False)
         return result
 
 
