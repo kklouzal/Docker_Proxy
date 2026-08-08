@@ -1342,16 +1342,21 @@ def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:
     )
 
     inserted = []
+    lifecycle = []
 
     class FakeLogDb:
         def __init__(self, max_rows) -> None:
             self.max_rows = max_rows
 
         def start(self) -> None:
-            pass
+            lifecycle.append("start")
 
         def insert(self, **kwargs) -> None:
             inserted.append(kwargs)
+
+        def close(self) -> bool:
+            lifecycle.append("close")
+            return True
 
     checker_selected_lists = []
 
@@ -1375,6 +1380,7 @@ def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:
 
     assert safe_browsing_acl.main(["--list", "se-4b", "--list", "uwsa-4b"]) == 0
     assert checker_selected_lists == [["se-4b", "uwsa-4b"]]
+    assert lifecycle == ["start", "close"]
     assert outputs == ["OK message=category=google-safe-browsing/social-engineering\n"]
     assert inserted[0]["src_ip"] == "192.0.2.10"
     assert inserted[0]["url"] == "http://bad.example/"

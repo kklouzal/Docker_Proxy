@@ -365,7 +365,7 @@ def test_blocked_log_db_keeps_block_when_source_ip_unavailable(monkeypatch) -> N
     webcat_acl = _webcat_acl_module()
 
     db = webcat_acl._BlockedLogDb(max_rows=10)
-    monkeypatch.setattr(db, "start", lambda: None)
+    monkeypatch.setattr(db, "_start_locked", lambda: None)
     monkeypatch.setattr(db, "_proxy_id", lambda: "default")
 
     db.insert(ts=123, src_ip="", url="http://blocked.example/", category="adult")
@@ -377,7 +377,7 @@ def test_blocked_log_db_sanitizes_untrusted_log_fields(monkeypatch) -> None:
     webcat_acl = _webcat_acl_module()
 
     db = webcat_acl._BlockedLogDb(max_rows=10)
-    monkeypatch.setattr(db, "start", lambda: None)
+    monkeypatch.setattr(db, "_start_locked", lambda: None)
     monkeypatch.setattr(webcat_acl, "_now", lambda: 999)
 
     db.insert(
@@ -401,7 +401,7 @@ def test_blocked_log_db_sanitizes_url_edge_cases(monkeypatch) -> None:
     webcat_acl = _webcat_acl_module()
 
     db = webcat_acl._BlockedLogDb(max_rows=10)
-    monkeypatch.setattr(db, "start", lambda: None)
+    monkeypatch.setattr(db, "_start_locked", lambda: None)
 
     cases = [
         (
@@ -437,6 +437,124 @@ def test_blocked_log_db_sanitizes_url_edge_cases(monkeypatch) -> None:
     for raw_url, expected in cases:
         db.insert(ts=123, src_ip="192.0.2.10", url=raw_url, category="adult")
         assert db._queue.get_nowait()[2] == expected
+
+
+def test_blocked_log_db_close_flushes_accepted_events_and_closes_connection(
+    monkeypatch,
+) -> None:
+    webcat_acl = _webcat_acl_module()
+
+    flushed = []
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        def close(self) -> None:
+            self.closed += 1
+
+    conn = FakeConn()
+    db = webcat_acl._BlockedLogDb(max_rows=10)
+
+    def fake_connect():
+        db._conn = conn
+        return conn
+
+    monkeypatch.setattr(db, "_connect", fake_connect)
+    monkeypatch.setattr(db, "_flush", lambda _conn, batch: flushed.extend(batch))
+
+    db.insert(
+        ts=123,
+        src_ip="192.0.2.10",
+        url="http://blocked.example/",
+        category="adult",
+    )
+
+    assert db.close(timeout=1.0) is True
+    assert flushed == [(123, "192.0.2.10", "http://blocked.example/", "adult")]
+    assert conn.closed == 1
+    assert db._conn is None
+    assert db._writer_thread is not None
+    assert db._writer_thread.is_alive() is False
+
+    db.insert(
+        ts=124,
+        src_ip="192.0.2.11",
+        url="http://late.example/",
+        category="adult",
+    )
+    assert db._queue.empty()
+
+
+def test_blocked_log_db_close_terminates_when_connection_unavailable(
+    monkeypatch,
+) -> None:
+    webcat_acl = _webcat_acl_module()
+
+    attempted = webcat_acl.threading.Event()
+    db = webcat_acl._BlockedLogDb(max_rows=10)
+    db._batch_size = 1
+
+    def unavailable():
+        attempted.set()
+
+    monkeypatch.setattr(db, "_connect", unavailable)
+    db.insert(
+        ts=123,
+        src_ip="192.0.2.10",
+        url="http://blocked.example/",
+        category="adult",
+    )
+
+    assert attempted.wait(timeout=1.0)
+    assert db.close(timeout=1.0) is True
+    assert db._writer_thread is not None
+    assert db._writer_thread.is_alive() is False
+
+
+def test_blocked_log_db_close_has_bounded_join_and_writer_owns_connection_close(
+    monkeypatch,
+) -> None:
+    webcat_acl = _webcat_acl_module()
+
+    entered = webcat_acl.threading.Event()
+    release = webcat_acl.threading.Event()
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        def close(self) -> None:
+            self.closed += 1
+
+    conn = FakeConn()
+    db = webcat_acl._BlockedLogDb(max_rows=10)
+    db._batch_size = 1
+
+    def fake_connect():
+        db._conn = conn
+        return conn
+
+    def blocked_flush(_conn, _batch) -> None:
+        entered.set()
+        assert release.wait(timeout=5.0)
+
+    monkeypatch.setattr(db, "_connect", fake_connect)
+    monkeypatch.setattr(db, "_flush", blocked_flush)
+    db.insert(
+        ts=123,
+        src_ip="192.0.2.10",
+        url="http://blocked.example/",
+        category="adult",
+    )
+    assert entered.wait(timeout=1.0)
+
+    assert db.close(timeout=0.0) is False
+    assert conn.closed == 0
+
+    release.set()
+    assert db.close(timeout=1.0) is True
+    assert conn.closed == 1
 
 
 def test_blocked_log_db_preserves_batch_when_connection_unavailable(
@@ -486,6 +604,54 @@ def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
     assert rolled_back == [True]
     assert closed == [True]
     assert batch == [(123, "192.0.2.10", "http://blocked.example/", "adult")]
+
+
+def test_blocked_log_db_does_not_retry_committed_batch_after_prune_error(
+    monkeypatch,
+) -> None:
+    webcat_acl = _webcat_acl_module()
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.commits = 0
+            self.rollbacks = 0
+
+        def executemany(self, *_args, **_kwargs) -> None:
+            pass
+
+        def commit(self) -> None:
+            self.commits += 1
+
+        def rollback(self) -> None:
+            self.rollbacks += 1
+
+    def fake_guarded_rows(_conn, _proxy_id, rows, row_factory, **_kwargs):
+        return type(
+            "Guarded",
+            (),
+            {
+                "proxy_id": "default",
+                "rows": tuple(row_factory("default", row) for row in rows),
+            },
+        )()
+
+    def fail_prune(*_args, **_kwargs) -> NoReturn:
+        msg = "prune failed after insert commit"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(webcat_acl, "guarded_proxy_rows", fake_guarded_rows)
+    db = webcat_acl._BlockedLogDb(max_rows=10)
+    db._inserts = 999
+    monkeypatch.setattr(db, "_prune_old_rows", fail_prune)
+    conn = FakeConn()
+    batch = [(123, "192.0.2.10", "http://blocked.example/", "adult")]
+
+    returned_conn, flushed = db._flush_batch_if_possible(conn, batch)
+
+    assert returned_conn is conn
+    assert flushed is True
+    assert conn.commits == 1
+    assert conn.rollbacks == 0
 
 
 def test_blocked_log_db_uses_proxy_write_guard_canonical_proxy(monkeypatch) -> None:
@@ -645,6 +811,56 @@ def test_blocked_log_prune_uses_bounded_ordered_delete(monkeypatch) -> None:
     assert "NOT IN" not in delete_sql
     assert delete_params == ("edge-a", 100, 100, 1, 2)
     assert conn.commits == 1
+
+
+def test_webcat_helper_closes_blocked_log_writer_at_eof(monkeypatch) -> None:
+    webcat_acl = _webcat_acl_module()
+
+    lifecycle = []
+    inserted = []
+
+    class FakeDb:
+        def lookup_categories(self, domain):
+            assert domain == "blocked.example"
+            return {"adult"}
+
+    class FakeLogDb:
+        def __init__(self, *, max_rows) -> None:
+            assert max_rows == 5000
+
+        def start(self) -> None:
+            lifecycle.append("start")
+
+        def insert(self, **kwargs) -> None:
+            inserted.append(kwargs)
+
+        def close(self) -> bool:
+            lifecycle.append("close")
+            return True
+
+    outputs = []
+    monkeypatch.setattr(webcat_acl, "_Db", FakeDb)
+    monkeypatch.setattr(webcat_acl, "_BlockedLogDb", FakeLogDb)
+    monkeypatch.setattr(
+        webcat_acl.sys,
+        "stdin",
+        [
+            (
+                "192.0.2.10 blocked.example "
+                "http://blocked.example/path adult\n"
+            )
+        ],
+    )
+    monkeypatch.setattr(webcat_acl.sys.stdout, "write", outputs.append)
+    monkeypatch.setattr(webcat_acl.sys.stdout, "flush", lambda: None)
+
+    assert webcat_acl.main([]) == 0
+    assert lifecycle == ["start", "close"]
+    assert len(inserted) == 1
+    assert inserted[0]["src_ip"] == "192.0.2.10"
+    assert inserted[0]["url"] == "http://blocked.example/path"
+    assert inserted[0]["category"] == "adult"
+    assert outputs == ["OK message=category=adult\n"]
 
 
 def test_webfilter_store_list_blocked_log_clamps_orders_and_redacts(monkeypatch) -> None:

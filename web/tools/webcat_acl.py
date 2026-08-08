@@ -601,6 +601,9 @@ class _Db:
         return self._cache_put(normalized, self._lookup_categories_remote(normalized))
 
 
+_BLOCKED_LOG_STOP = object()
+
+
 class _BlockedLogDb:
     def __init__(self, *, max_rows: int = 5000) -> None:
         try:
@@ -622,15 +625,22 @@ class _BlockedLogDb:
             minimum=0.1,
             maximum=10.0,
         )
-        self._queue: queue.Queue[tuple[int, str, str, str]] = queue.Queue(
-            maxsize=_env_int(
-                "WEBFILTER_LOG_QUEUE_SIZE",
-                10000,
-                minimum=100,
-                maximum=100000,
-            ),
+        self._queue_capacity = _env_int(
+            "WEBFILTER_LOG_QUEUE_SIZE",
+            10000,
+            minimum=100,
+            maximum=100000,
+        )
+        # Keep one internal slot reserved so close() can always wake the writer
+        # after atomically stopping new intake, even when the event queue is full.
+        self._queue: queue.Queue[tuple[int, str, str, str] | object] = queue.Queue(
+            maxsize=self._queue_capacity + 1,
         )
         self._writer_started = False
+        self._writer_thread: threading.Thread | None = None
+        self._accepting = True
+        self._stop_requested = threading.Event()
+        self._stop_queued = False
         self._writer_lock = threading.Lock()
 
     def _proxy_id(self) -> str:
@@ -745,34 +755,70 @@ class _BlockedLogDb:
             if mysql_error_code(exc) != 1061:
                 raise
 
-    def start(self) -> None:
-        if self.max_rows <= 0:
+    def _start_locked(self) -> None:
+        if self.max_rows <= 0 or self._writer_started or not self._accepting:
             return
+        self._writer_started = True
+        self._writer_thread = threading.Thread(
+            target=self._run,
+            name="webfilter-blocked-log-writer",
+            daemon=True,
+        )
+        self._writer_thread.start()
+
+    def start(self) -> None:
         with self._writer_lock:
-            if self._writer_started:
-                return
-            self._writer_started = True
-            t = threading.Thread(
-                target=self._run,
-                name="webfilter-blocked-log-writer",
-                daemon=True,
-            )
-            t.start()
+            self._start_locked()
 
     def insert(self, *, ts: int, src_ip: str, url: str, category: str) -> None:
         if self.max_rows <= 0:
             return
         try:
-            s_ts = _normalize_log_ts(ts)
-            s_ip = _normalize_log_src_ip(src_ip)
-            s_url = _normalize_log_url(url)
-            s_cat = _normalize_log_category(category)
-            if not s_url or not s_cat:
+            item = (
+                _normalize_log_ts(ts),
+                _normalize_log_src_ip(src_ip),
+                _normalize_log_url(url),
+                _normalize_log_category(category),
+            )
+            if not item[2] or not item[3]:
                 return
-            self.start()
-            self._queue.put_nowait((s_ts, s_ip, s_url, s_cat))
+            with self._writer_lock:
+                if not self._accepting or self._queue.qsize() >= self._queue_capacity:
+                    return
+                self._start_locked()
+                self._queue.put_nowait(item)
         except Exception:
             return
+
+    def close(self, *, timeout: float = 2.0) -> bool:
+        """Stop intake and give accepted events one bounded flush opportunity."""
+        try:
+            join_timeout = max(0.0, float(timeout))
+        except Exception:
+            join_timeout = 2.0
+        conn = None
+        with self._writer_lock:
+            self._accepting = False
+            thread = self._writer_thread
+            if thread is None:
+                conn = self._conn
+                self._conn = None
+            elif not self._stop_queued:
+                self._stop_requested.set()
+                # insert() and close() share this lock, and the queue reserves an
+                # internal slot, so every event accepted before this sentinel is
+                # ordered ahead of it and no later event can enter the queue.
+                self._queue.put_nowait(_BLOCKED_LOG_STOP)
+                self._stop_queued = True
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
+        if thread is None:
+            return True
+        if thread is threading.current_thread():
+            return False
+        thread.join(timeout=join_timeout)
+        return not thread.is_alive()
 
     def _prune_old_rows(self, conn, blocked_log_table: str, proxy_id: str) -> None:
         if self.max_rows <= 0:
@@ -829,7 +875,11 @@ class _BlockedLogDb:
         self._inserts += len(guarded_batch.rows)
         if self.max_rows > 0 and self._inserts >= 1000:
             self._inserts = 0
-            self._prune_old_rows(conn, blocked_log_table, guarded_batch.proxy_id)
+            # The insert commit above is already durable. Pruning remains
+            # best-effort so a later prune failure cannot make the writer retry
+            # and duplicate the committed batch, including during shutdown.
+            with contextlib.suppress(Exception):
+                self._prune_old_rows(conn, blocked_log_table, guarded_batch.proxy_id)
 
     def _flush_batch_if_possible(
         self,
@@ -862,25 +912,58 @@ class _BlockedLogDb:
         conn = None
         batch: list[tuple[int, str, str, str]] = []
         last_flush = time.monotonic()
-        while True:
-            timeout = max(0.05, self._flush_interval - (time.monotonic() - last_flush))
-            if len(batch) < self._batch_size:
-                try:
-                    item = self._queue.get(timeout=timeout)
-                    batch.append(item)
-                except queue.Empty:
-                    pass
-            else:
-                time.sleep(min(0.05, self._flush_interval))
+        stopping = False
+        try:
+            while not stopping:
+                if self._stop_requested.is_set():
+                    stopping = True
+                    while True:
+                        try:
+                            item = self._queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        if item is _BLOCKED_LOG_STOP:
+                            break
+                        batch.append(item)
+                else:
+                    timeout = max(
+                        0.05,
+                        self._flush_interval - (time.monotonic() - last_flush),
+                    )
+                    if len(batch) < self._batch_size:
+                        try:
+                            item = self._queue.get(timeout=timeout)
+                            if item is _BLOCKED_LOG_STOP:
+                                stopping = True
+                            else:
+                                batch.append(item)
+                        except queue.Empty:
+                            pass
+                    else:
+                        time.sleep(min(0.05, self._flush_interval))
 
-            if batch and (
-                len(batch) >= self._batch_size
-                or (time.monotonic() - last_flush) >= self._flush_interval
-            ):
-                conn, flushed = self._flush_batch_if_possible(conn, batch)
-                if flushed:
-                    batch.clear()
-                    last_flush = time.monotonic()
+                if batch and (
+                    stopping
+                    or len(batch) >= self._batch_size
+                    or (time.monotonic() - last_flush) >= self._flush_interval
+                ):
+                    conn, flushed = self._flush_batch_if_possible(conn, batch)
+                    if flushed:
+                        batch.clear()
+                        last_flush = time.monotonic()
+        finally:
+            # The writer exclusively owns its cached connection after start().
+            # Never close it from a timed-out join while a DB operation may still
+            # be using it; the writer closes it as soon as that operation returns.
+            cached_conn = self._conn
+            self._conn = None
+            seen: set[int] = set()
+            for candidate in (conn, cached_conn):
+                if candidate is None or id(candidate) in seen:
+                    continue
+                seen.add(id(candidate))
+                with contextlib.suppress(Exception):
+                    candidate.close()
 
 
 def _parse_line(
@@ -950,45 +1033,52 @@ def main(argv: Sequence[str] | None = None) -> int:
         log_max_rows=int(args.log_max_rows),
     )
 
-    for raw in sys.stdin:
-        ch, src_ip, domain, url, category = _parse_line(raw)
-        if url:
-            url_domain = _norm_domain(url)
-            if url_domain:
-                domain = url_domain
-        if not domain or not category:
-            # Fail-open: do not match the ACL (allow). Fail-closed: match (block).
-            stats.increment("parse_miss")
-            _write_response(ch, not fail_open)
-            stats.emit_if_due()
-            continue
+    try:
+        for raw in sys.stdin:
+            ch, src_ip, domain, url, category = _parse_line(raw)
+            if url:
+                url_domain = _norm_domain(url)
+                if url_domain:
+                    domain = url_domain
+            if not domain or not category:
+                # Fail-open: do not match the ACL (allow). Fail-closed: match (block).
+                stats.increment("parse_miss")
+                _write_response(ch, not fail_open)
+                stats.emit_if_due()
+                continue
 
-        cats = db.lookup_categories(domain)
-        stats.increment("requests")
-        if not cats:
-            # Unknown domain: do not match the ACL (allow) unless fail-closed.
-            stats.increment("misses")
-            _write_response(ch, not fail_open)
-            stats.emit_if_due()
-            continue
+            cats = db.lookup_categories(domain)
+            stats.increment("requests")
+            if not cats:
+                # Unknown domain: do not match the ACL (allow) unless fail-closed.
+                stats.increment("misses")
+                _write_response(ch, not fail_open)
+                stats.emit_if_due()
+                continue
 
-        # External ACL semantics: return OK when the ACL *matches*.
-        # For blocking ACLs, we match when the destination is in the named category.
-        match = category.lower() in cats
-        if match:
-            stats.increment("matches")
-            # Best-effort: record the event so the admin UI can show a blocked log.
-            # This helper is invoked only for requests that reach the deny ACL chain.
-            log_db.insert(
-                ts=_now(),
-                src_ip=(src_ip or ""),
-                url=(url or domain or ""),
-                category=(category or ""),
+            # External ACL semantics: return OK when the ACL *matches*.
+            # For blocking ACLs, we match when the destination is in the named category.
+            match = category.lower() in cats
+            if match:
+                stats.increment("matches")
+                # Best-effort: record the event so the admin UI can show a blocked log.
+                # This helper is invoked only for requests that reach the deny ACL chain.
+                log_db.insert(
+                    ts=_now(),
+                    src_ip=(src_ip or ""),
+                    url=(url or domain or ""),
+                    category=(category or ""),
+                )
+            _write_response(
+                ch,
+                match,
+                message=f"category={category}" if match else None,
             )
-        _write_response(ch, match, message=f"category={category}" if match else None)
-        stats.emit_if_due()
-
-    stats.emit_if_due(force=True)
+            stats.emit_if_due()
+    finally:
+        with contextlib.suppress(Exception):
+            log_db.close()
+        stats.emit_if_due(force=True)
     return 0
 
 

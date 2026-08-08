@@ -92,38 +92,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if log_db is not None:
         log_db.start()
-    for raw in sys.stdin:
-        channel_id, src_ip, url = _parse_line(raw)
-        if not url:
-            stats.increment("parse_miss")
-            write_acl_response(channel_id, not fail_open)
+    try:
+        for raw in sys.stdin:
+            channel_id, src_ip, url = _parse_line(raw)
+            if not url:
+                stats.increment("parse_miss")
+                write_acl_response(channel_id, not fail_open)
+                stats.emit_if_due()
+                continue
+            try:
+                verdict = checker.check_url(url)
+                unsafe = verdict.verdict == "unsafe"
+                stats.increment("requests")
+                category = ""
+                if unsafe:
+                    stats.increment("unsafe")
+                    category = "google-safe-browsing"
+                    if verdict.threat_type:
+                        category += "/" + verdict.threat_type.lower().replace("_", "-")
+                if unsafe and log_db is not None:
+                    with contextlib.suppress(Exception):
+                        log_db.insert(
+                            ts=int(__import__("time").time()),
+                            src_ip=src_ip,
+                            url=url,
+                            category=category,
+                        )
+                detail = f"category={category}" if unsafe else None
+                write_acl_response(channel_id, unsafe, message=detail)
+            except Exception:
+                stats.increment("errors")
+                write_acl_response(channel_id, not fail_open)
             stats.emit_if_due()
-            continue
-        try:
-            verdict = checker.check_url(url)
-            unsafe = verdict.verdict == "unsafe"
-            stats.increment("requests")
-            category = ""
-            if unsafe:
-                stats.increment("unsafe")
-                category = "google-safe-browsing"
-                if verdict.threat_type:
-                    category += "/" + verdict.threat_type.lower().replace("_", "-")
-            if unsafe and log_db is not None:
-                with contextlib.suppress(Exception):
-                    log_db.insert(
-                        ts=int(__import__("time").time()),
-                        src_ip=src_ip,
-                        url=url,
-                        category=category,
-                    )
-            detail = f"category={category}" if unsafe else None
-            write_acl_response(channel_id, unsafe, message=detail)
-        except Exception:
-            stats.increment("errors")
-            write_acl_response(channel_id, not fail_open)
-        stats.emit_if_due()
-    stats.emit_if_due(force=True)
+    finally:
+        if log_db is not None:
+            with contextlib.suppress(Exception):
+                log_db.close()
+        stats.emit_if_due(force=True)
     return 0
 
 
