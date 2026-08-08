@@ -8,6 +8,8 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from .mysql_test_utils import REPO_ROOT
 
 
@@ -801,6 +803,45 @@ def test_admin_ui_startup_uses_saved_https_settings_after_first_save() -> None:
     assert enabled.enabled is True
     assert enabled.certfile == "/etc/squid/ssl/certs/admin-ui.crt"
     assert enabled.keyfile == "/etc/squid/ssl/certs/admin-ui.key"
+
+
+def test_admin_ui_startup_malformed_saved_row_does_not_reenable_env_https() -> None:
+    module = _load_start_admin_ui_module()
+    from services.certificate_bundles import InvalidAdminUiHttpsSettingsError
+
+    config = module.resolve_admin_ui_https_config(
+        {"ADMIN_UI_HTTPS_ENABLED": "1"},
+        settings_loader=lambda: (_ for _ in ()).throw(
+            InvalidAdminUiHttpsSettingsError("certfile contains unsupported control characters")
+        ),
+    )
+
+    assert config.source == "db-invalid"
+    assert config.enabled is False
+    assert config.certfile == ""
+    assert config.keyfile == ""
+    assert "malformed" in config.error
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        SimpleNamespace(enabled="0", updated_ts=7),
+        SimpleNamespace(enabled=False, updated_ts="7"),
+        SimpleNamespace(enabled=False, updated_ts=-1),
+    ],
+)
+def test_admin_ui_startup_rejects_invalid_loader_contract(settings) -> None:
+    module = _load_start_admin_ui_module()
+
+    config = module.resolve_admin_ui_https_config(
+        {"ADMIN_UI_HTTPS_ENABLED": "1"},
+        settings_loader=lambda: settings,
+    )
+
+    assert config.source == "db-invalid"
+    assert config.enabled is False
+    assert config.error
 
 
 def test_admin_ui_startup_materializes_missing_db_leaf_from_active_bundle(

@@ -25,6 +25,7 @@ class AdminUiHttpsRuntimeConfig:
     certfile: str
     keyfile: str
     source: str
+    error: str = ""
 
 
 def _truthy(value: object | None) -> bool:
@@ -56,6 +57,29 @@ def _env_https_config(
     )
 
 
+def _invalid_saved_https_config(detail: str) -> AdminUiHttpsRuntimeConfig:
+    message = (
+        "Saved Admin UI HTTPS settings are malformed; starting HTTP so the "
+        "Certificates page can recover the setting."
+    )
+    _log(f"ERROR: {message} {detail}")
+    return AdminUiHttpsRuntimeConfig(
+        enabled=False,
+        certfile="",
+        keyfile="",
+        source="db-invalid",
+        error=message,
+    )
+
+
+def _is_invalid_saved_settings_error(exc: BaseException) -> bool:
+    try:
+        from services.certificate_bundles import InvalidAdminUiHttpsSettingsError
+    except Exception:
+        return False
+    return isinstance(exc, InvalidAdminUiHttpsSettingsError)
+
+
 def resolve_admin_ui_https_config(
     environ: Mapping[str, str],
     *,
@@ -81,15 +105,26 @@ def resolve_admin_ui_https_config(
     try:
         settings = settings_loader()
     except Exception as exc:
+        if _is_invalid_saved_settings_error(exc):
+            return _invalid_saved_https_config(str(exc))
         _log(
             f"WARNING: failed to load Admin UI HTTPS settings; using environment fallback: {exc}",
         )
         return fallback
 
-    if settings is None or int(getattr(settings, "updated_ts", 0) or 0) <= 0:
+    if settings is None:
+        return fallback
+    updated_ts = getattr(settings, "updated_ts", 0)
+    if isinstance(updated_ts, bool) or not isinstance(updated_ts, int):
+        return _invalid_saved_https_config("updated_ts must be a non-negative integer")
+    if updated_ts < 0:
+        return _invalid_saved_https_config("updated_ts must be a non-negative integer")
+    if updated_ts == 0:
         return fallback
 
-    enabled = bool(getattr(settings, "enabled", False))
+    enabled = getattr(settings, "enabled", False)
+    if not isinstance(enabled, bool):
+        return _invalid_saved_https_config("enabled must be boolean")
     if enabled:
         certfile = DEFAULT_CERTFILE
         keyfile = DEFAULT_KEYFILE
@@ -250,6 +285,11 @@ def main() -> int:
                     certfile="",
                     keyfile="",
                     source="db-missing-material",
+                    error=(
+                        "Saved Admin UI HTTPS is enabled, but the Admin UI leaf "
+                        "certificate is not valid TLS material inside the admin-ui "
+                        "container."
+                    ),
                 )
         elif not material.ready:
             _log(
@@ -261,11 +301,8 @@ def main() -> int:
     os.environ["ADMIN_UI_EFFECTIVE_SSL_CERTFILE"] = config.certfile
     os.environ["ADMIN_UI_EFFECTIVE_SSL_KEYFILE"] = config.keyfile
     os.environ["ADMIN_UI_EFFECTIVE_HTTPS_SOURCE"] = config.source
-    if config.source == "db-missing-material":
-        os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"] = (
-            "Saved Admin UI HTTPS is enabled, but the Admin UI leaf certificate "
-            "is not valid TLS material inside the admin-ui container."
-        )
+    if config.error:
+        os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"] = config.error
     else:
         os.environ.pop("ADMIN_UI_EFFECTIVE_HTTPS_ERROR", None)
     os.execvp("python3", build_gunicorn_argv(os.environ, config))  # noqa: S606

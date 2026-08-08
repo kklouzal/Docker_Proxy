@@ -94,6 +94,63 @@ class AdminUiHttpsSettings:
     updated_ts: int
 
 
+class InvalidAdminUiHttpsSettingsError(ValueError):
+    """Raised when persisted Admin UI HTTPS settings violate their row contract."""
+
+
+def _admin_ui_https_bool(value: object, *, field: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"0", "false"}:
+            return False
+        if normalized in {"1", "true"}:
+            return True
+    message = f"{field} must be boolean"
+    raise InvalidAdminUiHttpsSettingsError(message)
+
+
+def _admin_ui_https_text(
+    value: object | None,
+    *,
+    field: str,
+    allow_line_breaks: bool = False,
+) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        message = f"{field} must be text"
+        raise InvalidAdminUiHttpsSettingsError(message)
+    allowed_controls = {"\r", "\n"} if allow_line_breaks else set()
+    if any(
+        (ord(char) < 32 and char not in allowed_controls) or ord(char) == 127
+        for char in value
+    ):
+        message = f"{field} contains unsupported control characters"
+        raise InvalidAdminUiHttpsSettingsError(message)
+    return value
+
+
+def _admin_ui_https_timestamp(value: object | None) -> int:
+    if isinstance(value, bool):
+        message = "updated_ts must be a non-negative integer"
+        raise InvalidAdminUiHttpsSettingsError(message)
+    if isinstance(value, int):
+        timestamp = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        timestamp = int(value.strip())
+    else:
+        message = "updated_ts must be a non-negative integer"
+        raise InvalidAdminUiHttpsSettingsError(message)
+    if timestamp < 0:
+        message = "updated_ts must be a non-negative integer"
+        raise InvalidAdminUiHttpsSettingsError(message)
+    return timestamp
+
+
 class CertificateBundleStore:
     def __init__(self) -> None:
         self._schema_ready = False
@@ -644,12 +701,16 @@ class CertificateBundleStore:
         if not row:
             return AdminUiHttpsSettings(False, "", "", "", "", 0)
         return AdminUiHttpsSettings(
-            enabled=bool(int(row["enabled"] or 0)),
-            certfile=str(row["certfile"] or ""),
-            keyfile=str(row["keyfile"] or ""),
-            san_tokens=str(row["san_tokens"] or ""),
-            updated_by=str(row["updated_by"] or ""),
-            updated_ts=int(row["updated_ts"] or 0),
+            enabled=_admin_ui_https_bool(row["enabled"], field="enabled"),
+            certfile=_admin_ui_https_text(row["certfile"], field="certfile"),
+            keyfile=_admin_ui_https_text(row["keyfile"], field="keyfile"),
+            san_tokens=_admin_ui_https_text(
+                row["san_tokens"],
+                field="san_tokens",
+                allow_line_breaks=True,
+            ),
+            updated_by=_admin_ui_https_text(row["updated_by"], field="updated_by"),
+            updated_ts=_admin_ui_https_timestamp(row["updated_ts"]),
         )
 
     def set_admin_ui_https_settings(
@@ -662,10 +723,18 @@ class CertificateBundleStore:
         updated_by: object | None = None,
     ) -> AdminUiHttpsSettings:
         self.init_db()
-        cert_path = str(certfile or "").strip()[:1024]
-        key_path = str(keyfile or "").strip()[:1024]
-        san_text = str(san_tokens or "").strip()[:4000]
-        updater = str(updated_by or "").strip()[:255]
+        if not isinstance(enabled, bool):
+            message = "enabled must be boolean"
+            raise InvalidAdminUiHttpsSettingsError(message)
+        enabled_value = enabled
+        cert_path = _admin_ui_https_text(certfile, field="certfile").strip()[:1024]
+        key_path = _admin_ui_https_text(keyfile, field="keyfile").strip()[:1024]
+        san_text = _admin_ui_https_text(
+            san_tokens,
+            field="san_tokens",
+            allow_line_breaks=True,
+        ).strip()[:4000]
+        updater = _admin_ui_https_text(updated_by, field="updated_by").strip()[:255]
         now = int(time.time())
         with self._connect() as conn:
             conn.execute(
@@ -682,7 +751,7 @@ class CertificateBundleStore:
                     updated_by=incoming.updated_by,
                     updated_ts=incoming.updated_ts
                 """,
-                (1 if enabled else 0, cert_path, key_path, san_text, updater, now),
+                (1 if enabled_value else 0, cert_path, key_path, san_text, updater, now),
             )
         return self.get_admin_ui_https_settings()
 

@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def _add_web_to_path() -> None:
     web_dir = Path(__file__).resolve().parents[1]
@@ -242,3 +244,104 @@ def test_certificate_bundle_latest_apply_preserves_unscoped_query(monkeypatch) -
     sql, params = calls[-1]
     assert "AND revision_id" not in sql
     assert params == ("edge-2",)
+
+
+class _AdminUiHttpsSettingsConn:
+    def __init__(self, row: dict[str, object]) -> None:
+        self.row = row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, _sql, _params=()):
+        return SimpleNamespace(fetchone=lambda: self.row)
+
+
+def test_admin_ui_https_settings_normalize_valid_legacy_scalars(monkeypatch) -> None:
+    store = CertificateBundleStore()
+    row = {
+        "enabled": "0",
+        "certfile": "/legacy/admin.crt",
+        "keyfile": "/legacy/admin.key",
+        "san_tokens": "admin.example.test\n192.0.2.10",
+        "updated_by": "legacy-admin",
+        "updated_ts": "7",
+    }
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: _AdminUiHttpsSettingsConn(row))
+
+    settings = store.get_admin_ui_https_settings()
+
+    assert settings.enabled is False
+    assert settings.certfile == "/legacy/admin.crt"
+    assert settings.keyfile == "/legacy/admin.key"
+    assert settings.san_tokens == "admin.example.test\n192.0.2.10"
+    assert settings.updated_ts == 7
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "detail"),
+    [
+        ("enabled", "sometimes", "enabled must be boolean"),
+        ("certfile", "/certs/admin.crt\x00ignored", "certfile contains unsupported"),
+        ("keyfile", object(), "keyfile must be text"),
+        ("san_tokens", "admin.example.test\x07", "san_tokens contains unsupported"),
+        ("updated_ts", "yesterday", "updated_ts must be a non-negative integer"),
+    ],
+)
+def test_admin_ui_https_settings_reject_malformed_persisted_rows(
+    monkeypatch,
+    field,
+    value,
+    detail,
+) -> None:
+    store = CertificateBundleStore()
+    row = {
+        "enabled": 1,
+        "certfile": "/certs/admin.crt",
+        "keyfile": "/certs/admin.key",
+        "san_tokens": "admin.example.test",
+        "updated_by": "admin",
+        "updated_ts": 7,
+    }
+    row[field] = value
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: _AdminUiHttpsSettingsConn(row))
+
+    with pytest.raises(
+        certificate_bundles.InvalidAdminUiHttpsSettingsError,
+        match=detail,
+    ):
+        store.get_admin_ui_https_settings()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "detail"),
+    [
+        ({"enabled": "false"}, "enabled must be boolean"),
+        (
+            {"enabled": True, "certfile": "/certs/admin.crt\n--keyfile"},
+            "certfile contains unsupported",
+        ),
+        (
+            {"enabled": True, "san_tokens": "admin.example.test\x00evil.test"},
+            "san_tokens contains unsupported",
+        ),
+    ],
+)
+def test_admin_ui_https_settings_reject_malformed_writes(
+    monkeypatch,
+    kwargs,
+    detail,
+) -> None:
+    store = CertificateBundleStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+
+    with pytest.raises(
+        certificate_bundles.InvalidAdminUiHttpsSettingsError,
+        match=detail,
+    ):
+        store.set_admin_ui_https_settings(**kwargs)
