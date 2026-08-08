@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _add_web_path() -> None:
     web_root = Path(__file__).resolve().parents[1]
@@ -161,6 +163,24 @@ def test_clamav_options_round_trip_and_fail_closed_rendering() -> None:
         "http_access deny file_security_executable_mime file_security_upload_methods"
         in policy
     )
+
+
+def test_clamav_form_rejects_malformed_size_instead_of_disabling_existing_cap() -> (
+    None
+):
+    _add_web_path()
+    from services.clamav_config_forms import read_clamav_options_from_form
+
+    current = {
+        "file_security_preset": "balanced",
+        "file_security_max_download_size": "64M",
+    }
+
+    with pytest.raises(ValueError, match="Maximum download size"):
+        read_clamav_options_from_form(
+            {"file_security_max_download_size": "64 MB"},
+            current,
+        )
 
 
 def test_clamav_preset_change_reseeds_untouched_policy_fields() -> None:

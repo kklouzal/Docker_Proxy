@@ -80,6 +80,12 @@ _PRESET_MANAGED_FIELDS: tuple[str, ...] = (
 )
 
 _SIZE_RE = re.compile(r"^(?:0|[1-9][0-9]*)(?:[KMG])?$", re.IGNORECASE)
+_SIZE_FIELD_KEYS: tuple[str, ...] = (
+    "file_security_max_download_size",
+    "file_security_max_upload_size",
+    "virus_scan_start_send_percent_after",
+    "virus_scan_max_object_size",
+)
 _SCAN_TYPES_RE = re.compile(r"^[A-Z][A-Z0-9_]*(?:\s+[A-Z][A-Z0-9_]*)*$")
 _ENGINE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]*$")
@@ -277,7 +283,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Maximum download size",
         "reply_body_max_size",
         "text",
-        help_text="Optional hard block for downloads above this size. 0 disables the size block.",
+        help_text="Optional hard block for downloads above this size. Use values such as 64K, 64M, or 1G; 0 disables the size block.",
         placeholder="0",
     ),
     _field(
@@ -286,7 +292,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Maximum upload size",
         "request_body_max_size",
         "text",
-        help_text="Optional hard block for uploads above this size. 0 disables the size block.",
+        help_text="Optional hard block for uploads above this size. Use values such as 64K, 64M, or 1G; 0 disables the size block.",
         placeholder="0",
     ),
     _field(
@@ -453,7 +459,7 @@ def _clean_bool(value: Any, default: bool) -> bool:
 
 
 def _clean_size(value: Any, default: str) -> str:
-    text = str(value or "").strip().upper()
+    text = str(value if value is not None else "").strip().upper()
     return text if text and _SIZE_RE.match(text) else default
 
 
@@ -751,6 +757,18 @@ def read_clamav_options_from_form(
     form: FormMap,
     current: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    for key in _SIZE_FIELD_KEYS:
+        if key not in form:
+            continue
+        raw_value = form.get(key)
+        text = str(raw_value if raw_value is not None else "").strip()
+        if not text or _SIZE_RE.fullmatch(text) is None:
+            label = CLAMAV_FIELD_MAP[key].label
+            msg = (
+                f"{label} must be 0 or a positive integer with an optional "
+                "K, M, or G suffix (for example, 64M)."
+            )
+            raise ValueError(msg)
     current_values = normalize_clamav_options(current)
     values = dict(current_values)
     requested_preset = _normalize_preset_name(
