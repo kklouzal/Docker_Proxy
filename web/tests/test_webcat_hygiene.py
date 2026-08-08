@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from services import webcat_hygiene
+from services.db import CompatRow
 
 
 class _Rows:
@@ -57,6 +58,16 @@ def test_list_webcat_build_tables_uses_valid_mysql_escape_literal() -> None:
             (),
         ),
     ]
+
+
+def test_list_webcat_build_tables_reads_application_compat_rows() -> None:
+    conn = _Connection(
+        [CompatRow(("TABLE_NAME",), ("webcat_domains_stage_111_1000",))],
+    )
+
+    tables = webcat_hygiene.list_webcat_build_tables(conn)
+
+    assert tables == ["webcat_domains_stage_111_1000"]
 
 
 def test_webcat_build_table_matching_is_strict() -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from services.sql_identifiers import quote_mysql_identifier
@@ -77,7 +78,7 @@ def is_stale_webcat_build_table(
 
 
 def _table_name_from_row(row) -> str:
-    if isinstance(row, dict):
+    if isinstance(row, Mapping):
         return str(row.get("TABLE_NAME") or row.get("table_name") or "")
     if isinstance(row, (list, tuple)):
         return str(row[0] if row else "")
