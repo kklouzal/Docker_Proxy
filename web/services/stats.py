@@ -184,6 +184,8 @@ def get_cpu_utilization_percent(sample_seconds: float = 0.15) -> float | None:
     idle_delta = s2["idle"] - s1["idle"]
     if total_delta <= 0:
         return None
+    if idle_delta < 0 or idle_delta > total_delta:
+        return None
     return (1.0 - (idle_delta / total_delta)) * 100.0
 
 
