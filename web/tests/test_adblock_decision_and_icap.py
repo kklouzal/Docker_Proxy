@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import os
 import socket
 import struct
 import sys
@@ -1322,6 +1324,85 @@ def test_adblock_icap_server_closes_after_empty_preview_chunk_size(
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_adblock_icap_request_thread_closes_its_sqlite_connection(
+    tmp_path: Path,
+) -> None:
+    if not Path("/proc/self/fd").is_dir():
+        pytest.skip("SQLite descriptor lifecycle proof requires procfs")
+
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+    log_path = tmp_path / "cicap-access.log"
+    db_stat = db_path.stat()
+    request_done = threading.Event()
+
+    def open_db_descriptors() -> list[int]:
+        descriptors: list[int] = []
+        for entry in Path("/proc/self/fd").iterdir():
+            try:
+                descriptor_stat = os.stat(entry)
+            except OSError:
+                continue
+            if (
+                descriptor_stat.st_dev == db_stat.st_dev
+                and descriptor_stat.st_ino == db_stat.st_ino
+            ):
+                descriptors.append(int(entry.name))
+        return descriptors
+
+    _add_web_to_path()
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    class _TrackedAdblockIcapServer(_AdblockIcapServer):
+        def process_request_thread(
+            self,
+            request: socket.socket,
+            client_address: tuple[str, int],
+        ) -> None:
+            try:
+                super().process_request_thread(request, client_address)
+            finally:
+                request_done.set()
+
+    server = _TrackedAdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        http = (
+            b"GET http://ads.example/banner.js HTTP/1.1\r\n"
+            b"Host: ads.example\r\n\r\n"
+        )
+        request = (
+            b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Connection: close\r\n"
+            b"Encapsulated: req-hdr=0, null-body="
+            + str(len(http)).encode("ascii")
+            + b"\r\n\r\n"
+            + http
+        )
+        response = _send_icap(port, request)
+
+        assert response.startswith(b"ICAP/1.0 200")
+        assert request_done.wait(timeout=2.0)
+        assert open_db_descriptors() == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2.0)
+        if gc_was_enabled:
+            gc.enable()
+        gc.collect()
 
 
 def test_adblock_icap_server_blocks_connect_authority_requests(tmp_path: Path) -> None:

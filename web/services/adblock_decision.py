@@ -253,6 +253,14 @@ class AdblockDecisionEngine:
         ] = OrderedDict()
         self._cache_lock = threading.Lock()
 
+    def close_thread_connection(self) -> None:
+        self.lookup.close_thread_connection()
+
+    def close(self) -> None:
+        self.lookup.close()
+        with self._cache_lock:
+            self._cache.clear()
+
     def decide(
         self,
         url: str,

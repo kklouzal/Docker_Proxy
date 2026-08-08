@@ -22,6 +22,11 @@ _DEFAULT_RULE_CACHE_MAX = 50000
 _SQLITE_IN_CHUNK_SIZE = 500
 
 
+class AdblockLookupClosedError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("adblock lookup index is closed")
+
+
 class _RegexCandidate:
     __slots__ = ("regex", "rule_id")
 
@@ -130,6 +135,10 @@ class AdblockLookupIndex:
         self.db_path = Path(db_path)
         self.rule_cache_max = max(0, int(rule_cache_max or 0))
         self._local = threading.local()
+        self._connections_condition = threading.Condition()
+        self._connections: set[sqlite3.Connection] = set()
+        self._connection_users: dict[sqlite3.Connection, int] = {}
+        self._closed = False
         self._payloads: dict[str, dict[str, Any]] | None = None
         self._payloads_lock = threading.Lock()
         self._rule_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
@@ -148,17 +157,59 @@ class AdblockLookupIndex:
         _configure_read_connection(conn)
         return conn
 
-    def _thread_connection(self) -> sqlite3.Connection:
+    def _acquire_thread_connection(self) -> sqlite3.Connection:
+        with self._connections_condition:
+            if self._closed:
+                raise AdblockLookupClosedError
+            conn = getattr(self._local, "conn", None)
+            if conn is None:
+                conn = sqlite3.connect(
+                    f"file:{self.db_path}?mode=ro",
+                    uri=True,
+                    check_same_thread=False,
+                )
+                _configure_read_connection(conn)
+                self._local.conn = conn
+                self._connections.add(conn)
+            self._connection_users[conn] = self._connection_users.get(conn, 0) + 1
+            return conn
+
+    def _release_thread_connection(self, conn: sqlite3.Connection) -> None:
+        with self._connections_condition:
+            users = self._connection_users.get(conn, 0)
+            if users <= 1:
+                self._connection_users.pop(conn, None)
+                self._connections_condition.notify_all()
+            else:
+                self._connection_users[conn] = users - 1
+
+    def close_thread_connection(self) -> None:
+        """Close the calling thread's idle lookup connection, if any."""
         conn = getattr(self._local, "conn", None)
         if conn is None:
-            conn = sqlite3.connect(
-                f"file:{self.db_path}?mode=ro",
-                uri=True,
-                check_same_thread=False,
-            )
-            _configure_read_connection(conn)
-            self._local.conn = conn
-        return conn
+            return
+        del self._local.conn
+        with self._connections_condition:
+            while self._connection_users.get(conn, 0):
+                self._connections_condition.wait()
+            should_close = conn in self._connections
+            self._connections.discard(conn)
+        if should_close:
+            conn.close()
+
+    def close(self) -> None:
+        """Stop new lookups, then close every connection after active use ends."""
+        with self._connections_condition:
+            self._closed = True
+            while self._connection_users:
+                self._connections_condition.wait()
+            connections = list(self._connections)
+            self._connections.clear()
+            local_conn = getattr(self._local, "conn", None)
+            if local_conn in connections:
+                del self._local.conn
+        for conn in connections:
+            conn.close()
 
     def candidate_rules(
         self,
@@ -166,15 +217,18 @@ class AdblockLookupIndex:
         *,
         resource_type: str = "",
     ) -> list[dict[str, Any]]:
-        conn = self._thread_connection()
-        return self._rules_by_ids(
-            conn,
-            self._candidate_rule_ids(
+        conn = self._acquire_thread_connection()
+        try:
+            return self._rules_by_ids(
                 conn,
-                url,
-                resource_type=resource_type,
-            ),
-        )
+                self._candidate_rule_ids(
+                    conn,
+                    url,
+                    resource_type=resource_type,
+                ),
+            )
+        finally:
+            self._release_thread_connection(conn)
 
     def _rules_by_ids(
         self,

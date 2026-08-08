@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+import threading
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 
 def _add_web_to_path() -> None:
@@ -115,6 +118,65 @@ def _build_lookup_db(tmp_path: Path, lines: list[str]) -> Path:
 
 def _raws(rules: list[dict[str, Any]]) -> set[str]:
     return {str(rule["raw"]) for rule in rules}
+
+
+def test_adblock_lookup_close_waits_for_in_flight_candidate_query(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+
+    _add_web_to_path()
+    from services.adblock_lookup import AdblockLookupIndex
+
+    index = AdblockLookupIndex(db_path)
+    query_entered = threading.Event()
+    release_query = threading.Event()
+    close_started = threading.Event()
+    close_done = threading.Event()
+    original_candidate_rule_ids = index._candidate_rule_ids
+    result: list[dict[str, Any]] = []
+
+    def blocked_candidate_rule_ids(
+        conn: sqlite3.Connection,
+        url: str,
+        *,
+        resource_type: str = "",
+    ) -> set[str]:
+        query_entered.set()
+        assert release_query.wait(timeout=2.0)
+        return original_candidate_rule_ids(
+            conn,
+            url,
+            resource_type=resource_type,
+        )
+
+    def query() -> None:
+        result.extend(index.candidate_rules("https://ads.example/banner.js"))
+
+    def close() -> None:
+        close_started.set()
+        index.close()
+        close_done.set()
+
+    index._candidate_rule_ids = blocked_candidate_rule_ids  # type: ignore[method-assign]
+    query_thread = threading.Thread(target=query)
+    close_thread = threading.Thread(target=close)
+    query_thread.start()
+    assert query_entered.wait(timeout=2.0)
+    close_thread.start()
+    assert close_started.wait(timeout=2.0)
+    assert close_done.wait(timeout=0.1) is False
+
+    release_query.set()
+    query_thread.join(timeout=2.0)
+    close_thread.join(timeout=2.0)
+
+    assert query_thread.is_alive() is False
+    assert close_thread.is_alive() is False
+    assert _raws(result) == {"||ads.example^"}
+    index.close()
+    with pytest.raises(RuntimeError, match="lookup index is closed"):
+        index.candidate_rules("https://ads.example/banner.js")
 
 
 def test_adblock_lookup_index_returns_indexed_url_candidates(tmp_path: Path) -> None:

@@ -722,7 +722,7 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
 
 class _AdblockIcapServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
-    daemon_threads = True
+    daemon_threads = False
 
     def __init__(
         self,
@@ -746,6 +746,22 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         self.max_keepalive_requests = max(1, int(max_keepalive_requests or 1))
         self.block_recorder = block_recorder
         self.stats = stats
+
+    def process_request_thread(
+        self,
+        request: socket.socket,
+        client_address: tuple[str, int],
+    ) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.engine.close_thread_connection()
+
+    def server_close(self) -> None:
+        try:
+            super().server_close()
+        finally:
+            self.engine.close()
 
     def increment_stat(self, key: str, amount: int = 1) -> None:
         if self.stats is None:
