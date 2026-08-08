@@ -292,7 +292,11 @@ class SquidController(_CoreSquidController):
                 value = min(maximum, value)
             return value
 
-        def optional_int_value(name: str) -> int | None:
+        def optional_int_value(
+            name: str,
+            *,
+            minimum: int = 0,
+        ) -> int | None:
             raw = options.get(name)
             if raw is None:
                 return None
@@ -300,9 +304,10 @@ class SquidController(_CoreSquidController):
             if text == "":
                 return None
             try:
-                return int(text)
+                value = int(text)
             except Exception:
                 return None
+            return value if value >= minimum else None
 
         def bool_value(name: str, default: bool) -> bool:
             raw = options.get(name)
@@ -523,7 +528,10 @@ class SquidController(_CoreSquidController):
             24 * 3600,
             minimum=0,
         )
-        client_ip_max_connections = optional_int_value("client_ip_max_connections")
+        client_ip_max_connections = optional_int_value(
+            "client_ip_max_connections",
+            minimum=1,
+        )
         tcp_recv_bufsize_kb = optional_int_value("tcp_recv_bufsize_kb")
         accept_filter_value = self._validate_single_token_value(
             str(options.get("accept_filter_value") or ""),
@@ -936,11 +944,9 @@ class SquidController(_CoreSquidController):
             ),
         )
         if client_ip_max_connections is not None:
-            lines.append(
-                f"client_ip_max_connections {max(0, client_ip_max_connections)}",
-            )
+            lines.append(f"client_ip_max_connections {client_ip_max_connections}")
         if tcp_recv_bufsize_kb is not None:
-            lines.append(f"tcp_recv_bufsize {max(0, tcp_recv_bufsize_kb)} KB")
+            lines.append(f"tcp_recv_bufsize {tcp_recv_bufsize_kb} KB")
         if accept_filter_value:
             lines.append(f"accept_filter {accept_filter_value}")
         lines.extend(
@@ -953,11 +959,11 @@ class SquidController(_CoreSquidController):
         )
         if happy_eyeballs_connect_gap_ms is not None:
             lines.append(
-                f"happy_eyeballs_connect_gap {max(0, happy_eyeballs_connect_gap_ms)} ms",
+                f"happy_eyeballs_connect_gap {happy_eyeballs_connect_gap_ms} ms",
             )
         if happy_eyeballs_connect_limit is not None:
             lines.append(
-                f"happy_eyeballs_connect_limit {max(0, happy_eyeballs_connect_limit)}",
+                f"happy_eyeballs_connect_limit {happy_eyeballs_connect_limit}",
             )
 
         append_section(lines, "Timeouts", "Request, forwarding, and shutdown timers.")

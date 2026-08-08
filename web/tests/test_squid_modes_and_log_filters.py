@@ -1140,6 +1140,100 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path) ->
     assert "cache_log stdio:/var/log/squid/cache.log" in rendered
 
 
+def test_squid_controller_optional_integer_bounds_preserve_valid_round_trip() -> (
+    None
+):
+    _add_web_to_path()
+
+    from services.squidctl import SquidController  # type: ignore
+
+    ctl = SquidController()
+    optional_keys = (
+        "cache_dir_rock_swap_timeout_ms",
+        "cache_dir_rock_max_swap_rate",
+        "high_response_time_warning_ms",
+        "high_page_fault_warning",
+        "client_ip_max_connections",
+        "tcp_recv_bufsize_kb",
+        "happy_eyeballs_connect_gap_ms",
+        "happy_eyeballs_connect_limit",
+    )
+
+    invalid = ctl._render_managed_settings(
+        {
+            **dict.fromkeys(optional_keys, -1),
+            "client_ip_max_connections": 0,
+        },
+    )
+    assert "swap-timeout=" not in invalid
+    assert "max-swap-rate=" not in invalid
+    for directive in (
+        "high_response_time_warning",
+        "high_page_fault_warning",
+        "client_ip_max_connections",
+        "tcp_recv_bufsize",
+        "happy_eyeballs_connect_gap",
+        "happy_eyeballs_connect_limit",
+    ):
+        assert not ctl._get_lines(invalid, (directive,))
+
+    valid = ctl._render_managed_settings(
+        {
+            "cache_dir_rock_swap_timeout_ms": 0,
+            "cache_dir_rock_max_swap_rate": 0,
+            "high_response_time_warning_ms": 0,
+            "high_page_fault_warning": 0,
+            "client_ip_max_connections": 1,
+            "tcp_recv_bufsize_kb": 0,
+            "happy_eyeballs_connect_gap_ms": 0,
+            "happy_eyeballs_connect_limit": 0,
+        },
+    )
+    assert "swap-timeout=0" in valid
+    assert "max-swap-rate=0" in valid
+    assert ctl._get_lines(valid, ("high_response_time_warning",)) == [
+        "high_response_time_warning 0",
+    ]
+    assert ctl._get_lines(valid, ("high_page_fault_warning",)) == [
+        "high_page_fault_warning 0",
+    ]
+    assert ctl._get_lines(valid, ("client_ip_max_connections",)) == [
+        "client_ip_max_connections 1",
+    ]
+    assert ctl._get_lines(valid, ("tcp_recv_bufsize",)) == [
+        "tcp_recv_bufsize 0 KB",
+    ]
+    assert ctl._get_lines(valid, ("happy_eyeballs_connect_gap",)) == [
+        "happy_eyeballs_connect_gap 0 ms",
+    ]
+    assert ctl._get_lines(valid, ("happy_eyeballs_connect_limit",)) == [
+        "happy_eyeballs_connect_limit 0",
+    ]
+
+    parsed = ctl.get_tunable_options(valid)
+    assert parsed["cache_dir_rock_swap_timeout_ms"] == 0
+    assert parsed["cache_dir_rock_max_swap_rate"] == 0
+    assert parsed["high_response_time_warning_ms"] == 0
+    assert parsed["high_page_fault_warning"] == 0
+    assert parsed["client_ip_max_connections"] == 1
+    assert parsed["tcp_recv_bufsize_kb"] == 0
+    assert parsed["happy_eyeballs_connect_gap_ms"] == 0
+    assert parsed["happy_eyeballs_connect_limit"] == 0
+
+    blank = ctl._render_managed_settings(dict.fromkeys(optional_keys, ""))
+    assert "swap-timeout=" not in blank
+    assert "max-swap-rate=" not in blank
+    for directive in (
+        "high_response_time_warning",
+        "high_page_fault_warning",
+        "client_ip_max_connections",
+        "tcp_recv_bufsize",
+        "happy_eyeballs_connect_gap",
+        "happy_eyeballs_connect_limit",
+    ):
+        assert not ctl._get_lines(blank, (directive,))
+
+
 def test_squid_controller_generate_config_adds_optional_intercept_listener(
     tmp_path,
 ) -> None:
