@@ -313,6 +313,22 @@ def _sleep_until(target: datetime) -> None:
         time.sleep(min(300.0, max(1.0, remaining)))
 
 
+def _validate_schedule_value(
+    value: object,
+    *,
+    name: str,
+    minimum: int,
+    maximum: int,
+) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not minimum <= value <= maximum
+    ):
+        msg = f"{name} must be an integer between {minimum} and {maximum}"
+        raise ValueError(msg)
+
+
 def _log_failed_housekeeping_result(
     result: dict[str, Any] | None, *, run_label: str
 ) -> None:
@@ -435,6 +451,24 @@ def start_housekeeping(
     with _lock:
         if _started:
             return
+        _validate_schedule_value(
+            daily_hour,
+            name="daily_hour",
+            minimum=0,
+            maximum=23,
+        )
+        _validate_schedule_value(
+            weekly_hour,
+            name="weekly_hour",
+            minimum=0,
+            maximum=23,
+        )
+        _validate_schedule_value(
+            weekly_weekday,
+            name="weekly_weekday",
+            minimum=0,
+            maximum=6,
+        )
         if interval_seconds is not None:
             try:
                 normalized_interval_seconds = float(interval_seconds)

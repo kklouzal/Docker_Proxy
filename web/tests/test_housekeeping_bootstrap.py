@@ -720,6 +720,101 @@ def test_housekeeping_rejects_invalid_interval_before_start(
     assert housekeeping._started is False
 
 
+@pytest.mark.parametrize(
+    ("argument", "value", "maximum"),
+    [
+        ("daily_hour", -1, 23),
+        ("daily_hour", 24, 23),
+        ("daily_hour", True, 23),
+        ("daily_hour", 2.0, 23),
+        ("daily_hour", "2", 23),
+        ("weekly_hour", -1, 23),
+        ("weekly_hour", 24, 23),
+        ("weekly_hour", True, 23),
+        ("weekly_hour", 3.0, 23),
+        ("weekly_hour", "3", 23),
+        ("weekly_weekday", -1, 6),
+        ("weekly_weekday", 7, 6),
+        ("weekly_weekday", True, 6),
+        ("weekly_weekday", 6.0, 6),
+        ("weekly_weekday", "6", 6),
+    ],
+)
+def test_housekeeping_rejects_invalid_schedule_before_start_and_allows_retry(
+    monkeypatch, housekeeping, argument, value, maximum
+) -> None:
+    thread_creations = 0
+
+    def unexpected_thread(**_kwargs):
+        nonlocal thread_creations
+        thread_creations += 1
+        msg = "thread must not be created for an invalid schedule"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(housekeeping, "_started", False)
+    monkeypatch.setattr(housekeeping.threading, "Thread", unexpected_thread)
+
+    with pytest.raises(
+        ValueError,
+        match=rf"{argument} must be an integer between 0 and {maximum}",
+    ):
+        housekeeping.start_housekeeping(**{argument: value})
+
+    assert thread_creations == 0
+    assert housekeeping._started is False
+
+    class CorrectedThread:
+        def __init__(self, *, target, name: str, daemon: bool) -> None:
+            assert callable(target)
+            assert name == "db-housekeeping"
+            assert daemon is True
+
+        def start(self) -> None:
+            pass
+
+    monkeypatch.setattr(housekeeping.threading, "Thread", CorrectedThread)
+
+    housekeeping.start_housekeeping()
+
+    assert housekeeping._started is True
+
+
+@pytest.mark.parametrize(
+    ("daily_hour", "weekly_hour", "weekly_weekday"),
+    [(0, 23, 0), (23, 0, 6)],
+)
+def test_housekeeping_accepts_schedule_boundaries(
+    monkeypatch,
+    housekeeping,
+    daily_hour: int,
+    weekly_hour: int,
+    weekly_weekday: int,
+) -> None:
+    starts = 0
+
+    class BoundaryThread:
+        def __init__(self, *, target, name: str, daemon: bool) -> None:
+            assert callable(target)
+            assert name == "db-housekeeping"
+            assert daemon is True
+
+        def start(self) -> None:
+            nonlocal starts
+            starts += 1
+
+    monkeypatch.setattr(housekeeping, "_started", False)
+    monkeypatch.setattr(housekeeping.threading, "Thread", BoundaryThread)
+
+    housekeeping.start_housekeeping(
+        daily_hour=daily_hour,
+        weekly_hour=weekly_hour,
+        weekly_weekday=weekly_weekday,
+    )
+
+    assert starts == 1
+    assert housekeeping._started is True
+
+
 def test_housekeeping_scheduled_due_weekly_only_preserved(
     monkeypatch, housekeeping
 ) -> None:
