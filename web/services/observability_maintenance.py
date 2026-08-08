@@ -6,7 +6,12 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from services.bounded_delete import BoundedDeleteResult, delete_where_in_chunks, env_int
+from services.bounded_delete import (
+    BoundedDeleteIncompleteError,
+    BoundedDeleteResult,
+    delete_where_in_chunks,
+    env_int,
+)
 from services.db import DATABASE_ERRORS, connect, connect_unpooled, table_exists
 from services.errors import redact_sensitive_text
 from services.sql_identifiers import quote_mysql_identifier
@@ -66,6 +71,10 @@ class ObservabilityMaintenanceAlreadyRunningError(RuntimeError):
     """Raised when another scheduled or manual maintenance run is active."""
 
 
+class ObservabilityClearOutcomeUncertainError(RuntimeError):
+    """Raised when a non-transactional clear may have reached the server."""
+
+
 def _looks_like_stale_connection(exc: BaseException) -> bool:
     name = exc.__class__.__name__.lower()
     text = str(exc).lower()
@@ -107,31 +116,44 @@ def _table_exists(table: str) -> bool:
 
 def _truncate_table(table: str) -> None:
     quoted = quote_mysql_identifier(table)
-
-    def truncate() -> None:
-        with connect() as conn:
+    # Retrying connection acquisition is safe because no table operation has
+    # started. Do not replay TRUNCATE after execute begins: MySQL commits this
+    # DDL implicitly, so a lost acknowledgement can mean it already succeeded.
+    conn = _retry_stale_connection(connect)
+    truncate_succeeded = False
+    try:
+        with conn:
             # TRUNCATE is intentionally used instead of DELETE/OPTIMIZE here.
             # It is the closest match for an operator-facing "clear all stored
             # log history" action: fast, fleet-wide, and it resets auto-increment
             # counters without holding one long delete transaction open long
             # enough for PyMySQL read timeouts/stale pooled connections.
             conn.execute(f"TRUNCATE TABLE {quoted}")
-
-    _retry_stale_connection(truncate)
+            truncate_succeeded = True
+    except Exception as exc:
+        if truncate_succeeded:
+            # execute() received MySQL's success response. TRUNCATE was already
+            # implicitly committed; a later context-manager COMMIT failure cannot
+            # change that table outcome and must not trigger a destructive replay.
+            return
+        if _looks_like_stale_connection(exc):
+            msg = f"TRUNCATE outcome is uncertain for {table}: {exc}"
+            raise ObservabilityClearOutcomeUncertainError(msg) from exc
+        raise
 
 
 def _delete_table_in_chunks(table: str) -> BoundedDeleteResult:
-    def delete() -> BoundedDeleteResult:
-        return delete_where_in_chunks(
-            connect,
-            table=table,
-            where_sql="1 = 1",
-            max_rows=_clear_fallback_max_rows_per_table(),
-            log_key=f"observability.clear.{table}",
-            log_label=f"Observability clear fallback for {table}",
-        )
-
-    return _retry_stale_connection(delete)
+    # connect() already retries safe connection establishment. Replaying this
+    # whole multi-transaction operation after a disconnect could delete rows
+    # that arrived after one or more chunks committed.
+    return delete_where_in_chunks(
+        connect,
+        table=table,
+        where_sql="1 = 1",
+        max_rows=_clear_fallback_max_rows_per_table(),
+        log_key=f"observability.clear.{table}",
+        log_label=f"Observability clear fallback for {table}",
+    )
 
 
 def _run_table_maintenance(table: str, *, analyze: bool, optimize: bool) -> str:
@@ -164,6 +186,22 @@ def _best_effort_delete_fallback(table: str) -> tuple[str, int, str]:
             "cleared",
             result.deleted_rows,
             f"delete_fallback iterations={result.iterations}",
+        )
+    except BoundedDeleteIncompleteError as exc:
+        if exc.outcome_uncertain:
+            status = "uncertain"
+            outcome = "commit outcome uncertain"
+        else:
+            status = "partial"
+            outcome = "stopped after confirmed commits"
+        return (
+            status,
+            exc.deleted_rows,
+            (
+                f"delete_fallback {outcome} "
+                f"confirmed_deleted_rows={exc.deleted_rows} "
+                f"iterations={exc.iterations}: {public_detail(exc.cause)}"
+            ),
         )
     except DATABASE_ERRORS as exc:
         return "failed", 0, public_detail(exc)
@@ -588,6 +626,15 @@ def clear_observability_logs(*, optimize: bool = False) -> dict[str, Any]:
                     maintenance="truncated",
                 ),
             )
+        except ObservabilityClearOutcomeUncertainError as exc:
+            row = ObservabilityLogTableResult(
+                table=table,
+                status="uncertain",
+                maintenance="truncate",
+                detail=public_detail(exc),
+            )
+            table_results.append(row)
+            failed.append(row)
         except DATABASE_ERRORS:
             status, deleted, detail = _best_effort_delete_fallback(table)
             total_deleted += deleted
@@ -596,7 +643,9 @@ def clear_observability_logs(*, optimize: bool = False) -> dict[str, Any]:
                 status=status,
                 deleted_rows=deleted,
                 maintenance=(
-                    "delete_fallback" if status in {"cleared", "partial"} else "failed"
+                    "delete_fallback"
+                    if status in {"cleared", "partial", "uncertain"}
+                    else "failed"
                 ),
                 detail=detail,
             )
@@ -611,7 +660,9 @@ def clear_observability_logs(*, optimize: bool = False) -> dict[str, Any]:
                 status=status,
                 deleted_rows=deleted,
                 maintenance=(
-                    "delete_fallback" if status in {"cleared", "partial"} else "failed"
+                    "delete_fallback"
+                    if status in {"cleared", "partial", "uncertain"}
+                    else "failed"
                 ),
                 detail=detail,
             )

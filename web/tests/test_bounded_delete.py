@@ -3,7 +3,10 @@ from __future__ import annotations
 import logging
 
 import pytest
-from services.bounded_delete import delete_where_in_chunks
+from services.bounded_delete import (
+    BoundedDeleteIncompleteError,
+    delete_where_in_chunks,
+)
 
 
 class _Result:
@@ -16,9 +19,16 @@ class _Result:
 
 
 class _Conn:
-    def __init__(self, owner: _Factory, *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        owner: _Factory,
+        *,
+        fail: bool = False,
+        fail_on_exit: bool = False,
+    ) -> None:
         self.owner = owner
         self.fail = fail
+        self.fail_on_exit = fail_on_exit
         self.queries: list[tuple[str, tuple[object, ...]]] = []
         self.committed = False
         self.rolled_back = False
@@ -28,6 +38,9 @@ class _Conn:
 
     def __exit__(self, exc_type, _exc, _tb):
         if exc_type is None:
+            if self.fail_on_exit:
+                msg = "Lost connection to MySQL server during commit"
+                raise RuntimeError(msg)
             self.committed = True
         else:
             self.rolled_back = True
@@ -50,17 +63,23 @@ class _Factory:
         rowcounts: list[int],
         *,
         fail_on_call: int | None = None,
+        fail_on_exit_call: int | None = None,
         remaining_match: bool = False,
     ) -> None:
         self.rowcounts = rowcounts
         self.fail_on_call = fail_on_call
+        self.fail_on_exit_call = fail_on_exit_call
         self.remaining_match = remaining_match
         self.calls = 0
         self.conns: list[_Conn] = []
 
     def __call__(self):
         self.calls += 1
-        conn = _Conn(self, fail=self.fail_on_call == self.calls)
+        conn = _Conn(
+            self,
+            fail=self.fail_on_call == self.calls,
+            fail_on_exit=self.fail_on_exit_call == self.calls,
+        )
         self.conns.append(conn)
         return conn
 
@@ -144,10 +163,12 @@ def test_delete_where_in_chunks_stops_on_short_chunk() -> None:
     assert factory.calls == 2
 
 
-def test_delete_where_in_chunks_rolls_back_failing_chunk_and_stops() -> None:
+def test_delete_where_in_chunks_reports_confirmed_progress_after_later_failure() -> (
+    None
+):
     factory = _Factory([2], fail_on_call=2)
 
-    with pytest.raises(RuntimeError, match="delete failed"):
+    with pytest.raises(BoundedDeleteIncompleteError, match="delete failed") as raised:
         delete_where_in_chunks(
             factory,
             table="adblock_events",
@@ -158,8 +179,37 @@ def test_delete_where_in_chunks_rolls_back_failing_chunk_and_stops() -> None:
             max_rows=10,
         )
 
+    assert raised.value.deleted_rows == 2
+    assert raised.value.iterations == 1
+    assert raised.value.outcome_uncertain is False
     assert factory.calls == 2
     assert factory.conns[0].committed is True
     assert factory.conns[0].rolled_back is False
     assert factory.conns[1].committed is False
     assert factory.conns[1].rolled_back is True
+
+
+def test_delete_where_in_chunks_reports_commit_unknown_without_replaying_chunk() -> (
+    None
+):
+    factory = _Factory([2, 99], fail_on_exit_call=1)
+
+    with pytest.raises(
+        BoundedDeleteIncompleteError,
+        match=r"Lost connection.*during commit",
+    ) as raised:
+        delete_where_in_chunks(
+            factory,
+            table="adblock_events",
+            where_sql="ts < %s",
+            params=(789,),
+            order_by_columns=("ts", "id"),
+            chunk_size=2,
+            max_rows=10,
+        )
+
+    assert raised.value.deleted_rows == 0
+    assert raised.value.iterations == 0
+    assert raised.value.outcome_uncertain is True
+    assert factory.calls == 1
+    assert len(factory.conns[0].queries) == 1

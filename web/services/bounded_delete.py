@@ -23,6 +23,31 @@ class BoundedDeleteResult:
     truncated: bool
 
 
+class BoundedDeleteIncompleteError(RuntimeError):
+    """A bounded delete stopped after zero or more confirmed commits.
+
+    ``deleted_rows`` counts only chunks whose connection context exited
+    successfully. When ``outcome_uncertain`` is true, the next chunk reached
+    COMMIT but the client did not observe a successful connection-context exit.
+    """
+
+    def __init__(
+        self,
+        *,
+        table: str,
+        deleted_rows: int,
+        iterations: int,
+        outcome_uncertain: bool,
+        cause: BaseException,
+    ) -> None:
+        self.table = table
+        self.deleted_rows = int(deleted_rows)
+        self.iterations = int(iterations)
+        self.outcome_uncertain = bool(outcome_uncertain)
+        self.cause = cause
+        super().__init__(str(cause) or cause.__class__.__name__)
+
+
 def env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     try:
         value = int((os.environ.get(name) or str(default)).strip() or str(default))
@@ -94,19 +119,35 @@ def delete_where_in_chunks(
     remaining = None
     while total < per_run:
         limit = min(per_chunk, per_run - total)
-        with connect_factory() as conn:
-            result = conn.execute(
-                f"DELETE FROM {safe_table} WHERE {predicate}{order_sql} LIMIT %s",
-                (*tuple(params), int(limit)),
-            )
-            deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
-            # Probe after the cap-reaching delete in the same short transaction so
-            # ``truncated`` means matching rows remain, not merely that the cap hit.
-            if total + deleted >= per_run:
-                remaining = conn.execute(
-                    f"SELECT 1 FROM {safe_table} WHERE {predicate} LIMIT 1",
-                    tuple(params),
-                ).fetchone()
+        body_completed = False
+        try:
+            with connect_factory() as conn:
+                result = conn.execute(
+                    f"DELETE FROM {safe_table} WHERE {predicate}{order_sql} LIMIT %s",
+                    (*tuple(params), int(limit)),
+                )
+                deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
+                # Probe after the cap-reaching delete in the same short transaction so
+                # ``truncated`` means matching rows remain, not merely that the cap hit.
+                if total + deleted >= per_run:
+                    remaining = conn.execute(
+                        f"SELECT 1 FROM {safe_table} WHERE {predicate} LIMIT 1",
+                        tuple(params),
+                    ).fetchone()
+                body_completed = True
+        except Exception as exc:
+            # A completed body followed by __exit__ failure means COMMIT may have
+            # succeeded even though its acknowledgement was lost. Earlier chunks
+            # remain confirmed because each uses its own connection context.
+            if total > 0 or body_completed:
+                raise BoundedDeleteIncompleteError(
+                    table=table,
+                    deleted_rows=total,
+                    iterations=iterations,
+                    outcome_uncertain=body_completed,
+                    cause=exc,
+                ) from exc
+            raise
         total += deleted
         iterations += 1
         if deleted < limit:
