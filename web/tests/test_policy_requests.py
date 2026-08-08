@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import importlib
 import re
 import urllib.parse
 from pathlib import Path
+from types import SimpleNamespace
 
 from .mysql_test_utils import (
     configure_test_mysql_env,
@@ -28,6 +30,7 @@ class _PolicyApproveResult:
 class _PolicyApproveConn:
     def __init__(self, *, claim_rowcount: int = 1, block_type: str = "webfilter"):
         self.calls: list[tuple[str, tuple[object, ...]]] = []
+        self.events: list[str] = []
         self.inserted_expires_ts: int | None = None
         self.claim_rowcount = claim_rowcount
         self.block_type = block_type
@@ -35,8 +38,13 @@ class _PolicyApproveConn:
     def __enter__(self):
         return self
 
-    def __exit__(self, *_exc):
+    def __exit__(self, exc_type, *_exc):
+        if exc_type is None:
+            self.commit()
         return False
+
+    def commit(self) -> None:
+        self.events.append("commit")
 
     def execute(self, sql, params=()):
         text = " ".join(str(sql).split())
@@ -243,6 +251,33 @@ def test_policy_request_store_approval_stale_pending_claim_does_not_insert(
     )
     assert not any("INSERT INTO policy_exceptions" in sql for sql in executed_sql)
     assert not any("UPDATE policy_exceptions" in sql for sql in executed_sql)
+
+
+def test_policy_request_store_commits_approval_before_releasing_proxy_guard(
+    monkeypatch,
+) -> None:
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    conn = _PolicyApproveConn()
+
+    @contextlib.contextmanager
+    def observed_guard(_conn, proxy_id, **_kwargs):
+        try:
+            yield SimpleNamespace(proxy_id=str(proxy_id))
+        finally:
+            conn.events.append("guard-released")
+
+    store = module.PolicyRequestStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(module, "guarded_proxy_write", observed_guard)
+    monkeypatch.setattr(module, "now_ts", lambda: 1000)
+
+    store.approve_request(7, reviewer="admin", admin_note="ok")
+
+    assert conn.events.index("commit") < conn.events.index("guard-released")
 
 
 def test_policy_request_store_rejects_unsupported_approval_before_exception_write(

@@ -520,6 +520,11 @@ class PolicyRequestStore:
                     (exid, req.id),
                 )
                 exrow = c.execute(self._esql("WHERE id=%s"), (exid,)).fetchone()
+                # The proxy lifecycle guard uses a connection-scoped advisory
+                # lock.  Commit the request/exception transaction before that
+                # lock is released so another approval cannot miss this still-
+                # uncommitted exception and insert a duplicate for the scope.
+                c.commit()
         return _exc(exrow)
 
     def close_request(
