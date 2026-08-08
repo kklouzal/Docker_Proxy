@@ -490,28 +490,38 @@ def _expire_policy_exceptions(*, now_ts: int) -> PolicyExceptionExpiryResult:
                 """,
                 (int(now_ts), int(limit)),
             ).fetchall()
-            ids = [int(_row_value(row, "id", 0, 0) or 0) for row in rows]
-            proxy_ids = {
-                str(_row_value(row, "proxy_id", 1, "") or "").strip().lower()
-                for row in rows
-            }
-            ids = [row_id for row_id in ids if row_id > 0]
-            proxy_ids.discard("")
-            if not ids:
-                updated = 0
-            else:
+            ids_by_proxy: dict[str, list[int]] = {}
+            for row in rows:
+                row_id = int(_row_value(row, "id", 0, 0) or 0)
+                if row_id <= 0:
+                    continue
+                proxy_id = (
+                    str(_row_value(row, "proxy_id", 1, "") or "").strip().lower()
+                )
+                ids_by_proxy.setdefault(proxy_id, []).append(row_id)
+
+            updated = 0
+            # The candidate read is non-locking, so recheck expiry in the write.
+            # Per-proxy writes make each rowcount safe to use for reconciliation.
+            for proxy_id, ids in ids_by_proxy.items():
                 placeholders = ",".join(["%s"] * len(ids))
                 result = conn.execute(
                     f"""
                     UPDATE policy_exceptions
                     SET status='expired', updated_ts=%s
-                    WHERE status='active' AND id IN ({placeholders})
+                    WHERE status='active'
+                      AND expires_ts > 0 AND expires_ts <= %s
+                      AND id IN ({placeholders})
                     """,
-                    (int(now_ts), *ids),
+                    (int(now_ts), int(now_ts), *ids),
                 )
-                updated = max(0, int(getattr(result, "rowcount", 0) or 0))
-                if updated > 0:
-                    affected_proxy_ids.update(proxy_ids)
+                proxy_updated = max(
+                    0,
+                    int(getattr(result, "rowcount", 0) or 0),
+                )
+                updated += proxy_updated
+                if proxy_updated > 0 and proxy_id:
+                    affected_proxy_ids.add(proxy_id)
         total += updated
         iterations += 1
         if updated < limit:

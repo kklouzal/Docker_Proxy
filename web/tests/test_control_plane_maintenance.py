@@ -40,6 +40,8 @@ class _Connection:
         compact = " ".join(str(sql).split())
         params = tuple(params or ())
         self.queries.append((compact, params))
+        if compact.startswith("UPDATE policy_exceptions SET status='expired'"):
+            return _Result(max(0, len(params) - 2))
         return _Result(2)
 
 
@@ -449,13 +451,20 @@ def test_policy_exception_expiry_update_is_bounded(monkeypatch) -> None:
     assert result.iterations == 2
     assert result.truncated is True
     select_sql, select_params = used[0].queries[0]
-    update_sql, update_params = used[0].queries[1]
     assert select_sql.startswith("SELECT id, proxy_id FROM policy_exceptions")
     assert "ORDER BY expires_ts ASC, id ASC LIMIT %s" in select_sql
     assert select_params == (999, 2)
-    assert update_sql.startswith("UPDATE policy_exceptions SET status='expired'")
-    assert "WHERE status='active' AND id IN (%s,%s)" in update_sql
-    assert update_params == (999, 1, 2)
+    updates = used[0].queries[1:]
+    assert len(updates) == 2
+    assert all(
+        sql.startswith("UPDATE policy_exceptions SET status='expired'")
+        and "expires_ts > 0 AND expires_ts <= %s" in sql
+        for sql, _params in updates
+    )
+    assert [params for _sql, params in updates] == [
+        (999, 999, 1),
+        (999, 999, 2),
+    ]
 
 
 class _PolicyExpiryResult:
@@ -470,7 +479,7 @@ class _PolicyExpiryResult:
 class _PolicyExpiryConnection:
     def __init__(self, rows, rowcount: int | None = None) -> None:
         self.rows = list(rows)
-        self.rowcount = len(self.rows) if rowcount is None else rowcount
+        self.rowcount = rowcount
         self.queries: list[tuple[str, tuple[object, ...]]] = []
         self.committed = False
         self.rolled_back = False
@@ -492,8 +501,68 @@ class _PolicyExpiryConnection:
         if compact.startswith("SELECT id, proxy_id FROM policy_exceptions"):
             return _PolicyExpiryResult(rows=self.rows)
         if compact.startswith("UPDATE policy_exceptions SET status='expired'"):
-            return _PolicyExpiryResult(rowcount=self.rowcount)
+            rowcount = len(params[2:]) if self.rowcount is None else self.rowcount
+            return _PolicyExpiryResult(rowcount=rowcount)
         return _PolicyExpiryResult(rowcount=0)
+
+
+class _ConcurrentExtensionConnection(_PolicyExpiryConnection):
+    def __init__(self) -> None:
+        super().__init__(
+            [
+                {"id": 1, "proxy_id": "edge-extended"},
+                {"id": 2, "proxy_id": "edge-expired"},
+            ],
+        )
+        self.expires_ts = {1: 2_000, 2: 900}
+
+    def execute(self, sql, params=()):
+        compact = " ".join(str(sql).split())
+        params = tuple(params or ())
+        self.queries.append((compact, params))
+        if compact.startswith("SELECT id, proxy_id FROM policy_exceptions"):
+            return _PolicyExpiryResult(rows=self.rows)
+        if compact.startswith("UPDATE policy_exceptions SET status='expired'"):
+            guarded = "expires_ts > 0 AND expires_ts <= %s" in compact
+            cutoff = int(params[1]) if guarded else None
+            ids = [int(value) for value in params[2 if guarded else 1 :]]
+            transitioned = [
+                row_id
+                for row_id in ids
+                if not guarded or 0 < self.expires_ts[row_id] <= int(cutoff or 0)
+            ]
+            return _PolicyExpiryResult(rowcount=len(transitioned))
+        return _PolicyExpiryResult(rowcount=0)
+
+
+def test_policy_exception_expiry_preserves_concurrent_extension_and_queues_only_transitioned_proxy(
+    monkeypatch,
+) -> None:
+    conn = _ConcurrentExtensionConnection()
+    queued: list[str] = []
+
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 2)
+    monkeypatch.setattr(maintenance, "default_max_rows", lambda: 2)
+    monkeypatch.setattr(
+        maintenance,
+        "_queue_policy_exception_expiry_policy_sync",
+        lambda proxy_id: queued.append(proxy_id) or True,
+    )
+
+    result = maintenance._expire_policy_exceptions(now_ts=999)
+
+    assert result.deleted_rows == 1
+    assert result.queue_attempts == 1
+    assert result.queued_proxies == ("edge-expired",)
+    assert queued == ["edge-expired"]
+    updates = [
+        (sql, params)
+        for sql, params in conn.queries
+        if sql.startswith("UPDATE policy_exceptions SET status='expired'")
+    ]
+    assert len(updates) == 2
+    assert all("expires_ts > 0 AND expires_ts <= %s" in sql for sql, _ in updates)
 
 
 def test_policy_exception_expiry_queues_policy_sync_deduped_by_proxy(
@@ -540,8 +609,9 @@ def test_policy_exception_expiry_queues_policy_sync_deduped_by_proxy(
     assert "ORDER BY expires_ts ASC, id ASC LIMIT %s" in first_select_sql
     assert first_select_params == (999, 2)
     assert first_update_sql.startswith("UPDATE policy_exceptions SET status='expired'")
-    assert "WHERE status='active' AND id IN (%s,%s)" in first_update_sql
-    assert first_update_params == (999, 1, 2)
+    assert "expires_ts > 0 AND expires_ts <= %s" in first_update_sql
+    assert "AND id IN (%s,%s)" in first_update_sql
+    assert first_update_params == (999, 999, 1, 2)
 
 
 def test_policy_exception_expiry_does_not_queue_without_expired_rows(
