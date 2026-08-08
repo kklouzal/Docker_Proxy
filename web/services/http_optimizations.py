@@ -22,6 +22,13 @@ _COMPRESSIBLE_MIMETYPES = frozenset(
     },
 )
 _QVALUE_PATTERN = re.compile(r"(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)\Z")
+_TRANSFORMATION_INVALIDATED_HEADERS = (
+    "ETag",
+    "Content-Digest",
+    "Repr-Digest",
+    "Digest",
+    "Content-MD5",
+)
 
 
 def _bool_env(value: str | None, *, default: bool) -> bool:
@@ -112,8 +119,9 @@ def _compress_response(response: Any, *, min_size: int, compresslevel: int) -> A
     response.set_data(compressed)
     response.headers["Content-Encoding"] = "gzip"
     response.headers["Content-Length"] = str(len(compressed))
-    # Strong validators no longer apply after representation transformation.
-    response.headers.pop("ETag", None)
+    # Validators and integrity values for the identity bytes no longer apply.
+    for header in _TRANSFORMATION_INVALIDATED_HEADERS:
+        response.headers.pop(header, None)
     return response
 
 

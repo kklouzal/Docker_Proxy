@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import gzip
+import hashlib
 import importlib
 import sys
 from pathlib import Path
@@ -426,6 +428,48 @@ def test_gzip_negotiation_varies_identity_and_encoded_representations() -> None:
         "Accept-Encoding",
     }
     assert gzip.decompress(encoded.get_data()) == identity.get_data()
+
+
+def test_gzip_transformation_drops_stale_representation_integrity_fields() -> None:
+    app = Flask(__name__)
+
+    from web.services.http_optimizations import install_http_optimizations
+
+    install_http_optimizations(app, compress_min_size=1)
+    body = b"a" * 1000
+    sha256 = base64.b64encode(hashlib.sha256(body).digest()).decode("ascii")
+    md5 = base64.b64encode(hashlib.md5(body, usedforsecurity=False).digest()).decode(
+        "ascii"
+    )
+
+    @app.get("/integrity.txt")
+    def integrity_text():
+        return Response(
+            body,
+            mimetype="text/plain",
+            headers={
+                "Content-Digest": f"sha-256=:{sha256}:",
+                "Repr-Digest": f"sha-256=:{sha256}:",
+                "Digest": f"sha-256={sha256}",
+                "Content-MD5": md5,
+            },
+        )
+
+    client = app.test_client()
+
+    identity = client.get("/integrity.txt")
+    encoded = client.get("/integrity.txt", headers={"Accept-Encoding": "gzip"})
+
+    assert identity.headers.get("Content-Digest") == f"sha-256=:{sha256}:"
+    assert identity.headers.get("Repr-Digest") == f"sha-256=:{sha256}:"
+    assert identity.headers.get("Digest") == f"sha-256={sha256}"
+    assert identity.headers.get("Content-MD5") == md5
+    assert encoded.headers.get("Content-Encoding") == "gzip"
+    assert gzip.decompress(encoded.get_data()) == body
+    assert encoded.headers.get("Content-Digest") is None
+    assert encoded.headers.get("Repr-Digest") is None
+    assert encoded.headers.get("Digest") is None
+    assert encoded.headers.get("Content-MD5") is None
 
 
 def test_gzip_negotiation_rejects_invalid_and_duplicate_refusal_quality() -> None:
