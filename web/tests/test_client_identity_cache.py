@@ -620,7 +620,75 @@ def test_client_identity_cache_resolve_many_deduplicates_and_records_failures(
     assert set(resolved) == {"192.0.2.10", "2001:db8::1"}
     assert resolved["192.0.2.10"]["hostname_status"] == "unresolved"
     assert resolved["2001:db8::1"]["hostname_status"] == "unresolved"
-    assert calls == ["192.0.2.10", "2001:db8::1"]
+    assert sorted(calls) == ["192.0.2.10", "2001:db8::1"]
+
+
+def test_client_identity_cache_resolve_many_uses_bounded_parallelism(
+    monkeypatch,
+) -> None:
+    cache = ClientIdentityCache(
+        success_ttl_seconds=30.0,
+        lookup_timeout_seconds=0.5,
+    )
+    ips = [
+        f"192.0.2.{index}" for index in range(1, _REVERSE_DNS_LOOKUP_THREAD_LIMIT + 3)
+    ]
+    calls_lock = threading.Lock()
+    lookup_slots_full = threading.Event()
+    release_lookups = threading.Event()
+    calls: list[str] = []
+    active_lookups = 0
+    maximum_active_lookups = 0
+    resolved: dict[str, dict[str, str]] = {}
+    errors: list[Exception] = []
+
+    def blocked_lookup(ip: str) -> tuple[str, list[str], list[str]]:
+        nonlocal active_lookups, maximum_active_lookups
+        with calls_lock:
+            calls.append(ip)
+            active_lookups += 1
+            maximum_active_lookups = max(maximum_active_lookups, active_lookups)
+            if active_lookups == _REVERSE_DNS_LOOKUP_THREAD_LIMIT:
+                lookup_slots_full.set()
+        try:
+            release_lookups.wait(timeout=1.0)
+            return f"host-{ip}.example", [], []
+        finally:
+            with calls_lock:
+                active_lookups -= 1
+
+    def resolve_batch() -> None:
+        try:
+            resolved.update(cache.resolve_many(ips))
+        except Exception as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(
+        "services.client_identity_cache.socket.gethostbyaddr",
+        blocked_lookup,
+    )
+    batch_thread = threading.Thread(target=resolve_batch)
+    batch_thread.start()
+    try:
+        assert lookup_slots_full.wait(timeout=0.5)
+        with calls_lock:
+            assert len(calls) == _REVERSE_DNS_LOOKUP_THREAD_LIMIT
+    finally:
+        release_lookups.set()
+        batch_thread.join(timeout=1.0)
+
+    assert not batch_thread.is_alive()
+    assert errors == []
+    assert maximum_active_lookups == _REVERSE_DNS_LOOKUP_THREAD_LIMIT
+    assert set(calls) == set(ips)
+    assert resolved == {
+        ip: {
+            "hostname": f"host-{ip}.example",
+            "hostname_source": "rdns",
+            "hostname_status": "resolved",
+        }
+        for ip in ips
+    }
 
 
 def test_client_identity_cache_evicts_oldest_entry_when_full(monkeypatch) -> None:

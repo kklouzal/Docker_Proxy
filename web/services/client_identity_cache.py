@@ -5,6 +5,7 @@ import re
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -313,13 +314,31 @@ class ClientIdentityCache:
         return self._resolve_normalized(normalized)
 
     def resolve_many(self, ips: Iterable[object]) -> dict[str, dict[str, str]]:
-        resolved: dict[str, dict[str, str]] = {}
+        normalized_ips: list[str] = []
+        seen: set[str] = set()
         for ip in ips:
             normalized = self._normalize_ip(ip)
-            if not normalized or normalized in resolved:
+            if not normalized or normalized in seen:
                 continue
-            resolved[normalized] = self._resolve_normalized(normalized)
-        return resolved
+            seen.add(normalized)
+            normalized_ips.append(normalized)
+
+        if len(normalized_ips) <= 1:
+            return {
+                normalized: self._resolve_normalized(normalized)
+                for normalized in normalized_ips
+            }
+
+        worker_count = min(
+            len(normalized_ips),
+            _REVERSE_DNS_LOOKUP_THREAD_LIMIT,
+        )
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="client-rdns-batch",
+        ) as executor:
+            results = executor.map(self._resolve_normalized, normalized_ips)
+            return dict(zip(normalized_ips, results, strict=True))
 
 
 _cache: ClientIdentityCache | None = None
