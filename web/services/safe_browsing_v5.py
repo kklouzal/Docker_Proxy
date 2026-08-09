@@ -1057,7 +1057,7 @@ class SafeBrowsingStore:
             msg = "Google Safe Browsing hash search response fullHashes must be an array"
             raise ValueError(msg)
 
-        details_by_hash: dict[bytes, list[object]] = {}
+        details_by_hash: dict[bytes, list[dict[str, object]]] = {}
         normalized_items: list[dict[str, object]] = []
         for item in items:
             if not isinstance(item, dict):
@@ -1071,6 +1071,7 @@ class SafeBrowsingStore:
             if not isinstance(details, list):
                 msg = "Google Safe Browsing hash search fullHashDetails must be an array"
                 raise ValueError(msg)
+            normalized_details: list[dict[str, object]] = []
             for detail in details:
                 if not isinstance(detail, dict):
                     msg = "Google Safe Browsing hash search details must be objects"
@@ -1085,16 +1086,24 @@ class SafeBrowsingStore:
                 ):
                     msg = "Google Safe Browsing hash search attributes must be strings"
                     raise ValueError(msg)
+                normalized_detail: dict[str, object] = {"threatType": threat}
+                if attributes:
+                    normalized_detail["attributes"] = list(attributes)
+                if normalized_detail not in normalized_details:
+                    normalized_details.append(normalized_detail)
 
             existing_details = details_by_hash.get(full_hash)
             if existing_details is not None:
                 existing_details.extend(
-                    detail for detail in details if detail not in existing_details
+                    detail
+                    for detail in normalized_details
+                    if detail not in existing_details
                 )
                 continue
-            normalized_details: list[object] = list(details)
-            normalized_item = dict(item)
-            normalized_item["fullHashDetails"] = normalized_details
+            normalized_item = {
+                "fullHash": _urlsafe_b64(full_hash),
+                "fullHashDetails": normalized_details,
+            }
             details_by_hash[full_hash] = normalized_details
             normalized_items.append(normalized_item)
 

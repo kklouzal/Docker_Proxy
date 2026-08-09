@@ -579,7 +579,16 @@ def test_safe_browsing_search_hashes_accepts_valid_multi_prefix_multi_threat(
 
     full_hashes, duration = store.search_hashes("key", [first[:4], second[:4]])
 
-    assert full_hashes == response["fullHashes"]
+    assert full_hashes == [
+        _search_hash_item(
+            first,
+            [
+                {"threatType": "MALWARE"},
+                {"threatType": "SOCIAL_ENGINEERING"},
+            ],
+        ),
+        _search_hash_item(second, [{"threatType": "FUTURE_THREAT_TYPE"}]),
+    ]
     assert duration == 3
     assert calls == [
         (
@@ -588,6 +597,45 @@ def test_safe_browsing_search_hashes_accepts_valid_multi_prefix_multi_threat(
             [("hashPrefixes", "YWJjZA"), ("hashPrefixes", "-__-_Q")],
             8,
         ),
+    ]
+
+
+def test_safe_browsing_search_hashes_normalizes_known_fields_and_base64(
+    monkeypatch,
+) -> None:
+    target = bytes.fromhex("fbfffefd") + b"a" * 28
+    response = {
+        "fullHashes": [
+            {
+                "fullHash": base64.b64encode(target).decode("ascii"),
+                "ignoredEntryField": "untrusted",
+                "fullHashDetails": [
+                    {
+                        "threatType": "FUTURE_THREAT_TYPE",
+                        "attributes": ["FUTURE_ATTRIBUTE"],
+                        "ignoredDetailField": {"untrusted": True},
+                    },
+                ],
+            },
+        ],
+    }
+    store = SafeBrowsingStore()
+    monkeypatch.setattr(store, "_request_json", lambda *_args, **_kwargs: response)
+
+    full_hashes, _duration = store.search_hashes("key", [target[:4]])
+
+    assert full_hashes == [
+        {
+            "fullHash": base64.urlsafe_b64encode(target)
+            .decode("ascii")
+            .rstrip("="),
+            "fullHashDetails": [
+                {
+                    "threatType": "FUTURE_THREAT_TYPE",
+                    "attributes": ["FUTURE_ATTRIBUTE"],
+                },
+            ],
+        },
     ]
 
 
