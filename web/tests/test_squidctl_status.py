@@ -488,6 +488,71 @@ def test_clear_disk_cache_clears_all_configured_cache_dirs(
     assert "restarted" in detail
 
 
+def test_clear_disk_cache_fails_when_nested_directory_removal_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services import squid_core, squidctl  # type: ignore
+
+    cache_dir = tmp_path / "cache"
+    nested_dir = cache_dir / "00"
+    nested_dir.mkdir(parents=True)
+    (nested_dir / "cached-entry").write_text("cached\n", encoding="utf-8")
+    calls: list[list[str]] = []
+    restart_calls: list[float] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[-2:] == ["stop", "squid"]:
+            return SimpleNamespace(returncode=0, stdout=b"squid: stopped\n", stderr=b"")
+        msg = f"unexpected command: {args!r}"
+        raise AssertionError(msg)
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    monkeypatch.setattr(
+        controller,
+        "get_current_config",
+        lambda: f"cache_dir ufs {cache_dir} 100 16 256\n",
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_http_listener_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_squid_pidfile_stale_or_absent",
+        lambda *, timeout: True,
+    )
+    monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
+    monkeypatch.setattr(
+        controller,
+        "restart_squid",
+        lambda *, ready_timeout=45.0, **_kwargs: (
+            restart_calls.append(float(ready_timeout)) or (True, "restarted")
+        ),
+    )
+
+    deletion_error = PermissionError(f"cannot remove {nested_dir}")
+
+    def fail_rmtree(_path, *, ignore_errors=False, **_kwargs):
+        if ignore_errors:
+            return
+        raise deletion_error
+
+    monkeypatch.setattr(squid_core.shutil, "rmtree", fail_rmtree)
+
+    ok, detail = controller.clear_disk_cache()
+
+    assert ok is False
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+    ]
+    assert restart_calls == []
+    assert f"cache delete failed: cannot remove {nested_dir}" in detail
+    assert f"cleared: {cache_dir}" not in detail
+
+
 def test_clear_disk_cache_cleans_live_pid_before_prepare(
     monkeypatch,
     tmp_path,

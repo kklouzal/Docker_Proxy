@@ -2290,11 +2290,11 @@ stdout_logfile_maxbytes=0
                                 Path(candidate).is_dir()
                                 and not Path(candidate).is_symlink()
                             ):
-                                shutil.rmtree(candidate, ignore_errors=True)
+                                shutil.rmtree(candidate)
                             else:
                                 Path(candidate).unlink()
                         except IsADirectoryError:
-                            shutil.rmtree(candidate, ignore_errors=True)
+                            shutil.rmtree(candidate)
                         except FileNotFoundError:
                             pass
                 else:
