@@ -1124,6 +1124,104 @@ def test_ssl_db_reinitialize_preserves_database_when_squid_stop_is_unverified(
     assert ["sh", "/scripts/init_ssl_db.sh"] not in calls
 
 
+def test_ssl_db_reinitialize_stops_when_recursive_deletion_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    ssl_db = tmp_path / "ssl_db" / "store"
+    ssl_db.mkdir(parents=True)
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args == ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"]:
+            return _cp(0, stdout="squid: stopped")
+        return _cp(0, stdout="unexpected follow-on command")
+
+    def failing_rmtree(path, *, ignore_errors=False):
+        assert str(path) == str(ssl_db)
+        error = PermissionError("permission denied while removing stale ssl_db")
+        if not ignore_errors:
+            raise error
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(ssl_db_reinitializer=None)
+    runtime.ssl_db_dir = str(ssl_db)
+    runtime.controller = SimpleNamespace(
+        restart_squid=lambda: (_ for _ in ()).throw(
+            AssertionError("restart must not run after ssl_db deletion failure")
+        ),
+    )
+    runtime._supervisor_program_status = lambda *_args, **_kwargs: (
+        True,
+        "squid STOPPED Jul 18 02:18 AM",
+    )
+
+    monkeypatch.setattr(runtime_module, "subprocess", SimpleNamespace(run=fake_run))
+    monkeypatch.setattr(runtime_module.shutil, "rmtree", failing_rmtree)
+    monkeypatch.setattr(
+        runtime_module.pathlib.Path,
+        "exists",
+        lambda self: str(self) == "/scripts/init_ssl_db.sh",
+    )
+
+    ok, detail = runtime._reinitialize_ssl_db_and_restart()
+
+    assert ok is False
+    assert "Failed to clear ssl_db directory" in detail
+    assert "permission denied while removing stale ssl_db" in detail
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+    ]
+
+
+def test_ssl_db_reinitialize_tolerates_already_absent_database(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    ssl_db = tmp_path / "ssl_db" / "store"
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        if args == ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"]:
+            return _cp(0, stdout="squid: stopped")
+        if args == ["sh", "/scripts/init_ssl_db.sh"]:
+            target = Path(str((kwargs.get("env") or {})["SSL_DB_DIR"]))
+            target.mkdir(parents=True)
+            return _cp(0, stdout="initialized")
+        return _cp(0, stdout="ok")
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(ssl_db_reinitializer=None)
+    runtime.ssl_db_dir = str(ssl_db)
+    runtime.controller = SimpleNamespace(restart_squid=lambda: (True, "restarted"))
+    runtime._supervisor_program_status = lambda *_args, **_kwargs: (
+        True,
+        "squid STOPPED Jul 18 02:18 AM",
+    )
+
+    monkeypatch.setattr(runtime_module, "subprocess", SimpleNamespace(run=fake_run))
+    monkeypatch.setattr(
+        runtime_module.pathlib.Path,
+        "exists",
+        lambda self: str(self) == "/scripts/init_ssl_db.sh",
+    )
+
+    ok, detail = runtime._reinitialize_ssl_db_and_restart()
+
+    assert ok is True
+    assert "initialized" in detail
+    assert "restarted" in detail
+    assert ["sh", "/scripts/init_ssl_db.sh"] in calls
+
+
 def test_ssl_db_reinitialize_recovers_when_restart_reports_stopped_squid(
     monkeypatch,
     tmp_path,

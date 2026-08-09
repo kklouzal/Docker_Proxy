@@ -2514,10 +2514,17 @@ class ProxyRuntime:
 
         parent_dir = pathlib.Path(ssl_db_dir).parent or "/var/lib/ssl_db"
         try:
-            shutil.rmtree(ssl_db_dir, ignore_errors=True)
-            pathlib.Path(parent_dir).mkdir(exist_ok=True, parents=True)
+            shutil.rmtree(ssl_db_dir)
+        except FileNotFoundError:
+            pass
         except Exception as exc:
             details.append(f"Failed to clear ssl_db directory: {exc}")
+            return False, "\n".join([part for part in details if part]).strip()
+
+        try:
+            pathlib.Path(parent_dir).mkdir(exist_ok=True, parents=True)
+        except Exception as exc:
+            details.append(f"Failed to prepare ssl_db parent directory: {exc}")
             return False, "\n".join([part for part in details if part]).strip()
 
         init_script = "/scripts/init_ssl_db.sh"
