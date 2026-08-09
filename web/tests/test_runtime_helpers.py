@@ -1,10 +1,16 @@
+import errno
+import os
+from pathlib import Path
+
 import pytest
+from services import runtime_helpers
 from services.runtime_helpers import (
     authority_has_empty_explicit_port,
     decode_bytes,
     env_float,
     env_int,
     extract_domain,
+    fsync_parent_dir,
     normalize_hostish,
     not_cached_reason,
 )
@@ -252,3 +258,60 @@ def test_not_cached_reason_matches_expected_labels() -> None:
         not_cached_reason("GET", "TCP_MISS/302")
         == "Redirect response (302) (often not cached without explicit freshness)"
     )
+
+
+def test_fsync_parent_dir_opens_parent_and_closes_descriptor(monkeypatch) -> None:
+    opened: list[tuple[str, int]] = []
+    synced: list[int] = []
+    closed: list[int] = []
+    monkeypatch.setattr(
+        runtime_helpers.os,
+        "open",
+        lambda path, flags: opened.append((os.fspath(path), flags)) or 41,
+    )
+    monkeypatch.setattr(runtime_helpers.os, "fsync", synced.append)
+    monkeypatch.setattr(runtime_helpers.os, "close", closed.append)
+
+    fsync_parent_dir(Path("state") / "nested" / "value.json")
+
+    assert opened[0][0] == os.path.join("state", "nested")
+    assert opened[0][1] & os.O_RDONLY == os.O_RDONLY
+    assert synced == [41]
+    assert closed == [41]
+
+
+@pytest.mark.parametrize("error_number", [None, errno.EINVAL, errno.ENOSYS])
+def test_fsync_parent_dir_suppresses_unsupported_errors(
+    monkeypatch, error_number
+) -> None:
+    closed: list[int] = []
+    monkeypatch.setattr(runtime_helpers.os, "open", lambda _path, _flags: 42)
+    monkeypatch.setattr(
+        runtime_helpers.os,
+        "fsync",
+        lambda _fd: (_ for _ in ()).throw(OSError(error_number, "unsupported")),
+    )
+    monkeypatch.setattr(runtime_helpers.os, "close", closed.append)
+
+    fsync_parent_dir("value.json")
+
+    assert closed == [42]
+
+
+def test_fsync_parent_dir_propagates_actionable_error_and_ignores_close_error(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(runtime_helpers.os, "open", lambda _path, _flags: 43)
+    monkeypatch.setattr(
+        runtime_helpers.os,
+        "fsync",
+        lambda _fd: (_ for _ in ()).throw(OSError(errno.EIO, "fsync failed")),
+    )
+    monkeypatch.setattr(
+        runtime_helpers.os,
+        "close",
+        lambda _fd: (_ for _ in ()).throw(OSError(errno.EIO, "close failed")),
+    )
+
+    with pytest.raises(OSError, match="fsync failed"):
+        fsync_parent_dir("value.json")

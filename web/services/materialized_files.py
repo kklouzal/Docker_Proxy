@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import errno
 import os
 import pathlib
 import tempfile
@@ -9,17 +8,12 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from services.runtime_helpers import fsync_parent_dir as _fsync_parent_dir
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 _RUNTIME_FILE_MODE = 0o644
-_UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
-    errno.EBADF,
-    errno.EINVAL,
-    errno.ENOSYS,
-    getattr(errno, "ENOTSUP", errno.EINVAL),
-    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
-}
 _MANAGED_PATH_LOCKS_GUARD = threading.Lock()
 _MANAGED_PATH_LOCKS: dict[str, threading.Lock] = {}
 
@@ -49,27 +43,6 @@ def _locked_materialized_paths(paths: list[str]) -> Iterator[None]:
     finally:
         for lock in reversed(acquired):
             lock.release()
-
-
-def _fsync_parent_dir(path: str) -> None:
-    """Best-effort fsync for directory entries created/replaced near path."""
-    directory = pathlib.Path(path).parent or pathlib.Path()
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
-    fd: int | None = None
-    try:
-        fd = os.open(directory, flags)
-        os.fsync(fd)
-    except OSError as exc:
-        # Some platforms/filesystems do not support opening or fsyncing dirs.
-        if exc.errno is None or exc.errno in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
-            return
-        raise
-    finally:
-        if fd is not None:
-            with contextlib.suppress(OSError):
-                os.close(fd)
 
 
 @dataclass(frozen=True)

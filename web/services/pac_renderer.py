@@ -55,6 +55,7 @@ from services.public_endpoint import (
 from services.public_endpoint import (
     normalize_public_scheme as _normalize_pac_scheme,
 )
+from services.runtime_helpers import fsync_parent_dir as _fsync_parent_dir
 from services.sslfilter_store import get_sslfilter_store
 
 if TYPE_CHECKING:
@@ -98,27 +99,6 @@ def _locked_pac_materialization_target(target: str | os.PathLike[str]):
         yield
     finally:
         lock.release()
-
-
-def _fsync_parent_dir(path: str | os.PathLike[str]) -> None:
-    """Best-effort fsync for directory entries created/replaced near path."""
-    directory = Path(path).parent or Path()
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
-    fd: int | None = None
-    try:
-        fd = os.open(directory, flags)
-        os.fsync(fd)
-    except OSError as exc:
-        # Some platforms/filesystems do not support opening or fsyncing dirs.
-        if exc.errno is None or exc.errno in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
-            return
-        raise
-    finally:
-        if fd is not None:
-            with contextlib.suppress(OSError):
-                os.close(fd)
 
 
 def _fsync_dir(path: str | os.PathLike[str]) -> None:

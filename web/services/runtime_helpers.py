@@ -1,10 +1,41 @@
 from __future__ import annotations
 
+import contextlib
+import errno
 import ipaddress
 import math
 import os
 import time
+from pathlib import Path
 from urllib.parse import unquote, urlsplit
+
+_UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
+    errno.EBADF,
+    errno.EINVAL,
+    errno.ENOSYS,
+    getattr(errno, "ENOTSUP", errno.EINVAL),
+    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+}
+
+
+def fsync_parent_dir(path: str | os.PathLike[str]) -> None:
+    """Best-effort fsync of the directory containing path."""
+    directory = Path(path).parent or Path()
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    fd: int | None = None
+    try:
+        fd = os.open(directory, flags)
+        os.fsync(fd)
+    except OSError as exc:
+        if exc.errno is None or exc.errno in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
+            return
+        raise
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
 def now_ts() -> int:

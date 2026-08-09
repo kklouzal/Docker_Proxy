@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import errno
 import fcntl
 import hashlib
 import ipaddress
@@ -23,39 +22,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from services.logutil import log_exception_throttled
+from services.runtime_helpers import fsync_parent_dir as _fsync_parent_dir
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
 logger = logging.getLogger(__name__)
-_UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
-    errno.EBADF,
-    errno.EINVAL,
-    errno.ENOSYS,
-    getattr(errno, "ENOTSUP", errno.EINVAL),
-    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
-}
-
-
-def _fsync_parent_dir(path: str | os.PathLike[str]) -> None:
-    """Best-effort fsync for directory entries created/replaced near path."""
-    directory = pathlib.Path(path).parent or pathlib.Path()
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
-    fd: int | None = None
-    try:
-        fd = os.open(directory, flags)
-        os.fsync(fd)
-    except OSError as exc:
-        # Some platforms/filesystems do not support opening or fsyncing dirs.
-        if exc.errno is None or exc.errno in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
-            return
-        raise
-    finally:
-        if fd is not None:
-            with contextlib.suppress(OSError):
-                os.close(fd)
 
 
 def _unlink_with_parent_fsync(path: str | os.PathLike[str]) -> None:
