@@ -384,6 +384,44 @@ def test_proxy_client_http_error_uses_json_detail(
         proxy_client.ProxyClient().sync_proxy("live")
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"ok": false, "detail": "sync failed clearly"}',
+        b"not json",
+        b'["not", "an", "object"]',
+    ],
+)
+def test_proxy_client_closes_http_error_response_stream(
+    monkeypatch,
+    proxy_client_module,
+    body: bytes,
+) -> None:
+    proxy_client = proxy_client_module
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+    response_stream = io.BytesIO(body)
+
+    def fake_urlopen(_request, timeout) -> NoReturn:
+        msg = "http://proxy-mgmt:5000/api/manage/sync"
+        raise urllib.error.HTTPError(
+            msg,
+            409,
+            "Conflict",
+            {},
+            response_stream,
+        )
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().sync_proxy("live")
+
+    assert isinstance(exc_info.value.__cause__, urllib.error.HTTPError)
+    assert response_stream.closed
+
+
 def test_proxy_client_http_error_redacts_json_detail(
     monkeypatch,
     proxy_client_module,

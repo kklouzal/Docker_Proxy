@@ -257,8 +257,11 @@ class ProxyClient:
         except urllib.error.HTTPError as exc:
             raw = ""
             response_too_large = False
-            if hasattr(exc, "read"):
-                raw, response_too_large = _read_management_response_text(exc)
+            try:
+                if hasattr(exc, "read"):
+                    raw, response_too_large = _read_management_response_text(exc)
+            finally:
+                exc.close()
             try:
                 data = {} if response_too_large else (json.loads(raw) if raw else {})
             except Exception:
