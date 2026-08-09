@@ -69,12 +69,35 @@ def _urlsafe_b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
 
-def _decode_b64(text: object) -> bytes:
-    raw = str(text or "").strip()
+def _decode_b64(text: object, *, field: str) -> bytes:
+    if text is None:
+        return b""
+    if not isinstance(text, str):
+        msg = f"Google Safe Browsing {field} must be base64-encoded"
+        raise ValueError(msg)
+    raw = text.strip()
     if not raw:
         return b""
-    raw += "=" * (-len(raw) % 4)
-    return base64.urlsafe_b64decode(raw.encode("ascii"))
+    if not re.fullmatch(r"[A-Za-z0-9+/_-]+={0,2}", raw):
+        msg = f"Google Safe Browsing {field} must be base64-encoded"
+        raise ValueError(msg)
+    data = raw.rstrip("=")
+    padding_length = len(raw) - len(data)
+    if ({"+", "/"} & set(data)) and ({"-", "_"} & set(data)):
+        msg = f"Google Safe Browsing {field} must use one base64 alphabet"
+        raise ValueError(msg)
+    expected_padding = (-len(data)) % 4
+    if expected_padding == 3 or (
+        padding_length and padding_length != expected_padding
+    ):
+        msg = f"Google Safe Browsing {field} must be correctly padded base64"
+        raise ValueError(msg)
+    try:
+        encoded = data.encode("ascii") + b"=" * expected_padding
+        return base64.b64decode(encoded, altchars=b"-_", validate=True)
+    except (binascii.Error, UnicodeEncodeError, ValueError) as exc:
+        msg = f"Google Safe Browsing {field} must be base64-encoded"
+        raise ValueError(msg) from exc
 
 
 def _decode_search_full_hash(value: object) -> bytes:
@@ -443,7 +466,9 @@ def decode_rice_delta_32(payload: dict[str, object] | None) -> list[int]:
         raise ValueError(msg)
     if count <= 0:
         return [first]
-    reader = _BitReader(_decode_b64(payload.get("encodedData")))
+    reader = _BitReader(
+        _decode_b64(payload.get("encodedData"), field="compressed Rice encodedData")
+    )
     values = [first]
     previous = first
     for _ in range(count):
@@ -924,6 +949,11 @@ class SafeBrowsingStore:
             raise ValueError(msg)
         removals = decode_rice_delta_32(removals_payload)
         addition_values = decode_rice_delta_32(additions_payload)
+        checksum = _decode_b64(item.get("sha256Checksum"), field="sha256Checksum")
+        if checksum and len(checksum) != hashlib.sha256().digest_size:
+            msg = "Google Safe Browsing sha256Checksum must decode to exactly 32 bytes"
+            raise ValueError(msg)
+        version = _decode_b64(item.get("version"), field="version")
         self.init_schema(conn)
         partial = bool(item.get("partialUpdate"))
         current = [
@@ -966,13 +996,11 @@ class SafeBrowsingStore:
             del current[index]
         additions = _ints_to_prefixes(addition_values)
         merged = sorted(set(current).union(additions))
-        checksum = _decode_b64(item.get("sha256Checksum"))
         if checksum and _checksum_for_prefixes(merged) != checksum:
             # The v5 local database spec requires a full refresh whenever the
             # post-update checksum disagrees. Drop local state/version for this
             # list so the next scheduler pass requests a complete replacement.
             require_full_refresh("checksum mismatch")
-        version = _decode_b64(item.get("version"))
         now = _now()
         generation = int(time.time_ns())
 

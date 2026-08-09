@@ -11,6 +11,7 @@ from services.safe_browsing_v5 import (
     SafeBrowsingStore,
     SafeBrowsingVerdict,
     _checksum_for_prefixes,
+    _decode_b64,
     canonicalize_url,
     decode_rice_delta_32,
     expression_hashes,
@@ -178,6 +179,40 @@ def test_safe_browsing_rice_decoder_rejects_truncated_payload() -> None:
                 "entriesCount": 1,
                 "riceParameter": 3,
                 "encodedData": "",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("encoded_data", "expected"),
+    [
+        pytest.param("AA==", b"\x00", id="standard-padded"),
+        pytest.param("AA", b"\x00", id="standard-unpadded"),
+        pytest.param("+w==", b"\xfb", id="standard-padded-alphabet"),
+        pytest.param("+w", b"\xfb", id="standard-unpadded-alphabet"),
+        pytest.param("-w==", b"\xfb", id="url-safe-padded-alphabet"),
+        pytest.param("-w", b"\xfb", id="url-safe-unpadded-alphabet"),
+    ],
+)
+def test_safe_browsing_byte_decoder_accepts_protojson_base64_variants(
+    encoded_data,
+    expected,
+) -> None:
+    assert _decode_b64(encoded_data, field="encodedData") == expected
+
+
+@pytest.mark.parametrize(
+    "encoded_data",
+    ["@@", "A", "AA=", "AA=AA", "A-A+", "A_A/", 1],
+)
+def test_safe_browsing_rice_decoder_rejects_malformed_base64(encoded_data) -> None:
+    with pytest.raises(ValueError, match=r"compressed Rice encodedData.*base64"):
+        decode_rice_delta_32(
+            {
+                "firstValue": 7,
+                "entriesCount": 1,
+                "riceParameter": 3,
+                "encodedData": encoded_data,
             }
         )
 
@@ -1852,6 +1887,40 @@ def test_safe_browsing_malformed_removal_does_not_mutate(
 
     assert ok is False
     assert error
+    assert conn.persisted_prefixes == set(prefixes)
+    assert conn.persisted_version == b"v1"
+    assert conn.rollback_count == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("sha256Checksum", "@@", id="checksum-malformed-base64"),
+        pytest.param("sha256Checksum", "AA", id="checksum-wrong-length"),
+        pytest.param("version", "A", id="version"),
+    ],
+)
+def test_safe_browsing_malformed_hash_list_byte_field_does_not_mutate(
+    monkeypatch,
+    field,
+    value,
+) -> None:
+    prefixes = [(number).to_bytes(4, "big") for number in (1, 2, 3)]
+    item = {
+        "name": "mw-4b",
+        "version": _urlsafe_test_b64(b"v2"),
+        "partialUpdate": True,
+        "compressedRemovals": _rice_removals([1]),
+        "sha256Checksum": _urlsafe_test_b64(
+            _checksum_for_prefixes([prefixes[0], prefixes[2]])
+        ),
+    }
+    item[field] = value
+
+    (ok, error, _wait), conn = _run_hash_list_update(monkeypatch, item, prefixes)
+
+    assert ok is False
+    assert field in error
     assert conn.persisted_prefixes == set(prefixes)
     assert conn.persisted_version == b"v1"
     assert conn.rollback_count == 1
