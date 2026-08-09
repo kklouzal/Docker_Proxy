@@ -422,12 +422,23 @@ class _BitReader:
 
 
 def decode_rice_delta_32(payload: dict[str, object] | None) -> list[int]:
-    if not payload:
+    if payload is None:
         return []
-    first = int(payload.get("firstValue") or 0)
-    count = int(payload.get("entriesCount") or 0)
-    rice = int(payload.get("riceParameter") or 0)
-    if count < 0 or rice < 0 or rice > 31:
+
+    def integer_field(name: str, maximum: int) -> int:
+        value = payload.get(name, 0)
+        if isinstance(value, bool) or not isinstance(value, int):
+            msg = "Google Safe Browsing compressed Rice parameters are invalid"
+            raise ValueError(msg)
+        if value < 0 or value > maximum:
+            msg = "Google Safe Browsing compressed Rice parameters are invalid"
+            raise ValueError(msg)
+        return value
+
+    first = integer_field("firstValue", (1 << 32) - 1)
+    count = integer_field("entriesCount", (1 << 31) - 1)
+    rice = integer_field("riceParameter", (1 << 31) - 1)
+    if count > 0 and not 3 <= rice <= 30:
         msg = "Google Safe Browsing compressed Rice parameters are invalid"
         raise ValueError(msg)
     if count <= 0:
@@ -442,6 +453,9 @@ def decode_rice_delta_32(payload: dict[str, object] | None) -> list[int]:
         remainder = reader.read_bits(rice)
         delta = (quotient << rice) + remainder
         previous += delta
+        if previous > (1 << 32) - 1:
+            msg = "Google Safe Browsing compressed Rice parameters are invalid"
+            raise ValueError(msg)
         values.append(previous)
     return values
 
@@ -900,6 +914,16 @@ class SafeBrowsingStore:
         name = str(item.get("name") or "").strip()
         if name not in SAFE_BROWSING_LISTS:
             return
+        removals_payload = item.get("compressedRemovals")
+        additions_payload = item.get("additionsFourBytes")
+        if removals_payload is not None and not isinstance(removals_payload, dict):
+            msg = "Google Safe Browsing compressed Rice parameters are invalid"
+            raise ValueError(msg)
+        if additions_payload is not None and not isinstance(additions_payload, dict):
+            msg = "Google Safe Browsing compressed Rice parameters are invalid"
+            raise ValueError(msg)
+        removals = decode_rice_delta_32(removals_payload)
+        addition_values = decode_rice_delta_32(additions_payload)
         self.init_schema(conn)
         partial = bool(item.get("partialUpdate"))
         current = [
@@ -932,15 +956,6 @@ class SafeBrowsingStore:
             msg = f"Google Safe Browsing {reason} for {name}; full refresh required"
             raise ValueError(msg)
 
-        removals_payload = item.get("compressedRemovals")
-        if removals_payload is not None and not isinstance(removals_payload, dict):
-            require_full_refresh("compressed removals are invalid")
-        try:
-            removals = decode_rice_delta_32(
-                removals_payload if isinstance(removals_payload, dict) else None,
-            )
-        except (OverflowError, TypeError, ValueError):
-            require_full_refresh("compressed removals are invalid")
         if len(removals) != len(set(removals)):
             require_full_refresh("removal indices contain duplicates")
         if any(index < 0 or index >= len(current) for index in removals):
@@ -949,12 +964,7 @@ class SafeBrowsingStore:
         for index in sorted(removals, reverse=True):
             removed_prefixes.append(current[index])
             del current[index]
-        additions_payload = item.get("additionsFourBytes")
-        additions = _ints_to_prefixes(
-            decode_rice_delta_32(
-                additions_payload if isinstance(additions_payload, dict) else None,
-            ),
-        )
+        additions = _ints_to_prefixes(addition_values)
         merged = sorted(set(current).union(additions))
         checksum = _decode_b64(item.get("sha256Checksum"))
         if checksum and _checksum_for_prefixes(merged) != checksum:

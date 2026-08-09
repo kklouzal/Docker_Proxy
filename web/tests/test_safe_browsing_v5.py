@@ -140,6 +140,36 @@ def test_safe_browsing_rice_decoder_handles_single_value() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("firstValue", True),
+        ("firstValue", 1.0),
+        ("firstValue", "1"),
+        ("firstValue", -1),
+        ("firstValue", 1 << 32),
+        ("entriesCount", False),
+        ("entriesCount", -1),
+        ("entriesCount", 1 << 31),
+        ("riceParameter", "3"),
+        ("riceParameter", 2),
+        ("riceParameter", 31),
+    ],
+)
+def test_safe_browsing_rice_decoder_rejects_invalid_numeric_fields(
+    field, value
+) -> None:
+    payload = {
+        "firstValue": 1,
+        "entriesCount": 1,
+        "riceParameter": 3,
+        "encodedData": "AA==",
+    }
+    payload[field] = value
+    with pytest.raises(ValueError, match="compressed Rice parameters are invalid"):
+        decode_rice_delta_32(payload)
+
+
 def test_safe_browsing_rice_decoder_rejects_truncated_payload() -> None:
     with pytest.raises(ValueError, match="compressed Rice data is truncated"):
         decode_rice_delta_32(
@@ -1670,10 +1700,6 @@ def _run_hash_list_update(monkeypatch, item, prefixes):
 @pytest.mark.parametrize(
     "compressed_removals",
     [
-        pytest.param(
-            {"firstValue": -1, "entriesCount": 0},
-            id="negative",
-        ),
         pytest.param(_rice_removals([3]), id="past-end"),
     ],
 )
@@ -1795,6 +1821,7 @@ def test_safe_browsing_partial_write_failure_rolls_back_list_and_version(
 @pytest.mark.parametrize(
     "compressed_removals",
     [
+        pytest.param({"firstValue": -1, "entriesCount": 0}, id="negative"),
         pytest.param(
             {
                 "firstValue": 1,
@@ -1807,7 +1834,7 @@ def test_safe_browsing_partial_write_failure_rolls_back_list_and_version(
         pytest.param([1], id="wrong-type"),
     ],
 )
-def test_safe_browsing_malformed_removal_requires_full_refresh(
+def test_safe_browsing_malformed_removal_does_not_mutate(
     monkeypatch,
     compressed_removals,
 ) -> None:
@@ -1824,9 +1851,10 @@ def test_safe_browsing_malformed_removal_requires_full_refresh(
     )
 
     assert ok is False
-    assert "full refresh required" in error
-    assert conn.persisted_prefixes == set()
-    assert conn.persisted_version is None
+    assert error
+    assert conn.persisted_prefixes == set(prefixes)
+    assert conn.persisted_version == b"v1"
+    assert conn.rollback_count == 1
 
 
 def test_safe_browsing_apply_hash_list_rejects_checksum_mismatch() -> None:
@@ -1925,7 +1953,20 @@ def test_safe_browsing_apply_hash_list_accepts_matching_checksum() -> None:
     assert isinstance(conn.inserted[0][2], int)
 
 
-def test_safe_browsing_apply_hash_list_rejects_truncated_additions() -> None:
+@pytest.mark.parametrize(
+    "additions",
+    [
+        pytest.param(
+            {"firstValue": 1, "entriesCount": 1, "riceParameter": 3, "encodedData": ""},
+            id="truncated",
+        ),
+        pytest.param({"firstValue": True, "entriesCount": 0}, id="boolean"),
+        pytest.param({"firstValue": 1 << 32, "entriesCount": 0}, id="overflow"),
+    ],
+)
+def test_safe_browsing_apply_rejects_invalid_additions_before_mutation(
+    additions,
+) -> None:
     class Result:
         def __init__(self, rows=()) -> None:
             self.rows = list(rows)
@@ -1952,19 +1993,14 @@ def test_safe_browsing_apply_hash_list_rejects_truncated_additions() -> None:
             return Result([])
 
     conn = FakeConn()
-    with pytest.raises(ValueError, match="compressed Rice data is truncated"):
+    with pytest.raises(ValueError, match="compressed Rice"):
         SafeBrowsingStore()._apply_hash_list(
             conn,
             {
                 "name": "mw-4b",
                 "version": "AA",
                 "partialUpdate": False,
-                "additionsFourBytes": {
-                    "firstValue": 1,
-                    "entriesCount": 1,
-                    "riceParameter": 3,
-                    "encodedData": "",
-                },
+                "additionsFourBytes": additions,
             },
         )
 
