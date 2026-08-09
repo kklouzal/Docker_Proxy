@@ -72,6 +72,60 @@ def _set_admin_ui_https_material(monkeypatch, loaded, tmp_path) -> tuple[str, st
     return str(certfile), str(keyfile)
 
 
+def test_admin_ui_web_restart_helper_bounds_supervisorctl_call(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    popen_calls = []
+    monkeypatch.setattr(loaded.module.shutil, "which", lambda name: "/usr/bin/supervisorctl")
+    monkeypatch.setattr(
+        loaded.module.subprocess,
+        "Popen",
+        lambda *args, **kwargs: popen_calls.append((args, kwargs)),
+    )
+
+    ok, detail = loaded.module._restart_admin_ui_web_process()
+
+    assert ok is True
+    assert detail == "Admin UI web restart requested; reconnect using the selected scheme."
+    assert len(popen_calls) == 1
+    helper_argv = popen_calls[0][0][0]
+    helper_source = helper_argv[helper_argv.index("-c") + 1]
+
+    run_calls = []
+    sleep_calls = []
+
+    class FakeSubprocess:
+        @staticmethod
+        def run(*args, **kwargs) -> None:
+            run_calls.append((args, kwargs))
+
+    class FakeTime:
+        @staticmethod
+        def sleep(seconds) -> None:
+            sleep_calls.append(seconds)
+
+    exec(  # noqa: S102 - execute the fixed, generated helper source under fakes
+        helper_source,
+        {
+            "__builtins__": {
+                "__import__": lambda name, *args: {
+                    "subprocess": FakeSubprocess,
+                    "time": FakeTime,
+                }[name]
+            }
+        },
+    )
+
+    assert sleep_calls == [0.2]
+    assert run_calls == [
+        (
+            (["/usr/bin/supervisorctl", "-c", "/etc/supervisord.conf", "restart", "web"],),
+            {"timeout": 10},
+        )
+    ]
+
+
 def test_certificate_download_allows_only_active_ca_crt(monkeypatch, tmp_path) -> None:
     bundles = FakeCertificateBundles(bundle=_bundle())
     loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)

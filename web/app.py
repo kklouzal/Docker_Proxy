@@ -4857,7 +4857,7 @@ def _restart_admin_ui_web_process() -> tuple[bool, str]:
                 (
                     "import subprocess, time; "
                     "time.sleep(0.2); "
-                    f"subprocess.run([{supervisorctl!r}, '-c', '/etc/supervisord.conf', 'restart', 'web'])"
+                    f"subprocess.run([{supervisorctl!r}, '-c', '/etc/supervisord.conf', 'restart', 'web'], timeout=10)"
                 ),
             ],
             close_fds=True,
