@@ -1178,6 +1178,43 @@ def test_ssl_db_reinitialize_stops_when_recursive_deletion_fails(
     ]
 
 
+def test_init_ssl_db_permission_repair_fails_closed_on_chown_error(
+    tmp_path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    script = (repo_root / "scripts" / "init_ssl_db.sh").read_text(encoding="utf-8")
+    function = script[script.index("repair_ssl_db_permissions() {") :]
+    function = function[: function.index("\n}\n") + 3]
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in {
+        "chmod": "exit 0",
+        "getent": "exit 0",
+        "chown": 'echo "chown: simulated ownership denial" >&2; exit 1',
+    }.items():
+        command = bin_dir / name
+        command.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        command.chmod(0o755)
+
+    ssl_db = tmp_path / "ssl_db" / "store"
+    (ssl_db / "certs").mkdir(parents=True)
+    result = subprocess.run(
+        ["sh", "-c", f'{function}\nrepair_ssl_db_permissions'],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+            "SSL_DB_DIR": str(ssl_db),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "simulated ownership denial" in result.stderr
+    assert "Failed to recursively set squid:squid ownership" in result.stderr
+
+
 def test_ssl_db_reinitialize_tolerates_already_absent_database(
     monkeypatch,
     tmp_path,

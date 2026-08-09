@@ -11,13 +11,20 @@ SSL_DB_DIR="${SSL_DB_DIR:-/var/lib/ssl_db/store}"
 mkdir -p "$(dirname "$SSL_DB_DIR")"
 
 repair_ssl_db_permissions() {
-    chmod 700 "$SSL_DB_DIR" 2>/dev/null || true
-    if [ -d "$SSL_DB_DIR/certs" ]; then
-        chmod 750 "$SSL_DB_DIR/certs" 2>/dev/null || true
+    if ! chmod 700 "$SSL_DB_DIR"; then
+        echo "ERROR: Failed to set ssl_db mode 0700 on $SSL_DB_DIR" >&2
+        return 1
+    fi
+    if [ -d "$SSL_DB_DIR/certs" ] && ! chmod 750 "$SSL_DB_DIR/certs"; then
+        echo "ERROR: Failed to set ssl_db certs mode 0750 on $SSL_DB_DIR/certs" >&2
+        return 1
     fi
 
     if getent passwd squid >/dev/null 2>&1; then
-        chown -R squid:squid "$(dirname "$SSL_DB_DIR")" || true
+        if ! chown -R squid:squid "$(dirname "$SSL_DB_DIR")"; then
+            echo "ERROR: Failed to recursively set squid:squid ownership on $(dirname "$SSL_DB_DIR")" >&2
+            return 1
+        fi
     fi
 }
 

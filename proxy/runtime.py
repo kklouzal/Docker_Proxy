@@ -2580,7 +2580,7 @@ class ProxyRuntime:
                     [
                         "sh",
                         "-lc",
-                        'chmod 700 "$1" 2>/dev/null || true; [ -d "$1/certs" ] && chmod 750 "$1/certs" 2>/dev/null || true; if getent passwd squid >/dev/null 2>&1; then chown -R squid:squid "$(dirname "$1")"; fi',
+                        'chmod 700 "$1" || exit; if [ -d "$1/certs" ]; then chmod 750 "$1/certs" || exit; fi; if getent passwd squid >/dev/null 2>&1; then chown -R squid:squid "$(dirname "$1")"; fi',
                         "sh",
                         ssl_db_dir,
                     ],
