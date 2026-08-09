@@ -5477,6 +5477,13 @@ def _handle_auth_provider_post():
 
     def _submitted_directory_payload() -> dict[str, Any]:
         payload = request.form.to_dict()
+        # Checkbox fields follow a hidden "0" input so unchecked controls still
+        # submit a value. When checked, use the final (checkbox) value rather
+        # than MultiDict.to_dict()'s first (hidden) value.
+        for checkbox_field in ("use_starttls", "verify_tls", "clear_ca_bundle"):
+            submitted_values = request.form.getlist(checkbox_field)
+            if submitted_values:
+                payload[checkbox_field] = submitted_values[-1]
         ca_upload = request.files.get("ca_bundle_file")
         if ca_upload is not None and ca_upload.filename:
             payload["ca_bundle_upload"] = ca_upload.read()

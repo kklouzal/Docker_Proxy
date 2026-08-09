@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 from types import SimpleNamespace
 
+from werkzeug.datastructures import MultiDict
+
 from .admin_route_test_utils import (
     FakeAuditStore,
     csrf_token,
@@ -374,6 +376,54 @@ def test_active_directory_provider_save_passes_server_url_to_store(
     assert response.status_code in {302, 303}
     assert directory_store.saved[0][0] == "active_directory"
     assert directory_store.saved[0][1]["server_urls"] == "ldaps://dc.example.local:636"
+
+
+def test_auth_provider_checked_tls_controls_override_hidden_defaults(
+    monkeypatch, tmp_path
+) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=active_directory")
+
+    response = client.post(
+        "/administration?tab=active_directory",
+        data=MultiDict(
+            [
+                ("csrf_token", token),
+                ("action", "test_auth_provider"),
+                ("provider", "active_directory"),
+                ("enabled", "0"),
+                ("server_urls", "ldaps://submitted-dc.example.local:636"),
+                ("use_starttls", "0"),
+                ("use_starttls", "1"),
+                ("verify_tls", "0"),
+                ("verify_tls", "1"),
+                ("bind_dn", "submitted-svc@example.local"),
+                ("bind_password", "submitted-secret"),
+                ("base_dn", "DC=submitted,DC=local"),
+                ("user_search_base", "OU=People"),
+                ("user_filter", "(sAMAccountName={username})"),
+                ("user_attribute", "sAMAccountName"),
+                ("group_search_base", "OU=Groups"),
+                ("group_filter", "(member={user_dn})"),
+                ("required_admin_group", "CN=Admins,OU=Groups,DC=submitted,DC=local"),
+                ("timeout_seconds", "9"),
+            ]
+        ),
+    )
+
+    assert response.status_code in {302, 303}
+    saved = directory_store.saved[0][1]
+    assert saved["server_urls"] == "ldaps://submitted-dc.example.local:636"
+    assert saved["use_starttls"] == "1"
+    assert saved["verify_tls"] == "1"
+    assert saved["bind_dn"] == "submitted-svc@example.local"
+    assert saved["base_dn"] == "DC=submitted,DC=local"
+    assert saved["user_search_base"] == "OU=People"
+    assert saved["group_search_base"] == "OU=Groups"
+    assert directory_store.tested == ["active_directory"]
 
 
 def test_auth_provider_certificate_upload_is_passed_to_store(
