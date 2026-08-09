@@ -871,22 +871,54 @@ def test_proxy_runtime_clamav_icap_preserves_degraded_transport_detail(
     assert result["icap_status_code"] == 204
 
 
-def test_proxy_management_sync_rejects_invalid_operation_id(monkeypatch) -> None:
+def test_proxy_management_sync_rejects_non_integer_operation_ids(monkeypatch) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
-    runtime = _Runtime()
-    proxy_app.runtime = runtime
     client = proxy_app.app.test_client()
     headers = {"Authorization": "Bearer secret"}
 
-    response = _management_post(
-        client, "/api/manage/sync", json={"operation_id": "not-an-int"}, headers=headers
-    )
+    for operation_id in (True, False, 1.0, 1.5, "1", "not-an-int"):
+        runtime = _Runtime()
+        proxy_app.runtime = runtime
 
-    assert response.status_code == 400
-    assert response.get_json()["ok"] is False
-    assert "operation_id" in response.get_json()["detail"]
-    assert runtime.sync_operation_id is None
+        response = _management_post(
+            client,
+            "/api/manage/sync",
+            json={"operation_id": operation_id},
+            headers=headers,
+        )
+
+        assert response.status_code == 400, repr(operation_id)
+        assert response.get_json() == {
+            "ok": False,
+            "detail": "operation_id must be an integer.",
+        }
+        assert runtime.sync_force is None, repr(operation_id)
+        assert runtime.sync_operation_id is None, repr(operation_id)
+
+
+def test_proxy_management_sync_preserves_optional_and_positive_operation_ids(
+    monkeypatch,
+) -> None:
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret"}
+
+    for payload, expected_operation_id in (
+        ({}, None),
+        ({"operation_id": None}, None),
+        ({"operation_id": 42}, 42),
+    ):
+        runtime = _Runtime()
+        proxy_app.runtime = runtime
+
+        response = _management_post(
+            client, "/api/manage/sync", json=payload, headers=headers
+        )
+
+        assert response.status_code == 409, repr(payload)
+        assert runtime.sync_operation_id == expected_operation_id
 
 
 def test_proxy_management_logs_endpoint_reads_allowlisted_log_tail(

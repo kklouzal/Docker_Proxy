@@ -527,11 +527,9 @@ def manage_logs() -> Any:
 @_require_management_auth
 def manage_sync() -> Any:
     payload = _management_json_payload()
-    operation_id = None
-    if payload.get("operation_id") is not None:
-        try:
-            operation_id = int(payload.get("operation_id") or 0)
-        except Exception:
+    operation_id = payload.get("operation_id")
+    if operation_id is not None:
+        if type(operation_id) is not int:
             return jsonify(
                 {"ok": False, "detail": "operation_id must be an integer."},
             ), 400
