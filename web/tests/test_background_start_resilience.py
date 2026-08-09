@@ -93,6 +93,112 @@ def test_webfilter_background_start_defers_database_init(monkeypatch) -> None:
     assert len(targets) == 1
 
 
+def test_webfilter_background_retries_only_failed_safe_browsing_start(
+    monkeypatch,
+) -> None:
+    store = webfilter_store.WebFilterStore()
+    webfilter_starts: list[bool] = []
+    safe_browsing_attempts: list[bool] = []
+
+    def fail_if_called() -> None:  # pragma: no cover - should never run here
+        msg = "database initialization must remain in the worker thread"
+        raise AssertionError(msg)
+
+    class FakeThread:
+        def __init__(self, *, target, name, daemon) -> None:
+            assert target == store._loop
+            assert name == "webfilter-updater"
+            assert daemon is True
+
+        def start(self) -> None:
+            webfilter_starts.append(True)
+
+    def start_safe_browsing(self, *_args) -> None:
+        if self._started:
+            return
+        safe_browsing_attempts.append(True)
+        if len(safe_browsing_attempts) == 1:
+            msg = "simulated Safe Browsing thread start failure"
+            raise RuntimeError(msg)
+        self._started = True
+
+    monkeypatch.setattr(store, "init_db", fail_if_called)
+    monkeypatch.setattr(webfilter_store.threading, "Thread", FakeThread)
+    monkeypatch.setattr(
+        safe_browsing_v5.SafeBrowsingStore,
+        "start_background",
+        start_safe_browsing,
+    )
+
+    try:
+        store.start_background()
+    except RuntimeError as exc:
+        assert str(exc) == "simulated Safe Browsing thread start failure"
+    else:  # pragma: no cover - regression guard
+        msg = "Safe Browsing startup failure should escape"
+        raise AssertionError(msg)
+
+    store.start_background()
+    store.start_background()
+
+    assert store._started is True
+    assert store._safe_browsing_store._started is True
+    assert webfilter_starts == [True]
+    assert safe_browsing_attempts == [True, True]
+
+
+def test_webfilter_background_retries_failed_webfilter_thread_start(
+    monkeypatch,
+) -> None:
+    store = webfilter_store.WebFilterStore()
+    webfilter_attempts: list[bool] = []
+    safe_browsing_starts: list[bool] = []
+
+    class FakeThread:
+        def __init__(self, *, target, name, daemon) -> None:
+            assert target == store._loop
+            assert name == "webfilter-updater"
+            assert daemon is True
+
+        def start(self) -> None:
+            webfilter_attempts.append(True)
+            if len(webfilter_attempts) == 1:
+                msg = "simulated webfilter thread start failure"
+                raise RuntimeError(msg)
+
+    monkeypatch.setattr(webfilter_store.threading, "Thread", FakeThread)
+
+    def start_safe_browsing(self, *_args) -> None:
+        if self._started:
+            return
+        safe_browsing_starts.append(True)
+        self._started = True
+
+    monkeypatch.setattr(
+        safe_browsing_v5.SafeBrowsingStore,
+        "start_background",
+        start_safe_browsing,
+    )
+
+    try:
+        store.start_background()
+    except RuntimeError as exc:
+        assert str(exc) == "simulated webfilter thread start failure"
+    else:  # pragma: no cover - regression guard
+        msg = "webfilter thread startup failure should escape"
+        raise AssertionError(msg)
+
+    assert store._started is False
+    assert safe_browsing_starts == []
+
+    store.start_background()
+    store.start_background()
+
+    assert store._started is True
+    assert webfilter_attempts == [True, True]
+    assert safe_browsing_starts == [True]
+
+
 def test_safe_browsing_background_start_defers_database_init(monkeypatch) -> None:
     store = safe_browsing_v5.SafeBrowsingStore()
     started: list[bool] = []

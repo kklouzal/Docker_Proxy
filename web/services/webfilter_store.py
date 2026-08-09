@@ -108,6 +108,7 @@ class WebFilterStore(WebFilterStoreBase):
         )
         self._started = False
         self._lock = threading.Lock()
+        self._safe_browsing_store = SafeBrowsingStore()
 
     def _init_extra_schema(self, conn) -> None:
         blocked_log_table = self._table("blocked_log")
@@ -634,16 +635,15 @@ class WebFilterStore(WebFilterStoreBase):
 
     def start_background(self) -> None:
         with self._lock:
-            if self._started:
-                return
-            thread = threading.Thread(
-                target=self._loop,
-                name="webfilter-updater",
-                daemon=True,
-            )
-            thread.start()
-            self._started = True
-            SafeBrowsingStore().start_background(
+            if not self._started:
+                thread = threading.Thread(
+                    target=self._loop,
+                    name="webfilter-updater",
+                    daemon=True,
+                )
+                thread.start()
+                self._started = True
+            self._safe_browsing_store.start_background(
                 self._safe_browsing_settings,
                 self._record_safe_browsing_status,
             )
