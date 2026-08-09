@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import socket
 import sys
 from email.message import Message
@@ -978,6 +979,96 @@ def test_open_download_url_strips_extra_headers_on_cross_origin_redirect(
     assert redirected["user-agent"] == "unit-test-agent"
     assert "if-none-match" not in redirected
     assert "if-modified-since" not in redirected
+
+
+def test_open_download_url_closes_followed_redirect_but_not_returned_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0))
+        ],
+    )
+    redirect_body = io.BytesIO(b"redirect")
+    redirect_headers = Message()
+    redirect_headers["Location"] = "/mirror/feed.csv"
+
+    class _Response:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    response = _Response()
+    calls = 0
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise download_safety.urllib.error.HTTPError(
+                    req.full_url, 302, "Found", redirect_headers, redirect_body
+                )
+            return response
+
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    returned = download_safety.open_download_url(
+        "https://public.example/feed.csv",
+        timeout=1,
+        user_agent="unit-test-agent",
+    )
+
+    assert redirect_body.closed
+    assert returned is response
+    assert not response.closed
+
+
+def test_open_download_url_closes_rejected_redirect_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0))
+        ],
+    )
+    redirect_body = io.BytesIO(b"redirect")
+    redirect_headers = Message()
+    redirect_headers["Location"] = "http://public.example/feed.csv"
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            raise download_safety.urllib.error.HTTPError(
+                req.full_url, 302, "Found", redirect_headers, redirect_body
+            )
+
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(ValueError, match="downgrade from https to http"):
+        download_safety.open_download_url(
+            "https://public.example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+        )
+
+    assert redirect_body.closed
 
 
 def test_open_download_url_preserves_extra_headers_on_same_origin_redirect(

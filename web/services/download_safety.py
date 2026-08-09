@@ -472,25 +472,32 @@ def open_download_url(
         except urllib.error.HTTPError as exc:
             if exc.code not in {301, 302, 303, 307, 308}:
                 raise
-            location = exc.headers.get("Location") if exc.headers is not None else None
-            if not location:
-                msg = "Download redirect response did not include a Location header."
-                raise ValueError(msg) from exc
-            _validate_download_redirect_location(str(location))
-            redirect_url = urljoin(current, location)
-            redirect_parsed = validate_download_url(
-                redirect_url,
-                scheme_error=scheme_error,
-            )
-            redirect_url = _canonical_download_url(
-                redirect_parsed,
-                _canonical_download_hostname(str(redirect_parsed.hostname or "")),
-            )
-            if parsed.scheme == "https" and redirect_parsed.scheme == "http":
-                msg = "Download redirects must not downgrade from https to http."
-                raise ValueError(msg) from exc
-            if _url_origin(redirect_parsed) != _url_origin(parsed):
-                request_headers = dict(base_headers)
-            current = redirect_url
+            try:
+                location = (
+                    exc.headers.get("Location") if exc.headers is not None else None
+                )
+                if not location:
+                    msg = (
+                        "Download redirect response did not include a Location header."
+                    )
+                    raise ValueError(msg) from exc
+                _validate_download_redirect_location(str(location))
+                redirect_url = urljoin(current, location)
+                redirect_parsed = validate_download_url(
+                    redirect_url,
+                    scheme_error=scheme_error,
+                )
+                redirect_url = _canonical_download_url(
+                    redirect_parsed,
+                    _canonical_download_hostname(str(redirect_parsed.hostname or "")),
+                )
+                if parsed.scheme == "https" and redirect_parsed.scheme == "http":
+                    msg = "Download redirects must not downgrade from https to http."
+                    raise ValueError(msg) from exc
+                if _url_origin(redirect_parsed) != _url_origin(parsed):
+                    request_headers = dict(base_headers)
+                current = redirect_url
+            finally:
+                exc.close()
     msg = f"Download exceeded redirect limit ({max_redirects})."
     raise ValueError(msg)
