@@ -101,19 +101,10 @@ def _decode_b64(text: object, *, field: str) -> bytes:
 
 
 def _decode_search_full_hash(value: object) -> bytes:
-    if not isinstance(value, str) or not re.fullmatch(
-        r"[A-Za-z0-9+/_-]+={0,2}",
-        value,
-    ):
+    if not isinstance(value, str) or not value or value != value.strip():
         msg = "Google Safe Browsing hash search fullHash must be base64-encoded"
         raise ValueError(msg)
-    try:
-        encoded = value.encode("ascii")
-        encoded += b"=" * (-len(encoded) % 4)
-        full_hash = base64.b64decode(encoded, altchars=b"-_", validate=True)
-    except (binascii.Error, UnicodeEncodeError, ValueError) as exc:
-        msg = "Google Safe Browsing hash search fullHash must be base64-encoded"
-        raise ValueError(msg) from exc
+    full_hash = _decode_b64(value, field="hash search fullHash")
     if len(full_hash) != 32:
         msg = "Google Safe Browsing hash search fullHash must be exactly 32 bytes"
         raise ValueError(msg)

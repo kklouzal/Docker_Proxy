@@ -12,6 +12,7 @@ from services.safe_browsing_v5 import (
     SafeBrowsingVerdict,
     _checksum_for_prefixes,
     _decode_b64,
+    _decode_search_full_hash,
     canonicalize_url,
     decode_rice_delta_32,
     expression_hashes,
@@ -417,6 +418,51 @@ def _search_hash_item(
         if details is not None
         else [{"threatType": "MALWARE"}],
     }
+
+
+@pytest.mark.parametrize("urlsafe", [False, True], ids=["standard", "url-safe"])
+@pytest.mark.parametrize("padded", [True, False], ids=["padded", "unpadded"])
+def test_safe_browsing_search_full_hash_decoder_accepts_protojson_base64_variants(
+    urlsafe,
+    padded,
+) -> None:
+    full_hash = bytes.fromhex("fbfffefd") * 8
+    encoder = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+    encoded = encoder(full_hash).decode("ascii")
+    if not padded:
+        encoded = encoded.rstrip("=")
+
+    assert _decode_search_full_hash(encoded) == full_hash
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        pytest.param(
+            "+_/+/fv//v37//79+//+/fv//v37//79+//+/fv//v0=",
+            "must use one base64 alphabet",
+            id="mixed-alphabets",
+        ),
+        pytest.param("A" * 41, "correctly padded base64", id="impossible-length"),
+        pytest.param("A" * 43 + "==", "correctly padded base64", id="bad-padding"),
+        pytest.param("@" * 44, "must be base64-encoded", id="invalid-characters"),
+        pytest.param(" A" * 22, "must be base64-encoded", id="whitespace"),
+        pytest.param("", "must be base64-encoded", id="empty"),
+        pytest.param(None, "must be base64-encoded", id="null"),
+        pytest.param(1, "must be base64-encoded", id="non-string"),
+        pytest.param(
+            base64.b64encode(b"x" * 31).decode("ascii"),
+            "must be exactly 32 bytes",
+            id="wrong-decoded-length",
+        ),
+    ],
+)
+def test_safe_browsing_search_full_hash_decoder_rejects_malformed_values(
+    value,
+    error,
+) -> None:
+    with pytest.raises(ValueError, match=error):
+        _decode_search_full_hash(value)
 
 
 @pytest.mark.parametrize(
