@@ -91,20 +91,23 @@ def get_disk_usage(path: str) -> DiskUsage | None:
 
 
 def get_directory_size_bytes(path: str) -> int | None:
-    try:
-        if shutil.which("du"):
+    if shutil.which("du"):
+        try:
             p = subprocess.run(
                 ["du", "-sk", path],
                 capture_output=True,
                 text=True,
                 timeout=15,
             )
-            if p.returncode == 0:
-                first = ((p.stdout or "").strip().split() or [""])[0]
-                if first.isdigit():
-                    return int(first) * 1024
-    except Exception:
-        pass
+        except Exception:
+            return None
+        if p.returncode != 0:
+            return None
+        first = ((p.stdout or "").strip().split() or [""])[0]
+        if not first.isdigit():
+            return None
+        return int(first) * 1024
+
     try:
         total = 0
         for root, _, files in os.walk(path):

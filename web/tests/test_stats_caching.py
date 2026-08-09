@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -34,6 +35,73 @@ def _reset_stats_caches() -> None:
     stats._CACHE_DISK_USAGE_VALUE = None
     _reset_hit_rate_cache()
     _reset_cpu_cache()
+
+
+def test_get_directory_size_uses_successful_du_result(monkeypatch) -> None:
+    class Result:
+        returncode = 0
+        stdout = "12\t/cache\n"
+
+    monkeypatch.setattr(stats.shutil, "which", lambda name: "/usr/bin/du")
+    monkeypatch.setattr(stats.subprocess, "run", lambda *args, **kwargs: Result())
+    monkeypatch.setattr(
+        stats.os,
+        "walk",
+        lambda path: pytest.fail("successful du must not use Python fallback"),
+    )
+
+    assert stats.get_directory_size_bytes("/cache") == 12 * 1024
+
+
+@pytest.mark.parametrize(
+    ("run_result", "run_error"),
+    [
+        pytest.param(None, True, id="timeout"),
+        pytest.param(
+            type("Result", (), {"returncode": 1, "stdout": ""})(),
+            False,
+            id="nonzero",
+        ),
+        pytest.param(
+            type("Result", (), {"returncode": 0, "stdout": "not-a-number /cache"})(),
+            False,
+            id="malformed",
+        ),
+    ],
+)
+def test_get_directory_size_does_not_fallback_after_available_du_failure(
+    monkeypatch,
+    run_result,
+    run_error,
+) -> None:
+    monkeypatch.setattr(stats.shutil, "which", lambda name: "/usr/bin/du")
+
+    def fake_run(*args, **kwargs):
+        if run_error:
+            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        return run_result
+
+    monkeypatch.setattr(stats.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        stats.os,
+        "walk",
+        lambda path: pytest.fail("failed available du must not use Python fallback"),
+    )
+
+    assert stats.get_directory_size_bytes("/cache") is None
+
+
+def test_get_directory_size_falls_back_when_du_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(stats.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        stats.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("unavailable du must not be executed"),
+    )
+    monkeypatch.setattr(stats.os, "walk", lambda path: [(path, [], ["one", "two"])])
+    monkeypatch.setattr(stats.pathlib.Path, "stat", lambda path: type("S", (), {"st_size": 7})())
+
+    assert stats.get_directory_size_bytes("/cache") == 14
 
 
 def test_get_stats_negatively_caches_failed_storage_probes_until_ttl(
