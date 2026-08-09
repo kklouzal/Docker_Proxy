@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import contextlib
 import hashlib
 import os
@@ -128,6 +129,77 @@ def _runtime_shell():
         "counts": {},
     }
     return runtime
+
+
+def test_runtime_lock_open_failure_prevents_supervisor_and_sync_mutations(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    supervisor_calls: list[str] = []
+    sync_calls: list[str] = []
+    runtime._restart_supervisor_program_unlocked = (
+        lambda *_args, **_kwargs: supervisor_calls.append("restart") or (True, "")
+    )
+    runtime._sync_from_db_unlocked = (
+        lambda **_kwargs: sync_calls.append("sync") or {"ok": True}
+    )
+
+    def fail_open(*_args, **_kwargs):
+        error_detail = "secret lock path detail"
+        raise OSError(error_detail)
+
+    monkeypatch.setattr(runtime_module.pathlib.Path, "open", fail_open)
+
+    restart_ok, restart_detail = runtime._restart_supervisor_program("squid")
+    sync_result = runtime.sync_from_db()
+
+    assert restart_ok is False
+    assert restart_detail == "Required supervisor runtime lock is unavailable."
+    assert sync_result["ok"] is False
+    assert sync_result["changed"] is False
+    assert sync_result["detail"] == "Required sync runtime lock is unavailable."
+    assert "secret" not in restart_detail
+    assert "secret" not in sync_result["detail"]
+    assert supervisor_calls == []
+    assert sync_calls == []
+
+
+def test_runtime_lock_flock_failure_closes_open_handle(monkeypatch, tmp_path) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    real_import = builtins.__import__
+    handle = SimpleNamespace(closed=False, fileno=lambda: 123)
+    handle.close = lambda: setattr(handle, "closed", True)
+    fake_fcntl = SimpleNamespace(
+        LOCK_EX=1,
+        LOCK_UN=2,
+        flock=lambda *_args: (_ for _ in ()).throw(OSError("secret flock detail")),
+    )
+
+    def import_with_failed_flock(name, *args, **kwargs):
+        if name == "fcntl":
+            return fake_fcntl
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setenv("PROXY_RUNTIME_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(runtime_module.pathlib.Path, "open", lambda *_a, **_k: handle)
+    monkeypatch.setattr(builtins, "__import__", import_with_failed_flock)
+
+    with pytest.raises(
+        runtime_module._RuntimeLockError,
+        match=r"^Required sync runtime lock is unavailable\.$",
+    ):
+        with runtime_module._exclusive_runtime_lock(
+            "sync", runtime_module._SYNC_CONTROL_LOCK
+        ):
+            pytest.fail("protected body must not run")
+
+    assert handle.closed is True
 
 
 def _cp(returncode: int, stdout: str = "", stderr: str = ""):

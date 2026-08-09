@@ -870,31 +870,41 @@ def _certificate_result_evidence(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class _RuntimeLockError(RuntimeError):
+    """Raised when a required cross-process runtime lock is unavailable."""
+
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__(f"Required {name} runtime lock is unavailable.")
+
+
 @contextmanager
 def _exclusive_runtime_lock(name: str, thread_lock: threading.RLock):
     """Serialize runtime mutations across proxy_api threads and proxy_agent."""
     with thread_lock:
         handle = None
         fcntl_mod = None
+        locked = False
         try:
-            lock_dir = (
-                os.environ.get("PROXY_RUNTIME_LOCK_DIR") or "/tmp"
-            ).strip() or "/tmp"
-            pathlib.Path(lock_dir).mkdir(exist_ok=True, parents=True)
-            handle = pathlib.Path(
-                os.path.join(lock_dir, f"docker-proxy-{name}.lock"),
-            ).open("a+", encoding="utf-8")
             try:
+                lock_dir = (
+                    os.environ.get("PROXY_RUNTIME_LOCK_DIR") or "/tmp"
+                ).strip() or "/tmp"
+                pathlib.Path(lock_dir).mkdir(exist_ok=True, parents=True)
+                handle = pathlib.Path(
+                    os.path.join(lock_dir, f"docker-proxy-{name}.lock"),
+                ).open("a+", encoding="utf-8")
                 import fcntl as fcntl_mod  # type: ignore
 
                 fcntl_mod.flock(handle.fileno(), fcntl_mod.LOCK_EX)
-            except Exception:
-                fcntl_mod = None
+                locked = True
+            except Exception as exc:
+                raise _RuntimeLockError(name) from exc
             yield
         finally:
             if handle is not None:
                 try:
-                    if fcntl_mod is not None:
+                    if locked and fcntl_mod is not None:
                         fcntl_mod.flock(handle.fileno(), fcntl_mod.LOCK_UN)
                 except Exception:
                     pass
@@ -1866,44 +1876,63 @@ class ProxyRuntime:
         timeout_seconds: int = 30,
         stop_on_failure: bool = False,
     ) -> tuple[bool, str]:
-        with _exclusive_runtime_lock("supervisor", _SUPERVISOR_CONTROL_LOCK):
-            prefix = self._logical_supervisor_program_prefix(program_name)
-            ok, detail = self._restart_supervisor_program_unlocked(
-                program_name,
-                timeout_seconds=timeout_seconds,
-                stop_on_failure=stop_on_failure,
+        try:
+            lock_context = _exclusive_runtime_lock(
+                "supervisor", _SUPERVISOR_CONTROL_LOCK
             )
-            if ok or not prefix:
-                return ok, detail
-            if "no such process" not in str(detail or "").lower():
-                return ok, detail
-
-            programs, resolve_detail = self._resolve_supervisor_program_names(
-                program_name,
-                timeout_seconds=timeout_seconds,
-            )
-            scaled_programs = [
-                program for program in programs if program != program_name
-            ]
-            if not scaled_programs:
-                return ok, detail
-            results = [
-                self._restart_supervisor_program_unlocked(
-                    program,
+            with lock_context:
+                return self._restart_supervisor_program_locked(
+                    program_name,
                     timeout_seconds=timeout_seconds,
                     stop_on_failure=stop_on_failure,
                 )
-                for program in scaled_programs
-            ]
-            detail_parts = [
-                str(part or "").strip() for part in (detail, resolve_detail)
-            ]
-            detail_parts.extend(
-                str(result_detail or "").strip() for _ok, result_detail in results
+        except _RuntimeLockError as exc:
+            return False, str(exc)
+
+    def _restart_supervisor_program_locked(
+        self,
+        program_name: str,
+        *,
+        timeout_seconds: int,
+        stop_on_failure: bool,
+    ) -> tuple[bool, str]:
+        prefix = self._logical_supervisor_program_prefix(program_name)
+        ok, detail = self._restart_supervisor_program_unlocked(
+            program_name,
+            timeout_seconds=timeout_seconds,
+            stop_on_failure=stop_on_failure,
+        )
+        if ok or not prefix:
+            return ok, detail
+        if "no such process" not in str(detail or "").lower():
+            return ok, detail
+
+        programs, resolve_detail = self._resolve_supervisor_program_names(
+            program_name,
+            timeout_seconds=timeout_seconds,
+        )
+        scaled_programs = [
+            program for program in programs if program != program_name
+        ]
+        if not scaled_programs:
+            return ok, detail
+        results = [
+            self._restart_supervisor_program_unlocked(
+                program,
+                timeout_seconds=timeout_seconds,
+                stop_on_failure=stop_on_failure,
             )
-            return all(result_ok for result_ok, _detail in results), "\n".join(
-                part for part in detail_parts if part
-            )
+            for program in scaled_programs
+        ]
+        detail_parts = [
+            str(part or "").strip() for part in (detail, resolve_detail)
+        ]
+        detail_parts.extend(
+            str(result_detail or "").strip() for _ok, result_detail in results
+        )
+        return all(result_ok for result_ok, _detail in results), "\n".join(
+            part for part in detail_parts if part
+        )
 
     def _wait_for_supervisor_program_stopped(
         self,
@@ -4042,96 +4071,118 @@ class ProxyRuntime:
         force: bool = False,
         operation_id: int | None = None,
     ) -> dict[str, Any]:
-        with _exclusive_runtime_lock("sync", _SYNC_CONTROL_LOCK):
-            target_operation_id = _int_or_none(operation_id)
-            if operation_id is not None and target_operation_id is None:
-                return {
-                    "ok": False,
-                    "proxy_id": self.proxy_id,
-                    "changed": False,
-                    "detail": "operation_id must be a positive integer.",
-                    "current_config_sha": self._current_config_sha(),
-                    "executed_operation_types": [],
-                    "unsupported_operation_types": [],
-                }
+        try:
+            lock_context = _exclusive_runtime_lock("sync", _SYNC_CONTROL_LOCK)
+            with lock_context:
+                return self._sync_from_db_locked(
+                    force=force,
+                    operation_id=operation_id,
+                )
+        except _RuntimeLockError as exc:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "detail": str(exc),
+                "executed_operation_types": [],
+                "unsupported_operation_types": [],
+            }
+
+    def _sync_from_db_locked(
+        self,
+        *,
+        force: bool,
+        operation_id: int | None,
+    ) -> dict[str, Any]:
+        target_operation_id = _int_or_none(operation_id)
+        if operation_id is not None and target_operation_id is None:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "detail": "operation_id must be a positive integer.",
+                "current_config_sha": self._current_config_sha(),
+                "executed_operation_types": [],
+                "unsupported_operation_types": [],
+            }
+        claimed_operations = []
+        ledger = None
+        try:
+            ledger = get_operation_ledger()
+            ledger.requeue_stale_applying(self.proxy_id, allow_alias=False)
+            claimed_operations = ledger.claim_pending(
+                self.proxy_id,
+                limit=100,
+                operation_id=target_operation_id,
+                allow_alias=False,
+            )
+        except Exception as exc:
+            _log_recoverable_db_or_unexpected(
+                "proxy_runtime.operation_ledger.claim",
+                recoverable_message="Proxy operation ledger unavailable during runtime reconciliation",
+                unexpected_message="Proxy operation ledger claim failed",
+                exc=exc,
+                interval_seconds=30.0,
+            )
             claimed_operations = []
             ledger = None
-            try:
-                ledger = get_operation_ledger()
-                ledger.requeue_stale_applying(self.proxy_id, allow_alias=False)
-                claimed_operations = ledger.claim_pending(
-                    self.proxy_id,
-                    limit=100,
-                    operation_id=target_operation_id,
-                    allow_alias=False,
-                )
-            except Exception as exc:
-                _log_recoverable_db_or_unexpected(
-                    "proxy_runtime.operation_ledger.claim",
-                    recoverable_message="Proxy operation ledger unavailable during runtime reconciliation",
-                    unexpected_message="Proxy operation ledger claim failed",
-                    exc=exc,
-                    interval_seconds=30.0,
-                )
-                claimed_operations = []
-                ledger = None
-                if target_operation_id is not None:
-                    return {
-                        "ok": False,
-                        "proxy_id": self.proxy_id,
-                        "changed": False,
-                        "detail": public_error_message(
-                            exc,
-                            default=(
-                                f"Proxy operation #{target_operation_id} could not be claimed "
-                                "because the operation ledger is unavailable."
-                            ),
-                            max_len=500,
-                        ),
-                        "current_config_sha": self._current_config_sha(),
-                        "executed_operation_types": [],
-                        "unsupported_operation_types": [],
-                    }
-            if target_operation_id is not None and not claimed_operations:
+            if target_operation_id is not None:
                 return {
                     "ok": False,
                     "proxy_id": self.proxy_id,
                     "changed": False,
-                    "detail": (
-                        f"Proxy operation #{target_operation_id} was not claimed; it may "
-                        "already be running, completed, superseded, or assigned to another proxy."
+                    "detail": public_error_message(
+                        exc,
+                        default=(
+                            f"Proxy operation #{target_operation_id} could not be claimed "
+                            "because the operation ledger is unavailable."
+                        ),
+                        max_len=500,
                     ),
                     "current_config_sha": self._current_config_sha(),
                     "executed_operation_types": [],
                     "unsupported_operation_types": [],
                 }
-            try:
-                result = self._sync_from_db_unlocked(
-                    force=bool(
-                        force or _operations_request_config_force(claimed_operations),
+        if target_operation_id is not None and not claimed_operations:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "detail": (
+                    f"Proxy operation #{target_operation_id} was not claimed; it may "
+                    "already be running, completed, superseded, or assigned to another proxy."
+                ),
+                "current_config_sha": self._current_config_sha(),
+                "executed_operation_types": [],
+                "unsupported_operation_types": [],
+            }
+        try:
+            result = self._sync_from_db_unlocked(
+                force=bool(
+                    force or _operations_request_config_force(claimed_operations),
+                ),
+                artifact_force=bool(
+                    force
+                    or _operations_request_reconciliation_force(
+                        claimed_operations,
                     ),
-                    artifact_force=bool(
-                        force
-                        or _operations_request_reconciliation_force(
-                            claimed_operations,
-                        ),
-                    ),
-                    operations=claimed_operations,
-                )
-            except Exception as exc:
-                if ledger is not None and claimed_operations:
-                    with suppress(Exception):
-                        ledger.mark_many(
-                            claimed_operations,
-                            status="failed",
-                            detail=redact_sensitive_text(exc)[:4000],
-                        )
-                raise
+                ),
+                operations=claimed_operations,
+            )
+        except Exception as exc:
             if ledger is not None and claimed_operations:
                 with suppress(Exception):
-                    self._mark_claimed_operations(ledger, claimed_operations, result)
-            self._capture_recovery_bundle_after_sync(result)
-            return result
+                    ledger.mark_many(
+                        claimed_operations,
+                        status="failed",
+                        detail=redact_sensitive_text(exc)[:4000],
+                    )
+            raise
+        if ledger is not None and claimed_operations:
+            with suppress(Exception):
+                self._mark_claimed_operations(ledger, claimed_operations, result)
+        self._capture_recovery_bundle_after_sync(result)
+        return result
 
     def _mark_claimed_operations(
         self,
