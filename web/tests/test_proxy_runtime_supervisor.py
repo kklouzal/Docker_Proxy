@@ -1066,6 +1066,64 @@ def test_sync_certificate_bundle_skips_current_bundle_even_when_forced() -> None
     assert result["detail"] == "Proxy is already using the active certificate bundle."
 
 
+@pytest.mark.parametrize("stop_failure", ["nonzero", "exception"])
+def test_ssl_db_reinitialize_preserves_database_when_squid_stop_is_unverified(
+    monkeypatch,
+    tmp_path,
+    stop_failure,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    ssl_db = tmp_path / "ssl_db" / "store"
+    ssl_db.mkdir(parents=True)
+    sentinel = ssl_db / "sentinel.pem"
+    sentinel.write_text("live database", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args == ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"]:
+            if stop_failure == "exception":
+                msg = "supervisor unavailable"
+                raise OSError(msg)
+            return _cp(1, stdout="squid: ERROR (failed to stop)")
+        if args == ["squid", "-k", "shutdown"]:
+            return _cp(1, stdout="shutdown signal failed")
+        if args == ["sh", "/scripts/init_ssl_db.sh"]:
+            msg = "initializer must not run while Squid may be running"
+            raise AssertionError(msg)
+        return _cp(0, stdout="ok")
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(ssl_db_reinitializer=None)
+    runtime.ssl_db_dir = str(ssl_db)
+    runtime.controller = SimpleNamespace(
+        restart_squid=lambda: (_ for _ in ()).throw(
+            AssertionError("restart must not run after an unverified stop")
+        ),
+    )
+    runtime._supervisor_program_status = lambda *_args, **_kwargs: (
+        False,
+        "squid RUNNING pid 42, uptime 0:10:00",
+    )
+
+    monkeypatch.setattr(runtime_module, "subprocess", SimpleNamespace(run=fake_run))
+    monkeypatch.setattr(
+        runtime_module.pathlib.Path,
+        "exists",
+        lambda self: str(self) == "/scripts/init_ssl_db.sh" or self == sentinel,
+    )
+
+    ok, detail = runtime._reinitialize_ssl_db_and_restart()
+
+    assert ok is False
+    assert "could not be verified stopped" in detail
+    assert "squid RUNNING" in detail
+    assert sentinel.read_text(encoding="utf-8") == "live database"
+    assert ["sh", "/scripts/init_ssl_db.sh"] not in calls
+
+
 def test_ssl_db_reinitialize_recovers_when_restart_reports_stopped_squid(
     monkeypatch,
     tmp_path,
@@ -1103,6 +1161,7 @@ def test_ssl_db_reinitialize_recovers_when_restart_reports_stopped_squid(
     )
     statuses = iter(
         [
+            (True, "squid STOPPED Jul 18 02:18 AM"),
             (False, "squid STOPPED Jul 18 02:18 AM"),
             (True, "squid RUNNING pid 42, uptime 0:00:01"),
         ],
@@ -1150,10 +1209,14 @@ def test_ssl_db_reinitialize_reports_failure_when_recovery_start_is_not_running(
         restart_squid=lambda: (False, "squid: ERROR (abnormal termination)"),
         _wait_for_http_listener=lambda *, timeout: False,
     )
-    runtime._supervisor_program_status = lambda *_args, **_kwargs: (
-        False,
-        "squid BACKOFF Exited too quickly",
+    statuses = iter(
+        [
+            (True, "squid STOPPED Jul 18 02:18 AM"),
+            (False, "squid BACKOFF Exited too quickly"),
+            (False, "squid BACKOFF Exited too quickly"),
+        ],
     )
+    runtime._supervisor_program_status = lambda *_args, **_kwargs: next(statuses)
 
     monkeypatch.setattr(runtime_module, "subprocess", SimpleNamespace(run=fake_run))
     monkeypatch.setattr(

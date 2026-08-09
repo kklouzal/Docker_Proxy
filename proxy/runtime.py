@@ -2498,6 +2498,20 @@ class ProxyRuntime:
             except Exception as inner_exc:
                 details.append(f"squid shutdown fallback failed: {inner_exc}")
 
+        stopped_ok, stopped_detail = self._supervisor_program_status(
+            "squid",
+            timeout_seconds=5,
+            accepted_states=("STOPPED", "EXITED", "FATAL", "BACKOFF"),
+        )
+        if stopped_detail:
+            details.append(stopped_detail)
+        if not stopped_ok:
+            details.append(
+                "Refusing to reinitialize ssl_db because Squid could not be "
+                "verified stopped."
+            )
+            return False, "\n".join([part for part in details if part]).strip()
+
         parent_dir = pathlib.Path(ssl_db_dir).parent or "/var/lib/ssl_db"
         try:
             shutil.rmtree(ssl_db_dir, ignore_errors=True)
