@@ -53,6 +53,50 @@ def decode_bytes(value: object | None) -> str:
     return str(value or "").strip()
 
 
+def read_bounded_complete_lines(
+    path: str | os.PathLike[str],
+    *,
+    max_lines: int,
+    max_bytes: int,
+) -> list[str]:
+    """Read complete records from a bounded byte window at the end of a file."""
+    if max_lines <= 0 or max_bytes <= 0:
+        return []
+    try:
+        with Path(path).open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            start = max(0, size - max_bytes)
+            handle.seek(start)
+            chunk = handle.read(max_bytes)
+            if start > 0:
+                handle.seek(start - 1)
+                previous = handle.read(1)
+                starts_at_boundary = previous == b"\n" or (
+                    previous == b"\r" and not chunk.startswith(b"\n")
+                )
+                if not starts_at_boundary:
+                    lf = chunk.find(b"\n")
+                    cr = chunk.find(b"\r")
+                    boundaries = [position for position in (lf, cr) if position >= 0]
+                    if not boundaries:
+                        return []
+                    boundary = min(boundaries)
+                    boundary_end = boundary + 1
+                    if chunk[boundary : boundary + 2] == b"\r\n":
+                        boundary_end += 1
+                    chunk = chunk[boundary_end:]
+
+        if chunk and not chunk.endswith((b"\n", b"\r")):
+            boundary = max(chunk.rfind(b"\n"), chunk.rfind(b"\r"))
+            if boundary < 0:
+                return []
+            chunk = chunk[: boundary + 1]
+        return chunk.decode("utf-8", errors="replace").splitlines()[-max_lines:]
+    except Exception:
+        return []
+
+
 def _decoded_hostish_has_delimiters(value: str) -> bool:
     if "%" not in value:
         return False

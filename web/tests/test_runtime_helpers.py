@@ -13,7 +13,42 @@ from services.runtime_helpers import (
     fsync_parent_dir,
     normalize_hostish,
     not_cached_reason,
+    read_bounded_complete_lines,
 )
+
+
+@pytest.mark.parametrize("max_lines", [0, -1])
+def test_read_bounded_complete_lines_rejects_non_positive_limits(
+    tmp_path: Path, max_lines: int
+) -> None:
+    log = tmp_path / "events.log"
+    log.write_bytes(b"one\ntwo\n")
+    assert read_bounded_complete_lines(log, max_lines=max_lines, max_bytes=10) == []
+
+
+@pytest.mark.parametrize("separator", [b"\n", b"\r", b"\r\n"])
+def test_read_bounded_complete_lines_handles_boundaries_and_partial_records(
+    tmp_path: Path, separator: bytes
+) -> None:
+    log = tmp_path / "events.log"
+    complete = b"first" + separator + b"second" + separator
+    log.write_bytes(b"partial-prefix" + separator + complete + b"partial-tail")
+
+    assert read_bounded_complete_lines(
+        log, max_lines=5, max_bytes=len(complete) + len(b"partial-tail")
+    ) == ["first", "second"]
+
+
+def test_read_bounded_complete_lines_preserves_complete_blank_records(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "events.log"
+    log.write_bytes(b"one\n\ntwo\n")
+    assert read_bounded_complete_lines(log, max_lines=3, max_bytes=100) == [
+        "one",
+        "",
+        "two",
+    ]
 
 
 @pytest.mark.parametrize(

@@ -35,6 +35,7 @@ from services.proxy_write_guard import (
 )
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
+from services.runtime_helpers import read_bounded_complete_lines
 
 logger = logging.getLogger(__name__)
 
@@ -415,28 +416,10 @@ class AdblockStore:
         self._prune_events(conn)
 
     def _read_last_lines(self, path: str, *, max_lines: int) -> list[str]:
-        try:
-            with pathlib.Path(path).open("rb") as f:
-                f.seek(0, os.SEEK_END)
-                end = f.tell()
-                # Read up to ~1MB from the end and split to complete lines.
-                start = max(0, end - 1_000_000)
-                starts_on_line_boundary = start == 0
-                if start > 0:
-                    f.seek(start - 1, os.SEEK_SET)
-                    starts_on_line_boundary = f.read(1) in {b"\n", b"\r"}
-                f.seek(start, os.SEEK_SET)
-                data = f.read()
-            text = data.decode("utf-8", errors="replace")
-            lines = text.splitlines()
-            if not starts_on_line_boundary and lines:
-                lines = lines[1:]
-            if data and not data.endswith((b"\n", b"\r")) and lines:
-                lines = lines[:-1]
-            lines = [ln for ln in lines if ln.strip()]
-            return lines[-max_lines:]
-        except Exception:
-            return []
+        lines = read_bounded_complete_lines(
+            path, max_lines=max_lines, max_bytes=1_000_000
+        )
+        return [line for line in lines if line.strip()]
 
     def _blocklog_tail_loop(self) -> None:
         while True:

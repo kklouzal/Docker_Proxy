@@ -32,6 +32,7 @@ from services.runtime_helpers import escape_like as _escape_like
 from services.runtime_helpers import extract_domain as _extract_domain
 from services.runtime_helpers import normalize_hostish as _normalize_hostish
 from services.runtime_helpers import now_ts as _now
+from services.runtime_helpers import read_bounded_complete_lines
 
 logger = logging.getLogger(__name__)
 
@@ -887,29 +888,10 @@ class DiagnosticStore:
             self._started = True
 
     def _read_last_lines(self, path: str, *, max_lines: int) -> list[str]:
-        if not path or not pathlib.Path(path).exists():
-            return []
-        try:
-            with pathlib.Path(path).open("rb") as handle:
-                handle.seek(0, os.SEEK_END)
-                size = handle.tell()
-                read_size = min(size, max_lines * 512)
-                read_start = size - read_size
-                starts_on_line_boundary = read_start == 0
-                if read_start > 0:
-                    handle.seek(read_start - 1, os.SEEK_SET)
-                    starts_on_line_boundary = handle.read(1) == b"\n"
-                handle.seek(read_start, os.SEEK_SET)
-                chunk = handle.read().decode("utf-8", errors="replace")
-
-            lines = chunk.splitlines()
-            if not starts_on_line_boundary and lines:
-                lines = lines[1:]
-            if chunk and not chunk.endswith(("\n", "\r")) and lines:
-                lines = lines[:-1]
-            return [line for line in lines[-max_lines:] if line.strip()]
-        except Exception:
-            return []
+        lines = read_bounded_complete_lines(
+            path, max_lines=max_lines, max_bytes=max_lines * 512
+        )
+        return [line for line in lines if line.strip()]
 
     def seed_from_recent_logs(self) -> None:
         request_lines = self._read_last_lines(
