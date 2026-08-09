@@ -1194,7 +1194,7 @@ def test_ssl_db_reinitialize_tolerates_already_absent_database(
             return _cp(0, stdout="squid: stopped")
         if args == ["sh", "/scripts/init_ssl_db.sh"]:
             target = Path(str((kwargs.get("env") or {})["SSL_DB_DIR"]))
-            target.mkdir(parents=True)
+            (target / "certs").mkdir(parents=True)
             return _cp(0, stdout="initialized")
         return _cp(0, stdout="ok")
 
@@ -1220,6 +1220,68 @@ def test_ssl_db_reinitialize_tolerates_already_absent_database(
     assert "initialized" in detail
     assert "restarted" in detail
     assert ["sh", "/scripts/init_ssl_db.sh"] in calls
+    assert ssl_db.stat().st_mode & 0o777 == 0o700
+    assert (ssl_db / "certs").stat().st_mode & 0o777 == 0o750
+
+
+def test_ssl_db_reinitialize_stops_when_permission_repair_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    ssl_db = tmp_path / "ssl_db" / "store"
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        if args == ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"]:
+            return _cp(0, stdout="squid: stopped")
+        if args == ["sh", "/scripts/init_ssl_db.sh"]:
+            target = Path(str((kwargs.get("env") or {})["SSL_DB_DIR"]))
+            (target / "certs").mkdir(parents=True)
+            return _cp(0, stdout="initialized")
+        return _cp(0, stdout="ok")
+
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(ssl_db_reinitializer=None)
+    runtime.ssl_db_dir = str(ssl_db)
+    runtime.controller = SimpleNamespace(
+        restart_squid=lambda: (_ for _ in ()).throw(
+            AssertionError("restart must not run after permission repair failure")
+        ),
+    )
+    runtime._supervisor_program_status = lambda *_args, **_kwargs: (
+        True,
+        "squid STOPPED Jul 18 02:18 AM",
+    )
+
+    original_chmod = runtime_module.pathlib.Path.chmod
+
+    def fail_ssl_db_chmod(path, mode, *, follow_symlinks=True):
+        if path == ssl_db:
+            msg = "permission denied while securing ssl_db"
+            raise PermissionError(msg)
+        return original_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(runtime_module, "subprocess", SimpleNamespace(run=fake_run))
+    monkeypatch.setattr(runtime_module.pathlib.Path, "chmod", fail_ssl_db_chmod)
+    monkeypatch.setattr(
+        runtime_module.pathlib.Path,
+        "exists",
+        lambda self: str(self) == "/scripts/init_ssl_db.sh",
+    )
+
+    ok, detail = runtime._reinitialize_ssl_db_and_restart()
+
+    assert ok is False
+    assert "Failed to repair ssl_db permissions" in detail
+    assert "permission denied while securing ssl_db" in detail
+    assert calls == [
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
+        ["sh", "/scripts/init_ssl_db.sh"],
+    ]
 
 
 def test_ssl_db_reinitialize_recovers_when_restart_reports_stopped_squid(
@@ -1291,10 +1353,12 @@ def test_ssl_db_reinitialize_reports_failure_when_recovery_start_is_not_running(
 
     ssl_db = tmp_path / "ssl_db" / "store"
 
-    def fake_run(args, **_kwargs):
+    def fake_run(args, **kwargs):
         if args == ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"]:
             return _cp(0, stdout="squid: stopped")
         if args == ["sh", "/scripts/init_ssl_db.sh"]:
+            target = Path(str((kwargs.get("env") or {})["SSL_DB_DIR"]))
+            (target / "certs").mkdir(parents=True)
             return _cp(0, stdout="initialized")
         if args == ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"]:
             return _cp(0, stdout="squid: ERROR (abnormal termination)")

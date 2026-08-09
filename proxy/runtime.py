@@ -2604,8 +2604,9 @@ class ProxyRuntime:
             certs_dir = os.path.join(ssl_db_dir, "certs")
             if pathlib.Path(certs_dir).is_dir():
                 pathlib.Path(certs_dir).chmod(0o750)
-        except Exception:
-            pass
+        except Exception as exc:
+            details.append(f"Failed to repair ssl_db permissions: {exc}")
+            return False, "\n".join([part for part in details if part]).strip()
 
         ok_restart, restart_detail = self.controller.restart_squid()
         if restart_detail:
