@@ -948,10 +948,9 @@ class SslErrorsStore:
                                     )
                         line_pos = f.tell()
                         line = f.readline()
-                        if line:
-                            if line.endswith("\n"):
-                                last_complete_line_pos = line_pos
-                                last_complete_line = line
+                        if line and line.endswith("\n"):
+                            last_complete_line_pos = line_pos
+                            last_complete_line = line
                             try:
                                 if ingest_line(line):
                                     pending += 1
@@ -977,6 +976,11 @@ class SslErrorsStore:
                                 pending = 0
                                 last_commit = now
                             continue
+                        if line:
+                            # readline() returns an unterminated fragment at
+                            # EOF. Rewind so an append completes the same line
+                            # instead of ingesting split writes separately.
+                            f.seek(line_pos, os.SEEK_SET)
 
                         # EOF/idle: flush an in-memory pending TLS header without
                         # keeping a DB transaction open while waiting for more log

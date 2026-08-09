@@ -582,6 +582,67 @@ def test_ssl_errors_tailer_does_not_open_db_connection_while_idle(
         store._tail_loop()
 
 
+def test_ssl_errors_tailer_keeps_partial_line_until_newline(
+    monkeypatch, tmp_path, ssl_errors_store
+) -> None:
+    log_path = tmp_path / "cache.log"
+    log_path.write_text("", encoding="utf-8")
+    store = ssl_errors_store.SslErrorsStore(cache_log_path=str(log_path))
+    partial = "2026/08/09 12:00:00| TLS handshake failed host=split."
+    suffix = "example detail=complete\n"
+    sleep_calls = 0
+    connections = 0
+    ingested: list[tuple[str, str]] = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def sleep(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            with log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write(partial)
+            return
+        if sleep_calls == 2:
+            assert ingested == []
+            assert connections == 0
+            with log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write(suffix)
+            return
+        raise StopLoop
+
+    def connect() -> Conn:
+        nonlocal connections
+        connections += 1
+        return Conn()
+
+    monkeypatch.setenv("SSL_ERRORS_COMMIT_INTERVAL_SECONDS", "10")
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_tailer_connect", connect)
+    monkeypatch.setattr(
+        store,
+        "_upsert",
+        lambda _conn, domain, _category, _reason, _ts, sample: ingested.append(
+            (domain, sample)
+        ),
+    )
+    monkeypatch.setattr(ssl_errors_store.time, "time", lambda: 100.0)
+    monkeypatch.setattr(ssl_errors_store.time, "sleep", sleep)
+
+    with pytest.raises(StopLoop):
+        store._tail_loop()
+
+    assert connections == 1
+    assert ingested == [
+        ("split.example", "TLS handshake failed host=split.example detail=complete")
+    ]
+
+
 def test_ssl_errors_tailer_restarts_at_zero_after_copytruncate_regrowth(
     monkeypatch, tmp_path, ssl_errors_store
 ) -> None:
