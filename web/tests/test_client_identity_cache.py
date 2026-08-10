@@ -697,7 +697,7 @@ def test_client_identity_cache_evicts_oldest_entry_when_full(monkeypatch) -> Non
     cache.max_entries = 1
     now = {"value": 1000.0}
     monkeypatch.setattr(
-        "services.client_identity_cache.time.time", lambda: now["value"]
+        "services.client_identity_cache.time.monotonic", lambda: now["value"]
     )
     monkeypatch.setattr(
         cache, "_lookup_hostname", lambda ip: (f"host-{ip}", "rdns", "resolved")
@@ -722,7 +722,7 @@ def test_client_identity_cache_replaces_expired_entry(monkeypatch) -> None:
     calls: list[str] = []
 
     monkeypatch.setattr(
-        "services.client_identity_cache.time.time", lambda: now["value"]
+        "services.client_identity_cache.time.monotonic", lambda: now["value"]
     )
 
     def fake_lookup(ip: str) -> tuple[str, str, str]:
@@ -735,3 +735,31 @@ def test_client_identity_cache_replaces_expired_entry(monkeypatch) -> None:
     now["value"] += 30.0
     assert cache.resolve("192.0.2.10")["hostname"] == "second.example"
     assert calls == ["192.0.2.10", "192.0.2.10"]
+
+
+def test_client_identity_cache_wall_clock_rollback_does_not_extend_ttl(
+    monkeypatch,
+) -> None:
+    cache = ClientIdentityCache(success_ttl_seconds=30.0)
+    clocks = {"wall": 1000.0, "monotonic": 500.0}
+    responses = iter(
+        [
+            ("first.example", "rdns", "resolved"),
+            ("second.example", "rdns", "resolved"),
+        ]
+    )
+
+    monkeypatch.setattr(
+        "services.client_identity_cache.time.time", lambda: clocks["wall"]
+    )
+    monkeypatch.setattr(
+        "services.client_identity_cache.time.monotonic",
+        lambda: clocks["monotonic"],
+    )
+    monkeypatch.setattr(cache, "_lookup_hostname", lambda _ip: next(responses))
+
+    assert cache.resolve("192.0.2.10")["hostname"] == "first.example"
+    clocks["wall"] -= 600.0
+    clocks["monotonic"] += 30.0
+
+    assert cache.resolve("192.0.2.10")["hostname"] == "second.example"

@@ -211,7 +211,7 @@ class ClientIdentityCache:
 
     def _get_cached(self, ip: str) -> _CacheEntry | None:
         with self._lock:
-            return self._get_cached_locked(ip, now=time.time())
+            return self._get_cached_locked(ip, now=time.monotonic())
 
     def _store(
         self,
@@ -226,7 +226,7 @@ class ClientIdentityCache:
             hostname=hostname,
             source=source,
             status=status,
-            expires_at=time.time() + max(1.0, ttl_seconds),
+            expires_at=time.monotonic() + max(1.0, ttl_seconds),
         )
         with self._lock:
             if len(self._cache) >= self.max_entries:
@@ -240,7 +240,7 @@ class ClientIdentityCache:
 
     def _resolve_normalized(self, normalized: str) -> dict[str, str]:
         with self._lock:
-            cached = self._get_cached_locked(normalized, now=time.time())
+            cached = self._get_cached_locked(normalized, now=time.monotonic())
             if cached is not None:
                 return {
                     "hostname": cached.hostname,
