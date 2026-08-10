@@ -210,6 +210,7 @@ def run_housekeeping_once(
     run_type: str | None = None,
 ) -> dict[str, Any]:
     started = time.time()
+    started_elapsed = time.monotonic()
     days = (
         current_retention_days(30)
         if retention_days is None
@@ -223,7 +224,7 @@ def run_housekeeping_once(
             "status": "skipped",
             "started_ts": int(started),
             "finished_ts": int(time.time()),
-            "duration_ms": int((time.time() - started) * 1000),
+            "duration_ms": int((time.monotonic() - started_elapsed) * 1000),
             "retention_days": days,
             "pruned": False,
             "analyze": bool(analyze),
@@ -251,7 +252,7 @@ def run_housekeeping_once(
             "status": "ok" if maintenance_ok and prune_ok else "failed",
             "started_ts": int(started),
             "finished_ts": int(time.time()),
-            "duration_ms": int((time.time() - started) * 1000),
+            "duration_ms": int((time.monotonic() - started_elapsed) * 1000),
             "retention_days": days,
             "pruned": prune_ok,
             "analyze": bool(analyze),
@@ -270,7 +271,7 @@ def run_housekeeping_once(
             "status": "failed",
             "started_ts": int(started),
             "finished_ts": int(time.time()),
-            "duration_ms": int((time.time() - started) * 1000),
+            "duration_ms": int((time.monotonic() - started_elapsed) * 1000),
             "retention_days": days,
             "pruned": False,
             "analyze": bool(analyze),

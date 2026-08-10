@@ -315,6 +315,101 @@ def test_housekeeping_full_run_prunes_then_maintains_tables(
     assert result["maintenance"]["maintained_tables"] == 5
 
 
+def test_housekeeping_success_duration_uses_monotonic_clock(
+    monkeypatch, housekeeping
+) -> None:
+    monkeypatch.setattr(housekeeping.time, "time", iter([1_000.9, 900.1]).__next__)
+    monkeypatch.setattr(housekeeping.time, "monotonic", iter([10.0, 10.1259]).__next__)
+
+    def acquire_lock():
+        return object()
+
+    monkeypatch.setattr(
+        housekeeping, "acquire_observability_maintenance_lock", acquire_lock
+    )
+    monkeypatch.setattr(
+        housekeeping, "release_observability_maintenance_lock", lambda _conn: None
+    )
+    monkeypatch.setattr(
+        housekeeping,
+        "_run_prune_once",
+        lambda *, retention_days: {"ok": True, "steps": []},
+    )
+    monkeypatch.setattr(
+        housekeeping, "record_observability_maintenance_run", lambda **_kwargs: None
+    )
+
+    result = housekeeping.run_housekeeping_once(retention_days=30)
+
+    assert result["started_ts"] == 1_000
+    assert result["finished_ts"] == 900
+    assert result["duration_ms"] == 125
+
+
+def test_housekeeping_skipped_duration_uses_monotonic_clock(
+    monkeypatch, housekeeping
+) -> None:
+    recorded: list[dict] = []
+    monkeypatch.setattr(housekeeping.time, "time", iter([1_000.1, 1_500.9]).__next__)
+    monkeypatch.setattr(housekeeping.time, "monotonic", iter([20.0, 20.0429]).__next__)
+    monkeypatch.setattr(
+        housekeeping, "acquire_observability_maintenance_lock", lambda: None
+    )
+    monkeypatch.setattr(
+        housekeeping,
+        "record_observability_maintenance_run",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+
+    with pytest.raises(housekeeping.ObservabilityMaintenanceAlreadyRunningError):
+        housekeeping.run_housekeeping_once(retention_days=30)
+
+    result = recorded[0]["result"]
+    assert recorded[0]["status"] == "skipped"
+    assert result["started_ts"] == 1_000
+    assert result["finished_ts"] == 1_500
+    assert result["duration_ms"] == 42
+
+
+def test_housekeeping_exception_duration_uses_monotonic_clock(
+    monkeypatch, housekeeping
+) -> None:
+    recorded: list[dict] = []
+    monkeypatch.setattr(housekeeping.time, "time", iter([2_000.9, 1_000.2]).__next__)
+    monkeypatch.setattr(housekeeping.time, "monotonic", iter([30.0, 30.0079]).__next__)
+
+    def acquire_lock():
+        return object()
+
+    monkeypatch.setattr(
+        housekeeping, "acquire_observability_maintenance_lock", acquire_lock
+    )
+    monkeypatch.setattr(
+        housekeeping, "release_observability_maintenance_lock", lambda _conn: None
+    )
+
+    def fail(*, retention_days: int):
+        assert retention_days == 30
+        msg = "prune failed for 30"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(housekeeping, "_run_prune_once", fail)
+    monkeypatch.setattr(
+        housekeeping,
+        "record_observability_maintenance_run",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+
+    with pytest.raises(RuntimeError, match="prune failed for 30"):
+        housekeeping.run_housekeeping_once(retention_days=30)
+
+    result = recorded[0]["result"]
+    assert result["status"] == "failed"
+    assert result["started_ts"] == 2_000
+    assert result["finished_ts"] == 1_000
+    assert result["duration_ms"] == 7
+
+
 def test_housekeeping_maintenance_continues_after_observability_failure(
     monkeypatch, housekeeping
 ) -> None:
