@@ -271,8 +271,19 @@ def test_request_host_rejects_reserved_internal_dns_authorities(
     assert pac_http.request_host_from_headers({"Host": host}) == "127.0.0.1"
 
 
-def test_request_host_falls_back_to_host_when_trusted_forwarded_host_is_reserved(
-    monkeypatch, pac_http
+@pytest.mark.parametrize(
+    "forwarded_host",
+    [
+        "api.localhost:8080",
+        "proxy.internal, later-public.example:8080",
+        "127.0.0.1:3128, later-public.example:8080",
+        "bad host.example, later-public.example:8080",
+        "user@bad.example, later-public.example:8080",
+        "public.example:１２８０, later-public.example:8080",  # noqa: RUF001
+    ],
+)
+def test_request_host_falls_back_to_host_when_original_trusted_forwarded_host_is_invalid(
+    monkeypatch, pac_http, forwarded_host: str
 ) -> None:
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
 
@@ -280,17 +291,7 @@ def test_request_host_falls_back_to_host_when_trusted_forwarded_host_is_reserved
         pac_http.request_host_from_headers(
             {
                 "Host": "public-proxy.example:5000",
-                "X-Forwarded-Host": "api.localhost:8080",
-            },
-            "198.51.100.10",
-        )
-        == "public-proxy.example:5000"
-    )
-    assert (
-        pac_http.request_host_from_headers(
-            {
-                "Host": "public-proxy.example:5000",
-                "X-Forwarded-Host": "proxy.internal, public-proxy.example:5000",
+                "X-Forwarded-Host": forwarded_host,
             },
             "198.51.100.10",
         )
