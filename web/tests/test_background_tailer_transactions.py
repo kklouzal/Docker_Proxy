@@ -701,6 +701,69 @@ def test_ssl_errors_tailer_idle_flush_uses_monotonic_elapsed_time(
     assert flushed == ["rollback.example"]
 
 
+def test_ssl_errors_tailer_retries_idle_flush_after_database_error(
+    monkeypatch, tmp_path, ssl_errors_store
+) -> None:
+    import pymysql  # type: ignore
+
+    log_path = tmp_path / "cache.log"
+    log_path.write_text("", encoding="utf-8")
+    store = ssl_errors_store.SslErrorsStore(cache_log_path=str(log_path))
+    header = (
+        "2026/08/09 12:00:00| Cannot accept a TLS connection "
+        "host=retry.example\n"
+    )
+    sleep_calls = 0
+    attempts: list[str] = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def sleep(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            log_path.write_text(header, encoding="utf-8")
+            return
+        if sleep_calls == 2:
+            assert attempts == ["retry.example"]
+            assert store._has_uncommitted_pending_error()
+            return
+        raise StopLoop
+
+    def flush_pending(_conn) -> bool:
+        if store._pending_error is None:
+            return False
+        domain = str(store._pending_error["domain"])
+        attempts.append(domain)
+        if len(attempts) == 1:
+            raise pymysql.err.OperationalError(2003, "connect timed out")
+        store._pending_error["committed"] = True
+        return True
+
+    monotonic_times = iter([100.0, 100.1, 100.2, 101.2, 102.3])
+    monkeypatch.setenv("SSL_ERRORS_COMMIT_INTERVAL_SECONDS", "1")
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_tailer_connect", Conn)
+    monkeypatch.setattr(store, "_flush_pending_error", flush_pending)
+    monkeypatch.setattr(
+        ssl_errors_store.time,
+        "monotonic",
+        lambda: next(monotonic_times, 102.3),
+    )
+    monkeypatch.setattr(ssl_errors_store.time, "sleep", sleep)
+
+    with pytest.raises(StopLoop):
+        store._tail_loop()
+
+    assert attempts == ["retry.example", "retry.example"]
+    assert not store._has_uncommitted_pending_error()
+
+
 def test_ssl_errors_tailer_restarts_at_zero_after_copytruncate_regrowth(
     monkeypatch, tmp_path, ssl_errors_store
 ) -> None:
