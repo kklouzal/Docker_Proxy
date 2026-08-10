@@ -881,7 +881,7 @@ class SslErrorsStore:
                     last_inode = inode
 
                 pending = 0
-                last_commit = time.time()
+                last_commit = time.monotonic()
 
                 def ingest_line(line: str) -> bool:
                     if not self._line_requires_database(line):
@@ -968,7 +968,7 @@ class SslErrorsStore:
                                     interval_seconds=300.0,
                                     message="SSL errors tailer failed to ingest a log line",
                                 )
-                            now = time.time()
+                            now = time.monotonic()
                             if (
                                 pending >= commit_batch
                                 or (now - last_commit) >= commit_interval
@@ -985,7 +985,7 @@ class SslErrorsStore:
                         # EOF/idle: flush an in-memory pending TLS header without
                         # keeping a DB transaction open while waiting for more log
                         # lines.
-                        now = time.time()
+                        now = time.monotonic()
                         if (now - last_commit) >= commit_interval:
                             try:
                                 if flush_pending():
