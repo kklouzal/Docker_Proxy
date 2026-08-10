@@ -1,5 +1,6 @@
 import ipaddress
 from contextlib import nullcontext
+from types import SimpleNamespace
 
 from services.diagnostic_store import (
     DiagnosticStore,
@@ -1306,9 +1307,13 @@ def test_local_link_network_cache_uses_monotonic_expiry(monkeypatch) -> None:
         message = "cache expiry must not consult the wall clock"
         raise AssertionError(message)
 
-    monkeypatch.setattr(diagnostic_store.time, "time", fail_if_wall_clock_is_read)
     monkeypatch.setattr(
-        diagnostic_store.time, "monotonic", lambda: next(monotonic_times)
+        diagnostic_store,
+        "time",
+        SimpleNamespace(
+            time=fail_if_wall_clock_is_read,
+            monotonic=lambda: next(monotonic_times),
+        ),
     )
     monkeypatch.setattr(
         diagnostic_store, "_read_local_link_networks", lambda: next(reads)
@@ -1331,9 +1336,13 @@ def test_append_bounded_pending_row_drops_oldest_rows(monkeypatch, caplog) -> No
         message = "warning throttle must not consult the wall clock"
         raise AssertionError(message)
 
-    monkeypatch.setattr(diagnostic_store.time, "time", fail_if_wall_clock_is_read)
     monkeypatch.setattr(
-        diagnostic_store.time, "monotonic", lambda: next(monotonic_times)
+        diagnostic_store,
+        "time",
+        SimpleNamespace(
+            time=fail_if_wall_clock_is_read,
+            monotonic=lambda: next(monotonic_times),
+        ),
     )
 
     diagnostic_store._append_bounded_pending_row(
