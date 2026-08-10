@@ -360,6 +360,33 @@ def test_wait_for_http_listener_accepting_uses_direct_listener_only(
     assert controller._wait_for_http_listener_accepting(timeout=1.0) is True
 
 
+def test_http_listener_absence_timeout_uses_monotonic_clock_during_wall_rollback(
+    monkeypatch,
+) -> None:
+    from services import squid_core, squidctl  # type: ignore
+
+    controller = squidctl.SquidController(cmd_run=lambda *args, **kwargs: None)
+    monotonic_now = 10.0
+    wall_now = 1_000.0
+    sleeps: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal monotonic_now, wall_now
+        sleeps.append(seconds)
+        monotonic_now += seconds
+        wall_now -= 100.0
+
+    monkeypatch.setattr(controller, "_http_listener_ports", lambda: (3128,))
+    monkeypatch.setattr(controller, "_tcp_listener_accepts", lambda port: True)
+    monkeypatch.setattr(squid_core.time, "monotonic", lambda: monotonic_now)
+    monkeypatch.setattr(squid_core.time, "time", lambda: wall_now)
+    monkeypatch.setattr(squid_core.time, "sleep", fake_sleep)
+
+    assert controller._wait_for_http_listener_absent(timeout=1.0) is False
+    assert sleeps == [0.5, 0.5]
+    assert wall_now == pytest.approx(800.0)
+
+
 def test_clear_disk_cache_uses_bounded_restart_wait(
     monkeypatch,
     tmp_path,

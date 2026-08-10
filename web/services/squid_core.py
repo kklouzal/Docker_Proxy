@@ -1398,8 +1398,8 @@ stdout_logfile_maxbytes=0
     def _wait_for_http_listener(self, *, timeout: float = 20.0) -> bool:
         response_pending = set(self._http_listener_response_ports())
         accept_pending = set(self._http_listener_ports()) - response_pending
-        deadline = time.time() + max(0.5, timeout)
-        while (response_pending or accept_pending) and time.time() < deadline:
+        deadline = time.monotonic() + max(0.5, timeout)
+        while (response_pending or accept_pending) and time.monotonic() < deadline:
             for port in tuple(response_pending):
                 if self._tcp_listener_accepts(port) and self._http_listener_responds(
                     port,
@@ -1422,8 +1422,8 @@ stdout_logfile_maxbytes=0
         accept_pending = set(self._http_listener_response_ports()) or set(
             self._http_listener_ports()
         )
-        deadline = time.time() + max(0.5, timeout)
-        while accept_pending and time.time() < deadline:
+        deadline = time.monotonic() + max(0.5, timeout)
+        while accept_pending and time.monotonic() < deadline:
             for port in tuple(accept_pending):
                 if self._tcp_listener_accepts(port):
                     return True
@@ -1433,8 +1433,8 @@ stdout_logfile_maxbytes=0
 
     def _wait_for_http_listener_absent(self, *, timeout: float = 20.0) -> bool:
         ports = self._http_listener_ports()
-        deadline = time.time() + max(0.5, timeout)
-        while time.time() < deadline:
+        deadline = time.monotonic() + max(0.5, timeout)
+        while time.monotonic() < deadline:
             if not any(self._tcp_listener_accepts(port) for port in ports):
                 return True
             time.sleep(0.5)
@@ -1562,8 +1562,8 @@ stdout_logfile_maxbytes=0
                     detail_parts.append(
                         f"Failed to send {sig.name} to PID {pid}: {exc}",
                     )
-            deadline = time.time() + max(0.5, timeout / 2)
-            while time.time() < deadline:
+            deadline = time.monotonic() + max(0.5, timeout / 2)
+            while time.monotonic() < deadline:
                 if self._wait_for_http_listener_absent(timeout=0.5):
                     detail_parts.append(
                         "Squid HTTP listener sockets released after orphan cleanup.",
@@ -1609,8 +1609,8 @@ stdout_logfile_maxbytes=0
 
     def _wait_for_squid_pidfile_stale_or_absent(self, *, timeout: float = 10.0) -> bool:
         pid_path = "/var/run/squid.pid"
-        deadline = time.time() + max(0.5, timeout)
-        while time.time() < deadline:
+        deadline = time.monotonic() + max(0.5, timeout)
+        while time.monotonic() < deadline:
             try:
                 if not Path(pid_path).exists():
                     return True
