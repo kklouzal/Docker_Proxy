@@ -1896,11 +1896,17 @@ class ProxyRuntime:
         timeout_seconds: int,
         stop_on_failure: bool,
     ) -> tuple[bool, str]:
+        deadline = time.monotonic() + max(0.001, float(timeout_seconds))
+
+        def remaining_timeout() -> float:
+            return max(0.001, deadline - time.monotonic())
+
         prefix = self._logical_supervisor_program_prefix(program_name)
         ok, detail = self._restart_supervisor_program_unlocked(
             program_name,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=remaining_timeout(),
             stop_on_failure=stop_on_failure,
+            deadline=deadline,
         )
         if ok or not prefix:
             return ok, detail
@@ -1909,7 +1915,7 @@ class ProxyRuntime:
 
         programs, resolve_detail = self._resolve_supervisor_program_names(
             program_name,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=remaining_timeout(),
         )
         scaled_programs = [
             program for program in programs if program != program_name
@@ -1919,8 +1925,9 @@ class ProxyRuntime:
         results = [
             self._restart_supervisor_program_unlocked(
                 program,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=remaining_timeout(),
                 stop_on_failure=stop_on_failure,
+                deadline=deadline,
             )
             for program in scaled_programs
         ]
@@ -1940,7 +1947,7 @@ class ProxyRuntime:
         *,
         timeout_seconds: float = 30.0,
     ) -> tuple[bool, str]:
-        deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+        deadline = time.monotonic() + max(0.001, float(timeout_seconds))
         last_detail = ""
         while (remaining := deadline - time.monotonic()) > 0:
             try:
@@ -1981,15 +1988,33 @@ class ProxyRuntime:
         self,
         program_name: str,
         *,
-        timeout_seconds: int = 30,
+        timeout_seconds: float = 30,
         stop_on_failure: bool = False,
+        deadline: float | None = None,
     ) -> tuple[bool, str]:
         details: list[str] = []
+        if deadline is None:
+            deadline = time.monotonic() + max(0.001, float(timeout_seconds))
+
+        def remaining_timeout() -> float | None:
+            remaining = deadline - time.monotonic()
+            return max(0.001, remaining) if remaining > 0 else None
+
+        def sleep_within_budget(seconds: float) -> bool:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(seconds, remaining))
+            return time.monotonic() < deadline
+
+        command_timeout = remaining_timeout()
+        if command_timeout is None:
+            return False, f"Timed out restarting {program_name}."
         try:
             stop = subprocess.run(
                 ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", program_name],
                 capture_output=True,
-                timeout=timeout_seconds,
+                timeout=command_timeout,
             )
         except Exception as exc:
             details.append(
@@ -2003,7 +2028,7 @@ class ProxyRuntime:
 
         stopped_ok, stopped_detail = self._wait_for_supervisor_program_stopped(
             program_name,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=remaining_timeout() or 0.001,
         )
         if stopped_detail and stopped_detail not in details:
             details.append(stopped_detail)
@@ -2013,9 +2038,12 @@ class ProxyRuntime:
                 if self._logical_supervisor_program_prefix(program_name)
                 else self._supervisor_program_status
             )
+            command_timeout = remaining_timeout()
+            if command_timeout is None:
+                details.append(f"Timed out restarting {program_name}.")
+                return False, "\n".join(part for part in details if part).strip()
             status_ok, status_detail = status_checker(
-                program_name,
-                timeout_seconds=timeout_seconds,
+                program_name, timeout_seconds=command_timeout
             )
             if status_detail and status_detail not in details:
                 details.append(status_detail)
@@ -2029,8 +2057,11 @@ class ProxyRuntime:
             ).strip() or f"Failed to stop {program_name} before restart."
 
         for attempt in range(1, 6):
-            if attempt > 1:
-                time.sleep(1.0)
+            if attempt > 1 and not sleep_within_budget(1.0):
+                break
+            command_timeout = remaining_timeout()
+            if command_timeout is None:
+                break
             try:
                 start = subprocess.run(
                     [
@@ -2041,7 +2072,7 @@ class ProxyRuntime:
                         program_name,
                     ],
                     capture_output=True,
-                    timeout=timeout_seconds,
+                    timeout=command_timeout,
                 )
             except Exception as exc:
                 details.append(
@@ -2059,10 +2090,14 @@ class ProxyRuntime:
 
             # A quick start can still crash immediately afterward. Require a
             # post-start supervisor status check to avoid accepting restart loops.
-            time.sleep(1.0)
+            if not sleep_within_budget(1.0):
+                break
+            command_timeout = remaining_timeout()
+            if command_timeout is None:
+                break
             status_ok, status_detail = self._supervisor_program_status_exact(
                 program_name,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=command_timeout,
                 accepted_states=("RUNNING", "STARTING"),
             )
             if status_detail:
@@ -2073,6 +2108,10 @@ class ProxyRuntime:
                 ).strip() or f"{program_name} restarted."
 
         if stop_on_failure:
+            command_timeout = remaining_timeout()
+            if command_timeout is None:
+                details.append(f"Unable to run fail-safe stop for {program_name}: restart timeout exhausted.")
+                return False, "\n".join(part for part in details if part).strip()
             try:
                 stop = subprocess.run(
                     [
@@ -2083,7 +2122,7 @@ class ProxyRuntime:
                         program_name,
                     ],
                     capture_output=True,
-                    timeout=timeout_seconds,
+                    timeout=command_timeout,
                 )
                 stop_detail = _decode_completed(stop).strip()
                 if stop_detail:
@@ -2103,15 +2142,16 @@ class ProxyRuntime:
 
             stopped_ok, stopped_detail = self._wait_for_supervisor_program_stopped(
                 program_name,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=remaining_timeout() or 0.001,
             )
             if stopped_detail and stopped_detail not in details:
                 details.append(stopped_detail)
             terminal_ok = False
-            if stopped_ok:
+            command_timeout = remaining_timeout()
+            if stopped_ok and command_timeout is not None:
                 _status_ok, terminal_detail, terminal_lines = (
                     self._supervisor_status_lines(
-                        timeout_seconds=timeout_seconds,
+                        timeout_seconds=command_timeout,
                         programs=(program_name,),
                     )
                 )

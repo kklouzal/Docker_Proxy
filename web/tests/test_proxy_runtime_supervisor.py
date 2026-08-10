@@ -1010,6 +1010,52 @@ def test_restart_supervisor_program_returns_false_after_retries(monkeypatch) -> 
     assert "abnormal termination" in detail
 
 
+def test_restart_supervisor_program_uses_one_total_monotonic_budget(monkeypatch) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    elapsed = {"value": 0.0}
+    timeouts: list[float] = []
+    calls: list[str] = []
+
+    def fake_run(args, **kwargs):
+        action = args[3]
+        calls.append(action)
+        timeouts.append(kwargs["timeout"])
+        elapsed["value"] += min(0.2, kwargs["timeout"])
+        if action == "stop":
+            return _cp(0, stdout="service: stopped")
+        if action == "status":
+            return _cp(3, stdout="service FATAL")
+        return _cp(1, stderr="service: ERROR (abnormal termination)")
+
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
+    monkeypatch.setattr(
+        runtime_module.time,
+        "sleep",
+        lambda seconds: elapsed.__setitem__(
+            "value", elapsed["value"] + min(seconds, 2.0 - elapsed["value"])
+        ),
+    )
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+
+    runtime = _runtime_shell()
+    runtime._wait_for_supervisor_program_stopped = (
+        lambda _program, timeout_seconds=30.0: (True, "service STOPPED")
+    )
+
+    ok, detail = runtime._restart_supervisor_program(
+        "service", timeout_seconds=2
+    )
+
+    assert ok is False
+    assert "abnormal termination" in detail
+    assert calls == ["stop", "start", "status"]
+    assert elapsed["value"] == pytest.approx(2.0)
+    assert timeouts == pytest.approx([2.0, 1.8, 0.6])
+    assert all(timeout > 0 for timeout in timeouts)
+
+
 def test_restart_adblock_service_uses_injected_restarter() -> None:
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(
