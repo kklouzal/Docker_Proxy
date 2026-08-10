@@ -119,7 +119,7 @@ def _forwarded_client_ip(value: object | None) -> str:
 
 
 def _valid_authority_port(value: str) -> bool:
-    if not value.isdigit():
+    if not value.isascii() or not value.isdecimal():
         return False
     try:
         port = int(value)

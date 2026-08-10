@@ -452,6 +452,10 @@ def test_request_host_rejects_malformed_host_header_values(pac_http) -> None:
         "http://proxy.example:8080",
         "//proxy.example:8080",
         "proxy.example:bad",
+        "proxy.example:",
+        "proxy.example:１２８０",  # noqa: RUF001 - reject non-ASCII port digits.
+        "[2001:db8::20]:",
+        "[2001:db8::20]:１２８０",  # noqa: RUF001 - reject non-ASCII port digits.
         "proxy.example:0",
         "proxy.example:65536",
         "2130706433",
