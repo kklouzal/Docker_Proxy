@@ -79,6 +79,54 @@ def test_public_error_message_redacts_valueerror_credentials(monkeypatch) -> Non
     assert "https://[redacted]@example.com/path" in msg
 
 
+def test_redact_sensitive_text_redacts_multiline_and_escaped_quoted_values() -> None:
+    msg = redact_sensitive_text(
+        'request failed: password="alpha\r\nbeta" '
+        'client_secret="gamma\\\"delta\nepsilon"; retry is allowed'
+    )
+
+    for secret_fragment in ("alpha", "beta", "gamma", "delta", "epsilon"):
+        assert secret_fragment not in msg
+    assert 'password="[redacted]"' in msg
+    assert 'client_secret="[redacted]"' in msg
+    assert "retry is allowed" in msg
+
+
+def test_public_error_message_redacts_multiline_quoted_credentials(monkeypatch) -> None:
+    monkeypatch.delenv("EXPOSE_INTERNAL_ERRORS", raising=False)
+    error = ValueError('Bad proxy config: password="alpha\r\nbeta"; keep context')
+
+    msg = public_error_message(error, max_len=500)
+
+    assert "alpha" not in msg
+    assert "beta" not in msg
+    assert 'password="[redacted]"' in msg
+    assert "keep context" in msg
+
+
+def test_public_error_message_redacts_multiline_exposed_internal_details(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EXPOSE_INTERNAL_ERRORS", "1")
+    error = RuntimeError("upstream rejected client_secret='gamma\ndelta'; keep context")
+
+    msg = public_error_message(error, max_len=500)
+
+    assert "gamma" not in msg
+    assert "delta" not in msg
+    assert "RuntimeError" in msg
+    assert "keep context" in msg
+
+
+def test_redact_sensitive_text_handles_long_unterminated_quoted_value() -> None:
+    secret = "s" * 10_000
+
+    msg = redact_sensitive_text(f'password="{secret}')
+
+    assert secret not in msg
+    assert msg == "password=[redacted]"
+
+
 def test_public_error_message_keeps_ordinary_valueerror_context(monkeypatch) -> None:
     monkeypatch.delenv("EXPOSE_INTERNAL_ERRORS", raising=False)
     msg = public_error_message(

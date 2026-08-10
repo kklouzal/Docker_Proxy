@@ -15,12 +15,14 @@ _SENSITIVE_KEY_RE = re.compile(
         \s*[:=]\s*
     )
     (?:
-        (?P<quote>["'])(?P<quoted_value>.*?)(?P=quote)
+        (?P<quote>["'])
+        (?P<quoted_value>(?:\\.|(?!(?P=quote)).)*)
+        (?P=quote)
         |
         (?P<value>[^\s,;&]+)
     )
     """,
-    re.IGNORECASE | re.VERBOSE,
+    re.DOTALL | re.IGNORECASE | re.VERBOSE,
 )
 
 _AUTH_VALUE_RE = re.compile(
