@@ -144,6 +144,29 @@ class ProxyClient:
             "management listener."
         )
 
+    def _safe_url_context(self, url: str) -> str:
+        """Retain routing context without exposing registry base-path material."""
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            scheme = parsed.scheme.lower()
+            host = parsed.hostname
+            if scheme not in {"http", "https"} or not host:
+                return "unavailable"
+            authority = f"[{host}]" if ":" in host else host
+            if parsed.port is not None:
+                authority = f"{authority}:{parsed.port}"
+            marker = "/api/manage"
+            marker_at = parsed.path.rfind(marker)
+            if marker_at < 0:
+                return "unavailable"
+            marker_end = marker_at + len(marker)
+            if marker_end < len(parsed.path) and parsed.path[marker_end] != "/":
+                return "unavailable"
+            endpoint = parsed.path[marker_at:]
+            return f"{scheme}://{authority}{endpoint}"[:1000]
+        except Exception:
+            return "unavailable"
+
     def _timeout_error_detail(
         self,
         *,
@@ -233,6 +256,7 @@ class ProxyClient:
             headers=self._auth_headers(),
         )
         timeout = float(timeout_seconds or self.timeout_seconds)
+        error_url = self._safe_url_context(url)
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 raw, response_too_large = _read_management_response_text(response)
@@ -240,7 +264,7 @@ class ProxyClient:
                     msg = (
                         "Proxy management endpoint response exceeded "
                         f"{_MAX_MANAGEMENT_RESPONSE_BYTES} bytes "
-                        f"(proxy={normalize_proxy_id(proxy_id)}, url={url})"
+                        f"(proxy={normalize_proxy_id(proxy_id)}, url={error_url})"
                     )
                     raise ProxyClientError(msg)
                 try:
@@ -250,11 +274,11 @@ class ProxyClient:
                         raw,
                         status_code=int(response.status),
                     )
-                    msg = f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
+                    msg = f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={error_url})"
                     raise ProxyClientError(msg) from exc
                 if not isinstance(data, dict):
                     detail = self._non_object_json_detail()
-                    msg = f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
+                    msg = f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={error_url})"
                     raise ProxyClientError(msg)
                 return ProxyResponse(
                     ok=bool(data.get("ok", True)),
@@ -293,7 +317,7 @@ class ProxyClient:
                     status_code=int(exc.code),
                 ),
             )
-            msg = f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
+            msg = f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={error_url})"
             raise ProxyClientError(msg) from exc
         except ProxyClientError:
             raise
@@ -303,24 +327,24 @@ class ProxyClient:
                 raise ProxyClientError(
                     self._timeout_error_detail(
                         proxy_id=proxy_id,
-                        url=url,
+                        url=error_url,
                         timeout=timeout,
                     ),
                 ) from exc
             reason_detail = self._transport_error_detail(reason)
-            msg = f"Proxy management request failed: {reason_detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
+            msg = f"Proxy management request failed: {reason_detail} (proxy={normalize_proxy_id(proxy_id)}, url={error_url})"
             raise ProxyClientError(msg) from exc
         except TimeoutError as exc:
             raise ProxyClientError(
                 self._timeout_error_detail(
                     proxy_id=proxy_id,
-                    url=url,
+                    url=error_url,
                     timeout=timeout,
                 ),
             ) from exc
         except Exception as exc:
             detail = self._transport_error_detail(exc)
-            msg = f"Proxy management request failed: {detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
+            msg = f"Proxy management request failed: {detail} (proxy={normalize_proxy_id(proxy_id)}, url={error_url})"
             raise ProxyClientError(msg) from exc
 
     def get_health(

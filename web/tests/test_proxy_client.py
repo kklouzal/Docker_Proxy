@@ -812,3 +812,125 @@ def test_proxy_client_rejects_unsafe_management_paths_before_urlopen(
         proxy_client.ProxyClientError, match="Unsafe proxy management path"
     ):
         proxy_client.ProxyClient()._request("live", method="GET", path=path)
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        TimeoutError("timed out"),
+        urllib.error.URLError("network unavailable"),
+        RuntimeError("unexpected transport failure"),
+    ],
+)
+def test_proxy_client_error_url_context_omits_registry_base_path(
+    monkeypatch, proxy_client_module, raised
+) -> None:
+    proxy_client = proxy_client_module
+    management_url = "https://proxy-mgmt:5443/token/path-secret"
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry(management_url)
+    )
+    captured: dict[str, str] = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        raise raised
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().get_health("live")
+
+    message = str(exc_info.value)
+    assert "path-secret" not in message
+    assert "url=https://proxy-mgmt:5443/api/manage/health" in message
+    assert captured["url"] == (
+        "https://proxy-mgmt:5443/token/path-secret/api/manage/health"
+    )
+
+
+def test_proxy_client_safe_url_context_uses_final_segment_bounded_endpoint(
+    proxy_client_module,
+) -> None:
+    client = proxy_client_module.ProxyClient()
+
+    assert client._safe_url_context(
+        "https://proxy-mgmt:5443/prefix/api/manage-shadow/path-secret/api/manage/health"
+    ) == "https://proxy-mgmt:5443/api/manage/health"
+    assert client._safe_url_context(
+        "https://proxy-mgmt:5443/prefix/api/manage/path-secret/api/manage/logs"
+    ) == "https://proxy-mgmt:5443/api/manage/logs"
+    assert client._safe_url_context(
+        "https://proxy-mgmt:5443/prefix/api/manage-shadow/path-secret"
+    ) == "unavailable"
+    assert client._safe_url_context(
+        "https://proxy-mgmt:5443/prefix/without-management-endpoint"
+    ) == "unavailable"
+
+
+def test_proxy_client_repeated_marker_base_path_is_omitted_from_error_context(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
+    management_url = (
+        "https://proxy-mgmt:5443/prefix/api/manage-shadow/"
+        "path-secret/api/manage/base-secret"
+    )
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry(management_url)
+    )
+    captured: dict[str, str] = {}
+
+    timeout_error = TimeoutError("timed out")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        raise timeout_error
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().get_health("live")
+
+    message = str(exc_info.value)
+    assert "path-secret" not in message
+    assert "base-secret" not in message
+    assert "url=https://proxy-mgmt:5443/api/manage/health" in message
+    assert captured["url"] == f"{management_url}/api/manage/health"
+
+
+def test_proxy_client_http_and_response_errors_omit_registry_base_path(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
+    monkeypatch.setattr(
+        proxy_client,
+        "get_proxy_registry",
+        lambda: _Registry("http://proxy-mgmt:5000/api-key/path-secret"),
+    )
+
+    def http_error(_request, timeout):
+        request_url = "http://proxy-mgmt:5000/api/manage/health"
+        raise urllib.error.HTTPError(
+            request_url, 502, "Bad Gateway", {}, io.BytesIO(b'{"detail":"failed"}')
+        )
+
+    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", http_error)
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().get_health("live")
+    assert "path-secret" not in str(exc_info.value)
+    assert "url=http://proxy-mgmt:5000/api/manage/health" in str(exc_info.value)
+
+    class InvalidResponse(_Response):
+        def read(self, _size: int = -1) -> bytes:
+            return b"not json"
+
+    monkeypatch.setattr(
+        proxy_client.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: InvalidResponse({}),
+    )
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().get_health("live")
+    assert "path-secret" not in str(exc_info.value)
+    assert "url=http://proxy-mgmt:5000/api/manage/health" in str(exc_info.value)
