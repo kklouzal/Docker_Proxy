@@ -701,6 +701,91 @@ def test_test_control_supervisor_program_uses_squid_controller_restart() -> None
     }
 
 
+def test_test_control_supervisor_start_uses_one_total_monotonic_budget(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    elapsed = {"value": 0.0}
+    resolve_timeouts: list[float] = []
+    command_timeouts: list[float] = []
+    status_timeouts: list[float] = []
+
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
+
+    runtime = _runtime_shell()
+    runtime._invalidate_health_cache = lambda: None
+
+    def resolve(_program, timeout_seconds=10):
+        resolve_timeouts.append(timeout_seconds)
+        elapsed["value"] += 0.4
+        return ["cicap_adblock_1", "cicap_adblock_2"], "scaled helpers"
+
+    def fake_run(_args, **kwargs):
+        command_timeouts.append(kwargs["timeout"])
+        elapsed["value"] += 0.4
+        return _cp(0, stdout="started")
+
+    def status(_program, timeout_seconds=10, **_kwargs):
+        status_timeouts.append(timeout_seconds)
+        return True, "helpers RUNNING"
+
+    runtime._resolve_supervisor_program_names = resolve
+    runtime._supervisor_program_status = status
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+
+    result = runtime.test_control_supervisor_program(
+        "cicap_adblock", action="start", timeout_seconds=2
+    )
+
+    assert result["ok"] is True
+    assert "scaled helpers" in result["detail"]
+    assert "helpers RUNNING" in result["detail"]
+    assert resolve_timeouts == pytest.approx([2.0])
+    assert command_timeouts == pytest.approx([1.6, 1.2])
+    assert status_timeouts == pytest.approx([0.8])
+
+
+def test_test_control_supervisor_start_skips_status_when_total_budget_expires(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    elapsed = {"value": 0.0}
+    status_called = False
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
+
+    runtime = _runtime_shell()
+    runtime._invalidate_health_cache = lambda: None
+
+    def resolve(_program, timeout_seconds=10):
+        elapsed["value"] += 0.5
+        return ["cicap_av_1", "cicap_av_2"], "scaled helpers"
+
+    def fake_run(_args, **_kwargs):
+        elapsed["value"] += 0.75
+        return _cp(0, stdout="started")
+
+    def status(*_args, **_kwargs):
+        nonlocal status_called
+        status_called = True
+        return True, "helpers RUNNING"
+
+    runtime._resolve_supervisor_program_names = resolve
+    runtime._supervisor_program_status = status
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+
+    result = runtime.test_control_supervisor_program(
+        "cicap_av", action="start", timeout_seconds=2
+    )
+
+    assert result["ok"] is False
+    assert status_called is False
+    assert "Timed out before verifying cicap_av status." in result["detail"]
+
+
 def test_forced_navigation_health_does_not_seed_cache() -> None:
     runtime = _runtime_shell()
     runtime.health_cache_ttl_seconds = 60.0

@@ -1816,13 +1816,25 @@ class ProxyRuntime:
                 "action": requested_action,
                 "detail": "Unsupported test supervisor action.",
             }
+        deadline = time.monotonic() + max(0.001, float(timeout_seconds))
+
+        def remaining_timeout() -> float:
+            return max(0.0, deadline - time.monotonic())
+
         programs, resolve_detail = self._resolve_supervisor_program_names(
             program,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=max(0.001, remaining_timeout()),
         )
         details = [str(resolve_detail or "").strip()] if len(programs) > 1 else []
         ok = True
         for supervisor_program in programs:
+            command_timeout = remaining_timeout()
+            if command_timeout <= 0:
+                ok = False
+                details.append(
+                    f"Timed out before {requested_action} {supervisor_program}."
+                )
+                break
             try:
                 proc = subprocess.run(
                     [
@@ -1833,7 +1845,7 @@ class ProxyRuntime:
                         supervisor_program,
                     ],
                     capture_output=True,
-                    timeout=timeout_seconds,
+                    timeout=command_timeout,
                 )
             except Exception as exc:
                 ok = False
@@ -1854,13 +1866,18 @@ class ProxyRuntime:
             or f"{program} {requested_action} requested."
         )
         if requested_action == "start" and ok:
-            status_ok, status_detail = self._supervisor_program_status(
-                program,
-                timeout_seconds=timeout_seconds,
-            )
-            ok = status_ok
-            if status_detail:
-                detail = f"{detail}\n{status_detail}"
+            status_timeout = remaining_timeout()
+            if status_timeout <= 0:
+                ok = False
+                detail = f"{detail}\nTimed out before verifying {program} status."
+            else:
+                status_ok, status_detail = self._supervisor_program_status(
+                    program,
+                    timeout_seconds=status_timeout,
+                )
+                ok = status_ok
+                if status_detail:
+                    detail = f"{detail}\n{status_detail}"
         return {
             "ok": ok,
             "proxy_id": self.proxy_id,
