@@ -398,6 +398,50 @@ def test_adblock_decision_enforces_method_contract_without_cache_leakage(
     )
 
 
+def test_adblock_decision_cache_ttl_uses_elapsed_not_wall_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||cached.example^"])
+
+    _add_web_to_path()
+    from services import adblock_decision
+
+    clocks = {"wall": 1_000.0, "elapsed": 100.0}
+    monkeypatch.setattr(adblock_decision.time, "time", lambda: clocks["wall"])
+    monkeypatch.setattr(
+        adblock_decision.time,
+        "monotonic",
+        lambda: clocks["elapsed"],
+    )
+    engine = adblock_decision.AdblockDecisionEngine(
+        db_path,
+        cache_ttl_seconds=60,
+        cache_max=10,
+    )
+    candidate_calls = 0
+    original_candidate_rules = engine.lookup.candidate_rules
+
+    def counting_candidate_rules(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        nonlocal candidate_calls
+        candidate_calls += 1
+        return original_candidate_rules(*args, **kwargs)
+
+    monkeypatch.setattr(engine.lookup, "candidate_rules", counting_candidate_rules)
+    url = "https://cached.example/banner.js"
+
+    assert engine.decide(url).blocked is True
+    assert candidate_calls == 1
+
+    clocks.update(wall=100_000.0, elapsed=159.0)
+    assert engine.decide(url).blocked is True
+    assert candidate_calls == 1
+
+    clocks.update(wall=10.0, elapsed=161.0)
+    assert engine.decide(url).blocked is True
+    assert candidate_calls == 2
+
+
 def test_adblock_decision_treats_escaped_abp_metacharacters_as_literals(
     tmp_path: Path,
 ) -> None:

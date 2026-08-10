@@ -375,7 +375,7 @@ class AdblockDecisionEngine:
             if hit is None:
                 return None
             expires_at, decision = hit
-            if expires_at < time.time():
+            if expires_at < time.monotonic():
                 self._cache.pop(key, None)
                 return None
             self._cache.move_to_end(key)
@@ -389,7 +389,7 @@ class AdblockDecisionEngine:
         if not self.cache_ttl_seconds or not self.cache_max:
             return
         with self._cache_lock:
-            self._cache[key] = (time.time() + self.cache_ttl_seconds, decision)
+            self._cache[key] = (time.monotonic() + self.cache_ttl_seconds, decision)
             self._cache.move_to_end(key)
             while len(self._cache) > self.cache_max:
                 self._cache.popitem(last=False)
