@@ -130,6 +130,13 @@ class ProxyClient:
             return f"Proxy management request failed with HTTP {status_code}."
         return "Proxy management request failed."
 
+    def _transport_error_detail(self, raw: object) -> str:
+        try:
+            detail = redact_sensitive_text(raw).strip()
+        except Exception:
+            return "Transport error detail was unavailable."
+        return detail[:1000] or "Transport error detail was unavailable."
+
     def _non_object_json_detail(self) -> str:
         return (
             "Proxy management endpoint returned JSON that was not an object. "
@@ -300,7 +307,7 @@ class ProxyClient:
                         timeout=timeout,
                     ),
                 ) from exc
-            reason_detail = str(reason) or str(exc)
+            reason_detail = self._transport_error_detail(reason)
             msg = f"Proxy management request failed: {reason_detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
             raise ProxyClientError(msg) from exc
         except TimeoutError as exc:
@@ -312,7 +319,8 @@ class ProxyClient:
                 ),
             ) from exc
         except Exception as exc:
-            msg = f"Proxy management request failed: {exc} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
+            detail = self._transport_error_detail(exc)
+            msg = f"Proxy management request failed: {detail} (proxy={normalize_proxy_id(proxy_id)}, url={url})"
             raise ProxyClientError(msg) from exc
 
     def get_health(

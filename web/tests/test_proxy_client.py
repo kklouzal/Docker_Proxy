@@ -660,7 +660,71 @@ def test_proxy_client_timeout_error_is_actionable(
     assert "reachable from the Admin UI container" in message
 
 
-def test_proxy_client_url_error_surfaces_reason(
+def test_proxy_client_url_error_surfaces_redacted_reason(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+    reason = (
+        "network unreachable via Bearer transport-secret at "
+        "http://operator:user-password@proxy-mgmt:5000/connect?token=query-secret"
+    )
+    monkeypatch.setattr(
+        proxy_client.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            urllib.error.URLError(reason)
+        ),
+    )
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().clear_proxy_cache("live")
+
+    message = str(exc_info.value)
+    assert "network unreachable" in message
+    assert "Bearer [redacted]" in message
+    assert "http://[redacted]@proxy-mgmt:5000/connect?token=[redacted]" in message
+    assert "transport-secret" not in message
+    assert "user-password" not in message
+    assert "query-secret" not in message
+    assert "proxy=live" in message
+    assert "url=http://proxy-mgmt:5000/api/manage/cache/clear" in message
+
+
+def test_proxy_client_url_error_fails_closed_when_reason_cannot_be_rendered(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+
+    unrenderable_detail = "password=render-secret"
+
+    class UnrenderableReason:
+        def __str__(self) -> str:
+            raise ValueError(unrenderable_detail)
+
+    monkeypatch.setattr(
+        proxy_client.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            urllib.error.URLError(UnrenderableReason())
+        ),
+    )
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().get_health("live")
+
+    message = str(exc_info.value)
+    assert "Transport error detail was unavailable" in message
+    assert "render-secret" not in message
+    assert "proxy=live" in message
+
+
+def test_proxy_client_generic_transport_error_redacts_detail(
     monkeypatch, proxy_client_module
 ) -> None:
     proxy_client = proxy_client_module
@@ -671,12 +735,19 @@ def test_proxy_client_url_error_surfaces_reason(
         proxy_client.urllib.request,
         "urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            urllib.error.URLError("network unreachable")
+            RuntimeError("TLS setup failed: password=generic-secret")
         ),
     )
 
-    with pytest.raises(proxy_client.ProxyClientError, match="network unreachable"):
-        proxy_client.ProxyClient().clear_proxy_cache("live")
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().get_health("live")
+
+    message = str(exc_info.value)
+    assert "TLS setup failed" in message
+    assert "password=[redacted]" in message
+    assert "generic-secret" not in message
+    assert "proxy=live" in message
+    assert "url=http://proxy-mgmt:5000/api/manage/health" in message
 
 
 def test_proxy_client_builds_management_url_with_query_under_registered_base(
