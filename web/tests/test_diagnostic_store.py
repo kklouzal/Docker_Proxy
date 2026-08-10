@@ -1296,12 +1296,45 @@ def test_build_icap_insert_params_filters_internal_sources(monkeypatch) -> None:
     assert store._build_icap_insert_params(same_subnet_client_line) is not None
 
 
-def test_append_bounded_pending_row_drops_oldest_rows(monkeypatch) -> None:
+def test_local_link_network_cache_uses_monotonic_expiry(monkeypatch) -> None:
+    from services import diagnostic_store
+
+    monotonic_times = iter((10.0, 69.0, 70.0))
+    reads = iter((("first",), ("refreshed",)))
+
+    def fail_if_wall_clock_is_read() -> float:
+        message = "cache expiry must not consult the wall clock"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(diagnostic_store.time, "time", fail_if_wall_clock_is_read)
+    monkeypatch.setattr(
+        diagnostic_store.time, "monotonic", lambda: next(monotonic_times)
+    )
+    monkeypatch.setattr(
+        diagnostic_store, "_read_local_link_networks", lambda: next(reads)
+    )
+    monkeypatch.setattr(diagnostic_store, "_INTERNAL_NETWORK_CACHE", (0.0, ()))
+
+    assert diagnostic_store._local_link_networks() == ("first",)
+    assert diagnostic_store._local_link_networks() == ("first",)
+    assert diagnostic_store._local_link_networks() == ("refreshed",)
+
+
+def test_append_bounded_pending_row_drops_oldest_rows(monkeypatch, caplog) -> None:
     from services import diagnostic_store
 
     pending = [("old-1",), ("old-2",)]
-    drop_state = {"dropped": 0, "last_log_ts": 0.0}
-    monkeypatch.setattr(diagnostic_store.time, "time", lambda: 301.0)
+    drop_state = {"dropped": 0, "last_log_mono": None}
+    monotonic_times = iter((10.0, 309.0, 310.0))
+
+    def fail_if_wall_clock_is_read() -> float:
+        message = "warning throttle must not consult the wall clock"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(diagnostic_store.time, "time", fail_if_wall_clock_is_read)
+    monkeypatch.setattr(
+        diagnostic_store.time, "monotonic", lambda: next(monotonic_times)
+    )
 
     diagnostic_store._append_bounded_pending_row(
         pending,
@@ -1313,7 +1346,23 @@ def test_append_bounded_pending_row_drops_oldest_rows(monkeypatch) -> None:
 
     assert pending == [("old-2",), ("new",)]
     assert drop_state["dropped"] == 0
-    assert drop_state["last_log_ts"] > 300.0
+    assert int(drop_state["last_log_mono"]) == 10
+
+    for row in (("newer",), ("newest",)):
+        diagnostic_store._append_bounded_pending_row(
+            pending,
+            row,
+            max_pending_rows=2,
+            loop_name="test",
+            drop_state=drop_state,
+        )
+
+    assert int(drop_state["last_log_mono"]) == 310
+    assert drop_state["dropped"] == 0
+    assert caplog.messages == [
+        "Diagnostic tailer pending rows exceeded 2 in test; dropped 1 oldest rows while database flush is unavailable",
+        "Diagnostic tailer pending rows exceeded 2 in test; dropped 2 oldest rows while database flush is unavailable",
+    ]
 
 
 def test_request_parser_captures_remediation_response_metadata() -> None:

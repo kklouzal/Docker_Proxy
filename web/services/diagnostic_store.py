@@ -65,15 +65,16 @@ def _append_bounded_pending_row(
     del pending_rows[:overflow]
     dropped = int(drop_state.get("dropped", 0)) + overflow
     drop_state["dropped"] = dropped
-    now = time.time()
-    if now - float(drop_state.get("last_log_ts", 0.0)) >= 300.0:
+    now = time.monotonic()
+    last_log = drop_state.get("last_log_mono")
+    if last_log is None or now - float(last_log) >= 300.0:
         logger.warning(
             "Diagnostic tailer pending rows exceeded %s in %s; dropped %s oldest rows while database flush is unavailable",
             max_pending_rows,
             loop_name,
             dropped,
         )
-        drop_state["last_log_ts"] = now
+        drop_state["last_log_mono"] = now
         drop_state["dropped"] = 0
 
 
@@ -138,7 +139,7 @@ def _read_local_link_networks() -> tuple[Any, ...]:
 
 def _local_link_networks() -> tuple[Any, ...]:
     global _INTERNAL_NETWORK_CACHE
-    now = time.time()
+    now = time.monotonic()
     cache_ts, cached = _INTERNAL_NETWORK_CACHE
     if cached and now - cache_ts < 60.0:
         return cached
@@ -959,7 +960,7 @@ class DiagnosticStore:
         last_inode: int | None = None
         pending = 0
         pending_rows: list[tuple[Any, ...]] = []
-        drop_state: dict[str, Any] = {"dropped": 0, "last_log_ts": 0.0}
+        drop_state: dict[str, Any] = {"dropped": 0, "last_log_mono": None}
         flush_backoff = DatabaseWriteBackoff.from_env(
             "DIAGNOSTIC_DB_WRITE",
             default_base=5.0,
