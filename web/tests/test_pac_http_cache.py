@@ -155,6 +155,20 @@ def test_client_ip_rejects_invalid_forwarded_headers(monkeypatch, pac_http) -> N
     )
 
 
+def test_client_ip_ignores_untrusted_prepended_forwarded_for_hops(
+    monkeypatch, pac_http
+) -> None:
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
+
+    assert (
+        pac_http.client_ip_from_headers(
+            {"X-Forwarded-For": "10.9.8.7, 198.51.100.20, 192.0.2.55"},
+            "192.0.2.10",
+        )
+        == "198.51.100.20"
+    )
+
+
 def test_local_pac_cache_ignores_manifest_paths_outside_pac_dir(
     tmp_path, pac_http
 ) -> None:

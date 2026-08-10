@@ -90,14 +90,32 @@ def _first_header_value(value: object | None) -> str:
     return (str(value or "").split(",")[0] or "").strip()
 
 
-def _first_forwarded_ip(value: object | None) -> str:
-    first = _first_header_value(value)
-    if not first:
+def _forwarded_ip_chain(value: object | None) -> tuple[str, ...]:
+    raw = str(value or "").strip()
+    if not raw:
+        return ()
+    addresses: list[str] = []
+    for item in raw.split(","):
+        try:
+            addresses.append(str(ipaddress.ip_address(item.strip())))
+        except ValueError:
+            return ()
+    return tuple(addresses)
+
+
+def _forwarded_client_ip(value: object | None) -> str:
+    chain = _forwarded_ip_chain(value)
+    if not chain:
         return ""
-    try:
-        return str(ipaddress.ip_address(first))
-    except ValueError:
-        return ""
+    trusted_networks = _trusted_pac_header_networks()
+    for address in reversed(chain):
+        parsed = ipaddress.ip_address(address)
+        if not any(
+            parsed.version == network.version and parsed in network
+            for network in trusted_networks
+        ):
+            return address
+    return chain[0]
 
 
 def _valid_authority_port(value: str) -> bool:
@@ -212,10 +230,10 @@ def forwarded_client_ip_from_headers(
     headers: Any, remote_addr: str | None = None
 ) -> str:
     if headers is not None and _remote_addr_trusts_forwarded_headers(remote_addr):
-        xff = _first_forwarded_ip(headers.get("X-Forwarded-For"))
+        xff = _forwarded_client_ip(headers.get("X-Forwarded-For"))
         if xff:
             return xff
-        xri = _first_forwarded_ip(headers.get("X-Real-IP"))
+        xri = _forwarded_client_ip(headers.get("X-Real-IP"))
         if xri:
             return xri
     return ""
