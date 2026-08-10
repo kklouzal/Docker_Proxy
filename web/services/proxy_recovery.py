@@ -29,6 +29,10 @@ RECOVERY_MAX_BUNDLE_BYTES_ENV: Final = "PROXY_RECOVERY_MAX_BUNDLE_BYTES"
 DEFAULT_MAX_BUNDLE_BYTES: Final = 128 * 1024 * 1024
 MIN_MAX_BUNDLE_BYTES: Final = 1 * 1024 * 1024
 HARD_MAX_BUNDLE_BYTES: Final = 512 * 1024 * 1024
+# Recovery rows are JSON-shaped database values below a shallow fixed envelope.
+# Sixty-four nested containers leaves generous room for legitimate future fields
+# while keeping untrusted input safely below Python's recursive JSON operations.
+_MAX_JSON_NESTING_DEPTH: Final = 64
 RECOVERY_DIR_ENV: Final = "PROXY_RECOVERY_DIR"
 DEFAULT_RECOVERY_DIR: Final = Path("/var/lib/squid-flask-proxy/recovery")
 MAC_ALGORITHM: Final = "HMAC-SHA256"
@@ -457,6 +461,7 @@ def parse_recovery_bundle(
         msg = "recovery bundle exceeds maximum size"
         raise _recovery_error(msg)
     envelope = _json_loads_no_duplicates(raw)
+    _validate_json_structure(envelope)
     _validate_envelope_shape(
         envelope,
         expected_proxy_id=expected_proxy_id,
@@ -816,6 +821,7 @@ def _bundle_from_envelope(envelope: Mapping[str, Any]) -> RecoveryBundle:
 
 
 def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
+    _validate_json_structure(value)
     try:
         return json.dumps(
             value,
@@ -824,6 +830,9 @@ def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
             ensure_ascii=False,
             allow_nan=False,
         ).encode("utf-8")
+    except RecursionError as exc:
+        msg = "recovery bundle exceeds structural complexity limit"
+        raise _recovery_error(msg) from exc
     except (TypeError, ValueError) as exc:
         msg = "recovery bundle is not canonical JSON serializable"
         raise _recovery_error(msg) from exc
@@ -837,9 +846,32 @@ def _json_loads_no_duplicates(raw: bytes) -> Any:
             object_pairs_hook=_reject_duplicate_json_keys,
             parse_constant=_reject_json_constant,
         )
+    except RecursionError as exc:
+        msg = "recovery bundle exceeds structural complexity limit"
+        raise _recovery_error(msg) from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         msg = "malformed recovery bundle JSON"
         raise _recovery_error(msg) from exc
+
+
+def _validate_json_structure(value: Any) -> None:
+    """Bound container nesting before recursive decode and canonicalization."""
+    pending = [(iter((value,)), 0)]
+    while pending:
+        children, parent_depth = pending[-1]
+        try:
+            item = next(children)
+        except StopIteration:
+            pending.pop()
+            continue
+        if not isinstance(item, dict | list):
+            continue
+        depth = parent_depth + 1
+        if depth > _MAX_JSON_NESTING_DEPTH:
+            msg = "recovery bundle exceeds structural complexity limit"
+            raise _recovery_error(msg)
+        nested = item.values() if isinstance(item, dict) else item
+        pending.append((iter(nested), depth))
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

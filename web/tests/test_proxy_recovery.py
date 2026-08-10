@@ -191,6 +191,51 @@ def test_canonical_json_round_trip_includes_bytes_base64_and_hmac(
         )
 
 
+def test_recovery_bundle_rejects_excessive_json_nesting_before_authentication(
+    tmp_path: Path,
+) -> None:
+    key = recovery.get_or_create_signing_key("edge-01", tmp_path)
+    supported_value: object = "leaf"
+    for _ in range(24):
+        supported_value = {"nested": [supported_value]}
+    valid = _create_recovery_bundle(
+        "edge-01",
+        {"adblock_settings": [{"value": supported_value}]},
+        created_ts="2026-07-28T19:27:00Z",
+        recovery_dir=tmp_path,
+    )
+    parsed = recovery.parse_recovery_bundle(
+        recovery.serialize_recovery_bundle(valid),
+        expected_proxy_id="edge-01",
+        key=key,
+    )
+    assert parsed.tables[0].rows[0]["value"] == supported_value
+
+    for depth in (80, 1_200):
+        nested = "[" * depth + "0" + "]" * depth
+        raw = (
+            '{"created_ts":"2026-07-28T19:27:00Z","format_version":2,'
+            '"integrity":{"content_sha256":"'
+            + "0" * 64
+            + '","mac":"'
+            + "0" * 64
+            + '","mac_alg":"HMAC-SHA256"},"proxy_id":"edge-01",'
+            '"schema_version":1,"source_control_plane_id":"'
+            + _SOURCE_CONTROL_PLANE_ID
+            + '","tables":[{"name":"adblock_settings","rows":[{"deep":'
+            + nested
+            + "}]}]}"
+        ).encode()
+        assert len(raw) < recovery.MIN_MAX_BUNDLE_BYTES
+
+        with pytest.raises(recovery.ProxyRecoveryError, match="structural complexity"):
+            recovery.parse_recovery_bundle(
+                raw,
+                expected_proxy_id="edge-01",
+                key=key,
+            )
+
+
 def test_bundle_validation_rejects_tamper_wrong_proxy_duplicates_and_reserved_keys(
     tmp_path: Path,
 ) -> None:
