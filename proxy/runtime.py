@@ -2088,8 +2088,54 @@ class ProxyRuntime:
                 stop_detail = _decode_completed(stop).strip()
                 if stop_detail:
                     details.append(stop_detail)
-            except Exception:
-                pass
+                if stop.returncode != 0:
+                    details.append(
+                        f"Fail-safe stop command for {program_name} failed "
+                        f"with exit code {stop.returncode}."
+                    )
+            except Exception as exc:
+                details.append(
+                    public_error_message(
+                        exc,
+                        default=f"Fail-safe stop command for {program_name} failed.",
+                    )
+                )
+
+            stopped_ok, stopped_detail = self._wait_for_supervisor_program_stopped(
+                program_name,
+                timeout_seconds=timeout_seconds,
+            )
+            if stopped_detail and stopped_detail not in details:
+                details.append(stopped_detail)
+            terminal_ok = False
+            if stopped_ok:
+                _status_ok, terminal_detail, terminal_lines = (
+                    self._supervisor_status_lines(
+                        timeout_seconds=timeout_seconds,
+                        programs=(program_name,),
+                    )
+                )
+                if terminal_detail and terminal_detail not in details:
+                    details.append(terminal_detail)
+                terminal_line = terminal_lines.get(program_name, "")
+                terminal_parts = terminal_line.split(None, 2)
+                status_lines = [
+                    line.strip()
+                    for line in terminal_detail.splitlines()
+                    if line.strip()
+                ]
+                terminal_ok = (
+                    len(status_lines) == 1
+                    and status_lines[0] == terminal_line
+                    and len(terminal_parts) > 1
+                    and terminal_parts[0] == program_name
+                    and terminal_parts[1]
+                    in {"STOPPED", "EXITED", "FATAL", "BACKOFF"}
+                )
+            if terminal_ok:
+                details.append(f"Fail-safe stop confirmed for {program_name}.")
+            else:
+                details.append(f"Unable to verify fail-safe stop for {program_name}.")
         return False, "\n".join(
             part for part in details if part
         ).strip() or f"Failed to restart {program_name}."

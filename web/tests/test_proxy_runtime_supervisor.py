@@ -992,13 +992,21 @@ def test_restart_adblock_service_stops_program_after_restart_loop(monkeypatch) -
     calls: list[list[str]] = []
     monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
 
+    stop_calls = 0
+
     def fake_run(args, **_kwargs):
+        nonlocal stop_calls
         calls.append(list(args))
+        if "stop" in args:
+            stop_calls += 1
+            return _cp(0, stdout="cicap_adblock: stopped")
         if "status" in args:
+            if stop_calls > 1:
+                return _cp(3, stdout="cicap_adblock STOPPED Aug 10 01:00 AM")
             return _cp(3, stdout="cicap_adblock BACKOFF exited too quickly")
         if "start" in args:
             return _cp(0, stdout="cicap_adblock: started")
-        return _cp(0, stdout="cicap_adblock: stopped")
+        pytest.fail(f"unexpected supervisor call: {args}")
 
     monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
 
@@ -1009,13 +1017,74 @@ def test_restart_adblock_service_stops_program_after_restart_loop(monkeypatch) -
 
     assert ok is False
     assert "BACKOFF" in detail
-    assert calls[-1] == [
-        "supervisorctl",
-        "-c",
-        "/etc/supervisord.conf",
-        "stop",
-        "cicap_adblock",
+    assert "Fail-safe stop confirmed for cicap_adblock." in detail
+    assert calls[-2:] == [
+        [
+            "supervisorctl",
+            "-c",
+            "/etc/supervisord.conf",
+            "status",
+            "cicap_adblock",
+        ],
+        [
+            "supervisorctl",
+            "-c",
+            "/etc/supervisord.conf",
+            "status",
+            "cicap_adblock",
+        ],
     ]
+
+
+def test_restart_adblock_service_surfaces_unverified_fail_safe_stop(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    stop_calls = 0
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+
+    def fake_run(args, **_kwargs):
+        nonlocal stop_calls
+        if "stop" in args:
+            stop_calls += 1
+            if stop_calls == 2:
+                timeout_detail = "supervisor stop timed out"
+                raise TimeoutError(timeout_detail)
+            return _cp(0, stdout="cicap_adblock: stopped")
+        if "start" in args:
+            return _cp(1, stderr="cicap_adblock: ERROR (abnormal termination)")
+        if "status" in args:
+            return _cp(3, stdout="other_program STOPPED Aug 10 01:00 AM")
+        pytest.fail(f"unexpected supervisor call: {args}")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+    runtime = _runtime_shell()
+    wait_results = iter(
+        [
+            (True, "cicap_adblock STOPPED Aug 10 01:00 AM"),
+            (True, "cicap_adblock STOPPED Aug 10 01:00 AM"),
+        ]
+    )
+    runtime._wait_for_supervisor_program_stopped = (
+        lambda _program, timeout_seconds=30.0: next(wait_results)
+    )
+    runtime._supervisor_program_status_exact = (
+        lambda _program, timeout_seconds=30, accepted_states=("RUNNING",): (
+            False,
+            "cicap_adblock BACKOFF exited too quickly",
+        )
+    )
+    runtime.services = SimpleNamespace(adblock_service_restarter=None)
+
+    ok, detail = runtime._restart_adblock_service()
+
+    assert ok is False
+    assert stop_calls == 2
+    assert "Fail-safe stop command for cicap_adblock failed." in detail
+    assert "timed out" not in detail
+    assert "Unable to verify fail-safe stop for cicap_adblock." in detail
 
 
 def test_restart_adblock_service_reports_scaled_worker_failure_without_squid(
