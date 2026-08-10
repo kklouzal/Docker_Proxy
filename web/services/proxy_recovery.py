@@ -770,9 +770,15 @@ def _validate_envelope_shape(
         if order <= last_order:
             msg = "recovery table payload is not dependency ordered"
             raise _recovery_error(msg)
+        rows = table["rows"]
+        if not isinstance(rows, list):
+            msg = "recovery table rows must be a list"
+            raise _recovery_error(msg)
+        if any(not isinstance(row, dict) for row in rows):
+            msg = "recovery table row must decode to an object"
+            raise _recovery_error(msg)
         seen.add(name)
         last_order = order
-        _table_from_encoded_json(table)
     integrity = envelope["integrity"]
     if not isinstance(integrity, dict) or set(integrity) != _INTEGRITY_KEYS:
         msg = "invalid recovery bundle integrity metadata"

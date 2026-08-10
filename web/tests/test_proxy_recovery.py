@@ -325,6 +325,87 @@ def test_bundle_validation_rejects_tamper_wrong_proxy_duplicates_and_reserved_ke
         )
 
 
+def test_unauthenticated_wide_rows_are_not_decoded_before_integrity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = recovery.get_or_create_signing_key("edge-01", tmp_path)
+    bundle = _create_recovery_bundle(
+        "edge-01",
+        {
+            "adblock_settings": [
+                {
+                    f"blob_{index}": b"x" * 1024
+                    for index in range(512)
+                }
+            ]
+        },
+        created_ts="2026-07-28T19:27:00Z",
+        recovery_dir=tmp_path,
+    )
+    envelope = json.loads(recovery.serialize_recovery_bundle(bundle))
+    envelope["integrity"]["content_sha256"] = "0" * 64
+    raw = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+    assert len(raw) < recovery.MIN_MAX_BUNDLE_BYTES
+
+    decode_calls = 0
+    original_decode = recovery._decode_json_value
+
+    def counted_decode(value: object) -> object:
+        nonlocal decode_calls
+        decode_calls += 1
+        return original_decode(value)
+
+    monkeypatch.setattr(recovery, "_decode_json_value", counted_decode)
+    with pytest.raises(recovery.ProxyRecoveryError, match="digest mismatch"):
+        recovery.parse_recovery_bundle(
+            raw,
+            expected_proxy_id="edge-01",
+            key=key,
+        )
+    assert decode_calls == 0
+
+    parsed = recovery.parse_recovery_bundle(
+        recovery.serialize_recovery_bundle(bundle),
+        expected_proxy_id="edge-01",
+        key=key,
+    )
+    assert decode_calls == 1 + 512
+    assert parsed.tables[0].rows[0]["blob_511"] == b"x" * 1024
+
+
+def test_authenticated_invalid_encoding_fails_after_integrity(
+    tmp_path: Path,
+) -> None:
+    key = recovery.get_or_create_signing_key("edge-01", tmp_path)
+    bundle = _create_recovery_bundle(
+        "edge-01",
+        {"adblock_settings": [{"marker": "valid"}]},
+        created_ts="2026-07-28T19:27:00Z",
+        recovery_dir=tmp_path,
+    )
+    envelope = json.loads(recovery.serialize_recovery_bundle(bundle))
+    envelope["tables"][0]["rows"][0]["marker"] = {
+        "__proxy_recovery_type__": "bytes/base64",
+        "data": "not base64!",
+    }
+    unsigned = {name: envelope[name] for name in sorted(recovery._UNSIGNED_KEYS)}
+    canonical = recovery._canonical_json_bytes(unsigned)
+    envelope["integrity"]["content_sha256"] = recovery.hashlib.sha256(
+        canonical
+    ).hexdigest()
+    envelope["integrity"]["mac"] = recovery.hmac.new(
+        key, canonical, recovery.hashlib.sha256
+    ).hexdigest()
+
+    with pytest.raises(recovery.ProxyRecoveryError, match="base64"):
+        recovery.parse_recovery_bundle(
+            recovery.serialize_envelope(envelope),
+            expected_proxy_id="edge-01",
+            key=key,
+        )
+
+
 def test_future_version_malformed_encoding_and_oversized_write_rejected(
     tmp_path: Path,
 ) -> None:
@@ -350,7 +431,7 @@ def test_future_version_malformed_encoding_and_oversized_write_rejected(
         "data": "not base64!",
     }
     malformed_raw = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
-    with pytest.raises(recovery.ProxyRecoveryError, match="base64"):
+    with pytest.raises(recovery.ProxyRecoveryError, match="digest mismatch"):
         recovery.parse_recovery_bundle(
             malformed_raw,
             expected_proxy_id="edge-01",
