@@ -951,6 +951,40 @@ def test_restart_supervisor_program_accepts_supervisor_auto_restart_after_stop(
     assert "RUNNING" in detail
 
 
+def test_wait_for_supervisor_stop_uses_monotonic_deadline_during_wall_clock_jumps(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    elapsed = {"value": 0.0}
+    timeouts: list[float] = []
+    wall_times = iter((100.0, 10_000.0, -10_000.0, 20_000.0, -20_000.0))
+
+    def fake_run(_args, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return _cp(0, stdout="squid RUNNING pid 123, uptime 0:00:01")
+
+    monkeypatch.setattr(runtime_module.time, "time", lambda: next(wall_times))
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
+    monkeypatch.setattr(
+        runtime_module.time,
+        "sleep",
+        lambda seconds: elapsed.__setitem__("value", elapsed["value"] + seconds),
+    )
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+
+    ok, detail = _runtime_shell()._wait_for_supervisor_program_stopped(
+        "squid", timeout_seconds=2.0
+    )
+
+    assert ok is False
+    assert "RUNNING" in detail
+    assert len(timeouts) == 4
+    assert all(timeout > 0 for timeout in timeouts)
+    assert timeouts == pytest.approx([2.0, 1.5, 1.0, 0.5])
+
+
 def test_restart_supervisor_program_returns_false_after_retries(monkeypatch) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
@@ -983,6 +1017,43 @@ def test_restart_adblock_service_uses_injected_restarter() -> None:
     )
 
     assert runtime._restart_adblock_service() == (True, "custom restarter")
+
+
+def test_restart_adblock_health_wait_uses_monotonic_deadline_during_wall_clock_jumps(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    elapsed = {"value": 0.0}
+    probes = {"count": 0}
+    runtime = _runtime_shell()
+    runtime.services = SimpleNamespace(adblock_service_restarter=None)
+    runtime._restart_supervisor_program = lambda *_args, **_kwargs: (True, "restarted")
+
+    monkeypatch.setattr(
+        runtime_module.time,
+        "time",
+        lambda: 10**9 if probes["count"] % 2 else -10**9,
+    )
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
+    monkeypatch.setattr(
+        runtime_module.time,
+        "sleep",
+        lambda _seconds: elapsed.__setitem__("value", elapsed["value"] + 5.0),
+    )
+
+    def unhealthy(**_kwargs):
+        probes["count"] += 1
+        return {"ok": False, "detail": "icap not ready"}
+
+    monkeypatch.setattr(runtime_module, "_check_icap_adblock", unhealthy)
+
+    ok, detail = runtime._restart_adblock_service()
+
+    assert ok is False
+    assert "icap not ready" in detail
+    assert probes["count"] == 3
 
 
 def test_restart_adblock_service_stops_program_after_restart_loop(monkeypatch) -> None:
@@ -2650,6 +2721,49 @@ def test_reload_for_policy_update_fails_when_adblock_icap_never_recovers(
     assert ok is False
     assert "reconfigured" in detail
     assert "icap not ready" in detail
+
+
+def test_policy_reload_icap_wait_uses_monotonic_deadline_during_wall_clock_jumps(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    elapsed = {"value": 0.0}
+    probes = {"count": 0}
+
+    class Controller:
+        def _run(self, _args, **_kwargs):
+            return _cp(0, stdout="reconfigured")
+
+        def _wait_for_http_listener(self, *, timeout) -> bool:
+            return True
+
+    runtime.controller = Controller()
+    monkeypatch.setattr(
+        runtime_module.time,
+        "time",
+        lambda: -10**9 if probes["count"] % 2 else 10**9,
+    )
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
+    monkeypatch.setattr(
+        runtime_module.time,
+        "sleep",
+        lambda _seconds: elapsed.__setitem__("value", elapsed["value"] + 5.0),
+    )
+
+    def unhealthy(**_kwargs):
+        probes["count"] += 1
+        return {"ok": False, "detail": "icap still warming"}
+
+    monkeypatch.setattr(runtime_module, "_check_icap_adblock", unhealthy)
+
+    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=True)
+
+    assert ok is False
+    assert "icap still warming" in detail
+    assert probes["count"] == 3
 
 
 def test_reload_for_policy_update_accepts_missing_pid_when_listener_healthy(

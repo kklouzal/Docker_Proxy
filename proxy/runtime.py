@@ -1940,9 +1940,9 @@ class ProxyRuntime:
         *,
         timeout_seconds: float = 30.0,
     ) -> tuple[bool, str]:
-        deadline = time.time() + max(1.0, float(timeout_seconds))
+        deadline = time.monotonic() + max(1.0, float(timeout_seconds))
         last_detail = ""
-        while time.time() < deadline:
+        while (remaining := deadline - time.monotonic()) > 0:
             try:
                 proc = subprocess.run(
                     [
@@ -1953,7 +1953,7 @@ class ProxyRuntime:
                         program_name,
                     ],
                     capture_output=True,
-                    timeout=min(8.0, max(1.0, deadline - time.time())),
+                    timeout=max(0.001, min(8.0, remaining)),
                 )
                 last_detail = _decode_completed(proc).strip()
                 upper = last_detail.upper()
@@ -2142,9 +2142,9 @@ class ProxyRuntime:
 
     def _restart_adblock_service(self) -> tuple[bool, str]:
         def wait_for_health(detail: str) -> tuple[bool, str]:
-            deadline = time.time() + 15.0
+            deadline = time.monotonic() + 15.0
             last_health: dict[str, Any] = {}
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 last_health = _check_icap_adblock(timeout=1.0, error_formatter=str)
                 if bool(last_health.get("ok")):
                     health_detail = str(
@@ -2294,9 +2294,9 @@ class ProxyRuntime:
             # fully converged after rapid policy/adblock churn. Wait for the local
             # adblock ICAP service too so the sync API does not hand traffic back to
             # callers while first requests can still bypass or hang on adaptation.
-            deadline = time.time() + 15.0
+            deadline = time.monotonic() + 15.0
             last_icap: dict[str, Any] = {}
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 last_icap = _check_icap_adblock(timeout=1.0, error_formatter=str)
                 if bool(last_icap.get("ok")):
                     break
