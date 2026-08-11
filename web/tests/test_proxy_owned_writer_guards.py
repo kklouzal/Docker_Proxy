@@ -2,17 +2,9 @@ from __future__ import annotations
 
 import contextlib
 import importlib
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
 
 
 class _Result:
@@ -92,7 +84,6 @@ def _fake_guard(_conn, proxy_id, **_kwargs):
 
 
 def test_policy_request_create_uses_guard_canonical_proxy(monkeypatch) -> None:
-    _add_web_to_path()
     from services import policy_requests  # type: ignore
 
     module = importlib.reload(policy_requests)
@@ -118,7 +109,6 @@ def test_policy_request_create_uses_guard_canonical_proxy(monkeypatch) -> None:
 
 
 def test_observability_schedule_uses_guard_canonical_proxy(monkeypatch) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     module = importlib.reload(observability_queries)
@@ -146,7 +136,6 @@ def test_observability_schedule_uses_guard_canonical_proxy(monkeypatch) -> None:
 
 
 def test_observability_schedule_guard_blocks_insert_before_persist(monkeypatch) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
     from services.proxy_write_guard import ProxyLifecycleWriteError  # type: ignore
 
@@ -182,7 +171,6 @@ def test_observability_schedule_guard_blocks_insert_before_persist(monkeypatch) 
 def test_policy_close_and_revoke_scoped_mutations_use_guard_canonical_proxy(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import policy_requests  # type: ignore
 
     module = importlib.reload(policy_requests)
@@ -202,7 +190,6 @@ def test_policy_close_and_revoke_scoped_mutations_use_guard_canonical_proxy(
 
 
 def test_policy_close_and_revoke_unscoped_mutations_do_not_guard(monkeypatch) -> None:
-    _add_web_to_path()
     from services import policy_requests  # type: ignore
 
     module = importlib.reload(policy_requests)
@@ -228,7 +215,6 @@ def test_policy_close_and_revoke_unscoped_mutations_do_not_guard(monkeypatch) ->
 def test_webfilter_scoped_setting_uses_guard_but_global_setting_does_not(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import webfilter_core  # type: ignore
 
     module = importlib.reload(webfilter_core)
@@ -254,7 +240,6 @@ def test_webfilter_scoped_setting_uses_guard_but_global_setting_does_not(
 
 
 def test_pac_backup_mutations_use_guard_canonical_proxy(monkeypatch) -> None:
-    _add_web_to_path()
     from services import pac_profiles_store  # type: ignore
 
     module = importlib.reload(pac_profiles_store)
@@ -290,7 +275,6 @@ def test_pac_backup_mutations_use_guard_canonical_proxy(monkeypatch) -> None:
 
 
 def test_adblock_event_insert_and_batch_use_guard_canonical_proxy(monkeypatch) -> None:
-    _add_web_to_path()
     from services import adblock_store  # type: ignore
 
     module = importlib.reload(adblock_store)
@@ -364,7 +348,6 @@ def test_adblock_event_insert_and_batch_use_guard_canonical_proxy(monkeypatch) -
 
 
 def test_guarded_service_writes_reject_tombstoned_proxy(monkeypatch) -> None:
-    _add_web_to_path()
     from services import (  # type: ignore
         adblock_store,
         pac_profiles_store,

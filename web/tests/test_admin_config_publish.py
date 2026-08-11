@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
 from urllib.parse import parse_qs, urlsplit
@@ -10,14 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 
-def _add_web_path() -> None:
-    web_root = Path(__file__).resolve().parents[1]
-    if str(web_root) not in sys.path:
-        sys.path.insert(0, str(web_root))
-
-
 def _load_admin_app(monkeypatch, tmp_path):
-    _add_web_path()
     monkeypatch.setenv("DISABLE_BACKGROUND", "1")
     monkeypatch.setenv("FLASK_SECRET_PATH", str(tmp_path / "flask_secret.key"))
     sys.modules.pop("app", None)
@@ -730,9 +722,7 @@ def test_operations_api_uses_valid_since_cursor_args(monkeypatch, tmp_path) -> N
         def list_operations(self, proxy_id, *, limit):  # pragma: no cover - guard
             pytest.fail("valid since cursors must use list_recent_since")
 
-        def list_recent_since(
-            self, proxy_id, *, after_updated_ts, after_id, limit
-        ):
+        def list_recent_since(self, proxy_id, *, after_updated_ts, after_id, limit):
             assert proxy_id == "edge-a"
             assert after_updated_ts == 123
             assert after_id == 7

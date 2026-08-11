@@ -1,19 +1,12 @@
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
-
-def _add_repo_paths() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (repo_root, web_root):
-        path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _write_pac_artifacts(
@@ -41,7 +34,6 @@ def _write_pac_artifacts(
 
 @pytest.fixture
 def public_pac_client(monkeypatch):
-    _add_repo_paths()
     from services import pac_http  # type: ignore
 
     from proxy import app as proxy_app  # type: ignore

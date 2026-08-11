@@ -2,24 +2,15 @@ from __future__ import annotations
 
 import io
 import json
-import sys
 import urllib.error
-from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
 
 import pytest
 
 
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
 @pytest.fixture
 def proxy_client_module():
-    _add_web_to_path()
     from services import proxy_client  # type: ignore
 
     return proxy_client
@@ -674,9 +665,7 @@ def test_proxy_client_url_error_surfaces_redacted_reason(
     monkeypatch.setattr(
         proxy_client.urllib.request,
         "urlopen",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            urllib.error.URLError(reason)
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(urllib.error.URLError(reason)),
     )
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
@@ -854,18 +843,30 @@ def test_proxy_client_safe_url_context_uses_final_segment_bounded_endpoint(
 ) -> None:
     client = proxy_client_module.ProxyClient()
 
-    assert client._safe_url_context(
-        "https://proxy-mgmt:5443/prefix/api/manage-shadow/path-secret/api/manage/health"
-    ) == "https://proxy-mgmt:5443/api/manage/health"
-    assert client._safe_url_context(
-        "https://proxy-mgmt:5443/prefix/api/manage/path-secret/api/manage/logs"
-    ) == "https://proxy-mgmt:5443/api/manage/logs"
-    assert client._safe_url_context(
-        "https://proxy-mgmt:5443/prefix/api/manage-shadow/path-secret"
-    ) == "unavailable"
-    assert client._safe_url_context(
-        "https://proxy-mgmt:5443/prefix/without-management-endpoint"
-    ) == "unavailable"
+    assert (
+        client._safe_url_context(
+            "https://proxy-mgmt:5443/prefix/api/manage-shadow/path-secret/api/manage/health"
+        )
+        == "https://proxy-mgmt:5443/api/manage/health"
+    )
+    assert (
+        client._safe_url_context(
+            "https://proxy-mgmt:5443/prefix/api/manage/path-secret/api/manage/logs"
+        )
+        == "https://proxy-mgmt:5443/api/manage/logs"
+    )
+    assert (
+        client._safe_url_context(
+            "https://proxy-mgmt:5443/prefix/api/manage-shadow/path-secret"
+        )
+        == "unavailable"
+    )
+    assert (
+        client._safe_url_context(
+            "https://proxy-mgmt:5443/prefix/without-management-endpoint"
+        )
+        == "unavailable"
+    )
 
 
 def test_proxy_client_repeated_marker_base_path_is_omitted_from_error_context(

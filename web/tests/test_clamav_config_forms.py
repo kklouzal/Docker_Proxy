@@ -1,15 +1,8 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
-
-
-def _add_web_path() -> None:
-    web_root = Path(__file__).resolve().parents[1]
-    if str(web_root) not in sys.path:
-        sys.path.insert(0, str(web_root))
 
 
 def _repo_root() -> Path:
@@ -30,7 +23,6 @@ def _directives(config_text: str) -> dict[str, str]:
 def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract() -> (
     None
 ):
-    _add_web_path()
     from services.clamav_config_forms import (
         DEFAULTS,
         normalize_clamav_options,
@@ -69,7 +61,6 @@ def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract()
 
 
 def test_download_respmod_policy_remains_enabled_for_stream_safe_remote_clamd() -> None:
-    _add_web_path()
     from services.clamav_config_forms import render_file_security_policy_config
 
     policy = render_file_security_policy_config()
@@ -77,13 +68,14 @@ def test_download_respmod_policy_remains_enabled_for_stream_safe_remote_clamd() 
     assert "adaptation_access av_req_set allow file_security_upload_methods" in policy
     assert "adaptation_access av_resp_set deny file_security_range_request" in policy
     assert "adaptation_access av_resp_set deny file_security_partial_response" in policy
-    assert "adaptation_access av_resp_set allow file_security_download_methods" in policy
+    assert (
+        "adaptation_access av_resp_set allow file_security_download_methods" in policy
+    )
     assert "adaptation_access av_resp_set deny all" in policy
     assert "download/RESPMOD AV scanning disabled" not in policy
 
 
 def test_legacy_default_risky_extensions_drop_web_script_assets() -> None:
-    _add_web_path()
     from services.clamav_config_forms import normalize_clamav_options
 
     options = normalize_clamav_options(
@@ -99,7 +91,6 @@ def test_legacy_default_risky_extensions_drop_web_script_assets() -> None:
 
 
 def test_clamav_options_round_trip_and_fail_closed_rendering() -> None:
-    _add_web_path()
     from services.clamav_config_forms import (
         apply_clamav_options_to_config,
         extract_clamav_options,
@@ -165,10 +156,7 @@ def test_clamav_options_round_trip_and_fail_closed_rendering() -> None:
     )
 
 
-def test_clamav_form_rejects_malformed_size_instead_of_disabling_existing_cap() -> (
-    None
-):
-    _add_web_path()
+def test_clamav_form_rejects_malformed_size_instead_of_disabling_existing_cap() -> None:
     from services.clamav_config_forms import read_clamav_options_from_form
 
     current = {
@@ -184,7 +172,6 @@ def test_clamav_form_rejects_malformed_size_instead_of_disabling_existing_cap() 
 
 
 def test_clamav_preset_change_reseeds_untouched_policy_fields() -> None:
-    _add_web_path()
     from services.clamav_config_forms import read_clamav_options_from_form
 
     current = {
@@ -209,7 +196,6 @@ def test_clamav_preset_change_reseeds_untouched_policy_fields() -> None:
 
 
 def test_clamav_monitor_preset_relaxes_untouched_blocking_controls() -> None:
-    _add_web_path()
     from services.clamav_config_forms import read_clamav_options_from_form
 
     current = {
@@ -238,7 +224,6 @@ def test_clamav_monitor_preset_relaxes_untouched_blocking_controls() -> None:
 def test_clamav_preset_change_preserves_explicit_checked_matching_current_value() -> (
     None
 ):
-    _add_web_path()
     from services.clamav_config_forms import read_clamav_options_from_form
 
     current = {
@@ -266,10 +251,7 @@ def test_clamav_preset_change_preserves_explicit_checked_matching_current_value(
     assert options["file_security_block_executable_content"] is False
 
 
-def test_clamav_unchecked_checkbox_absence_still_clears_when_preset_unchanged() -> (
-    None
-):
-    _add_web_path()
+def test_clamav_unchecked_checkbox_absence_still_clears_when_preset_unchanged() -> None:
     from services.clamav_config_forms import read_clamav_options_from_form
 
     current = {
@@ -287,7 +269,6 @@ def test_clamav_unchecked_checkbox_absence_still_clears_when_preset_unchanged() 
 
 
 def test_packaged_virus_scan_config_matches_schema_streaming_defaults() -> None:
-    _add_web_path()
     from services.clamav_config_forms import render_virus_scan_config
 
     packaged = _directives(
@@ -311,13 +292,10 @@ def test_packaged_virus_scan_config_matches_schema_streaming_defaults() -> None:
 
 
 def test_cicap_alias_does_not_override_schema_allow_204_policy() -> None:
-    _add_web_path()
     from services.clamav_config_forms import render_virus_scan_config
 
     rendered = render_virus_scan_config({"virus_scan_allow_204_on": False})
-    cicap_config = (_repo_root() / "docker" / "c-icap.conf").read_text(
-        encoding="utf-8"
-    )
+    cicap_config = (_repo_root() / "docker" / "c-icap.conf").read_text(encoding="utf-8")
     alias = next(
         line
         for line in cicap_config.splitlines()
@@ -332,7 +310,6 @@ def test_cicap_alias_does_not_override_schema_allow_204_policy() -> None:
 def test_squid_controller_materializes_clamav_runtime_files(
     tmp_path, monkeypatch
 ) -> None:
-    _add_web_path()
     from services.clamav_config_forms import apply_clamav_options_to_config
     from services.squid_core import SquidController
 
@@ -404,7 +381,6 @@ def test_squid_controller_routes_remote_clamd_download_scan_to_stream_helper(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_web_path()
     from services.clamav_config_forms import apply_clamav_options_to_config
     from services.squid_core import SquidController
 
@@ -435,13 +411,30 @@ def test_squid_controller_routes_remote_clamd_download_scan_to_stream_helper(
     assert ok is True
     assert "updated" in detail
     include_text = icap_path.read_text(encoding="utf-8")
-    assert "icap_service av_req reqmod_precache icap://127.0.0.1:14001/avrespmod" in include_text
-    assert "icap_service av_resp respmod_precache icap://127.0.0.1:14002/avrespmod" in include_text
+    assert (
+        "icap_service av_req reqmod_precache icap://127.0.0.1:14001/avrespmod"
+        in include_text
+    )
+    assert (
+        "icap_service av_resp respmod_precache icap://127.0.0.1:14002/avrespmod"
+        in include_text
+    )
     assert "adaptation_service_set av_resp_set av_resp" in include_text
-    assert "adaptation_access av_req_set allow file_security_upload_methods" in include_text
-    assert "adaptation_access av_resp_set deny file_security_range_request" in include_text
-    assert "adaptation_access av_resp_set deny file_security_partial_response" in include_text
-    assert "adaptation_access av_resp_set allow file_security_download_methods" in include_text
+    assert (
+        "adaptation_access av_req_set allow file_security_upload_methods"
+        in include_text
+    )
+    assert (
+        "adaptation_access av_resp_set deny file_security_range_request" in include_text
+    )
+    assert (
+        "adaptation_access av_resp_set deny file_security_partial_response"
+        in include_text
+    )
+    assert (
+        "adaptation_access av_resp_set allow file_security_download_methods"
+        in include_text
+    )
     assert "adaptation_access av_resp_set deny all" in include_text
     assert "download/RESPMOD AV scanning disabled" not in include_text
     assert "c-icap virus_scan passes local temporary file paths" not in include_text

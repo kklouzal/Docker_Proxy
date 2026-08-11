@@ -1,20 +1,10 @@
 from __future__ import annotations
 
 import socket
-import sys
 import threading
 import time
-from pathlib import Path
 
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
-_add_web_to_path()
-from services.client_identity_cache import (  # type: ignore  # noqa: E402
+from services.client_identity_cache import (  # type: ignore
     _REVERSE_DNS_LOOKUP_THREAD_LIMIT,
     ClientIdentityCache,
 )

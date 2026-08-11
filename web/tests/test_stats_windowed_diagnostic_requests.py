@@ -1,17 +1,6 @@
 from __future__ import annotations
 
-import os
-import pathlib
-import sys
-
 from .mysql_test_utils import configure_test_mysql_env
-
-
-def _add_web_to_path() -> None:
-    web_dir = pathlib.Path(os.path.join(pathlib.Path(__file__).parent, "..")).resolve()
-    web_dir_str = str(web_dir)
-    if web_dir_str not in sys.path:
-        sys.path.insert(0, web_dir_str)
 
 
 def _request_line(
@@ -57,7 +46,6 @@ def _insert_request(diag_store, line: str) -> None:
 
 
 def _init_stats_stores(tmp_path, env_name: str):
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / env_name)
 
     from services.diagnostic_store import DiagnosticStore  # type: ignore

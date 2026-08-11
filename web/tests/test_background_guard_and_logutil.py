@@ -1,20 +1,9 @@
 from __future__ import annotations
 
 import builtins
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
-_add_web_to_path()
-
-from services import background_guard, logutil  # type: ignore  # noqa: E402
+from services import background_guard, logutil  # type: ignore
 
 
 def _reset_logutil_state() -> None:
@@ -347,9 +336,7 @@ def test_acquire_background_lock_denies_pid_change_when_inherited_close_fails(
     monkeypatch.setattr(
         background_guard.logger,
         "exception",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("logging failed")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("logging failed")),
     )
 
     assert background_guard.acquire_background_lock() is False
@@ -382,7 +369,9 @@ def test_acquire_background_lock_pid_change_contention_closes_both_fds(
     assert background_guard._LOCK_PID is None
 
 
-def test_acquire_background_lock_is_idempotent_for_current_process(monkeypatch, tmp_path) -> None:
+def test_acquire_background_lock_is_idempotent_for_current_process(
+    monkeypatch, tmp_path
+) -> None:
     import fcntl
 
     opened: list[str] = []
@@ -477,7 +466,9 @@ def test_should_log_prunes_stale_dynamic_keys_after_safe_window(monkeypatch) -> 
     assert "dynamic.recent" in logutil._last_log
 
 
-def test_should_log_keeps_keys_within_throttle_interval_when_pruning(monkeypatch) -> None:
+def test_should_log_keeps_keys_within_throttle_interval_when_pruning(
+    monkeypatch,
+) -> None:
     _reset_logutil_state()
     current = {"value": 10000.0}
     monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
@@ -495,15 +486,24 @@ def test_should_log_malformed_intervals_do_not_break_logging_loop(monkeypatch) -
     current = {"value": 1000.0}
     monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
 
-    assert logutil.should_log(  # type: ignore[arg-type]
-        "bad.none", interval_seconds=None
-    ) is True
-    assert logutil.should_log(  # type: ignore[arg-type]
-        "bad.text", interval_seconds="oops"
-    ) is True
+    assert (
+        logutil.should_log(  # type: ignore[arg-type]
+            "bad.none", interval_seconds=None
+        )
+        is True
+    )
+    assert (
+        logutil.should_log(  # type: ignore[arg-type]
+            "bad.text", interval_seconds="oops"
+        )
+        is True
+    )
     assert logutil.should_log("bad.negative", interval_seconds=-10.0) is True
 
     current["value"] += 1.0
-    assert logutil.should_log(  # type: ignore[arg-type]
-        "bad.none", interval_seconds=None
-    ) is True
+    assert (
+        logutil.should_log(  # type: ignore[arg-type]
+            "bad.none", interval_seconds=None
+        )
+        is True
+    )

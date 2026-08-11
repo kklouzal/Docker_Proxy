@@ -1,20 +1,6 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-
-def _add_repo_paths() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (repo_root, web_root):
-        path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-
-
-_add_repo_paths()
-from services.diagnostic_store import _split_tsv  # type: ignore  # noqa: E402
+from services.diagnostic_store import _split_tsv  # type: ignore
 
 
 def test_split_tsv_fast_path_accepts_tab_separated_rows() -> None:

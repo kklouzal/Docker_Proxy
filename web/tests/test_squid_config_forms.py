@@ -1,20 +1,9 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
-
-
-def _ensure_web_import_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
-_ensure_web_import_path()
-
-from services.squid_config_forms import (  # type: ignore  # noqa: E402
+from services.squid_config_forms import (  # type: ignore
     CACHE_OVERRIDE_FIELDS,
     DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES,
     DEFAULT_REFRESH_PATTERNS,

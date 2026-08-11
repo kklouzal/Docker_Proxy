@@ -1,20 +1,9 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
-_add_web_to_path()
-from services import certificate_bundles  # type: ignore  # noqa: E402
+from services import certificate_bundles  # type: ignore
 
 CertificateBundleRevision = certificate_bundles.CertificateBundleRevision
 CertificateBundleStore = certificate_bundles.CertificateBundleStore

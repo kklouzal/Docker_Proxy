@@ -1,21 +1,14 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
 # Escaped compatibility characters keep IDNA/fullwidth regression inputs explicit
 # without tripping Ruff's ambiguous-unicode-character lint.
 FULLWIDTH_FULL_STOP = "\uff0e"
 FULLWIDTH_LOOPBACK_IPV4 = "\uff11\uff12\uff17.\uff10.\uff10.\uff11"
-FULLWIDTH_LOOPBACK_IPV4_IDNA_DOTS = "\uff11\uff12\uff17\u3002\uff10\u3002\uff10\u3002\uff11"
-
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
+FULLWIDTH_LOOPBACK_IPV4_IDNA_DOTS = (
+    "\uff11\uff12\uff17\u3002\uff10\u3002\uff10\u3002\uff11"
+)
 
 
 @pytest.mark.parametrize(
@@ -41,11 +34,12 @@ def _add_web_to_path() -> None:
     ],
 )
 def test_normalize_public_host_rejects_internal_reserved_dns_names(value: str) -> None:
-    _add_web_to_path()
     from services.public_endpoint import normalize_public_host  # type: ignore
 
     assert normalize_public_host(value) == ""
-    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+    assert (
+        normalize_public_host(value, default="fallback.example") == "fallback.example"
+    )
 
 
 @pytest.mark.parametrize(
@@ -57,11 +51,12 @@ def test_normalize_public_host_rejects_internal_reserved_dns_names(value: str) -
     ],
 )
 def test_normalize_public_host_rejects_single_label_dns_names(value: str) -> None:
-    _add_web_to_path()
     from services.public_endpoint import normalize_public_host  # type: ignore
 
     assert normalize_public_host(value) == ""
-    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+    assert (
+        normalize_public_host(value, default="fallback.example") == "fallback.example"
+    )
 
 
 @pytest.mark.parametrize(
@@ -76,7 +71,6 @@ def test_normalize_public_host_allows_explicit_single_label_dns_names(
     value: str,
     expected: str,
 ) -> None:
-    _add_web_to_path()
     from services.public_endpoint import normalize_public_host  # type: ignore
 
     assert normalize_public_host(value, allow_single_label=True) == expected
@@ -96,11 +90,12 @@ def test_normalize_public_host_allows_explicit_single_label_dns_names(
     ],
 )
 def test_normalize_public_host_rejects_non_public_ip_literals(value: str) -> None:
-    _add_web_to_path()
     from services.public_endpoint import normalize_public_host  # type: ignore
 
     assert normalize_public_host(value) == ""
-    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+    assert (
+        normalize_public_host(value, default="fallback.example") == "fallback.example"
+    )
 
 
 @pytest.mark.parametrize(
@@ -123,7 +118,6 @@ def test_normalize_public_host_accepts_public_endpoint_hosts(
     value: str,
     expected: str,
 ) -> None:
-    _add_web_to_path()
     from services.public_endpoint import normalize_public_host  # type: ignore
 
     assert normalize_public_host(value) == expected
@@ -143,11 +137,12 @@ def test_normalize_public_host_accepts_public_endpoint_hosts(
 def test_normalize_public_host_rejects_schemeless_authority_suffixes(
     value: str,
 ) -> None:
-    _add_web_to_path()
     from services.public_endpoint import normalize_public_host  # type: ignore
 
     assert normalize_public_host(value) == ""
-    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+    assert (
+        normalize_public_host(value, default="fallback.example") == "fallback.example"
+    )
 
 
 @pytest.mark.parametrize(
@@ -160,11 +155,12 @@ def test_normalize_public_host_rejects_schemeless_authority_suffixes(
     ],
 )
 def test_normalize_public_host_rejects_stray_authority_brackets(value: str) -> None:
-    _add_web_to_path()
     from services.public_endpoint import normalize_public_host  # type: ignore
 
     assert normalize_public_host(value) == ""
-    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+    assert (
+        normalize_public_host(value, default="fallback.example") == "fallback.example"
+    )
 
 
 @pytest.mark.parametrize(
@@ -179,11 +175,12 @@ def test_normalize_public_host_rejects_stray_authority_brackets(value: str) -> N
 def test_normalize_public_host_rejects_multiple_trailing_root_dots(
     value: str,
 ) -> None:
-    _add_web_to_path()
     from services.public_endpoint import normalize_public_host  # type: ignore
 
     assert normalize_public_host(value) == ""
-    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+    assert (
+        normalize_public_host(value, default="fallback.example") == "fallback.example"
+    )
     assert normalize_public_host(value, allow_single_label=True) == ""
 
 
@@ -198,11 +195,12 @@ def test_normalize_public_host_rejects_multiple_trailing_root_dots(
 def test_normalize_public_host_rejects_idna_folded_ambiguous_ipv4_forms(
     value: str,
 ) -> None:
-    _add_web_to_path()
     from services.public_endpoint import normalize_public_host  # type: ignore
 
     assert normalize_public_host(value) == ""
-    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+    assert (
+        normalize_public_host(value, default="fallback.example") == "fallback.example"
+    )
 
 
 @pytest.mark.parametrize(
@@ -215,12 +213,15 @@ def test_normalize_public_host_rejects_idna_folded_ambiguous_ipv4_forms(
         "https://[2001:4860:4860::8888]:/proxy.pac",
     ],
 )
-def test_normalize_public_host_rejects_empty_explicit_authority_ports(value: str) -> None:
-    _add_web_to_path()
+def test_normalize_public_host_rejects_empty_explicit_authority_ports(
+    value: str,
+) -> None:
     from services.public_endpoint import normalize_public_host  # type: ignore
 
     assert normalize_public_host(value) == ""
-    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+    assert (
+        normalize_public_host(value, default="fallback.example") == "fallback.example"
+    )
 
 
 @pytest.mark.parametrize(
@@ -232,9 +233,12 @@ def test_normalize_public_host_rejects_empty_explicit_authority_ports(value: str
         "https://[2001:4860:4860::8888]:0/proxy.pac",
     ],
 )
-def test_normalize_public_host_rejects_zero_explicit_authority_ports(value: str) -> None:
-    _add_web_to_path()
+def test_normalize_public_host_rejects_zero_explicit_authority_ports(
+    value: str,
+) -> None:
     from services.public_endpoint import normalize_public_host  # type: ignore
 
     assert normalize_public_host(value) == ""
-    assert normalize_public_host(value, default="fallback.example") == "fallback.example"
+    assert (
+        normalize_public_host(value, default="fallback.example") == "fallback.example"
+    )

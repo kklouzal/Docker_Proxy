@@ -1,19 +1,8 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-
-def _add_repo_paths() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (repo_root, web_root):
-        path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
 
 
 class StopLoop(BaseException):
@@ -26,7 +15,6 @@ def _stop_sleep(_seconds: float) -> None:
 
 @pytest.fixture
 def adblock_store():
-    _add_repo_paths()
     from services import adblock_store as module  # type: ignore
 
     return module
@@ -34,7 +22,6 @@ def adblock_store():
 
 @pytest.fixture
 def diagnostic_store():
-    _add_repo_paths()
     from services import diagnostic_store as module  # type: ignore
 
     return module
@@ -42,7 +29,6 @@ def diagnostic_store():
 
 @pytest.fixture
 def live_stats():
-    _add_repo_paths()
     from services import live_stats as module  # type: ignore
 
     return module
@@ -50,7 +36,6 @@ def live_stats():
 
 @pytest.fixture
 def ssl_errors_store():
-    _add_repo_paths()
     from services import ssl_errors_store as module  # type: ignore
 
     return module
@@ -81,12 +66,10 @@ def test_live_stats_seed_checkpoint_skips_restarts_and_recovers_appends(
 ) -> None:
     log_path = tmp_path / "access.log"
     first_line = (
-        "1777770000.1\t-\t192.0.2.10\tGET\thttps://first.example/a"
-        "\tTCP_MISS/200\t100\n"
+        "1777770000.1\t-\t192.0.2.10\tGET\thttps://first.example/a\tTCP_MISS/200\t100\n"
     )
     second_line = (
-        "1777770001.2\t-\t192.0.2.10\tGET\thttps://second.example/b"
-        "\tTCP_HIT/200\t200\n"
+        "1777770001.2\t-\t192.0.2.10\tGET\thttps://second.example/b\tTCP_HIT/200\t200\n"
     )
     log_path.write_text(first_line, encoding="utf-8")
     state: tuple[object, ...] | None = None
@@ -118,10 +101,7 @@ def test_live_stats_seed_checkpoint_skips_restarts_and_recovers_appends(
 
     def flush_batch(_conn, batch, **_kwargs) -> None:
         flushed_requests.append(
-            {
-                domain: entry.requests
-                for domain, entry in batch["domains"].items()
-            }
+            {domain: entry.requests for domain, entry in batch["domains"].items()}
         )
 
     def make_store():
@@ -194,6 +174,7 @@ def test_live_stats_tailer_retains_batch_across_rotation_and_backoff(
 
     def next_handle() -> Handle:
         return next(handles, Handle([]))
+
     log_path_stats = iter([1, 2, 2])
     times = iter([100.0, 100.1, 100.2, 101.5, 101.6, 102.8])
 
@@ -207,7 +188,9 @@ def test_live_stats_tailer_retains_batch_across_rotation_and_backoff(
         return True
 
     def flush_batch(_conn, batch, **_kwargs) -> None:
-        flushed_batches.append({bucket: dict(values) for bucket, values in batch.items()})
+        flushed_batches.append(
+            {bucket: dict(values) for bucket, values in batch.items()}
+        )
 
     outage_logs: list[tuple[str, str]] = []
     sleeps = 0
@@ -217,6 +200,7 @@ def test_live_stats_tailer_retains_batch_across_rotation_and_backoff(
         sleeps += 1
         if flush_attempts >= 2 or sleeps >= 3:
             raise StopLoop
+
     monkeypatch.setenv("LIVE_STATS_COMMIT_BATCH", "2")
     monkeypatch.setenv("LIVE_STATS_COMMIT_INTERVAL_SECONDS", "1")
     monkeypatch.setenv("LIVE_STATS_DB_WRITE_BACKOFF_INITIAL_SECONDS", "0.25")
@@ -230,7 +214,9 @@ def test_live_stats_tailer_retains_batch_across_rotation_and_backoff(
     monkeypatch.setattr(live_stats.time, "monotonic", lambda: next(times, 999.0))
     monkeypatch.setattr(live_stats.time, "sleep", stop_after_retry)
     monkeypatch.setattr(live_stats.pathlib.Path, "exists", lambda _self: True)
-    monkeypatch.setattr(live_stats.pathlib.Path, "open", lambda *_args, **_kwargs: next_handle())
+    monkeypatch.setattr(
+        live_stats.pathlib.Path, "open", lambda *_args, **_kwargs: next_handle()
+    )
     monkeypatch.setattr(live_stats.os, "stat", fake_stat)
     monkeypatch.setattr(
         live_stats,
@@ -346,7 +332,9 @@ def test_live_stats_commit_cadence_uses_monotonic_time(
         "_save_seed_checkpoint",
         lambda _conn, _proxy_id, value: saved_checkpoints.append(value),
     )
-    monkeypatch.setattr(live_stats.time, "monotonic", lambda: next(monotonic_times, 101.2))
+    monkeypatch.setattr(
+        live_stats.time, "monotonic", lambda: next(monotonic_times, 101.2)
+    )
     monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
     monkeypatch.setattr(
         live_stats.time,
@@ -354,7 +342,9 @@ def test_live_stats_commit_cadence_uses_monotonic_time(
         lambda: (_ for _ in ()).throw(AssertionError("cadence used wall time")),
     )
     monkeypatch.setattr(live_stats.pathlib.Path, "exists", lambda _self: True)
-    monkeypatch.setattr(live_stats.pathlib.Path, "open", lambda *_args, **_kwargs: Handle())
+    monkeypatch.setattr(
+        live_stats.pathlib.Path, "open", lambda *_args, **_kwargs: Handle()
+    )
 
     with pytest.raises(StopLoop):
         store._tail_loop()
@@ -650,8 +640,7 @@ def test_ssl_errors_tailer_idle_flush_uses_monotonic_elapsed_time(
     log_path.write_text("", encoding="utf-8")
     store = ssl_errors_store.SslErrorsStore(cache_log_path=str(log_path))
     header = (
-        "2026/08/09 12:00:00| Cannot accept a TLS connection "
-        "host=rollback.example\n"
+        "2026/08/09 12:00:00| Cannot accept a TLS connection host=rollback.example\n"
     )
     flushed: list[str] = []
     sleep_calls = 0
@@ -709,10 +698,7 @@ def test_ssl_errors_tailer_retries_idle_flush_after_database_error(
     log_path = tmp_path / "cache.log"
     log_path.write_text("", encoding="utf-8")
     store = ssl_errors_store.SslErrorsStore(cache_log_path=str(log_path))
-    header = (
-        "2026/08/09 12:00:00| Cannot accept a TLS connection "
-        "host=retry.example\n"
-    )
+    header = "2026/08/09 12:00:00| Cannot accept a TLS connection host=retry.example\n"
     sleep_calls = 0
     attempts: list[str] = []
 

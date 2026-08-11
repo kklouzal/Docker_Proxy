@@ -10,16 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-def _add_web_to_path() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (str(repo_root), str(web_root)):
-        if path not in sys.path:
-            sys.path.insert(0, path)
-
-
 def _compile_sample(tmp_path: Path, lines: list[str]) -> Path:
-    _add_web_to_path()
     from tools import adblock_compile as ac  # type: ignore
 
     out = tmp_path / "compiled"
@@ -129,7 +120,6 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 def test_main_compiles_explicit_enabled_lists_without_database_state(
     tmp_path: Path,
 ) -> None:
-    _add_web_to_path()
     from tools import adblock_compile as ac  # type: ignore
 
     lists = tmp_path / "lists"
@@ -194,7 +184,6 @@ def test_script_entrypoint_compiles_explicit_enabled_lists_without_pythonpath(
 
 
 def test_abp_regex_options_split_after_closing_delimiter() -> None:
-    _add_web_to_path()
     from tools import adblock_compile as ac  # type: ignore
 
     rule = (
@@ -215,7 +204,6 @@ def test_abp_regex_options_split_after_closing_delimiter() -> None:
 
 
 def test_abp_options_split_ignores_escaped_literal_dollars() -> None:
-    _add_web_to_path()
     from tools import adblock_compile as ac  # type: ignore
 
     assert ac._split_options(r"plain\$literal") == (r"plain\$literal", "")
@@ -230,7 +218,6 @@ def test_abp_options_split_ignores_escaped_literal_dollars() -> None:
 
 
 def test_abp_regex_compilation_honors_escaped_pattern_metacharacters() -> None:
-    _add_web_to_path()
     from services.adblock_patterns import abp_suffix_to_regex, abp_to_regex
 
     wildcard_regex = abp_to_regex(r"ad\*token")
@@ -348,7 +335,6 @@ def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> 
         ],
     )
 
-    _add_web_to_path()
     from tools import adblock_compile as ac  # type: ignore
 
     db_path = out / "request_lookup.sqlite"

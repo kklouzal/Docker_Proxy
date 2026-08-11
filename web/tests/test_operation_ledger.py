@@ -1,19 +1,8 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
 POLICY_SHA = "a" * 64
-
-
-def _add_repo_paths() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    for path in (repo_root, repo_root / "web"):
-        path_text = str(path)
-        if path_text not in sys.path:
-            sys.path.insert(0, path_text)
 
 
 class _Result:
@@ -177,7 +166,6 @@ class _LifecycleConnection:
 
 
 def test_init_db_backfills_active_request_keys_before_unique_index(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     conn = _Connection()
@@ -238,7 +226,6 @@ def test_init_db_backfills_active_request_keys_before_unique_index(monkeypatch) 
 def test_init_db_trusts_current_runtime_schema_without_requirement_probes(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _CurrentSchemaConnection(_Connection):
@@ -250,12 +237,16 @@ def test_init_db_trusts_current_runtime_schema_without_requirement_probes(
     monkeypatch.setattr(
         ledger,
         "_column_exists",
-        lambda *_args: pytest.fail("current schema must not trigger hot-path column probes"),
+        lambda *_args: pytest.fail(
+            "current schema must not trigger hot-path column probes"
+        ),
     )
     monkeypatch.setattr(
         ledger,
         "_index_exists",
-        lambda *_args: pytest.fail("current schema must not trigger hot-path index probes"),
+        lambda *_args: pytest.fail(
+            "current schema must not trigger hot-path index probes"
+        ),
     )
     monkeypatch.setattr(
         "services.schema_lifecycle.runtime_schema_ready_for_lazy_store",
@@ -270,7 +261,6 @@ def test_init_db_trusts_current_runtime_schema_without_requirement_probes(
 def test_init_db_repairs_missing_operation_requirements_when_schema_unknown(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     conn = _Connection()
@@ -290,14 +280,15 @@ def test_init_db_repairs_missing_operation_requirements_when_schema_unknown(
     ledger.init_db()
 
     sql = [query for query, _params in conn.queries]
-    assert any(query.startswith("CREATE TABLE IF NOT EXISTS proxy_operations") for query in sql)
+    assert any(
+        query.startswith("CREATE TABLE IF NOT EXISTS proxy_operations") for query in sql
+    )
     assert any("ADD COLUMN stale_requeue_count" in query for query in sql)
 
 
 def test_claim_pending_locks_and_updates_claimed_rows_in_one_transaction(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     conn = _Connection()
@@ -323,7 +314,6 @@ def test_claim_pending_locks_and_updates_claimed_rows_in_one_transaction(
 
 
 def test_claim_pending_can_target_single_operation_id(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     conn = _Connection()
@@ -342,7 +332,6 @@ def test_claim_pending_can_target_single_operation_id(monkeypatch) -> None:
 
 
 def test_claim_pending_preserves_force_flag(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     conn = _Connection()
@@ -360,8 +349,9 @@ def test_claim_pending_preserves_force_flag(monkeypatch) -> None:
     assert [op.force for op in claimed] == [False, False]
 
 
-def test_claim_pending_accepts_lifecycle_alias_and_uses_canonical_proxy(monkeypatch) -> None:
-    _add_repo_paths()
+def test_claim_pending_accepts_lifecycle_alias_and_uses_canonical_proxy(
+    monkeypatch,
+) -> None:
     from services.operation_ledger import OperationLedger
     from services.proxy_write_guard import clear_proxy_write_guard_cache
 
@@ -404,7 +394,9 @@ def test_claim_pending_accepts_lifecycle_alias_and_uses_canonical_proxy(monkeypa
 
     assert [op.proxy_id for op in claimed] == ["edge-new"]
     claim_select = next(
-        item for item in conn.queries if item[0].startswith("SELECT id FROM proxy_operations")
+        item
+        for item in conn.queries
+        if item[0].startswith("SELECT id FROM proxy_operations")
     )
     assert claim_select[1] == ("edge-new", 5)
     claim_update = next(
@@ -421,7 +413,6 @@ def test_claim_pending_fails_closed_for_blocked_lifecycle_states(
     monkeypatch,
     action,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
     from services.proxy_write_guard import (
         ProxyLifecycleWriteError,
@@ -451,7 +442,6 @@ def test_claim_pending_fails_closed_for_blocked_lifecycle_states(
 def test_claim_pending_rejects_renamed_tombstone_when_alias_disabled(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
     from services.proxy_write_guard import (
         ProxyLifecycleWriteError,
@@ -461,7 +451,9 @@ def test_claim_pending_rejects_renamed_tombstone_when_alias_disabled(
     class _LifecycleClaimConnection(_LifecycleConnection):
         def _execute_operation(self, compact: str, params: tuple[object, ...]):
             if compact.startswith("SELECT id FROM proxy_operations"):
-                pytest.fail("strict runtime claim must fail before selecting new proxy rows")
+                pytest.fail(
+                    "strict runtime claim must fail before selecting new proxy rows"
+                )
             if compact.startswith("UPDATE proxy_operations"):
                 pytest.fail("strict runtime claim must fail before mutating operations")
             return _Result()
@@ -489,7 +481,6 @@ def test_claim_pending_rejects_renamed_tombstone_when_alias_disabled(
 def test_requeue_stale_applying_rejects_renamed_tombstone_when_alias_disabled(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
     from services.proxy_write_guard import (
         ProxyLifecycleWriteError,
@@ -499,7 +490,9 @@ def test_requeue_stale_applying_rejects_renamed_tombstone_when_alias_disabled(
     class _LifecycleRequeueConnection(_LifecycleConnection):
         def _execute_operation(self, compact: str, params: tuple[object, ...]):
             if compact.startswith("UPDATE proxy_operations"):
-                pytest.fail("strict runtime requeue must fail before mutating operations")
+                pytest.fail(
+                    "strict runtime requeue must fail before mutating operations"
+                )
             return _Result()
 
     clear_proxy_write_guard_cache()
@@ -524,7 +517,6 @@ def test_requeue_stale_applying_rejects_renamed_tombstone_when_alias_disabled(
 def test_new_canonical_runtime_can_claim_and_complete_after_rename(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
     from services.proxy_write_guard import clear_proxy_write_guard_cache
 
@@ -593,7 +585,6 @@ def test_new_canonical_runtime_can_claim_and_complete_after_rename(
 
 
 def test_list_recent_since_preserves_claim_token(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     row = _operation_row(
@@ -643,7 +634,6 @@ def test_list_recent_since_preserves_claim_token(monkeypatch) -> None:
 def test_requeue_stale_applying_recovers_without_active_key_collisions(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _RequeueConnection:
@@ -688,7 +678,10 @@ def test_requeue_stale_applying_recovers_without_active_key_collisions(
     assert "JOIN ( SELECT proxy_id, request_key FROM" in supersede_sql
     assert "FROM proxy_operations stale_source" in supersede_sql
     assert "JOIN proxy_operations keeper" in supersede_sql
-    assert "CASE WHEN keeper.status='applying' AND keeper.started_ts>=%s THEN 0" in supersede_sql
+    assert (
+        "CASE WHEN keeper.status='applying' AND keeper.started_ts>=%s THEN 0"
+        in supersede_sql
+    )
     assert "active.status='superseded'" in supersede_sql
     assert "active.request_key=NULL" in supersede_sql
     assert "active.claim_token=NULL" in supersede_sql
@@ -719,7 +712,6 @@ def test_requeue_stale_applying_recovers_without_active_key_collisions(
 def test_requeue_stale_applying_accepts_lifecycle_alias_and_scopes_canonical(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
     from services.proxy_write_guard import clear_proxy_write_guard_cache
 
@@ -760,7 +752,6 @@ def test_requeue_stale_applying_accepts_lifecycle_alias_and_scopes_canonical(
 def test_requeue_stale_applying_supersede_sql_preserves_valid_keeper_ordering(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _RequeueConnection:
@@ -802,10 +793,9 @@ def test_requeue_stale_applying_supersede_sql_preserves_valid_keeper_ordering(
     assert supersede_sql.index(f"{priority_case} < {active_priority_case}") < (
         supersede_sql.index(f"{priority_case} = {active_priority_case}")
     )
-    assert (
-        supersede_sql.index(f"{priority_case} = {active_priority_case}")
-        < supersede_sql.index("keeper.created_ts < active.created_ts")
-    )
+    assert supersede_sql.index(
+        f"{priority_case} = {active_priority_case}"
+    ) < supersede_sql.index("keeper.created_ts < active.created_ts")
     assert (
         "OR (keeper.created_ts = active.created_ts AND keeper.id < active.id)"
         in supersede_sql
@@ -824,7 +814,6 @@ def test_requeue_stale_applying_supersede_sql_preserves_valid_keeper_ordering(
 
 
 def test_claim_pending_returns_only_rows_claimed_by_current_token(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _LostUpdateConnection:
@@ -872,7 +861,6 @@ def test_claim_pending_returns_only_rows_claimed_by_current_token(monkeypatch) -
 
 
 def test_mark_status_can_guard_applying_claim_token(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     conn = _Connection()
@@ -912,7 +900,6 @@ def test_mark_status_can_guard_applying_claim_token(monkeypatch) -> None:
 
 
 def test_mark_status_empty_expected_claim_token_adds_claim_guard(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     conn = _Connection()
@@ -951,7 +938,6 @@ def test_mark_status_empty_expected_claim_token_adds_claim_guard(monkeypatch) ->
 def test_stale_claim_completion_does_not_overwrite_reclaimed_operation_detail(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _GuardedConnection:
@@ -1029,7 +1015,6 @@ def test_stale_claim_completion_does_not_overwrite_reclaimed_operation_detail(
 def test_empty_stale_claim_completion_does_not_overwrite_reclaimed_operation_detail(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _GuardedConnection:
@@ -1114,7 +1099,6 @@ def test_mark_status_fails_closed_for_lifecycle_blocked_identity(
     monkeypatch,
     action,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
     from services.proxy_write_guard import (
         ProxyLifecycleWriteError,
@@ -1167,7 +1151,6 @@ def test_mark_status_fails_closed_for_lifecycle_blocked_identity(
 def test_mark_status_update_is_explicitly_scoped_to_initial_proxy_identity(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _ProxyChangedConnection:
@@ -1186,7 +1169,10 @@ def test_mark_status_update_is_explicitly_scoped_to_initial_proxy_identity(
             compact = " ".join(str(sql).split())
             params = tuple(params or ())
             self.queries.append((compact, params))
-            if compact.startswith("SELECT id, proxy_id, status") and not self.identity_read:
+            if (
+                compact.startswith("SELECT id, proxy_id, status")
+                and not self.identity_read
+            ):
                 self.identity_read = True
                 initial_row = dict(self.row)
                 self.row["proxy_id"] = "edge-b"
@@ -1232,7 +1218,6 @@ def test_mark_status_update_is_explicitly_scoped_to_initial_proxy_identity(
 
 
 def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _CreateConnection:
@@ -1302,7 +1287,6 @@ def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:
 def test_create_operation_normalizes_falsey_refs_and_redacts_operator_details(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _CreateConnection:
@@ -1376,7 +1360,6 @@ def test_create_operation_normalizes_falsey_refs_and_redacts_operator_details(
 def test_create_operation_normalizes_and_rejects_request_hash_evidence(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _CreateConnection:
@@ -1441,7 +1424,6 @@ def test_create_operation_normalizes_and_rejects_request_hash_evidence(
 def test_policy_and_pac_operation_target_refs_are_strict_sha256_and_normalized(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _CreateConnection:
@@ -1519,7 +1501,6 @@ def test_policy_and_pac_operation_target_refs_are_strict_sha256_and_normalized(
 def test_duplicate_active_request_preserves_original_rollback_metadata(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _DuplicateConnection:
@@ -1600,7 +1581,6 @@ def test_duplicate_active_request_preserves_original_rollback_metadata(
 def test_duplicate_active_request_fills_missing_rollback_metadata(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _StatefulCreateConnection:
@@ -1744,7 +1724,6 @@ def test_duplicate_active_request_fills_missing_rollback_metadata(
 def test_duplicate_requests_refresh_mutable_fields_without_replacing_rollback(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _StatefulCreateConnection:
@@ -1909,7 +1888,6 @@ def test_duplicate_request_dedupes_existing_operation_types_without_regressing_u
     rollback_kind,
     rollback_ref,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     row = _operation_row(
@@ -1979,7 +1957,6 @@ def test_duplicate_request_dedupes_existing_operation_types_without_regressing_u
 def test_duplicate_while_applying_returns_same_id_preserves_rollback_and_no_pending(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _ApplyingConnection:
@@ -2139,7 +2116,6 @@ def test_duplicate_while_applying_returns_same_id_preserves_rollback_and_no_pend
 
 
 def test_terminal_release_allows_genuine_retry_new_operation(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _RetryConnection:
@@ -2268,7 +2244,6 @@ def test_terminal_release_allows_genuine_retry_new_operation(monkeypatch) -> Non
 
 
 def test_multi_proxy_same_request_key_is_isolated(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _MultiProxyConnection:
@@ -2343,7 +2318,6 @@ def test_multi_proxy_same_request_key_is_isolated(monkeypatch) -> None:
 
 
 def test_terminal_status_releases_active_request_key(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     conn = _Connection()
@@ -2372,7 +2346,6 @@ def test_terminal_status_releases_active_request_key(monkeypatch) -> None:
 def test_terminal_status_does_not_overwrite_existing_terminal_operation(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _TerminalConnection:
@@ -2429,7 +2402,6 @@ def test_terminal_status_does_not_overwrite_existing_terminal_operation(
 
 
 def test_non_terminal_status_keeps_active_request_key(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     conn = _Connection()
@@ -2448,7 +2420,6 @@ def test_non_terminal_status_keeps_active_request_key(monkeypatch) -> None:
 
 
 def test_non_terminal_status_cannot_reopen_terminal_operation(monkeypatch) -> None:
-    _add_repo_paths()
     from services.operation_ledger import OperationLedger
 
     class _TerminalConnection:

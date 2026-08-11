@@ -13,16 +13,7 @@ from typing import NoReturn
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _add_repo_paths() -> None:
-    web_root = REPO_ROOT / "web"
-    for path in (REPO_ROOT, web_root):
-        path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-
-
 def _import_sslfilter_store_module():
-    _add_repo_paths()
     import services.sslfilter_store as module  # type: ignore
 
     importlib.reload(module)
@@ -30,7 +21,6 @@ def _import_sslfilter_store_module():
 
 
 def _import_webfilter_core_module():
-    _add_repo_paths()
     import services.webfilter_core as module  # type: ignore
 
     importlib.reload(module)
@@ -38,13 +28,11 @@ def _import_webfilter_core_module():
 
 
 def _import_tool_module(module_name: str):
-    _add_repo_paths()
     module = importlib.import_module(f"tools.{module_name}")
     return importlib.reload(module)
 
 
 def _import_materialized_files_module():
-    _add_repo_paths()
     from services import materialized_files  # type: ignore
 
     return materialized_files
@@ -336,7 +324,9 @@ def test_sslfilter_wildcard_domains_match_squid_suffix_semantics(
     assert cache_acl_line.split()[3:] == [".cache.example"]
 
     discord_preset = next(
-        preset for preset in store.list_compatibility_presets() if preset["id"] == "discord"
+        preset
+        for preset in store.list_compatibility_presets()
+        if preset["id"] == "discord"
     )
     assert discord_preset["installed"] == 1
     assert discord_preset["missing"] == 3
@@ -925,9 +915,14 @@ def test_webfilter_policy_exception_materialization_skips_malformed_client_ips(
     rendered = store.render_materialized_state().include_text
 
     assert "acl webfilter_exception_src_101 src 192.0.2.10" in rendered
-    assert "acl webfilter_exception_dst_101 dstdomain example.com .example.com" in rendered
+    assert (
+        "acl webfilter_exception_dst_101 dstdomain example.com .example.com" in rendered
+    )
     assert "acl webfilter_exception_src_102 src 2001:db8::5" in rendered
-    assert "acl webfilter_exception_dst_102 dstdomain ipv6.example.test .ipv6.example.test" in rendered
+    assert (
+        "acl webfilter_exception_dst_102 dstdomain ipv6.example.test .ipv6.example.test"
+        in rendered
+    )
     assert "webfilter_exception_src_103" not in rendered
     assert "webfilter_exception_src_104" not in rendered
     assert "webfilter_exception_src_105" not in rendered
@@ -1253,7 +1248,9 @@ def test_write_managed_text_files_continues_rollback_after_restore_failure(
 ) -> None:
     materialized_files = _import_materialized_files_module()
 
-    targets = [tmp_path / f"{name}.conf" for name in ("first", "second", "third", "fourth")]
+    targets = [
+        tmp_path / f"{name}.conf" for name in ("first", "second", "third", "fourth")
+    ]
     modes = (0o600, 0o620, 0o640, 0o660)
     original_owners: dict[Path, tuple[int, int]] = {}
     for target, mode in zip(targets, modes, strict=True):

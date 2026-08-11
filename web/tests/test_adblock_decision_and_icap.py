@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from .test_adblock_lookup import _add_web_to_path, _build_lookup_db
+from .test_adblock_lookup import _build_lookup_db
 
 
 @pytest.mark.parametrize(
@@ -86,7 +86,6 @@ def test_infer_resource_type_uses_browser_fetch_metadata(
     headers: dict[str, str],
     expected: str,
 ) -> None:
-    _add_web_to_path()
     from services.adblock_decision import infer_resource_type
 
     assert infer_resource_type(method, url, headers) == expected
@@ -124,7 +123,6 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
         ],
     )
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
@@ -367,7 +365,6 @@ def test_adblock_decision_enforces_method_contract_without_cache_leakage(
         ],
     )
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=60, cache_max=10)
@@ -404,7 +401,6 @@ def test_adblock_decision_cache_ttl_uses_elapsed_not_wall_time(
 ) -> None:
     db_path = _build_lookup_db(tmp_path, ["||cached.example^"])
 
-    _add_web_to_path()
     from services import adblock_decision
 
     clocks = {"wall": 1_000.0, "elapsed": 100.0}
@@ -422,7 +418,9 @@ def test_adblock_decision_cache_ttl_uses_elapsed_not_wall_time(
     candidate_calls = 0
     original_candidate_rules = engine.lookup.candidate_rules
 
-    def counting_candidate_rules(*args: object, **kwargs: object) -> list[dict[str, object]]:
+    def counting_candidate_rules(
+        *args: object, **kwargs: object
+    ) -> list[dict[str, object]]:
         nonlocal candidate_calls
         candidate_calls += 1
         return original_candidate_rules(*args, **kwargs)
@@ -454,7 +452,6 @@ def test_adblock_decision_treats_escaped_abp_metacharacters_as_literals(
         ],
     )
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
@@ -480,7 +477,6 @@ def test_adblock_decision_preserves_absolute_and_host_authority_boundaries(
         ],
     )
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
@@ -540,7 +536,6 @@ def test_adblock_decision_malformed_request_urls_do_not_raise(
 ) -> None:
     db_path = _build_lookup_db(tmp_path, ["||ads.example^", "malformed-token"])
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=60, cache_max=10)
@@ -557,7 +552,6 @@ def test_adblock_decision_percent_encoded_authority_delimiters_do_not_match_suff
 ) -> None:
     db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
@@ -590,7 +584,6 @@ def test_adblock_decision_malformed_source_urls_do_not_match_scoped_rules(
         ],
     )
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
@@ -620,7 +613,6 @@ def test_adblock_decision_valid_ipv6_literal_matching_still_works(
         ["||[2001:db8::20]^$third-party,domain=~[2001:db8::20]"],
     )
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
@@ -697,7 +689,6 @@ class _ChunkedSocket:
 
 
 def test_adblock_icap_parse_http_request_normalizes_connect_authority() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _parse_http_request
 
     method, url, headers = _parse_http_request(
@@ -738,7 +729,6 @@ def test_adblock_icap_parse_http_request_normalizes_connect_authority() -> None:
 def test_adblock_icap_parse_http_request_rejects_malformed_connect_authority(
     target: str,
 ) -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _parse_http_request
 
     method, url, headers = _parse_http_request(
@@ -757,7 +747,6 @@ def test_adblock_icap_parse_http_request_rejects_malformed_connect_authority(
 def test_adblock_icap_parse_http_request_allows_bracketed_ipv6_connect_authority() -> (
     None
 ):
-    _add_web_to_path()
     from tools.adblock_icap_server import _parse_http_request
 
     method, url, headers = _parse_http_request(
@@ -777,7 +766,6 @@ def test_adblock_icap_parse_http_request_allows_bracketed_ipv6_connect_authority
 
 
 def test_adblock_icap_parse_http_request_preserves_scheme_relative_authority() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _parse_http_request
 
     method, url, headers = _parse_http_request(
@@ -829,7 +817,6 @@ def test_adblock_icap_parse_http_request_accepts_unambiguous_non_connect_targets
     http: bytes,
     expected: str,
 ) -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _parse_http_request
 
     method, url, _headers = _parse_http_request(http)
@@ -873,7 +860,6 @@ def test_adblock_icap_parse_http_request_accepts_unambiguous_non_connect_targets
 def test_adblock_icap_parse_http_request_rejects_ambiguous_non_connect_targets(
     http: bytes,
 ) -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _parse_http_request
 
     _method, url, _headers = _parse_http_request(http)
@@ -882,7 +868,6 @@ def test_adblock_icap_parse_http_request_rejects_ambiguous_non_connect_targets(
 
 
 def test_adblock_icap_rejects_duplicate_encapsulated_offsets() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _encapsulated_http_request
 
     blocked = b"GET http://ads.example/banner.js HTTP/1.1\r\nHost: ads.example\r\n\r\n"
@@ -907,7 +892,6 @@ def test_adblock_icap_rejects_duplicate_encapsulated_offsets() -> None:
 
 
 def test_adblock_icap_rejects_out_of_order_encapsulated_offsets() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _encapsulated_http_request
 
     http = b"GET http://ads.example/banner.js HTTP/1.1\r\nHost: ads.example\r\n\r\n"
@@ -921,7 +905,6 @@ def test_adblock_icap_rejects_out_of_order_encapsulated_offsets() -> None:
 
 
 def test_adblock_icap_rejects_req_hdr_without_body_boundary() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
     http = b"GET http://ads.example/banner.js HTTP/1.1\r\nHost: ads.example\r\n\r\n"
@@ -949,7 +932,6 @@ def test_adblock_icap_rejects_req_hdr_without_body_boundary() -> None:
 
 
 def test_adblock_icap_rejects_duplicate_encapsulated_header_fields() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
     http = b"GET http://ads.example/banner.js HTTP/1.1\r\nHost: ads.example\r\n\r\n"
@@ -994,7 +976,6 @@ def test_adblock_icap_rejects_duplicate_encapsulated_header_fields() -> None:
 def test_adblock_icap_rejects_malformed_general_header_before_pipeline(
     malformed_header: bytes,
 ) -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
     http = b"GET http://allowed.example/page HTTP/1.1\r\nHost: allowed.example\r\n\r\n"
@@ -1026,7 +1007,6 @@ def test_adblock_icap_rejects_malformed_general_header_before_pipeline(
 
 
 def test_adblock_icap_extracts_request_headers_without_buffering_body() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import (
         _encapsulated_http_request,
         _parse_http_request,
@@ -1057,7 +1037,6 @@ def test_adblock_icap_extracts_request_headers_without_buffering_body() -> None:
 
 
 def test_adblock_icap_reads_preview_zero_chunk_before_responding() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
     http = (
@@ -1090,7 +1069,6 @@ def test_adblock_icap_reads_preview_zero_chunk_before_responding() -> None:
 
 
 def test_adblock_icap_reads_preview_zero_ieof_chunk_before_responding() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
     http = (
@@ -1121,7 +1099,6 @@ def test_adblock_icap_reads_preview_zero_ieof_chunk_before_responding() -> None:
 
 
 def test_adblock_icap_preserves_pipelined_request_after_valid_preview_zero() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
     http = (
@@ -1157,7 +1134,6 @@ def test_adblock_icap_preserves_pipelined_request_after_valid_preview_zero() -> 
 
 
 def test_adblock_icap_allows_duplicate_equal_preview_zero_before_pipeline() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
     http = (
@@ -1206,7 +1182,6 @@ def test_adblock_icap_allows_duplicate_equal_preview_zero_before_pipeline() -> N
 def test_adblock_icap_rejects_malformed_or_conflicting_preview_before_pipeline(
     preview_headers: list[bytes],
 ) -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
     http = (
@@ -1245,7 +1220,6 @@ def test_adblock_icap_rejects_malformed_or_conflicting_preview_before_pipeline(
 def test_adblock_icap_rejects_empty_or_signed_preview_chunk_size(
     chunk_line: bytes,
 ) -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
     http = (
@@ -1282,7 +1256,6 @@ def test_adblock_icap_rejects_empty_or_signed_preview_chunk_size(
 
 
 def test_adblock_icap_rejects_malformed_zero_preview_before_pipeline() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _read_icap_message
 
     http = (
@@ -1323,7 +1296,6 @@ def test_adblock_icap_server_closes_after_empty_preview_chunk_size(
     db_path = _build_lookup_db(tmp_path, [])
     log_path = tmp_path / "cicap-access.log"
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -1395,7 +1367,6 @@ def test_adblock_icap_request_thread_closes_its_sqlite_connection(
                 descriptors.append(int(entry.name))
         return descriptors
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -1422,10 +1393,7 @@ def test_adblock_icap_request_thread_closes_its_sqlite_connection(
     gc_was_enabled = gc.isenabled()
     gc.disable()
     try:
-        http = (
-            b"GET http://ads.example/banner.js HTTP/1.1\r\n"
-            b"Host: ads.example\r\n\r\n"
-        )
+        http = b"GET http://ads.example/banner.js HTTP/1.1\r\nHost: ads.example\r\n\r\n"
         request = (
             b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
             b"Host: 127.0.0.1\r\n"
@@ -1453,7 +1421,6 @@ def test_adblock_icap_server_blocks_connect_authority_requests(tmp_path: Path) -
     db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
     log_path = tmp_path / "cicap-access.log"
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -1498,7 +1465,6 @@ def test_adblock_icap_server_blocks_scheme_relative_request_targets(
     db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
     log_path = tmp_path / "cicap-access.log"
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -1542,7 +1508,6 @@ def test_adblock_icap_server_blocks_post_requests_with_preview_zero(
     log_path = tmp_path / "cicap-access.log"
     recorded_blocks: list[str] = []
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -1592,7 +1557,6 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
     log_path = tmp_path / "cicap-access.log"
     recorded_blocks: list[str] = []
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -1651,7 +1615,6 @@ def test_adblock_icap_server_handles_persistent_transactions(tmp_path: Path) -> 
     db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
     log_path = tmp_path / "cicap-access.log"
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -1713,7 +1676,6 @@ def test_adblock_icap_server_ignores_reset_peer_during_response(
     db_path = _build_lookup_db(tmp_path, [])
     log_path = tmp_path / "cicap-access.log"
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -1762,7 +1724,6 @@ def test_adblock_icap_server_honors_connection_close_token_lists(
     db_path = _build_lookup_db(tmp_path, [])
     log_path = tmp_path / "cicap-access.log"
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -1807,7 +1768,6 @@ def test_adblock_icap_connection_close_requested_handles_duplicate_lists(
     headers: list[bytes],
     expected: bool,
 ) -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _connection_close_requested
 
     header_blob = (
@@ -1825,7 +1785,6 @@ def test_adblock_icap_server_closes_on_duplicate_conflicting_connection(
     db_path = _build_lookup_db(tmp_path, [])
     log_path = tmp_path / "cicap-access.log"
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -1868,7 +1827,6 @@ def test_adblock_icap_server_caps_keepalive_transactions(tmp_path: Path) -> None
     db_path = _build_lookup_db(tmp_path, [])
     log_path = tmp_path / "cicap-access.log"
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -1905,7 +1863,6 @@ def test_adblock_icap_server_handles_coalesced_persistent_transactions(
     db_path = _build_lookup_db(tmp_path, [])
     log_path = tmp_path / "cicap-access.log"
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -1957,7 +1914,6 @@ def test_adblock_icap_unpreviewed_body_drain_rejects_malformed_framing(
     body: bytes,
 ) -> None:
     del case
-    _add_web_to_path()
     from tools.adblock_icap_server import _drain_chunked_body
 
     assert (
@@ -1971,7 +1927,6 @@ def test_adblock_icap_unpreviewed_body_drain_rejects_malformed_framing(
 
 
 def test_adblock_icap_unpreviewed_body_drain_accepts_valid_framing() -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _drain_chunked_body
 
     assert (
@@ -2002,7 +1957,6 @@ def test_adblock_icap_server_allows_and_closes_after_malformed_unpreviewed_body(
     db_path = _build_lookup_db(tmp_path, [])
     log_path = tmp_path / "cicap-access.log"
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -2055,7 +2009,6 @@ def test_adblock_icap_server_drains_and_closes_after_unpreviewed_request_body(
     db_path = _build_lookup_db(tmp_path, [])
     log_path = tmp_path / "cicap-access.log"
 
-    _add_web_to_path()
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
@@ -2095,7 +2048,6 @@ def test_adblock_icap_server_drains_and_closes_after_unpreviewed_request_body(
 def test_adblock_icap_parse_args_falls_back_for_malformed_numeric_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _parse_args
 
     malformed_env = {
@@ -2126,7 +2078,6 @@ def test_adblock_icap_parse_args_falls_back_for_malformed_numeric_env(
 def test_adblock_icap_parse_args_preserves_cli_numeric_rejection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _parse_args
 
     monkeypatch.setenv("ADBLOCK_CACHE_TTL", "1800")
@@ -2144,7 +2095,6 @@ def test_adblock_icap_parse_args_preserves_cli_numeric_rejection(
 def test_adblock_icap_parse_args_reads_valid_numeric_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _parse_args
 
     monkeypatch.setenv("ADBLOCK_CACHE_TTL", "1800")
@@ -2161,7 +2111,6 @@ def test_adblock_icap_parse_args_rejects_non_finite_timeout_env(
     monkeypatch: pytest.MonkeyPatch,
     value: str,
 ) -> None:
-    _add_web_to_path()
     from tools.adblock_icap_server import _parse_args
 
     monkeypatch.setenv("ADBLOCK_ICAP_REQUEST_TIMEOUT", value)

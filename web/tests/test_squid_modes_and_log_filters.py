@@ -1,5 +1,3 @@
-import os
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,19 +6,9 @@ import pytest
 from .mysql_test_utils import configure_test_mysql_env
 
 
-def _add_web_to_path() -> None:
-    web_dir = Path(os.path.join(Path(__file__).parent, "..")).resolve()
-    repo_dir = Path(os.path.join(web_dir, "..")).resolve()
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
-    if repo_dir not in sys.path:
-        sys.path.insert(0, repo_dir)
-
-
 def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-seed")
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
@@ -45,7 +33,6 @@ def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(
 def test_live_stats_seed_checkpoint_skips_restarts_and_recovers_appends(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "live-stats-seed")
 
     from services.live_stats import LiveStatsStore  # type: ignore
@@ -73,7 +60,6 @@ def test_live_stats_seed_checkpoint_skips_restarts_and_recovers_appends(
 
 
 def test_ssl_errors_store_ignores_startup_noise(tmp_path) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors")
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
@@ -100,7 +86,6 @@ def test_ssl_errors_store_ignores_startup_noise(tmp_path) -> None:
 def test_ssl_errors_store_merges_followup_connection_context_without_double_count(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-context")
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
@@ -125,7 +110,6 @@ def test_ssl_errors_store_merges_followup_connection_context_without_double_coun
 def test_ssl_errors_store_merges_tls_accept_header_detail_and_context_into_one_bucket(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-block")
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
@@ -157,7 +141,6 @@ def test_ssl_errors_store_merges_tls_accept_header_detail_and_context_into_one_b
 def test_ssl_errors_store_enriches_tls_accept_domain_from_master_xaction(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-master-context")
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
@@ -204,7 +187,6 @@ def test_ssl_errors_store_enriches_tls_accept_domain_from_master_xaction(
 def test_ssl_errors_store_search_queries_escape_like_patterns_for_mysql(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-search")
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
@@ -226,7 +208,6 @@ def test_ssl_errors_store_search_queries_escape_like_patterns_for_mysql(
 def test_render_icap_include_scales_services_by_squid_workers_without_duplicate_uris(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -262,7 +243,6 @@ def test_render_icap_include_scales_services_by_squid_workers_without_duplicate_
 def test_render_icap_include_preserves_non_overlapping_explicit_av_base(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services.squid_core import SquidController  # type: ignore
 
@@ -280,7 +260,6 @@ def test_render_icap_include_preserves_non_overlapping_explicit_av_base(
 def test_generate_icap_include_uses_supplied_workers_over_environment(
     monkeypatch, tmp_path
 ) -> None:
-    _add_web_to_path()
 
     from services.squid_core import (  # type: ignore
         SquidController,
@@ -308,7 +287,6 @@ def test_generate_icap_include_uses_supplied_workers_over_environment(
 
 
 def test_render_icap_include_omits_adblock_routing_when_disabled(monkeypatch) -> None:
-    _add_web_to_path()
 
     from services.squid_core import SquidController  # type: ignore
 
@@ -323,7 +301,6 @@ def test_render_icap_include_omits_adblock_routing_when_disabled(monkeypatch) ->
 
 
 def test_render_icap_include_restores_adblock_routing_when_enabled(monkeypatch) -> None:
-    _add_web_to_path()
 
     from services.squid_core import SquidController  # type: ignore
 
@@ -340,7 +317,6 @@ def test_materialize_clamav_runtime_files_uses_adblock_setting(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services.squid_core import (  # type: ignore
         SquidController,
@@ -381,7 +357,6 @@ def test_materialize_runtime_updates_scaled_supervisor_and_cicap_files(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services.squid_core import (  # type: ignore
         SquidController,
@@ -462,7 +437,6 @@ def test_ci_remote_clamd_startup_supervisor_files_are_runtime_noop(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services.squid_core import SquidController  # type: ignore
 
@@ -554,7 +528,6 @@ def test_materialize_runtime_removes_remote_respmod_when_clamd_returns_local(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services.squid_core import (  # type: ignore
         SquidController,
@@ -601,7 +574,6 @@ def test_materialize_runtime_removes_remote_respmod_when_clamd_returns_local(
 
 
 def test_runtime_supervisor_sanitizes_clamd_shell_tokens(monkeypatch) -> None:
-    _add_web_to_path()
 
     from services.squid_core import SquidController  # type: ignore
 
@@ -618,7 +590,6 @@ def test_runtime_supervisor_sanitizes_clamd_shell_tokens(monkeypatch) -> None:
 
 
 def test_render_icap_include_makes_required_clamav_fail_closed(monkeypatch) -> None:
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -644,7 +615,6 @@ def test_render_icap_include_makes_required_clamav_fail_closed(monkeypatch) -> N
 
 
 def test_render_icap_include_keeps_body_methods_when_preview_is_disabled() -> None:
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -732,7 +702,6 @@ def test_repo_template_includes_cache_first_defaults() -> None:
 def test_squid_controller_normalize_config_text_adds_default_observability_lines() -> (
     None
 ):
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -783,7 +752,6 @@ http_access allow all
 def test_squid_controller_normalize_config_text_repositions_legacy_webfilter_include() -> (
     None
 ):
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -804,7 +772,6 @@ include /etc/squid/conf.d/30-webfilter.conf
 def test_squid_controller_forwarding_canary_path_rejects_double_slash(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -826,7 +793,6 @@ def test_squid_controller_forwarding_canary_path_rejects_whitespace_and_control(
     monkeypatch,
     unsafe_path: str,
 ) -> None:
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -842,7 +808,6 @@ def test_squid_controller_forwarding_canary_path_rejects_whitespace_and_control(
 def test_squid_controller_normalize_config_text_keeps_includes_outside_canary_block() -> (
     None
 ):
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -872,7 +837,6 @@ http_access allow all
 def test_squid_controller_normalize_config_text_migrates_legacy_inline_icap_services_to_include() -> (
     None
 ):
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -895,7 +859,6 @@ http_access allow all
 
 
 def test_squid_controller_parses_new_perf_tunables() -> None:
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -1002,7 +965,6 @@ max_open_disk_fds 512
 
 
 def test_squid_controller_network_lines_include_https_intercept_ports() -> None:
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -1028,7 +990,6 @@ client_lifetime 1 day
 
 
 def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path) -> None:
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -1140,10 +1101,7 @@ def test_squid_controller_generate_config_applies_new_perf_tunables(tmp_path) ->
     assert "cache_log stdio:/var/log/squid/cache.log" in rendered
 
 
-def test_squid_controller_optional_integer_bounds_preserve_valid_round_trip() -> (
-    None
-):
-    _add_web_to_path()
+def test_squid_controller_optional_integer_bounds_preserve_valid_round_trip() -> None:
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -1237,7 +1195,6 @@ def test_squid_controller_optional_integer_bounds_preserve_valid_round_trip() ->
 def test_squid_controller_generate_config_adds_optional_intercept_listener(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
 
     from services.squid_config_forms import build_template_options  # type: ignore
     from services.squidctl import SquidController  # type: ignore
@@ -1271,7 +1228,6 @@ def test_squid_controller_generate_config_adds_optional_intercept_listener(
 def test_squid_controller_generate_config_parses_string_false_booleans(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
 
     from services.squidctl import SquidController  # type: ignore
 
@@ -1308,7 +1264,6 @@ def test_squid_controller_generate_config_parses_string_false_booleans(
 def test_squid_controller_generate_config_adds_optional_https_intercept_listener(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
 
     from services.squid_config_forms import build_template_options  # type: ignore
     from services.squidctl import SquidController  # type: ignore
@@ -1353,7 +1308,6 @@ def test_squid_controller_generate_config_adds_optional_https_intercept_listener
 
 
 def test_squid_controller_resolves_three_way_listener_port_collision(tmp_path) -> None:
-    _add_web_to_path()
 
     from services.squid_config_forms import build_template_options  # type: ignore
     from services.squidctl import SquidController  # type: ignore
@@ -1386,7 +1340,6 @@ def test_squid_controller_resolves_three_way_listener_port_collision(tmp_path) -
 
 
 def test_squid_controller_avoids_unmanaged_listener_port_collision(tmp_path) -> None:
-    _add_web_to_path()
 
     from services.squid_config_forms import build_template_options  # type: ignore
     from services.squidctl import SquidController  # type: ignore
@@ -1427,7 +1380,6 @@ def test_squid_controller_avoids_unmanaged_listener_port_collision(tmp_path) -> 
 def test_squid_controller_https_intercept_listener_does_not_splice_by_default(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
 
     from services.squid_config_forms import build_template_options  # type: ignore
     from services.squidctl import SquidController  # type: ignore
@@ -1457,7 +1409,6 @@ def test_squid_controller_https_intercept_listener_does_not_splice_by_default(
 
 
 def test_squid_controller_health_details_include_https_intercept_listener() -> None:
-    _add_web_to_path()
 
     from services.squid_core import SquidController  # type: ignore
 
@@ -1484,7 +1435,6 @@ https_port 0.0.0.0:3130 intercept ssl-bump \\
 
 
 def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "ssl-errors-candidates")
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
@@ -1519,7 +1469,6 @@ def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path) ->
 def test_sslfilter_materialized_config_deduplicates_domains_covered_by_wildcards(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "sslfilter-domain-dedupe")
 
     from services.sslfilter_store import SslFilterStore  # type: ignore
@@ -1586,7 +1535,6 @@ def test_sslfilter_materialized_config_deduplicates_domains_covered_by_wildcards
 
 
 def test_empty_compatibility_preset_is_incomplete_and_rejected(monkeypatch) -> None:
-    _add_web_to_path()
 
     import services.sslfilter_store as module  # type: ignore
 
@@ -1623,7 +1571,6 @@ def test_empty_compatibility_preset_is_incomplete_and_rejected(monkeypatch) -> N
 def test_all_compatibility_presets_preflight_catalog_before_writes(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     import services.sslfilter_store as module  # type: ignore
 
@@ -1672,7 +1619,6 @@ def test_all_compatibility_presets_preflight_catalog_before_writes(
 def test_all_compatibility_presets_remains_effectively_deduped_and_idempotent(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     import services.sslfilter_store as module  # type: ignore
 
@@ -1719,7 +1665,6 @@ def test_all_compatibility_presets_remains_effectively_deduped_and_idempotent(
 def test_compatibility_presets_include_source_backed_collaboration_sslfilter_domains(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "compatibility-presets")
 
     from services.ssl_compatibility_presets import COMPATIBILITY_PRESETS  # type: ignore
@@ -1760,11 +1705,15 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
 
     store = get_sslfilter_store()
     added, attempted, error = store.install_compatibility_preset("all")
-    status_by_id = {preset["id"]: preset for preset in store.list_compatibility_presets()}
+    status_by_id = {
+        preset["id"]: preset for preset in store.list_compatibility_presets()
+    }
     effective_total = sum(preset["total"] for preset in status_by_id.values())
     installed_domains = store.list_all().no_bump_domains
 
-    assert effective_total < sum(len(preset.domains) for preset in COMPATIBILITY_PRESETS)
+    assert effective_total < sum(
+        len(preset.domains) for preset in COMPATIBILITY_PRESETS
+    )
     assert attempted == len(installed_domains)
     assert added == attempted
     assert attempted < effective_total
@@ -1774,7 +1723,6 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
 
 
 def test_github_compatibility_presets_cover_githubassets_domain() -> None:
-    _add_web_to_path()
     from services.ssl_compatibility_presets import COMPATIBILITY_PRESETS  # type: ignore
 
     presets = {preset.id: preset for preset in COMPATIBILITY_PRESETS}
@@ -1786,7 +1734,6 @@ def test_github_compatibility_presets_cover_githubassets_domain() -> None:
 
 
 def test_squid_controller_default_ssl_bump_uses_peek_stare_then_bump(tmp_path) -> None:
-    _add_web_to_path()
 
     from services.squid_config_forms import build_template_options  # type: ignore
     from services.squidctl import SquidController  # type: ignore
@@ -1816,7 +1763,6 @@ def test_squid_controller_default_ssl_bump_uses_peek_stare_then_bump(tmp_path) -
 
 
 def test_webfilter_materialized_helper_name_tracks_webcat_revision(tmp_path) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "webfilter-helper-version")
 
     from services.db import connect  # type: ignore
@@ -1885,7 +1831,6 @@ def test_repo_template_orders_generated_policy_includes_before_enforcement_hooks
 def test_squid_normalize_migrates_stale_inline_policy_plumbing_to_generated_includes() -> (
     None
 ):
-    _add_web_to_path()
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
@@ -1929,7 +1874,6 @@ def test_squid_normalize_migrates_stale_inline_policy_plumbing_to_generated_incl
 
 
 def test_squid_normalize_migrates_hyphenated_versioned_adblock_service() -> None:
-    _add_web_to_path()
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
@@ -1959,7 +1903,6 @@ def test_squid_normalize_migrates_hyphenated_versioned_adblock_service() -> None
 
 
 def test_squid_icap_include_versions_adblock_service_name_not_uri() -> None:
-    _add_web_to_path()
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
@@ -1992,7 +1935,6 @@ def test_squid_icap_include_versions_adblock_service_name_not_uri() -> None:
 
 
 def test_squid_icap_include_never_renders_legacy_regex_shortcut() -> None:
-    _add_web_to_path()
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)

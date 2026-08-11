@@ -1,23 +1,11 @@
 from __future__ import annotations
 
 import importlib
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
 
 
-def _add_repo_paths() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (repo_root, web_root):
-        path_text = str(path)
-        if path_text not in sys.path:
-            sys.path.insert(0, path_text)
-
-
 def _load_proxy_app(monkeypatch):
-    _add_repo_paths()
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
     import proxy.app as proxy_app  # type: ignore
 
@@ -633,7 +621,10 @@ def test_proxy_management_sync_operation_id_records_current_config_apply(
 
     class Revisions:
         def get_active_revision_metadata(self, _proxy_id):
-            return SimpleNamespace(revision_id=9, config_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            return SimpleNamespace(
+                revision_id=9,
+                config_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
 
         def latest_apply(self, _proxy_id):
             return None
@@ -673,7 +664,9 @@ def test_proxy_management_sync_operation_id_records_current_config_apply(
         "artifact_sha256": "adblock-sha",
     }
     runtime.sync_pac_state = lambda force=False: {"ok": True, "changed": False}
-    runtime._current_config_sha = lambda: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    runtime._current_config_sha = lambda: (
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
     runtime._current_adblock_artifact_sha = lambda: "adblock-sha"
     runtime._current_adblock_enabled = lambda: True
     runtime._ensure_policy_runtime_config = lambda: (True, "", False)
@@ -782,11 +775,13 @@ def test_proxy_management_sync_exception_returns_sanitized_json(monkeypatch) -> 
     )
 
     assert response.status_code == 500
-    assert response.get_json() == {"ok": False, "detail": "Proxy reconciliation failed."}
+    assert response.get_json() == {
+        "ok": False,
+        "detail": "Proxy reconciliation failed.",
+    }
 
 
 def test_config_operation_completion_requires_matching_revision_hash() -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     operation = SimpleNamespace(
@@ -834,7 +829,6 @@ def test_config_operation_completion_requires_matching_revision_hash() -> None:
 def test_proxy_runtime_clamav_icap_preserves_degraded_transport_detail(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as proxy_runtime  # type: ignore
 
     runtime = proxy_runtime.ProxyRuntime.__new__(proxy_runtime.ProxyRuntime)

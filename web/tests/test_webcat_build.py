@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import os
-import sys
 import tarfile
 import tempfile
 import zipfile
@@ -12,21 +11,13 @@ from typing import NoReturn
 import pytest
 
 
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
 def _import_webcat_build():
-    _add_web_to_path()
     from tools import webcat_build  # type: ignore
 
     return webcat_build
 
 
 def _download_safety_module():
-    _add_web_to_path()
     from services import download_safety  # type: ignore
 
     return download_safety
@@ -1185,7 +1176,6 @@ def test_main_rejects_malformed_source_url_before_filename_guess(
 
 def test_webcat_domain_normalization_is_shared_and_idna() -> None:
     webcat_build = _import_webcat_build()
-    _add_web_to_path()
     from tools import webcat_acl  # type: ignore
 
     assert (

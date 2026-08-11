@@ -3,7 +3,6 @@ from __future__ import annotations
 import errno
 import multiprocessing
 import stat
-import sys
 import threading
 import time
 from pathlib import Path
@@ -13,14 +12,7 @@ import pytest
 from .mysql_test_utils import configure_test_mysql_env
 
 
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
 def _auth_store_module():
-    _add_web_to_path()
     from services import auth_store  # type: ignore
 
     return auth_store

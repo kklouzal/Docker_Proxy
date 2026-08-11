@@ -1,19 +1,10 @@
 from __future__ import annotations
 
-import os
-import pathlib
-import sys
 from typing import Self
 
 import pytest
 
 from .mysql_test_utils import configure_test_mysql_env
-
-
-def _add_web_to_path() -> None:
-    web_dir = pathlib.Path(os.path.join(pathlib.Path(__file__).parent, "..")).resolve()
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
 
 
 def _request_line(
@@ -105,7 +96,6 @@ def _insert_icap(diag_store, line: str) -> None:
 
 
 def test_remediation_suggestion_search_matches_all_visible_fields() -> None:
-    _add_web_to_path()
     from services.observability_queries import ObservabilityQueries  # type: ignore
 
     row = ObservabilityQueries._suggestion_row(
@@ -129,7 +119,6 @@ def test_remediation_suggestion_search_matches_all_visible_fields() -> None:
 
 
 def test_runtime_remediation_suggestions_must_match_search_terms() -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     runtime_health = {
@@ -169,7 +158,6 @@ def test_runtime_remediation_suggestions_must_match_search_terms() -> None:
 
 
 def test_url_host_sql_preserves_runtime_domain_edge_case_branches() -> None:
-    _add_web_to_path()
     from services.observability_queries import ObservabilityQueries  # type: ignore
 
     sql = ObservabilityQueries._url_host_sql("url")
@@ -189,7 +177,6 @@ def test_url_host_sql_preserves_runtime_domain_edge_case_branches() -> None:
 def test_remediation_overview_does_not_keep_runtime_rows_for_unrelated_search(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services import observability_queries  # type: ignore
 
@@ -236,16 +223,17 @@ def test_remediation_overview_does_not_keep_runtime_rows_for_unrelated_search(
 
 
 def test_security_event_filters_build_source_specific_search_sql(monkeypatch) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     monkeypatch.setattr(observability_queries, "get_proxy_id", lambda: "proxy-a")
 
-    where_sql, params = observability_queries.ObservabilityQueries._security_event_filters(
-        since=1234,
-        search=" Ads_% ",
-        base_conditions=["service_family = 'av'"],
-        search_columns=("domain", "url", "client_ip"),
+    where_sql, params = (
+        observability_queries.ObservabilityQueries._security_event_filters(
+            since=1234,
+            search=" Ads_% ",
+            base_conditions=["service_family = 'av'"],
+            search_columns=("domain", "url", "client_ip"),
+        )
     )
 
     assert where_sql == (
@@ -256,10 +244,12 @@ def test_security_event_filters_build_source_specific_search_sql(monkeypatch) ->
     )
     assert params == ["proxy-a", 1234, "%ads\\_\\%%", "%ads\\_\\%%", "%ads\\_\\%%"]
 
-    where_sql, params = observability_queries.ObservabilityQueries._security_event_filters(
-        since=1234,
-        search="",
-        search_columns=("url", "src_ip"),
+    where_sql, params = (
+        observability_queries.ObservabilityQueries._security_event_filters(
+            since=1234,
+            search="",
+            search_columns=("url", "src_ip"),
+        )
     )
 
     assert where_sql == "WHERE proxy_id = %s AND ts >= %s"
@@ -269,7 +259,6 @@ def test_security_event_filters_build_source_specific_search_sql(monkeypatch) ->
 def test_remediation_search_does_not_hide_generated_suggestion_fields(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -329,7 +318,6 @@ def test_remediation_search_does_not_hide_generated_suggestion_fields(
 def test_remediation_source_search_includes_match_outside_unfiltered_top_set(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -398,7 +386,6 @@ def test_remediation_source_search_includes_match_outside_unfiltered_top_set(
 def test_remediation_search_does_not_hide_ssl_generated_actions(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -458,7 +445,6 @@ def test_remediation_search_does_not_hide_ssl_generated_actions(
 
 
 def test_remediation_overview_builds_icap_suggestion_rows(monkeypatch) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -533,7 +519,6 @@ def test_remediation_overview_builds_icap_suggestion_rows(monkeypatch) -> None:
 def test_remediation_summary_separates_domain_and_runtime_subjects(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -589,8 +574,9 @@ def test_remediation_summary_separates_domain_and_runtime_subjects(
     assert payload["summary"]["runtime_subjects"] == 1
 
 
-def test_remediation_summary_counts_candidates_beyond_visible_limit(monkeypatch) -> None:
-    _add_web_to_path()
+def test_remediation_summary_counts_candidates_beyond_visible_limit(
+    monkeypatch,
+) -> None:
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -652,7 +638,6 @@ def test_remediation_summary_counts_candidates_beyond_visible_limit(monkeypatch)
 def test_remediation_runtime_health_bad_timestamp_degrades_safely(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -701,7 +686,6 @@ def test_remediation_runtime_health_bad_timestamp_degrades_safely(
 def test_remediation_runtime_state_errors_surface_generated_state_drift(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -783,7 +767,6 @@ def test_remediation_runtime_state_errors_surface_generated_state_drift(
 def test_remediation_runtime_state_errors_accept_scalar_payload(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -833,7 +816,6 @@ def test_remediation_runtime_state_errors_accept_scalar_payload(
 def test_remediation_runtime_state_errors_classify_packet_failures_as_database(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -889,7 +871,6 @@ def test_remediation_runtime_state_errors_classify_packet_failures_as_database(
 def test_remediation_runtime_detail_database_degradation_counts_once(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -940,7 +921,6 @@ def test_remediation_runtime_detail_database_degradation_counts_once(
 def test_remediation_search_filters_database_degradation_until_it_matches(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -1015,7 +995,6 @@ def test_remediation_search_filters_database_degradation_until_it_matches(
 def test_remediation_search_filters_runtime_state_drift_until_it_matches(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -1074,7 +1053,6 @@ def test_remediation_search_filters_runtime_state_drift_until_it_matches(
 def test_remediation_search_filters_runtime_icap_and_memory_until_they_match(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import observability_queries  # type: ignore
 
     class FakeResult:
@@ -1151,16 +1129,13 @@ def test_remediation_search_filters_runtime_icap_and_memory_until_they_match(
             },
         },
     )
-    assert "runtime_icap_degraded" in {
-        row["kind"] for row in clamd_payload["rows"]
-    }
+    assert "runtime_icap_degraded" in {row["kind"] for row in clamd_payload["rows"]}
     assert clamd_payload["summary"]["runtime_subjects"] == 1
 
 
 def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(
     tmp_path, monkeypatch
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "observability-queries")
 
     from services import observability_queries  # type: ignore
@@ -1326,7 +1301,6 @@ def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(
 def test_observability_queries_surface_ssl_security_and_performance(
     tmp_path, monkeypatch
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "observability-hub")
 
     from services import observability_queries  # type: ignore
@@ -1527,9 +1501,11 @@ def test_observability_queries_surface_ssl_security_and_performance(
         == "192.0.2.42"
     )
     assert security_payload["adblock_top_domains"][0]["domain"] == "ads.example"
-    assert {
-        row["domain"] for row in security_payload["adblock_top_domains"]
-    } >= {"authads.example", "cdn.ads.example", "2001:db8::1"}
+    assert {row["domain"] for row in security_payload["adblock_top_domains"]} >= {
+        "authads.example",
+        "cdn.ads.example",
+        "2001:db8::1",
+    }
     assert security_payload["webfilter_top_categories"][0]["category"] == "adult"
 
     performance_payload = queries.performance_overview(since=2800, limit=10)
@@ -1549,7 +1525,6 @@ def test_observability_queries_surface_ssl_security_and_performance(
 def test_observability_overview_bundle_reuses_precomputed_summary(
     tmp_path, monkeypatch
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "observability-queries-summary-reuse")
 
     from services import observability_queries  # type: ignore
@@ -1630,7 +1605,6 @@ def test_observability_overview_bundle_reuses_precomputed_summary(
 def test_observability_performance_overview_reuses_precomputed_summary(
     tmp_path, monkeypatch
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(
         tmp_path / "observability-queries-performance-summary-reuse"
     )
@@ -1707,7 +1681,6 @@ def test_observability_performance_overview_reuses_precomputed_summary(
 def test_save_report_schedule_returns_inserted_row_instead_of_sorted_first(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services import observability_queries  # type: ignore
 
@@ -1780,8 +1753,9 @@ def test_save_report_schedule_returns_inserted_row_instead_of_sorted_first(
     )
 
 
-def test_save_report_schedule_normalizes_and_deduplicates_recipients(monkeypatch) -> None:
-    _add_web_to_path()
+def test_save_report_schedule_normalizes_and_deduplicates_recipients(
+    monkeypatch,
+) -> None:
 
     from services import observability_queries  # type: ignore
     from services.report_schedule_recipients import (  # type: ignore
@@ -1871,7 +1845,6 @@ def test_save_report_schedule_normalizes_and_deduplicates_recipients(monkeypatch
 def test_report_schedule_recipient_deduplication_uses_mailbox_semantics(
     recipients: str, expected: str
 ) -> None:
-    _add_web_to_path()
 
     from services.report_schedule_recipients import (  # type: ignore
         normalize_report_schedule_recipients,
@@ -1892,7 +1865,6 @@ def test_report_schedule_recipient_deduplication_uses_mailbox_semantics(
 def test_report_schedule_recipient_normalization_rejects_outer_control_characters(
     recipients: str,
 ) -> None:
-    _add_web_to_path()
 
     from services.report_schedule_recipients import (  # type: ignore
         REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES,
@@ -1902,14 +1874,15 @@ def test_report_schedule_recipient_normalization_rejects_outer_control_character
     with pytest.raises(ValueError) as excinfo:
         normalize_report_schedule_recipients(recipients)
 
-    assert str(excinfo.value) == REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["control_chars"]
+    assert (
+        str(excinfo.value) == REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["control_chars"]
+    )
     assert recipients not in str(excinfo.value)
 
 
 def test_report_schedules_exclude_persisted_runtime_state_from_manual_presets(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services import observability_queries  # type: ignore
 
@@ -1940,7 +1913,9 @@ def test_report_schedules_exclude_persisted_runtime_state_from_manual_presets(
         def execute(self, sql: str, params=()):
             text = " ".join(str(sql).split())
             assert "ORDER BY enabled DESC, updated_ts DESC, id DESC" in text
-            projection = text.split(" FROM observability_report_schedules", maxsplit=1)[0]
+            projection = text.split(" FROM observability_report_schedules", maxsplit=1)[
+                0
+            ]
             assert "next_run_ts" not in projection
             assert "last_run_ts" not in projection
             assert "last_status" not in projection
@@ -1993,7 +1968,6 @@ def test_report_schedules_exclude_persisted_runtime_state_from_manual_presets(
 def test_save_report_schedule_rejects_invalid_recipient_text(
     monkeypatch, recipients: str
 ) -> None:
-    _add_web_to_path()
 
     from services import observability_queries  # type: ignore
 
@@ -2018,7 +1992,6 @@ def test_save_report_schedule_rejects_invalid_recipient_text(
 def test_save_report_schedule_invalid_recipient_error_does_not_echo_input(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services import observability_queries  # type: ignore
 
@@ -2047,7 +2020,6 @@ def test_save_report_schedule_invalid_recipient_error_does_not_echo_input(
 def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_privacy(
     tmp_path, monkeypatch
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "observability-reporting-overview")
 
     from services import observability_queries  # type: ignore
@@ -2206,7 +2178,6 @@ def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_
 def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "observability-remediation")
 
     from services import observability_queries  # type: ignore

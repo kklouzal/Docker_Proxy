@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import importlib
-import sys
 import threading
-from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 import pytest
@@ -21,14 +19,7 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
 def _proxy_registry() -> ModuleType:
-    _add_web_to_path()
     from services import proxy_registry  # type: ignore
 
     return proxy_registry
@@ -1408,7 +1399,10 @@ def test_lifecycle_incomplete_error_identity_survives_lifecycle_reload() -> None
 
     reloaded_lifecycle = importlib.reload(proxy_lifecycle)
 
-    assert reloaded_lifecycle.ProxyLifecycleIncompleteError is ProxyLifecycleIncompleteError
+    assert (
+        reloaded_lifecycle.ProxyLifecycleIncompleteError
+        is ProxyLifecycleIncompleteError
+    )
     assert proxy_registry.ProxyLifecycleIncompleteError is ProxyLifecycleIncompleteError
 
 
@@ -1671,7 +1665,9 @@ def test_rename_proxy_rejects_conflicting_in_progress_target_without_mysql(monke
     registry.init_db = lambda: None  # type: ignore[method-assign]
     registry._connect = Context  # type: ignore[method-assign]
     monkeypatch.setattr(proxy_registry, "mysql_advisory_lock", lambda *args: Lock())
-    monkeypatch.setattr(proxy_registry, "prepare_proxy_lifecycle", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        proxy_registry, "prepare_proxy_lifecycle", lambda *_a, **_k: None
+    )
 
     try:
         registry.rename_proxy("edge-old", "edge-new-b", display_name="Edge B")

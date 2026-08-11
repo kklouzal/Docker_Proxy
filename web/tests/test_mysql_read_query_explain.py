@@ -4,34 +4,34 @@ import concurrent.futures
 import hashlib
 import importlib
 import json
-import sys
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest import SkipTest
 
 import pytest
 
 from .mysql_test_utils import configure_test_mysql_env
 
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _fresh_diagnostic_store(tmp_path: Path):
-    configure_test_mysql_env(("read-query-explain", tmp_path), secret_path=tmp_path / "flask_secret.key")
-    _add_web_to_path()
+    configure_test_mysql_env(
+        ("read-query-explain", tmp_path), secret_path=tmp_path / "flask_secret.key"
+    )
     module = importlib.import_module("services.diagnostic_store")
     return importlib.reload(module)
 
 
 def _event_key(*parts: object) -> str:
-    return hashlib.sha256("|".join(str(part) for part in parts).encode()).hexdigest()[:40]
+    return hashlib.sha256("|".join(str(part) for part in parts).encode()).hexdigest()[
+        :40
+    ]
 
 
-def _request_row(proxy_id: str, seq: int, *, ts: int, domain: str, client_ip: str) -> tuple[Any, ...]:
+def _request_row(
+    proxy_id: str, seq: int, *, ts: int, domain: str, client_ip: str
+) -> tuple[Any, ...]:
     tx = f"tx-{proxy_id}-{seq}"
     url = f"https://{domain}/objects/{seq}?client={client_ip}"
     return (
@@ -66,7 +66,9 @@ def _request_row(proxy_id: str, seq: int, *, ts: int, domain: str, client_ip: st
     )
 
 
-def _icap_row(proxy_id: str, seq: int, *, ts: int, domain: str, client_ip: str, service: str) -> tuple[Any, ...]:
+def _icap_row(
+    proxy_id: str, seq: int, *, ts: int, domain: str, client_ip: str, service: str
+) -> tuple[Any, ...]:
     tx = f"tx-{proxy_id}-{seq}"
     return (
         proxy_id,
@@ -176,22 +178,37 @@ def _walk_json(value: Any):
 
 
 def _assert_no_temp_sort(plan: dict[str, Any]) -> None:
-    assert not any(node.get("using_filesort") is True for node in _walk_json(plan)), json.dumps(plan, sort_keys=True)
-    assert not any(node.get("using_temporary_table") is True for node in _walk_json(plan)), json.dumps(plan, sort_keys=True)
+    assert not any(node.get("using_filesort") is True for node in _walk_json(plan)), (
+        json.dumps(plan, sort_keys=True)
+    )
+    assert not any(
+        node.get("using_temporary_table") is True for node in _walk_json(plan)
+    ), json.dumps(plan, sort_keys=True)
 
 
-def _assert_indexed_access(plan: dict[str, Any], *, table: str, expected_key: str) -> None:
-    table_nodes = [node["table"] for node in _walk_json(plan) if isinstance(node.get("table"), dict)]
+def _assert_indexed_access(
+    plan: dict[str, Any], *, table: str, expected_key: str
+) -> None:
+    table_nodes = [
+        node["table"]
+        for node in _walk_json(plan)
+        if isinstance(node.get("table"), dict)
+    ]
     matches = [node for node in table_nodes if node.get("table_name") == table]
     assert matches, json.dumps(plan, sort_keys=True)
     keys = {str(node.get("key") or "") for node in matches}
     assert expected_key in keys, json.dumps(plan, sort_keys=True)
-    assert any(str(node.get("access_type") or "").lower() in {"range", "ref"} for node in matches), json.dumps(plan, sort_keys=True)
+    assert any(
+        str(node.get("access_type") or "").lower() in {"range", "ref"}
+        for node in matches
+    ), json.dumps(plan, sort_keys=True)
 
 
 @pytest.mark.integration
 @pytest.mark.mysql
-def test_mysql_nearest_observability_readers_use_sargable_index_ranges(tmp_path: Path) -> None:
+def test_mysql_nearest_observability_readers_use_sargable_index_ranges(
+    tmp_path: Path,
+) -> None:
     try:
         diagnostic_module = _fresh_diagnostic_store(tmp_path)
     except SkipTest as exc:
@@ -328,5 +345,10 @@ def test_mysql_nearest_observability_readers_use_sargable_index_ranges(tmp_path:
             reset_proxy_id(token)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-        results = list(executor.map(read_for_proxy, ["edge-a", "edge-b", "deleted-old"] * 3))
-    assert all(request_count > 0 and icap_count > 0 for _proxy_id, request_count, icap_count in results)
+        results = list(
+            executor.map(read_for_proxy, ["edge-a", "edge-b", "deleted-old"] * 3)
+        )
+    assert all(
+        request_count > 0 and icap_count > 0
+        for _proxy_id, request_count, icap_count in results
+    )

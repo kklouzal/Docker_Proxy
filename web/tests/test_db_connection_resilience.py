@@ -1,23 +1,11 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import NoReturn
 
 import pytest
 
 
-def _add_repo_paths() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (repo_root, web_root):
-        path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-
-
 def test_parse_database_url_resolves_valid_mysql_url(monkeypatch) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     monkeypatch.setenv("MYSQL_CHARSET", "utf8")
@@ -43,7 +31,6 @@ def test_parse_database_url_resolves_valid_mysql_url(monkeypatch) -> None:
 def test_parse_database_url_reports_malformed_url_as_mysql_config_error(
     database_url,
 ) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     with pytest.raises(
@@ -83,7 +70,6 @@ def test_resolve_database_config_reports_invalid_numeric_mysql_env(
     env,
     expected_message,
 ) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -119,7 +105,6 @@ def test_parse_database_url_reports_invalid_numeric_mysql_fallback_env(
     env_value: str,
     expected_message: str,
 ) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     for name in (
@@ -138,7 +123,6 @@ def test_parse_database_url_reports_invalid_numeric_mysql_fallback_env(
 def test_parse_database_url_explicit_port_does_not_read_mysql_port_fallback(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     monkeypatch.setenv("MYSQL_PORT", "bad")
@@ -158,7 +142,6 @@ def test_parse_database_url_explicit_port_does_not_read_mysql_port_fallback(
     ],
 )
 def test_mysql_error_code_extracts_first_numeric_arg(exc, expected) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     assert db.mysql_error_code(exc) == expected
@@ -167,7 +150,6 @@ def test_mysql_error_code_extracts_first_numeric_arg(exc, expected) -> None:
 def test_context_manager_preserves_original_error_when_rollback_connection_is_lost() -> (
     None
 ):
-    _add_repo_paths()
     import pymysql  # type: ignore
     from services.db import CompatConnection  # type: ignore
 
@@ -193,7 +175,6 @@ def test_failed_cursor_connection_error_discards_pooled_connection(
     monkeypatch,
     method_name: str,
 ) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
     from services import db  # type: ignore
 
@@ -242,7 +223,6 @@ def test_failed_cursor_connection_error_discards_pooled_connection(
 
 
 def test_compat_result_closes_cursor_after_fetchall_and_preserves_rows() -> None:
-    _add_repo_paths()
     from services.db import CompatConnection  # type: ignore
 
     class Cursor:
@@ -273,7 +253,6 @@ def test_compat_result_closes_cursor_after_fetchall_and_preserves_rows() -> None
 
 
 def test_compat_result_fetchone_defers_close_until_exhausted() -> None:
-    _add_repo_paths()
     from services.db import CompatConnection  # type: ignore
 
     class Cursor:
@@ -306,7 +285,6 @@ def test_compat_result_fetchone_defers_close_until_exhausted() -> None:
 
 
 def test_compat_connection_closes_partial_result_and_write_cursor() -> None:
-    _add_repo_paths()
     from services.db import CompatConnection  # type: ignore
 
     class Cursor:
@@ -349,7 +327,6 @@ def test_compat_connection_closes_partial_result_and_write_cursor() -> None:
 
 
 def test_compat_result_closes_cursor_when_fetch_raises() -> None:
-    _add_repo_paths()
     from services.db import CompatConnection  # type: ignore
 
     class Cursor:
@@ -379,7 +356,6 @@ def test_compat_result_closes_cursor_when_fetch_raises() -> None:
 
 
 def test_interface_error_zero_is_retryable_mysql_error() -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
     from services import db  # type: ignore
 
@@ -389,7 +365,6 @@ def test_interface_error_zero_is_retryable_mysql_error() -> None:
 def test_returning_connection_to_pool_rolls_back_any_open_transaction(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     db.reset_mysql_ready_for_tests()
@@ -417,7 +392,6 @@ def test_returning_connection_to_pool_rolls_back_any_open_transaction(
 
 
 def test_failed_pool_rollback_discards_connection(monkeypatch) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     db.reset_mysql_ready_for_tests()
@@ -442,7 +416,6 @@ def test_failed_pool_rollback_discards_connection(monkeypatch) -> None:
 
 
 def test_discarded_compat_connection_releases_pool_slot(monkeypatch) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     db.reset_mysql_ready_for_tests()
@@ -476,7 +449,6 @@ def test_discarded_compat_connection_releases_pool_slot(monkeypatch) -> None:
 
 
 def test_failed_context_rollback_releases_pool_slot(monkeypatch) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     db.reset_mysql_ready_for_tests()
@@ -508,7 +480,6 @@ def test_failed_context_rollback_releases_pool_slot(monkeypatch) -> None:
 
 
 def test_pool_reaper_preserves_active_only_bucket(monkeypatch) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     db.reset_mysql_ready_for_tests()
@@ -526,7 +497,6 @@ def test_pool_reaper_preserves_active_only_bucket(monkeypatch) -> None:
 
 
 def test_new_native_connections_receive_session_guardrails(monkeypatch) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     db.reset_mysql_ready_for_tests()
@@ -570,7 +540,6 @@ def test_new_native_connections_receive_session_guardrails(monkeypatch) -> None:
 def test_pool_disabled_checkout_closes_connection_when_configuration_fails(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     db.reset_mysql_ready_for_tests()
@@ -600,7 +569,6 @@ def test_pool_disabled_checkout_closes_connection_when_configuration_fails(
 
 
 def test_checkout_discards_new_connection_when_session_reset_fails(monkeypatch) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     db.reset_mysql_ready_for_tests()
@@ -637,7 +605,6 @@ def test_checkout_discards_new_connection_when_session_reset_fails(monkeypatch) 
 
 
 def test_failed_advisory_lock_release_discards_pooled_connection(monkeypatch) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     db.reset_mysql_ready_for_tests()
@@ -681,7 +648,6 @@ def test_failed_advisory_lock_release_discards_pooled_connection(monkeypatch) ->
 
 
 def test_failed_advisory_lock_release_does_not_mask_body_exception() -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     class Result:
@@ -707,7 +673,6 @@ def test_failed_advisory_lock_release_does_not_mask_body_exception() -> None:
 
 
 def test_open_native_connection_retries_transient_mysql_errors(monkeypatch) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
     from services import db  # type: ignore
 
@@ -752,7 +717,6 @@ def test_open_native_connection_retries_transient_mysql_errors(monkeypatch) -> N
 def test_ssl_errors_store_getter_tolerates_transient_database_init_failure(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services import ssl_errors_store  # type: ignore
 
     ssl_errors_store._store = None
@@ -779,7 +743,6 @@ def test_ssl_errors_store_getter_tolerates_transient_database_init_failure(
 def test_ssl_errors_background_start_does_not_block_on_database_init(
     monkeypatch, tmp_path
 ) -> None:
-    _add_repo_paths()
     from services import ssl_errors_store  # type: ignore
 
     started: list[bool] = []
@@ -816,7 +779,6 @@ def test_ssl_errors_background_start_does_not_block_on_database_init(
 def test_ssl_errors_ingest_retries_after_database_init_timeout(
     monkeypatch, tmp_path
 ) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
     from services import ssl_errors_store  # type: ignore
 
@@ -858,7 +820,6 @@ def test_ssl_errors_ingest_retries_after_database_init_timeout(
 
 
 def test_ssl_errors_tailer_uses_unpooled_connections(monkeypatch, tmp_path) -> None:
-    _add_repo_paths()
     from services import ssl_errors_store  # type: ignore
 
     calls: list[str] = []
@@ -885,7 +846,6 @@ def test_ssl_errors_tailer_uses_unpooled_connections(monkeypatch, tmp_path) -> N
 
 
 def test_ssl_errors_cleanup_uses_bounded_delete_chunks(monkeypatch, tmp_path) -> None:
-    _add_repo_paths()
     from services import ssl_errors_store  # type: ignore
 
     executed: list[tuple[str, tuple[object, ...]]] = []
@@ -922,7 +882,6 @@ def test_ssl_errors_cleanup_uses_bounded_delete_chunks(monkeypatch, tmp_path) ->
 def test_ssl_errors_init_db_survives_cleanup_lock_timeout(
     monkeypatch, tmp_path
 ) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
     from services import ssl_errors_store  # type: ignore
 
@@ -963,7 +922,6 @@ def test_ssl_errors_init_db_survives_cleanup_lock_timeout(
 
 
 def test_blank_db_pool_size_derives_from_web_threads(monkeypatch) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     monkeypatch.delenv("DB_POOL_SIZE", raising=False)
@@ -973,7 +931,6 @@ def test_blank_db_pool_size_derives_from_web_threads(monkeypatch) -> None:
 
 
 def test_explicit_db_pool_size_still_allows_single_connection(monkeypatch) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     monkeypatch.setenv("DB_POOL_SIZE", "1")
@@ -983,7 +940,6 @@ def test_explicit_db_pool_size_still_allows_single_connection(monkeypatch) -> No
 
 
 def test_explicit_db_pool_size_caps_at_larger_admin_budget(monkeypatch) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     monkeypatch.setenv("DB_POOL_SIZE", "64")
@@ -992,7 +948,6 @@ def test_explicit_db_pool_size_caps_at_larger_admin_budget(monkeypatch) -> None:
 
 
 def test_mysql_advisory_lock_acquires_and_releases() -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     statements: list[tuple[str, tuple[object, ...]]] = []
@@ -1024,7 +979,6 @@ def test_mysql_advisory_lock_acquires_and_releases() -> None:
 
 
 def test_mysql_advisory_lock_times_out() -> None:
-    _add_repo_paths()
     import pytest
     from services import db  # type: ignore
 
@@ -1044,7 +998,6 @@ def test_mysql_advisory_lock_times_out() -> None:
 def test_ssl_errors_ingest_logs_database_outage_without_traceback(
     monkeypatch, tmp_path
 ) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
     from services import ssl_errors_store  # type: ignore
 
@@ -1082,7 +1035,6 @@ def test_ssl_errors_ingest_logs_database_outage_without_traceback(
 
 
 def test_connect_unpooled_does_not_register_pool_slot(monkeypatch) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     db.reset_mysql_ready_for_tests()
@@ -1121,7 +1073,6 @@ def test_connect_unpooled_does_not_register_pool_slot(monkeypatch) -> None:
 def test_transaction_retry_does_not_replay_lost_connection_commit_ambiguity(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
     from services import db  # type: ignore
 
@@ -1146,7 +1097,6 @@ def test_transaction_retry_does_not_replay_lost_connection_commit_ambiguity(
 def test_transaction_retry_does_not_replay_connection_acquisition_failure(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
     from services import db  # type: ignore
 
@@ -1169,7 +1119,6 @@ def test_transaction_retry_does_not_replay_connection_acquisition_failure(
 
 
 def test_transaction_retry_replays_lock_wait_timeout(monkeypatch) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
     from services import db  # type: ignore
 
@@ -1194,7 +1143,6 @@ def test_transaction_retry_replays_lock_wait_timeout(monkeypatch) -> None:
 
 
 def test_transaction_retry_replays_deadlock_with_bounded_jitter(monkeypatch) -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
     from services import db  # type: ignore
 
@@ -1222,7 +1170,6 @@ def test_transaction_retry_replays_deadlock_with_bounded_jitter(monkeypatch) -> 
 
 
 def test_mysql_error_classification_names_operator_relevant_failures() -> None:
-    _add_repo_paths()
     import pymysql  # type: ignore
     from services import db  # type: ignore
 
@@ -1249,7 +1196,6 @@ def test_mysql_error_classification_names_operator_relevant_failures() -> None:
 def test_ensure_mysql_database_validates_database_identifier_and_charset(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     db.reset_mysql_ready_for_tests()
@@ -1306,7 +1252,6 @@ def test_ensure_mysql_database_validates_database_identifier_and_charset(
 def test_mysql_database_creation_ready_cache_is_scoped_per_database(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services import db  # type: ignore
 
     created: list[str] = []

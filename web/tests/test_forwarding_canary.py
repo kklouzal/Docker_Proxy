@@ -2,26 +2,14 @@ from __future__ import annotations
 
 import json
 import socket
-import sys
 import threading
-from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
 import pytest
 
 
-def _add_repo_paths() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (repo_root, web_root):
-        path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-
-
 def test_forwarding_canary_listener_serves_only_static_loopback_canary() -> None:
-    _add_repo_paths()
     from http.server import ThreadingHTTPServer
 
     from proxy.forwarding_canary import ForwardingCanaryHandler
@@ -55,7 +43,6 @@ def test_forwarding_canary_listener_serves_only_static_loopback_canary() -> None
 def test_forwarding_canary_env_hardening_keeps_listener_loopback_only(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from proxy import forwarding_canary
 
     monkeypatch.setenv("FORWARDING_CANARY_HOST", "0.0.0.0")  # noqa: S104 - verifies unsafe bind env is coerced.
@@ -76,7 +63,6 @@ def test_forwarding_canary_path_rejects_whitespace_and_control_characters(
     monkeypatch,
     unsafe_path: str,
 ) -> None:
-    _add_repo_paths()
     from proxy import forwarding_canary
 
     monkeypatch.setenv("FORWARDING_CANARY_PATH", unsafe_path)
@@ -87,7 +73,6 @@ def test_forwarding_canary_path_rejects_whitespace_and_control_characters(
 def test_forwarding_canary_rejects_dns_names_that_look_like_loopback(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from proxy import forwarding_canary
 
     for host in ("127.evil.test", "127.0.0.1.evil.test"):
@@ -97,7 +82,6 @@ def test_forwarding_canary_rejects_dns_names_that_look_like_loopback(
 
 
 def test_forwarding_canary_probe_header_cannot_inject_response_headers() -> None:
-    _add_repo_paths()
     from http.server import ThreadingHTTPServer
 
     from proxy.forwarding_canary import ForwardingCanaryHandler
@@ -132,7 +116,6 @@ def test_forwarding_canary_probe_header_cannot_inject_response_headers() -> None
 
 
 def test_forwarding_canary_probe_body_uses_bounded_header_representation() -> None:
-    _add_repo_paths()
     from http.server import ThreadingHTTPServer
 
     from proxy.forwarding_canary import (
@@ -161,7 +144,6 @@ def test_forwarding_canary_probe_body_uses_bounded_header_representation() -> No
 
 
 def test_forwarding_canary_probe_header_value_is_control_safe_and_bounded() -> None:
-    _add_repo_paths()
     from proxy.forwarding_canary import (
         MAX_PROBE_HEADER_VALUE_LEN,
         _probe_header_value,

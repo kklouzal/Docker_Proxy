@@ -2,25 +2,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import sys
 import threading
 from contextlib import ExitStack
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-
-def _add_web_to_path() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (str(repo_root), str(web_root)):
-        if path not in sys.path:
-            sys.path.insert(0, path)
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _build_lookup_db(tmp_path: Path, lines: list[str]) -> Path:
-    _add_web_to_path()
     from tools import adblock_compile as ac  # type: ignore
 
     out = tmp_path / "compiled"
@@ -125,7 +117,6 @@ def test_adblock_lookup_close_waits_for_in_flight_candidate_query(
 ) -> None:
     db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
 
-    _add_web_to_path()
     from services.adblock_lookup import AdblockLookupIndex
 
     index = AdblockLookupIndex(db_path)
@@ -193,7 +184,6 @@ def test_adblock_lookup_index_returns_indexed_url_candidates(tmp_path: Path) -> 
         ],
     )
 
-    _add_web_to_path()
     from services.adblock_lookup import AdblockLookupIndex
 
     lookup = AdblockLookupIndex(db_path)
@@ -259,7 +249,6 @@ def test_lookup_returns_domain_anchored_wildcard_host_subdomain_candidates(
         ["||google.*/pagead/lvz?$script"],
     )
 
-    _add_web_to_path()
     from services.adblock_lookup import AdblockLookupIndex
 
     lookup = AdblockLookupIndex(db_path)
@@ -287,7 +276,6 @@ def test_token_prefilters_preserve_host_pattern_and_regex_candidate_superset(
         ],
     )
 
-    _add_web_to_path()
     from services.adblock_lookup import AdblockLookupIndex
 
     urls = [
@@ -350,7 +338,6 @@ def test_adblock_lookup_rejects_malformed_authority_candidates(
         ["||ads.example^", "||safe.example^", "||[2001:db8::20]^"],
     )
 
-    _add_web_to_path()
     from services.adblock_lookup import AdblockLookupIndex
 
     lookup = AdblockLookupIndex(db_path)
@@ -358,17 +345,22 @@ def test_adblock_lookup_rejects_malformed_authority_candidates(
     assert _raws(lookup.candidate_rules("http://[::1")) == set()
     assert _raws(lookup.candidate_rules("https://ads.example:bad/banner.js")) == set()
     assert _raws(lookup.candidate_rules("https://ads.example:99999/banner.js")) == set()
-    assert _raws(
-        lookup.candidate_rules(r"https://safe.example\@ads.example/banner.js")
-    ) == set()
-    assert _raws(
-        lookup.candidate_rules(r"https://safe.example\.ads.example/banner.js")
-    ) == set()
+    assert (
+        _raws(lookup.candidate_rules(r"https://safe.example\@ads.example/banner.js"))
+        == set()
+    )
+    assert (
+        _raws(lookup.candidate_rules(r"https://safe.example\.ads.example/banner.js"))
+        == set()
+    )
     assert _raws(lookup.candidate_rules(r"https://ads.example\path/banner.js")) == set()
-    assert _raws(lookup.candidate_rules("https://ads.example\n.evil/banner.js")) == set()
-    assert _raws(
-        lookup.candidate_rules("https://safe.example%2f.ads.example/banner.js")
-    ) == set()
+    assert (
+        _raws(lookup.candidate_rules("https://ads.example\n.evil/banner.js")) == set()
+    )
+    assert (
+        _raws(lookup.candidate_rules("https://safe.example%2f.ads.example/banner.js"))
+        == set()
+    )
     assert "||ads.example^" in _raws(
         lookup.candidate_rules("https://user:pass@sub.ads.example/banner.js")
     )
@@ -512,7 +504,6 @@ def test_lookup_hydrates_payload_from_jsonl_for_legacy_sqlite_schema(
         encoding="utf-8",
     )
 
-    _add_web_to_path()
     from services.adblock_lookup import AdblockLookupIndex
 
     lookup = AdblockLookupIndex(db_path)
@@ -543,7 +534,6 @@ def test_lookup_uses_jsonl_payload_when_embedded_payload_is_incomplete(
     finally:
         conn.close()
 
-    _add_web_to_path()
     from services.adblock_lookup import AdblockLookupIndex
 
     lookup = AdblockLookupIndex(db_path)
@@ -572,7 +562,6 @@ def test_lookup_ignores_malformed_resource_type_prefilter_schema(
     finally:
         conn.close()
 
-    _add_web_to_path()
     from services.adblock_lookup import AdblockLookupIndex
 
     lookup = AdblockLookupIndex(db_path)
@@ -594,7 +583,6 @@ def test_adblock_lookup_chunks_large_sqlite_in_queries(
         [f"sharedtoken/path{index}" for index in range(8)],
     )
 
-    _add_web_to_path()
     import services.adblock_lookup as lookup_module
 
     monkeypatch.setattr(lookup_module, "_SQLITE_IN_CHUNK_SIZE", 3)

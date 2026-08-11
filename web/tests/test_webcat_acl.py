@@ -1,7 +1,4 @@
 import importlib
-import os
-import pathlib
-import sys
 from typing import NoReturn
 
 import pytest
@@ -9,14 +6,7 @@ import pytest
 from .mysql_test_utils import configure_test_mysql_env
 
 
-def _add_web_to_path() -> None:
-    web_dir = pathlib.Path(os.path.join(pathlib.Path(__file__).parent, "..")).resolve()
-    if web_dir not in sys.path:
-        sys.path.insert(0, web_dir)
-
-
 def _webcat_acl_module():
-    _add_web_to_path()
     from tools import webcat_acl  # type: ignore
 
     return webcat_acl
@@ -25,7 +15,6 @@ def _webcat_acl_module():
 def test_webcat_acl_uses_local_snapshot_for_parent_domain_lookups(
     tmp_path, monkeypatch
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "webcat-acl")
 
     from services.db import connect  # type: ignore
@@ -63,7 +52,6 @@ def test_webcat_acl_uses_local_snapshot_for_parent_domain_lookups(
 def test_webcat_acl_refreshes_stale_disk_snapshot_before_negative_lookup(
     tmp_path, monkeypatch
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "webcat-acl-stale-snapshot")
 
     from services.db import connect  # type: ignore
@@ -106,7 +94,6 @@ def test_webcat_acl_refreshes_stale_disk_snapshot_before_negative_lookup(
 def test_webcat_acl_refreshes_snapshot_lock_while_building(
     tmp_path, monkeypatch
 ) -> None:
-    _add_web_to_path()
     configure_test_mysql_env(tmp_path / "webcat-acl-lock-refresh")
 
     webcat_acl = _webcat_acl_module()
@@ -370,7 +357,12 @@ def test_blocked_log_db_keeps_block_when_source_ip_unavailable(monkeypatch) -> N
 
     db.insert(ts=123, src_ip="", url="http://blocked.example/", category="adult")
 
-    assert db._queue.get_nowait() == (123, "unknown", "http://blocked.example/", "adult")
+    assert db._queue.get_nowait() == (
+        123,
+        "unknown",
+        "http://blocked.example/",
+        "adult",
+    )
 
 
 def test_blocked_log_db_sanitizes_untrusted_log_fields(monkeypatch) -> None:
@@ -727,7 +719,6 @@ def test_blocked_log_db_drops_lifecycle_blocked_batches(monkeypatch) -> None:
 
 def test_blocked_log_db_drops_reloaded_lifecycle_blocked_batches(monkeypatch) -> None:
     webcat_acl = _webcat_acl_module()
-    _add_web_to_path()
     from services import proxy_write_guard  # type: ignore
 
     class FakeConn:
@@ -844,12 +835,7 @@ def test_webcat_helper_closes_blocked_log_writer_at_eof(monkeypatch) -> None:
     monkeypatch.setattr(
         webcat_acl.sys,
         "stdin",
-        [
-            (
-                "192.0.2.10 blocked.example "
-                "http://blocked.example/path adult\n"
-            )
-        ],
+        [("192.0.2.10 blocked.example http://blocked.example/path adult\n")],
     )
     monkeypatch.setattr(webcat_acl.sys.stdout, "write", outputs.append)
     monkeypatch.setattr(webcat_acl.sys.stdout, "flush", lambda: None)
@@ -863,8 +849,9 @@ def test_webcat_helper_closes_blocked_log_writer_at_eof(monkeypatch) -> None:
     assert outputs == ["OK message=category=adult\n"]
 
 
-def test_webfilter_store_list_blocked_log_clamps_orders_and_redacts(monkeypatch) -> None:
-    _add_web_to_path()
+def test_webfilter_store_list_blocked_log_clamps_orders_and_redacts(
+    monkeypatch,
+) -> None:
     from services import webfilter_store  # type: ignore
 
     class Result:
@@ -902,4 +889,7 @@ def test_webfilter_store_list_blocked_log_clamps_orders_and_redacts(monkeypatch)
 
     assert "ORDER BY ts DESC, id DESC LIMIT" in conn.calls[0][0]
     assert conn.calls[0][1] == ("edge-a", 1000)
-    assert rows[0]["url"] == "https://example.test/path?access_token=[redacted]&token=[redacted]"
+    assert (
+        rows[0]["url"]
+        == "https://example.test/path?access_token=[redacted]&token=[redacted]"
+    )

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import errno
 import stat
-import sys
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -13,16 +12,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
-_add_web_to_path()
-from services import certificate_core  # type: ignore  # noqa: E402
+from services import certificate_core  # type: ignore
 
 CERT_A = "-----BEGIN CERTIFICATE-----\nCERTA\n-----END CERTIFICATE-----\n"
 CERT_B = "-----BEGIN CERTIFICATE-----\nCERTB\n-----END CERTIFICATE-----\n"
@@ -299,7 +289,9 @@ def test_materialize_certificate_bundle_surfaces_publish_directory_fsync_io_fail
                 raise OSError(errno.EIO, "directory fsync failed")
         real_fsync(fd)
 
-    monkeypatch.setattr(certificate_core.os, "fsync", fail_first_publish_directory_fsync)
+    monkeypatch.setattr(
+        certificate_core.os, "fsync", fail_first_publish_directory_fsync
+    )
 
     with pytest.raises(OSError, match="directory fsync failed"):
         certificate_core.materialize_certificate_bundle(tmp_path, bundle)
@@ -392,10 +384,13 @@ def test_validate_tls_material_paths_rejects_stale_admin_leaf_marker(tmp_path) -
         bundle,
         san_tokens=["admin.example.test"],
     )
-    assert certificate_core.validate_tls_material_paths(
-        material.certfile,
-        material.keyfile,
-    ).ready is True
+    assert (
+        certificate_core.validate_tls_material_paths(
+            material.certfile,
+            material.keyfile,
+        ).ready
+        is True
+    )
 
     cert_path = Path(material.certfile)
     cert_path.write_bytes(cert_path.read_bytes() + b"\n")
@@ -463,9 +458,7 @@ def test_admin_ui_leaf_generation_uses_separate_server_cert_with_sans(tmp_path) 
 
 def test_admin_ui_leaf_generation_rejects_non_ca_issuer_material(tmp_path) -> None:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = issuer = x509.Name(
-        [x509.NameAttribute(NameOID.COMMON_NAME, "Not A CA")]
-    )
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Not A CA")])
     now = datetime.now(UTC)
     cert = (
         x509.CertificateBuilder()
@@ -522,7 +515,9 @@ def test_validate_tls_material_paths_rejects_expired_certificate(tmp_path) -> No
         ),
     )
 
-    validation = certificate_core.validate_tls_material_paths(str(certfile), str(keyfile))
+    validation = certificate_core.validate_tls_material_paths(
+        str(certfile), str(keyfile)
+    )
 
     assert validation.ready is False
     assert validation.cert_status.valid is True
@@ -561,7 +556,9 @@ def test_admin_ui_san_normalization_rejects_scoped_ipv6_literals() -> None:
         ],
     )
 
-    assert certificate_core.normalize_admin_ui_certificate_san_token("fe80::1%eth0") == ""
+    assert (
+        certificate_core.normalize_admin_ui_certificate_san_token("fe80::1%eth0") == ""
+    )
     assert (
         certificate_core.normalize_admin_ui_certificate_san_token(
             "[fe80::1%25eth0]:5000",

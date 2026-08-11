@@ -5,7 +5,6 @@ import gzip
 import hashlib
 import importlib
 import sys
-from pathlib import Path
 
 from flask import Flask, Response
 
@@ -284,15 +283,6 @@ class ReportsPrivacyPrefixLeakQueries(CountingObservabilityQueries):
             "export_contracts": [],
             "privacy": {"enabled": True, "mode": "pseudonymized"},
         }
-
-
-def _add_repo_paths() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (repo_root, web_root):
-        path_text = str(path)
-        if path_text not in sys.path:
-            sys.path.insert(0, path_text)
 
 
 def test_login_and_static_requests_do_not_bind_proxy_context(
@@ -748,9 +738,14 @@ def test_observability_report_schedule_invalid_recipient_redirects_to_safe_speci
     rendered = client.get(location)
 
     assert rendered.status_code == 200
-    assert b"Report preset was not saved. Report recipients must be valid email addresses." in rendered.data
+    assert (
+        b"Report preset was not saved. Report recipients must be valid email addresses."
+        in rendered.data
+    )
     assert raw_recipient.encode() not in rendered.data
-    assert b"recipient is required and the database must be reachable" not in rendered.data
+    assert (
+        b"recipient is required and the database must be reachable" not in rendered.data
+    )
 
 
 def test_observability_report_schedule_recipient_feedback_codes_are_specific_and_safe(
@@ -859,9 +854,14 @@ def test_observability_report_schedule_generic_save_error_stays_generic(
     rendered = client.get(location)
 
     assert rendered.status_code == 200
-    assert b"Report preset was not saved. Check Admin UI logs for the database error." in rendered.data
+    assert (
+        b"Report preset was not saved. Check Admin UI logs for the database error."
+        in rendered.data
+    )
     assert raw_error.encode() not in rendered.data
-    assert b"recipient is required and the database must be reachable" not in rendered.data
+    assert (
+        b"recipient is required and the database must be reachable" not in rendered.data
+    )
 
 
 def test_observability_report_schedule_post_records_configuration(
@@ -926,7 +926,6 @@ def test_normal_admin_gets_revalidate_instead_of_immutable_cache(
 def test_proxy_pac_emergency_responses_are_private_no_store_and_conditional_etag(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
     sys.modules.pop("proxy.app", None)

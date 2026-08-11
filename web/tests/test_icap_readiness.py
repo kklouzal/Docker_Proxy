@@ -12,16 +12,6 @@ import pytest
 ResponsePayload = bytes | list[bytes]
 
 
-def _add_repo_paths() -> None:
-    import sys
-
-    repo_root = Path(__file__).resolve().parents[2]
-    for path in (repo_root, repo_root / "docker"):
-        path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-
-
 class _IcapHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         self.server.calls += 1
@@ -87,7 +77,6 @@ def _start_server(
 
 
 def _service(port: int):
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     return icap_readiness.IcapService(
@@ -102,7 +91,6 @@ def _service(port: int):
 
 
 def _probe_response(response: ResponsePayload):
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     server = _start_server(responses=[response])
@@ -116,7 +104,6 @@ def _probe_response(response: ResponsePayload):
 
 
 def test_icap_readiness_requires_options_method_match(tmp_path) -> None:
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     server = _start_server(methods="RESPMOD")
@@ -148,7 +135,6 @@ def test_icap_readiness_requires_options_method_match(tmp_path) -> None:
 def test_icap_readiness_required_failure_blocks_with_optional_degradation(
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     config = tmp_path / "20-icap.conf"
@@ -172,7 +158,6 @@ def test_icap_readiness_required_failure_blocks_with_optional_degradation(
 
 
 def test_icap_readiness_skips_malformed_icap_service_ports(tmp_path) -> None:
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     config = tmp_path / "20-icap.conf"
@@ -194,7 +179,6 @@ def test_icap_readiness_skips_malformed_icap_service_ports(tmp_path) -> None:
 def test_icap_readiness_preserves_query_and_rejects_fragmented_service_url(
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     config = tmp_path / "20-icap.conf"
@@ -214,7 +198,6 @@ def test_icap_readiness_preserves_query_and_rejects_fragmented_service_url(
 
 
 def test_icap_readiness_options_request_uses_authority_host_header(tmp_path) -> None:
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     server = _start_server(methods="REQMOD")
@@ -329,7 +312,6 @@ def test_icap_readiness_rejects_malformed_headers() -> None:
 
 
 def test_icap_readiness_waits_until_options_ready(tmp_path, monkeypatch) -> None:
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     server = _start_server(methods="REQMOD", ready_after_calls=3)
@@ -365,7 +347,6 @@ def test_icap_readiness_waits_until_options_ready(tmp_path, monkeypatch) -> None
 def test_icap_readiness_wait_json_uses_success_payload_without_extra_probe(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     server = _start_server(
@@ -415,7 +396,6 @@ def test_icap_readiness_wait_json_uses_success_payload_without_extra_probe(
 def test_icap_readiness_wait_json_reports_timeout_payload_without_recheck(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     server = _start_server(
@@ -473,7 +453,6 @@ def test_icap_readiness_wait_json_reports_timeout_payload_without_recheck(
 def test_icap_readiness_cli_ignores_malformed_numeric_env_defaults(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     config = tmp_path / "20-icap.conf"
@@ -507,7 +486,6 @@ def test_icap_readiness_cli_ignores_malformed_numeric_env_defaults(
 
 
 def test_icap_readiness_cli_rejects_non_finite_numeric_flags(capsys) -> None:
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     try:
@@ -523,7 +501,6 @@ def test_icap_readiness_cli_rejects_non_finite_numeric_flags(capsys) -> None:
 
 
 def test_icap_readiness_probe_does_not_swallow_programming_errors(monkeypatch) -> None:
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     def raise_runtime_error(*_args, **_kwargs):
@@ -537,7 +514,6 @@ def test_icap_readiness_probe_does_not_swallow_programming_errors(monkeypatch) -
 
 
 def test_icap_readiness_reports_status_file_write_failures(tmp_path) -> None:
-    _add_repo_paths()
     import icap_readiness  # type: ignore
 
     config = tmp_path / "20-icap.conf"
@@ -572,7 +548,6 @@ def test_squid_ready_start_delegates_numeric_env_parsing_to_readiness() -> None:
 def test_cicap_av_runner_optional_fallback_answers_options(
     tmp_path, monkeypatch
 ) -> None:
-    _add_repo_paths()
     import docker.cicap_av_runner as runner  # type: ignore
 
     conf = tmp_path / "c-icap-av.conf"

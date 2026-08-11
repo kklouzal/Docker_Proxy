@@ -1,25 +1,9 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
 
 import pytest
-
-
-def _add_repo_paths() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (repo_root, web_root):
-        path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-
-
-@pytest.fixture(autouse=True)
-def _repo_paths_available() -> None:
-    _add_repo_paths()
 
 
 def test_proxy_agent_startup_does_not_exit_when_initial_control_plane_db_calls_fail(
@@ -257,7 +241,13 @@ def test_proxy_agent_runs_schema_when_runtime_has_no_recovery_hook(monkeypatch) 
 
     agent.start_agent()
 
-    assert calls == ["schema", "ensure_registered", "bootstrap", "background", "sync:False"]
+    assert calls == [
+        "schema",
+        "ensure_registered",
+        "bootstrap",
+        "background",
+        "sync:False",
+    ]
 
 
 def test_proxy_agent_skips_initial_db_mutation_when_missing_bundle_schema_deferred(
@@ -599,7 +589,9 @@ def test_proxy_runtime_required_initial_capture_suppresses_optional_sync_capture
     assert captures == []
 
 
-def test_proxy_runtime_successful_required_capture_clears_initial_guard(monkeypatch) -> None:
+def test_proxy_runtime_successful_required_capture_clears_initial_guard(
+    monkeypatch,
+) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = runtime_module.ProxyRuntime.__new__(runtime_module.ProxyRuntime)
@@ -623,7 +615,9 @@ def test_proxy_runtime_successful_required_capture_clears_initial_guard(monkeypa
             detail="",
         )
 
-    monkeypatch.setattr(runtime_module, "capture_recovery_bundle_after_authoritative_state", capture)
+    monkeypatch.setattr(
+        runtime_module, "capture_recovery_bundle_after_authoritative_state", capture
+    )
 
     result = runtime.capture_recovery_bundle(reason="startup_initial", required=True)
 
@@ -631,7 +625,9 @@ def test_proxy_runtime_successful_required_capture_clears_initial_guard(monkeypa
     assert runtime.recovery_initial_capture_required is False
 
 
-def test_proxy_runtime_successful_rollback_captures_authoritative_state(monkeypatch) -> None:
+def test_proxy_runtime_successful_rollback_captures_authoritative_state(
+    monkeypatch,
+) -> None:
     from proxy.runtime import ProxyRuntime  # type: ignore
 
     runtime = ProxyRuntime.__new__(ProxyRuntime)

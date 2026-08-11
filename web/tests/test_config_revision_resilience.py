@@ -1,21 +1,10 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
 
 import pymysql
-
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
-_add_web_to_path()
-from services.config_revisions import ConfigRevisionStore  # type: ignore  # noqa: E402
+from services.config_revisions import ConfigRevisionStore  # type: ignore
 
 
 class _ConfigRevisionConn:
@@ -217,7 +206,10 @@ class _ActivationConn:
             return SimpleNamespace(fetchone=lambda: {"acquired": 1})
         if "RELEASE_LOCK" in text:
             return SimpleNamespace(fetchone=lambda: None, rowcount=0)
-        if "SELECT * FROM proxy_config_revisions WHERE id=%s AND proxy_id=%s LIMIT 1" in text:
+        if (
+            "SELECT * FROM proxy_config_revisions WHERE id=%s AND proxy_id=%s LIMIT 1"
+            in text
+        ):
             row = None
             if self.target_exists:
                 row = {
@@ -299,7 +291,9 @@ class _LatestApplyConn:
         )
 
 
-def test_config_revision_latest_apply_can_filter_to_active_revision(monkeypatch) -> None:
+def test_config_revision_latest_apply_can_filter_to_active_revision(
+    monkeypatch,
+) -> None:
     store = ConfigRevisionStore()
     calls: list[tuple[str, tuple[object, ...] | None]] = []
 

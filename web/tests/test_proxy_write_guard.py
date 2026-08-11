@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 import importlib
-import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest import SkipTest
 
 import pytest
 
 from .mysql_test_utils import configure_test_mysql_env
 
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _Result:
@@ -63,16 +59,21 @@ class _GuardConn:
 
 
 def _guard_module(monkeypatch):
-    _add_web_to_path()
     from services import proxy_write_guard  # type: ignore
 
     module = importlib.reload(proxy_write_guard)
-    monkeypatch.setattr(module, "table_exists", lambda _conn, name: name in {"proxy_id_aliases", "proxy_instances"})
+    monkeypatch.setattr(
+        module,
+        "table_exists",
+        lambda _conn, name: name in {"proxy_id_aliases", "proxy_instances"},
+    )
     module.clear_proxy_write_guard_cache()
     return module
 
 
-def test_proxy_write_guard_resolves_alias_and_caches_positive_decision(monkeypatch) -> None:
+def test_proxy_write_guard_resolves_alias_and_caches_positive_decision(
+    monkeypatch,
+) -> None:
     guard = _guard_module(monkeypatch)
     monkeypatch.setenv("MYSQL_PROXY_WRITE_GUARD_CACHE_SECONDS", "30")
     conn = _GuardConn()
@@ -98,7 +99,10 @@ def test_proxy_write_guard_cache_invalidates_and_expires(monkeypatch) -> None:
     conn = _GuardConn()
     conn.instances["edge-a"] = "healthy"
 
-    assert guard.resolve_proxy_write_id(conn, "edge-a", use_cache=True).proxy_id == "edge-a"
+    assert (
+        guard.resolve_proxy_write_id(conn, "edge-a", use_cache=True).proxy_id
+        == "edge-a"
+    )
     guard.clear_proxy_write_guard_cache("edge-a")
     conn.tombstones["edge-a"] = {"action": "removing", "target_proxy_id": ""}
     with pytest.raises(guard.ProxyLifecycleWriteError, match=r"removed|removing"):
@@ -107,18 +111,25 @@ def test_proxy_write_guard_cache_invalidates_and_expires(monkeypatch) -> None:
     monkeypatch.setenv("MYSQL_PROXY_WRITE_GUARD_CACHE_SECONDS", "0")
     guard.clear_proxy_write_guard_cache()
     conn.tombstones.clear()
-    assert guard.resolve_proxy_write_id(conn, "edge-a", use_cache=True).proxy_id == "edge-a"
+    assert (
+        guard.resolve_proxy_write_id(conn, "edge-a", use_cache=True).proxy_id
+        == "edge-a"
+    )
     conn.tombstones["edge-a"] = {"action": "removing", "target_proxy_id": ""}
     with pytest.raises(guard.ProxyLifecycleWriteError):
         guard.resolve_proxy_write_id(conn, "edge-a", use_cache=True)
 
 
-def test_proxy_write_guard_fails_closed_for_removed_registry_status(monkeypatch) -> None:
+def test_proxy_write_guard_fails_closed_for_removed_registry_status(
+    monkeypatch,
+) -> None:
     guard = _guard_module(monkeypatch)
     conn = _GuardConn()
     conn.instances["edge-a"] = "removed"
 
-    with pytest.raises(guard.ProxyLifecycleWriteError, match="lifecycle status 'removed'"):
+    with pytest.raises(
+        guard.ProxyLifecycleWriteError, match="lifecycle status 'removed'"
+    ):
         guard.resolve_proxy_write_id(conn, "edge-a")
 
 
@@ -146,7 +157,9 @@ def test_proxy_lifecycle_write_error_marker_survives_module_reload(monkeypatch) 
     assert reloaded_guard.is_proxy_lifecycle_write_error(RuntimeError("other")) is False
 
 
-def test_proxy_lifecycle_lock_name_keeps_short_ids_readable_and_stable(monkeypatch) -> None:
+def test_proxy_lifecycle_lock_name_keeps_short_ids_readable_and_stable(
+    monkeypatch,
+) -> None:
     guard = _guard_module(monkeypatch)
 
     first = guard.proxy_lifecycle_lock_name("edge-a")
@@ -157,7 +170,9 @@ def test_proxy_lifecycle_lock_name_keeps_short_ids_readable_and_stable(monkeypat
     assert len(first) <= 64
 
 
-def test_proxy_lifecycle_lock_name_avoids_long_id_truncation_collisions(monkeypatch) -> None:
+def test_proxy_lifecycle_lock_name_avoids_long_id_truncation_collisions(
+    monkeypatch,
+) -> None:
     guard = _guard_module(monkeypatch)
     shared_prefix = "edge-" + ("a" * 35)
     first_proxy_id = f"{shared_prefix}11111111111111111111111"
@@ -191,7 +206,9 @@ def test_guarded_proxy_write_rechecks_after_lifecycle_lock(monkeypatch) -> None:
     assert any("RELEASE_LOCK" in call for call in conn.calls)
 
 
-def test_guarded_proxy_rows_materializes_batch_with_canonical_alias(monkeypatch) -> None:
+def test_guarded_proxy_rows_materializes_batch_with_canonical_alias(
+    monkeypatch,
+) -> None:
     guard = _guard_module(monkeypatch)
     conn = _GuardConn()
     conn.native = object()
@@ -214,7 +231,6 @@ def test_guarded_proxy_rows_materializes_batch_with_canonical_alias(monkeypatch)
 
 def _fresh_mysql_modules(tmp_path: Path):
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
-    _add_web_to_path()
     from services import (
         config_revisions,  # type: ignore
         operation_ledger,  # type: ignore
@@ -230,9 +246,13 @@ def _fresh_mysql_modules(tmp_path: Path):
 
 @pytest.mark.integration
 @pytest.mark.mysql
-def test_mysql_lifecycle_write_guard_aliases_and_stale_rejection(tmp_path: Path) -> None:
+def test_mysql_lifecycle_write_guard_aliases_and_stale_rejection(
+    tmp_path: Path,
+) -> None:
     try:
-        proxy_registry, config_revisions, operation_ledger = _fresh_mysql_modules(tmp_path / "mysql-lifecycle-guard")
+        proxy_registry, config_revisions, operation_ledger = _fresh_mysql_modules(
+            tmp_path / "mysql-lifecycle-guard"
+        )
     except SkipTest as exc:
         pytest.skip(str(exc))
 
@@ -266,12 +286,21 @@ def test_mysql_lifecycle_write_guard_aliases_and_stale_rejection(tmp_path: Path)
             "INSERT INTO proxy_lifecycle_tombstones(proxy_id, action, target_proxy_id, detail, created_ts, updated_ts) VALUES(%s,'renaming',%s,'test',1,1) ON DUPLICATE KEY UPDATE action=VALUES(action), target_proxy_id=VALUES(target_proxy_id)",
             ("edge-new", "edge-final"),
         )
-    with pytest.raises(config_revisions.ProxyLifecycleWriteError if hasattr(config_revisions, "ProxyLifecycleWriteError") else ValueError):
+    with pytest.raises(
+        config_revisions.ProxyLifecycleWriteError
+        if hasattr(config_revisions, "ProxyLifecycleWriteError")
+        else ValueError
+    ):
         config_store.create_revision("edge-new", "blocked\n", created_by="pytest")
 
     with registry._connect() as conn:
-        conn.execute("DELETE FROM proxy_lifecycle_tombstones WHERE proxy_id=%s", ("edge-new",))
-        conn.execute("UPDATE proxy_instances SET status='unknown' WHERE proxy_id=%s", ("edge-new",))
+        conn.execute(
+            "DELETE FROM proxy_lifecycle_tombstones WHERE proxy_id=%s", ("edge-new",)
+        )
+        conn.execute(
+            "UPDATE proxy_instances SET status='unknown' WHERE proxy_id=%s",
+            ("edge-new",),
+        )
 
     registry.remove_proxy("edge-new")
 

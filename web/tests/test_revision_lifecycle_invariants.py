@@ -2,24 +2,17 @@ from __future__ import annotations
 
 import concurrent.futures
 import importlib
-import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest import SkipTest
 
 import pytest
+from services import revision_lifecycle  # type: ignore
+from services.config_revisions import ConfigRevisionStore  # type: ignore
 
 from .mysql_test_utils import configure_test_mysql_env
 
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
-_add_web_to_path()
-from services import revision_lifecycle  # type: ignore  # noqa: E402
-from services.config_revisions import ConfigRevisionStore  # type: ignore  # noqa: E402
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _SqlResult:
@@ -64,7 +57,9 @@ def test_scoped_lock_name_long_inputs_do_not_collapse() -> None:
     assert lock_a != lock_c
     assert lock_b != lock_c
     assert len({_lock_digest(lock_a), _lock_digest(lock_b), _lock_digest(lock_c)}) == 3
-    assert all(len(_lock_digest(lock_name)) == 24 for lock_name in (lock_a, lock_b, lock_c))
+    assert all(
+        len(_lock_digest(lock_name)) == 24 for lock_name in (lock_a, lock_b, lock_c)
+    )
 
 
 def test_scoped_lock_name_sanitizes_unsafe_readable_prefix() -> None:
@@ -114,7 +109,10 @@ def test_duplicate_active_repair_uses_deterministic_partition_update() -> None:
 
     assert changed == 2
     sql = calls[-1]
-    assert "ROW_NUMBER() OVER (PARTITION BY proxy_id ORDER BY created_ts DESC, id DESC)" in sql
+    assert (
+        "ROW_NUMBER() OVER (PARTITION BY proxy_id ORDER BY created_ts DESC, id DESC)"
+        in sql
+    )
     assert "SET target.is_active=0" in sql
     assert "ranked.active_rank > 1" in sql
 
@@ -146,9 +144,15 @@ class _ConfigRestoreConn:
             return _SqlResult([{"acquired": 1}])
         if "RELEASE_LOCK" in text:
             return _SqlResult()
-        if text.startswith("SELECT id FROM proxy_config_revisions WHERE proxy_id=%s AND is_active=1"):
-            return _SqlResult([] if self.current_id is None else [{"id": self.current_id}])
-        if text.startswith("SELECT id FROM proxy_config_revisions WHERE proxy_id=%s AND id=%s"):
+        if text.startswith(
+            "SELECT id FROM proxy_config_revisions WHERE proxy_id=%s AND is_active=1"
+        ):
+            return _SqlResult(
+                [] if self.current_id is None else [{"id": self.current_id}]
+            )
+        if text.startswith(
+            "SELECT id FROM proxy_config_revisions WHERE proxy_id=%s AND id=%s"
+        ):
             return _SqlResult([{"id": params[1]}] if self.previous_exists else [])
         if text.startswith("UPDATE proxy_config_revisions SET is_active"):
             self.updates.append((text, params))
@@ -172,8 +176,12 @@ def test_config_restore_previous_is_compare_and_swap(monkeypatch) -> None:
     )
 
     assert store.restore_previous_if_current("edge-a", 7, 3) is True
-    assert any("id<>%s" in sql and params == ("edge-a", 3) for sql, params in conn.updates)
-    assert any("id=%s" in sql and params == ("edge-a", 3) for sql, params in conn.updates)
+    assert any(
+        "id<>%s" in sql and params == ("edge-a", 3) for sql, params in conn.updates
+    )
+    assert any(
+        "id=%s" in sql and params == ("edge-a", 3) for sql, params in conn.updates
+    )
 
 
 def test_config_restore_previous_respects_proxy_lifecycle_guard(monkeypatch) -> None:
@@ -227,7 +235,6 @@ def test_config_restore_does_not_stomp_newer_active(monkeypatch) -> None:
 
 def _import_fresh_config_store(tmp_path: Path):
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
-    _add_web_to_path()
     import services.config_revisions as config_module  # type: ignore
 
     return importlib.reload(config_module)
@@ -281,7 +288,10 @@ def test_mysql_config_revision_legacy_repair_and_unique_active(tmp_path: Path) -
             ORDER BY proxy_id
             """,
         ).fetchall()
-        assert [(row["proxy_id"], int(row["active_count"]), row["active_text"]) for row in rows] == [
+        assert [
+            (row["proxy_id"], int(row["active_count"]), row["active_text"])
+            for row in rows
+        ] == [
             ("edge-a", 1, "new"),
             ("edge-b", 1, "other"),
         ]
@@ -305,7 +315,9 @@ def test_mysql_config_revision_legacy_repair_and_unique_active(tmp_path: Path) -
 
 @pytest.mark.integration
 @pytest.mark.mysql
-def test_mysql_config_revision_concurrent_activation_is_single_active_per_proxy(tmp_path: Path) -> None:
+def test_mysql_config_revision_concurrent_activation_is_single_active_per_proxy(
+    tmp_path: Path,
+) -> None:
     try:
         config_module = _import_fresh_config_store(tmp_path)
     except SkipTest as exc:
@@ -353,19 +365,25 @@ def test_mysql_config_revision_concurrent_activation_is_single_active_per_proxy(
             GROUP BY proxy_id
             """,
         ).fetchall()
-        assert {row["proxy_id"]: int(row["n"]) for row in counts} == {"edge-a": 1, "edge-b": 1}
+        assert {row["proxy_id"]: int(row["n"]) for row in counts} == {
+            "edge-a": 1,
+            "edge-b": 1,
+        }
 
 
 def _import_fresh_module(module_name: str, tmp_path: Path):
-    configure_test_mysql_env((module_name, tmp_path), secret_path=tmp_path / "flask_secret.key")
-    _add_web_to_path()
+    configure_test_mysql_env(
+        (module_name, tmp_path), secret_path=tmp_path / "flask_secret.key"
+    )
     module = importlib.import_module(module_name)
     return importlib.reload(module)
 
 
 @pytest.mark.integration
 @pytest.mark.mysql
-def test_mysql_certificate_bundle_legacy_repair_enforces_global_single_active(tmp_path: Path) -> None:
+def test_mysql_certificate_bundle_legacy_repair_enforces_global_single_active(
+    tmp_path: Path,
+) -> None:
     try:
         cert_module = _import_fresh_module("services.certificate_bundles", tmp_path)
     except SkipTest as exc:
@@ -408,20 +426,27 @@ def test_mysql_certificate_bundle_legacy_repair_enforces_global_single_active(tm
     cert_module.CertificateBundleStore().init_db()
 
     with connect() as conn:
-        rows = conn.execute("SELECT id, cert_pem FROM certificate_bundle_revisions WHERE is_active=1").fetchall()
+        rows = conn.execute(
+            "SELECT id, cert_pem FROM certificate_bundle_revisions WHERE is_active=1"
+        ).fetchall()
         assert [(int(row["id"]), row["cert_pem"]) for row in rows] == [(2, "cert-b")]
-        assert conn.execute(
-            """
+        assert (
+            conn.execute(
+                """
             SELECT 1 FROM information_schema.statistics
             WHERE table_schema=DATABASE() AND table_name='certificate_bundle_revisions' AND index_name='uniq_certificate_bundle_revisions_active'
             LIMIT 1
             """,
-        ).fetchone() is not None
+            ).fetchone()
+            is not None
+        )
 
 
 @pytest.mark.integration
 @pytest.mark.mysql
-def test_mysql_adblock_artifact_legacy_repair_enforces_global_single_active(tmp_path: Path) -> None:
+def test_mysql_adblock_artifact_legacy_repair_enforces_global_single_active(
+    tmp_path: Path,
+) -> None:
     try:
         artifacts_module = _import_fresh_module("services.adblock_artifacts", tmp_path)
     except SkipTest as exc:
@@ -460,12 +485,19 @@ def test_mysql_adblock_artifact_legacy_repair_enforces_global_single_active(tmp_
     artifacts_module.AdblockArtifactStore().init_db()
 
     with connect() as conn:
-        rows = conn.execute("SELECT id, settings_version FROM adblock_artifact_revisions WHERE is_active=1").fetchall()
-        assert [(int(row["id"]), int(row["settings_version"])) for row in rows] == [(2, 2)]
-        assert conn.execute(
-            """
+        rows = conn.execute(
+            "SELECT id, settings_version FROM adblock_artifact_revisions WHERE is_active=1"
+        ).fetchall()
+        assert [(int(row["id"]), int(row["settings_version"])) for row in rows] == [
+            (2, 2)
+        ]
+        assert (
+            conn.execute(
+                """
             SELECT 1 FROM information_schema.statistics
             WHERE table_schema=DATABASE() AND table_name='adblock_artifact_revisions' AND index_name='uniq_adblock_artifact_revisions_active'
             LIMIT 1
             """,
-        ).fetchone() is not None
+            ).fetchone()
+            is not None
+        )

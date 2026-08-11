@@ -1,16 +1,8 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pymysql
-
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
 
 
 class _AdblockConn:
@@ -44,7 +36,6 @@ class _AdblockConn:
 
 
 def test_adblock_set_enabled_retries_transient_deadlock(monkeypatch) -> None:
-    _add_web_to_path()
     from services.adblock_store import AdblockStore  # type: ignore
 
     store = AdblockStore()

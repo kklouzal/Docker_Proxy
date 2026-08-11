@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-import sys
 import threading
-from pathlib import Path
 from types import SimpleNamespace
 
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
-_add_web_to_path()
-from services import (  # type: ignore  # noqa: E402
+from services import (  # type: ignore
     adblock_artifacts,  # type: ignore
     certificate_bundles,  # type: ignore
     config_revisions,  # type: ignore
@@ -78,7 +68,9 @@ def _assert_concurrent_init_is_serialized(monkeypatch, module, store) -> None:
     def run_init() -> None:
         try:
             store.init_db()
-        except BaseException as exc:  # pragma: no cover - assertion reports thread errors
+        except (
+            BaseException
+        ) as exc:  # pragma: no cover - assertion reports thread errors
             errors.append(exc)
 
     monkeypatch.setattr(store, "_connect", fake_connect)
@@ -90,7 +82,9 @@ def _assert_concurrent_init_is_serialized(monkeypatch, module, store) -> None:
     )
     monkeypatch.setattr(module, "ensure_generated_column", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "ensure_index", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "repair_duplicate_active_rows", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        module, "repair_duplicate_active_rows", lambda *args, **kwargs: None
+    )
 
     first = threading.Thread(target=run_init)
     first.start()
@@ -131,7 +125,9 @@ def test_certificate_bundle_init_serializes_lazy_schema_work(monkeypatch) -> Non
     )
 
 
-def test_adblock_artifact_init_serializes_lazy_schema_work(monkeypatch, tmp_path) -> None:
+def test_adblock_artifact_init_serializes_lazy_schema_work(
+    monkeypatch, tmp_path
+) -> None:
     _assert_concurrent_init_is_serialized(
         monkeypatch,
         adblock_artifacts,

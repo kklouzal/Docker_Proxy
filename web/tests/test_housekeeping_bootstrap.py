@@ -1,17 +1,9 @@
 from __future__ import annotations
 
-import sys
 import threading
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
-
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
 
 
 class _FakeConn:
@@ -38,14 +30,12 @@ def _fake_connect(calls: list[str]):
 
 @pytest.fixture
 def housekeeping():
-    _add_web_to_path()
     from services import housekeeping as module  # type: ignore
 
     return module
 
 
 def test_prune_methods_initialize_tables_before_deleting(monkeypatch) -> None:
-    _add_web_to_path()
     from services.adblock_store import AdblockStore  # type: ignore
     from services.diagnostic_store import DiagnosticStore  # type: ignore
     from services.live_stats import LiveStatsStore  # type: ignore
@@ -125,7 +115,6 @@ class _TimeseriesResult:
 def test_timeseries_insert_reinitializes_after_external_schema_wipe(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services.timeseries_store import TimeSeriesStore  # type: ignore
 
     store = TimeSeriesStore.__new__(TimeSeriesStore)
@@ -151,7 +140,6 @@ def test_timeseries_insert_reinitializes_after_external_schema_wipe(
 def test_timeseries_summary_reinitializes_after_external_schema_wipe(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services.timeseries_store import TimeSeriesStore  # type: ignore
 
     store = TimeSeriesStore.__new__(TimeSeriesStore)
@@ -176,7 +164,6 @@ def test_timeseries_summary_reinitializes_after_external_schema_wipe(
 
 
 def test_timeseries_query_reinitializes_after_external_schema_wipe(monkeypatch) -> None:
-    _add_web_to_path()
     from services.timeseries_store import TimeSeriesStore  # type: ignore
 
     store = TimeSeriesStore.__new__(TimeSeriesStore)

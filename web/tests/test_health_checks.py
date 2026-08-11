@@ -1,26 +1,15 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
 
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
-
-
 def _health_checks_module():
-    _add_web_to_path()
     from services import health_checks  # type: ignore
 
     return health_checks
 
 
 def _proxy_health_module():
-    _add_web_to_path()
     from services import proxy_health  # type: ignore
 
     return proxy_health
@@ -79,15 +68,12 @@ def _forwarding_canary_response(
 
 def _chunked_http_response(chunks: list[bytes]) -> bytes:
     body = b"".join(
-        f"{len(chunk):x}\r\n".encode("ascii") + chunk + b"\r\n"
-        for chunk in chunks
+        f"{len(chunk):x}\r\n".encode("ascii") + chunk + b"\r\n" for chunk in chunks
     )
     return (
         b"HTTP/1.1 200 OK\r\n"
         b"Content-Type: application/json\r\n"
-        b"Transfer-Encoding: chunked\r\n\r\n"
-        + body
-        + b"0\r\n\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n" + body + b"0\r\n\r\n"
     )
 
 
@@ -116,7 +102,10 @@ def test_health_check_local_host_listener_and_target_helpers(
         "sl local_address rem_address st\n0: 00000000:36B0 00000000:0000 0A\n",
         encoding="utf-8",
     )
-    assert health_checks.has_listen_socket(str(proc_tcp_wildcard), 14000, "10.0.0.5") is True
+    assert (
+        health_checks.has_listen_socket(str(proc_tcp_wildcard), 14000, "10.0.0.5")
+        is True
+    )
 
     proc_tcp6 = tmp_path / "tcp6"
     proc_tcp6.write_text(
@@ -126,7 +115,9 @@ def test_health_check_local_host_listener_and_target_helpers(
     )
     assert health_checks.is_local_host("[::1]") is True
     assert health_checks.has_listen_socket(str(proc_tcp6), 14001, "::1") is True
-    assert health_checks.has_listen_socket(str(proc_tcp6), 14001, "2001:db8::1") is False
+    assert (
+        health_checks.has_listen_socket(str(proc_tcp6), 14001, "2001:db8::1") is False
+    )
 
     assert health_checks.annotate_service_target(
         {"ok": 1, "detail": "ready"}, host="127.0.0.1", port=3310, service="clamd"
@@ -1009,7 +1000,9 @@ def test_check_http_proxy_forwarding_refuses_encoded_unsafe_targets_before_conne
     assert result["probe_url"] == target_url
 
 
-def test_check_http_proxy_forwarding_refuses_request_line_injection(monkeypatch) -> None:
+def test_check_http_proxy_forwarding_refuses_request_line_injection(
+    monkeypatch,
+) -> None:
     health_checks = _health_checks_module()
 
     def fail_connect(*_args, **_kwargs):
@@ -1060,8 +1053,7 @@ def test_check_http_proxy_forwarding_refuses_non_local_targets_before_connect(
     assert result == {
         "ok": False,
         "detail": (
-            "unsafe forwarding probe target URL: expected localhost or "
-            "loopback IP host"
+            "unsafe forwarding probe target URL: expected localhost or loopback IP host"
         ),
         "probe_url": target_url,
     }

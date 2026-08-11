@@ -1,14 +1,5 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-
-def _add_web_path() -> None:
-    web_root = Path(__file__).resolve().parents[1]
-    if str(web_root) not in sys.path:
-        sys.path.insert(0, str(web_root))
-
 
 class _FakeResult:
     def __init__(self, rows: list[dict[str, object]]) -> None:
@@ -123,7 +114,6 @@ class _FakeStore:
 
 
 def _patched_store(monkeypatch, conn: _FakeConn | None = None):
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     conn = conn or _FakeConn()
@@ -137,7 +127,6 @@ def _patched_store(monkeypatch, conn: _FakeConn | None = None):
 
 
 def test_init_db_lazy_bootstrap_uses_valid_pac_dst_net_ddl(monkeypatch) -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
     from services import schema_lifecycle
 
@@ -160,11 +149,13 @@ def test_init_db_lazy_bootstrap_uses_valid_pac_dst_net_ddl(monkeypatch) -> None:
             "CREATE TABLE IF NOT EXISTS pac_direct_dst_nets",
         )
     ]
-    assert pac_dst_net_ddls == [(
-        "CREATE TABLE IF NOT EXISTS pac_direct_dst_nets ( "
-        "profile_id BIGINT NOT NULL, cidr VARCHAR(64) NOT NULL, "
-        "PRIMARY KEY(profile_id, cidr) )"
-    )]
+    assert pac_dst_net_ddls == [
+        (
+            "CREATE TABLE IF NOT EXISTS pac_direct_dst_nets ( "
+            "profile_id BIGINT NOT NULL, cidr VARCHAR(64) NOT NULL, "
+            "PRIMARY KEY(profile_id, cidr) )"
+        )
+    ]
     assert pac_dst_net_ddls[0].count("PRIMARY KEY") == 1
     assert store._schema_ready is True
 
@@ -360,7 +351,6 @@ def test_delete_profile_reports_changed_status(monkeypatch) -> None:
 
 
 def test_direct_domain_normalization_accepts_urls_idn_and_wildcards() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     assert mod._normalize_domain("https://Bücher.Example:443/path") == (
@@ -381,7 +371,6 @@ def test_direct_domain_normalization_accepts_urls_idn_and_wildcards() -> None:
 
 
 def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     assert mod._normalize_proxy_host_port("Backup.Proxy.Example.", None) == (
@@ -389,15 +378,21 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
         3128,
         "",
     )
-    assert mod._normalize_proxy_host_port(
-        "http://Backup.Proxy.Example.:8080", ""
-    ) == ("backup.proxy.example", 8080, "")
-    assert mod._normalize_proxy_host_port(
-        "http://Backup.Example:8080", ""
-    ) == ("backup.example", 8080, "")
-    assert mod._normalize_proxy_host_port(
-        "https://Backup.Example", "9090"
-    ) == ("backup.example", 9090, "")
+    assert mod._normalize_proxy_host_port("http://Backup.Proxy.Example.:8080", "") == (
+        "backup.proxy.example",
+        8080,
+        "",
+    )
+    assert mod._normalize_proxy_host_port("http://Backup.Example:8080", "") == (
+        "backup.example",
+        8080,
+        "",
+    )
+    assert mod._normalize_proxy_host_port("https://Backup.Example", "9090") == (
+        "backup.example",
+        9090,
+        "",
+    )
     assert mod._normalize_proxy_host_port("[2001:db8::10]:3129", None) == (
         "2001:db8::10",
         3129,
@@ -451,7 +446,6 @@ def test_backup_proxy_host_port_normalization_accepts_url_and_default_port() -> 
 
 
 def test_backup_proxy_host_port_normalization_accepts_scheme_url_without_port() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     assert mod._normalize_proxy_host_port("http://backup.example", None) == (
@@ -467,7 +461,6 @@ def test_backup_proxy_host_port_normalization_accepts_scheme_url_without_port() 
 
 
 def test_backup_proxy_host_port_normalization_rejects_bracketed_non_ipv6() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     for host in (
@@ -484,7 +477,6 @@ def test_backup_proxy_host_port_normalization_rejects_bracketed_non_ipv6() -> No
 
 
 def test_backup_proxy_host_port_normalization_rejects_scheme_url_empty_port() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     for host in ("http://backup.example:", "https://backup.example:"):
@@ -496,7 +488,6 @@ def test_backup_proxy_host_port_normalization_rejects_scheme_url_empty_port() ->
 
 
 def test_backup_proxy_host_port_normalization_rejects_scoped_ipv6() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     for host in (
@@ -512,7 +503,6 @@ def test_backup_proxy_host_port_normalization_rejects_scoped_ipv6() -> None:
 
 
 def test_backup_proxy_host_port_normalization_rejects_loopback_hosts() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     for host in (
@@ -533,7 +523,6 @@ def test_backup_proxy_host_port_normalization_rejects_loopback_hosts() -> None:
 
 
 def test_backup_proxy_rejects_unroutable_ip_literals() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     for host in (
@@ -561,7 +550,6 @@ def test_backup_proxy_rejects_unroutable_ip_literals() -> None:
 
 
 def test_backup_proxy_host_port_normalization_rejects_unsupported_url_schemes() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     for host in (
@@ -575,8 +563,9 @@ def test_backup_proxy_host_port_normalization_rejects_unsupported_url_schemes() 
         )
 
 
-def test_backup_proxy_host_port_normalization_rejects_url_paths_queries_fragments() -> None:
-    _add_web_path()
+def test_backup_proxy_host_port_normalization_rejects_url_paths_queries_fragments() -> (
+    None
+):
     import services.pac_profiles_store as mod
 
     for host in (
@@ -593,7 +582,6 @@ def test_backup_proxy_host_port_normalization_rejects_url_paths_queries_fragment
 
 
 def test_backup_proxy_host_port_normalization_rejects_unsafe_hosts() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     for host in (
@@ -613,7 +601,6 @@ def test_backup_proxy_host_port_normalization_rejects_unsafe_hosts() -> None:
 
 
 def test_backup_proxy_host_port_normalization_rejects_ambiguous_ipv4_hosts() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     for host in (
@@ -633,7 +620,6 @@ def test_backup_proxy_host_port_normalization_rejects_ambiguous_ipv4_hosts() -> 
 
 
 def test_backup_proxy_host_port_normalization_rejects_embedded_credentials() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     for host in (
@@ -649,7 +635,6 @@ def test_backup_proxy_host_port_normalization_rejects_embedded_credentials() -> 
 
 
 def test_backup_proxy_host_port_normalization_rejects_malformed_inline_ports() -> None:
-    _add_web_path()
     import services.pac_profiles_store as mod
 
     assert mod._normalize_proxy_host_port("backup.example", 0) == (
@@ -701,9 +686,7 @@ def test_backup_proxy_host_port_normalization_rejects_malformed_inline_ports() -
         None,
         "Invalid proxy port.",
     )
-    assert mod._normalize_proxy_host_port(
-        "http://backup.example:0/proxy.pac", ""
-    ) == (
+    assert mod._normalize_proxy_host_port("http://backup.example:0/proxy.pac", "") == (
         None,
         None,
         "Proxy port must be between 1 and 65535.",

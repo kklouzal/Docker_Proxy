@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,14 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = REPO_ROOT / "web"
 
 
-def _ensure_web_import_path() -> None:
-    web_root = str(WEB_ROOT)
-    if web_root not in sys.path:
-        sys.path.insert(0, web_root)
-
-
 def test_policy_materializer_rejects_conflicting_same_target_files(tmp_path) -> None:
-    _ensure_web_import_path()
 
     from services.policy_materializer import (
         build_proxy_policy_state_from_stores,  # type: ignore
@@ -63,7 +55,6 @@ def test_policy_materializer_rejects_conflicting_same_target_files(tmp_path) -> 
 
 
 def test_policy_materializer_rejects_duplicate_alias_target(tmp_path) -> None:
-    _ensure_web_import_path()
 
     from services.policy_materializer import (  # type: ignore
         build_proxy_policy_state_from_stores,
@@ -99,7 +90,6 @@ def test_policy_materializer_rejects_duplicate_alias_target(tmp_path) -> None:
 
 
 def test_policy_sha_uses_canonical_target_identity_and_logical_order(tmp_path) -> None:
-    _ensure_web_import_path()
 
     from services.policy_materializer import (  # type: ignore
         MaterializedPolicyFile,
@@ -124,18 +114,24 @@ def test_policy_sha_uses_canonical_target_identity_and_logical_order(tmp_path) -
     )
 
     assert equivalent_sha == canonical_sha
-    assert calculate_policy_sha(
-        (
-            MaterializedPolicyFile(str(first_path), "changed\n"),
-            MaterializedPolicyFile(str(second_path), "second\n"),
-        ),
-    ) != canonical_sha
-    assert calculate_policy_sha(
-        (
-            MaterializedPolicyFile(str(first_path), "first\n"),
-            MaterializedPolicyFile(str(tmp_path / "different.conf"), "second\n"),
-        ),
-    ) != canonical_sha
+    assert (
+        calculate_policy_sha(
+            (
+                MaterializedPolicyFile(str(first_path), "changed\n"),
+                MaterializedPolicyFile(str(second_path), "second\n"),
+            ),
+        )
+        != canonical_sha
+    )
+    assert (
+        calculate_policy_sha(
+            (
+                MaterializedPolicyFile(str(first_path), "first\n"),
+                MaterializedPolicyFile(str(tmp_path / "different.conf"), "second\n"),
+            ),
+        )
+        != canonical_sha
+    )
 
 
 @pytest.mark.parametrize("failing_store", ["webfilter", "sslfilter"])
@@ -143,7 +139,6 @@ def test_policy_materializer_restores_context_after_store_render_failure(
     tmp_path,
     failing_store,
 ) -> None:
-    _ensure_web_import_path()
 
     from services.policy_materializer import (  # type: ignore
         build_proxy_policy_state_from_stores,
@@ -200,7 +195,6 @@ def test_policy_materializer_restores_context_after_store_render_failure(
 
 
 def test_policy_materializer_restores_context_after_success(tmp_path) -> None:
-    _ensure_web_import_path()
 
     from services.policy_materializer import (  # type: ignore
         build_proxy_policy_state_from_stores,

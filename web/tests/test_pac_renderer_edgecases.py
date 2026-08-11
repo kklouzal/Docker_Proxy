@@ -4,18 +4,11 @@ import errno
 import json
 import stat
 import subprocess
-import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-
-def _add_web_to_path() -> None:
-    web_dir = Path(__file__).resolve().parents[1]
-    if str(web_dir) not in sys.path:
-        sys.path.insert(0, str(web_dir))
 
 
 def _proxy_record(public_host: str, **overrides: object) -> SimpleNamespace:
@@ -94,12 +87,14 @@ def _evaluate_pac_with_dns_answer(rendered: str, host: str, dns_answer: str) -> 
 
 
 def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     assert pac_renderer.format_proxy_host("proxy.example:3128") == "proxy.example"
     assert pac_renderer.format_proxy_host("93.184.216.34") == "93.184.216.34"
-    assert pac_renderer.format_proxy_host("2001:4860:4860::8888") == "[2001:4860:4860::8888]"
+    assert (
+        pac_renderer.format_proxy_host("2001:4860:4860::8888")
+        == "[2001:4860:4860::8888]"
+    )
     assert (
         pac_renderer.format_proxy_host("[2001:4860:4860::8888]:3128")
         == "[2001:4860:4860::8888]"
@@ -149,14 +144,12 @@ def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() 
 def test_format_proxy_host_fails_closed_for_request_host_fallback_authorities(
     host: str,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     assert pac_renderer.format_proxy_host(host) == "127.0.0.1"
 
 
 def test_pac_host_normalization_strips_url_schemes_before_ipv6_detection() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     assert (
@@ -164,9 +157,7 @@ def test_pac_host_normalization_strips_url_schemes_before_ipv6_detection() -> No
         == "proxy.example"
     )
     assert (
-        pac_renderer.format_proxy_host(
-            "https://[2001:4860:4860::8888]:8443/proxy.pac"
-        )
+        pac_renderer.format_proxy_host("https://[2001:4860:4860::8888]:8443/proxy.pac")
         == "[2001:4860:4860::8888]"
     )
     assert (
@@ -188,7 +179,6 @@ def test_pac_host_normalization_strips_url_schemes_before_ipv6_detection() -> No
 
 
 def test_proxy_chain_filters_stale_invalid_backup_hosts() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = pac_renderer.ProxyPacTarget(
@@ -223,7 +213,6 @@ def test_proxy_chain_filters_stale_invalid_backup_hosts() -> None:
 def test_resolve_proxy_pac_target_honors_public_pac_url_when_registry_is_empty(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
@@ -263,7 +252,6 @@ def test_resolve_proxy_pac_target_preserves_unbracketed_ipv6_public_pac_url(
     public_pac_url: str,
     expected_url: str,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
@@ -291,7 +279,6 @@ def test_resolve_proxy_pac_target_ignores_invalid_absolute_public_pac_url(
     monkeypatch,
     public_pac_url: str,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
@@ -310,7 +297,6 @@ def test_resolve_proxy_pac_target_ignores_invalid_absolute_public_pac_url(
 def test_resolve_proxy_pac_target_ignores_invalid_env_public_host(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services import pac_renderer  # type: ignore
 
@@ -342,7 +328,6 @@ def test_resolve_proxy_pac_target_ignores_reserved_dns_public_host(
     monkeypatch,
     public_host: str,
 ) -> None:
-    _add_web_to_path()
 
     from services import pac_renderer  # type: ignore
 
@@ -364,7 +349,6 @@ def test_resolve_proxy_pac_target_ignores_ambiguous_ipv4_public_host(
     monkeypatch,
     public_host: str,
 ) -> None:
-    _add_web_to_path()
 
     from services import pac_renderer  # type: ignore
 
@@ -393,7 +377,6 @@ def test_resolve_proxy_pac_target_ignores_scoped_ipv6_public_endpoint(
     env_name: str,
     value: str,
 ) -> None:
-    _add_web_to_path()
 
     from services import pac_renderer  # type: ignore
 
@@ -426,7 +409,6 @@ def test_resolve_proxy_pac_target_ignores_non_public_ip_literal_endpoint(
     env_name: str,
     value: str,
 ) -> None:
-    _add_web_to_path()
 
     from services import pac_renderer  # type: ignore
 
@@ -447,7 +429,6 @@ def test_resolve_proxy_pac_target_ignores_non_public_ip_literal_endpoint(
 def test_resolve_proxy_pac_target_uses_env_endpoint_when_registry_has_no_public_host(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services import pac_renderer  # type: ignore
 
@@ -474,7 +455,6 @@ def test_resolve_proxy_pac_target_uses_env_endpoint_when_registry_has_no_public_
 def test_resolve_proxy_pac_target_preserves_registered_compose_public_endpoint(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services import pac_renderer  # type: ignore
 
@@ -501,7 +481,6 @@ def test_resolve_proxy_pac_target_preserves_registered_compose_public_endpoint(
 def test_build_proxy_pac_state_manifest_preserves_configured_public_pac_path(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
@@ -535,7 +514,6 @@ def test_build_proxy_pac_state_manifest_preserves_configured_public_pac_path(
 def test_build_proxy_pac_state_manifest_rejects_encoded_public_pac_separator(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     monkeypatch.setattr(pac_renderer, "get_proxy_registry", _EmptyRegistry)
@@ -566,7 +544,6 @@ def test_build_proxy_pac_state_manifest_rejects_encoded_public_pac_separator(
 def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services import pac_renderer  # type: ignore
 
@@ -596,7 +573,6 @@ def test_resolve_proxy_pac_target_prefers_registry_public_endpoint_over_env(
 def test_resolve_proxy_pac_target_rejects_registry_public_pac_path_fragment(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services import pac_renderer  # type: ignore
 
@@ -625,7 +601,6 @@ def test_resolve_proxy_pac_target_rejects_registry_public_pac_path_fragment(
 def test_build_proxy_pac_state_uses_active_proxy_context_when_unspecified(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services import pac_renderer  # type: ignore
     from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
@@ -661,7 +636,6 @@ def test_build_proxy_pac_state_uses_active_proxy_context_when_unspecified(
 def test_resolve_proxy_pac_target_scopes_chain_settings_to_requested_proxy(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services import pac_renderer  # type: ignore
     from services.proxy_context import (  # type: ignore
@@ -722,7 +696,6 @@ def test_resolve_proxy_pac_target_scopes_chain_settings_to_requested_proxy(
 def test_resolve_proxy_pac_target_filters_stale_invalid_backup_proxy_ports(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
 
     from services import pac_renderer  # type: ignore
 
@@ -760,7 +733,6 @@ def test_resolve_proxy_pac_target_filters_stale_invalid_backup_proxy_ports(
 
 
 def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
     from services.pac_private_local import LOCAL_DOMAIN_SUFFIXES
 
@@ -789,7 +761,6 @@ def test_rendered_pac_contains_local_direct_rules_and_deduplicates_domains() -> 
 
 
 def test_rendered_pac_preserves_exact_and_wildcard_direct_domain_semantics() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_pac(
@@ -805,19 +776,18 @@ def test_rendered_pac_preserves_exact_and_wildcard_direct_domain_semantics() -> 
         include_private=False,
     )
 
-    assert rendered.count('if (host === "example.com") return \'DIRECT\';') == 1
+    assert rendered.count("if (host === \"example.com\") return 'DIRECT';") == 1
     assert (
         rendered.count(
             'if (host === "example.com" || dnsDomainIs(host, ".example.com")) return \'DIRECT\';'
         )
         == 1
     )
-    assert 'if host === "example.com" return \'DIRECT\';' not in rendered
-    assert 'if dnsDomainIs(host, ".example.com") return \'DIRECT\';' not in rendered
+    assert "if host === \"example.com\" return 'DIRECT';" not in rendered
+    assert "if dnsDomainIs(host, \".example.com\") return 'DIRECT';" not in rendered
 
 
 def test_rendered_pac_is_deterministic_for_equivalent_direct_rule_ordering() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     first = pac_renderer._render_pac(
@@ -839,7 +809,6 @@ def test_rendered_pac_is_deterministic_for_equivalent_direct_rule_ordering() -> 
 
 
 def test_rendered_pac_normalizes_stale_direct_domain_inputs() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_pac(
@@ -864,7 +833,6 @@ def test_rendered_pac_normalizes_stale_direct_domain_inputs() -> None:
 
 
 def test_rendered_pac_strips_root_dot_before_host_matching() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_pac(
@@ -888,8 +856,9 @@ def test_rendered_pac_strips_root_dot_before_host_matching() -> None:
     assert rendered.index(host_normalizer) < rendered.index("var ip = hostIp();")
 
 
-def test_rendered_pac_strips_ipv6_url_brackets_before_local_and_proxy_matching() -> None:
-    _add_web_to_path()
+def test_rendered_pac_strips_ipv6_url_brackets_before_local_and_proxy_matching() -> (
+    None
+):
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_pac(
@@ -913,7 +882,6 @@ def test_rendered_pac_strips_ipv6_url_brackets_before_local_and_proxy_matching()
 
 
 def test_rendered_pac_normalizes_host_brackets_ports_and_root_dots() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_pac(
@@ -935,7 +903,6 @@ def test_rendered_pac_normalizes_host_brackets_ports_and_root_dots() -> None:
 
 
 def test_pac_target_advertises_only_explicit_proxy_listener() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = pac_renderer.ProxyPacTarget(
@@ -951,7 +918,6 @@ def test_pac_target_advertises_only_explicit_proxy_listener() -> None:
 
 
 def test_pac_target_display_chain_normalizes_url_shaped_public_host() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = pac_renderer.ProxyPacTarget(
@@ -967,7 +933,6 @@ def test_pac_target_display_chain_normalizes_url_shaped_public_host() -> None:
 
 
 def test_pac_target_renders_ordered_backup_proxy_chain_and_optional_direct() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = pac_renderer.ProxyPacTarget(
@@ -995,7 +960,6 @@ def test_pac_target_renders_ordered_backup_proxy_chain_and_optional_direct() -> 
 
 
 def test_pac_target_filters_duplicate_proxy_chain_endpoints() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = pac_renderer.ProxyPacTarget(
@@ -1016,8 +980,7 @@ def test_pac_target_filters_duplicate_proxy_chain_endpoints() -> None:
     )
 
     assert (
-        target.proxy_chain
-        == "PROXY proxy.example:3128; PROXY backup.example:8080; "
+        target.proxy_chain == "PROXY proxy.example:3128; PROXY backup.example:8080; "
         "PROXY backup.example:8443; PROXY [2001:db8::20]:8080; DIRECT"
     )
     assert target.proxy_chain.count("PROXY proxy.example:3128") == 1
@@ -1026,7 +989,6 @@ def test_pac_target_filters_duplicate_proxy_chain_endpoints() -> None:
 
 
 def test_pac_target_filters_stale_invalid_backup_proxy_rows() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = pac_renderer.ProxyPacTarget(
@@ -1045,7 +1007,10 @@ def test_pac_target_filters_stale_invalid_backup_proxy_rows() -> None:
     )
 
     assert target.normalized_backup_proxies == (("[2001:db8::20]", 8443),)
-    assert target.proxy_chain == "PROXY proxy.example:3128; PROXY [2001:db8::20]:8443; DIRECT"
+    assert (
+        target.proxy_chain
+        == "PROXY proxy.example:3128; PROXY [2001:db8::20]:8443; DIRECT"
+    )
     assert "backup.example" not in target.proxy_chain
     assert "bad host" not in target.proxy_chain
     assert "/path" not in target.proxy_chain
@@ -1053,7 +1018,6 @@ def test_pac_target_filters_stale_invalid_backup_proxy_rows() -> None:
 
 
 def test_pac_state_sha_is_order_stable_and_content_sensitive() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     files_a = (
@@ -1077,7 +1041,6 @@ def test_pac_state_sha_is_order_stable_and_content_sensitive() -> None:
 def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback() -> (
     None
 ):
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     manifest = {
@@ -1099,8 +1062,9 @@ def test_select_manifest_file_prefers_matching_cidr_then_catch_all_then_fallback
     )
 
 
-def test_select_manifest_file_matches_ipv4_mapped_ipv6_clients_against_ipv4_profiles() -> None:
-    _add_web_to_path()
+def test_select_manifest_file_matches_ipv4_mapped_ipv6_clients_against_ipv4_profiles() -> (
+    None
+):
     from services import pac_renderer  # type: ignore
 
     manifest = {
@@ -1112,12 +1076,13 @@ def test_select_manifest_file_matches_ipv4_mapped_ipv6_clients_against_ipv4_prof
         ],
     }
 
-    assert pac_renderer.select_manifest_file(manifest, "::ffff:10.2.3.44") == "branch.pac"
+    assert (
+        pac_renderer.select_manifest_file(manifest, "::ffff:10.2.3.44") == "branch.pac"
+    )
     assert pac_renderer.select_manifest_file(manifest, "::ffff:10.9.8.7") == "corp.pac"
 
 
 def test_select_manifest_file_uses_lowest_profile_id_for_equal_prefix_matches() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     manifest = {
@@ -1133,7 +1098,6 @@ def test_select_manifest_file_uses_lowest_profile_id_for_equal_prefix_matches() 
 
 
 def test_select_manifest_file_uses_lowest_profile_id_for_catch_all_fallback() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     manifest = {
@@ -1155,8 +1119,9 @@ def test_select_manifest_file_uses_lowest_profile_id_for_catch_all_fallback() ->
     )
 
 
-def test_select_manifest_file_keeps_manifest_order_when_profile_ids_are_absent() -> None:
-    _add_web_to_path()
+def test_select_manifest_file_keeps_manifest_order_when_profile_ids_are_absent() -> (
+    None
+):
     from services import pac_renderer  # type: ignore
 
     manifest = {
@@ -1169,12 +1134,16 @@ def test_select_manifest_file_keeps_manifest_order_when_profile_ids_are_absent()
         ],
     }
 
-    assert pac_renderer.select_manifest_file(manifest, "10.2.3.44") == "first-branch.pac"
-    assert pac_renderer.select_manifest_file(manifest, "192.0.2.55") == "first-catch-all.pac"
+    assert (
+        pac_renderer.select_manifest_file(manifest, "10.2.3.44") == "first-branch.pac"
+    )
+    assert (
+        pac_renderer.select_manifest_file(manifest, "192.0.2.55")
+        == "first-catch-all.pac"
+    )
 
 
 def test_rendered_pac_does_not_treat_ipv6_literals_as_plain_hosts() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_fallback_pac(
@@ -1194,7 +1163,6 @@ def test_rendered_pac_does_not_treat_ipv6_literals_as_plain_hosts() -> None:
 
 
 def test_rendered_pac_always_bypasses_loopback_ipv4_literals() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_fallback_pac(
@@ -1231,7 +1199,6 @@ def test_rendered_pac_always_bypasses_loopback_ipv4_literals() -> None:
 def test_rendered_pac_always_bypasses_equivalent_ipv6_loopback_literals(
     host: str,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_fallback_pac(
@@ -1247,13 +1214,10 @@ def test_rendered_pac_always_bypasses_equivalent_ipv6_loopback_literals(
     )
 
     assert _evaluate_pac(rendered, host) == "DIRECT"
-    assert _evaluate_pac(rendered, "0:0:0:0:0:0:0:2") == (
-        "PROXY proxy.example:3128"
-    )
+    assert _evaluate_pac(rendered, "0:0:0:0:0:0:0:2") == ("PROXY proxy.example:3128")
 
 
 def test_private_local_destination_metadata_tracks_rendered_pac_direct_rules() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
     from services.pac_private_local import (
         PAC_PRIVATE_LOCAL_DESTINATION_CLASSES,
@@ -1276,7 +1240,9 @@ def test_private_local_destination_metadata_tracks_rendered_pac_direct_rules() -
         include_private=False,
     )
 
-    assert get_sslfilter_store().private_dst_nets == pac_private_local_destination_values()
+    assert (
+        get_sslfilter_store().private_dst_nets == pac_private_local_destination_values()
+    )
     for group in PAC_PRIVATE_LOCAL_DESTINATION_CLASSES:
         for value in group.values:
             if value == "plain hostnames":
@@ -1302,13 +1268,21 @@ def test_private_local_destination_metadata_tracks_rendered_pac_direct_rules() -
                     assert f"isInNet(ip, '{net}', '255.0.0.0')" in rendered_private
                 elif prefix == "8":
                     assert f"isInNet(ip, '{net}', '255.0.0.0')" in rendered_private
-                    assert f"isInNet(ip, '{net}', '255.0.0.0')" not in rendered_public_only
+                    assert (
+                        f"isInNet(ip, '{net}', '255.0.0.0')" not in rendered_public_only
+                    )
                 elif prefix == "12":
                     assert f"isInNet(ip, '{net}', '255.240.0.0')" in rendered_private
-                    assert f"isInNet(ip, '{net}', '255.240.0.0')" not in rendered_public_only
+                    assert (
+                        f"isInNet(ip, '{net}', '255.240.0.0')"
+                        not in rendered_public_only
+                    )
                 elif prefix == "16":
                     assert f"isInNet(ip, '{net}', '255.255.0.0')" in rendered_private
-                    assert f"isInNet(ip, '{net}', '255.255.0.0')" not in rendered_public_only
+                    assert (
+                        f"isInNet(ip, '{net}', '255.255.0.0')"
+                        not in rendered_public_only
+                    )
 
         for sample in group.sample_hosts:
             assert _evaluate_pac(rendered_private, sample) == "DIRECT"
@@ -1320,7 +1294,6 @@ def test_private_local_destination_metadata_tracks_rendered_pac_direct_rules() -
 
 
 def test_rendered_pac_bypasses_private_ipv6_literals_only_when_enabled() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = pac_renderer.ProxyPacTarget(
@@ -1360,7 +1333,6 @@ def test_rendered_pac_bypasses_private_ipv6_literals_only_when_enabled() -> None
 
 
 def test_rendered_pac_keeps_existing_ipv4_private_and_domain_direct_behavior() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_pac(
@@ -1381,7 +1353,6 @@ def test_rendered_pac_keeps_existing_ipv4_private_and_domain_direct_behavior() -
 
 
 def test_pac_ipv4_direct_rules_ignore_ipv6_dns_answer_without_throwing() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_pac(
@@ -1392,20 +1363,25 @@ def test_pac_ipv4_direct_rules_ignore_ipv6_dns_answer_without_throwing() -> None
         include_private=True,
     )
 
-    assert _evaluate_pac_with_dns_answer(
-        rendered,
-        "dualstack.example",
-        "2001:db8::10",
-    ) == "PROXY proxy.example:3128; DIRECT"
-    assert _evaluate_pac_with_dns_answer(
-        rendered,
-        "intranet.example",
-        "10.20.3.4",
-    ) == "DIRECT"
+    assert (
+        _evaluate_pac_with_dns_answer(
+            rendered,
+            "dualstack.example",
+            "2001:db8::10",
+        )
+        == "PROXY proxy.example:3128; DIRECT"
+    )
+    assert (
+        _evaluate_pac_with_dns_answer(
+            rendered,
+            "intranet.example",
+            "10.20.3.4",
+        )
+        == "DIRECT"
+    )
 
 
 def test_pac_ipv4_direct_rules_ignore_malformed_dns_answer_without_throwing() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_pac(
@@ -1416,15 +1392,17 @@ def test_pac_ipv4_direct_rules_ignore_malformed_dns_answer_without_throwing() ->
         include_private=False,
     )
 
-    assert _evaluate_pac_with_dns_answer(
-        rendered,
-        "stale.example",
-        "10.20.3.4 garbage",
-    ) == "PROXY proxy.example:3128; DIRECT"
+    assert (
+        _evaluate_pac_with_dns_answer(
+            rendered,
+            "stale.example",
+            "10.20.3.4 garbage",
+        )
+        == "PROXY proxy.example:3128; DIRECT"
+    )
 
 
 def test_select_manifest_file_prefers_most_specific_overlapping_cidr() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     manifest = {
@@ -1447,7 +1425,6 @@ def test_select_manifest_file_prefers_most_specific_overlapping_cidr() -> None:
 
 
 def test_select_manifest_file_ignores_malformed_profile_file_paths() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     manifest = {
@@ -1473,7 +1450,6 @@ def test_materialize_proxy_pac_state_fsyncs_parent_directories_after_publish(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = tmp_path / "pac"
@@ -1482,7 +1458,9 @@ def test_materialize_proxy_pac_state_fsyncs_parent_directories_after_publish(
         state_sha256="sha",
         files=(
             pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="A"),
-            pac_renderer.RenderedPacFile(relative_path="profiles/corp.pac", content="B"),
+            pac_renderer.RenderedPacFile(
+                relative_path="profiles/corp.pac", content="B"
+            ),
         ),
     )
     parent_fsyncs: list[str] = []
@@ -1510,7 +1488,6 @@ def test_materialize_proxy_pac_state_fsyncs_parent_directories_during_rollback(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = tmp_path / "pac"
@@ -1519,7 +1496,9 @@ def test_materialize_proxy_pac_state_fsyncs_parent_directories_during_rollback(
     state = pac_renderer.ProxyPacState(
         proxy_id="live",
         state_sha256="sha",
-        files=(pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="A"),),
+        files=(
+            pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="A"),
+        ),
     )
     parent_fsyncs: list[str] = []
     monkeypatch.setattr(
@@ -1551,7 +1530,6 @@ def test_materialize_proxy_pac_state_surfaces_directory_fsync_io_failure_and_rol
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = tmp_path / "pac"
@@ -1560,7 +1538,9 @@ def test_materialize_proxy_pac_state_surfaces_directory_fsync_io_failure_and_rol
     state = pac_renderer.ProxyPacState(
         proxy_id="live",
         state_sha256="sha",
-        files=(pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="A"),),
+        files=(
+            pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="A"),
+        ),
     )
     real_fsync = pac_renderer.os.fsync
     directory_fsync_count = 0
@@ -1586,7 +1566,6 @@ def test_materialize_proxy_pac_state_serializes_overlapping_same_target(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = tmp_path / "pac"
@@ -1595,12 +1574,16 @@ def test_materialize_proxy_pac_state_serializes_overlapping_same_target(
     first_state = pac_renderer.ProxyPacState(
         proxy_id="live",
         state_sha256="sha-a",
-        files=(pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="A"),),
+        files=(
+            pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="A"),
+        ),
     )
     second_state = pac_renderer.ProxyPacState(
         proxy_id="live",
         state_sha256="sha-b",
-        files=(pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="B"),),
+        files=(
+            pac_renderer.RenderedPacFile(relative_path="fallback.pac", content="B"),
+        ),
     )
 
     first_thread_holder: dict[str, threading.Thread] = {}
@@ -1638,10 +1621,9 @@ def test_materialize_proxy_pac_state_serializes_overlapping_same_target(
         result = original_replace(self, target_path)
         current_thread = threading.current_thread()
         target_path_obj = Path(target_path)
-        if (
-            current_thread is first_thread_holder.get("thread")
-            and target_path_obj.name.startswith(".pac-backup-")
-        ):
+        if current_thread is first_thread_holder.get(
+            "thread"
+        ) and target_path_obj.name.startswith(".pac-backup-"):
             first_moved_target_to_backup.set()
             if not first_can_publish.wait(timeout=2):
                 msg = "timed out waiting to resume first publish"
@@ -1696,7 +1678,6 @@ def test_materialize_proxy_pac_state_serializes_overlapping_same_target(
 def test_materialize_proxy_pac_state_rejects_unsafe_paths_and_preserves_existing_payload(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = tmp_path / "pac"
@@ -1720,7 +1701,6 @@ def test_materialize_proxy_pac_state_rejects_unsafe_paths_and_preserves_existing
 def test_materialize_proxy_pac_state_rejects_backslash_traversal_paths(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = tmp_path / "pac"
@@ -1748,7 +1728,6 @@ def test_materialize_proxy_pac_state_rejects_backslash_traversal_paths(
 def test_materialize_proxy_pac_state_rejects_drive_style_first_segment_paths(
     tmp_path,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     target = tmp_path / "pac"
@@ -1774,7 +1753,6 @@ def test_materialize_proxy_pac_state_rejects_drive_style_first_segment_paths(
 
 
 def test_substitute_request_host_replaces_placeholder_with_normalized_host() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     content = json.dumps({"proxy": pac_renderer.PAC_HOST_PLACEHOLDER})
@@ -1784,7 +1762,6 @@ def test_substitute_request_host_replaces_placeholder_with_normalized_host() -> 
 
 
 def test_substitute_request_host_replaces_invalid_host_with_loopback() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     content = (
@@ -1815,7 +1792,6 @@ def test_substitute_request_host_replaces_invalid_host_with_loopback() -> None:
 def test_substitute_request_host_replaces_internal_or_ambiguous_fallback_with_loopback(
     request_host: str,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     content = f'return "PROXY {pac_renderer.PAC_HOST_PLACEHOLDER}:3128; DIRECT";'
@@ -1827,7 +1803,6 @@ def test_substitute_request_host_replaces_internal_or_ambiguous_fallback_with_lo
 
 
 def test_substitute_request_host_preserves_valid_public_fallback_hosts() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     content = f'return "PROXY {pac_renderer.PAC_HOST_PLACEHOLDER}:3128; DIRECT";'
@@ -1854,7 +1829,6 @@ def test_substitute_request_host_preserves_private_lan_fallback_hosts(
     request_host: str,
     expected_host: str,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     content = f'return "PROXY {pac_renderer.PAC_HOST_PLACEHOLDER}:3128; DIRECT";'
@@ -1865,7 +1839,6 @@ def test_substitute_request_host_preserves_private_lan_fallback_hosts(
 
 
 def test_render_proxy_pac_for_request_replaces_invalid_request_host() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer.substitute_request_host(
@@ -1902,7 +1875,6 @@ def _default_proxy_pac_target(pac_renderer):
 def test_fallback_pac_does_not_turn_proxy_side_exclusion_domains_into_direct_rules(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rules = type(
@@ -1934,7 +1906,6 @@ def test_fallback_pac_does_not_turn_proxy_side_exclusion_domains_into_direct_rul
 def test_profile_pac_keeps_explicit_direct_rules_and_adds_private_when_enabled(
     monkeypatch,
 ) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
     from services.pac_profiles_store import PacProfile  # type: ignore
 
@@ -1961,7 +1932,6 @@ def test_profile_pac_keeps_explicit_direct_rules_and_adds_private_when_enabled(
 
 
 def test_profile_pac_wildcard_direct_domain_matches_apex_and_subdomains() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
     from services.pac_profiles_store import PacProfile  # type: ignore
 
@@ -1987,7 +1957,6 @@ def test_profile_pac_wildcard_direct_domain_matches_apex_and_subdomains() -> Non
 
 
 def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
     from services.pac_profiles_store import PacProfile  # type: ignore
 
@@ -2079,7 +2048,6 @@ def test_build_proxy_pac_state_reads_sslfilter_rules_once(monkeypatch) -> None:
 
 
 def test_rendered_pac_replaces_invalid_proxy_chain_host() -> None:
-    _add_web_to_path()
     from services import pac_renderer  # type: ignore
 
     rendered = pac_renderer._render_fallback_pac(
@@ -2095,14 +2063,12 @@ def test_rendered_pac_replaces_invalid_proxy_chain_host() -> None:
     )
 
     assert (
-        'return "PROXY 127.0.0.1:3128; PROXY backup.example:8080; DIRECT";'
-        in rendered
+        'return "PROXY 127.0.0.1:3128; PROXY backup.example:8080; DIRECT";' in rendered
     )
     assert "proxy'host.example" not in rendered
 
 
 def test_pac_profile_match_uses_manifest_specificity_without_database() -> None:
-    _add_web_to_path()
     from services import pac_profiles_store  # type: ignore
 
     store = pac_profiles_store.PacProfilesStore()

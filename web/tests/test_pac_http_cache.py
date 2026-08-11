@@ -2,25 +2,14 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 from pathlib import Path
 
 import pytest
 
 
-def _add_repo_paths() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (repo_root, web_root):
-        path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-
-
 @pytest.fixture
 def pac_http():
-    _add_repo_paths()
     from services import pac_http as module  # type: ignore
 
     return module
@@ -849,7 +838,6 @@ def test_local_pac_cache_rejects_tampered_pac_file_with_valid_state_sha(
     tmp_path,
     pac_http,
 ) -> None:
-    _add_repo_paths()
     from services.pac_renderer import RenderedPacFile, calculate_pac_state_sha
 
     pac_dir = tmp_path / "pac"

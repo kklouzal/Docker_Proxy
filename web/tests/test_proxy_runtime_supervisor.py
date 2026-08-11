@@ -109,17 +109,7 @@ def _entrypoint_forwarding_canary_path(**env_overrides: str) -> str:
     return result.stdout.strip()
 
 
-def _add_repo_paths() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    web_root = repo_root / "web"
-    for path in (repo_root, web_root):
-        path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-
-
 def _runtime_shell():
-    _add_repo_paths()
     from proxy.runtime import ProxyRuntime  # type: ignore
 
     runtime = ProxyRuntime.__new__(ProxyRuntime)
@@ -134,7 +124,6 @@ def _runtime_shell():
 def test_runtime_lock_open_failure_prevents_supervisor_and_sync_mutations(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -169,7 +158,6 @@ def test_runtime_lock_open_failure_prevents_supervisor_and_sync_mutations(
 
 
 def test_runtime_lock_flock_failure_closes_open_handle(monkeypatch, tmp_path) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     real_import = builtins.__import__
@@ -227,7 +215,6 @@ def test_sync_policy_state_failure_reports_desired_and_current_sha(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -260,7 +247,6 @@ def test_sync_policy_state_rolls_back_partial_policy_materialization(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services import materialized_files  # type: ignore
 
     first = tmp_path / "10-sslfilter.conf"
@@ -321,7 +307,6 @@ def test_sync_policy_state_reapplies_missing_empty_materialized_file(tmp_path) -
 
 
 def test_sync_pac_state_failure_reports_desired_and_current_sha(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -353,7 +338,6 @@ def test_sync_pac_state_force_does_not_churn_intact_materialization(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services import pac_renderer  # type: ignore
 
     import proxy.runtime as runtime_module  # type: ignore
@@ -395,7 +379,6 @@ def test_sync_pac_state_force_does_not_churn_intact_materialization(
 def test_sync_pac_state_reports_verified_current_sha_after_materialize(
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     from services import pac_renderer  # type: ignore
 
     state = pac_renderer.ProxyPacState(
@@ -432,7 +415,6 @@ def test_sync_pac_state_fails_when_post_materialize_evidence_is_absent(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services import pac_renderer  # type: ignore
 
     import proxy.runtime as runtime_module  # type: ignore
@@ -478,7 +460,6 @@ def test_sync_pac_state_fails_when_post_materialize_evidence_is_absent(
 
 
 def test_sync_from_db_pac_evidence_does_not_invent_current_sha(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -553,7 +534,6 @@ def test_sync_from_db_pac_evidence_does_not_invent_current_sha(monkeypatch) -> N
 def test_sync_pac_state_reapplies_when_marker_matches_but_file_missing(
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     from services import pac_renderer  # type: ignore
 
     state = pac_renderer.ProxyPacState(
@@ -594,7 +574,6 @@ def test_sync_pac_state_reapplies_when_marker_matches_but_file_missing(
 def test_supervisor_program_status_trusts_matching_running_line_with_nonzero_returncode(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     monkeypatch.setattr(
@@ -612,7 +591,6 @@ def test_supervisor_program_status_trusts_matching_running_line_with_nonzero_ret
 
 
 def test_supervisor_program_status_accepts_scaled_icap_helpers(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     monkeypatch.setattr(
@@ -638,7 +616,6 @@ def test_supervisor_program_status_accepts_scaled_icap_helpers(monkeypatch) -> N
 
 
 def test_restart_supervisor_program_restarts_scaled_icap_helpers(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     calls: list[tuple[str, str | None]] = []
@@ -708,7 +685,6 @@ def test_test_control_supervisor_program_uses_squid_controller_restart() -> None
 def test_test_control_supervisor_start_uses_one_total_monotonic_budget(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     elapsed = {"value": 0.0}
@@ -754,7 +730,6 @@ def test_test_control_supervisor_start_uses_one_total_monotonic_budget(
 def test_test_control_supervisor_start_skips_status_when_total_budget_expires(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     elapsed = {"value": 0.0}
@@ -894,7 +869,6 @@ def test_navigation_health_cache_refreshes_when_config_sha_changes() -> None:
 
 
 def test_restart_supervisor_program_accepts_already_started_output(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     calls: list[list[str]] = []
@@ -926,7 +900,6 @@ def test_restart_supervisor_program_accepts_already_started_output(monkeypatch) 
 def test_restart_supervisor_program_trusts_running_status_after_failed_start(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
@@ -951,7 +924,6 @@ def test_restart_supervisor_program_trusts_running_status_after_failed_start(
 def test_restart_supervisor_program_accepts_starting_after_startsecs_change(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     calls: list[list[str]] = []
@@ -986,7 +958,6 @@ def test_restart_supervisor_program_rejects_unstable_post_start_states(
     monkeypatch,
     state: str,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     calls: list[list[str]] = []
@@ -1014,7 +985,6 @@ def test_restart_supervisor_program_rejects_unstable_post_start_states(
 def test_restart_supervisor_program_accepts_supervisor_auto_restart_after_stop(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     results = [_cp(0, stdout="squid: stopped")]
@@ -1043,7 +1013,6 @@ def test_restart_supervisor_program_accepts_supervisor_auto_restart_after_stop(
 def test_wait_for_supervisor_stop_uses_monotonic_deadline_during_wall_clock_jumps(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     elapsed = {"value": 0.0}
@@ -1075,7 +1044,6 @@ def test_wait_for_supervisor_stop_uses_monotonic_deadline_during_wall_clock_jump
 
 
 def test_restart_supervisor_program_returns_false_after_retries(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     calls = {"count": 0}
@@ -1102,7 +1070,6 @@ def test_restart_supervisor_program_returns_false_after_retries(monkeypatch) -> 
 def test_restart_supervisor_program_uses_one_total_monotonic_budget(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     elapsed = {"value": 0.0}
@@ -1157,7 +1124,6 @@ def test_restart_adblock_service_uses_injected_restarter() -> None:
 def test_restart_adblock_health_wait_uses_monotonic_deadline_during_wall_clock_jumps(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     elapsed = {"value": 0.0}
@@ -1192,7 +1158,6 @@ def test_restart_adblock_health_wait_uses_monotonic_deadline_during_wall_clock_j
 
 
 def test_restart_adblock_service_stops_program_after_restart_loop(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     calls: list[list[str]] = []
@@ -1245,7 +1210,6 @@ def test_restart_adblock_service_stops_program_after_restart_loop(monkeypatch) -
 def test_restart_adblock_service_surfaces_unverified_fail_safe_stop(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     stop_calls = 0
@@ -1296,7 +1260,6 @@ def test_restart_adblock_service_surfaces_unverified_fail_safe_stop(
 def test_restart_adblock_service_reports_scaled_worker_failure_without_squid(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     calls: list[list[str]] = []
@@ -1419,7 +1382,6 @@ def test_ssl_db_reinitialize_preserves_database_when_squid_stop_is_unverified(
     tmp_path,
     stop_failure,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     ssl_db = tmp_path / "ssl_db" / "store"
@@ -1475,7 +1437,6 @@ def test_ssl_db_reinitialize_stops_when_recursive_deletion_fails(
     monkeypatch,
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     ssl_db = tmp_path / "ssl_db" / "store"
@@ -1566,7 +1527,6 @@ def test_ssl_db_reinitialize_tolerates_already_absent_database(
     monkeypatch,
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     ssl_db = tmp_path / "ssl_db" / "store"
@@ -1612,7 +1572,6 @@ def test_ssl_db_reinitialize_stops_when_permission_repair_fails(
     monkeypatch,
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     ssl_db = tmp_path / "ssl_db" / "store"
@@ -1672,7 +1631,6 @@ def test_ssl_db_reinitialize_recovers_when_restart_reports_stopped_squid(
     monkeypatch,
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     ssl_db = tmp_path / "ssl_db" / "store"
@@ -1732,7 +1690,6 @@ def test_ssl_db_reinitialize_reports_failure_when_recovery_start_is_not_running(
     monkeypatch,
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     ssl_db = tmp_path / "ssl_db" / "store"
@@ -1872,7 +1829,6 @@ def test_runtime_self_heal_rolls_back_when_squid_status_fails() -> None:
 
 
 def test_runtime_service_self_heal_restarts_unhealthy_adblock(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -1898,7 +1854,6 @@ def test_runtime_service_self_heal_restarts_unhealthy_adblock(monkeypatch) -> No
 def test_runtime_service_self_heal_defers_transient_adblock_icap_failures(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -1934,7 +1889,6 @@ def test_runtime_service_self_heal_defers_transient_adblock_icap_failures(
 
 
 def test_runtime_service_self_heal_waits_for_starting_adblock(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -1975,7 +1929,6 @@ def test_runtime_service_self_heal_waits_for_starting_adblock(monkeypatch) -> No
 def test_clear_cache_only_clears_disk_cache_without_adblock_restart(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -2013,7 +1966,6 @@ def test_clear_cache_only_clears_disk_cache_without_adblock_restart(
 def test_clear_cache_reports_disk_cache_failure_without_adblock_restart(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -2761,7 +2713,6 @@ def test_sync_from_db_forced_normalized_noop_reloads_policy_without_reapply() ->
 
 
 def test_reload_for_policy_update_can_skip_adblock_icap_health(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -2790,7 +2741,6 @@ def test_reload_for_policy_update_can_skip_adblock_icap_health(monkeypatch) -> N
 
 
 def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -2826,7 +2776,6 @@ def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> 
 def test_reload_for_policy_update_fails_when_adblock_icap_never_recovers(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -2864,7 +2813,6 @@ def test_reload_for_policy_update_fails_when_adblock_icap_never_recovers(
 def test_policy_reload_icap_wait_uses_monotonic_deadline_during_wall_clock_jumps(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -2907,7 +2855,6 @@ def test_policy_reload_icap_wait_uses_monotonic_deadline_during_wall_clock_jumps
 def test_reload_for_policy_update_accepts_missing_pid_when_listener_healthy(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -2941,7 +2888,6 @@ def test_reload_for_policy_update_accepts_missing_pid_when_listener_healthy(
 def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeout(
     tmp_path, monkeypatch
 ) -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     squid_conf = tmp_path / "squid.conf"
@@ -2986,7 +2932,6 @@ def test_squid_controller_apply_accepts_missing_pid_when_listener_is_healthy(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     squid_conf = tmp_path / "squid.conf"
@@ -3043,7 +2988,6 @@ def test_squid_controller_apply_restarts_after_missing_pid_when_listener_is_down
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     squid_conf = tmp_path / "squid.conf"
@@ -3117,7 +3061,6 @@ def test_squid_controller_apply_restarts_after_missing_pid_when_listener_is_down
 def test_squid_controller_apply_stages_config_with_atomic_writes(
     tmp_path, monkeypatch
 ) -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     squid_conf = tmp_path / "squid.conf"
@@ -3160,7 +3103,6 @@ def test_squid_controller_apply_stages_config_with_atomic_writes(
 
 
 def test_squid_controller_atomic_write_preserves_existing_file_mode(tmp_path) -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     target = tmp_path / "squid.conf"
@@ -3177,7 +3119,6 @@ def test_squid_controller_atomic_write_preserves_existing_file_mode(tmp_path) ->
 def test_squid_controller_atomic_write_uses_readable_mode_for_new_files(
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     target = tmp_path / "conf.d" / "20-icap.conf"
@@ -3194,7 +3135,6 @@ def test_runtime_icap_materialization_matches_startup_parity_contract(
     monkeypatch,
     request,
 ) -> None:
-    _add_repo_paths()
     from services.clamav_config_forms import (  # type: ignore
         render_clamav_settings_block,
     )
@@ -3315,7 +3255,6 @@ def test_runtime_icap_materialization_matches_startup_parity_contract(
 def test_clamav_runtime_supervisor_update_restarts_squid_with_accept_only_probe(
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
@@ -3368,7 +3307,6 @@ def test_clamav_runtime_supervisor_update_restarts_squid_with_accept_only_probe(
 def test_squid_controller_validation_timeout_returns_actionable_detail(
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     def fake_run(args, **_kwargs) -> NoReturn:
@@ -3383,7 +3321,6 @@ def test_squid_controller_validation_timeout_returns_actionable_detail(
 
 
 def test_squid_controller_extracts_all_http_listener_ports(tmp_path) -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     squid_conf = tmp_path / "squid.conf"
@@ -3413,7 +3350,6 @@ http_port 3130 tproxy
 def test_squid_controller_removes_stale_pidfile_before_restart(
     monkeypatch, tmp_path
 ) -> None:
-    _add_repo_paths()
     from services import squid_core  # type: ignore
     from services.squid_core import SquidController  # type: ignore
 
@@ -3446,7 +3382,6 @@ def test_squid_controller_removes_stale_pidfile_before_restart(
 def test_sync_adblock_state_rolls_back_compiled_artifact_when_cicap_restart_fails(
     tmp_path, monkeypatch
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     compiled = tmp_path / "compiled"
@@ -3520,7 +3455,6 @@ def test_sync_adblock_state_rolls_back_when_materialized_artifact_fails_integrit
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     compiled = tmp_path / "compiled"
@@ -3666,7 +3600,6 @@ def test_sync_adblock_state_reapplies_when_current_marker_has_incomplete_lookup(
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     compiled = tmp_path / "compiled"
@@ -3752,7 +3685,6 @@ def test_sync_adblock_state_reapplies_when_marker_matches_but_lookup_missing_wit
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     compiled = tmp_path / "compiled"
@@ -3830,7 +3762,6 @@ def test_sync_adblock_state_changed_artifact_refreshes_helpers_without_squid_sto
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     compiled = tmp_path / "compiled"
@@ -3956,7 +3887,6 @@ def test_sync_adblock_state_changed_artifact_refreshes_helpers_without_squid_sto
 def test_sync_adblock_state_cache_flush_refreshes_helpers_without_squid_stop(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     recorded: list[dict[str, object]] = []
@@ -4078,7 +4008,6 @@ def test_sync_adblock_state_reapplies_when_marker_matches_but_lookup_corrupt_wit
     tmp_path,
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     compiled = tmp_path / "compiled"
@@ -4488,7 +4417,6 @@ def test_collect_health_stale_cache_degrades_forwarding_without_preserving_green
 
 
 def test_collect_health_serializes_cold_refresh(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -4639,7 +4567,6 @@ def test_collect_health_cache_refreshes_when_config_sha_changes() -> None:
 
 
 def test_operation_ledger_health_reports_counts_and_unavailable(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
     from proxy.runtime import ProxyRuntime  # type: ignore
 
@@ -4902,7 +4829,6 @@ def test_collect_health_degrades_when_materialized_runtime_payload_is_stale() ->
 
 
 def test_collect_health_accepts_normalized_active_config_revision() -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController("/tmp/nonexistent-squid.conf")
@@ -4975,7 +4901,6 @@ http_access deny all
 
 
 def test_local_runtime_service_health_checks_run_in_parallel(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     calls: list[str] = []
@@ -5006,7 +4931,6 @@ def test_local_runtime_service_health_checks_run_in_parallel(monkeypatch) -> Non
 
 
 def test_local_runtime_service_health_uses_tcp_timeout_for_clamd(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     captured: dict[str, float] = {}
@@ -5039,7 +4963,6 @@ def test_local_runtime_service_health_uses_tcp_timeout_for_clamd(monkeypatch) ->
 def test_local_runtime_service_health_does_not_wait_for_stuck_probe(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     def stuck_probe(**_kwargs):
@@ -5070,7 +4993,6 @@ def test_local_runtime_service_health_does_not_wait_for_stuck_probe(
 
 
 def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -5100,7 +5022,6 @@ def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None
 
 
 def test_squid_restart_waits_for_icap_readiness_before_accepting_success() -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     calls: list[list[str]] = []
@@ -5179,7 +5100,6 @@ def test_adblock_artifact_refresh_keeps_squid_listener_running() -> None:
 def test_adblock_refresh_uses_lifecycle_lock_without_squid_restart(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     lock_state = {"held": False}
@@ -5553,7 +5473,6 @@ def test_packaged_proxy_entrypoint_keeps_adblock_running_before_squid_gate() -> 
 
 
 def test_runtime_adblock_supervisor_config_matches_startup_readiness_contract() -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     files = SquidController()._render_icap_supervisor_files(workers=1)
@@ -5574,7 +5493,6 @@ def test_runtime_adblock_supervisor_config_matches_startup_readiness_contract() 
 def test_runtime_icap_include_honors_explicit_required_adblock_mode(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     monkeypatch.setenv("ADBLOCK_ICAP_REQUIRED", "strict")
@@ -5598,7 +5516,6 @@ def test_packaged_proxy_supervisor_stops_squid_process_group() -> None:
 
 
 def test_squid_reload_treats_successful_stderr_warnings_as_detail() -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
@@ -5614,7 +5531,6 @@ def test_squid_reload_treats_successful_stderr_warnings_as_detail() -> None:
 
 
 def test_squid_reload_preserves_nonzero_reconfigure_failure() -> None:
-    _add_repo_paths()
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
@@ -5633,7 +5549,6 @@ def test_squid_controller_matches_socket_inode_symlink_targets(
     monkeypatch,
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     import pathlib
 
     from services import squid_core  # type: ignore
@@ -5886,7 +5801,6 @@ def test_sync_from_db_normalizes_policy_runtime_includes_before_reconfigure() ->
 
 
 def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -5927,7 +5841,6 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
 def test_sync_from_db_claims_runtime_operations_with_exact_live_identity(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -5968,7 +5881,6 @@ def test_sync_from_db_claims_runtime_operations_with_exact_live_identity(
 def test_sync_from_db_old_runtime_alias_cannot_mutate_or_fail_new_proxy_operations(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.proxy_write_guard import ProxyLifecycleWriteError
 
     import proxy.runtime as runtime_module  # type: ignore
@@ -6017,7 +5929,6 @@ def test_sync_from_db_old_runtime_alias_cannot_mutate_or_fail_new_proxy_operatio
 def test_sync_from_db_routes_claimed_operation_force_to_artifact_sync(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6056,7 +5967,6 @@ def test_sync_from_db_routes_claimed_operation_force_to_artifact_sync(
 def test_sync_from_db_does_not_force_artifacts_for_cache_clear(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6103,7 +6013,6 @@ def test_sync_from_db_does_not_force_artifacts_for_cache_clear(
 
 
 def test_sync_from_db_logs_operation_ledger_claim_failure(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6156,7 +6065,6 @@ def test_sync_from_db_logs_operation_ledger_claim_failure(monkeypatch) -> None:
 
 
 def test_sync_from_db_marks_matching_config_revision_applied(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6200,7 +6108,6 @@ def test_sync_from_db_marks_matching_config_revision_applied(monkeypatch) -> Non
 
 
 def test_sync_from_db_marks_stale_config_operations_superseded(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6257,7 +6164,6 @@ def test_sync_from_db_fails_config_operation_with_invalid_target(
     monkeypatch,
     invalid_target,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6304,7 +6210,6 @@ def test_sync_from_db_fails_config_operation_with_invalid_target(
 def test_sync_from_db_fails_config_operation_without_revision_evidence(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6350,7 +6255,6 @@ def test_sync_from_db_fails_config_operation_without_revision_evidence(
 def test_sync_from_db_fails_claimed_config_operation_when_no_active_revision(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6415,7 +6319,6 @@ def test_sync_from_db_fails_claimed_config_operation_when_no_active_revision(
 
 
 def test_sync_from_db_marks_matching_certificate_revision_applied(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6495,7 +6398,6 @@ def test_sync_from_db_marks_matching_certificate_revision_applied(monkeypatch) -
 def test_sync_from_db_fails_certificate_operation_with_hash_mismatch(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6544,7 +6446,6 @@ def test_sync_from_db_fails_certificate_operation_with_hash_mismatch(
 def test_sync_from_db_fails_certificate_operation_without_hash_evidence(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6589,7 +6490,6 @@ def test_sync_from_db_fails_certificate_operation_without_hash_evidence(
 
 
 def test_sync_from_db_marks_stale_certificate_revision_superseded(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6680,7 +6580,6 @@ def test_sync_from_db_marks_stale_certificate_revision_superseded(monkeypatch) -
 def test_sync_from_db_fails_certificate_operation_without_revision_evidence(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6755,7 +6654,6 @@ def test_sync_from_db_fails_certificate_operation_without_revision_evidence(
 def test_sync_from_db_policy_operation_requires_selected_proxy_policy_convergence(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -6814,7 +6712,6 @@ def test_sync_from_db_policy_operation_requires_selected_proxy_policy_convergenc
 def test_sync_from_db_policy_operation_uses_selected_proxy_current_policy_sha(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -7160,7 +7057,6 @@ def test_operation_completion_normalizes_and_rejects_request_hash_evidence() -> 
 
 
 def test_sync_from_db_marks_unsupported_operation_failed(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -7210,7 +7106,6 @@ def test_sync_from_db_marks_unsupported_operation_failed(monkeypatch) -> None:
 
 
 def test_sync_from_db_marks_mismatched_supported_operation_failed(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -7252,7 +7147,6 @@ def test_sync_from_db_marks_mismatched_supported_operation_failed(monkeypatch) -
 
 
 def test_sync_from_db_requires_operation_execution_evidence(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -7299,7 +7193,6 @@ def test_sync_from_db_requires_operation_execution_evidence(monkeypatch) -> None
 
 
 def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
@@ -7536,7 +7429,6 @@ def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() 
 def test_sync_certificate_bundle_rolls_back_material_after_restart_failure(
     tmp_path,
 ) -> None:
-    _add_repo_paths()
     from services.certificate_core import CertificateBundle  # type: ignore
 
     runtime = _runtime_shell()
@@ -7618,7 +7510,6 @@ def test_sync_certificate_bundle_rolls_back_material_after_restart_failure(
 def test_sync_certificate_bundle_rolls_back_after_materialization_exception(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.certificate_core import CertificateBundle  # type: ignore
 
     import proxy.runtime as runtime_module  # type: ignore
@@ -7711,7 +7602,6 @@ def test_sync_certificate_bundle_rolls_back_after_materialization_exception(
 def test_sync_certificate_bundle_retries_materialization_after_successful_rollback(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.certificate_core import CertificateBundle  # type: ignore
 
     import proxy.runtime as runtime_module  # type: ignore
@@ -7804,7 +7694,6 @@ def test_sync_certificate_bundle_retries_materialization_after_successful_rollba
 def test_sync_certificate_bundle_failed_restart_and_failed_rollback_reports_unknown_current(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.certificate_core import CertificateBundle  # type: ignore
 
     import proxy.runtime as runtime_module  # type: ignore
@@ -7894,7 +7783,6 @@ def test_sync_certificate_bundle_failed_restart_and_failed_rollback_reports_unkn
 def test_sync_certificate_bundle_retry_after_unknown_rollback_rematerializes(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.certificate_core import CertificateBundle  # type: ignore
 
     import proxy.runtime as runtime_module  # type: ignore
@@ -7975,7 +7863,6 @@ def test_sync_certificate_bundle_retry_after_unknown_rollback_rematerializes(
 def test_sync_certificate_bundle_retries_failed_rollback_against_desired_revision(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     from services.certificate_core import CertificateBundle  # type: ignore
 
     import proxy.runtime as runtime_module  # type: ignore
@@ -8052,7 +7939,6 @@ def test_sync_certificate_bundle_retries_failed_rollback_against_desired_revisio
 def test_sync_certificate_bundle_retries_restart_after_failed_apply_without_rematerializing(
     monkeypatch,
 ) -> None:
-    _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
     runtime = _runtime_shell()
