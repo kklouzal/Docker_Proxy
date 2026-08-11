@@ -3,14 +3,38 @@ from __future__ import annotations
 import importlib.util
 import io
 import math
+import os
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
+import pytest
+
 CLIENT_CREATE_CONNECTION = socket.create_connection
+
+
+def test_direct_script_help_without_repo_on_pythonpath(tmp_path: Path) -> None:
+    script = (
+        Path(__file__).resolve().parents[1] / "tools" / "clamav_respmod_icap_server.py"
+    )
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
 
 
 def _load_server():
@@ -4394,3 +4418,17 @@ def test_respmod_runtime_args_malformed_numeric_env_uses_defaults(monkeypatch) -
     assert math.isclose(args.client_timeout, server.DEFAULT_CLIENT_TIMEOUT)
     assert args.max_connections == server.DEFAULT_MAX_CONNECTIONS
     assert args.max_scans == server.DEFAULT_MAX_SCANS
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_respmod_runtime_args_reject_non_finite_timeout_env(
+    monkeypatch, value: str
+) -> None:
+    server = _load_server()
+    monkeypatch.setenv("CLAMD_TIMEOUT", value)
+    monkeypatch.setenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", value)
+
+    args = server._parse_args([])
+
+    assert math.isclose(args.clamd_timeout, 5.0)
+    assert math.isclose(args.client_timeout, server.DEFAULT_CLIENT_TIMEOUT)

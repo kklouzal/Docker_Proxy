@@ -2156,6 +2156,19 @@ def test_adblock_icap_parse_args_reads_valid_numeric_env(
     assert args.request_timeout == pytest.approx(2.5)
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_adblock_icap_parse_args_rejects_non_finite_timeout_env(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    _add_web_to_path()
+    from tools.adblock_icap_server import _parse_args
+
+    monkeypatch.setenv("ADBLOCK_ICAP_REQUEST_TIMEOUT", value)
+
+    assert _parse_args([]).request_timeout == pytest.approx(5.0)
+
+
 def test_proxy_payload_includes_sqlite_adblock_runtime() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     dockerfile = (repo_root / "docker/Dockerfile.proxy").read_text(encoding="utf-8")

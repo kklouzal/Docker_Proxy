@@ -29,28 +29,9 @@ from services.adblock_decision import (  # noqa: E402
     AdblockDecisionEngine,
 )
 from services.helper_runtime import HelperStats, helper_event  # noqa: E402
+from services.runtime_helpers import env_float, env_int  # noqa: E402
 
 _CRLF = b"\r\n"
-
-
-def _env_int(name: str, default: int) -> int:
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _env_float(name: str, default: float) -> float:
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _parse_headers(lines: list[str]) -> dict[str, str]:
@@ -816,7 +797,7 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="SQLite-backed adblock ICAP server")
     parser.add_argument("--host", default=os.environ.get("CICAP_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=_env_int("CICAP_PORT", 14000))
+    parser.add_argument("--port", type=int, default=env_int("CICAP_PORT", 14000))
     parser.add_argument(
         "--db",
         default=os.environ.get(
@@ -831,37 +812,37 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cache-ttl",
         type=int,
-        default=_env_int("ADBLOCK_CACHE_TTL", 3600),
+        default=env_int("ADBLOCK_CACHE_TTL", 3600),
     )
     parser.add_argument(
         "--cache-max",
         type=int,
-        default=_env_int("ADBLOCK_CACHE_MAX", 200000),
+        default=env_int("ADBLOCK_CACHE_MAX", 200000),
     )
     parser.add_argument(
         "--rule-cache-max",
         type=int,
-        default=_env_int("ADBLOCK_RULE_CACHE_MAX", 50000),
+        default=env_int("ADBLOCK_RULE_CACHE_MAX", 50000),
     )
     parser.add_argument(
         "--max-request-bytes",
         type=int,
-        default=_env_int("ADBLOCK_ICAP_MAX_REQUEST_BYTES", 262144),
+        default=env_int("ADBLOCK_ICAP_MAX_REQUEST_BYTES", 262144),
     )
     parser.add_argument(
         "--max-body-drain-bytes",
         type=int,
-        default=_env_int("ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES", 8388608),
+        default=env_int("ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES", 8388608),
     )
     parser.add_argument(
         "--request-timeout",
         type=float,
-        default=_env_float("ADBLOCK_ICAP_REQUEST_TIMEOUT", 5.0),
+        default=env_float("ADBLOCK_ICAP_REQUEST_TIMEOUT", 5.0),
     )
     parser.add_argument(
         "--max-keepalive-requests",
         type=int,
-        default=_env_int("ADBLOCK_ICAP_MAX_KEEPALIVE_REQUESTS", 1000),
+        default=env_int("ADBLOCK_ICAP_MAX_KEEPALIVE_REQUESTS", 1000),
     )
     return parser.parse_args(argv)
 
