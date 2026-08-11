@@ -306,7 +306,9 @@ def _is_retryable_mysql_error(exc: BaseException) -> bool:
     transaction helpers retry only deadlock and lock-wait failures so they do not
     replay an operation whose transaction may already have begun or committed.
     """
-    return _is_retryable_mysql_connect_error(exc) or _is_retryable_mysql_transaction_error(exc)
+    return _is_retryable_mysql_connect_error(
+        exc
+    ) or _is_retryable_mysql_transaction_error(exc)
 
 
 def _should_discard_native_connection(exc: BaseException) -> bool:
@@ -355,7 +357,10 @@ def _mysql_retry_jitter_seconds() -> float:
             0.0,
             min(
                 1.0,
-                float((os.environ.get("MYSQL_RETRY_JITTER_SECONDS") or "0.05").strip() or "0.05"),
+                float(
+                    (os.environ.get("MYSQL_RETRY_JITTER_SECONDS") or "0.05").strip()
+                    or "0.05"
+                ),
             ),
         )
     except Exception:
@@ -420,7 +425,9 @@ def _retry_mysql_operation(
     raise RuntimeError(msg)
 
 
-def run_mysql_operation_with_retry(operation, *, operation_name: str = "mysql operation"):
+def run_mysql_operation_with_retry(
+    operation, *, operation_name: str = "mysql operation"
+):
     """Retry a whole MySQL transaction only for unambiguous contention errors.
 
     This helper is only for explicitly idempotent operations that open a fresh
@@ -466,8 +473,13 @@ def mysql_advisory_lock(
     try:
         yield
     finally:
-        with contextlib.suppress(Exception):
+        try:
             conn.execute("DO RELEASE_LOCK(%s)", (lock_name,))
+        except Exception:
+            # Advisory locks are connection-scoped and survive transaction
+            # rollback.  If release is uncertain, the session must not be
+            # reused from the pool.  Preserve any exception from the body.
+            conn._discard_on_close = True
 
 
 def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
@@ -524,8 +536,9 @@ def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
     finally:
         with contextlib.suppress(Exception):
             cur.close()
-    with contextlib.suppress(Exception):
-        native.rollback()
+    # A failed rollback means the transaction/session state is unknown.  Never
+    # hand that native connection to an application or return it to the pool.
+    native.rollback()
 
 
 def _rollback_native_connection(native: Any) -> bool:
@@ -653,8 +666,12 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
     maxsize = _pool_maxsize()
     if maxsize <= 0:
         native = _retry_mysql_operation(lambda: _open_native_connection(cfg))
-        _configure_native_connection(native, cfg)
-        return native
+        try:
+            _configure_native_connection(native, cfg)
+            return native
+        except Exception:
+            _close_native_connection(native)
+            raise
 
     deadline = time.monotonic() + _pool_acquire_timeout_seconds()
     while True:
@@ -696,6 +713,8 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
             _configure_native_connection(native, cfg)
             return native
         except Exception:
+            if native is not None:
+                _close_native_connection(native)
             with _pool_condition:
                 _release_pool_slot_locked(key)
             raise

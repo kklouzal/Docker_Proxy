@@ -567,6 +567,145 @@ def test_new_native_connections_receive_session_guardrails(monkeypatch) -> None:
     assert calls == ["rollback"]
 
 
+def test_pool_disabled_checkout_closes_connection_when_configuration_fails(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    monkeypatch.setenv("DB_POOL_SIZE", "0")
+    calls: list[str] = []
+
+    class NativeConnection:
+        def close(self) -> None:
+            calls.append("native.close")
+
+    native = NativeConnection()
+    cfg = db.DatabaseConfig(host="db", user="u", password="***", database="d")
+    monkeypatch.setattr(db, "_open_native_connection", lambda _cfg: native)
+
+    def fail_configuration(_native, _cfg) -> NoReturn:
+        calls.append("configure")
+        message = "configuration failed"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(db, "_configure_native_connection", fail_configuration)
+
+    with pytest.raises(RuntimeError, match="configuration failed"):
+        db._checkout_connection(cfg)
+
+    assert calls == ["configure", "native.close"]
+    assert not db._pooled_connections
+
+
+def test_checkout_discards_new_connection_when_session_reset_fails(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    calls: list[str] = []
+
+    class Cursor:
+        def execute(self, *_args) -> None:
+            pass
+
+        def close(self) -> None:
+            calls.append("cursor.close")
+
+    class NativeConnection:
+        def cursor(self):
+            return Cursor()
+
+        def rollback(self) -> NoReturn:
+            calls.append("rollback")
+            message = "session reset failed"
+            raise RuntimeError(message)
+
+        def close(self) -> None:
+            calls.append("native.close")
+
+    cfg = db.DatabaseConfig(host="db", user="u", password="***", database="d")
+    monkeypatch.setattr(db, "_open_native_connection", lambda _cfg: NativeConnection())
+
+    with pytest.raises(RuntimeError, match="session reset failed"):
+        db._checkout_connection(cfg)
+
+    assert calls == ["cursor.close", "rollback", "native.close"]
+    assert not db._pooled_connections
+
+
+def test_failed_advisory_lock_release_discards_pooled_connection(monkeypatch) -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    calls: list[str] = []
+
+    class Result:
+        def fetchone(self):
+            return {"acquired": 1}
+
+    class NativeConnection:
+        def commit(self) -> None:
+            calls.append("commit")
+
+        def rollback(self) -> None:
+            calls.append("rollback")
+
+        def close(self) -> None:
+            calls.append("close")
+
+    cfg = db.DatabaseConfig(host="db", user="u", password="***", database="d")
+    key = db._pool_key(cfg)
+    with db._pool_condition:
+        db._pooled_connections[key] = db._PoolState(idle=[], active=1)
+    conn = db.CompatConnection(NativeConnection(), cfg=cfg)
+
+    def execute(sql, _params):
+        if "GET_LOCK" in sql:
+            return Result()
+        calls.append("release")
+        message = "release uncertain"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(conn, "execute", execute)
+    with conn:
+        with db.mysql_advisory_lock(conn, "schema"):
+            pass
+
+    assert calls == ["release", "commit", "close"]
+    assert key not in db._pooled_connections
+
+
+def test_failed_advisory_lock_release_does_not_mask_body_exception() -> None:
+    _add_repo_paths()
+    from services import db  # type: ignore
+
+    class Result:
+        def fetchone(self):
+            return {"acquired": 1}
+
+    class Conn:
+        _discard_on_close = False
+
+        def execute(self, sql, _params):
+            if "GET_LOCK" in sql:
+                return Result()
+            message = "release uncertain"
+            raise RuntimeError(message)
+
+    conn = Conn()
+    with pytest.raises(ValueError, match="body failed"):
+        with db.mysql_advisory_lock(conn, "schema"):
+            message = "body failed"
+            raise ValueError(message)
+
+    assert conn._discard_on_close is True
+
+
 def test_open_native_connection_retries_transient_mysql_errors(monkeypatch) -> None:
     _add_repo_paths()
     import pymysql  # type: ignore
@@ -1107,7 +1246,9 @@ def test_mysql_error_classification_names_operator_relevant_failures() -> None:
     )
 
 
-def test_ensure_mysql_database_validates_database_identifier_and_charset(monkeypatch) -> None:
+def test_ensure_mysql_database_validates_database_identifier_and_charset(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     from services import db  # type: ignore
 
@@ -1162,7 +1303,9 @@ def test_ensure_mysql_database_validates_database_identifier_and_charset(monkeyp
         )
 
 
-def test_mysql_database_creation_ready_cache_is_scoped_per_database(monkeypatch) -> None:
+def test_mysql_database_creation_ready_cache_is_scoped_per_database(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     from services import db  # type: ignore
 
@@ -1183,7 +1326,9 @@ def test_mysql_database_creation_ready_cache_is_scoped_per_database(monkeypatch)
             pass
 
     monkeypatch.setattr(db.pymysql, "connect", lambda **_kwargs: NativeConnection())
-    monkeypatch.setattr(db, "_retry_mysql_operation", lambda operation, **_kwargs: operation())
+    monkeypatch.setattr(
+        db, "_retry_mysql_operation", lambda operation, **_kwargs: operation()
+    )
     db.reset_mysql_ready_for_tests()
 
     cfg_a = db.DatabaseConfig(host="db", user="user", database="proxy_a")
