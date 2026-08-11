@@ -1408,6 +1408,10 @@ class SquidController(_CoreSquidController):
                 continue
             unmanaged_listener_ports.add(port)
 
+        explicit_port = self._first_available_port(
+            explicit_port,
+            unmanaged_listener_ports,
+        )
         if intercept_enabled:
             intercept_port = self._first_available_port(
                 intercept_port,

@@ -1701,6 +1701,45 @@ def test_listener_collision_adjustment_is_reported_and_reapply_is_stable(
     )
 
 
+def test_explicit_listener_collision_adjustment_is_reported_and_reapply_is_stable(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    controller = loaded.module.SquidController()
+    config = (
+        "http_port 0.0.0.0:3128 ssl-bump\n"
+        "https_port 0.0.0.0:8080 cert=/etc/squid/external.pem\n"
+    )
+    requested = {
+        "explicit_proxy_port": 8080,
+        "intercept_enabled_on": True,
+        "intercept_port": 8080,
+        "https_intercept_enabled_on": True,
+        "https_intercept_port": 8080,
+    }
+
+    rendered = controller._render_http_port_listeners(config, requested, 128)
+    detail = loaded.module._listener_adjustment_detail(
+        requested, rendered, controller=controller
+    )
+    assert "Explicit proxy port adjusted from 8080 to 8081" in detail
+    assert "HTTP intercept port adjusted from 8080 to 8082" in detail
+    assert "HTTPS intercept port adjusted from 8080 to 8083" in detail
+
+    readback = controller.get_tunable_options(rendered)
+    reapplied_options = loaded.module._options_from_tunables(readback)
+    reapplied = controller._render_http_port_listeners(
+        config, reapplied_options, 128
+    )
+    assert controller.get_tunable_options(reapplied) == readback
+    assert (
+        loaded.module._listener_adjustment_detail(
+            reapplied_options, reapplied, controller=controller
+        )
+        == ""
+    )
+
+
 def test_safe_config_apply_failure_returns_to_active_form_tab(
     monkeypatch, tmp_path
 ) -> None:

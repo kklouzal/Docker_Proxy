@@ -435,6 +435,47 @@ def test_renderer_avoids_intercept_collision_with_unmanaged_listener() -> None:
     assert rendered.count("0.0.0.0:3129") == 1
 
 
+def test_renderer_avoids_explicit_collision_with_retained_unmanaged_listener() -> None:
+    from services.squidctl import SquidController  # type: ignore
+
+    controller = SquidController()
+    config = (
+        "http_port 0.0.0.0:3128 ssl-bump\n"
+        "https_port 0.0.0.0:8080 cert=/etc/squid/external.pem\n"
+    )
+    requested = {
+        "explicit_proxy_port": 8080,
+        "intercept_enabled_on": True,
+        "intercept_port": 8080,
+        "https_intercept_enabled_on": True,
+        "https_intercept_port": 8080,
+    }
+
+    rendered = controller._render_http_port_listeners(config, requested, 128)
+
+    assert "https_port 0.0.0.0:8080 cert=/etc/squid/external.pem" in rendered
+    assert "http_port 0.0.0.0:8081 ssl-bump" in rendered
+    assert "http_port 0.0.0.0:8082 intercept" in rendered
+    assert "https_port 0.0.0.0:8083 intercept ssl-bump" in rendered
+    readback = controller.get_tunable_options(rendered)
+    assert readback["explicit_proxy_port"] == 8081
+    assert readback["intercept_port"] == 8082
+    assert readback["https_intercept_port"] == 8083
+
+    reapplied = controller._render_http_port_listeners(
+        config,
+        {
+            "explicit_proxy_port": readback["explicit_proxy_port"],
+            "intercept_enabled_on": readback["intercept_enabled"],
+            "intercept_port": readback["intercept_port"],
+            "https_intercept_enabled_on": readback["https_intercept_enabled"],
+            "https_intercept_port": readback["https_intercept_port"],
+        },
+        128,
+    )
+    assert controller.get_tunable_options(reapplied) == readback
+
+
 def test_build_template_options_from_form_blank_optional_values_do_not_override() -> (
     None
 ):

@@ -2866,10 +2866,11 @@ def _listener_adjustment_detail(
     effective = (controller or squid_controller).get_tunable_options(config_text)
     adjustments: list[str] = []
     for enabled_key, port_key, label in (
+        (None, "explicit_proxy_port", "Explicit proxy"),
         ("intercept_enabled_on", "intercept_port", "HTTP intercept"),
         ("https_intercept_enabled_on", "https_intercept_port", "HTTPS intercept"),
     ):
-        if not coerce_config_bool(options.get(enabled_key)):
+        if enabled_key is not None and not coerce_config_bool(options.get(enabled_key)):
             continue
         try:
             requested_port = int(options.get(port_key))
