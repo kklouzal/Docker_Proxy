@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import fcntl
+import os
+import stat
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
     from pathlib import Path
 
 from services import proxy_recovery
@@ -348,7 +352,9 @@ def recovery_export_query_plans() -> tuple[RecoveryExportQueryPlan, ...]:
 
 
 def validate_export_query_plan_coverage() -> None:
-    registry_tables = tuple(spec.table_name for spec in proxy_recovery.recovery_registry())
+    registry_tables = tuple(
+        spec.table_name for spec in proxy_recovery.recovery_registry()
+    )
     plan_tables = tuple(plan.table_name for plan in EXPORT_QUERY_PLANS)
     if plan_tables != registry_tables:
         msg = "recovery DB export query plans do not match recovery registry order"
@@ -401,6 +407,46 @@ def capture_recovery_state(
     )
 
 
+@contextmanager
+def _recovery_capture_lock(
+    proxy_id: str,
+    recovery_dir: Path | str | None,
+) -> Iterator[None]:
+    """Serialize snapshot-and-publish across all local proxy processes."""
+    bundle_path = proxy_recovery.bundle_path_for_proxy(proxy_id, recovery_dir)
+    root = proxy_recovery._ensure_private_dir(bundle_path.parent)
+    lock_path = root / f".{bundle_path.name}.capture.lock"
+    if lock_path.exists() or lock_path.is_symlink():
+        proxy_recovery._stat_regular_nosymlink(lock_path)
+
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd: int | None = None
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+        opened_stat = os.fstat(fd)
+        if not stat.S_ISREG(opened_stat.st_mode):
+            msg = "recovery capture lock is not a regular file"
+            raise proxy_recovery.ProxyRecoveryError(msg)
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as exc:
+        if fd is not None:
+            os.close(fd)
+        msg = "unable to establish recovery capture lock"
+        raise proxy_recovery.ProxyRecoveryError(msg) from exc
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        raise
+
+    try:
+        yield
+    finally:
+        os.close(fd)
+
+
 def capture_and_write_recovery_bundle(
     connect_factory: Callable[[], Any] = connect,
     proxy_id: str = "default",
@@ -408,15 +454,19 @@ def capture_and_write_recovery_bundle(
     recovery_dir: Path | str | None = None,
     max_bundle_bytes: int | None = None,
 ) -> Path:
-    with connect_factory() as conn:
-        captured = capture_recovery_state(conn, proxy_id)
-    return proxy_recovery.write_recovery_bundle(
-        captured.proxy_id,
-        captured.tables,
-        source_control_plane_id=captured.source_control_plane_id,
-        recovery_dir=recovery_dir,
-        max_bundle_bytes=max_bundle_bytes,
-    )
+    normalized_proxy_id = proxy_recovery.normalize_proxy_id(proxy_id)
+    with _recovery_capture_lock(normalized_proxy_id, recovery_dir):
+        # The lock must precede the DB snapshot: locking only publication allows
+        # a slow, older snapshot to replace a newer bundle.
+        with connect_factory() as conn:
+            captured = capture_recovery_state(conn, normalized_proxy_id)
+        return proxy_recovery.write_recovery_bundle(
+            captured.proxy_id,
+            captured.tables,
+            source_control_plane_id=captured.source_control_plane_id,
+            recovery_dir=recovery_dir,
+            max_bundle_bytes=max_bundle_bytes,
+        )
 
 
 def _rows_for_plan(
@@ -445,7 +495,10 @@ def _params_for_plan(
 
 
 def _normalize_row(row: Any, columns: Sequence[str]) -> Mapping[str, Any]:
-    return {column: _normalize_value(_row_value(row, column, index)) for index, column in enumerate(columns)}
+    return {
+        column: _normalize_value(_row_value(row, column, index))
+        for index, column in enumerate(columns)
+    }
 
 
 def _row_value(row: Any, key: str, index: int) -> Any:

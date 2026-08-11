@@ -3,7 +3,9 @@ from __future__ import annotations
 # ruff: noqa: I001
 
 import sys
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -106,9 +108,15 @@ def _expected_params(
     raise AssertionError(plan.param_mode)
 
 
-def test_export_query_plan_coverage_is_exact_static_and_excludes_unsafe_columns() -> None:
-    registry_tables = tuple(spec.table_name for spec in proxy_recovery.recovery_registry())
-    plan_tables = tuple(plan.table_name for plan in recovery_db.recovery_export_query_plans())
+def test_export_query_plan_coverage_is_exact_static_and_excludes_unsafe_columns() -> (
+    None
+):
+    registry_tables = tuple(
+        spec.table_name for spec in proxy_recovery.recovery_registry()
+    )
+    plan_tables = tuple(
+        plan.table_name for plan in recovery_db.recovery_export_query_plans()
+    )
 
     assert plan_tables == registry_tables
     recovery_db.validate_export_query_plan_coverage()
@@ -155,7 +163,9 @@ def test_export_query_plan_coverage_is_exact_static_and_excludes_unsafe_columns(
     )
 
 
-def test_capture_recovery_state_uses_snapshot_identity_exact_queries_and_normalizes_rows() -> None:
+def test_capture_recovery_state_uses_snapshot_identity_exact_queries_and_normalizes_rows() -> (
+    None
+):
     rows_by_table = {
         "adblock_lists": [
             {
@@ -281,6 +291,112 @@ def test_capture_recovery_state_uses_snapshot_identity_exact_queries_and_normali
     )
 
 
+def test_concurrent_capture_serializes_snapshot_before_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_snapshot_started = threading.Event()
+    release_first_snapshot = threading.Event()
+    second_snapshot_started = threading.Event()
+    writes: list[str] = []
+
+    def capture_state(_conn, proxy_id):
+        name = threading.current_thread().name
+        if name == "older-capture":
+            first_snapshot_started.set()
+            assert release_first_snapshot.wait(timeout=2)
+        else:
+            second_snapshot_started.set()
+        return SimpleNamespace(
+            proxy_id=proxy_id,
+            source_control_plane_id=_SOURCE_CONTROL_PLANE_ID,
+            tables=((name,),),
+        )
+
+    def write_bundle(_proxy_id, tables, **_kwargs):
+        writes.append(tables[0][0])
+        return tmp_path / "edge-01.bundle.json"
+
+    monkeypatch.setattr(recovery_db, "capture_recovery_state", capture_state)
+    monkeypatch.setattr(proxy_recovery, "write_recovery_bundle", write_bundle)
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    first = threading.Thread(
+        target=recovery_db.capture_and_write_recovery_bundle,
+        name="older-capture",
+        args=(Conn, "edge-01"),
+        kwargs={"recovery_dir": tmp_path},
+    )
+    second = threading.Thread(
+        target=recovery_db.capture_and_write_recovery_bundle,
+        name="newer-capture",
+        args=(Conn, "edge-01"),
+        kwargs={"recovery_dir": tmp_path},
+    )
+    first.start()
+    assert first_snapshot_started.wait(timeout=2)
+    second.start()
+    assert not second_snapshot_started.wait(timeout=0.1)
+    release_first_snapshot.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert second_snapshot_started.is_set()
+    assert writes == ["older-capture", "newer-capture"]
+
+
+def test_capture_lock_preserves_oserror_from_protected_body(tmp_path: Path) -> None:
+    expected = OSError("database snapshot failed")
+
+    class FailingConn:
+        def __enter__(self):
+            raise expected
+
+        def __exit__(self, *_args):
+            return None
+
+    with pytest.raises(OSError, match="database snapshot failed") as caught:
+        recovery_db.capture_and_write_recovery_bundle(
+            FailingConn,
+            "edge-01",
+            recovery_dir=tmp_path,
+        )
+
+    assert caught.value is expected
+
+
+def test_capture_lock_rejects_symlink_without_following_it(tmp_path: Path) -> None:
+    target = tmp_path / "attacker-controlled"
+    target.write_text("unchanged", encoding="utf-8")
+    lock_path = tmp_path / ".edge-01.bundle.json.capture.lock"
+    lock_path.symlink_to(target)
+
+    with pytest.raises(
+        proxy_recovery.ProxyRecoveryError, match="must not be a symlink"
+    ):
+        with recovery_db._recovery_capture_lock("edge-01", tmp_path):
+            pytest.fail("symlink lock must not be acquired")
+
+    assert target.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_capture_lock_hardens_directory_and_lock_permissions(tmp_path: Path) -> None:
+    tmp_path.chmod(0o750)
+
+    with recovery_db._recovery_capture_lock("edge-01", tmp_path):
+        lock_path = tmp_path / ".edge-01.bundle.json.capture.lock"
+        assert lock_path.stat().st_mode & 0o777 == 0o600
+        assert tmp_path.stat().st_mode & 0o777 == 0o700
+
+
 def test_capture_and_write_is_all_or_nothing_and_does_not_fsync_inside_db_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -309,7 +425,9 @@ def test_capture_and_write_is_all_or_nothing_and_does_not_fsync_inside_db_contex
         writes.append({"args": args, "kwargs": kwargs})
         return tmp_path / "edge-01.bundle.json"
 
-    monkeypatch.setattr(proxy_recovery, "write_recovery_bundle", assert_closed_then_write)
+    monkeypatch.setattr(
+        proxy_recovery, "write_recovery_bundle", assert_closed_then_write
+    )
     path = recovery_db.capture_and_write_recovery_bundle(
         lambda: good_conn,
         "edge-01",
