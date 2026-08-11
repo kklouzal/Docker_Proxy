@@ -11,6 +11,7 @@ from services import saml_auth
 from services.saml_auth import (
     SamlAuthStore,
     build_saml_settings,
+    build_sp_info,
     parse_saml_metadata,
     prepare_flask_request,
     resolve_saml_login,
@@ -301,6 +302,53 @@ class FakeSamlToolkit:
         return "SESSION-1"
 
 
+def test_build_sp_info_requires_explicit_public_base_url() -> None:
+    profile = replace(
+        MemorySamlAuthStore().default_profile(),
+        public_base_url="",
+    )
+
+    with pytest.raises(ValueError, match="public admin base URL must be configured"):
+        build_sp_info(
+            profile,
+            _saml_request("https://attacker.example.test/auth/saml/metadata"),
+        )
+
+
+def test_build_sp_info_ignores_host_when_public_base_url_configured() -> None:
+    profile = replace(
+        MemorySamlAuthStore().default_profile(),
+        public_base_url="https://admin.example.test/base",
+    )
+
+    sp = build_sp_info(
+        profile,
+        _saml_request("https://attacker.example.test/auth/saml/metadata"),
+    )
+
+    assert sp == {
+        "entity_id": "https://admin.example.test/base/auth/saml/metadata",
+        "acs_url": "https://admin.example.test/base/auth/saml/acs",
+        "sls_url": "https://admin.example.test/base/auth/saml/sls",
+    }
+
+
+def test_build_saml_settings_rejects_host_derived_service_provider_urls() -> None:
+    profile = replace(
+        MemorySamlAuthStore().default_profile(),
+        public_base_url="",
+        raw_metadata_xml=SAMPLE_METADATA,
+        parsed_metadata_json=json.dumps(parse_saml_metadata(SAMPLE_METADATA)),
+        last_refresh_ok=True,
+    )
+
+    with pytest.raises(ValueError, match="public admin base URL must be configured"):
+        build_saml_settings(
+            profile,
+            _saml_request("https://evil.example.test/auth/saml/login"),
+        )
+
+
 def test_prepare_flask_request_uses_default_https_port_when_url_omits_port() -> None:
     request_data = prepare_flask_request(
         _saml_request("https://admin.example.test/auth/saml/login")
@@ -323,7 +371,9 @@ def test_parse_saml_metadata_extracts_adfs_metadata() -> None:
     assert parsed["entity_id"] == "https://adfs.example.local/adfs/services/trust"
     assert parsed["cache_duration_seconds"] == 21600
     assert parsed["valid_until_ts"] > 0
-    assert parsed["sso_services"][0]["location"] == "https://adfs.example.local/adfs/ls/"
+    assert (
+        parsed["sso_services"][0]["location"] == "https://adfs.example.local/adfs/ls/"
+    )
     assert parsed["slo_services"][0]["binding"].endswith(":HTTP-Redirect")
     assert parsed["signing_certs"] == [SIGNING_CERT]
     assert parsed["encryption_certs"] == [ENCRYPTION_CERT]
@@ -386,7 +436,9 @@ def test_parse_saml_metadata_rejects_dtd_entities_safely() -> None:
         parse_saml_metadata(ENTITY_METADATA)
 
     message = str(exc_info.value)
-    assert message == "SAML metadata XML contains disallowed DTD or entity declarations."
+    assert (
+        message == "SAML metadata XML contains disallowed DTD or entity declarations."
+    )
     assert "injected" not in message
     assert "evil.example" not in message
     assert "EntityDescriptor [" not in message
@@ -454,6 +506,7 @@ def test_saml_profile_requires_successful_metadata_refresh_before_enable() -> No
             {
                 "enabled": "1",
                 "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+                "public_base_url": "https://admin.example.test",
             }
         )
 
@@ -468,6 +521,7 @@ def test_saml_profile_requires_successful_metadata_refresh_before_enable() -> No
         {
             "enabled": "1",
             "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            "public_base_url": "https://admin.example.test",
         }
     )
 
@@ -492,6 +546,7 @@ def test_saml_profile_requires_current_metadata_cache_before_enable() -> None:
             {
                 "enabled": "1",
                 "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+                "public_base_url": "https://admin.example.test",
             }
         )
 
@@ -521,6 +576,7 @@ def test_saml_profile_requires_unexpired_metadata_valid_until_before_enable() ->
             {
                 "enabled": "1",
                 "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+                "public_base_url": "https://admin.example.test",
             }
         )
 
@@ -783,7 +839,9 @@ def test_saml_fetch_rejects_https_metadata_redirect_before_unsafe_fetch(
                     "http://evil.example/FederationMetadata.xml",
                 )
                 opened_urls.append("http://evil.example/FederationMetadata.xml")
-                return _FakeMetadataResponse(SAMPLE_METADATA.encode(), profile.metadata_url)
+                return _FakeMetadataResponse(
+                    SAMPLE_METADATA.encode(), profile.metadata_url
+                )
 
         return FakeOpener()
 
@@ -1009,6 +1067,7 @@ def test_build_saml_settings_prefers_redirect_idp_endpoints_over_post_order() ->
         MemorySamlAuthStore().default_profile(),
         raw_metadata_xml="cached",
         parsed_metadata_json=json.dumps(parsed, sort_keys=True),
+        public_base_url="https://admin.example.test",
     )
 
     settings = build_saml_settings(
@@ -1028,7 +1087,9 @@ def test_build_saml_settings_prefers_redirect_idp_endpoints_over_post_order() ->
     }
 
 
-def test_build_saml_settings_rejects_double_encoded_cached_idp_endpoint_locations() -> None:
+def test_build_saml_settings_rejects_double_encoded_cached_idp_endpoint_locations() -> (
+    None
+):
     parsed = parse_saml_metadata(
         _metadata_with_service_locations(
             sso_location="https://adfs.example.local/adfs/%255cls"
@@ -1109,7 +1170,10 @@ def test_saml_refresh_records_safe_detail_for_rejected_metadata(monkeypatch) -> 
     result = store.refresh_metadata()
 
     assert result.ok is False
-    assert result.detail == "SAML metadata XML contains disallowed DTD or entity declarations."
+    assert (
+        result.detail
+        == "SAML metadata XML contains disallowed DTD or entity declarations."
+    )
     assert store.profile.last_refresh_ok is False
     assert store.profile.last_refresh_detail == result.detail
     assert "evil.example" not in result.detail

@@ -66,8 +66,7 @@ def _repeatedly_decode_url_component(value: str) -> tuple[list[str], bool]:
 def _decoded_url_component_is_unsafe(value: str) -> bool:
     decoded_values, is_excessively_nested = _repeatedly_decode_url_component(value)
     return is_excessively_nested or any(
-        _has_unsafe_url_text(decoded) or "\\" in decoded
-        for decoded in decoded_values
+        _has_unsafe_url_text(decoded) or "\\" in decoded for decoded in decoded_values
     )
 
 
@@ -460,6 +459,9 @@ class SamlAuthStore:
             required_group=required_group,
             updated_ts=int(time.time()),
         )
+        if profile.enabled and not profile.public_base_url:
+            msg = "Set the SAML public admin base URL before enabling the provider."
+            raise ValueError(msg)
         if profile.enabled and not profile_metadata_cache_ready(profile):
             msg = "Refresh SAML metadata successfully before enabling the provider."
             raise ValueError(msg)
@@ -683,7 +685,9 @@ class SamlAuthStore:
             msg = "SAML public base URL must be a valid http:// or https:// URL."
             raise ValueError(msg)
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
-            msg = "SAML public base URL must not include credentials, query, or fragment."
+            msg = (
+                "SAML public base URL must not include credentials, query, or fragment."
+            )
             raise ValueError(msg)
         try:
             port = parsed.port
@@ -939,7 +943,11 @@ def _duration_seconds(value: str | None) -> int:
     hours = int(match.group("hours") or 0)
     minutes = int(match.group("minutes") or 0)
     seconds = int(match.group("seconds") or 0)
-    return int(timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds).total_seconds())
+    return int(
+        timedelta(
+            days=days, hours=hours, minutes=minutes, seconds=seconds
+        ).total_seconds()
+    )
 
 
 def _cache_expires_ts(parsed: dict[str, Any], now: int) -> int:
@@ -967,7 +975,9 @@ def profile_metadata_cache_ready(
     )
 
 
-def profile_metadata_ready(profile: SamlProviderProfile, *, now: int | None = None) -> bool:
+def profile_metadata_ready(
+    profile: SamlProviderProfile, *, now: int | None = None
+) -> bool:
     return bool(profile.enabled and profile_metadata_cache_ready(profile, now=now))
 
 
@@ -975,7 +985,11 @@ def public_base_url(profile: SamlProviderProfile, request: Any) -> str:
     configured = (profile.public_base_url or "").strip().rstrip("/")
     if configured:
         return configured
-    return request.url_root.rstrip("/")
+    msg = (
+        "SAML public admin base URL must be configured before generating "
+        "service-provider URLs."
+    )
+    raise ValueError(msg)
 
 
 def build_sp_info(profile: SamlProviderProfile, request: Any) -> dict[str, str]:

@@ -206,6 +206,9 @@ class FailingSamlStatusStore:
 
 def test_administration_exposes_saml_tab_and_sp_endpoints(monkeypatch, tmp_path):
     loaded, store = _load_with_saml(monkeypatch, tmp_path)
+    store.profile = type(store.profile)(
+        **{**store.profile.__dict__, "public_base_url": "https://admin.example.test"}
+    )
     client = loaded.module.app.test_client()
     login_client(client)
 
@@ -258,19 +261,43 @@ def test_administration_saml_status_falls_back_when_store_default_fails(
     assert "profile unavailable" not in body
 
 
-def test_saml_sp_metadata_is_available_before_idp_metadata_refresh(
-    monkeypatch, tmp_path
-):
+def test_saml_sp_metadata_fails_closed_without_public_base_url(monkeypatch, tmp_path):
     loaded, _store = _load_with_saml(monkeypatch, tmp_path)
     client = loaded.module.app.test_client()
 
-    response = client.get("/auth/saml/metadata", base_url="https://admin.example.test")
+    response = client.get(
+        "/auth/saml/metadata",
+        base_url="https://attacker.example.test",
+        headers={"X-Forwarded-Host": "forwarded-attacker.example.test"},
+    )
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 503
+    assert "public admin base URL must be configured" in body
+    assert "attacker.example.test/auth/saml/metadata" not in body
+    assert "forwarded-attacker.example.test" not in body
+
+
+def test_saml_sp_metadata_uses_configured_public_base_url(monkeypatch, tmp_path):
+    loaded, store = _load_with_saml(monkeypatch, tmp_path)
+    store.profile = type(store.profile)(
+        **{**store.profile.__dict__, "public_base_url": "https://admin.example.test"}
+    )
+    client = loaded.module.app.test_client()
+
+    response = client.get(
+        "/auth/saml/metadata",
+        base_url="https://attacker.example.test",
+        headers={"X-Forwarded-Host": "forwarded-attacker.example.test"},
+    )
     body = response.get_data(as_text=True)
 
     assert response.status_code == 200
     assert response.mimetype == "application/samlmetadata+xml"
     assert 'entityID="https://admin.example.test/auth/saml/metadata"' in body
     assert 'Location="https://admin.example.test/auth/saml/acs"' in body
+    assert "attacker.example.test" not in body
+    assert "forwarded-attacker.example.test" not in body
 
 
 def test_saml_admin_refresh_save_and_disable_actions(monkeypatch, tmp_path):
@@ -281,7 +308,11 @@ def test_saml_admin_refresh_save_and_disable_actions(monkeypatch, tmp_path):
 
     refreshed = client.post(
         "/administration?tab=saml",
-        data={"csrf_token": token, "provider": "saml", "action": "refresh_saml_metadata"},
+        data={
+            "csrf_token": token,
+            "provider": "saml",
+            "action": "refresh_saml_metadata",
+        },
     )
     assert refreshed.status_code in {302, 303}
     assert store.refreshed == 1
@@ -310,7 +341,11 @@ def test_saml_admin_refresh_save_and_disable_actions(monkeypatch, tmp_path):
     token = csrf_token(client, "/administration?tab=saml")
     disabled = client.post(
         "/administration?tab=saml",
-        data={"csrf_token": token, "provider": "saml", "action": "disable_saml_provider"},
+        data={
+            "csrf_token": token,
+            "provider": "saml",
+            "action": "disable_saml_provider",
+        },
     )
     assert disabled.status_code in {302, 303}
     assert store.disabled == 1
@@ -365,7 +400,9 @@ def test_saml_login_and_acs_create_standard_session(monkeypatch, tmp_path):
     loaded, store = _load_with_saml(monkeypatch, tmp_path, audit_store=audit)
     store.enable_with_metadata()
     toolkit = FakeSamlToolkit()
-    monkeypatch.setattr(loaded.module, "build_saml_auth", lambda _profile, _request: toolkit)
+    monkeypatch.setattr(
+        loaded.module, "build_saml_auth", lambda _profile, _request: toolkit
+    )
     client = loaded.module.app.test_client()
 
     login_response = client.get("/auth/saml/login?next=/administration")
@@ -454,7 +491,9 @@ def test_saml_acs_drops_external_relay_state(monkeypatch, tmp_path):
     loaded, store = _load_with_saml(monkeypatch, tmp_path)
     store.enable_with_metadata(required_group="")
     toolkit = FakeSamlToolkit()
-    monkeypatch.setattr(loaded.module, "build_saml_auth", lambda _profile, _request: toolkit)
+    monkeypatch.setattr(
+        loaded.module, "build_saml_auth", lambda _profile, _request: toolkit
+    )
     client = loaded.module.app.test_client()
 
     response = client.post(
@@ -475,7 +514,9 @@ def test_saml_acs_rejects_missing_required_group_without_raw_response_audit(
     loaded, store = _load_with_saml(monkeypatch, tmp_path, audit_store=audit)
     store.enable_with_metadata(required_group="AdminGroup")
     toolkit = FakeSamlToolkit(groups=["OtherGroup"])
-    monkeypatch.setattr(loaded.module, "build_saml_auth", lambda _profile, _request: toolkit)
+    monkeypatch.setattr(
+        loaded.module, "build_saml_auth", lambda _profile, _request: toolkit
+    )
     client = loaded.module.app.test_client()
 
     response = client.post(
@@ -501,7 +542,9 @@ def test_saml_success_audit_redacts_username_like_secret(monkeypatch, tmp_path):
             return {"email": ["password=supersecret\nadmin"], "groups": self.groups}
 
     toolkit = SecretLikeUsernameToolkit()
-    monkeypatch.setattr(loaded.module, "build_saml_auth", lambda _profile, _request: toolkit)
+    monkeypatch.setattr(
+        loaded.module, "build_saml_auth", lambda _profile, _request: toolkit
+    )
     client = loaded.module.app.test_client()
 
     response = client.post("/auth/saml/acs", data={"RelayState": "/administration"})
