@@ -2217,9 +2217,28 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
     hours=_configured_session_timeout_hours()
 )
 
-# Ensure there is at least one login.
-with contextlib.suppress(Exception):
-    _auth_store.ensure_default_admin()
+
+def _bootstrap_local_admin_from_environment() -> None:
+    # Remove bootstrap inputs from the mutable process environment as soon as they
+    # are read. Python cannot guarantee erasure of all prior in-memory copies, but
+    # this avoids retaining an application-global plaintext credential.
+    username = (os.environ.pop("ADMIN_BOOTSTRAP_USERNAME", "") or "").strip()
+    password = os.environ.pop("ADMIN_BOOTSTRAP_PASSWORD", "") or ""
+    try:
+        if bool(username) != bool(password):
+            msg = (
+                "ADMIN_BOOTSTRAP_USERNAME and ADMIN_BOOTSTRAP_PASSWORD must either "
+                "both be set or both be unset."
+            )
+            raise RuntimeError(msg)
+        if username:
+            _auth_store.bootstrap_admin(username, password)
+    finally:
+        username = ""
+        password = ""
+
+
+_bootstrap_local_admin_from_environment()
 _database_runtime_configured = any(
     (os.environ.get(name) or "").strip()
     for name in ("DATABASE_URL", "MYSQL_HOST", "MYSQL_DATABASE", "MYSQL_USER")
@@ -3402,6 +3421,10 @@ def _inject_proxy_context():
 def login():
     saml_profile = _current_saml_profile()
     saml_enabled = profile_metadata_ready(saml_profile)
+    try:
+        local_admin_configured = _auth_store.any_users()
+    except Exception:
+        local_admin_configured = True
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
@@ -3459,6 +3482,7 @@ def login():
             error="Invalid username or password.",
             next=next_url,
             saml_enabled=saml_enabled,
+            local_admin_configured=local_admin_configured,
         )
 
     if _is_logged_in():
@@ -3469,6 +3493,7 @@ def login():
         error=None,
         next=next_url,
         saml_enabled=saml_enabled,
+        local_admin_configured=local_admin_configured,
     )
 
 

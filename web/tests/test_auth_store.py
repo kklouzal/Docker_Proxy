@@ -253,7 +253,9 @@ def _load_secret_in_process(secret_path, ready, result_queue, worker_id: int) ->
     )
     auth_store.secrets.token_urlsafe = lambda _size: f"process-secret-{worker_id}"
     try:
-        result = auth_store.AuthStore(secret_path=secret_path).get_or_create_secret_key()
+        result = auth_store.AuthStore(
+            secret_path=secret_path
+        ).get_or_create_secret_key()
         result_queue.put(("ok", result))
     except BaseException as exc:
         result_queue.put(("error", repr(exc)))
@@ -324,3 +326,24 @@ def test_auth_store_username_and_password_validation(tmp_path) -> None:
     assert store.verify_user("user_1", "abcd") is True
     store.delete_user("user_1")
     assert store.verify_user("user_1", "abcd") is False
+
+
+def test_explicit_bootstrap_creates_only_first_user(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path, secret_path=tmp_path / "secret.key")
+    store = _auth_store_module().AuthStore(secret_path=str(tmp_path / "secret.key"))
+
+    assert store.bootstrap_admin("first-admin", "unique-bootstrap-password") is True
+    assert store.verify_user("first-admin", "unique-bootstrap-password") is True
+    assert store.bootstrap_admin("replacement", "another-bootstrap-password") is False
+    assert store.verify_user("replacement", "another-bootstrap-password") is False
+
+
+def test_explicit_bootstrap_rejects_unbounded_passwords(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path, secret_path=tmp_path / "secret.key")
+    store = _auth_store_module().AuthStore(secret_path=str(tmp_path / "secret.key"))
+
+    with pytest.raises(ValueError, match="at least 12"):
+        store.bootstrap_admin("admin", "too-short")
+    with pytest.raises(ValueError, match="too long"):
+        store.bootstrap_admin("admin", "x" * 1025)
+    assert store.any_users() is False

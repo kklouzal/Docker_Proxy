@@ -69,10 +69,24 @@ This path uses the published GHCR images and the committed `docker-compose.ghcr.
    curl -fsS http://localhost/proxy.pac | head
    ```
 
-4. Open the admin UI at `http://localhost:5000`, sign in with the first-run local account, and immediately change the password:
+4. Before the first Admin UI start, set a unique local bootstrap account in the
+   Compose `.env` (the password must be 12-1024 characters), then open
+   `http://localhost:5000` and sign in:
 
-   - Username: `admin`
-   - Password: `admin`
+   ```dotenv
+   ADMIN_BOOTSTRAP_USERNAME=admin
+   ADMIN_BOOTSTRAP_PASSWORD=choose-a-strong-password
+   ```
+
+   Both variables must be set together. They create an account only while the
+   users table is empty, so upgrades and existing accounts are unchanged.
+   Remove the variables after the account is created. Docker Proxy does not
+   generate, print, log, render, or audit a bootstrap password. At startup it
+   consumes the values and removes them from its mutable process environment;
+   Python and container runtimes cannot guarantee erasure of all prior copies.
+   A deployment with no local
+   users may instead use an already configured external provider; otherwise
+   the login page remains fail-closed and shows setup guidance.
 
 5. Before routing real clients, review the generated proxy record, PAC/WPAD URLs, certificate authority trust plan, no-bump policy, and management-plane exposure. Do not expose the admin UI directly to the internet, and do not enable TLS inspection for unmanaged clients or clients that do not trust the proxy CA.
 

@@ -16,10 +16,24 @@ import os
 import sys
 
 import services.directory_auth as directory_module
+import services.auth_store as auth_module
 import services.saml_auth as saml_module
 
 failures = set(filter(None, os.environ["ADMIN_BOOTSTRAP_FAILURES"].split(",")))
 events = []
+
+
+class FakeAuthStore:
+    def get_or_create_secret_key(self):
+        return auth_module.AuthStore().get_or_create_secret_key()
+
+    def bootstrap_admin(self, username, password):
+        events.append(f"local:{username}")
+        if "local" in failures:
+            raise RuntimeError("deterministic local bootstrap failure")
+
+    def any_users(self):
+        return False
 
 
 class FakeDirectoryStore:
@@ -37,6 +51,7 @@ class FakeSamlStore:
 
 
 directory_module.get_directory_auth_store = lambda _secret: FakeDirectoryStore()
+auth_module.get_auth_store = lambda: FakeAuthStore()
 saml_module.get_saml_auth_store = lambda: FakeSamlStore()
 
 try:
@@ -55,9 +70,16 @@ def _import_admin_app(
     *,
     configured_secret: str = "",
     bootstrap_failures: tuple[str, ...] = (),
+    bootstrap_username: str | None = None,
+    bootstrap_password: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    for name in (*_SECRET_ENV_NAMES, *_DATABASE_ENV_NAMES):
+    for name in (
+        *_SECRET_ENV_NAMES,
+        *_DATABASE_ENV_NAMES,
+        "ADMIN_BOOTSTRAP_USERNAME",
+        "ADMIN_BOOTSTRAP_PASSWORD",
+    ):
         env.pop(name, None)
     env.update(
         DISABLE_BACKGROUND="1",
@@ -69,6 +91,10 @@ def _import_admin_app(
     )
     if configured_secret:
         env["FLASK_SECRET_KEY"] = configured_secret
+    if bootstrap_username is not None:
+        env["ADMIN_BOOTSTRAP_USERNAME"] = bootstrap_username
+    if bootstrap_password is not None:
+        env["ADMIN_BOOTSTRAP_PASSWORD"] = bootstrap_password
     env["ADMIN_BOOTSTRAP_FAILURES"] = ",".join(bootstrap_failures)
 
     return subprocess.run(
@@ -79,6 +105,46 @@ def _import_admin_app(
         capture_output=True,
         text=True,
     )
+
+
+@pytest.mark.parametrize(
+    ("username", "password"),
+    [("first-admin", None), (None, "not-retained-bootstrap-password")],
+)
+def test_admin_startup_rejects_unpaired_local_bootstrap_configuration(
+    tmp_path: Path,
+    username: str | None,
+    password: str | None,
+) -> None:
+    result = _import_admin_app(
+        tmp_path / "flask_secret.key",
+        configured_secret="configured-production-secret",
+        bootstrap_username=username,
+        bootstrap_password=password,
+    )
+
+    assert result.returncode != 0
+    assert "must either both be set or both be unset" in result.stderr
+    assert "not-retained-bootstrap-password" not in result.stderr
+    assert "ADMIN_BOOTSTRAP_EVENTS=[]" in result.stderr
+
+
+def test_admin_startup_consumes_bootstrap_and_propagates_failure(
+    tmp_path: Path,
+) -> None:
+    password = "not-retained-bootstrap-password"
+    result = _import_admin_app(
+        tmp_path / "flask_secret.key",
+        configured_secret="configured-production-secret",
+        bootstrap_failures=("local",),
+        bootstrap_username="first-admin",
+        bootstrap_password=password,
+    )
+
+    assert result.returncode != 0
+    assert "deterministic local bootstrap failure" in result.stderr
+    assert password not in result.stderr
+    assert 'ADMIN_BOOTSTRAP_EVENTS=["local:first-admin"]' in result.stderr
 
 
 def test_admin_startup_fails_when_persistent_session_secret_is_unavailable(

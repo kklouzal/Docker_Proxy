@@ -20,8 +20,8 @@ class FakeAuthStore:
         self.password_changes: list[tuple[str, str]] = []
         self.deleted: list[str] = []
 
-    def ensure_default_admin(self) -> None:
-        self.passwords.setdefault("admin", "admin")
+    def any_users(self) -> bool:
+        return bool(self.passwords)
 
     def get_or_create_secret_key(self) -> str:
         return "test-secret-key"
@@ -1265,6 +1265,8 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
     monkeypatch.setenv("DISABLE_BACKGROUND", "1")
     monkeypatch.setenv("FLASK_SECRET_PATH", str(tmp_path / "flask_secret.key"))
     monkeypatch.setenv("DEFAULT_PROXY_ID", "default")
+    monkeypatch.delenv("ADMIN_BOOTSTRAP_USERNAME", raising=False)
+    monkeypatch.delenv("ADMIN_BOOTSTRAP_PASSWORD", raising=False)
     sys.modules.pop("app", None)
     import app as admin_app  # type: ignore
 
@@ -1389,6 +1391,7 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
     return SimpleNamespace(
         module=admin_app,
         auth_store=fake_auth,
+        directory_auth_store=admin_app._directory_auth_store,
         audit_store=fake_audit,
         saml_auth_store=fake_saml_auth,
         registry=fake_registry,

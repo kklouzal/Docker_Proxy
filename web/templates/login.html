@@ -22,6 +22,15 @@
             <span class="badge">Web admin only</span>
         </div>
         <div class="card-body stack-md">
+            {% if not local_admin_configured %}
+            <div class="banner warning">
+                <span class="badge warning">Setup required</span>
+                <div class="banner-copy">
+                    <strong>No local administrator is configured</strong>
+                    <span class="small">Set explicit first-run bootstrap credentials in the deployment environment and restart the Admin UI, or use an already configured external sign-in provider.</span>
+                </div>
+            </div>
+            {% endif %}
             {% if error %}
             <div class="banner error">
                 <span class="badge danger">Error</span>
@@ -62,7 +71,7 @@
         <div class="card-body stack-md">
             <ul class="auth-list small">
                 <li>This login protects the admin UI only; proxy clients never use these credentials.</li>
-                <li>Use <strong>Administration</strong> after signing in to rotate initial credentials and add other operators.</li>
+                <li>Local first-run credentials must be supplied explicitly by the operator; no default password is installed.</li>
                 <li>For shared environments, restrict access to the admin UI to your management network or VPN.</li>
             </ul>
             <div class="surface-note small">

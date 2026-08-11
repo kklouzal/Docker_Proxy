@@ -55,6 +55,8 @@ services:
         condition: service_healthy
     environment:
       ENABLE_TEST_MODE: "1"
+      ADMIN_BOOTSTRAP_USERNAME: ${LIVE_TEST_USERNAME:-admin}
+      ADMIN_BOOTSTRAP_PASSWORD: ${LIVE_TEST_PASSWORD:-live-test-admin-password}
       DEFAULT_PROXY_ID: ${LIVE_TEST_PROXY_ID:-live}
       PROXY_MANAGEMENT_TOKEN: ${LIVE_TEST_PROXY_MANAGEMENT_TOKEN:-live-tests-token}
       MYSQL_HOST: mysql-test
@@ -190,7 +192,7 @@ services:
       LIVE_TEST_REMOTE_PAC_URL: ${LIVE_TEST_REMOTE_PAC_URL:-http://proxy-edge-2/proxy.pac}
       LIVE_TEST_PROXY_TOKEN: ${LIVE_TEST_PROXY_MANAGEMENT_TOKEN:-live-tests-token}
       LIVE_TEST_USERNAME: ${LIVE_TEST_USERNAME:-admin}
-      LIVE_TEST_PASSWORD: ${LIVE_TEST_PASSWORD:-admin}
+      LIVE_TEST_PASSWORD: ${LIVE_TEST_PASSWORD:-live-test-admin-password}
       LIVE_TEST_WAIT_TIMEOUT_SECONDS: ${LIVE_TEST_WAIT_TIMEOUT_SECONDS:-180}
       LIVE_TEST_PYTEST_TIMEOUT_SECONDS: ${LIVE_TEST_PYTEST_TIMEOUT_SECONDS:-180}
       MYSQL_HOST: mysql-test

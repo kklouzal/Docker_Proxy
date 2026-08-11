@@ -149,6 +149,36 @@ def test_login_degrades_to_local_auth_when_saml_profile_store_is_unavailable(
         assert sess.get("user") == "admin"
 
 
+def test_login_guidance_does_not_block_external_auth(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    loaded.auth_store.passwords.clear()
+    client = loaded.module.app.test_client()
+
+    page = client.get("/login")
+    body = page.get_data(as_text=True)
+
+    assert page.status_code == 200
+    assert "No local administrator is configured" in body
+    assert "external sign-in provider" in body
+    assert "admin/admin" not in body
+
+    loaded.directory_auth_store.authenticate_admin = lambda username, password: type(
+        "Result",
+        (),
+        {"ok": True, "provider": "ldap", "username": username, "detail": ""},
+    )()
+    token = csrf_token(client, "/login")
+    response = client.post(
+        "/login",
+        data={"username": "ldap-admin", "password": "external", "csrf_token": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    with client.session_transaction() as sess:
+        assert sess.get("auth_provider") == "ldap"
+
+
 def test_saml_routes_degrade_when_profile_store_is_unavailable(
     monkeypatch, tmp_path
 ) -> None:

@@ -9,7 +9,7 @@ def test_auth_store_allows_relative_secret_paths(tmp_path, monkeypatch) -> None:
     from services.auth_store import AuthStore
 
     store = AuthStore(secret_path="flask_secret.key")
-    store.ensure_default_admin()
+    store.bootstrap_admin("admin", "test-admin-password")
     store.get_or_create_secret_key()
 
     assert not list(tmp_path.glob("*.db"))

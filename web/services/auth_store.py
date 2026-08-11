@@ -14,6 +14,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from services.db import INTEGRITY_ERRORS, connect
 from services.logutil import log_exception_throttled
+from services.revision_lifecycle import mysql_advisory_lock
 from services.runtime_helpers import fsync_parent_dir as _fsync_parent_dir
 
 logger = logging.getLogger(__name__)
@@ -70,12 +71,50 @@ class AuthStore:
                 )
             self._schema_ready = True
 
-    def ensure_default_admin(self) -> None:
+    def bootstrap_admin(self, username: str, password: str) -> bool:
+        """Create the first local administrator from explicit operator input.
+
+        Existing installations are deliberately a no-op. An advisory lock makes
+        the empty-store check and insert atomic across concurrent web workers.
+        """
         self.ensure_schema()
-        if self.any_users():
-            return
-        # Default credentials requested by user: admin/admin
-        self.add_user("admin", "admin")
+        password = password or ""
+        if len(password) < 12:
+            msg = "Bootstrap password must be at least 12 characters."
+            raise ValueError(msg)
+        if len(password) > 1024:
+            msg = "Bootstrap password is too long."
+            raise ValueError(msg)
+        with (
+            self._connect() as conn,
+            mysql_advisory_lock(
+                conn,
+                namespace="auth_store.bootstrap_admin",
+                timeout_seconds=30,
+            ),
+        ):
+            row = conn.execute("SELECT 1 FROM users LIMIT 1").fetchone()
+            if row is not None:
+                return False
+            u = (username or "").strip()
+            if not u:
+                msg = "Username is required."
+                raise ValueError(msg)
+            if len(u) > 64:
+                msg = "Username too long."
+                raise ValueError(msg)
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", u):
+                msg = (
+                    "Username may only include letters, numbers, underscore, dash, dot."
+                )
+                raise ValueError(msg)
+            now = int(time.time())
+            pw_hash = generate_password_hash(password)
+            conn.execute(
+                "INSERT INTO users(username, password_hash, created_ts, updated_ts) VALUES (%s,%s,%s,%s)",
+                (u, pw_hash, now, now),
+            )
+        return True
 
     def get_or_create_secret_key(self) -> str:
         with self._secret_lock:

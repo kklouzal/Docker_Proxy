@@ -84,7 +84,7 @@ LIVE_CONFIG = LiveStackConfig(
     ),
     proxy_token=_env_text("LIVE_TEST_PROXY_TOKEN", ""),
     username=_env_text("LIVE_TEST_USERNAME", "admin"),
-    password=_env_text("LIVE_TEST_PASSWORD", "admin"),
+    password=_env_text("LIVE_TEST_PASSWORD", "live-test-admin-password"),
     wait_timeout_seconds=max(
         5.0, float(_env_text("LIVE_TEST_WAIT_TIMEOUT_SECONDS", "180"))
     ),
@@ -512,8 +512,10 @@ def wait_for_proxy_operations_idle(
 
     return _wait_for_value(
         lambda: proxy_operation_counts(target_proxy_id),
-        accept=lambda counts: int(counts.get("pending") or 0) == 0
-        and int(counts.get("applying") or 0) == 0,
+        accept=lambda counts: (
+            int(counts.get("pending") or 0) == 0
+            and int(counts.get("applying") or 0) == 0
+        ),
         description=f"proxy operation queue for {target_proxy_id!r} to become idle",
         timeout_seconds=timeout_seconds,
     )
@@ -533,8 +535,9 @@ def wait_for_primary_proxy_traffic_converged(
         client,
         "/health",
         timeout_seconds=timeout_seconds,
-        accept=lambda response: response.status == 200
-        and "ICAP_FAILURE" not in response.text,
+        accept=lambda response: (
+            response.status == 200 and "ICAP_FAILURE" not in response.text
+        ),
     )
 
 
