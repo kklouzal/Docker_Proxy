@@ -591,13 +591,84 @@ def test_admin_runtime_defaults_keep_mysql_pool_bounded() -> None:
         "docker/Dockerfile.admin"
     )
     launcher = _read("web/tools/start_admin_ui.py")
-    assert 'environ.get("WEB_THREADS") or "2"' in launcher
+    assert '"WEB_THREADS": "2"' in launcher
     assert "# WEB_THREADS=2" in env_example
-    assert 'web_threads="${WEB_THREADS:-2}"' in entrypoint
+    assert "--print-effective-gunicorn-env" in entrypoint
+    assert 'web_threads="$WEB_THREADS"' in entrypoint
     assert "web_workers" not in entrypoint
     assert "derived_pool=$((web_threads + 12))" in entrypoint
     assert 'if [ "$derived_pool" -lt 16 ]; then' in entrypoint
     assert 'if [ "$derived_pool" -gt 32 ]; then' in entrypoint
+
+
+@pytest.mark.parametrize(
+    ("name", "default"),
+    [
+        ("WEB_WORKERS", "1"),
+        ("WEB_THREADS", "2"),
+        ("WEB_TIMEOUT", "120"),
+        ("WEB_GRACEFUL_TIMEOUT", "30"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("7", "7"),
+        ("0007", "7"),
+        ("", None),
+        ("oops", None),
+        ("0", None),
+        ("-1", None),
+    ],
+)
+def test_admin_ui_gunicorn_positive_numeric_controls(
+    name: str,
+    default: str,
+    value: str,
+    expected: str | None,
+) -> None:
+    module = _load_start_admin_ui_module()
+
+    effective = module.effective_gunicorn_numeric_env({name: value})
+
+    assert effective[name] == (default if expected is None else expected)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [("9", "9"), ("000", "0"), ("-1", "5"), (" ", "5")]
+)
+def test_admin_ui_gunicorn_keepalive_is_nonnegative(value: str, expected: str) -> None:
+    module = _load_start_admin_ui_module()
+
+    effective = module.effective_gunicorn_numeric_env({"WEB_KEEPALIVE": value})
+
+    assert effective["WEB_KEEPALIVE"] == expected
+
+
+def test_admin_ui_numeric_env_executable_boundary_handles_oversized_digits() -> None:
+    env = {
+        **os.environ,
+        "WEB_WORKERS": "3",
+        "WEB_THREADS": " malformed ",
+        "WEB_TIMEOUT": "0",
+        "WEB_GRACEFUL_TIMEOUT": "9" * 5000,
+        "WEB_KEEPALIVE": "0",
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "web/tools/start_admin_ui.py",
+            "--print-effective-gunicorn-env",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "3 2 120 30 0"
 
 
 def test_observability_runtime_env_knobs_are_documented_and_composed() -> None:

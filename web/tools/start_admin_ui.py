@@ -17,6 +17,13 @@ if str(APP_ROOT) not in sys.path:
 
 DEFAULT_CERTFILE = "/etc/squid/ssl/certs/admin-ui.crt"
 DEFAULT_KEYFILE = "/etc/squid/ssl/certs/admin-ui.key"
+GUNICORN_NUMERIC_DEFAULTS = {
+    "WEB_WORKERS": "1",
+    "WEB_THREADS": "2",
+    "WEB_TIMEOUT": "120",
+    "WEB_GRACEFUL_TIMEOUT": "30",
+    "WEB_KEEPALIVE": "5",
+}
 
 
 @dataclass(frozen=True)
@@ -35,6 +42,25 @@ def _truthy(value: object | None) -> bool:
 def _log(message: str) -> None:
     sys.stderr.write(f"{message}\n")
     sys.stderr.flush()
+
+
+def effective_gunicorn_numeric_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """Return bounded canonical decimals for Gunicorn and shell arithmetic."""
+    effective: dict[str, str] = {}
+    maximum = "2147483647"
+    for name, default in GUNICORN_NUMERIC_DEFAULTS.items():
+        raw = environ.get(name, "")
+        if not re.fullmatch(r"[0-9]+", raw or ""):
+            effective[name] = default
+            continue
+
+        canonical = raw.lstrip("0") or "0"
+        oversized = len(canonical) > len(maximum) or (
+            len(canonical) == len(maximum) and canonical > maximum
+        )
+        positive_required = name != "WEB_KEEPALIVE" and canonical == "0"
+        effective[name] = default if oversized or positive_required else canonical
+    return effective
 
 
 def _env_https_config(
@@ -231,7 +257,11 @@ def build_gunicorn_argv(
     environ: Mapping[str, str],
     config: AdminUiHttpsRuntimeConfig,
 ) -> list[str]:
-    bind = environ.get("ADMIN_UI_BIND") or f"0.0.0.0:{environ.get('ADMIN_UI_PORT') or '5000'}"
+    bind = (
+        environ.get("ADMIN_UI_BIND")
+        or f"0.0.0.0:{environ.get('ADMIN_UI_PORT') or '5000'}"
+    )
+    numeric = effective_gunicorn_numeric_env(environ)
     argv = [
         "python3",
         "-m",
@@ -240,15 +270,15 @@ def build_gunicorn_argv(
         bind,
         "wsgi:app",
         "--workers",
-        environ.get("WEB_WORKERS") or "1",
+        numeric["WEB_WORKERS"],
         "--threads",
-        environ.get("WEB_THREADS") or "2",
+        numeric["WEB_THREADS"],
         "--timeout",
-        environ.get("WEB_TIMEOUT") or "120",
+        numeric["WEB_TIMEOUT"],
         "--graceful-timeout",
-        environ.get("WEB_GRACEFUL_TIMEOUT") or "30",
+        numeric["WEB_GRACEFUL_TIMEOUT"],
         "--keep-alive",
-        environ.get("WEB_KEEPALIVE") or "5",
+        numeric["WEB_KEEPALIVE"],
         "--worker-tmp-dir",
         "/dev/shm",  # noqa: S108
         "--error-logfile",
@@ -260,6 +290,13 @@ def build_gunicorn_argv(
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--print-effective-gunicorn-env"]:
+        effective = effective_gunicorn_numeric_env(os.environ)
+        sys.stdout.write(
+            " ".join(effective[name] for name in GUNICORN_NUMERIC_DEFAULTS) + "\n"
+        )
+        return 0
+
     from services.certificate_core import validate_tls_material_paths
 
     config = resolve_admin_ui_https_config(os.environ)
