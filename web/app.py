@@ -39,7 +39,7 @@ from services.adblock_artifacts import get_adblock_artifacts
 from services.adblock_store import get_adblock_store as _default_get_adblock_store
 from services.audit_store import get_audit_store as _default_get_audit_store
 from services.auth_store import get_auth_store
-from services.background_guard import acquire_background_lock
+from services.background_guard import BackgroundServiceCoordinator
 from services.cert_manager import (
     generate_self_signed_ca_bundle,
     parse_pfx_bundle,
@@ -3618,13 +3618,26 @@ def _options_from_tunables(tunables: dict[str, Any]) -> dict[str, Any]:
 
 _disable_background = (os.environ.get("DISABLE_BACKGROUND") or "").strip() == "1"
 
-# In multi-worker servers, ensure only one process runs background workers.
-if not _disable_background:
-    try:
-        if not acquire_background_lock():
-            _disable_background = True
-    except Exception:
-        pass
+
+def _start_adblock_background() -> None:
+    get_adblock_artifacts().start_background()
+
+
+def _start_webfilter_background() -> None:
+    get_webfilter_store().start_background()
+
+
+def _start_housekeeping_background() -> None:
+    start_housekeeping(retention_days=30)
+
+
+_background_coordinator = BackgroundServiceCoordinator(
+    (
+        _start_adblock_background,
+        _start_webfilter_background,
+        _start_housekeeping_background,
+    )
+)
 
 
 def _safe_int(value: object, default: int = 0) -> int:
@@ -3767,18 +3780,10 @@ def _datetimeformat(ts: object) -> str:
         return ""
 
 
-if not _disable_background:
-    # Build and activate adblock artifacts from MySQL-backed admin state.
-    with contextlib.suppress(Exception):
-        get_adblock_artifacts().start_background()
-
-    # Start web filtering background updater (downloads/compiles categories daily at midnight).
-    with contextlib.suppress(Exception):
-        get_webfilter_store().start_background()
-
-    # Scheduled housekeeping: daily prune at 02:00, weekly full maintenance Sunday 03:00.
-    with contextlib.suppress(Exception):
-        start_housekeeping(retention_days=30)
+@app.before_request
+def _ensure_background_services() -> None:
+    if not _disable_background:
+        _background_coordinator.ensure_started()
 
 
 @app.context_processor

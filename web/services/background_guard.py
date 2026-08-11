@@ -3,6 +3,11 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
 
 from services.logutil import log_exception_throttled, should_log
 
@@ -11,6 +16,48 @@ logger = logging.getLogger(__name__)
 
 _LOCK_FD: int | None = None
 _LOCK_PID: int | None = None
+
+
+class BackgroundServiceCoordinator:
+    """Lazily establish process ownership and retry incomplete startup.
+
+    Deferring this work until a worker handles a request avoids creating threads
+    in a Gunicorn preload/master process.  Processes that lose lock contention
+    keep retrying, so an existing or replacement worker can take over when the
+    owner exits.
+    """
+
+    def __init__(self, starters: Iterable[Callable[[], None]]) -> None:
+        self._starters = tuple(starters)
+        self._started: set[int] = set()
+        self._pid: int | None = None
+        self._mutex = threading.Lock()
+
+    def ensure_started(self) -> bool:
+        """Start every service in the lock-owning process; retry failures later."""
+        with self._mutex:
+            current_pid = os.getpid()
+            if current_pid != self._pid:
+                self._pid = current_pid
+                self._started.clear()
+            if not acquire_background_lock():
+                return False
+
+            for index, starter in enumerate(self._starters):
+                if index in self._started:
+                    continue
+                try:
+                    starter()
+                except Exception:
+                    log_exception_throttled(
+                        logger,
+                        f"background_guard.start.{index}",
+                        interval_seconds=300.0,
+                        message="Failed to start background service",
+                    )
+                else:
+                    self._started.add(index)
+            return len(self._started) == len(self._starters)
 
 
 def _close_lock_fd(fd: int, *, log_key: str, message: str) -> bool:
