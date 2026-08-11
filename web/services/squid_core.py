@@ -24,6 +24,7 @@ from services.clamav_config_forms import (
 )
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
+from services.squid_listeners import parse_squid_listeners
 
 logger = logging.getLogger(__name__)
 
@@ -1200,54 +1201,10 @@ stdout_logfile_maxbytes=0
         config_text: str | None = None,
     ) -> tuple[dict[str, object], ...]:
         text = config_text if config_text is not None else self.get_current_config()
-        listeners: list[dict[str, object]] = []
-        pending: list[str] = []
-
-        def flush_pending() -> None:
-            if not pending:
-                return
-            logical = " ".join(
-                line.rstrip().rstrip("\\").strip() for line in pending
-            ).strip()
-            pending.clear()
-            if not logical or logical.startswith("#"):
-                return
-            lower = logical.lower()
-            if not lower.startswith(("http_port ", "https_port ")):
-                return
-            parts = logical.split()
-            if len(parts) < 2:
-                return
-            token = parts[1]
-            try:
-                if token.isdigit():
-                    port = int(token)
-                elif (token.startswith("[") and "]:" in token) or ":" in token:
-                    port = int(token.rsplit(":", 1)[1])
-                else:
-                    return
-            except Exception:
-                return
-            if not (1 <= port <= 65535):
-                return
-            modes = {part.strip().lower() for part in parts[2:]}
-            is_https_port = lower.startswith("https_port ")
-            if "intercept" in modes:
-                mode = "https-intercept" if is_https_port else "intercept"
-            elif "tproxy" in modes:
-                mode = "https-tproxy" if is_https_port else "tproxy"
-            else:
-                mode = "https" if is_https_port else "explicit"
-            if not any(int(item.get("port") or 0) == port for item in listeners):
-                listeners.append({"port": port, "mode": mode})
-
-        for line in (text or "").splitlines():
-            pending.append(line)
-            if line.rstrip().endswith("\\"):
-                continue
-            flush_pending()
-        flush_pending()
-        return tuple(listeners or [{"port": 3128, "mode": "explicit"}])
+        return tuple(
+            {"port": item["port"], "mode": item["mode"]}
+            for item in parse_squid_listeners(text)
+        )
 
     def _http_listener_ports(self, config_text: str | None = None) -> tuple[int, ...]:
         return tuple(

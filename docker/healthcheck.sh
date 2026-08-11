@@ -34,101 +34,30 @@ PY
 }
 
 check_squid_http_listeners() {
-    SQUID_CONFIG_PATH="${SQUID_CONFIG_PATH:-/etc/squid/squid.conf}" python3 - <<'PY'
+    SQUID_CONFIG_PATH="${SQUID_CONFIG_PATH:-/etc/squid/squid.conf}" python3 - <<'PYHEALTH'
 import os
-
-
-def has_listen_socket(path: str, port: int) -> bool:
-    try:
-        with open(path, 'r', encoding='utf-8', errors='replace') as f:
-            next(f, None)
-            for line in f:
-                parts = line.split()
-                if len(parts) < 4:
-                    continue
-                local_addr = parts[1]
-                state = parts[3]
-                if state != '0A':
-                    continue
-                _addr, port_hex = local_addr.rsplit(':', 1)
-                if int(port_hex, 16) == int(port):
-                    return True
-    except FileNotFoundError:
-        return False
-    return False
-
-
-def logical_lines(text: str):
-    pending = []
-    for raw in text.splitlines():
-        pending.append(raw)
-        if raw.rstrip().endswith('\\'):
-            continue
-        yield ' '.join(line.rstrip().rstrip('\\').strip() for line in pending).strip()
-        pending = []
-    if pending:
-        yield ' '.join(line.rstrip().rstrip('\\').strip() for line in pending).strip()
-
-
-def parse_port(token: str):
-    token = (token or '').strip()
-    if token.isdigit():
-        return int(token)
-    if token.startswith('[') and ']:' in token:
-        candidate = token.rsplit(':', 1)[1]
-    elif ':' in token:
-        candidate = token.rsplit(':', 1)[1]
-    else:
-        return None
-    return int(candidate) if candidate.isdigit() else None
-
+from services.squid_listeners import listener_is_present, listening_endpoints, parse_squid_listeners
 
 def coerce_port(value, default):
     try:
-        parsed = int(str(value or '').strip() or str(default))
+        parsed = int(str(value or "").strip() or str(default))
     except Exception:
         parsed = int(default)
-    return min(65535, max(1, parsed))
+    return parsed if 1 <= parsed <= 65535 else int(default)
 
-
-def env_enabled(value):
-    return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
-
-
-config_path = os.environ.get('SQUID_CONFIG_PATH') or '/etc/squid/squid.conf'
+config_path = os.environ.get("SQUID_CONFIG_PATH") or "/etc/squid/squid.conf"
 try:
-    with open(config_path, 'r', encoding='utf-8', errors='replace') as handle:
+    with open(config_path, "r", encoding="utf-8", errors="replace") as handle:
         text = handle.read()
 except FileNotFoundError:
-    text = ''
-
-ports = []
-for logical in logical_lines(text):
-    stripped = logical.strip()
-    if not stripped or stripped.startswith('#'):
-        continue
-    lower = stripped.lower()
-    if not lower.startswith(('http_port ', 'https_port ')):
-        continue
-    parts = stripped.split()
-    if len(parts) < 2:
-        continue
-    port = parse_port(parts[1])
-    if port and 1 <= port <= 65535 and port not in ports:
-        ports.append(port)
-
-if not ports:
-    explicit_port = coerce_port(os.environ.get('SQUID_HTTP_PORT'), 3128)
-    ports = [explicit_port]
-    if env_enabled(os.environ.get('SQUID_INTERCEPT_ENABLED')):
-        intercept_port = coerce_port(os.environ.get('SQUID_INTERCEPT_PORT'), explicit_port + 1 if explicit_port < 65535 else 3129)
-        if intercept_port not in ports:
-            ports.append(intercept_port)
-
-missing = [port for port in ports if not (has_listen_socket('/proc/net/tcp', port) or has_listen_socket('/proc/net/tcp6', port))]
+    text = ""
+listeners = parse_squid_listeners(text, fallback_port=coerce_port(os.environ.get("SQUID_HTTP_PORT"), 3128))
+endpoints = listening_endpoints()
+missing = [item for item in listeners if not listener_is_present(item, endpoints)]
 if missing:
-    raise SystemExit(f"Squid listener(s) not accepting connections on port(s): {', '.join(map(str, missing))}")
-PY
+    rendered = ", ".join(f"{item.get('host') or '*'}:{item['port']} ({item['mode']})" for item in missing)
+    raise SystemExit(f"Squid listener(s) not accepting connections: {rendered}")
+PYHEALTH
 }
 
 check_icap_readiness() {

@@ -5367,7 +5367,7 @@ def test_packaged_proxy_healthcheck_checks_https_intercept_listeners() -> None:
         encoding="utf-8",
     )
 
-    assert "lower.startswith(('http_port ', 'https_port '))" in healthcheck
+    assert "from services.squid_listeners import" in healthcheck
     assert "Squid listener(s) not accepting connections" in healthcheck
 
 
