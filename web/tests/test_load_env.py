@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -24,9 +26,6 @@ keys = [
     "TAB_EXPORT",
     "URL_FRAGMENT",
     "EMPTY",
-    "VALID_AFTER_INVALID",
-    "BAD-NAME",
-    "1BAD",
 ]
 print(json.dumps({{key: os.environ.get(key) for key in keys}}, sort_keys=True))
 PY
@@ -40,7 +39,9 @@ PY
     return json.loads(result.stdout)
 
 
-def test_load_env_accepts_common_env_file_syntax_without_sourcing(tmp_path: Path) -> None:
+def test_load_env_accepts_common_env_file_syntax_without_sourcing(
+    tmp_path: Path,
+) -> None:
     app_env = tmp_path / "app.env"
     app_env.write_bytes(
         b"\n".join(
@@ -52,9 +53,6 @@ def test_load_env_accepts_common_env_file_syntax_without_sourcing(tmp_path: Path
                 b"export\tTAB_EXPORT=tabbed\r",
                 b"URL_FRAGMENT=https://example.test/path#fragment",
                 b"EMPTY =   ",
-                b"BAD-NAME=skip-me",
-                b"1BAD=skip-me",
-                b"VALID_AFTER_INVALID=ok",
             ],
         )
         + b"\n",
@@ -69,7 +67,37 @@ def test_load_env_accepts_common_env_file_syntax_without_sourcing(tmp_path: Path
         "TAB_EXPORT": "tabbed",
         "URL_FRAGMENT": "https://example.test/path#fragment",
         "EMPTY": "",
-        "VALID_AFTER_INVALID": "ok",
-        "BAD-NAME": None,
-        "1BAD": None,
     }
+
+
+@pytest.mark.parametrize(
+    ("content", "line_number", "diagnostic"),
+    [
+        (b"GOOD=ok\nnot an assignment\n", 2, "expected environment assignment"),
+        (b"BAD-NAME=secret-value\n", 1, "invalid environment variable name"),
+        (b'GOOD="unterminated secret\n', 1, "unterminated quoted value"),
+        (b"GOOD='unterminated secret\n", 1, "unterminated quoted value"),
+    ],
+)
+def test_load_env_rejects_malformed_input_without_echoing_values(
+    tmp_path: Path,
+    content: bytes,
+    line_number: int,
+    diagnostic: str,
+) -> None:
+    app_env = tmp_path / "app.env"
+    app_env.write_bytes(content)
+    script = (REPO_ROOT / "docker" / "load-env.sh").read_text(encoding="utf-8")
+    script = script.replace("/config/app.env", str(app_env))
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert f"line {line_number}: {diagnostic}" in result.stderr
+    assert "secret" not in result.stderr
+    assert result.stdout == ""

@@ -14,6 +14,10 @@ if [ -f /config/app.env ]; then
         function trim(value) {
             return rtrim(ltrim(value))
         }
+        function fail(reason) {
+            printf "load-env: app.env: line %d: %s\n", NR, reason > "/dev/stderr"
+            exit 2
+        }
         function parse_value(value,    ch, i, out, prev, quote) {
             sub(/\r$/, "", value)
             value = ltrim(value)
@@ -27,7 +31,7 @@ if [ -f /config/app.env ]; then
                     }
                     out = out ch
                 }
-                return out
+                fail("unterminated quoted value")
             }
 
             out = ""
@@ -55,11 +59,11 @@ if [ -f /config/app.env ]; then
             }
             eq = index(line, "=")
             if (eq == 0) {
-                next
+                fail("expected environment assignment")
             }
             key = rtrim(substr(line, 1, eq - 1))
             if (key !~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
-                next
+                fail("invalid environment variable name")
             }
             print key "=" parse_value(substr(line, eq + 1))
         }
