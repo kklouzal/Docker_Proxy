@@ -191,10 +191,10 @@ def test_saml_routes_degrade_when_profile_store_is_unavailable(
 
     metadata = client.get("/auth/saml/metadata", base_url="https://admin.example.test")
     metadata_body = metadata.get_data(as_text=True)
-    assert metadata.status_code == 200
-    assert metadata.mimetype == "application/samlmetadata+xml"
+    assert metadata.status_code == 503
+    assert "public admin base URL must be configured" in metadata_body
     assert "secret" not in metadata_body
-    assert 'entityID="https://admin.example.test/auth/saml/metadata"' in metadata_body
+    assert "https://admin.example.test/auth/saml/metadata" not in metadata_body
 
     login = client.get("/auth/saml/login?next=/administration", follow_redirects=False)
     assert login.status_code in {302, 303}
