@@ -241,6 +241,143 @@ def test_failed_cursor_connection_error_discards_pooled_connection(
     db.reset_mysql_ready_for_tests()
 
 
+def test_compat_result_closes_cursor_after_fetchall_and_preserves_rows() -> None:
+    _add_repo_paths()
+    from services.db import CompatConnection  # type: ignore
+
+    class Cursor:
+        description = (("id",), ("name",))
+        rowcount = 2
+        lastrowid = None
+        closed = False
+
+        def execute(self, *_args) -> None:
+            pass
+
+        def fetchall(self):
+            return [(1, "one"), (2, "two")]
+
+        def close(self) -> None:
+            self.closed = True
+
+    cursor = Cursor()
+    native = type("Native", (), {"cursor": lambda self: cursor})()
+    result = CompatConnection(native).execute("SELECT id, name FROM t")
+
+    rows = result.fetchall()
+
+    assert cursor.closed is True
+    assert rows[0][0] == 1
+    assert rows[0]["name"] == "one"
+    assert result.rowcount == 2
+
+
+def test_compat_result_fetchone_defers_close_until_exhausted() -> None:
+    _add_repo_paths()
+    from services.db import CompatConnection  # type: ignore
+
+    class Cursor:
+        description = (("id",),)
+        rowcount = 2
+        lastrowid = None
+        rownumber = 0
+        closed = False
+
+        def execute(self, *_args) -> None:
+            pass
+
+        def fetchone(self):
+            rows = [(1,), (2,)]
+            row = rows[self.rownumber]
+            self.rownumber += 1
+            return row
+
+        def close(self) -> None:
+            self.closed = True
+
+    cursor = Cursor()
+    native = type("Native", (), {"cursor": lambda self: cursor})()
+    result = CompatConnection(native).execute("SELECT id FROM t")
+
+    assert result.fetchone()[0] == 1
+    assert cursor.closed is False
+    assert result.fetchone()[0] == 2
+    assert cursor.closed is True
+
+
+def test_compat_connection_closes_partial_result_and_write_cursor() -> None:
+    _add_repo_paths()
+    from services.db import CompatConnection  # type: ignore
+
+    class Cursor:
+        def __init__(self, *, description, rowcount) -> None:
+            self.description = description
+            self.rowcount = rowcount
+            self.lastrowid = 17
+            self.closed = False
+
+        def execute(self, *_args) -> None:
+            pass
+
+        def fetchone(self):
+            return (1,)
+
+        def close(self) -> None:
+            self.closed = True
+
+    read_cursor = Cursor(description=(("id",),), rowcount=2)
+    write_cursor = Cursor(description=None, rowcount=1)
+    cursors = iter((read_cursor, write_cursor))
+    native = type(
+        "Native",
+        (),
+        {"cursor": lambda self: next(cursors), "close": lambda self: None},
+    )()
+    conn = CompatConnection(native)
+
+    result = conn.execute("SELECT id FROM t")
+    assert result.fetchone()[0] == 1
+    assert read_cursor.closed is False
+    write_result = conn.execute("UPDATE t SET id = 2")
+    assert write_cursor.closed is True
+    assert write_result.rowcount == 1
+    assert write_result.lastrowid == 17
+
+    conn.close()
+
+    assert read_cursor.closed is True
+
+
+def test_compat_result_closes_cursor_when_fetch_raises() -> None:
+    _add_repo_paths()
+    from services.db import CompatConnection  # type: ignore
+
+    class Cursor:
+        description = (("id",),)
+        rowcount = 1
+        lastrowid = None
+        closed = False
+
+        def execute(self, *_args) -> None:
+            pass
+
+        def fetchall(self):
+            message = "fetch failed"
+            raise RuntimeError(message)
+
+        def close(self) -> None:
+            self.closed = True
+
+    cursor = Cursor()
+    native = type("Native", (), {"cursor": lambda self: cursor})()
+    result = CompatConnection(native).execute("SELECT id FROM t")
+
+    with pytest.raises(RuntimeError, match="fetch failed"):
+        result.fetchall()
+
+    assert cursor.closed is True
+
+
 def test_interface_error_zero_is_retryable_mysql_error() -> None:
     _add_repo_paths()
     import pymysql  # type: ignore
@@ -1016,7 +1153,11 @@ def test_ensure_mysql_database_validates_database_identifier_and_charset(monkeyp
     with pytest.raises(ValueError, match="Unsafe MySQL charset"):
         db._ensure_mysql_database(
             db.DatabaseConfig(
-                host="db", user="u", password="p", database="safe_db", charset="utf8mb4;DROP"
+                host="db",
+                user="u",
+                password="p",
+                database="safe_db",
+                charset="utf8mb4;DROP",
             )
         )
 

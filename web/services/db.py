@@ -59,13 +59,36 @@ class CompatRow(UserDict[str, Any]):
 
 
 class CompatResult:
-    def __init__(self, cursor: Any) -> None:
+    def __init__(self, cursor: Any, *, on_close: Any = None) -> None:
         self._cursor = cursor
+        self._on_close = on_close
+        self._closed = False
         self._columns = tuple(
             (d[0] if d else "") for d in (getattr(cursor, "description", None) or [])
         )
         self.rowcount = int(getattr(cursor, "rowcount", -1) or 0)
         self.lastrowid = getattr(cursor, "lastrowid", None)
+        if not self._columns:
+            self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            with contextlib.suppress(Exception):
+                self._cursor.close()
+        finally:
+            if self._on_close is not None:
+                self._on_close(self)
+
+    def _is_exhausted(self) -> bool:
+        rownumber = getattr(self._cursor, "rownumber", None)
+        return (
+            isinstance(rownumber, int)
+            and self.rowcount >= 0
+            and rownumber >= self.rowcount
+        )
 
     def _convert_row(self, row: Any) -> Any:
         if row is None:
@@ -78,16 +101,29 @@ class CompatResult:
         return row
 
     def fetchone(self) -> Any:
-        return self._convert_row(self._cursor.fetchone())
+        try:
+            row = self._cursor.fetchone()
+        except Exception:
+            self.close()
+            raise
+        if row is None or self._is_exhausted():
+            self.close()
+        return self._convert_row(row)
 
     def fetchall(self) -> list[Any]:
-        return [self._convert_row(r) for r in self._cursor.fetchall()]
+        try:
+            return [self._convert_row(r) for r in self._cursor.fetchall()]
+        finally:
+            self.close()
 
 
 class _EmptyCursor:
     description = None
     rowcount = 0
     lastrowid = None
+
+    def close(self) -> None:
+        pass
 
     def fetchone(self) -> None:
         return None
@@ -102,6 +138,13 @@ class CompatConnection:
         self._cfg = cfg
         self._closed = False
         self._discard_on_close = False
+        self._results: set[CompatResult] = set()
+
+    def _result(self, cursor: Any) -> CompatResult:
+        result = CompatResult(cursor, on_close=self._results.discard)
+        if not result._closed:
+            self._results.add(result)
+        return result
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> CompatResult:
         if not (sql or "").strip():
@@ -115,7 +158,7 @@ class CompatConnection:
             with contextlib.suppress(Exception):
                 cur.close()
             raise
-        return CompatResult(cur)
+        return self._result(cur)
 
     def executemany(
         self,
@@ -133,7 +176,7 @@ class CompatConnection:
             with contextlib.suppress(Exception):
                 cur.close()
             raise
-        return CompatResult(cur)
+        return self._result(cur)
 
     def commit(self) -> None:
         try:
@@ -153,6 +196,10 @@ class CompatConnection:
         if self._closed:
             return
         self._closed = True
+        for result in tuple(self._results):
+            with contextlib.suppress(Exception):
+                result.close()
+        self._results.clear()
         if self._cfg is None:
             _close_native_connection(self.native)
             return
