@@ -4,6 +4,7 @@ set -eu
 
 # shellcheck source=/dev/null
 . /usr/local/bin/load-env.sh
+/usr/local/bin/validate-management-token.sh
 
 IPV6_DISABLED=0
 case "$(printf '%s' "${DISABLE_IPV6:-0}" | tr '[:upper:]' '[:lower:]')" in

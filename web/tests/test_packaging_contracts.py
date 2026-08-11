@@ -520,6 +520,33 @@ def test_common_compose_env_surface_is_documented_in_env_example() -> None:
     assert [name for name in compose_env_names if name not in env_example] == []
 
 
+def test_management_token_packaging_fails_closed_without_public_default() -> None:
+    compose = _read("docker-compose.common.yml")
+    validator = _read("docker/validate-management-token.sh")
+
+    assert "PROXY_MANAGEMENT_TOKEN: ${PROXY_MANAGEMENT_TOKEN:-}" in compose
+    assert "PROXY_MANAGEMENT_TOKEN:***" not in compose
+    public_placeholders = {
+        "change-me",
+        "replace-with-a-long-random-token",
+        "replace_with_a_long_random_shared_token",
+    }
+    for placeholder in public_placeholders:
+        assert placeholder in validator
+
+    for path in ("README.md", "config/app.env.example"):
+        match = re.search(
+            r"^\s*PROXY_MANAGEMENT_TOKEN=(\S+)$", _read(path), re.MULTILINE
+        )
+        assert match is not None
+        assert match.group(1) in public_placeholders
+        assert match.group(1) in validator
+    for entrypoint_name in ("docker/entrypoint.admin.sh", "docker/entrypoint.sh"):
+        assert "/usr/local/bin/validate-management-token.sh" in _read(entrypoint_name)
+    for dockerfile_name in ("docker/Dockerfile.admin", "docker/Dockerfile.proxy"):
+        assert "docker/validate-management-token.sh" in _read(dockerfile_name)
+
+
 def test_docs_config_track_schema_lifecycle_and_health_knobs() -> None:
     compose = _read("docker-compose.common.yml")
     env_example = _read("config/app.env.example")

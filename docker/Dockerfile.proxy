@@ -192,6 +192,7 @@ COPY squid /squid
 COPY --chmod=755 scripts/generate_ca.sh scripts/init_ssl_db.sh /scripts/
 COPY --chmod=755 docker/load-env.sh /usr/local/bin/load-env.sh
 COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
+COPY --chmod=755 docker/validate-management-token.sh /usr/local/bin/validate-management-token.sh
 COPY docker/supervisord.proxy.conf /etc/supervisord.conf
 COPY --chmod=755 docker/healthcheck.sh /healthcheck.sh
 COPY --chmod=755 docker/icap_readiness.py /usr/local/bin/icap_readiness.py

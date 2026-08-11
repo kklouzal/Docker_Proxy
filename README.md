@@ -54,6 +54,14 @@ This path uses the published GHCR images and the committed `docker-compose.ghcr.
    ENV
    ```
 
+   Replace every `replace_with_...` value before starting. In particular,
+   `PROXY_MANAGEMENT_TOKEN` is required and must be the same private random
+   value for the Admin UI and proxy; missing values and the public `change-me`,
+   `replace-with-a-long-random-token`, and
+   `replace_with_a_long_random_shared_token` placeholders are rejected at
+   container startup. Generate one with
+   `openssl rand -hex 32`.
+
 2. Pull and start the split containers:
 
    ```bash
@@ -419,7 +427,7 @@ Operational guidance:
 
 - Do not publish the admin UI to untrusted networks.
 - Put the admin UI behind a management VLAN, VPN, reverse proxy, or SSH tunnel for shared environments.
-- Use a strong `PROXY_MANAGEMENT_TOKEN`; the admin UI and proxy management API must agree on this token.
+- Set a strong, private `PROXY_MANAGEMENT_TOKEN`; the admin UI and proxy management API must agree on this token. Both containers fail startup when it is missing or set to the public `change-me`, `replace-with-a-long-random-token`, or `replace_with_a_long_random_shared_token` placeholder.
 - Set `FLASK_SECRET_KEY` when you want host-managed session-secret rotation instead of the MySQL-backed generated secret.
 - Session cookies are automatically marked `Secure` when the packaged Admin UI HTTPS runtime is active or the trusted WSGI request scheme is HTTPS. Use `SESSION_COOKIE_SECURE=1` when TLS is terminated by a reverse proxy that does not pass a trusted HTTPS WSGI scheme.
 - Treat SSL-bump as managed-device infrastructure: clients must trust the proxy CA, and applications with certificate pinning should be spliced.
