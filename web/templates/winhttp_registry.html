@@ -202,10 +202,10 @@
       </div>
       <div class="card-body">
         {% if output.static_registry_available %}
-          <textarea id="winhttp-normalized-hex" rows="8" readonly>{{ output.normalized_hex }}</textarea>
+          <textarea id="winhttp-normalized-hex" rows="8" aria-label="Basic REG_BINARY hex" readonly>{{ output.normalized_hex }}</textarea>
         {% else %}
           <div class="surface-note small">Static REG_BINARY output is intentionally disabled when PAC URL or AutoDetect is enabled. Use the advproxy JSON/commands below for those documented settings.</div>
-          <textarea id="winhttp-normalized-hex-empty" rows="4" readonly></textarea>
+          <textarea id="winhttp-normalized-hex-empty" rows="4" aria-label="Basic REG_BINARY hex unavailable" readonly></textarea>
         {% endif %}
       </div>
     </section>
@@ -217,9 +217,9 @@
       </div>
       <div class="card-body">
         {% if output.static_registry_available %}
-          <textarea id="winhttp-reg-file" rows="8" readonly>{{ output.reg_file }}</textarea>
+          <textarea id="winhttp-reg-file" rows="8" aria-label="REG file output" readonly>{{ output.reg_file }}</textarea>
         {% else %}
-          <textarea id="winhttp-reg-file-empty" rows="4" readonly></textarea>
+          <textarea id="winhttp-reg-file-empty" rows="4" aria-label="REG file output unavailable" readonly></textarea>
         {% endif %}
       </div>
     </section>
@@ -232,7 +232,7 @@
         <button class="btn ghost" type="button" data-copy-target="#winhttp-advproxy-json">Copy</button>
       </div>
       <div class="card-body">
-        <textarea id="winhttp-advproxy-json" rows="9" readonly>{{ output.advproxy_json }}</textarea>
+        <textarea id="winhttp-advproxy-json" rows="9" aria-label="advproxy JSON output" readonly>{{ output.advproxy_json }}</textarea>
       </div>
     </section>
 
@@ -243,7 +243,7 @@
       </div>
       <div class="card-body">
         <div class="surface-note small">Run the PowerShell write step in the target directory first, then run the netsh settings-file command from that same directory.</div>
-        <textarea id="winhttp-settings-file-workflow" rows="13" readonly>{{ output.advproxy_settings_file_write_command }}
+        <textarea id="winhttp-settings-file-workflow" rows="13" aria-label="advproxy settings-file workflow" readonly>{{ output.advproxy_settings_file_write_command }}
 {{ output.advproxy_settings_file_command }}</textarea>
       </div>
     </section>
@@ -255,7 +255,7 @@
       <button class="btn ghost" type="button" data-copy-target="#winhttp-command-list">Copy</button>
     </div>
     <div class="card-body">
-      <textarea id="winhttp-command-list" rows="12" readonly>{{ output.advproxy_command }}
+      <textarea id="winhttp-command-list" rows="12" aria-label="Deployment commands" readonly>{{ output.advproxy_command }}
 {{ output.advproxy_settings_file_write_command }}
 {{ output.advproxy_settings_file_command }}
 {{ output.legacy_set_proxy_command }}
@@ -280,6 +280,7 @@
     <form class="form" method="post" action="{{ url_for('winhttp_registry_builder') }}">
       {{ csrf_field() }}
       <input type="hidden" name="action" value="normalize_reg" />
+      <label for="reg_input">Exported WinHttpSettings REG value</label>
       <textarea id="reg_input" name="reg_input" rows="8" placeholder="Paste an exported WinHttpSettings .reg value here">{{ form.reg_input }}</textarea>
       <div class="actions">
         <button class="btn primary" type="submit">Normalize WinHttpSettings</button>
@@ -290,7 +291,7 @@
         <h3 class="card-title">Normalized hex</h3>
         <button class="btn ghost" type="button" data-copy-target="#normalized-reg-output">Copy</button>
       </div>
-      <textarea id="normalized-reg-output" rows="6" readonly>{{ normalized_reg_hex }}</textarea>
+      <textarea id="normalized-reg-output" rows="6" aria-label="Normalized hex output" readonly>{{ normalized_reg_hex }}</textarea>
       {% if decoded_reg %}
         <div class="surface-note small">Decoded proxy: <span class="mono">{{ decoded_reg.proxy_string }}</span></div>
         <div class="surface-note small">Decoded bypass: <span class="mono">{{ decoded_reg.bypass_string or '(empty)' }}</span></div>

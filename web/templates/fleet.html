@@ -150,10 +150,10 @@
                                     <form action="{{ url_for('reconcile_proxy_identity') }}" method="post" class="stack-sm">
                                         {{ csrf_field() }}
                                         <input type="hidden" name="old_proxy_id" value="{{ proxy.proxy_id }}">
-                                        <label class="small">Correct proxy ID</label>
-                                        <input type="text" name="new_proxy_id" value="{{ proxy.proxy_id }}" required>
-                                        <label class="small">Display name</label>
-                                        <input type="text" name="display_name" value="{{ proxy.display_name or proxy.proxy_id }}" required>
+                                        <label class="small" for="new-proxy-id-{{ loop.index }}">Correct proxy ID</label>
+                                        <input id="new-proxy-id-{{ loop.index }}" type="text" name="new_proxy_id" value="{{ proxy.proxy_id }}" required>
+                                        <label class="small" for="display-name-{{ loop.index }}">Display name</label>
+                                        <input id="display-name-{{ loop.index }}" type="text" name="display_name" value="{{ proxy.display_name or proxy.proxy_id }}" required>
                                         <button class="btn primary" type="submit">Reconcile</button>
                                     </form>
                                 </details>
@@ -163,8 +163,8 @@
                                         {{ csrf_field() }}
                                         <input type="hidden" name="proxy_id" value="{{ proxy.proxy_id }}">
                                         <div class="surface-note small">Deletes this proxy registration and MySQL rows scoped to <span class="mono">{{ proxy.proxy_id }}</span> in bounded chunks. The removed ID is tombstoned so stale containers cannot recreate it on heartbeat.</div>
-                                        <label class="small">Type proxy ID to confirm</label>
-                                        <input type="text" name="confirm_proxy_id" autocomplete="off" required>
+                                        <label class="small" for="confirm-proxy-id-{{ loop.index }}">Type proxy ID to confirm</label>
+                                        <input id="confirm-proxy-id-{{ loop.index }}" type="text" name="confirm_proxy_id" autocomplete="off" required>
                                         <button class="btn danger" type="submit" data-confirm-message="Remove {{ proxy.display_name }} and delete all MySQL data scoped to {{ proxy.proxy_id }}?" data-pending-label="Removing...">Remove proxy</button>
                                     </form>
                                 </details>

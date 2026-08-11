@@ -53,7 +53,7 @@
             {% if log_payload.truncated %} Showing the last {{ (log_payload.max_bytes or 0) // 1024 }} KiB.{% endif %}
         </div>
 
-        <textarea id="log-content" class="log-textarea" readonly spellcheck="false">{{ log_payload.content or '' }}</textarea>
+        <textarea id="log-content" class="log-textarea" aria-label="Log content" readonly spellcheck="false">{{ log_payload.content or '' }}</textarea>
     </div>
 </section>
 

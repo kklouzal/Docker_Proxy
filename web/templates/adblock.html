@@ -136,7 +136,7 @@
             {% for st in statuses %}
             <tr>
               <td>
-                <input class="check" type="checkbox" name="enabled_{{ st.key }}" {% if st.enabled %}checked{% endif %} />
+                <input class="check" type="checkbox" name="enabled_{{ st.key }}" aria-label="Enable {{ st.key }} list" {% if st.enabled %}checked{% endif %} />
               </td>
               <td>
                 <div><strong>{{ st.key }}</strong></div>

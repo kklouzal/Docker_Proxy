@@ -243,12 +243,12 @@
                 </div>
                 <div class="summary-grid">
                     <div>
-                        <label>Entity ID</label>
-                        <input type="text" value="{{ saml_status.sp.entity_id }}" readonly>
+                        <label for="saml-entity-id">Entity ID</label>
+                        <input id="saml-entity-id" type="text" value="{{ saml_status.sp.entity_id }}" readonly>
                     </div>
                     <div>
-                        <label>ACS URL</label>
-                        <input type="text" value="{{ saml_status.sp.acs_url }}" readonly>
+                        <label for="saml-acs-url">ACS URL</label>
+                        <input id="saml-acs-url" type="text" value="{{ saml_status.sp.acs_url }}" readonly>
                     </div>
                 </div>
             </section>
