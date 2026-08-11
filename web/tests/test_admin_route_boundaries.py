@@ -3814,10 +3814,10 @@ def test_observability_remediation_scopes_row_actions_by_subject_and_kind(
     assert 'name="domain" value="challenge.example"' in text
     assert 'name="domain" value="media.example"' in text
     assert 'name="domain" value="Challenge.Example/path"' not in text
-    assert ">No-bump domain<" in text
+    assert ">Apply no-bump<" in text
     assert 'action="/observability/remediation/no-cache-domain' in text
     assert text.count('action="/observability/remediation/no-cache-domain') == 1
-    assert ">No-cache domain<" in text
+    assert ">Apply no-cache<" in text
     assert 'name="domain" value="bad domain"' not in text
     assert 'name="domain" value="video.example"' not in text
     assert 'name="domain" value="scan.example"' not in text

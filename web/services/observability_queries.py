@@ -1711,7 +1711,7 @@ class ObservabilityQueries:
                 title="Selected proxy runtime health is unreachable",
                 count=1,
                 confidence="medium",
-                recommended_action="Verify the proxy management URL, management token, container state, and network path before trusting traffic-level conclusions.",
+                recommended_action="Inspect the selected proxy runtime and verify its management URL, token, container state, and network path. This requires operator access outside this page.",
                 evidence=detail_text
                 or "Proxy health request returned an unavailable runtime payload.",
             )
@@ -1747,7 +1747,7 @@ class ObservabilityQueries:
                 title="Database or ingestion degradation observed",
                 count=max(1, len(db_evidence_parts)),
                 confidence="medium",
-                recommended_action="Check MySQL health, credentials, connection limits, DB_POOL_SIZE, tailer pending-row warnings, and ingestion queue pressure before relying on trend data.",
+                recommended_action="Inspect MySQL health, credentials, connection limits, DB_POOL_SIZE, tailer warnings, and ingestion pressure. This page cannot safely change database operations.",
                 evidence="; ".join(db_evidence_parts).strip()
                 or "Runtime health referenced database degradation.",
             )
@@ -1765,7 +1765,7 @@ class ObservabilityQueries:
                 title="Proxy generated state does not match runtime",
                 count=len(non_db_state_errors),
                 confidence="high",
-                recommended_action="Review the generated config, certificate bundle, adblock artifact, policy, and PAC state; then force a selected-proxy sync after confirming the desired state is correct.",
+                recommended_action="Inspect generated config, certificate, adblock, policy, and PAC state. Use selected-proxy controls only after confirming desired state; no automatic change is offered here.",
                 evidence="; ".join(non_db_state_errors),
             )
 
@@ -1785,7 +1785,7 @@ class ObservabilityQueries:
                     title="Selected proxy forwarding readiness is degraded",
                     count=1,
                     confidence="high",
-                    recommended_action="Check Squid listener readiness, public PAC listener reachability, ICAP/ClamAV adaptation health, and recent restart/certificate apply results before trusting proxy availability.",
+                    recommended_action="Inspect Squid/PAC listener readiness, ICAP/ClamAV health, and recent apply results. Runtime repair requires operator diagnosis outside this page.",
                     evidence=f"{service_name}: {service_detail}",
                 )
             if any(token in lowered for token in ("icap", "clamd", "clamav", "c-icap")):
@@ -1796,7 +1796,7 @@ class ObservabilityQueries:
                     title="ICAP or ClamAV runtime health is degraded",
                     count=1,
                     confidence="high",
-                    recommended_action="Check supervisor state, c-icap listeners, clamd reachability, scan timeouts, fail-open/fail-closed policy, and memory pressure.",
+                    recommended_action="Inspect supervisor state, c-icap listeners, clamd reachability, scan timeouts, policy, and memory pressure. No safe automatic runtime repair is available here.",
                     evidence=f"{service_name}: {service_detail}",
                 )
 
@@ -1832,7 +1832,7 @@ class ObservabilityQueries:
                 title="Proxy runtime memory pressure observed",
                 count=1,
                 confidence="medium",
-                recommended_action="Increase the container memory cap, reduce Squid/ICAP/cache concurrency, or move side workloads off the constrained host before increasing inspection depth.",
+                recommended_action="Review container sizing and Squid/ICAP/cache concurrency with the runtime operator. This page cannot safely resize or move workloads.",
                 evidence=", ".join(evidence_parts)
                 or "Runtime memory availability is low.",
             )
@@ -2153,7 +2153,7 @@ class ObservabilityQueries:
                 clients=int(row[2] or 0),
                 last_seen=int(row[3] or 0),
                 confidence="medium",
-                recommended_action="Block or steer UDP/443 at the gateway for managed clients, then verify the browser/app is using the PAC/proxy path.",
+                recommended_action="Have the gateway operator block or steer UDP/443 for managed clients, then verify PAC/proxy use. This page does not change gateway policy.",
                 evidence=f"Alt-Svc advertises h3; sample={row[4] or 'not captured'}",
             )
             for row in h3_rows
@@ -2209,7 +2209,7 @@ class ObservabilityQueries:
             severity="medium",
             title="Slow ICAP adaptation observed",
             confidence="medium",
-            recommended_action="Check c-icap/clamd latency, tune scan policy by MIME/size/domain, or add an exclusion for latency-sensitive traffic.",
+            recommended_action="Inspect c-icap/clamd latency and scan policy before choosing an exclusion. A slow sample alone is not safe evidence for an automatic bypass.",
             evidence_for=lambda row: f"Max ICAP latency {int(row[5] or 0)} ms",
         )
         add_icap_suggestions(
@@ -2218,7 +2218,7 @@ class ObservabilityQueries:
             severity="high",
             title="ICAP degradation or bypass signal observed",
             confidence="high",
-            recommended_action="Check c-icap listener health, clamd reachability, fail-open/fail-closed policy, and proxy memory pressure.",
+            recommended_action="Inspect c-icap listener health, clamd reachability, fail-open/fail-closed policy, and memory pressure. No automatic bypass or restart is offered here.",
             evidence_for=lambda row: str(
                 row[5] or "ICAP trace contained failure/bypass language"
             )[:240],

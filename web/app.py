@@ -7955,12 +7955,19 @@ def _ratio_from_percent(value: object) -> float:
     return number
 
 
-_OBSERVABILITY_NO_BUMP_DOMAIN_REMEDIATION_KINDS = {
-    "aborted_media_segments",
-    "cloudflare_challenge",
-    "ssl_exclusion_candidate",
+_OBSERVABILITY_REMEDIATION_ACTIONS = {
+    "aborted_media_segments": frozenset({"nobump", "nocache"}),
+    "cloudflare_challenge": frozenset({"nobump"}),
+    "ssl_exclusion_candidate": frozenset({"nobump"}),
 }
-_OBSERVABILITY_NO_CACHE_DOMAIN_REMEDIATION_KINDS = {"aborted_media_segments"}
+
+
+def _observability_remediation_kinds_for(policy: str) -> set[str]:
+    return {
+        kind
+        for kind, policies in _OBSERVABILITY_REMEDIATION_ACTIONS.items()
+        if policy in policies
+    }
 
 
 def _annotate_observability_remediation_actions(payload: dict[str, Any]) -> None:
@@ -7976,14 +7983,14 @@ def _annotate_observability_remediation_actions(payload: dict[str, Any]) -> None
         row["no_bump_domain_action"] = (
             bool(row.get("subject"))
             and (row.get("subject_type") or "domain") == "domain"
-            and row.get("kind") in _OBSERVABILITY_NO_BUMP_DOMAIN_REMEDIATION_KINDS
+            and "nobump" in _OBSERVABILITY_REMEDIATION_ACTIONS.get(row.get("kind"), ())
             and ok
         )
         row["no_cache_domain"] = canonical if ok else ""
         row["no_cache_domain_action"] = (
             bool(row.get("subject"))
             and (row.get("subject_type") or "domain") == "domain"
-            and row.get("kind") in _OBSERVABILITY_NO_CACHE_DOMAIN_REMEDIATION_KINDS
+            and "nocache" in _OBSERVABILITY_REMEDIATION_ACTIONS.get(row.get("kind"), ())
             and ok
         )
 
@@ -8404,7 +8411,7 @@ def observability_remediation_no_bump_domain():
         audit_kind="observability_remediation_no_bump_domain",
         label="No-bump",
         success_message=lambda domain: f"No-bump SSL exclusion saved for {domain}.",
-        allowed_kinds=_OBSERVABILITY_NO_BUMP_DOMAIN_REMEDIATION_KINDS,
+        allowed_kinds=_observability_remediation_kinds_for("nobump"),
     )
 
 
@@ -8415,7 +8422,7 @@ def observability_remediation_no_cache_domain():
         audit_kind="observability_remediation_no_cache_domain",
         label="No-cache",
         success_message=lambda domain: f"No-cache SSL filter rule saved for {domain}.",
-        allowed_kinds=_OBSERVABILITY_NO_CACHE_DOMAIN_REMEDIATION_KINDS,
+        allowed_kinds=_observability_remediation_kinds_for("nocache"),
     )
 
 
