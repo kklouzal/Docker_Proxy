@@ -33,6 +33,7 @@ from flask import (
     session,
     url_for,
 )
+from flask.sessions import SecureCookieSessionInterface
 from markupsafe import Markup, escape
 from services.adblock_artifacts import get_adblock_artifacts
 from services.adblock_store import get_adblock_store as _default_get_adblock_store
@@ -711,7 +712,9 @@ def _state_target_sha_error(target_kind: str, value: object | None) -> str:
     try:
         normalize_operation_target_ref(target_kind, value)
     except ValueError as exc:
-        return public_error_message(exc, default="Invalid operation target fingerprint.")
+        return public_error_message(
+            exc, default="Invalid operation target fingerprint."
+        )
     return ""
 
 
@@ -759,7 +762,10 @@ def _latest_operation(
             expected_ref=target_ref_text,
         ):
             continue
-        if operation_types and str(getattr(op, "operation_type", "") or "") not in operation_types:
+        if (
+            operation_types
+            and str(getattr(op, "operation_type", "") or "") not in operation_types
+        ):
             continue
         matching.append(op)
     if not matching:
@@ -1028,7 +1034,9 @@ def _certificate_runtime_state(
     applied_sha = str(getattr(latest_apply, "bundle_sha256", "") or "").strip()
     applied_ts = _safe_revision_id(getattr(latest_apply, "applied_ts", 0))
     apply_ok = bool(getattr(latest_apply, "ok", False)) if latest_apply else False
-    apply_detail = str(getattr(latest_apply, "detail", "") or "") if latest_apply else ""
+    apply_detail = (
+        str(getattr(latest_apply, "detail", "") or "") if latest_apply else ""
+    )
     apply_matches = bool(
         revision_id
         and latest_apply is not None
@@ -1078,7 +1086,10 @@ def _certificate_runtime_state(
     elif latest_apply is not None and not apply_ok:
         state = "failed"
         label = "Apply failed"
-        detail = apply_detail or f"Proxy recorded a failed apply for certificate revision {revision_id}."
+        detail = (
+            apply_detail
+            or f"Proxy recorded a failed apply for certificate revision {revision_id}."
+        )
     elif (
         latest_apply is not None
         and desired_sha
@@ -1124,7 +1135,9 @@ def _certificate_runtime_state(
             "or use Operations if it later fails."
         )
     elif not revision_id:
-        action_help = "Generate or upload a CA bundle before retrying proxy certificate apply."
+        action_help = (
+            "Generate or upload a CA bundle before retrying proxy certificate apply."
+        )
 
     return {
         "proxy_id": proxy_id,
@@ -1208,7 +1221,10 @@ def _config_runtime_state(
     operation_id = _safe_revision_id(getattr(latest_operation, "operation_id", 0))
 
     runtime_active_sha_mismatch = bool(
-        revision_id and revision_sha and runtime_active_sha and runtime_active_sha != revision_sha
+        revision_id
+        and revision_sha
+        and runtime_active_sha
+        and runtime_active_sha != revision_sha
     )
     running_revision_id_mismatch = bool(
         revision_id and running_revision_id and running_revision_id != revision_id
@@ -1413,20 +1429,36 @@ def _policy_runtime_state(
         and operation_target_ref == desired_policy_sha
     )
     running_matches = bool(
-        desired_policy_sha and current_policy_sha and desired_policy_sha == current_policy_sha
+        desired_policy_sha
+        and current_policy_sha
+        and desired_policy_sha == current_policy_sha
     )
     operation_matches_current_desired = operation_matches_desired
 
-    if operation_status in {"pending", "applying"} and operation_matches_current_desired:
+    if (
+        operation_status in {"pending", "applying"}
+        and operation_matches_current_desired
+    ):
         state = operation_status
-        label = "Policy apply pending" if operation_status == "pending" else "Policy apply running"
+        label = (
+            "Policy apply pending"
+            if operation_status == "pending"
+            else "Policy apply running"
+        )
         detail = (
             f"Selected-proxy policy operation #{operation_id} is {operation_status}; "
             "desired policy settings are not proven running yet."
         )
-    elif operation_status in {"failed", "superseded"} and operation_matches_current_desired:
+    elif (
+        operation_status in {"failed", "superseded"}
+        and operation_matches_current_desired
+    ):
         state = operation_status
-        label = "Policy apply failed" if operation_status == "failed" else "Policy apply superseded"
+        label = (
+            "Policy apply failed"
+            if operation_status == "failed"
+            else "Policy apply superseded"
+        )
         detail = (
             f"Selected-proxy policy operation #{operation_id} ended {operation_status}; "
             "do not treat the saved desired policy as running until a later reconcile succeeds."
@@ -1488,7 +1520,9 @@ def _policy_runtime_state(
         "current_policy_short_sha": _short_sha(current_policy_sha),
         "operation_status_label": _operation_status_label(operation_status),
         "operation_target_ref": operation_target_ref or raw_operation_target_ref,
-        "operation_target_short_ref": _short_sha(operation_target_ref or raw_operation_target_ref),
+        "operation_target_short_ref": _short_sha(
+            operation_target_ref or raw_operation_target_ref
+        ),
         "operation_matches_desired": operation_matches_desired,
         "runtime_health_status": str((runtime_health or {}).get("status") or ""),
         "runtime_health_ts": _safe_revision_id((runtime_health or {}).get("timestamp")),
@@ -1517,7 +1551,9 @@ def _runtime_unavailable(runtime_health: dict[str, Any]) -> bool:
     )
 
 
-def _runtime_evidence_base(proxy_id: str, runtime_health: dict[str, Any]) -> dict[str, Any]:
+def _runtime_evidence_base(
+    proxy_id: str, runtime_health: dict[str, Any]
+) -> dict[str, Any]:
     return {
         "proxy_id": proxy_id,
         "runtime_health_status": str((runtime_health or {}).get("status") or "unknown"),
@@ -1551,7 +1587,11 @@ def _pac_runtime_state(
     *,
     runtime_health: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    runtime_health = runtime_health if runtime_health is not None else _runtime_health_for_proxy(proxy_id)
+    runtime_health = (
+        runtime_health
+        if runtime_health is not None
+        else _runtime_health_for_proxy(proxy_id)
+    )
     desired_pac_sha, desired_error = _desired_pac_state_sha_for_proxy(proxy_id)
     current_pac_sha = _state_target_sha(
         "pac_state",
@@ -1582,23 +1622,43 @@ def _pac_runtime_state(
         state = "no_desired_state"
         label = "No desired PAC state"
         detail = "No saved PAC desired-state fingerprint is available for the selected proxy."
-        recovery_action = "Save PAC routing settings to queue selected-proxy materialization."
-    elif operation_status in {"pending", "applying"} and operation_matches_current_desired:
+        recovery_action = (
+            "Save PAC routing settings to queue selected-proxy materialization."
+        )
+    elif (
+        operation_status in {"pending", "applying"}
+        and operation_matches_current_desired
+    ):
         state = operation_status
-        label = "PAC materialization pending" if operation_status == "pending" else "PAC materialization running"
+        label = (
+            "PAC materialization pending"
+            if operation_status == "pending"
+            else "PAC materialization running"
+        )
         detail = (
             f"Selected-proxy PAC operation #{operation_id} is {operation_status}; "
             "saved PAC profiles are not proven materialized yet."
         )
-        recovery_action = "Wait for the selected proxy to reconcile, then refresh this page."
-    elif operation_status in {"failed", "superseded"} and operation_matches_current_desired:
+        recovery_action = (
+            "Wait for the selected proxy to reconcile, then refresh this page."
+        )
+    elif (
+        operation_status in {"failed", "superseded"}
+        and operation_matches_current_desired
+    ):
         state = operation_status
-        label = "PAC materialization failed" if operation_status == "failed" else "PAC materialization superseded"
+        label = (
+            "PAC materialization failed"
+            if operation_status == "failed"
+            else "PAC materialization superseded"
+        )
         detail = (
             f"Selected-proxy PAC operation #{operation_id} ended {operation_status}; "
             "do not treat saved PAC profiles as selected-proxy runtime until a later refresh succeeds."
         )
-        recovery_action = "Save the PAC settings again to queue a fresh selected-proxy refresh."
+        recovery_action = (
+            "Save the PAC settings again to queue a fresh selected-proxy refresh."
+        )
     elif desired_pac_sha and current_pac_sha and desired_pac_sha == current_pac_sha:
         state = "reconciled"
         label = "PAC materialized"
@@ -1611,7 +1671,9 @@ def _pac_runtime_state(
             f"Saved PAC {_short_sha(desired_pac_sha) or 'unknown sha'} does not match "
             f"selected-proxy runtime PAC {_short_sha(current_pac_sha) or 'unknown sha'}."
         )
-        recovery_action = "Save PAC routing settings to queue selected-proxy materialization."
+        recovery_action = (
+            "Save PAC routing settings to queue selected-proxy materialization."
+        )
     elif _runtime_unavailable(runtime_health):
         state = "unavailable"
         label = "PAC runtime unavailable"
@@ -1621,7 +1683,9 @@ def _pac_runtime_state(
         state = "unknown"
         label = "PAC evidence limited"
         detail = f"Desired PAC state could not be fingerprinted. {desired_error}"
-        recovery_action = "Fix the PAC desired-state error, then save PAC settings again."
+        recovery_action = (
+            "Fix the PAC desired-state error, then save PAC settings again."
+        )
     else:
         state = "unknown"
         label = "PAC runtime unknown"
@@ -1655,12 +1719,16 @@ def _pac_runtime_state(
         "current_pac_short_sha": _short_sha(current_pac_sha),
         "operation_status_label": _operation_status_label(operation_status),
         "operation_target_ref": operation_target_ref or raw_operation_target_ref,
-        "operation_target_short_ref": _short_sha(operation_target_ref or raw_operation_target_ref),
+        "operation_target_short_ref": _short_sha(
+            operation_target_ref or raw_operation_target_ref
+        ),
         "operation_matches_desired": operation_matches_desired,
     }
 
 
-def _latest_adblock_operation(proxy_id: str, revision_id: int = 0, artifact_sha: str = ""):
+def _latest_adblock_operation(
+    proxy_id: str, revision_id: int = 0, artifact_sha: str = ""
+):
     if revision_id > 0:
         exact = _latest_operation(
             proxy_id,
@@ -1692,7 +1760,11 @@ def _adblock_runtime_state(
     active_artifact: dict[str, Any],
     runtime_health: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    runtime_health = runtime_health if runtime_health is not None else _runtime_health_for_proxy(proxy_id)
+    runtime_health = (
+        runtime_health
+        if runtime_health is not None
+        else _runtime_health_for_proxy(proxy_id)
+    )
     revision_id = _safe_int((active_artifact or {}).get("revision_id"))
     artifact_sha = str((active_artifact or {}).get("artifact_sha256") or "")
     current_sha = str((runtime_health or {}).get("current_adblock_sha") or "")
@@ -1707,11 +1779,23 @@ def _adblock_runtime_state(
         latest_operation is not None
         and revision_id > 0
         and operation_target_ref == str(revision_id)
-        and (not artifact_sha or not operation_request_hash or operation_request_hash == artifact_sha)
+        and (
+            not artifact_sha
+            or not operation_request_hash
+            or operation_request_hash == artifact_sha
+        )
     )
-    apply_ok = bool(getattr(latest_apply, "ok", False)) if latest_apply is not None else False
-    apply_sha = str(getattr(latest_apply, "artifact_sha256", "") or "") if latest_apply is not None else ""
-    apply_matches_active = bool(apply_ok and (not artifact_sha or apply_sha == artifact_sha))
+    apply_ok = (
+        bool(getattr(latest_apply, "ok", False)) if latest_apply is not None else False
+    )
+    apply_sha = (
+        str(getattr(latest_apply, "artifact_sha256", "") or "")
+        if latest_apply is not None
+        else ""
+    )
+    apply_matches_active = bool(
+        apply_ok and (not artifact_sha or apply_sha == artifact_sha)
+    )
 
     if not (active_artifact or {}).get("available"):
         state = "no_active_artifact"
@@ -1720,21 +1804,36 @@ def _adblock_runtime_state(
         recovery_action = "Use the existing Update now or Save lists controls to build an active artifact."
     elif operation_status in {"pending", "applying"} and operation_matches_active:
         state = operation_status
-        label = "Adblock apply pending" if operation_status == "pending" else "Adblock apply running"
+        label = (
+            "Adblock apply pending"
+            if operation_status == "pending"
+            else "Adblock apply running"
+        )
         detail = (
             f"Selected-proxy adblock operation #{operation_id} is {operation_status}; "
             "the shared artifact is not proven applied to runtime yet."
         )
-        recovery_action = "Wait for selected-proxy reconciliation, then refresh this page."
+        recovery_action = (
+            "Wait for selected-proxy reconciliation, then refresh this page."
+        )
     elif operation_status in {"failed", "superseded"} and operation_matches_active:
         state = operation_status
-        label = "Adblock apply failed" if operation_status == "failed" else "Adblock apply superseded"
+        label = (
+            "Adblock apply failed"
+            if operation_status == "failed"
+            else "Adblock apply superseded"
+        )
         detail = (
             f"Selected-proxy adblock operation #{operation_id} ended {operation_status}; "
             "do not treat the shared built artifact as applied runtime."
         )
         recovery_action = "Use the existing adblock refresh controls to queue a fresh selected-proxy apply."
-    elif artifact_sha and current_sha and artifact_sha == current_sha and apply_matches_active:
+    elif (
+        artifact_sha
+        and current_sha
+        and artifact_sha == current_sha
+        and apply_matches_active
+    ):
         state = "reconciled"
         label = "Adblock artifact applied"
         detail = "Active shared artifact hash matches the selected proxy runtime hash and revision-scoped apply evidence."
@@ -1779,8 +1878,12 @@ def _adblock_runtime_state(
         "runtime_active_adblock_short_sha": _short_sha(runtime_active_sha),
         "current_adblock_sha": current_sha,
         "current_adblock_short_sha": _short_sha(current_sha),
-        "latest_apply_id": _safe_revision_id(getattr(latest_apply, "application_id", 0)),
-        "latest_apply_ok": bool(getattr(latest_apply, "ok", False)) if latest_apply is not None else None,
+        "latest_apply_id": _safe_revision_id(
+            getattr(latest_apply, "application_id", 0)
+        ),
+        "latest_apply_ok": bool(getattr(latest_apply, "ok", False))
+        if latest_apply is not None
+        else None,
         "latest_apply_ts": _safe_revision_id(getattr(latest_apply, "applied_ts", 0)),
         "latest_apply_detail": redact_sensitive_text(
             getattr(latest_apply, "detail", "") or "",
@@ -2053,18 +2156,35 @@ else:
         )
         raise RuntimeError(msg) from exc
 
-# Cookie hardening. Defaults chosen to avoid breaking common HTTP deployments.
+# Cookie hardening. Plain HTTP remains supported, while cookies emitted by the
+# first-class HTTPS runtime (or an HTTPS WSGI request) are always Secure.
 # Note: use explicit assignment (not setdefault) so the Set-Cookie attributes are
 # reliably emitted across Flask/Werkzeug versions.
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-if (os.environ.get("SESSION_COOKIE_SECURE") or "").strip().lower() in {
+_SESSION_COOKIE_SECURE_ENV = (
+    os.environ.get("SESSION_COOKIE_SECURE") or ""
+).strip().lower() in {
     "1",
     "true",
     "yes",
     "on",
-}:
-    app.config["SESSION_COOKIE_SECURE"] = True
+}
+app.config["SESSION_COOKIE_SECURE"] = _SESSION_COOKIE_SECURE_ENV
+
+
+class _AdminUiSessionInterface(SecureCookieSessionInterface):
+    def get_cookie_secure(self, flask_app: Flask) -> bool:
+        if super().get_cookie_secure(flask_app):
+            return True
+        if has_request_context() and request.is_secure:
+            return True
+        return (
+            os.environ.get("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED") or ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+app.session_interface = _AdminUiSessionInterface()
 
 # Session timeout: auto-logout after 8 hours of inactivity (configurable via env).
 _SESSION_TIMEOUT_DEFAULT_HOURS = 8
@@ -3328,7 +3448,9 @@ def login():
             directory_detail = _audit_safe_detail(
                 getattr(directory_result, "detail", "")
             )
-            failure_detail += f" provider={_audit_safe_detail(directory_provider, limit=80)}"
+            failure_detail += (
+                f" provider={_audit_safe_detail(directory_provider, limit=80)}"
+            )
             if directory_detail:
                 failure_detail += f" directory_detail={directory_detail}"
         _record_audit_event("login_failed", ok=False, detail=failure_detail)
@@ -3864,9 +3986,7 @@ def _publish_config_for_current_mode(
             elif restored:
                 restore_detail = "Unqueued revision was left inactive."
             else:
-                restore_detail = (
-                    "Active revision changed concurrently; newer active revision was preserved."
-                )
+                restore_detail = "Active revision changed concurrently; newer active revision was preserved."
         except Exception:
             log_exception_throttled(
                 app.logger,
@@ -3988,8 +4108,12 @@ def _trigger_policy_sync(*, force: bool = True) -> tuple[bool, str]:
             detail = f"{detail} {desired_error}"
         return False, detail
     summary = "Policy state reconciliation queued."
-    detail = "Admin changed policy state; proxy should refresh materialized policy files."
-    summary = f"Policy state {_short_sha(desired_policy_sha)} queued for reconciliation."
+    detail = (
+        "Admin changed policy state; proxy should refresh materialized policy files."
+    )
+    summary = (
+        f"Policy state {_short_sha(desired_policy_sha)} queued for reconciliation."
+    )
     detail = f"Desired policy SHA: {desired_policy_sha}"
     try:
         operation = request_proxy_reconcile(
@@ -4023,7 +4147,9 @@ def _trigger_policy_sync(*, force: bool = True) -> tuple[bool, str]:
         if getattr(operation, "operation_id", 0)
         else ""
     )
-    sha_suffix = f" for policy {_short_sha(desired_policy_sha)}" if desired_policy_sha else ""
+    sha_suffix = (
+        f" for policy {_short_sha(desired_policy_sha)}" if desired_policy_sha else ""
+    )
     return True, f"Policy reconciliation queued{op_suffix}{sha_suffix}."
 
 
@@ -4101,9 +4227,7 @@ def _publish_certificate_bundle_remote(
                     "Unqueued certificate bundle revision was left inactive."
                 )
             else:
-                restore_detail = (
-                    "Active certificate bundle changed concurrently; newer active bundle was preserved."
-                )
+                restore_detail = "Active certificate bundle changed concurrently; newer active bundle was preserved."
         except Exception:
             log_exception_throttled(
                 app.logger,
@@ -4311,7 +4435,9 @@ def _queue_pac_runtime_refresh(
             detail = f"{detail} {desired_error}"
         return False, detail
     summary = "PAC profile changes queued for proxy materialization."
-    detail = "Admin changed PAC profile state; proxy should refresh materialized PAC files."
+    detail = (
+        "Admin changed PAC profile state; proxy should refresh materialized PAC files."
+    )
     summary = f"PAC state {_short_sha(desired_pac_sha)} queued for materialization."
     detail = f"Desired PAC state SHA: {desired_pac_sha}"
     try:
@@ -4415,7 +4541,9 @@ def _adblock_runtime_refresh_target(*, store: Any | None = None) -> dict[str, st
     return target
 
 
-def _queue_adblock_runtime_refresh(*, action: str, store: Any | None = None) -> tuple[bool, str]:
+def _queue_adblock_runtime_refresh(
+    *, action: str, store: Any | None = None
+) -> tuple[bool, str]:
     default = "Adblock changes were saved, but runtime refresh was not queued."
     target = _adblock_runtime_refresh_target(store=store)
     detail = f"Admin requested adblock runtime refresh after {action}."
@@ -4658,7 +4786,9 @@ def _admin_ui_https_implicit_san_token_keys() -> set[str]:
     return {token.lower() for token in normalize_admin_ui_certificate_sans(())}
 
 
-def _admin_ui_https_persistent_san_tokens(settings: Any | None = None) -> tuple[str, ...]:
+def _admin_ui_https_persistent_san_tokens(
+    settings: Any | None = None,
+) -> tuple[str, ...]:
     saved_tokens = _admin_ui_https_saved_san_tokens(settings)
     implicit_tokens = _admin_ui_https_implicit_san_token_keys()
     request_tokens = [
@@ -4692,7 +4822,9 @@ def _admin_ui_https_converge_leaf_settings(settings: Any | None) -> Any | None:
     try:
         return get_certificate_bundles().set_admin_ui_https_settings(
             enabled=bool(getattr(settings, "enabled", False)),
-            certfile=ADMIN_UI_SSL_CERTFILE if getattr(settings, "enabled", False) else "",
+            certfile=ADMIN_UI_SSL_CERTFILE
+            if getattr(settings, "enabled", False)
+            else "",
             keyfile=ADMIN_UI_SSL_KEYFILE if getattr(settings, "enabled", False) else "",
             san_tokens=getattr(settings, "san_tokens", ""),
             updated_by=getattr(settings, "updated_by", ""),
@@ -4927,8 +5059,7 @@ def _webfilter_set_settings(store: Any, **kwargs: Any) -> None:
         accepted_settings = optional_names
     else:
         if any(
-            param.kind is inspect.Parameter.VAR_KEYWORD
-            for param in parameters.values()
+            param.kind is inspect.Parameter.VAR_KEYWORD for param in parameters.values()
         ):
             accepted_settings = optional_names
         else:
@@ -5336,7 +5467,9 @@ def _handle_pac_builder_post(store: Any):
             return _redirect_pac_builder_ok(changed=changed)
 
         if action == "toggle_direct":
-            result = store.set_direct_enabled(request.form.get("direct_enabled") == "on")
+            result = store.set_direct_enabled(
+                request.form.get("direct_enabled") == "on"
+            )
             return _redirect_pac_builder_ok(
                 changed=_pac_mutation_changed(result, default=True)
             )
@@ -5918,7 +6051,9 @@ def reconcile_proxy_identity():
             detail=f"old_proxy_id={old_proxy_id} new_proxy_id={new_proxy_id} error={public_error_message(exc)}",
         )
         return _redirect_to("proxies", error="1", msg=public_error_message(exc))
-    active_after_resolved = _safe_resolve_registered_proxy_id(registry, active_before_key)
+    active_after_resolved = _safe_resolve_registered_proxy_id(
+        registry, active_before_key
+    )
     if (
         active_before_key in {old_proxy_id, renamed.proxy_id}
         or active_before_resolved == old_proxy_id
@@ -6260,7 +6395,9 @@ def revert_operation(operation_id: int):
                 if revision is None:
                     return
                 try:
-                    restore_if_current = getattr(revisions, "restore_previous_if_current", None)
+                    restore_if_current = getattr(
+                        revisions, "restore_previous_if_current", None
+                    )
                     if callable(restore_if_current):
                         restore_if_current(
                             op.proxy_id,
@@ -6295,7 +6432,11 @@ def revert_operation(operation_id: int):
                     not active_revision_id
                     or not op_target_revision_id
                     or active_revision_id != op_target_revision_id
-                    or (op_target_sha and active_config_sha and active_config_sha != op_target_sha)
+                    or (
+                        op_target_sha
+                        and active_config_sha
+                        and active_config_sha != op_target_sha
+                    )
                 ):
                     return _redirect_to("operations_status", error="rollback_stale")
 
@@ -6421,10 +6562,10 @@ def revert_operation(operation_id: int):
                     if not failure_detail:
                         failure_detail = public_error_message(exc)
                     continue
-                if (
-                    getattr(operation, "operation_id", 0)
-                    and operation.status in {"pending", "applying"}
-                ):
+                if getattr(operation, "operation_id", 0) and operation.status in {
+                    "pending",
+                    "applying",
+                }:
                     queued_count += 1
                 elif not failure_detail:
                     failure_detail = redact_sensitive_text(
@@ -7869,7 +8010,9 @@ def _observability_remediation_allowed_domains(
             continue
         if kind_set is not None and row.get("kind") not in kind_set:
             continue
-        ok, _detail, canonical = validate_domain_rule(_extract_domain(row.get("subject")))
+        ok, _detail, canonical = validate_domain_rule(
+            _extract_domain(row.get("subject"))
+        )
         if ok and canonical:
             allowed.add(canonical)
     return allowed
@@ -9182,7 +9325,9 @@ def api_timeseries():
 
     since = int(time.time()) - window_i
     try:
-        points = get_timeseries_store().query(resolution=res, since=since, limit=limit_i)
+        points = get_timeseries_store().query(
+            resolution=res, since=since, limit=limit_i
+        )
         return jsonify({"resolution": res, "since": since, "points": points})
     except Exception as exc:
         return jsonify(

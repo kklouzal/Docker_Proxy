@@ -405,7 +405,7 @@ Operational guidance:
 - Put the admin UI behind a management VLAN, VPN, reverse proxy, or SSH tunnel for shared environments.
 - Use a strong `PROXY_MANAGEMENT_TOKEN`; the admin UI and proxy management API must agree on this token.
 - Set `FLASK_SECRET_KEY` when you want host-managed session-secret rotation instead of the MySQL-backed generated secret.
-- Use `SESSION_COOKIE_SECURE=1` when the UI is served over HTTPS by a reverse proxy.
+- Session cookies are automatically marked `Secure` when the packaged Admin UI HTTPS runtime is active or the trusted WSGI request scheme is HTTPS. Use `SESSION_COOKIE_SECURE=1` when TLS is terminated by a reverse proxy that does not pass a trusted HTTPS WSGI scheme.
 - Treat SSL-bump as managed-device infrastructure: clients must trust the proxy CA, and applications with certificate pinning should be spliced.
 - HTTP and HTTPS NAT intercept modes require external router or host firewall rules; the container listens on the intercept ports but does not install topology-specific redirect rules.
 - Keep the proxy recovery directory on the proxy durable volume; see `docs/proxy-recovery.md` for first-connection adoption and fail-closed recovery behavior.

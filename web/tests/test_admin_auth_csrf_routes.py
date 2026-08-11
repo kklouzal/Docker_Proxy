@@ -23,6 +23,51 @@ class UnavailableSamlAuthStore:
         return SamlAuthStore().default_profile()
 
 
+@pytest.mark.parametrize(
+    ("base_url", "effective_https", "expect_secure"),
+    [
+        ("http://admin.example.test", None, False),
+        ("https://admin.example.test", None, True),
+        ("http://admin.example.test", "1", True),
+        ("http://admin.example.test", "0", False),
+    ],
+)
+def test_session_cookie_secure_matches_effective_admin_ui_scheme(
+    monkeypatch,
+    tmp_path,
+    base_url: str,
+    effective_https: str | None,
+    expect_secure: bool,
+) -> None:
+    monkeypatch.delenv("SESSION_COOKIE_SECURE", raising=False)
+    if effective_https is None:
+        monkeypatch.delenv("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED", effective_https)
+
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    response = loaded.module.app.test_client().get("/login", base_url=base_url)
+    cookie = response.headers.get("Set-Cookie", "")
+
+    assert "HttpOnly" in cookie
+    assert "SameSite=Lax" in cookie
+    assert ("; Secure" in cookie) is expect_secure
+
+
+def test_session_cookie_secure_env_remains_explicit_http_override(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "1")
+    monkeypatch.setenv("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED", "0")
+
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    response = loaded.module.app.test_client().get(
+        "/login", base_url="http://admin.example.test"
+    )
+
+    assert "; Secure" in response.headers.get("Set-Cookie", "")
+
+
 def test_login_requires_csrf_and_accepts_form_or_header_token(
     monkeypatch, tmp_path
 ) -> None:
@@ -160,7 +205,9 @@ def test_login_records_success_and_failure_audit_events(monkeypatch, tmp_path) -
     assert audit.records[1]["ok"] is True
 
 
-def test_login_audit_details_are_single_line_and_redacted(monkeypatch, tmp_path) -> None:
+def test_login_audit_details_are_single_line_and_redacted(
+    monkeypatch, tmp_path
+) -> None:
     audit = FakeAuditStore()
     loaded = load_admin_app(monkeypatch, tmp_path, audit_store=audit)
     client = loaded.module.app.test_client()
