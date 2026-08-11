@@ -28,7 +28,9 @@ DEFAULT_TIMEOUT_SECONDS = 75.0
 DEFAULT_PROBE_TIMEOUT_SECONDS = 1.0
 DEFAULT_INTERVAL_SECONDS = 0.25
 MAX_ICAP_HEADER_BYTES = 8192
-ICAP_STATUS_LINE_RE = re.compile(r"^ICAP/1\.0 (?P<code>[0-9]{3}) (?P<reason>[!-~](?:[ -~]*[!-~])?)$")
+ICAP_STATUS_LINE_RE = re.compile(
+    r"^ICAP/1\.0 (?P<code>[0-9]{3}) (?P<reason>[!-~](?:[ -~]*[!-~])?)$"
+)
 ICAP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 
@@ -163,7 +165,9 @@ def parse_services(paths: list[str]) -> list[IcapService]:
     return services
 
 
-def _read_icap_headers(sock: socket.socket, *, max_bytes: int = MAX_ICAP_HEADER_BYTES) -> bytes:
+def _read_icap_headers(
+    sock: socket.socket, *, max_bytes: int = MAX_ICAP_HEADER_BYTES
+) -> bytes:
     data = b""
     while len(data) < max_bytes:
         chunk = sock.recv(min(512, max_bytes - len(data)))
@@ -175,7 +179,9 @@ def _read_icap_headers(sock: socket.socket, *, max_bytes: int = MAX_ICAP_HEADER_
     return data
 
 
-def _parse_icap_response_head(head: bytes) -> tuple[bool, str, str, dict[str, list[str]]]:
+def _parse_icap_response_head(
+    head: bytes,
+) -> tuple[bool, str, str, dict[str, list[str]]]:
     if not head:
         return False, "no ICAP response headers", "", {}
     if b"\r\n\r\n" not in head:
@@ -196,16 +202,31 @@ def _parse_icap_response_head(head: bytes) -> tuple[bool, str, str, dict[str, li
     first_line = decoded[0] if decoded else ""
     match = ICAP_STATUS_LINE_RE.fullmatch(first_line)
     if not match:
-        return False, f"malformed ICAP status line: {first_line or 'empty'}", first_line, {}
+        return (
+            False,
+            f"malformed ICAP status line: {first_line or 'empty'}",
+            first_line,
+            {},
+        )
     if match.group("code") != "200":
         return False, first_line, first_line, {}
     headers: dict[str, list[str]] = {}
     for line in decoded[1:]:
         if ":" not in line:
-            return False, f"malformed ICAP header line: {line or 'empty'}", first_line, {}
+            return (
+                False,
+                f"malformed ICAP header line: {line or 'empty'}",
+                first_line,
+                {},
+            )
         key, value = line.split(":", 1)
         if not ICAP_HEADER_NAME_RE.fullmatch(key):
-            return False, f"malformed ICAP header name: {key or 'empty'}", first_line, {}
+            return (
+                False,
+                f"malformed ICAP header name: {key or 'empty'}",
+                first_line,
+                {},
+            )
         headers.setdefault(key.lower(), []).append(value.strip())
     return True, first_line or "ICAP OPTIONS ok", first_line, headers
 
@@ -223,12 +244,16 @@ def probe_service(service: IcapService, *, timeout: float) -> ProbeResult:
         "Encapsulated: null-body=0\r\n\r\n"
     ).encode("ascii", errors="replace")
     try:
-        with socket.create_connection((service.host, service.port), timeout=timeout) as sock:
+        with socket.create_connection(
+            (service.host, service.port), timeout=timeout
+        ) as sock:
             sock.settimeout(timeout)
             sock.sendall(request)
             head = _read_icap_headers(sock)
     except OSError as exc:
-        return ProbeResult(service=service, ok=False, detail=f"connect/options failed: {exc}")
+        return ProbeResult(
+            service=service, ok=False, detail=f"connect/options failed: {exc}"
+        )
 
     ok, detail, first_line, headers = _parse_icap_response_head(head)
     methods_values = headers.get("methods", [])
@@ -250,7 +275,11 @@ def probe_service(service: IcapService, *, timeout: float) -> ProbeResult:
             methods=", ".join(methods_values),
         )
     if methods:
-        allowed = {part.strip().upper() for part in re.split(r"[,\s]+", methods) if part.strip()}
+        allowed = {
+            part.strip().upper()
+            for part in re.split(r"[,\s]+", methods)
+            if part.strip()
+        }
         if service.method.upper() not in allowed:
             return ProbeResult(
                 service=service,
@@ -296,22 +325,51 @@ def _write_status(path: str, payload: dict[str, object]) -> str | None:
     return None
 
 
-def check_once(configs: list[str], *, probe_timeout: float) -> tuple[bool, str, dict[str, object]]:
+def check_once(
+    configs: list[str], *, probe_timeout: float
+) -> tuple[bool, str, dict[str, object]]:
     services = parse_services(configs)
     if not services:
-        payload = {"ok": True, "services": [], "detail": "No ICAP services are configured."}
+        payload = {
+            "ok": True,
+            "services": [],
+            "detail": "No ICAP services are configured.",
+        }
         return True, payload["detail"], payload
     results = [probe_service(service, timeout=probe_timeout) for service in services]
     failures = [result for result in results if not result.ok]
+    blocking_failures = [result for result in failures if result.service.required]
+    degraded_failures = [result for result in failures if not result.service.required]
+
+    def describe(items: list[ProbeResult]) -> str:
+        return "; ".join(
+            f"{item.service.name}@{item.service.host}:{item.service.port}{item.service.path} "
+            f"{item.service.method}: {item.detail}"
+            for item in items
+        )
+
+    if blocking_failures:
+        detail = f"Required ICAP services are not OPTIONS-ready: {describe(blocking_failures)}"
+        if degraded_failures:
+            detail += (
+                f"; optional ICAP services also degraded: {describe(degraded_failures)}"
+            )
+    elif degraded_failures:
+        detail = (
+            "Required ICAP services are OPTIONS-ready; optional ICAP services are degraded "
+            f"(fail-open): {describe(degraded_failures)}"
+        )
+    else:
+        detail = "All configured ICAP services answered OPTIONS."
     payload = {
-        "ok": not failures,
+        "ok": not blocking_failures,
+        "degraded": bool(degraded_failures),
+        "blocking_failure_count": len(blocking_failures),
+        "optional_failure_count": len(degraded_failures),
         "services": [_result_to_json(result) for result in results],
-        "detail": "All configured ICAP services answered OPTIONS." if not failures else "; ".join(
-            f"{item.service.name}@{item.service.host}:{item.service.port}{item.service.path} {item.service.method}: {item.detail}"
-            for item in failures
-        ),
+        "detail": detail,
     }
-    return not failures, str(payload["detail"]), payload
+    return not blocking_failures, detail, payload
 
 
 def wait_ready(
@@ -324,10 +382,18 @@ def wait_ready(
 ) -> tuple[bool, str, dict[str, object]]:
     deadline = time.monotonic() + max(0.1, timeout)
     last_detail = "ICAP readiness has not been checked yet."
-    last_payload: dict[str, object] = {"ok": False, "detail": last_detail, "services": []}
+    last_payload: dict[str, object] = {
+        "ok": False,
+        "detail": last_detail,
+        "services": [],
+    }
     while True:
         ok, detail, payload = check_once(configs, probe_timeout=probe_timeout)
-        payload = {**payload, "checked_at": int(time.time()), "timeout_seconds": timeout}
+        payload = {
+            **payload,
+            "checked_at": int(time.time()),
+            "timeout_seconds": timeout,
+        }
         status_error = _write_status(status_file, payload)
         if status_error:
             payload = {**payload, "status_file_error": status_error}
@@ -348,7 +414,9 @@ def _configs_from_args(values: list[str] | None) -> list[str]:
     configs = [item for item in (values or []) if str(item or "").strip()]
     if configs:
         return configs
-    env_value = os.environ.get("SQUID_ICAP_READY_CONFIGS") or os.environ.get("SQUID_ICAP_INCLUDE_PATH")
+    env_value = os.environ.get("SQUID_ICAP_READY_CONFIGS") or os.environ.get(
+        "SQUID_ICAP_INCLUDE_PATH"
+    )
     if env_value:
         return [item for item in re.split(r"[:,]", env_value) if item.strip()]
     return [DEFAULT_CONFIG]
@@ -391,12 +459,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             sub.add_argument(
                 "--status-file",
-                default=os.environ.get("SQUID_ICAP_READY_STATUS_FILE", DEFAULT_STATUS_FILE),
+                default=os.environ.get(
+                    "SQUID_ICAP_READY_STATUS_FILE", DEFAULT_STATUS_FILE
+                ),
             )
     args = parser.parse_args(argv)
     configs = _configs_from_args(args.configs)
     if args.command == "check":
-        ok, detail, payload = check_once(configs, probe_timeout=max(0.1, args.probe_timeout))
+        ok, detail, payload = check_once(
+            configs, probe_timeout=max(0.1, args.probe_timeout)
+        )
         if args.json:
             sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
         else:

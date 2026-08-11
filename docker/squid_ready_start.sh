@@ -1,5 +1,6 @@
 #!/bin/sh
-# Start Squid only after every generated ICAP endpoint is OPTIONS-ready.
+# Start Squid after every required (bypass=off) ICAP endpoint is OPTIONS-ready.
+# Optional fail-open endpoint failures remain visible in the readiness status JSON.
 
 set -eu
 
@@ -10,5 +11,5 @@ printf '[squid-ready-start] waiting for ICAP readiness config=%s timeout=%s\n' "
 /usr/local/bin/icap_readiness.py wait \
     --config "$CONFIG_PATH" \
     --status-file "$STATUS_FILE"
-printf '[squid-ready-start] ICAP ready; starting Squid\n'
+printf '[squid-ready-start] required ICAP services ready; starting Squid (optional failures, if any, are fail-open)\n'
 exec /usr/sbin/squid --foreground -f /etc/squid/squid.conf

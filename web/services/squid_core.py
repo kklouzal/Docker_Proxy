@@ -204,9 +204,7 @@ def _exclusive_squid_lifecycle_lock():
                     or tempfile.gettempdir()
                 ).strip() or tempfile.gettempdir()
                 Path(lock_dir).mkdir(exist_ok=True, parents=True)
-                handle = (
-                    Path(lock_dir) / "docker-proxy-squid-lifecycle.lock"
-                ).open(
+                handle = (Path(lock_dir) / "docker-proxy-squid-lifecycle.lock").open(
                     "a+",
                     encoding="utf-8",
                 )
@@ -852,6 +850,7 @@ stdout_logfile_maxbytes=0
             extract_clamav_options(config_text or ""),
         )
         av_bypass = "on" if clamav_fail_open(clamav_options) else "off"
+        adblock_bypass = "off" if _env_flag("ADBLOCK_ICAP_REQUIRED", False) else "on"
         file_security_policy = render_file_security_policy_config(
             clamav_options
         ).strip()
@@ -881,7 +880,7 @@ stdout_logfile_maxbytes=0
             ) + index
             lines.extend(
                 [
-                    f"icap_service {adblock_name} reqmod_precache icap://127.0.0.1:{adblock_icap_port + index}/adblockreq bypass=on",
+                    f"icap_service {adblock_name} reqmod_precache icap://127.0.0.1:{adblock_icap_port + index}/adblockreq bypass={adblock_bypass}",
                     f"icap_service {av_req_name} reqmod_precache icap://127.0.0.1:{cicap_av_port + index}/avrespmod bypass={av_bypass}",
                     f"icap_service {av_resp_name} respmod_precache icap://127.0.0.1:{av_resp_port}/avrespmod bypass={av_bypass}",
                 ]

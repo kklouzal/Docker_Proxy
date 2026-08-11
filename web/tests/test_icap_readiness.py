@@ -33,8 +33,13 @@ class _IcapHandler(socketserver.BaseRequestHandler):
             data += chunk
         self.server.requests.append(data)
         if self.server.responses:
-            response = self.server.responses[min(self.server.calls, len(self.server.responses)) - 1]
-        elif self.server.ready_after_calls and self.server.calls < self.server.ready_after_calls:
+            response = self.server.responses[
+                min(self.server.calls, len(self.server.responses)) - 1
+            ]
+        elif (
+            self.server.ready_after_calls
+            and self.server.calls < self.server.ready_after_calls
+        ):
             response = b"ICAP/1.0 503 Service Unavailable\r\nConnection: close\r\n\r\n"
         else:
             response = (
@@ -73,7 +78,9 @@ def _start_server(
     ready_after_calls: int = 0,
     responses: list[ResponsePayload] | None = None,
 ):
-    server = _Server(methods=methods, ready_after_calls=ready_after_calls, responses=responses)
+    server = _Server(
+        methods=methods, ready_after_calls=ready_after_calls, responses=responses
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
@@ -100,7 +107,9 @@ def _probe_response(response: ResponsePayload):
 
     server = _start_server(responses=[response])
     try:
-        return icap_readiness.probe_service(_service(server.server_address[1]), timeout=0.5)
+        return icap_readiness.probe_service(
+            _service(server.server_address[1]), timeout=0.5
+        )
     finally:
         server.shutdown()
         server.server_close()
@@ -118,14 +127,48 @@ def test_icap_readiness_requires_options_method_match(tmp_path) -> None:
             encoding="utf-8",
         )
 
-        ok, detail, payload = icap_readiness.check_once([str(config)], probe_timeout=0.5)
+        ok, detail, payload = icap_readiness.check_once(
+            [str(config)], probe_timeout=0.5
+        )
 
-        assert ok is False
-        assert "does not include REQMOD" in detail
+        assert ok is True
+        assert "optional ICAP services are degraded (fail-open)" in detail
+        assert payload["degraded"] is True
+        assert payload["blocking_failure_count"] == 0
+        assert payload["optional_failure_count"] == 1
         assert payload["services"][0]["bypass"] is True
+        assert payload["services"][0]["required"] is False
+        assert payload["services"][0]["ok"] is False
+        assert "does not include REQMOD" in payload["services"][0]["detail"]
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_icap_readiness_required_failure_blocks_with_optional_degradation(
+    tmp_path,
+) -> None:
+    _add_repo_paths()
+    import icap_readiness  # type: ignore
+
+    config = tmp_path / "20-icap.conf"
+    config.write_text(
+        "icap_service optional_req reqmod_precache icap://127.0.0.1:1/optional bypass=on\n"
+        "icap_service required_resp respmod_precache icap://127.0.0.1:2/required bypass=off\n",
+        encoding="utf-8",
+    )
+
+    ok, detail, payload = icap_readiness.check_once([str(config)], probe_timeout=0.1)
+
+    assert ok is False
+    assert payload["ok"] is False
+    assert payload["degraded"] is True
+    assert payload["blocking_failure_count"] == 1
+    assert payload["optional_failure_count"] == 1
+    assert "Required ICAP services are not OPTIONS-ready" in detail
+    assert "optional ICAP services also degraded" in detail
+    assert [service["required"] for service in payload["services"]] == [False, True]
+    assert [service["ok"] for service in payload["services"]] == [False, False]
 
 
 def test_icap_readiness_skips_malformed_icap_service_ports(tmp_path) -> None:
@@ -178,7 +221,7 @@ def test_icap_readiness_options_request_uses_authority_host_header(tmp_path) -> 
     try:
         config = tmp_path / "20-icap.conf"
         config.write_text(
-            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{server.server_address[1]}/adblockreq bypass=on\n",
+            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{server.server_address[1]}/adblockreq bypass=off\n",
             encoding="utf-8",
         )
 
@@ -225,7 +268,11 @@ def test_icap_readiness_accepts_fragmented_strict_options_200_status() -> None:
 
 
 def test_icap_readiness_rejects_status_prefix_confusion() -> None:
-    for status_line in (b"ICAP/1.0 2000 Weird", b"ICAP/1.0 200X Weird", b"ICAP/1.0 200OK"):
+    for status_line in (
+        b"ICAP/1.0 2000 Weird",
+        b"ICAP/1.0 200X Weird",
+        b"ICAP/1.0 200OK",
+    ):
         result = _probe_response(status_line + b"\r\nMethods: REQMOD\r\n\r\n")
 
         assert result.ok is False
@@ -249,8 +296,7 @@ def test_icap_readiness_rejects_non_strict_status_lines() -> None:
 
 def test_icap_readiness_rejects_duplicate_interim_response() -> None:
     result = _probe_response(
-        b"ICAP/1.0 100 Continue\r\n\r\n"
-        b"ICAP/1.0 200 OK\r\nMethods: REQMOD\r\n\r\n",
+        b"ICAP/1.0 100 Continue\r\n\r\nICAP/1.0 200 OK\r\nMethods: REQMOD\r\n\r\n",
     )
 
     assert result.ok is False
@@ -293,7 +339,7 @@ def test_icap_readiness_waits_until_options_ready(tmp_path, monkeypatch) -> None
         config = tmp_path / "20-icap.conf"
         status_file = tmp_path / "status.json"
         config.write_text(
-            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{server.server_address[1]}/adblockreq bypass=on\n",
+            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{server.server_address[1]}/adblockreq bypass=off\n",
             encoding="utf-8",
         )
 
@@ -380,12 +426,14 @@ def test_icap_readiness_wait_json_reports_timeout_payload_without_recheck(
     )
     monkeypatch.setattr(icap_readiness.time, "sleep", lambda _seconds: None)
     monotonic_values = iter([0.0, 0.1])
-    monkeypatch.setattr(icap_readiness.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(
+        icap_readiness.time, "monotonic", lambda: next(monotonic_values)
+    )
     try:
         config = tmp_path / "20-icap.conf"
         status_file = tmp_path / "status.json"
         config.write_text(
-            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{server.server_address[1]}/adblockreq bypass=on\n",
+            f"icap_service adblock_req reqmod_precache icap://127.0.0.1:{server.server_address[1]}/adblockreq bypass=off\n",
             encoding="utf-8",
         )
 
@@ -412,7 +460,10 @@ def test_icap_readiness_wait_json_reports_timeout_payload_without_recheck(
         assert stdout_payload == status_payload
         assert stdout_payload["ok"] is False
         assert stdout_payload["timed_out"] is True
-        assert stdout_payload["services"][0]["status_line"] == "ICAP/1.0 503 Service Unavailable"
+        assert (
+            stdout_payload["services"][0]["status_line"]
+            == "ICAP/1.0 503 Service Unavailable"
+        )
         assert server.calls == 1
     finally:
         server.shutdown()
@@ -510,9 +561,7 @@ def test_icap_readiness_reports_status_file_write_failures(tmp_path) -> None:
 
 def test_squid_ready_start_delegates_numeric_env_parsing_to_readiness() -> None:
     repo_root = Path(__file__).resolve().parents[2]
-    script = (repo_root / "docker" / "squid_ready_start.sh").read_text(
-        encoding="utf-8"
-    )
+    script = (repo_root / "docker" / "squid_ready_start.sh").read_text(encoding="utf-8")
 
     assert '--timeout "$TIMEOUT"' not in script
     assert '--probe-timeout "$PROBE_TIMEOUT"' not in script
@@ -520,7 +569,9 @@ def test_squid_ready_start_delegates_numeric_env_parsing_to_readiness() -> None:
     assert '--status-file "$STATUS_FILE"' in script
 
 
-def test_cicap_av_runner_optional_fallback_answers_options(tmp_path, monkeypatch) -> None:
+def test_cicap_av_runner_optional_fallback_answers_options(
+    tmp_path, monkeypatch
+) -> None:
     _add_repo_paths()
     import docker.cicap_av_runner as runner  # type: ignore
 

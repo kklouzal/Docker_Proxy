@@ -1143,8 +1143,12 @@ ADBLOCK_ROUTING_ENABLED=0
 if env_enabled "$ADBLOCK_ENABLED_RAW"; then
     ADBLOCK_ROUTING_ENABLED=1
 fi
+ADBLOCK_BYPASS=on
+if env_enabled "${ADBLOCK_ICAP_REQUIRED:-}"; then
+    ADBLOCK_BYPASS=off
+fi
 
-export CLAMD_HOST CLAMD_PORT CLAMAV_REQUIRED AV_BYPASS CICAP_PORT CICAP_AV_PORT CICAP_AV_RESP_PORT ADBLOCK_ROUTING_ENABLED
+export CLAMD_HOST CLAMD_PORT CLAMAV_REQUIRED AV_BYPASS ADBLOCK_BYPASS CICAP_PORT CICAP_AV_PORT CICAP_AV_RESP_PORT ADBLOCK_ROUTING_ENABLED
 
 cat > /etc/clamd_mod.conf <<EOF
 # c-icap clamd_mod configuration for squid-flask-proxy
@@ -1252,7 +1256,7 @@ done
         adblock_services="${adblock_services}${adblock_services:+ }${adblock_name}"
         av_req_services="${av_req_services}${av_req_services:+ }${av_req_name}"
         av_resp_services="${av_resp_services}${av_resp_services:+ }${av_resp_name}"
-        echo "icap_service ${adblock_name} reqmod_precache icap://127.0.0.1:$((CICAP_PORT + i))/adblockreq bypass=on"
+        echo "icap_service ${adblock_name} reqmod_precache icap://127.0.0.1:$((CICAP_PORT + i))/adblockreq bypass=${ADBLOCK_BYPASS}"
         echo "icap_service ${av_req_name} reqmod_precache icap://127.0.0.1:$((CICAP_AV_PORT + i))/avrespmod bypass=${AV_BYPASS}"
         if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then
             echo "icap_service ${av_resp_name} respmod_precache icap://127.0.0.1:$((CICAP_AV_RESP_PORT + i))/avrespmod bypass=${AV_BYPASS}"

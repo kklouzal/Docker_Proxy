@@ -141,11 +141,11 @@ def test_runtime_lock_open_failure_prevents_supervisor_and_sync_mutations(
     monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
     supervisor_calls: list[str] = []
     sync_calls: list[str] = []
-    runtime._restart_supervisor_program_unlocked = (
-        lambda *_args, **_kwargs: supervisor_calls.append("restart") or (True, "")
+    runtime._restart_supervisor_program_unlocked = lambda *_args, **_kwargs: (
+        supervisor_calls.append("restart") or (True, "")
     )
-    runtime._sync_from_db_unlocked = (
-        lambda **_kwargs: sync_calls.append("sync") or {"ok": True}
+    runtime._sync_from_db_unlocked = lambda **_kwargs: (
+        sync_calls.append("sync") or {"ok": True}
     )
 
     def fail_open(*_args, **_kwargs):
@@ -465,7 +465,9 @@ def test_sync_pac_state_fails_when_post_materialize_evidence_is_absent(
     runtime.services = SimpleNamespace(current_pac_sha_reader=None)
     runtime.pac_render_dir = str(pac_dir)
     runtime.pac_state_builder = lambda _proxy_id: state
-    monkeypatch.setattr(runtime_module, "materialize_proxy_pac_state", stale_materialize)
+    monkeypatch.setattr(
+        runtime_module, "materialize_proxy_pac_state", stale_materialize
+    )
 
     result = runtime.sync_pac_state()
 
@@ -516,7 +518,9 @@ def test_sync_from_db_pac_evidence_does_not_invent_current_sha(monkeypatch) -> N
     runtime._capture_recovery_bundle_after_sync = lambda _result: None
     runtime.controller = SimpleNamespace()
     runtime.registry = SimpleNamespace(mark_apply_result=lambda *args, **kwargs: None)
-    runtime.revisions = SimpleNamespace(get_active_revision_metadata=lambda _proxy_id: None)
+    runtime.revisions = SimpleNamespace(
+        get_active_revision_metadata=lambda _proxy_id: None
+    )
 
     result = runtime._sync_from_db_unlocked(
         operations=[
@@ -1095,7 +1099,9 @@ def test_restart_supervisor_program_returns_false_after_retries(monkeypatch) -> 
     assert "abnormal termination" in detail
 
 
-def test_restart_supervisor_program_uses_one_total_monotonic_budget(monkeypatch) -> None:
+def test_restart_supervisor_program_uses_one_total_monotonic_budget(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
@@ -1129,9 +1135,7 @@ def test_restart_supervisor_program_uses_one_total_monotonic_budget(monkeypatch)
         lambda _program, timeout_seconds=30.0: (True, "service STOPPED")
     )
 
-    ok, detail = runtime._restart_supervisor_program(
-        "service", timeout_seconds=2
-    )
+    ok, detail = runtime._restart_supervisor_program("service", timeout_seconds=2)
 
     assert ok is False
     assert "abnormal termination" in detail
@@ -1165,7 +1169,7 @@ def test_restart_adblock_health_wait_uses_monotonic_deadline_during_wall_clock_j
     monkeypatch.setattr(
         runtime_module.time,
         "time",
-        lambda: 10**9 if probes["count"] % 2 else -10**9,
+        lambda: 10**9 if probes["count"] % 2 else -(10**9),
     )
     monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
     monkeypatch.setattr(
@@ -1543,7 +1547,7 @@ def test_init_ssl_db_permission_repair_fails_closed_on_chown_error(
     ssl_db = tmp_path / "ssl_db" / "store"
     (ssl_db / "certs").mkdir(parents=True)
     result = subprocess.run(
-        ["sh", "-c", f'{function}\nrepair_ssl_db_permissions'],
+        ["sh", "-c", f"{function}\nrepair_ssl_db_permissions"],
         capture_output=True,
         text=True,
         env={
@@ -2227,7 +2231,10 @@ def test_sync_from_db_reloads_policy_after_forced_config_apply() -> None:
 
     class Revisions:
         def get_active_revision_metadata(self, _proxy_id):
-            return SimpleNamespace(revision_id=9, config_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            return SimpleNamespace(
+                revision_id=9,
+                config_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
 
         def latest_apply(self, _proxy_id) -> None:
             return None
@@ -2875,7 +2882,7 @@ def test_policy_reload_icap_wait_uses_monotonic_deadline_during_wall_clock_jumps
     monkeypatch.setattr(
         runtime_module.time,
         "time",
-        lambda: -10**9 if probes["count"] % 2 else 10**9,
+        lambda: -(10**9) if probes["count"] % 2 else 10**9,
     )
     monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
     monkeypatch.setattr(
@@ -5444,7 +5451,9 @@ def test_packaged_proxy_healthcheck_checks_https_intercept_listeners() -> None:
     assert "Squid listener(s) not accepting connections" in healthcheck
 
 
-def test_packaged_proxy_healthcheck_normalizes_forwarding_canary_path_like_runtime() -> None:
+def test_packaged_proxy_healthcheck_normalizes_forwarding_canary_path_like_runtime() -> (
+    None
+):
     default_url = (
         "http://127.0.0.1:18080/__docker_proxy_forwarding_canary?probe=squid-respmod"
     )
@@ -5484,7 +5493,9 @@ def test_packaged_proxy_scripts_reject_unsafe_forwarding_canary_path(
     )
 
 
-def test_packaged_proxy_healthcheck_normalizes_forwarding_canary_listener_port() -> None:
+def test_packaged_proxy_healthcheck_normalizes_forwarding_canary_listener_port() -> (
+    None
+):
     repo_root = Path(__file__).resolve().parents[2]
     healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(
         encoding="utf-8",
@@ -5535,7 +5546,10 @@ def test_packaged_proxy_entrypoint_keeps_adblock_running_before_squid_gate() -> 
     assert "startsecs=1" in section
     assert "startsecs=45" not in section
     assert "startretries=2" in section
-    assert "bypass=on" in entrypoint
+    assert "ADBLOCK_BYPASS=on" in entrypoint
+    assert 'env_enabled "${ADBLOCK_ICAP_REQUIRED:-}"' in entrypoint
+    assert "ADBLOCK_BYPASS=off" in entrypoint
+    assert "bypass=${ADBLOCK_BYPASS}" in entrypoint
 
 
 def test_runtime_adblock_supervisor_config_matches_startup_readiness_contract() -> None:
@@ -5555,6 +5569,19 @@ def test_runtime_adblock_supervisor_config_matches_startup_readiness_contract() 
     assert "exitcodes=0" in section
     assert "startsecs=1" in section
     assert "startsecs=45" not in section
+
+
+def test_runtime_icap_include_honors_explicit_required_adblock_mode(
+    monkeypatch,
+) -> None:
+    _add_repo_paths()
+    from services.squid_core import SquidController  # type: ignore
+
+    monkeypatch.setenv("ADBLOCK_ICAP_REQUIRED", "strict")
+
+    include = SquidController()._render_icap_include("workers 1\n")
+
+    assert "icap://127.0.0.1:14000/adblockreq bypass=off" in include
 
 
 def test_packaged_proxy_supervisor_stops_squid_process_group() -> None:
@@ -5897,7 +5924,9 @@ def test_sync_from_db_claims_and_marks_operation_ledger(monkeypatch) -> None:
     ]
 
 
-def test_sync_from_db_claims_runtime_operations_with_exact_live_identity(monkeypatch) -> None:
+def test_sync_from_db_claims_runtime_operations_with_exact_live_identity(
+    monkeypatch,
+) -> None:
     _add_repo_paths()
     import proxy.runtime as runtime_module  # type: ignore
 
@@ -6450,7 +6479,10 @@ def test_sync_from_db_marks_matching_certificate_revision_applied(monkeypatch) -
 
     assert result["ok"] is True
     assert result["certificate_revision_id"] == 12
-    assert result["certificate_bundle_sha256"] == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    assert (
+        result["certificate_bundle_sha256"]
+        == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    )
     assert calls == [
         (
             5,
@@ -7450,7 +7482,9 @@ def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() 
         "Squid reconfigured for policy update.",
     )
     runtime._current_config_sha = lambda: "current-sha"
-    runtime._current_adblock_artifact_sha = lambda: "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    runtime._current_adblock_artifact_sha = lambda: (
+        "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
     runtime.controller = SimpleNamespace(
         set_adblock_icap_revision_token=lambda _token: None,
     )
@@ -7489,7 +7523,10 @@ def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() 
 
     assert result["ok"] is True
     assert result["adblock_revision_id"] == 44
-    assert result["artifact_sha256"] == "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert (
+        result["artifact_sha256"]
+        == "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
     assert result["adblock_settings_version"] == 15
     assert result["executed_operation_types"] == ["adblock_refresh"]
     assert "build request was already cleared" in result["detail"]
@@ -7849,7 +7886,9 @@ def test_sync_certificate_bundle_failed_restart_and_failed_rollback_reports_unkn
     assert "squid restart failed" in result["detail"]
     assert "failed to restore previous certificate material" in result["detail"]
     assert "could not be verified" in result["detail"]
-    assert "Last-known certificate bundle before failed apply: oldsha" in result["detail"]
+    assert (
+        "Last-known certificate bundle before failed apply: oldsha" in result["detail"]
+    )
 
 
 def test_sync_certificate_bundle_retry_after_unknown_rollback_rematerializes(
