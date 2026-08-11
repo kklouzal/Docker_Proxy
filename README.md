@@ -192,6 +192,8 @@ Source builds use Alpine's `edge` image tag by default so Squid and runtime pack
 docker compose build --build-arg ALPINE_VERSION=3.23.4
 ```
 
+The proxy image defaults its c-icap sources to release refs and independently pinned commit IDs. The build verifies each checked-out `HEAD` before compilation and fails closed if a ref moves or resolves to different source. Advanced source overrides must supply each ref and its matching full commit together, for example `--build-arg CICAP_GIT_REF=<ref> --build-arg CICAP_GIT_COMMIT=<40-character-commit>` (and the corresponding `CICAP_MODULES_GIT_REF` / `CICAP_MODULES_GIT_COMMIT` pair). Changing only a ref or only its expected commit intentionally fails the build.
+
 ### Prebuilt images
 
 `docker-compose.ghcr.yml` runs the published split images:

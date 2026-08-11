@@ -75,7 +75,7 @@ def _entrypoint_perf_tuning_script() -> str:
         [
             _entrypoint_shell_block(
                 "config_has_directive() {",
-                "\nif [ -z \"${DB_POOL_MAX_IDLE_SECONDS:-}\" ]; then",
+                '\nif [ -z "${DB_POOL_MAX_IDLE_SECONDS:-}" ]; then',
             ),
             _entrypoint_shell_block(
                 "replace_or_append_config_line() {",
@@ -99,7 +99,7 @@ def _run_entrypoint_perf_tuning(config_path, *, children: int) -> None:
         f"EXPLICIT_SQUID_SSLCRTD_CHILDREN={children}\n"
         "SQUID_MAX_FILEDESCRIPTORS=65536\n"
         "SQUID_DYNAMIC_CERT_MEM_CACHE_MB=256\n"
-        "apply_squid_perf_tuning \"$1\"\n"
+        'apply_squid_perf_tuning "$1"\n'
     )
     subprocess.run(
         ["/bin/sh", "-c", script, "entrypoint-perf-tuning-test", str(config_path)],
@@ -165,26 +165,30 @@ def _workflow_job_body(workflow: str, job_name: str) -> str:
 def _dockerfile_stages(dockerfile: str) -> list[str]:
     text = _read(dockerfile)
     return [
-        "FROM " + stage
-        for stage in re.split(r"^FROM ", text, flags=re.MULTILINE)[1:]
+        "FROM " + stage for stage in re.split(r"^FROM ", text, flags=re.MULTILINE)[1:]
     ]
 
 
 def test_alpine_package_installs_use_retry_helper_for_runtime_images() -> None:
     helper = _read("docker/apk-install.sh")
 
-    assert "apk add --no-cache \"$@\"" in helper
+    assert 'apk add --no-cache "$@"' in helper
     assert "APK_INSTALL_RETRIES:-4" in helper
     assert "APK_INSTALL_RETRY_DELAY_SECONDS:-5" in helper
 
     for dockerfile in ("docker/Dockerfile.admin", "docker/Dockerfile.proxy"):
         text = _read(dockerfile)
-        assert "COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install" in text
+        assert (
+            "COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install" in text
+        )
 
         for stage in _dockerfile_stages(dockerfile):
             if "apk add --no-cache" not in stage and "apk-install" not in stage:
                 continue
-            assert "COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install" in stage
+            assert (
+                "COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install"
+                in stage
+            )
             assert "RUN apk-install" in stage
 
         assert "RUN apk add --no-cache" not in text
@@ -357,7 +361,9 @@ def test_admin_image_contains_documented_mysql_state_validation_cli() -> None:
     assert "python -m services.mysql_state_validation --phase pre-backup" in docs
     assert "python -m services.mysql_state_validation --phase post-restore" in docs
     assert "web/services/mysql_state_validation.py" in admin
-    assert "web/services/mysql_state_validation.py" not in _read("docker/Dockerfile.proxy")
+    assert "web/services/mysql_state_validation.py" not in _read(
+        "docker/Dockerfile.proxy"
+    )
 
 
 def test_local_deterministic_test_command_matches_ci_mysql_exclusion() -> None:
@@ -377,7 +383,7 @@ def test_ghcr_publish_passes_runtime_version_build_args() -> None:
         "        id: build-date\n"
         "        shell: bash\n"
         "        run: echo \"value=$(date -u +'%Y-%m-%dT%H:%M:%SZ')\" "
-        ">> \"$GITHUB_OUTPUT\"\n"
+        '>> "$GITHUB_OUTPUT"\n'
     )
 
     assert len(build_arg_blocks) == 2
@@ -395,8 +401,10 @@ def test_ghcr_publish_passes_runtime_version_build_args() -> None:
         assert job.count("- name: Compute OCI build date") == 1
         assert build_date_step in job
         assert "date -u +'%Y-%m-%dT%H:%M:%SZ'" in job
-        assert ">> \"$GITHUB_OUTPUT\"" in job
-        assert job.index("id: build-date") < job.index("uses: docker/build-push-action@v7")
+        assert '>> "$GITHUB_OUTPUT"' in job
+        assert job.index("id: build-date") < job.index(
+            "uses: docker/build-push-action@v7"
+        )
         assert "${{ github.event.head_commit.timestamp || github.run_id }}" not in job
         assert job.count("BUILD_DATE=${{ steps.build-date.outputs.value }}") == 1
 
@@ -450,7 +458,10 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
         "PROXY_MANAGEMENT_URL: ${LIVE_TEST_PROXY_MANAGEMENT_URL:-http://proxy:5000}"
         in primary_proxy_block
     )
-    assert "PROXY_PUBLIC_HOST: ${LIVE_TEST_PROXY_PUBLIC_HOST:-proxy}" in primary_proxy_block
+    assert (
+        "PROXY_PUBLIC_HOST: ${LIVE_TEST_PROXY_PUBLIC_HOST:-proxy}"
+        in primary_proxy_block
+    )
     assert (
         "PROXY_PUBLIC_PAC_URL: ${LIVE_TEST_PROXY_PUBLIC_PAC_URL:-http://proxy/proxy.pac}"
         in primary_proxy_block
@@ -480,10 +491,16 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     )
     assert "python3 /app/tools/clamav_respmod_icap_server.py" in entrypoint
     assert 'av_pid="/var/run/c-icap/c-icap-av-${instance}.pid"' in entrypoint
-    assert 'rm -f "${av_pid}"; exec /usr/local/bin/cicap_av_runner.py "${av_conf}"' in entrypoint
+    assert (
+        'rm -f "${av_pid}"; exec /usr/local/bin/cicap_av_runner.py "${av_conf}"'
+        in entrypoint
+    )
     dockerfile = _read("docker/Dockerfile.proxy")
     assert "web/tools/clamav_respmod_icap_server.py" in dockerfile
-    assert "COPY --chmod=755 docker/cicap_av_runner.py /usr/local/bin/cicap_av_runner.py" in dockerfile
+    assert (
+        "COPY --chmod=755 docker/cicap_av_runner.py /usr/local/bin/cicap_av_runner.py"
+        in dockerfile
+    )
 
     env_example = _read("config/app.env.example")
     assert "# CICAP_AV_RESP_PORT=" in env_example
@@ -546,6 +563,31 @@ def test_docs_config_track_schema_lifecycle_and_health_knobs() -> None:
     assert f"# PROXY_RECOVERY_MAX_BUNDLE_BYTES={recovery_default}" in env_example
     assert recovery_default in readme
     assert recovery_default in recovery_docs
+
+
+def test_proxy_cicap_sources_are_pinned_and_verified_before_compilation() -> None:
+    proxy = _read("docker/Dockerfile.proxy")
+
+    expected_sources = {
+        "CICAP": (
+            "C_ICAP_0.6.5",
+            "b34baf32b764a2d79db34c61041cd9f92c39a535",
+            "c_icap_src",
+        ),
+        "CICAP_MODULES": (
+            "C_ICAP_MODULES_0.5.7",
+            "e1f6af0e06be1ae1e8b8f822ae74bc0d352b788f",
+            "c_icap_modules_src",
+        ),
+    }
+    for prefix, (git_ref, git_commit, checkout) in expected_sources.items():
+        assert f"ARG {prefix}_GIT_REF={git_ref}" in proxy
+        assert f"ARG {prefix}_GIT_COMMIT={git_commit}" in proxy
+        build_step = proxy.split(f"cd {checkout};", 1)[1].split("make install", 1)[0]
+        assert 'actual_commit="$(git rev-parse HEAD)"' in build_step
+        assert f'"${{{prefix}_GIT_COMMIT}}"' in build_step
+        assert "source verification failed" in build_step
+        assert build_step.index("git rev-parse HEAD") < build_step.index("./configure")
 
 
 def test_proxy_cicap_build_enables_compression_support_and_strips_artifacts() -> None:
@@ -769,13 +811,18 @@ def test_admin_ui_https_packaging_contract() -> None:
     assert 'DEFAULT_KEYFILE = "/etc/squid/ssl/certs/admin-ui.key"' in launcher
     assert '"--certfile", config.certfile, "--keyfile", config.keyfile' in launcher
     assert "# ADMIN_UI_HTTPS_ENABLED=0" in env_example
-    assert "ADMIN_UI_SSL_CERTFILE and ADMIN_UI_SSL_KEYFILE are internal bootstrap" in env_example
+    assert (
+        "ADMIN_UI_SSL_CERTFILE and ADMIN_UI_SSL_KEYFILE are internal bootstrap"
+        in env_example
+    )
     assert "prefer a server certificate whose subject/SAN matches" not in readme
     assert "dedicated Admin UI server leaf certificate" in readme
     assert "Admin UI container read-only" not in readme
     assert "mount is writable" in readme
     assert "saved DB setting is the source of truth" in readme
-    assert "standalone admin-UI deployments must keep that same mount available" in readme
+    assert (
+        "standalone admin-UI deployments must keep that same mount available" in readme
+    )
 
 
 def test_admin_ui_startup_can_import_services_from_tools_launcher_path() -> None:
@@ -883,7 +930,9 @@ def test_admin_ui_startup_malformed_saved_row_does_not_reenable_env_https() -> N
     config = module.resolve_admin_ui_https_config(
         {"ADMIN_UI_HTTPS_ENABLED": "1"},
         settings_loader=lambda: (_ for _ in ()).throw(
-            InvalidAdminUiHttpsSettingsError("certfile contains unsupported control characters")
+            InvalidAdminUiHttpsSettingsError(
+                "certfile contains unsupported control characters"
+            )
         ),
     )
 
@@ -1057,7 +1106,9 @@ def test_admin_ui_startup_db_https_missing_material_falls_back_to_http(
     assert "--keyfile" not in exec_calls[0][1]
     assert module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ENABLED"] == "0"
     assert module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_SOURCE"] == "db-missing-material"
-    assert "not valid TLS material" in module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"]
+    assert (
+        "not valid TLS material" in module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"]
+    )
 
 
 def test_admin_ui_startup_db_https_empty_material_falls_back_to_http(
@@ -1091,7 +1142,9 @@ def test_admin_ui_startup_db_https_empty_material_falls_back_to_http(
     assert exec_calls
     assert "--certfile" not in exec_calls[0][1]
     assert module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_SOURCE"] == "db-missing-material"
-    assert "not valid TLS material" in module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"]
+    assert (
+        "not valid TLS material" in module.os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"]
+    )
 
 
 def test_admin_ui_startup_env_https_missing_material_fails(monkeypatch) -> None:
@@ -1149,7 +1202,9 @@ def test_admin_ui_startup_env_https_invalid_material_fails(
     assert exec_calls == []
 
 
-def test_admin_ui_startup_falls_back_to_env_before_saved_setting_or_db_failure() -> None:
+def test_admin_ui_startup_falls_back_to_env_before_saved_setting_or_db_failure() -> (
+    None
+):
     module = _load_start_admin_ui_module()
 
     seeded = module.resolve_admin_ui_https_config(
@@ -1360,7 +1415,9 @@ def test_proxy_entrypoint_perf_tuning_preserves_sslcrtd_child_options(tmp_path) 
     assert "sslcrtd_children 2\n" not in rendered
 
 
-def test_proxy_entrypoint_perf_tuning_synthesizes_sslcrtd_child_options(tmp_path) -> None:
+def test_proxy_entrypoint_perf_tuning_synthesizes_sslcrtd_child_options(
+    tmp_path,
+) -> None:
     config = tmp_path / "squid.conf"
     config.write_text("workers 4\ncache_mem 256 MB\n", encoding="utf-8")
 

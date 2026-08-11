@@ -16,7 +16,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 FROM alpine:${ALPINE_VERSION} AS cicap_builder
 
 ARG CICAP_GIT_REF=C_ICAP_0.6.5
+ARG CICAP_GIT_COMMIT=b34baf32b764a2d79db34c61041cd9f92c39a535
 ARG CICAP_MODULES_GIT_REF=C_ICAP_MODULES_0.5.7
+ARG CICAP_MODULES_GIT_COMMIT=e1f6af0e06be1ae1e8b8f822ae74bc0d352b788f
 
 COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install
 RUN apk-install \
@@ -43,6 +45,12 @@ RUN set -eu; \
     echo "[c-icap] cloning GitHub ref ${CICAP_GIT_REF}"; \
     git clone --depth 1 --branch "${CICAP_GIT_REF}" https://github.com/c-icap/c-icap-server.git c_icap_src; \
     cd c_icap_src; \
+    actual_commit="$(git rev-parse HEAD)"; \
+    if [ "${actual_commit}" != "${CICAP_GIT_COMMIT}" ]; then \
+        echo >&2 "[c-icap] source verification failed: ref ${CICAP_GIT_REF} resolved to ${actual_commit}, expected ${CICAP_GIT_COMMIT}"; \
+        exit 1; \
+    fi; \
+    echo "[c-icap] verified commit ${actual_commit}"; \
     if [ ! -x ./configure ]; then autoreconf -fi; fi; \
     ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --disable-static; \
     make -j"$(getconf _NPROCESSORS_ONLN || echo 2)"; \
@@ -52,6 +60,12 @@ RUN set -eu; \
     echo "[c-icap-modules] cloning GitHub ref ${CICAP_MODULES_GIT_REF}"; \
     git clone --depth 1 --branch "${CICAP_MODULES_GIT_REF}" https://github.com/c-icap/c-icap-modules.git c_icap_modules_src; \
     cd c_icap_modules_src; \
+    actual_commit="$(git rev-parse HEAD)"; \
+    if [ "${actual_commit}" != "${CICAP_MODULES_GIT_COMMIT}" ]; then \
+        echo >&2 "[c-icap-modules] source verification failed: ref ${CICAP_MODULES_GIT_REF} resolved to ${actual_commit}, expected ${CICAP_MODULES_GIT_COMMIT}"; \
+        exit 1; \
+    fi; \
+    echo "[c-icap-modules] verified commit ${actual_commit}"; \
     if [ ! -x ./configure ]; then autoreconf -fi; fi; \
     ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --disable-static; \
     make -j"$(getconf _NPROCESSORS_ONLN || echo 2)"; \
