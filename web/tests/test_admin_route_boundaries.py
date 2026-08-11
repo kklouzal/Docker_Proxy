@@ -1655,6 +1655,52 @@ def test_network_config_apply_can_publish_intercept_listener(
     assert "PROXY" not in config_text
 
 
+def test_listener_collision_adjustment_is_reported_and_reapply_is_stable(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    template = tmp_path / "squid.conf.template"
+    template.write_text(
+        "http_port 0.0.0.0:3128 ssl-bump\n"
+        "http_port 0.0.0.0:3129 tproxy\n",
+        encoding="utf-8",
+    )
+    controller = loaded.module.SquidController()
+    controller.squid_conf_template_path = str(template)
+    requested = {
+        "explicit_proxy_port": 3128,
+        "intercept_enabled_on": True,
+        "intercept_port": 3129,
+        "https_intercept_enabled_on": True,
+        "https_intercept_port": 3129,
+    }
+
+    rendered = controller._render_http_port_listeners(
+        template.read_text(encoding="utf-8"), dict(requested), 128
+    )
+    detail = loaded.module._listener_adjustment_detail(
+        requested, rendered, controller=controller
+    )
+    assert "HTTP intercept port adjusted from 3129 to 3130" in detail
+    assert "HTTPS intercept port adjusted from 3129 to 3131" in detail
+    readback = controller.get_tunable_options(rendered)
+    assert readback["intercept_port"] == 3130
+    assert readback["https_intercept_port"] == 3131
+
+    reapplied_options = loaded.module._options_from_tunables(readback)
+    reapplied = controller._render_http_port_listeners(
+        template.read_text(encoding="utf-8"), reapplied_options, 128
+    )
+    assert controller.get_tunable_options(reapplied)["intercept_port"] == 3130
+    assert controller.get_tunable_options(reapplied)["https_intercept_port"] == 3131
+    assert (
+        loaded.module._listener_adjustment_detail(
+            reapplied_options, reapplied, controller=controller
+        )
+        == ""
+    )
+
+
 def test_safe_config_apply_failure_returns_to_active_form_tab(
     monkeypatch, tmp_path
 ) -> None:

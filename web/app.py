@@ -174,6 +174,7 @@ from services.schema_lifecycle import ensure_startup_schema_if_configured
 from services.squid_config_forms import (
     build_template_options,
     build_template_options_from_form,
+    coerce_config_bool,
     get_config_ui_field_map,
     get_config_ui_sections,
     normalize_safe_form_kind,
@@ -2856,6 +2857,33 @@ def _render_template_config_text(
     return squid_controller.apply_cache_overrides(config_text, effective_overrides)
 
 
+def _listener_adjustment_detail(
+    options: dict[str, Any],
+    config_text: str,
+    *,
+    controller: SquidController | None = None,
+) -> str:
+    effective = (controller or squid_controller).get_tunable_options(config_text)
+    adjustments: list[str] = []
+    for enabled_key, port_key, label in (
+        ("intercept_enabled_on", "intercept_port", "HTTP intercept"),
+        ("https_intercept_enabled_on", "https_intercept_port", "HTTPS intercept"),
+    ):
+        if not coerce_config_bool(options.get(enabled_key)):
+            continue
+        try:
+            requested_port = int(options.get(port_key))
+            effective_port = int(effective.get(port_key))
+        except (TypeError, ValueError):
+            continue
+        if requested_port != effective_port:
+            adjustments.append(
+                f"{label} port adjusted from {requested_port} to {effective_port} "
+                "to avoid a listener collision.",
+            )
+    return " ".join(adjustments)
+
+
 def _publish_template_config(
     options: dict[str, Any],
     *,
@@ -2863,10 +2891,13 @@ def _publish_template_config(
     audit_kind: str,
     overrides: dict[str, bool] | None = None,
 ) -> tuple[bool, str]:
+    requested_options = dict(options)
     config_text = _render_template_config_text(options, overrides=overrides)
+    adjustment_detail = _listener_adjustment_detail(requested_options, config_text)
     ok, detail = _publish_config_for_current_mode(config_text, source_kind=source_kind)
+    detail = " ".join(part for part in (str(detail or ""), adjustment_detail) if part)
     _record_audit_event(audit_kind, ok=ok, detail=detail, config_text=config_text)
-    return ok, str(detail or "")
+    return ok, detail
 
 
 def _active_proxy_management_url() -> str:
