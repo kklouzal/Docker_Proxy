@@ -1888,6 +1888,95 @@ def test_runtime_service_self_heal_defers_transient_adblock_icap_failures(
     assert restarts == [True]
 
 
+def test_runtime_service_self_heal_first_restart_is_not_suppressed_by_uptime(
+    monkeypatch,
+) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    runtime._adblock_icap_health_failures = 2
+    runtime._adblock_icap_last_restart_ts = None
+    runtime._supervisor_program_status = lambda program, **_kwargs: (
+        True,
+        "cicap_adblock RUNNING pid 123, uptime 0:10:00",
+    )
+    restarts: list[bool] = []
+    runtime._restart_adblock_service = lambda: (
+        restarts.append(True) or (True, "cicap_adblock restarted")
+    )
+    monkeypatch.setenv("ADBLOCK_ICAP_SELF_HEAL_FAILURE_THRESHOLD", "3")
+    monkeypatch.setenv("ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS", "600")
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(
+        runtime_module,
+        "_check_icap_adblock",
+        lambda **_kwargs: {"ok": False, "detail": "temporary timeout"},
+    )
+
+    result = runtime.self_heal_runtime_services_if_needed(reason="heartbeat")
+
+    assert result["changed"] is True
+    assert restarts == [True]
+
+
+def test_runtime_service_self_heal_serializes_concurrent_callers(monkeypatch) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    runtime._adblock_icap_health_failures = 0
+    runtime._adblock_icap_last_restart_ts = None
+    healthy = threading.Event()
+    restart_entered = threading.Event()
+    release_restart = threading.Event()
+    restarts: list[bool] = []
+    runtime._supervisor_program_status = lambda program, **_kwargs: (
+        True,
+        "cicap_adblock RUNNING pid 123, uptime 0:10:00",
+    )
+
+    def restart():
+        restarts.append(True)
+        restart_entered.set()
+        assert release_restart.wait(timeout=2)
+        healthy.set()
+        return True, "cicap_adblock restarted"
+
+    runtime._restart_adblock_service = restart
+    monkeypatch.setenv("ADBLOCK_ICAP_SELF_HEAL_FAILURE_THRESHOLD", "1")
+    monkeypatch.setenv("ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS", "0")
+    monkeypatch.setattr(
+        runtime_module,
+        "_check_icap_adblock",
+        lambda **_kwargs: {
+            "ok": healthy.is_set(),
+            "detail": "healthy" if healthy.is_set() else "not listening",
+        },
+    )
+
+    results: list[dict[str, object]] = []
+    first = threading.Thread(
+        target=lambda: results.append(
+            runtime.self_heal_runtime_services_if_needed(reason="heartbeat")
+        )
+    )
+    second = threading.Thread(
+        target=lambda: results.append(
+            runtime.self_heal_runtime_services_if_needed(reason="api")
+        )
+    )
+    first.start()
+    assert restart_entered.wait(timeout=2)
+    second.start()
+    release_restart.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert restarts == [True]
+    assert sorted(result["changed"] for result in results) == [False, True]
+
+
 def test_runtime_service_self_heal_waits_for_starting_adblock(monkeypatch) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 

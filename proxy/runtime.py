@@ -88,6 +88,7 @@ logger = logging.getLogger(__name__)
 
 _SUPERVISOR_CONTROL_LOCK = threading.RLock()
 _SYNC_CONTROL_LOCK = threading.RLock()
+_ADBLOCK_ICAP_SELF_HEAL_LOCK = threading.RLock()
 _ADBLOCK_ICAP_SELF_HEAL_FAILURE_THRESHOLD = 3
 _ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS = 600.0
 
@@ -1202,7 +1203,7 @@ class ProxyRuntime:
         self._clamav_health_cache_ts = 0.0
         self._clamav_health_cache_value: dict[str, Any] | None = None
         self._adblock_icap_health_failures = 0
-        self._adblock_icap_last_restart_ts = 0.0
+        self._adblock_icap_last_restart_ts: float | None = None
         self._recovery_capture_lock = threading.Lock()
         self._last_recovery_capture_mono = 0.0
         self._recovery_initial_capture_required = False
@@ -2463,6 +2464,25 @@ class ProxyRuntime:
         *,
         reason: str = "health check",
     ) -> dict[str, Any]:
+        try:
+            with _exclusive_runtime_lock(
+                "adblock-icap-self-heal",
+                _ADBLOCK_ICAP_SELF_HEAL_LOCK,
+            ):
+                return self._self_heal_runtime_services_if_needed_locked(reason=reason)
+        except _RuntimeLockError as exc:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "detail": str(exc),
+            }
+
+    def _self_heal_runtime_services_if_needed_locked(
+        self,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
         status_ok, status_detail = self._supervisor_program_status(
             "cicap_adblock",
             timeout_seconds=5,
@@ -2498,13 +2518,12 @@ class ProxyRuntime:
             self._adblock_icap_health_failures = failures
             threshold = _adblock_icap_self_heal_failure_threshold()
             now = time.monotonic()
-            last_restart_ts = float(
-                getattr(self, "_adblock_icap_last_restart_ts", 0.0) or 0.0
-            )
+            last_restart_ts = getattr(self, "_adblock_icap_last_restart_ts", None)
             cooldown_seconds = _adblock_icap_self_heal_restart_cooldown_seconds()
-            cooldown_remaining = max(
-                0.0,
-                cooldown_seconds - (now - last_restart_ts),
+            cooldown_remaining = (
+                max(0.0, cooldown_seconds - (now - float(last_restart_ts)))
+                if last_restart_ts is not None
+                else 0.0
             )
             if failures < threshold or cooldown_remaining > 0:
                 return {
