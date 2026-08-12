@@ -6,7 +6,7 @@ import socket
 import string
 import threading
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from ipaddress import IPv6Address, ip_address
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -51,6 +51,27 @@ from services.runtime_helpers import authority_has_empty_explicit_port
 
 def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
     return mysql_error_code(exc) in codes
+
+
+@dataclass
+class _CommittedLifecycleAttempt:
+    committed: bool = False
+
+
+@contextmanager
+def _preserve_committed_lifecycle_success():
+    """Suppress connection cleanup DB errors after a proven lifecycle commit.
+
+    Yields:
+        Mutable attempt state marked after the lifecycle commit succeeds.
+
+    """
+    attempt = _CommittedLifecycleAttempt()
+    try:
+        yield attempt
+    except DATABASE_ERRORS:
+        if not attempt.committed:
+            raise
 
 
 def _lifecycle_incomplete_retry_detail(result: ProxyLifecycleRunResult) -> str:
@@ -798,7 +819,10 @@ class ProxyRegistry:
 
         def _rename() -> None:
             nonlocal lifecycle_result
-            with self._connect() as conn:
+            with (
+                _preserve_committed_lifecycle_success() as attempt,
+                self._connect() as conn,
+            ):
                 with ExitStack() as stack:
                     for lock_name in sorted(
                         {
@@ -914,6 +938,7 @@ class ProxyRegistry:
                             )
                             conn.commit()
                             self._clear_lifecycle_write_cache(old_key, new_key)
+                            attempt.committed = True
                             return
                         msg = f"Proxy {old_key!r} is not registered."
                         raise ValueError(msg)
@@ -1047,6 +1072,7 @@ class ProxyRegistry:
                     )
                     conn.commit()
                     self._clear_lifecycle_write_cache(old_key, new_key)
+                    attempt.committed = True
 
         run_mysql_operation_with_retry(_rename)
         refreshed = self.get_proxy(new_key)
@@ -1061,7 +1087,10 @@ class ProxyRegistry:
 
         def _remove() -> None:
             nonlocal lifecycle_result, table_counts
-            with self._connect() as conn:
+            with (
+                _preserve_committed_lifecycle_success() as attempt,
+                self._connect() as conn,
+            ):
                 with mysql_advisory_lock(
                     conn,
                     self._lifecycle_lock_name(proxy_key),
@@ -1180,6 +1209,7 @@ class ProxyRegistry:
                     )
                     conn.commit()
                     self._clear_lifecycle_write_cache(proxy_key)
+                    attempt.committed = True
 
         run_mysql_operation_with_retry(_remove)
         result_complete = True if lifecycle_result is None else lifecycle_result.complete

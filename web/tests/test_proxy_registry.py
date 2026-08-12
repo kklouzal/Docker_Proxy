@@ -1021,6 +1021,8 @@ class _RollbackTrackingContext:
     def __exit__(self, exc_type, exc, tb) -> bool:
         if exc_type is None:
             self.conn.commit()
+            if self.conn.fail_cleanup_after_commit:
+                raise self.conn.cleanup_error
         else:
             self.conn.rollback()
         return False
@@ -1052,6 +1054,8 @@ class _RegistryFaultConn:
 
         self.registry_module = registry_module
         self.deadlock_error = pymysql.OperationalError(1213, "deadlock victim")
+        self.cleanup_error = pymysql.OperationalError(2013, "lost during cleanup")
+        self.fail_cleanup_after_commit = False
         self.fail_lifecycle_once = fail_lifecycle_once
         self.attempts = 0
         self.commits = 0
@@ -1300,6 +1304,41 @@ def test_remove_proxy_retries_deadlock_as_whole_transaction_without_partial_meta
     assert conn.aliases == {}
     assert conn.tombstones == {"edge-old": ("removed", "")}
     assert conn.scoped_rows == []
+
+
+@pytest.mark.parametrize("action", ["rename", "remove"])
+def test_proxy_lifecycle_does_not_report_failure_after_committed_cleanup_error(
+    monkeypatch, action
+):
+    proxy_registry = _proxy_registry()
+    conn = _RegistryFaultConn(proxy_registry, fail_lifecycle_once=False)
+    conn.proxy_rows["edge-keep"] = {**conn.select_row, "proxy_id": "edge-keep"}
+    conn.snapshot_initial()
+    conn.fail_cleanup_after_commit = True
+    registry = proxy_registry.ProxyRegistry()
+    registry.init_db = lambda: None  # type: ignore[method-assign]
+    registry._connect = conn.context  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        proxy_registry, "prepare_proxy_lifecycle", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        proxy_registry, "rename_proxy_scoped_rows", conn.rename_scoped_rows
+    )
+    monkeypatch.setattr(
+        proxy_registry, "remove_proxy_scoped_rows", conn.remove_scoped_rows
+    )
+    registry.get_proxy = lambda proxy_id: proxy_registry.ProxyInstance(  # type: ignore[method-assign]
+        **{**conn.select_row, "proxy_id": str(proxy_id), "display_name": "Edge New"}
+    )
+
+    result = (
+        registry.rename_proxy("edge-old", "edge-new", display_name="Edge New")
+        if action == "rename"
+        else registry.remove_proxy("edge-old")
+    )
+
+    assert result.proxy_id == ("edge-new" if action == "rename" else "edge-old")
+    assert conn.attempts == 1
 
 
 def test_concurrent_rename_and_remove_same_source_serializes_without_hijack(tmp_path):
