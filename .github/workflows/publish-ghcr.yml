@@ -1,16 +1,17 @@
 name: Publish Docker images to GHCR
 
 on:
+  pull_request:
+    branches: ["main"]
   push:
     branches: ["main"]
     tags: ["v*"]
   workflow_dispatch:
 
+# Pull requests, including Dependabot PRs, run the complete release gate with a
+# read-only token and no repository secrets. Publishing remains non-PR only.
 permissions:
   contents: read
-  packages: write
-  attestations: write
-  id-token: write
 
 env:
   REGISTRY: ghcr.io
@@ -198,6 +199,12 @@ jobs:
         run: docker compose -f docker-compose.yml -f docker-compose.live-tests.yml down -v --remove-orphans
 
   publish-images:
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
     runs-on: ubuntu-latest
     timeout-minutes: 90
     needs: live-tests
