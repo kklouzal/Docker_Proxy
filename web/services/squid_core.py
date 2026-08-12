@@ -359,19 +359,12 @@ class SquidController:
         normalized = self.normalize_config_text(candidate)
         valid, validation_detail = self.validate_config_text(normalized)
         if not valid:
-            if "timed out" in (validation_detail or "").lower():
-                detail_parts.append(
-                    f"Validation of last-known-good config from {source} timed out; proceeding with restore because this file was previously applied successfully.",
-                )
-                if validation_detail:
-                    detail_parts.append(validation_detail)
-            else:
-                detail_parts.append(
-                    f"Last-known-good config from {source} failed validation.",
-                )
-                if validation_detail:
-                    detail_parts.append(validation_detail)
-                return False, "\n".join(part for part in detail_parts if part).strip()
+            detail_parts.append(
+                f"Last-known-good config from {source} could not be validated; rollback was not applied.",
+            )
+            if validation_detail:
+                detail_parts.append(validation_detail)
+            return False, "\n".join(part for part in detail_parts if part).strip()
 
         try:
             self._atomic_write_file(self.squid_conf_path, normalized)

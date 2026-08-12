@@ -3409,6 +3409,35 @@ def test_squid_controller_validation_timeout_returns_actionable_detail(
     assert detail == "Squid config validation timed out after 15 seconds."
 
 
+def test_squid_controller_rollback_fails_closed_when_validation_times_out(
+    tmp_path,
+) -> None:
+    from services.squid_core import SquidController  # type: ignore
+
+    squid_conf = tmp_path / "squid.conf"
+    persisted_conf = tmp_path / "persisted.conf"
+    squid_conf.write_text("workers 1\n# current\n", encoding="utf-8")
+    persisted_conf.write_text("workers 1\n# prior\n", encoding="utf-8")
+
+    controller = SquidController(str(squid_conf))
+    controller.persisted_squid_conf_path = str(persisted_conf)
+    controller.validate_config_text = lambda _text: (
+        False,
+        "Squid config validation timed out after 15 seconds.",
+    )
+    controller.restart_squid = lambda: (_ for _ in ()).throw(
+        AssertionError("unvalidated rollback material must not be started"),
+    )
+
+    ok, detail = controller.restore_last_known_good_config(reason="operator rollback")
+
+    assert ok is False
+    assert "could not be validated; rollback was not applied" in detail
+    assert "timed out" in detail
+    assert squid_conf.read_text(encoding="utf-8") == "workers 1\n# current\n"
+    assert persisted_conf.read_text(encoding="utf-8") == "workers 1\n# prior\n"
+
+
 def test_squid_controller_extracts_all_http_listener_ports(tmp_path) -> None:
     from services.squid_core import SquidController  # type: ignore
 
