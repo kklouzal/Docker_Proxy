@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import multiprocessing
 import stat
 import sys
 from pathlib import Path
@@ -15,6 +16,97 @@ def _materialized_files_module():
     from services import materialized_files  # type: ignore
 
     return materialized_files
+
+
+def _overlapping_writer(
+    targets: tuple[str, str],
+    first_replaced,
+    permit_failure,
+    writer_started,
+    writer_done,
+    failing: bool,
+) -> None:
+    materialized_files = _materialized_files_module()
+    if failing:
+        real_replace = materialized_files.os.replace
+        replace_count = 0
+
+        def fail_second_replace(source, destination) -> None:
+            nonlocal replace_count
+            replace_count += 1
+            if replace_count == 1:
+                real_replace(source, destination)
+                first_replaced.set()
+                assert permit_failure.wait(10)
+                return
+            if replace_count == 2:
+                raise OSError(errno.EIO, "injected late publish failure")
+            real_replace(source, destination)
+
+        materialized_files.os.replace = fail_second_replace
+        try:
+            materialized_files.write_managed_text_files(
+                (targets[0], "failed-a\n"), (targets[1], "failed-b\n")
+            )
+        except OSError:
+            return
+        msg = "failing writer unexpectedly succeeded"
+        raise AssertionError(msg)
+
+    writer_started.set()
+    materialized_files.write_managed_text_files(
+        (targets[0], "success-a\n"), (targets[1], "success-b\n")
+    )
+    writer_done.set()
+
+
+def test_write_managed_text_files_serializes_cross_process_rollback(tmp_path) -> None:
+    targets = (str(tmp_path / "a.conf"), str(tmp_path / "b.conf"))
+    for target in targets:
+        Path(target).write_text("old\n", encoding="utf-8")
+
+    context = multiprocessing.get_context("fork")
+    first_replaced = context.Event()
+    permit_failure = context.Event()
+    writer_started = context.Event()
+    writer_done = context.Event()
+    failing_writer = context.Process(
+        target=_overlapping_writer,
+        args=(
+            targets,
+            first_replaced,
+            permit_failure,
+            writer_started,
+            writer_done,
+            True,
+        ),
+    )
+    successful_writer = context.Process(
+        target=_overlapping_writer,
+        args=(
+            targets,
+            first_replaced,
+            permit_failure,
+            writer_started,
+            writer_done,
+            False,
+        ),
+    )
+
+    failing_writer.start()
+    assert first_replaced.wait(10)
+    successful_writer.start()
+    assert writer_started.wait(10)
+    assert not writer_done.wait(0.25)
+    permit_failure.set()
+    failing_writer.join(10)
+    successful_writer.join(10)
+
+    assert failing_writer.exitcode == 0
+    assert successful_writer.exitcode == 0
+    assert writer_done.is_set()
+    assert Path(targets[0]).read_text(encoding="utf-8") == "success-a\n"
+    assert Path(targets[1]).read_text(encoding="utf-8") == "success-b\n"
 
 
 def test_write_managed_text_files_rolls_back_publish_on_directory_fsync_io_failure(

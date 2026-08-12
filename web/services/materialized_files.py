@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
+import hashlib
 import os
 import pathlib
 import tempfile
@@ -22,25 +24,52 @@ def _managed_path_key(path: str) -> str:
     return str(pathlib.Path(path).resolve(strict=False))
 
 
-def _locks_for_paths(paths: list[str]) -> list[threading.Lock]:
+def _locks_for_paths(paths: list[str]) -> list[tuple[str, threading.Lock]]:
     path_keys = sorted({_managed_path_key(path) for path in paths})
     with _MANAGED_PATH_LOCKS_GUARD:
         return [
-            _MANAGED_PATH_LOCKS.setdefault(path_key, threading.Lock())
+            (path_key, _MANAGED_PATH_LOCKS.setdefault(path_key, threading.Lock()))
             for path_key in path_keys
         ]
 
 
+def _interprocess_lock_path(path_key: str) -> pathlib.Path:
+    target = pathlib.Path(path_key)
+    digest = hashlib.sha256(path_key.encode()).hexdigest()
+    return target.parent / f".materialized-lock-{digest}"
+
+
 @contextlib.contextmanager
 def _locked_materialized_paths(paths: list[str]) -> Iterator[None]:
-    locks = _locks_for_paths(paths)
+    keyed_locks = _locks_for_paths(paths)
     acquired: list[threading.Lock] = []
+    lock_files: list[int] = []
     try:
-        for lock in locks:
+        for _path_key, lock in keyed_locks:
             lock.acquire()
             acquired.append(lock)
+        for path_key, _lock in keyed_locks:
+            lock_path = _interprocess_lock_path(path_key)
+            lock_path.parent.mkdir(exist_ok=True, parents=True)
+            flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            try:
+                fd = os.open(lock_path, flags, 0o600)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError:
+                with contextlib.suppress(UnboundLocalError):
+                    os.close(fd)
+                msg = "Unable to serialize managed file update"
+                raise RuntimeError(msg) from None
+            lock_files.append(fd)
         yield
     finally:
+        for fd in reversed(lock_files):
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            with contextlib.suppress(OSError):
+                os.close(fd)
         for lock in reversed(acquired):
             lock.release()
 
