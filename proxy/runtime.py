@@ -3718,6 +3718,27 @@ class ProxyRuntime:
                 interval_seconds=30.0,
             )
 
+    def stop_background_tasks(self, *, timeout: float = 10.0) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        ok = True
+        stoppers = (
+            getattr(self.live_stats_store, "stop_background", None),
+            getattr(self.diagnostic_store, "stop_background", None),
+            getattr(self.timeseries_store, "stop_background", None),
+            getattr(self.ssl_errors_store, "stop_background", None),
+            getattr(self.adblock_store, "stop_blocklog_background", None),
+        )
+        for stopper in stoppers:
+            if not callable(stopper):
+                continue
+            try:
+                remaining = max(0.0, deadline - time.monotonic())
+                ok = bool(stopper(timeout=remaining)) and ok
+            except Exception:
+                ok = False
+                logger.exception("Failed to stop proxy background telemetry task")
+        return ok
+
     def collect_clamav_health(self, *, force: bool = False) -> dict[str, Any]:
         now_mono = time.monotonic()
         try:

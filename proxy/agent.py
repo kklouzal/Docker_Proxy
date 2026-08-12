@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import signal
 import threading
 import time
 
@@ -222,9 +223,20 @@ def start_agent() -> None:
 
 
 def main() -> None:
+    stop_event = threading.Event()
+
+    def request_shutdown(_signum, _frame) -> None:
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGINT, request_shutdown)
     start_agent()
-    while True:
-        time.sleep(3600)
+    stop_event.wait()
+    runtime = get_runtime()
+    if not runtime.stop_background_tasks(timeout=10.0):
+        logger.warning(
+            "Proxy background telemetry shutdown exceeded its flush deadline"
+        )
 
 
 if __name__ == "__main__":

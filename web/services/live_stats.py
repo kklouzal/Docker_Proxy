@@ -147,6 +147,8 @@ class LiveStatsStore:
 
         self._started = False
         self._start_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
         self._db_initialized = False
         self._db_init_lock = threading.Lock()
 
@@ -575,7 +577,8 @@ class LiveStatsStore:
         )
         with self._connect() as conn:
             physical_tables = tuple(
-                (self._table(conn, table), order_by) for table, order_by in logical_tables
+                (self._table(conn, table), order_by)
+                for table, order_by in logical_tables
             )
         for table, order_by in physical_tables:
             delete_older_than_in_chunks(
@@ -880,8 +883,17 @@ class LiveStatsStore:
                 name="live-stats-tailer",
                 daemon=True,
             )
+            self._stop_event.clear()
             t.start()
+            self._thread = t
             self._started = True
+
+    def stop_background(self, *, timeout: float = 5.0) -> bool:
+        self._stop_event.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(max(0.0, timeout))
+        return thread is None or not thread.is_alive()
 
     def _tail_loop(self) -> None:
         # Seed so the page is useful immediately.
@@ -942,7 +954,7 @@ class LiveStatsStore:
         pending = 0
         last_commit = time.monotonic()
 
-        while True:
+        while not self._stop_event.is_set():
             try:
                 if not pathlib.Path(path).exists():
                     time.sleep(max(1.0, poll_interval))
@@ -993,7 +1005,7 @@ class LiveStatsStore:
                 with pathlib.Path(path).open(encoding="utf-8", errors="replace") as f:
                     # Start at end so we don't reprocess the whole file.
                     f.seek(0, os.SEEK_END)
-                    while True:
+                    while not self._stop_event.is_set():
                         line = f.readline()
                         if line:
                             try:
@@ -1123,6 +1135,16 @@ class LiveStatsStore:
                             break
 
                         time.sleep(poll_interval)
+                    if self._stop_event.is_set():
+                        try:
+                            flush_pending()
+                        except Exception:
+                            log_exception_throttled(
+                                logger,
+                                "live_stats.shutdown_flush",
+                                interval_seconds=300.0,
+                                message="Background telemetry final flush failed during shutdown",
+                            )
             except DATABASE_ERRORS as exc:
                 log_database_unavailable(
                     logger,

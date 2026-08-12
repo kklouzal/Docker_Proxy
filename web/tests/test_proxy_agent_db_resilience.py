@@ -787,3 +787,72 @@ def test_proxy_runtime_background_task_startup_is_isolated_and_retryable(
         "ssl_errors",
         "adblock",
     ]
+
+
+def test_runtime_stop_background_tasks_uses_one_bounded_shared_deadline(monkeypatch):
+    from proxy.runtime import ProxyRuntime
+
+    calls = []
+
+    class Store:
+        def __init__(self, name):
+            self.name = name
+
+        def stop_background(self, *, timeout):
+            calls.append((self.name, timeout))
+            return True
+
+    class Adblock:
+        def stop_blocklog_background(self, *, timeout):
+            calls.append(("adblock", timeout))
+            return True
+
+    runtime = ProxyRuntime.__new__(ProxyRuntime)
+    runtime.live_stats_store = Store("live")
+    runtime.diagnostic_store = Store("diagnostic")
+    runtime.timeseries_store = Store("timeseries")
+    runtime.ssl_errors_store = Store("ssl")
+    runtime.adblock_store = Adblock()
+    ticks = iter((100.0, 101.0, 102.0, 103.0, 104.0, 105.0))
+    monkeypatch.setattr("proxy.runtime.time.monotonic", lambda: next(ticks))
+
+    assert runtime.stop_background_tasks(timeout=10.0) is True
+    assert calls == [
+        ("live", 9.0),
+        ("diagnostic", 8.0),
+        ("timeseries", 7.0),
+        ("ssl", 6.0),
+        ("adblock", 5.0),
+    ]
+
+
+def test_runtime_stop_background_tasks_continues_after_failure():
+    from proxy.runtime import ProxyRuntime
+
+    calls = []
+
+    class Store:
+        def __init__(self, name, result=True):
+            self.name = name
+            self.result = result
+
+        def stop_background(self, *, timeout):
+            calls.append(self.name)
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    class Adblock:
+        def stop_blocklog_background(self, *, timeout):
+            calls.append("adblock")
+            return True
+
+    runtime = ProxyRuntime.__new__(ProxyRuntime)
+    runtime.live_stats_store = Store("live", False)
+    runtime.diagnostic_store = Store("diagnostic", RuntimeError("boom"))
+    runtime.timeseries_store = Store("timeseries")
+    runtime.ssl_errors_store = Store("ssl")
+    runtime.adblock_store = Adblock()
+
+    assert runtime.stop_background_tasks(timeout=1.0) is False
+    assert calls == ["live", "diagnostic", "timeseries", "ssl", "adblock"]

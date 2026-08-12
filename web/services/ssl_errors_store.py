@@ -215,6 +215,8 @@ class SslErrorsStore:
 
         self._started = False
         self._start_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
         self._pending_error: dict[str, Any] | None = None
         self._db_initialized = False
         self._db_init_lock = threading.Lock()
@@ -843,8 +845,17 @@ class SslErrorsStore:
                 name="ssl-errors-tailer",
                 daemon=True,
             )
+            self._stop_event.clear()
             t.start()
+            self._thread = t
             self._started = True
+
+    def stop_background(self, *, timeout: float = 5.0) -> bool:
+        self._stop_event.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(max(0.0, timeout))
+        return thread is None or not thread.is_alive()
 
     def _tail_loop(self) -> None:
         commit_batch = _env_int(
@@ -869,7 +880,7 @@ class SslErrorsStore:
         path = self.cache_log_path
         last_inode: int | None = None
 
-        while True:
+        while not self._stop_event.is_set():
             try:
                 if not pathlib.Path(path).exists():
                     time.sleep(max(1.0, poll_interval))
@@ -915,7 +926,7 @@ class SslErrorsStore:
                         except Exception:
                             return None
 
-                    while True:
+                    while not self._stop_event.is_set():
                         if verify_cursor:
                             verify_cursor = False
                             current_file_version = open_file_version()
@@ -1055,6 +1066,16 @@ class SslErrorsStore:
                         cursor_file_version = open_file_version()
                         verify_cursor = True
                         time.sleep(poll_interval)
+                    if self._stop_event.is_set():
+                        try:
+                            flush_pending()
+                        except Exception:
+                            log_exception_throttled(
+                                logger,
+                                "ssl_errors_store.shutdown_flush",
+                                interval_seconds=300.0,
+                                message="Background telemetry final flush failed during shutdown",
+                            )
             except DATABASE_ERRORS as exc:
                 log_database_unavailable(
                     logger,

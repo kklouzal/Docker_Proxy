@@ -118,6 +118,8 @@ class AdblockStore:
 
         self._blocklog_started = False
         self._blocklog_lock = threading.Lock()
+        self._blocklog_stop_event = threading.Event()
+        self._blocklog_thread: threading.Thread | None = None
         self._db_initialized = False
         self._db_init_lock = threading.Lock()
         self._last_events_prune_ts = 0
@@ -402,8 +404,17 @@ class AdblockStore:
                 name="adblock-cicap-tailer",
                 daemon=True,
             )
+            self._blocklog_stop_event.clear()
             t.start()
+            self._blocklog_thread = t
             self._blocklog_started = True
+
+    def stop_blocklog_background(self, *, timeout: float = 5.0) -> bool:
+        self._blocklog_stop_event.set()
+        thread = self._blocklog_thread
+        if thread is not None:
+            thread.join(max(0.0, timeout))
+        return thread is None or not thread.is_alive()
 
     def _seed_from_recent_log(self, conn, max_lines: int = 5000) -> None:
         lines = self._read_last_lines(self.cicap_access_log_path, max_lines=max_lines)
@@ -422,7 +433,7 @@ class AdblockStore:
         return [line for line in lines if line.strip()]
 
     def _blocklog_tail_loop(self) -> None:
-        while True:
+        while not self._blocklog_stop_event.is_set():
             try:
                 path = self.cicap_access_log_path
                 if path and pathlib.Path(path).exists():

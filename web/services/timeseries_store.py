@@ -117,6 +117,8 @@ class TimeSeriesStore:
     def __init__(self) -> None:
         self._started = False
         self._start_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
         self._db_initialized = False
         self._db_init_lock = threading.Lock()
 
@@ -498,7 +500,7 @@ class TimeSeriesStore:
 
             def loop() -> None:
                 next_rollup_at = time.monotonic() + initial_jitter + rollup_interval
-                while True:
+                while not self._stop_event.is_set():
                     now_monotonic = time.monotonic()
                     try:
                         if sample_backoff.can_attempt(now_monotonic):
@@ -561,8 +563,17 @@ class TimeSeriesStore:
                     time.sleep(1.0)
 
             t = threading.Thread(target=loop, name="timeseries-sampler", daemon=True)
+            self._stop_event.clear()
             t.start()
+            self._thread = t
             self._started = True
+
+    def stop_background(self, *, timeout: float = 5.0) -> bool:
+        self._stop_event.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(max(0.0, timeout))
+        return thread is None or not thread.is_alive()
 
 
 _store: TimeSeriesStore | None = None
