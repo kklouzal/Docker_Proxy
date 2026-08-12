@@ -19,6 +19,7 @@ DEFAULT_GITHUB_REPOSITORY = "kklouzal/Docker_Proxy"
 _GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 _GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 _GITHUB_BRANCH_FORBIDDEN_CHARS = frozenset(" ~^:?*[\\")
+_GITHUB_COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _MAX_GITHUB_API_RESPONSE_BYTES = 512 * 1024
 _MAX_VERSION_STATUS_CACHE_ENTRIES = 128
 _CACHE_LOCK_STRIPES = 16
@@ -232,6 +233,24 @@ class VersionStatusClient:
             raise RuntimeError(msg)
         return data
 
+    def _resolve_branch_tip(self) -> str:
+        branch_ref = f"refs/heads/{self.branch}"
+        payload = self._api_get(
+            "git/ref/heads/" + urllib.parse.quote(self.branch, safe="")
+        )
+        if payload.get("ref") != branch_ref:
+            msg = "GitHub branch ref response has an unexpected identity."
+            raise RuntimeError(msg)
+        target = payload.get("object")
+        if not isinstance(target, dict) or target.get("type") != "commit":
+            msg = "GitHub branch ref response has an invalid target."
+            raise RuntimeError(msg)
+        tip = _clean(target.get("sha"))
+        if not _GITHUB_COMMIT_SHA_RE.fullmatch(tip):
+            msg = "GitHub branch ref response has an invalid commit identity."
+            raise RuntimeError(msg)
+        return tip.lower()
+
     def compare_revision(
         self,
         revision: object | None,
@@ -289,23 +308,23 @@ class VersionStatusClient:
             return cached[1]
 
         try:
+            # Resolve the mutable branch to an authoritative commit first.  The
+            # compare is then frozen to that identity, while a later one-item page
+            # avoids the potentially large changed-files list on page one.
+            latest_revision = self._resolve_branch_tip()
             compare = self._api_get(
                 "compare/"
                 + urllib.parse.quote(current, safe="")
                 + "..."
-                + urllib.parse.quote(self.branch, safe="")
+                + urllib.parse.quote(latest_revision, safe="")
+                + "?per_page=1&page=2"
             )
             status, main_commits_ahead, running_commits_ahead = (
                 _validated_compare_summary(compare)
             )
-            commits = compare.get("commits")
-            latest_commit = commits[-1] if isinstance(commits, list) and commits else {}
-            latest_revision = _clean(
-                latest_commit.get("sha") if isinstance(latest_commit, dict) else ""
-            )
             if status == "identical":
                 result = CompareResult(
-                    "ok", 0, current, f"Running commit matches {self.branch}."
+                    "ok", 0, latest_revision, f"Running commit matches {self.branch}."
                 )
             elif status == "ahead":
                 result = CompareResult(

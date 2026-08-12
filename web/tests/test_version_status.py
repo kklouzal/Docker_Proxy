@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import threading
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -40,6 +41,14 @@ def _json_response(payload: dict[str, Any]) -> _Response:
     return _Response(json.dumps(payload).encode("utf-8"))
 
 
+def _branch_ref_response(request, sha: str = "f" * 40) -> _Response:
+    branch = request.full_url.split("/git/ref/heads/", 1)[1]
+    branch = urllib.parse.unquote(branch)
+    return _json_response(
+        {"ref": f"refs/heads/{branch}", "object": {"type": "commit", "sha": sha}}
+    )
+
+
 def test_current_component_metadata_preserves_published_image_identity(
     monkeypatch,
 ) -> None:
@@ -64,7 +73,9 @@ def test_current_component_metadata_preserves_published_image_identity(
 
 def test_current_component_status_counts_commits_behind_from_compare_api() -> None:
     def urlopen(request, *, timeout):
-        assert "compare/abc123...main" in request.full_url
+        if "/git/ref/heads/" in request.full_url:
+            return _branch_ref_response(request)
+        assert "compare/abc123..." + ("f" * 40) in request.full_url
         assert abs(timeout - 0.5) < 0.001
         return _json_response(
             {
@@ -72,10 +83,6 @@ def test_current_component_status_counts_commits_behind_from_compare_api() -> No
                 "ahead_by": 3,
                 "behind_by": 0,
                 "total_commits": 3,
-                "commits": [
-                    {"sha": "badc0ffee"},
-                    {"sha": "feedfacecafebeef"},
-                ],
             }
         )
 
@@ -93,11 +100,13 @@ def test_current_component_status_counts_commits_behind_from_compare_api() -> No
 
     assert status["state"] == "outdated"
     assert status["commits_behind"] == 3
-    assert status["latest_revision_short"] == "feedfacecafe"
+    assert status["latest_revision_short"] == "ffffffffffff"
 
 
 def test_compare_revision_identical_main_is_ok() -> None:
     def urlopen(_request, *, timeout):
+        if "/git/ref/heads/" in _request.full_url:
+            return _branch_ref_response(_request)
         return _json_response(
             {
                 "status": "identical",
@@ -113,7 +122,78 @@ def test_compare_revision_identical_main_is_ok() -> None:
 
     assert status.state == "ok"
     assert status.commits_behind == 0
-    assert status.latest_revision == "abc123"
+    assert status.latest_revision == "f" * 40
+
+
+def test_compare_revision_freezes_branch_tip_and_needs_no_paginated_head_commit() -> (
+    None
+):
+    tip = "a" * 40
+    seen_urls: list[str] = []
+
+    def urlopen(request, *, timeout):
+        seen_urls.append(request.full_url)
+        if "/git/ref/heads/" in request.full_url:
+            return _branch_ref_response(request, tip)
+        return _json_response(
+            {
+                "status": "ahead",
+                "ahead_by": 1,
+                "behind_by": 0,
+                "total_commits": 1,
+                "commits": [],
+            }
+        )
+
+    status = VersionStatusClient(
+        repository="owner/repo", branch="release/next", urlopen=urlopen
+    ).compare_revision("abc123")
+
+    assert status.state == "outdated"
+    assert status.latest_revision == tip
+    assert seen_urls == [
+        "https://api.github.com/repos/owner/repo/git/ref/heads/release%2Fnext",
+        f"https://api.github.com/repos/owner/repo/compare/abc123...{tip}?per_page=1&page=2",
+    ]
+
+
+def test_compare_revision_rejects_malformed_authoritative_tip_without_compare() -> None:
+    seen_urls: list[str] = []
+
+    def urlopen(request, *, timeout):
+        seen_urls.append(request.full_url)
+        return _json_response(
+            {
+                "ref": "refs/heads/main",
+                "object": {"type": "commit", "sha": "not-a-full-commit-sha"},
+            }
+        )
+
+    status = VersionStatusClient(
+        repository="owner/repo", urlopen=urlopen
+    ).compare_revision("abc123")
+
+    assert status.state == "unknown"
+    assert status.commits_behind is None
+    assert "invalid commit identity" in status.detail
+    assert seen_urls == ["https://api.github.com/repos/owner/repo/git/ref/heads/main"]
+
+
+def test_compare_revision_rejects_mismatched_authoritative_ref_identity() -> None:
+    def urlopen(request, *, timeout):
+        return _json_response(
+            {
+                "ref": "refs/heads/other",
+                "object": {"type": "commit", "sha": "a" * 40},
+            }
+        )
+
+    status = VersionStatusClient(
+        repository="owner/repo", urlopen=urlopen
+    ).compare_revision("abc123")
+
+    assert status.state == "unknown"
+    assert "unexpected identity" in status.detail
 
 
 def test_compare_revision_oversized_github_response_is_bounded_unknown() -> None:
@@ -123,6 +203,8 @@ def test_compare_revision_oversized_github_response_is_bounded_unknown() -> None
     )
 
     def urlopen(_request, *, timeout):
+        if "/git/ref/heads/" in _request.full_url:
+            return _branch_ref_response(_request)
         return response
 
     client = VersionStatusClient(repository="owner/repo", urlopen=urlopen)
@@ -143,6 +225,8 @@ def test_compare_revision_first_oversized_failure_is_not_ttl_cached() -> None:
     calls = {"count": 0}
 
     def urlopen(_request, *, timeout):
+        if "/git/ref/heads/" in _request.full_url:
+            return _branch_ref_response(_request)
         calls["count"] += 1
         if calls["count"] == 1:
             return _Response(b"x" * (_MAX_GITHUB_API_RESPONSE_BYTES + 1))
@@ -176,6 +260,8 @@ def test_default_client_failure_is_retried_and_can_recover(
     calls = {"count": 0}
 
     def urlopen(_request, *, timeout):
+        if "/git/ref/heads/" in _request.full_url:
+            return _branch_ref_response(_request)
         calls["count"] += 1
         if calls["count"] == 1:
             msg = "temporary outage"
@@ -201,6 +287,8 @@ def test_default_client_failure_is_retried_and_can_recover(
 
 def test_compare_revision_rejects_status_count_contradiction() -> None:
     def urlopen(_request, *, timeout):
+        if "/git/ref/heads/" in _request.full_url:
+            return _branch_ref_response(_request)
         return _json_response(
             {
                 "status": "identical",
@@ -221,6 +309,8 @@ def test_compare_revision_rejects_status_count_contradiction() -> None:
 
 def test_compare_revision_running_commit_ahead_of_main_warns() -> None:
     def urlopen(_request, *, timeout):
+        if "/git/ref/heads/" in _request.full_url:
+            return _branch_ref_response(_request)
         return _json_response(
             {
                 "status": "behind",
@@ -242,13 +332,14 @@ def test_compare_revision_running_commit_ahead_of_main_warns() -> None:
 
 def test_compare_revision_diverged_reports_main_and_running_counts() -> None:
     def urlopen(_request, *, timeout):
+        if "/git/ref/heads/" in _request.full_url:
+            return _branch_ref_response(_request)
         return _json_response(
             {
                 "status": "diverged",
                 "ahead_by": 4,
                 "behind_by": 2,
                 "total_commits": 4,
-                "commits": [{"sha": "feedfacecafebeef"}],
             }
         )
 
@@ -258,12 +349,14 @@ def test_compare_revision_diverged_reports_main_and_running_counts() -> None:
 
     assert status.state == "warn"
     assert status.commits_behind == 4
-    assert status.latest_revision == "feedfacecafebeef"
+    assert status.latest_revision == "f" * 40
     assert "(4 behind, 2 ahead)" in status.detail
 
 
 def test_compare_revision_rejects_path_like_repository_without_github_call() -> None:
     def urlopen(request, *, timeout):
+        if "/git/ref/heads/" in request.full_url:
+            return _branch_ref_response(request)
         msg = f"unexpected GitHub call to {request.full_url}"
         raise AssertionError(msg)
 
@@ -282,6 +375,8 @@ def test_compare_revision_rejects_unsafe_branch_config_without_github_call(
     monkeypatch.setenv("VERSION_STATUS_GITHUB_BRANCH", "refs/heads/main\nother")
 
     def urlopen(request, *, timeout):
+        if "/git/ref/heads/" in request.full_url:
+            return _branch_ref_response(request)
         msg = f"unexpected GitHub call to {request.full_url}"
         raise AssertionError(msg)
 
@@ -302,6 +397,8 @@ def test_compare_revision_preserves_safe_configured_branch_in_compare_url() -> N
     seen_urls: list[str] = []
 
     def urlopen(request, *, timeout):
+        if "/git/ref/heads/" in request.full_url:
+            return _branch_ref_response(request)
         seen_urls.append(request.full_url)
         return _json_response(
             {
@@ -322,7 +419,7 @@ def test_compare_revision_preserves_safe_configured_branch_in_compare_url() -> N
 
     assert status.state == "ok"
     assert seen_urls == [
-        "https://api.github.com/repos/owner/repo/compare/abc123...release%2F2026.07"
+        "https://api.github.com/repos/owner/repo/compare/abc123...ffffffffffffffffffffffffffffffffffffffff?per_page=1&page=2"
     ]
 
 
@@ -330,6 +427,8 @@ def test_compare_cache_marks_expired_success_stale_until_github_recovers() -> No
     calls = {"count": 0}
 
     def urlopen(_request, *, timeout):
+        if "/git/ref/heads/" in _request.full_url:
+            return _branch_ref_response(_request)
         calls["count"] += 1
         if calls["count"] == 1:
             return _json_response(
@@ -352,7 +451,6 @@ def test_compare_cache_marks_expired_success_stale_until_github_recovers() -> No
                 "ahead_by": 2,
                 "behind_by": 0,
                 "total_commits": 2,
-                "commits": [{"sha": "new-main-revision"}],
             }
         )
 
@@ -379,7 +477,7 @@ def test_compare_cache_marks_expired_success_stale_until_github_recovers() -> No
     assert current_cache_hit == current
     assert stale_after_failure.state == "warn"
     assert stale_after_failure.commits_behind == 0
-    assert stale_after_failure.latest_revision == "abc123"
+    assert stale_after_failure.latest_revision == "f" * 40
     assert "showing stale cached result" in stale_after_failure.detail
     assert "Running commit matches main" in stale_after_failure.detail
     assert "network down" in stale_after_failure.detail
@@ -388,7 +486,7 @@ def test_compare_cache_marks_expired_success_stale_until_github_recovers() -> No
     assert "request timed out" in stale_after_repeated_failure.detail
     assert recovered.state == "outdated"
     assert recovered.commits_behind == 2
-    assert recovered.latest_revision == "new-main-revision"
+    assert recovered.latest_revision == "f" * 40
     assert "stale" not in recovered.detail
     assert recovered_cache_hit == recovered
     assert calls["count"] == 4
@@ -400,6 +498,8 @@ def test_concurrent_compare_requests_for_one_revision_share_github_call() -> Non
     release_request = threading.Event()
 
     def urlopen(_request, *, timeout):
+        if "/git/ref/heads/" in _request.full_url:
+            return _branch_ref_response(_request)
         calls["count"] += 1
         request_started.set()
         assert release_request.wait(timeout=2)
@@ -429,6 +529,8 @@ def test_compare_cache_evicts_least_recently_used_revision_at_fixed_bound() -> N
     calls: list[str] = []
 
     def urlopen(request, *, timeout):
+        if "/git/ref/heads/" in request.full_url:
+            return _branch_ref_response(request)
         calls.append(request.full_url)
         return _json_response(
             {
@@ -467,6 +569,8 @@ def test_default_client_cache_isolates_revisions_and_tracks_config_changes(
     seen_urls: list[str] = []
 
     def urlopen(request, *, timeout):
+        if "/git/ref/heads/" in request.full_url:
+            return _branch_ref_response(request)
         seen_urls.append(request.full_url)
         if "revision-a" in request.full_url:
             return _json_response(
@@ -483,7 +587,6 @@ def test_default_client_cache_isolates_revisions_and_tracks_config_changes(
                 "ahead_by": 2,
                 "behind_by": 0,
                 "total_commits": 2,
-                "commits": [{"sha": "latest-revision"}],
             }
         )
 
@@ -504,14 +607,16 @@ def test_default_client_cache_isolates_revisions_and_tracks_config_changes(
     assert after_config_change["state"] == "ok"
     assert after_config_change["detail"] == "Running commit matches release/next."
     assert seen_urls == [
-        "https://api.github.com/repos/owner/repo/compare/revision-a...main",
-        "https://api.github.com/repos/owner/repo/compare/revision-b...main",
-        "https://api.github.com/repos/owner/repo/compare/revision-a...release%2Fnext",
+        "https://api.github.com/repos/owner/repo/compare/revision-a...ffffffffffffffffffffffffffffffffffffffff?per_page=1&page=2",
+        "https://api.github.com/repos/owner/repo/compare/revision-b...ffffffffffffffffffffffffffffffffffffffff?per_page=1&page=2",
+        "https://api.github.com/repos/owner/repo/compare/revision-a...ffffffffffffffffffffffffffffffffffffffff?per_page=1&page=2",
     ]
 
 
 def test_missing_running_commit_is_unknown_without_github_call() -> None:
     def urlopen(_request, *, timeout):
+        if "/git/ref/heads/" in _request.full_url:
+            return _branch_ref_response(_request)
         msg = "GitHub should not be called"
         raise AssertionError(msg)
 
@@ -555,6 +660,8 @@ def test_api_version_status_reuses_compare_cache_across_admin_and_proxy(
     calls = {"count": 0}
 
     def urlopen(_request, *, timeout):
+        if "/git/ref/heads/" in _request.full_url:
+            return _branch_ref_response(_request)
         calls["count"] += 1
         if calls["count"] == 2:
             return _json_response(
@@ -563,7 +670,6 @@ def test_api_version_status_reuses_compare_cache_across_admin_and_proxy(
                     "ahead_by": 1,
                     "behind_by": 0,
                     "total_commits": 1,
-                    "commits": [{"sha": "new-main-revision"}],
                 }
             )
         return _json_response(
