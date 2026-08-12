@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -263,3 +264,45 @@ def test_prune_to_last_events_bounds_old_events_within_same_proxy() -> None:
     assert deleted == 3
     assert [row["id"] for row in rows if row["proxy_id"] == "quiet"] == [3, 4]
     assert [row["id"] for row in rows if row["proxy_id"] == "noisy"] == [11, 12]
+
+
+def test_record_does_not_report_committed_event_failed_when_prune_fails(
+    monkeypatch,
+    caplog,
+) -> None:
+    executed: list[tuple[str, tuple[object, ...]]] = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def execute(self, sql: str, params: tuple[object, ...]) -> _FakeResult:
+            executed.append((" ".join(sql.split()), params))
+            return _FakeResult(rowcount=1)
+
+    @contextmanager
+    def unguarded(_conn, proxy_id: str):
+        yield type("Guard", (), {"proxy_id": proxy_id})()
+
+    store = AuditStore()
+    store._schema_ready = True
+    monkeypatch.setattr(store, "_connect", Connection)
+    monkeypatch.setattr(audit_store, "guarded_proxy_write", unguarded)
+    monkeypatch.setattr(audit_store, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(
+        store,
+        "_prune_to_last_events",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("prune unavailable")),
+    )
+
+    with caplog.at_level("ERROR", logger="services.audit_store"):
+        store.record("config_apply_manual", ok=True)
+
+    assert len(executed) == 1
+    assert executed[0][0].startswith("INSERT INTO audit_events")
+    assert executed[0][1][0] == "edge-a"
+    assert "event was recorded" in caplog.text
+    assert "prune unavailable" in caplog.text

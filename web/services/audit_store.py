@@ -11,6 +11,7 @@ from services.bounded_delete import (
     delete_where_in_chunks,
 )
 from services.db import connect
+from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
 from services.revision_lifecycle import ensure_index
@@ -142,7 +143,23 @@ class AuditStore:
 
         # Keep storage bounded (last 200 events per proxy) without an unbounded
         # delete in the request transaction that records the event.
-        self._prune_to_last_events(max_events=200, max_rows=default_chunk_size())
+        # The connection context above has already committed the audit event.
+        # Retention is follow-up maintenance, so its failure must not make a
+        # caller interpret the durable insert as failed and retry it.
+        try:
+            self._prune_to_last_events(
+                max_events=200,
+                max_rows=default_chunk_size(),
+            )
+        except Exception:
+            log_exception_throttled(
+                logger,
+                "audit-store-write-prune",
+                interval_seconds=300.0,
+                message=(
+                    "Audit event was recorded, but bounded retention cleanup failed."
+                ),
+            )
 
     def _prune_to_last_events(
         self,
