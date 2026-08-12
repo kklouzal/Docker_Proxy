@@ -266,10 +266,16 @@ def _validate_respmod_encapsulated_offsets(
         raise IcapProtocolError(message)
 
 
+def _is_single_encapsulated_header_block(header: bytes) -> bool:
+    """Return whether *header* contains exactly one complete HTTP header block."""
+    header_end = header.find(HEADER_END)
+    return header_end >= 0 and header_end == len(header) - len(HEADER_END)
+
+
 def _validate_respmod_encapsulated_header_boundaries(
     encapsulated_headers: bytes, offsets: dict[str, int]
 ) -> None:
-    """Reject RESPMOD offsets that split or overrun HTTP header sections."""
+    """Reject RESPMOD offsets that split, overrun, or combine HTTP headers."""
     response_header_offset = offsets["res-hdr"]
     terminal_offset = offsets.get("res-body", offsets.get("null-body"))
     if terminal_offset is None:  # pragma: no cover - offset validation guards this
@@ -278,12 +284,12 @@ def _validate_respmod_encapsulated_header_boundaries(
 
     if offsets.get("req-hdr") is not None:
         request_header = encapsulated_headers[:response_header_offset]
-        if not request_header.endswith(HEADER_END):
+        if not _is_single_encapsulated_header_block(request_header):
             message = "invalid RESPMOD encapsulated req-hdr boundary"
             raise IcapProtocolError(message)
 
     response_header = encapsulated_headers[response_header_offset:terminal_offset]
-    if not response_header.endswith(HEADER_END):
+    if not _is_single_encapsulated_header_block(response_header):
         message = "invalid RESPMOD encapsulated res-hdr boundary"
         raise IcapProtocolError(message)
 

@@ -3596,3 +3596,27 @@ def test_fail_open_placeholder_preserves_valid_respmod_offset_layouts() -> None:
     assert b"GET /download HTTP/1.1" not in response
     assert b"Content-Length: 5\r\n" in response
     assert b"5\r\nhello\r\n0\r\n\r\n" in response
+
+
+def test_respmod_boundary_rejects_multiple_header_blocks() -> None:
+    runner = _load_runner()
+    request_header = (
+        b"GET /download HTTP/1.1\r\nHost: example.test\r\n\r\n"
+        b"GET /smuggled HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    )
+    response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+    offsets = {
+        "req-hdr": 0,
+        "res-hdr": len(request_header),
+        "res-body": len(request_header) + len(response_header),
+    }
+
+    try:
+        runner._validate_respmod_encapsulated_boundaries(
+            request_header + response_header, offsets
+        )
+    except runner.IcapProtocolError as exc:
+        assert str(exc) == "invalid RESPMOD encapsulated req-hdr boundary"
+    else:
+        message = "multiple req-hdr blocks were accepted"
+        raise AssertionError(message)

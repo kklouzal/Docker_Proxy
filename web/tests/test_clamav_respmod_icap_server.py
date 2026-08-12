@@ -4432,3 +4432,25 @@ def test_respmod_runtime_args_reject_non_finite_timeout_env(
 
     assert math.isclose(args.clamd_timeout, 5.0)
     assert math.isclose(args.client_timeout, server.DEFAULT_CLIENT_TIMEOUT)
+
+
+def test_respmod_boundary_rejects_multiple_header_blocks() -> None:
+    server = _load_server()
+    request_header = (
+        b"GET /download HTTP/1.1\r\nHost: example.test\r\n\r\n"
+        b"GET /smuggled HTTP/1.1\r\nHost: example.test\r\n\r\n"
+    )
+    response_header = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+    offsets = {
+        "req-hdr": 0,
+        "res-hdr": len(request_header),
+        "res-body": len(request_header) + len(response_header),
+    }
+
+    with pytest.raises(
+        server.IcapProtocolError,
+        match="invalid RESPMOD encapsulated req-hdr boundary",
+    ):
+        server._validate_respmod_encapsulated_header_boundaries(
+            request_header + response_header, offsets
+        )
