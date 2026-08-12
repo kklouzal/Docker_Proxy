@@ -449,13 +449,6 @@ def test_restore_rejects_invalid_report_schedule_cadence_format_and_window() -> 
         (
             {
                 **_base_recovery_row("observability_report_schedules"),
-                "cadence": "hourly",
-            },
-            "cadence",
-        ),
-        (
-            {
-                **_base_recovery_row("observability_report_schedules"),
                 "report_format": "html",
             },
             "report_format",
@@ -475,31 +468,23 @@ def test_restore_rejects_invalid_report_schedule_cadence_format_and_window() -> 
             restore.build_restore_plan(bundle, "edge-01", now_ts=NOW)
 
 
-def test_restore_report_schedule_uses_shared_recipient_normalization_contract() -> None:
-    from services.report_schedule_recipients import normalize_report_schedule_recipients
-
-    assert restore.normalize_report_schedule_recipients is normalize_report_schedule_recipients
-
+def test_restore_report_schedule_discards_legacy_delivery_fields() -> None:
     row = {
         **_base_recovery_row("observability_report_schedules"),
-        "recipients": (
-            " Ops@example.com; alerts@Example.COM Ops@EXAMPLE.COM "
-            "ops@example.com ops@example.com "
-        ),
+        "cadence": "weekly",
+        "recipients": "legacy@example.com",
     }
-    bundle = _bundle_with_table_rows("observability_report_schedules", (row,))
-
-    plan = restore.build_restore_plan(bundle, "edge-01", now_ts=NOW)
-    schedule_table = next(
-        table
-        for table in plan.tables
+    plan = restore.build_restore_plan(
+        _bundle_with_table_rows("observability_report_schedules", (row,)),
+        "edge-01",
+        now_ts=NOW,
+    )
+    schedule = next(
+        table for table in plan.tables
         if table.table_name == "observability_report_schedules"
     )
-    recipients_index = schedule_table.columns.index("recipients")
-
-    assert schedule_table.rows[0][recipients_index] == (
-        "Ops@example.com, alerts@Example.COM, ops@example.com"
-    )
+    assert schedule.rows[0][schedule.columns.index("cadence")] == "manual"
+    assert schedule.rows[0][schedule.columns.index("recipients")] == ""
 
 
 def test_restore_report_schedule_maps_normalized_values_and_recovery_metadata_to_insert() -> None:
@@ -527,7 +512,7 @@ def test_restore_report_schedule_maps_normalized_values_and_recovery_metadata_to
     expected_insert_sql = (
         "INSERT INTO observability_report_schedules( proxy_id, enabled, name, cadence, recipients, pane, "
         "report_format, privacy, window_seconds, created_ts, updated_ts, next_run_ts, last_run_ts, last_status "
-        ") VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,'recovered')"
+        ") VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,'manual_export_only')"
     )
     assert [
         (sql, params)
@@ -540,8 +525,8 @@ def test_restore_report_schedule_maps_normalized_values_and_recovery_metadata_to
                 "edge-01",
                 0,
                 "Weekly executive",
-                "weekly",
-                "Ops@example.com, alerts@Example.COM",
+                "manual",
+                "",
                 "security",
                 "jsonl",
                 0,
@@ -608,21 +593,6 @@ def test_restore_normalizes_valid_pac_backup_proxy_url() -> None:
     )
 
     assert backup_table.rows == (("edge-01", "backup.example", 8443, 1),)
-
-
-def test_restore_rejects_report_schedule_with_invalid_or_sensitive_recipient() -> None:
-    row = {
-        **_base_recovery_row("observability_report_schedules"),
-        "recipients": "sensitive-person",
-    }
-    bundle = _bundle_with_table_rows("observability_report_schedules", (row,))
-
-    with pytest.raises(restore.ProxyRecoveryRestoreError) as excinfo:
-        restore.build_restore_plan(bundle, "edge-01", now_ts=NOW)
-
-    detail = str(excinfo.value)
-    assert "recipients" in detail
-    assert "sensitive-person" not in detail
 
 
 def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adoption() -> None:

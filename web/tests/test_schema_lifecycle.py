@@ -209,7 +209,7 @@ def test_schema_migration_failure_is_observable_and_retryable() -> None:
 
 def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
     all_specs = schema_lifecycle._migration_specs()
-    specs = all_specs[:-1]
+    specs = all_specs[:-2]
     versions = [spec.version for spec in all_specs]
     names = {spec.name for spec in all_specs}
 
@@ -240,7 +240,11 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "live_stats_seed_checkpoint",
         "diagnostic_icap_extended_metadata",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 25
+    assert schema_lifecycle.latest_schema_version() == 26
+    manual_spec = all_specs[-1]
+    assert manual_spec.version == 26
+    assert manual_spec.name == "observability_manual_export_preset_contract"
+    assert manual_spec.data_steps[0].name == "canonicalize_observability_manual_export_presets"
     assert specs[-9].version == 16
     assert specs[-9].name == "control_plane_identity"
     assert specs[-8].version == 17
@@ -301,7 +305,7 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
     ]
     assert specs[-2].data_steps[0].name == "application_ledger_evidence_completion_backfill"
     assert specs[-1].tables[0].table == "live_stats_seed_state"
-    assert [(column.table, column.name) for column in all_specs[-1].columns] == [
+    assert [(column.table, column.name) for column in all_specs[-2].columns] == [
         ("diagnostic_icap_events", "icap_service"),
         ("diagnostic_icap_events", "icap_outcome"),
         ("diagnostic_icap_events", "icap_status"),

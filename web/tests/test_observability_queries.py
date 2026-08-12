@@ -1753,26 +1753,15 @@ def test_save_report_schedule_returns_inserted_row_instead_of_sorted_first(
     )
 
 
-def test_save_report_schedule_normalizes_and_deduplicates_recipients(
-    monkeypatch,
-) -> None:
-
+def test_save_report_schedule_persists_manual_export_only_contract(monkeypatch) -> None:
     from services import observability_queries  # type: ignore
-    from services.report_schedule_recipients import (  # type: ignore
-        normalize_report_schedule_recipients,
-    )
-
-    assert (
-        observability_queries.normalize_report_schedule_recipients
-        is normalize_report_schedule_recipients
-    )
 
     class InsertResult:
         lastrowid = 31
 
     class FakeConnection:
         def __init__(self) -> None:
-            self.insert_params: tuple[object, ...] | None = None
+            self.insert_params = None
 
         def __enter__(self):
             return self
@@ -1782,33 +1771,21 @@ def test_save_report_schedule_normalizes_and_deduplicates_recipients(
 
         def execute(self, sql: str, params=()):
             text = " ".join(str(sql).split())
-            params_t = tuple(params or ())
             if "INSERT INTO observability_report_schedules" in text:
-                self.insert_params = params_t
+                self.insert_params = tuple(params)
+                assert "0,0,'manual_export_only'" in text
                 return InsertResult()
             if "WHERE proxy_id = %s AND id = %s" in text:
-                assert self.insert_params is not None
                 return SelectResult(self.insert_params)
             message = f"unexpected SQL: {text}"
             raise AssertionError(message)
 
     class SelectResult:
-        def __init__(self, insert_params: tuple[object, ...]) -> None:
-            self.insert_params = insert_params
+        def __init__(self, params) -> None:
+            self.params = params
 
         def fetchone(self):
-            return (
-                31,
-                self.insert_params[1],
-                self.insert_params[2],
-                self.insert_params[3],
-                self.insert_params[4],
-                self.insert_params[5],
-                self.insert_params[6],
-                self.insert_params[7],
-                self.insert_params[8],
-                self.insert_params[10],
-            )
+            return (31, *self.params[1:9], self.params[10])
 
     conn = FakeConnection()
     queries = observability_queries.ObservabilityQueries()
@@ -1816,68 +1793,12 @@ def test_save_report_schedule_normalizes_and_deduplicates_recipients(
     monkeypatch.setattr(queries, "_connect", lambda: conn)
 
     saved = queries.save_report_schedule(
-        name="Daily ops report",
-        cadence="daily",
-        recipients=(
-            " Ops@example.com; alerts@example.com "
-            "Ops@EXAMPLE.COM ops@example.com ops@example.com "
-            "reports+daily@example.co.uk "
-        ),
-        report_format="json",
+        name="Daily ops report", cadence="daily", recipients="sensitive-person"
     )
 
+    assert saved["cadence"] == "manual"
     assert saved["recipients"] == ""
-    assert conn.insert_params is not None
-    assert conn.insert_params[4] == (
-        "Ops@example.com, alerts@example.com, ops@example.com, "
-        "reports+daily@example.co.uk"
-    )
-
-
-@pytest.mark.parametrize(
-    ("recipients", "expected"),
-    [
-        ("ops@example.com ops@example.com", "ops@example.com"),
-        ("ops@Example.COM ops@example.com", "ops@Example.COM"),
-        ("Ops@example.com ops@example.com", "Ops@example.com, ops@example.com"),
-    ],
-)
-def test_report_schedule_recipient_deduplication_uses_mailbox_semantics(
-    recipients: str, expected: str
-) -> None:
-
-    from services.report_schedule_recipients import (  # type: ignore
-        normalize_report_schedule_recipients,
-    )
-
-    assert normalize_report_schedule_recipients(recipients) == expected
-
-
-@pytest.mark.parametrize(
-    "recipients",
-    [
-        "\nops@example.com",
-        "ops@example.com\n",
-        "\tops@example.com",
-        "ops@example.com\x7f",
-    ],
-)
-def test_report_schedule_recipient_normalization_rejects_outer_control_characters(
-    recipients: str,
-) -> None:
-
-    from services.report_schedule_recipients import (  # type: ignore
-        REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES,
-        normalize_report_schedule_recipients,
-    )
-
-    with pytest.raises(ValueError) as excinfo:
-        normalize_report_schedule_recipients(recipients)
-
-    assert (
-        str(excinfo.value) == REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES["control_chars"]
-    )
-    assert recipients not in str(excinfo.value)
+    assert conn.insert_params[3:5] == ("manual", "")
 
 
 def test_report_schedules_exclude_persisted_runtime_state_from_manual_presets(
@@ -1943,75 +1864,6 @@ def test_report_schedules_exclude_persisted_runtime_state_from_manual_presets(
             "updated_ts": 777777,
         }
     ]
-
-
-@pytest.mark.parametrize(
-    "recipients",
-    [
-        "ops@example.com,,alerts@example.com",
-        "ops@example.com, ;alerts@example.com",
-        "not-an-email",
-        "ops@example.com\r\nBcc: attacker@example.com",
-        "\nops@example.com",
-        "ops@example.com\n",
-        "\tops@example.com",
-        "ops@example.com\x7f",
-        "ops@example.com, alerts@",
-        ",ops@example.com",
-        "ops@example.com;",
-        ", ".join(f"recipient{idx:02d}@example.com" for idx in range(40)),
-    ],
-)
-def test_save_report_schedule_rejects_invalid_recipient_text(
-    monkeypatch, recipients: str
-) -> None:
-
-    from services import observability_queries  # type: ignore
-
-    queries = observability_queries.ObservabilityQueries()
-    monkeypatch.setattr(queries, "_ensure_report_schedule_db", lambda: None)
-    monkeypatch.setattr(
-        queries,
-        "_connect",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("invalid recipients should not be persisted"),
-        ),
-    )
-
-    with pytest.raises(ValueError):
-        queries.save_report_schedule(
-            name="Bad report",
-            cadence="daily",
-            recipients=recipients,
-        )
-
-
-def test_save_report_schedule_invalid_recipient_error_does_not_echo_input(
-    monkeypatch,
-) -> None:
-
-    from services import observability_queries  # type: ignore
-
-    queries = observability_queries.ObservabilityQueries()
-    monkeypatch.setattr(queries, "_ensure_report_schedule_db", lambda: None)
-    monkeypatch.setattr(
-        queries,
-        "_connect",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("invalid recipients should not be persisted"),
-        ),
-    )
-
-    with pytest.raises(ValueError) as excinfo:
-        queries.save_report_schedule(
-            name="Bad report",
-            cadence="daily",
-            recipients="very-sensitive-user",
-        )
-
-    detail = str(excinfo.value)
-    assert detail == "Report recipients must be valid email addresses."
-    assert "very-sensitive-user" not in detail
 
 
 def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_privacy(

@@ -42,7 +42,6 @@ class _ValidationConn:
         blocked_recovery_adoptions: int = 0,
         invalid_report_schedule_cadence: int = 0,
         invalid_report_schedule_format: int = 0,
-        report_schedule_recipients: tuple[object, ...] = ("ops@example.com",),
         invalid_report_schedule_times: int = 0,
         count_query_error_contains: str | None = None,
     ) -> None:
@@ -67,7 +66,6 @@ class _ValidationConn:
         self.blocked_recovery_adoptions = blocked_recovery_adoptions
         self.invalid_report_schedule_cadence = invalid_report_schedule_cadence
         self.invalid_report_schedule_format = invalid_report_schedule_format
-        self.report_schedule_recipients = report_schedule_recipients
         self.invalid_report_schedule_times = invalid_report_schedule_times
         self.count_query_error_contains = count_query_error_contains
 
@@ -160,13 +158,6 @@ class _ValidationConn:
             and "report_format not in" in text
         ):
             return _Result([{"n": self.invalid_report_schedule_format}])
-        if "select recipients from observability_report_schedules" in text:
-            return _Result(
-                [
-                    {"recipients": recipients}
-                    for recipients in self.report_schedule_recipients
-                ],
-            )
         if (
             "from observability_report_schedules" in text
             and "updated_ts < created_ts" in text
@@ -434,7 +425,7 @@ def test_mysql_state_validation_fails_pac_persistence_orphans(
         ),
         (
             {"invalid_report_schedule_cadence": 2},
-            "observability_report_schedules has 2 row(s) with invalid cadence values",
+            "observability_report_schedules has 2 row(s) violating manual-export preset semantics",
         ),
         (
             {"invalid_report_schedule_format": 3},
@@ -458,105 +449,6 @@ def test_mysql_state_validation_fails_report_schedule_invariants(
 
     assert result.ok is False
     assert expected_error in result.errors
-
-
-@pytest.mark.parametrize(
-    "recipients",
-    [
-        "sensitive-person",
-        "ops@example.com; alerts@example.com",
-        "ops@example.com, ops@EXAMPLE.COM",
-        ", ".join(f"recipient-{index}@example.com" for index in range(30)),
-    ],
-)
-def test_mysql_state_validation_fails_invalid_or_noncanonical_report_recipients_without_pii(
-    recipients,
-) -> None:
-    from services import mysql_state_validation  # type: ignore
-
-    result = mysql_state_validation.validate_mysql_state(
-        _ValidationConn(
-            mysql_state_validation,
-            report_schedule_recipients=(recipients,),
-        ),
-        phase="post-restore",
-    )
-
-    assert result.ok is False
-    assert result.errors == [
-        "observability_report_schedules has 1 row(s) with invalid or non-canonical recipients"
-    ]
-    assert recipients not in " ".join(result.errors)
-
-
-def test_mysql_state_validation_preserves_report_recipient_mailbox_case_semantics() -> (
-    None
-):
-    from services import mysql_state_validation  # type: ignore
-
-    result = mysql_state_validation.validate_mysql_state(
-        _ValidationConn(
-            mysql_state_validation,
-            report_schedule_recipients=("Ops@example.com, ops@EXAMPLE.COM",),
-        ),
-        phase="post-restore",
-    )
-
-    assert result.ok is True
-    assert result.errors == []
-
-
-def test_mysql_state_validation_preserves_normalized_recipient_length_contract() -> (
-    None
-):
-    from services import mysql_state_validation  # type: ignore
-
-    first = f"{'a' * 64}@{'d' * 63}.{'e' * 41}"
-    second = f"{'b' * 64}@{'f' * 63}.{'g' * 41}"
-    third = f"{'c' * 64}@{'h' * 63}.{'i' * 39}"
-    max_length_recipients = f"{first}, {second}, {third}"
-    assert len(max_length_recipients) == 512
-
-    valid_result = mysql_state_validation.validate_mysql_state(
-        _ValidationConn(
-            mysql_state_validation,
-            report_schedule_recipients=(max_length_recipients,),
-        ),
-        phase="post-restore",
-    )
-    too_long_result = mysql_state_validation.validate_mysql_state(
-        _ValidationConn(
-            mysql_state_validation,
-            report_schedule_recipients=(max_length_recipients + "x",),
-        ),
-        phase="post-restore",
-    )
-
-    assert valid_result.ok is True
-    assert valid_result.errors == []
-    assert too_long_result.ok is False
-    assert too_long_result.errors == [
-        "observability_report_schedules has 1 row(s) with invalid or non-canonical recipients"
-    ]
-    assert max_length_recipients not in " ".join(too_long_result.errors)
-
-
-def test_mysql_state_validation_fails_closed_at_report_recipient_scan_limit() -> None:
-    from services import mysql_state_validation  # type: ignore
-
-    result = mysql_state_validation.validate_mysql_state(
-        _ValidationConn(
-            mysql_state_validation,
-            report_schedule_recipients=("ops@example.com",)
-            * (mysql_state_validation._REPORT_SCHEDULE_RECIPIENT_SCAN_LIMIT + 1),
-        ),
-        phase="post-restore",
-    )
-
-    assert result.ok is False
-    assert result.errors == [
-        "observability_report_schedules recipient validation exceeded the 1000-row safety limit"
-    ]
 
 
 def test_mysql_state_validation_cli_returns_failure_for_invalid_state(

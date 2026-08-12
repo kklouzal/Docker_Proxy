@@ -336,11 +336,11 @@ EXPORT_QUERY_PLANS: Final = (
             "window_seconds",
         ),
         """
-        SELECT proxy_id, enabled, name, cadence, recipients, pane, report_format,
+        SELECT proxy_id, enabled, name, 'manual' AS cadence, '' AS recipients, pane, report_format,
                privacy, window_seconds
         FROM observability_report_schedules
         WHERE proxy_id=%s
-        ORDER BY name ASC, cadence ASC, pane ASC, id ASC
+        ORDER BY name ASC, pane ASC, id ASC
         """,
         _PARAM_PROXY,
     ),

@@ -16,7 +16,6 @@ from services.proxy_write_guard import (
     proxy_lifecycle_lock_name,
     resolve_proxy_write_id,
 )
-from services.report_schedule_recipients import normalize_report_schedule_recipients
 from services.schema_lifecycle import read_control_plane_identity
 
 
@@ -769,15 +768,10 @@ def _normalize_column_value(
 
 def _normalize_observability_report_schedule_text(column: str, value: str) -> str:
     if column == "recipients":
-        if value == "":
-            return ""
-        try:
-            return normalize_report_schedule_recipients(value)
-        except ValueError as exc:
-            raise ProxyRecoveryRestoreError(
-                "observability_report_schedules recipients are invalid",
-            ) from exc
-    if column in {"cadence", "pane", "report_format"}:
+        return ""
+    if column == "cadence":
+        return "manual"
+    if column in {"pane", "report_format"}:
         return value.strip().lower()
     if column == "name":
         return value.strip()[:120]
@@ -1624,7 +1618,7 @@ def _insert_observability_report_schedules(
         INSERT INTO observability_report_schedules(
             proxy_id, enabled, name, cadence, recipients, pane, report_format, privacy,
             window_seconds, created_ts, updated_ts, next_run_ts, last_run_ts, last_status
-        ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,'recovered')
+        ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,'manual_export_only')
         """,
         tuple((*row, now_ts, now_ts) for row in rows),
     )

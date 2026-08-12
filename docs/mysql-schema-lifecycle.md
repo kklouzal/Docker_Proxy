@@ -1,6 +1,6 @@
 # MySQL schema lifecycle hardening
 
-Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 25.
+Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 26.
 
 ## Version ownership
 
@@ -31,6 +31,7 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 | 23 | `application_ledger_evidence_completion` | Forward-repairs application ledger evidence ownership without changing historical checksums: ensures config, certificate, and adblock application evidence columns; backfills them from matching revisions; and declares all proxy/revision/timestamp application-ledger indexes before lazy stores can skip runtime DDL. |
 | 24 | `live_stats_seed_checkpoint` | Adds the proxy-scoped durable access-log checkpoint used to seed only unseen complete lines after process restarts. |
 | 25 | `diagnostic_icap_extended_metadata` | Adds ICAP service, outcome, status, timing, and byte-count metadata columns to `diagnostic_icap_events` for durable extended diagnostic evidence. |
+| 26 | `observability_manual_export_preset_contract` | Canonicalizes `observability_report_schedules` as manual-export presets: `cadence='manual'`, empty recipients, zero next/last runtime timestamps, and `last_status='manual_export_only'`. |
 
 ## Lifecycle model
 

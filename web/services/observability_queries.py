@@ -16,7 +16,6 @@ from services.diagnostic_store import get_diagnostic_store
 from services.privacy_labels import pseudonymize
 from services.proxy_context import get_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
-from services.report_schedule_recipients import normalize_report_schedule_recipients
 from services.runtime_helpers import cache_hit_sql as _cache_hit_sql
 from services.runtime_helpers import escape_like as _escape_like
 from services.runtime_helpers import extract_domain as _extract_domain
@@ -1367,14 +1366,8 @@ class ObservabilityQueries:
         window_seconds: int = 86400,
         enabled: bool = True,
     ) -> dict[str, Any]:
-        recipients_s = (
-            normalize_report_schedule_recipients(recipients) if recipients else ""
-        )
         self._ensure_report_schedule_db()
         now = int(time.time())
-        cadence_s = str(cadence or "daily").strip().lower()
-        if cadence_s not in {"manual", "daily", "weekly"}:
-            cadence_s = "manual"
         pane_s = str(pane or "reports").strip().lower()
         if pane_s not in {
             "reports",
@@ -1400,14 +1393,14 @@ class ObservabilityQueries:
                         proxy_id, enabled, name, cadence, recipients, pane, report_format, privacy,
                         window_seconds, created_ts, updated_ts, next_run_ts, last_run_ts, last_status
                     )
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,'saved preset')
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,'manual_export_only')
                     """,
                     (
                         guard.proxy_id,
                         1 if enabled else 0,
                         name_s,
-                        cadence_s,
-                        recipients_s,
+                        "manual",
+                        "",
                         pane_s,
                         fmt_s,
                         1 if privacy else 0,

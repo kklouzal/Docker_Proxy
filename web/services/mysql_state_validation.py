@@ -6,10 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from services.db import connect
-from services.report_schedule_recipients import normalize_report_schedule_recipients
 from services.schema_lifecycle import latest_schema_checksum, latest_schema_version
-
-_REPORT_SCHEDULE_RECIPIENT_SCAN_LIMIT = 1_000
 
 _REQUIRED_TABLES: tuple[str, ...] = (
     "schema_migrations",
@@ -272,23 +269,6 @@ def _count_row(conn: Any, sql: str, *, context: str) -> int:
     except MysqlStateInvariantQueryError:
         raise
     except Exception as exc:
-        raise MysqlStateInvariantQueryError.from_exception(context, exc) from exc
-
-
-def _report_schedule_recipient_rows(conn: Any) -> list[Any]:
-    try:
-        return _rows(
-            conn,
-            """
-            SELECT recipients
-            FROM observability_report_schedules
-            ORDER BY id
-            LIMIT %s
-            """,
-            (_REPORT_SCHEDULE_RECIPIENT_SCAN_LIMIT + 1,),
-        )
-    except Exception as exc:
-        context = "observability_report_schedules recipient values"
         raise MysqlStateInvariantQueryError.from_exception(context, exc) from exc
 
 
@@ -714,13 +694,14 @@ def validate_mysql_state(
                 """
                 SELECT COUNT(*) AS n
                 FROM observability_report_schedules
-                WHERE cadence NOT IN ('manual','daily','weekly')
+                WHERE cadence NOT IN ('manual') OR recipients <> '' OR next_run_ts <> 0
+                   OR last_run_ts <> 0 OR last_status <> 'manual_export_only'
                 """,
                 context="observability_report_schedules cadence values",
             )
             if invalid_report_schedule_cadence:
                 result.error(
-                    f"observability_report_schedules has {invalid_report_schedule_cadence} row(s) with invalid cadence values"
+                    f"observability_report_schedules has {invalid_report_schedule_cadence} row(s) violating manual-export preset semantics"
                 )
 
             invalid_report_schedule_format = _count_row(
@@ -736,41 +717,6 @@ def validate_mysql_state(
                 result.error(
                     f"observability_report_schedules has {invalid_report_schedule_format} row(s) with invalid format values"
                 )
-
-            report_schedule_recipient_rows = _report_schedule_recipient_rows(
-                active_conn
-            )
-            if (
-                len(report_schedule_recipient_rows)
-                > _REPORT_SCHEDULE_RECIPIENT_SCAN_LIMIT
-            ):
-                result.error(
-                    "observability_report_schedules recipient validation exceeded "
-                    f"the {_REPORT_SCHEDULE_RECIPIENT_SCAN_LIMIT}-row safety limit"
-                )
-            else:
-                invalid_report_schedule_recipients = 0
-                for recipient_row in report_schedule_recipient_rows:
-                    recipients = _row_value(recipient_row, "recipients")
-                    if recipients == "":
-                        continue
-                    try:
-                        normalized_recipients = normalize_report_schedule_recipients(
-                            recipients
-                        )
-                    except ValueError:
-                        invalid_report_schedule_recipients += 1
-                        continue
-                    if (
-                        not isinstance(recipients, str)
-                        or normalized_recipients != recipients
-                    ):
-                        invalid_report_schedule_recipients += 1
-                if invalid_report_schedule_recipients:
-                    result.error(
-                        "observability_report_schedules has "
-                        f"{invalid_report_schedule_recipients} row(s) with invalid or non-canonical recipients"
-                    )
 
             invalid_report_schedule_times = _count_row(
                 active_conn,

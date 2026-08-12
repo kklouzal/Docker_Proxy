@@ -28,7 +28,7 @@ from services.sql_identifiers import normalize_mysql_identifier
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 25
+_SCHEMA_VERSION = 26
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -1485,6 +1485,24 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                     "diagnostic_icap_events",
                     "icap_bytes_received",
                     "ALTER TABLE diagnostic_icap_events ADD COLUMN icap_bytes_received BIGINT NOT NULL DEFAULT 0 AFTER icap_bytes_sent",
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=26,
+            name="observability_manual_export_preset_contract",
+            data_steps=(
+                SchemaDataStep(
+                    "canonicalize_observability_manual_export_presets",
+                    lambda conn: conn.execute(
+                        """
+                        UPDATE observability_report_schedules
+                        SET cadence='manual', recipients='', next_run_ts=0,
+                            last_run_ts=0, last_status='manual_export_only'
+                        WHERE cadence<>'manual' OR recipients<>'' OR next_run_ts<>0
+                           OR last_run_ts<>0 OR last_status<>'manual_export_only'
+                        """
+                    ),
                 ),
             ),
         ),
