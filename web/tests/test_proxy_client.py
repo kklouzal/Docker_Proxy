@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import urllib.error
+import urllib.request
 from types import SimpleNamespace
 from typing import NoReturn
 
@@ -44,6 +45,39 @@ class _Response:
         return json.dumps(self._payload).encode("utf-8")
 
 
+def test_management_opener_disables_ambient_proxies(proxy_client_module) -> None:
+    proxy_client = proxy_client_module
+
+    proxy_handlers = [
+        handler
+        for handler in proxy_client._MANAGEMENT_OPENER.handlers
+        if isinstance(handler, urllib.request.ProxyHandler)
+    ]
+
+    assert proxy_handlers == []
+
+
+def test_management_redirects_are_rejected_without_copying_auth(
+    proxy_client_module,
+) -> None:
+    proxy_client = proxy_client_module
+    request = urllib.request.Request(
+        "http://proxy-mgmt:5000/api/manage/health",
+        headers={"Authorization": "Bearer secret-token"},
+    )
+
+    redirected = proxy_client._RejectManagementRedirects().redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "http://attacker.invalid/collect",
+    )
+
+    assert redirected is None
+
+
 def test_proxy_client_requires_registered_management_url(
     monkeypatch, proxy_client_module
 ) -> None:
@@ -75,7 +109,7 @@ def test_proxy_client_sets_bearer_auth_and_json_body(
         captured["timeout"] = timeout
         return _Response({"ok": True, "changed": False})
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     payload = proxy_client.ProxyClient(timeout_seconds=1.25).sync_proxy(
         "live", force=True, timeout_seconds=9.5
@@ -107,7 +141,7 @@ def test_proxy_client_get_current_config_uses_management_endpoint(
         captured["timeout"] = timeout
         return _Response({"ok": True, "config_text": "http_port 3128\n"})
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     payload = proxy_client.ProxyClient().get_current_config(
         "live",
@@ -137,7 +171,7 @@ def test_proxy_client_canonicalizes_endpoint_shaped_management_url(
         captured["url"] = request.full_url
         return _Response({"ok": True})
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     assert proxy_client.ProxyClient().sync_proxy("live")["ok"] is True
     assert captured["url"] == "http://proxy-mgmt:5000/api/manage/sync"
@@ -163,7 +197,7 @@ def test_proxy_client_can_request_config_validation_and_rollback(
         )
         return _Response({"ok": True, "detail": "accepted"})
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     client = proxy_client.ProxyClient()
     assert (
@@ -202,7 +236,7 @@ def test_proxy_client_get_health_default_timeout_handles_cold_health_collection(
         captured["timeout"] = timeout
         return _Response({"ok": True, "status": "healthy"})
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     payload = proxy_client.ProxyClient().get_health("live")
 
@@ -225,7 +259,7 @@ def test_proxy_client_get_logs_uses_management_logs_endpoint(
         captured["timeout"] = timeout
         return _Response({"ok": True, "content": "line\n"})
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     payload = proxy_client.ProxyClient().get_logs(
         "live",
@@ -255,7 +289,7 @@ def test_proxy_client_get_logs_omits_max_bytes_when_not_provided(
         captured["url"] = request.full_url
         return _Response({"ok": True, "content": "line\n"})
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     proxy_client.ProxyClient().get_logs("live", log_key="access")
 
@@ -275,7 +309,7 @@ def test_proxy_client_get_logs_preserves_urlencoded_query_values(
         captured["url"] = request.full_url
         return _Response({"ok": True, "content": "line\n"})
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     proxy_client.ProxyClient().get_logs("live", log_key="access log/one", max_bytes=128)
 
@@ -311,7 +345,7 @@ def test_proxy_client_rejects_malformed_management_query_percent_encoding_before
         msg = "urlopen should not be called for unsafe query strings"
         raise AssertionError(msg)
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fail_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fail_urlopen)
 
     with pytest.raises(
         proxy_client.ProxyClientError, match="Unsafe proxy management path"
@@ -343,7 +377,7 @@ def test_proxy_client_rejects_nested_encoded_unsafe_management_query_before_urlo
         msg = "urlopen should not be called for unsafe query strings"
         raise AssertionError(msg)
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fail_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fail_urlopen)
 
     with pytest.raises(
         proxy_client.ProxyClientError, match="Unsafe proxy management path"
@@ -369,7 +403,7 @@ def test_proxy_client_http_error_uses_json_detail(
             io.BytesIO(b'{"ok": false, "detail": "sync failed clearly"}'),
         )
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError, match="sync failed clearly"):
         proxy_client.ProxyClient().sync_proxy("live")
@@ -404,7 +438,7 @@ def test_proxy_client_closes_http_error_response_stream(
             response_stream,
         )
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
         proxy_client.ProxyClient().sync_proxy("live")
@@ -432,7 +466,7 @@ def test_proxy_client_http_error_redacts_json_detail(
             io.BytesIO(b'{"ok": false, "detail": "sync failed token=secret-value"}'),
         )
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
         proxy_client.ProxyClient().sync_proxy("live")
@@ -460,7 +494,7 @@ def test_proxy_client_http_error_rejects_non_object_json(
             io.BytesIO(b'["not", "a", "management", "payload"]'),
         )
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
         proxy_client.ProxyClient().sync_proxy("live")
@@ -492,7 +526,7 @@ def test_proxy_client_sanitizes_html_management_auth_error(
             ),
         )
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
         proxy_client.ProxyClient().get_health("live")
@@ -517,8 +551,8 @@ def test_proxy_client_sanitizes_successful_html_response(
             return b"<!doctype html><title>Wrong listener</title><h1>OK</h1>"
 
     monkeypatch.setattr(
-        proxy_client.urllib.request,
-        "urlopen",
+        proxy_client,
+        "_open_management_request",
         lambda *_args, **_kwargs: HtmlResponse({}),
     )
 
@@ -545,8 +579,8 @@ def test_proxy_client_rejects_successful_non_object_json(
             return b'["not", "a", "management", "payload"]'
 
     monkeypatch.setattr(
-        proxy_client.urllib.request,
-        "urlopen",
+        proxy_client,
+        "_open_management_request",
         lambda *_args, **_kwargs: ListResponse({}),
     )
 
@@ -576,8 +610,8 @@ def test_proxy_client_rejects_oversized_success_response(
             return b'{"ok": true, "detail": "too large"}'
 
     monkeypatch.setattr(
-        proxy_client.urllib.request,
-        "urlopen",
+        proxy_client,
+        "_open_management_request",
         lambda *_args, **_kwargs: OversizedResponse({}),
     )
 
@@ -609,7 +643,7 @@ def test_proxy_client_rejects_oversized_http_error_response_without_raw_detail(
             io.BytesIO(b'{"ok": false, "detail": "secret-token-value"}'),
         )
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
         proxy_client.ProxyClient().sync_proxy("live")
@@ -635,8 +669,8 @@ def test_proxy_client_timeout_error_is_actionable(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
     )
     monkeypatch.setattr(
-        proxy_client.urllib.request,
-        "urlopen",
+        proxy_client,
+        "_open_management_request",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(raised),
     )
 
@@ -663,8 +697,8 @@ def test_proxy_client_url_error_surfaces_redacted_reason(
         "http://operator:user-password@proxy-mgmt:5000/connect?token=query-secret"
     )
     monkeypatch.setattr(
-        proxy_client.urllib.request,
-        "urlopen",
+        proxy_client,
+        "_open_management_request",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(urllib.error.URLError(reason)),
     )
 
@@ -697,8 +731,8 @@ def test_proxy_client_url_error_fails_closed_when_reason_cannot_be_rendered(
             raise ValueError(unrenderable_detail)
 
     monkeypatch.setattr(
-        proxy_client.urllib.request,
-        "urlopen",
+        proxy_client,
+        "_open_management_request",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             urllib.error.URLError(UnrenderableReason())
         ),
@@ -721,8 +755,8 @@ def test_proxy_client_generic_transport_error_redacts_detail(
         proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
     )
     monkeypatch.setattr(
-        proxy_client.urllib.request,
-        "urlopen",
+        proxy_client,
+        "_open_management_request",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("TLS setup failed: password=generic-secret")
         ),
@@ -754,7 +788,7 @@ def test_proxy_client_builds_management_url_with_query_under_registered_base(
         opened_urls.append(request.full_url)
         return _Response({"ok": True})
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     client = proxy_client.ProxyClient()
     client._request("live", method="GET", path="/api/manage/health?full=1")
@@ -795,7 +829,7 @@ def test_proxy_client_rejects_unsafe_management_paths_before_urlopen(
         msg = "urlopen should not be called for unsafe paths"
         raise AssertionError(msg)
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fail_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fail_urlopen)
 
     with pytest.raises(
         proxy_client.ProxyClientError, match="Unsafe proxy management path"
@@ -825,7 +859,7 @@ def test_proxy_client_error_url_context_omits_registry_base_path(
         captured["url"] = request.full_url
         raise raised
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
         proxy_client.ProxyClient().get_health("live")
@@ -888,7 +922,7 @@ def test_proxy_client_repeated_marker_base_path_is_omitted_from_error_context(
         captured["url"] = request.full_url
         raise timeout_error
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_urlopen)
 
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
         proxy_client.ProxyClient().get_health("live")
@@ -916,7 +950,7 @@ def test_proxy_client_http_and_response_errors_omit_registry_base_path(
             request_url, 502, "Bad Gateway", {}, io.BytesIO(b'{"detail":"failed"}')
         )
 
-    monkeypatch.setattr(proxy_client.urllib.request, "urlopen", http_error)
+    monkeypatch.setattr(proxy_client, "_open_management_request", http_error)
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:
         proxy_client.ProxyClient().get_health("live")
     assert "path-secret" not in str(exc_info.value)
@@ -927,8 +961,8 @@ def test_proxy_client_http_and_response_errors_omit_registry_base_path(
             return b"not json"
 
     monkeypatch.setattr(
-        proxy_client.urllib.request,
-        "urlopen",
+        proxy_client,
+        "_open_management_request",
         lambda *_args, **_kwargs: InvalidResponse({}),
     )
     with pytest.raises(proxy_client.ProxyClientError) as exc_info:

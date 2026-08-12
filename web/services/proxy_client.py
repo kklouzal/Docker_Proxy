@@ -24,6 +24,22 @@ class ProxyClientError(RuntimeError):
     pass
 
 
+class _RejectManagementRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_MANAGEMENT_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    _RejectManagementRedirects(),
+)
+
+
+def _open_management_request(request: urllib.request.Request, *, timeout: float):
+    """Open directly and keep authentication bound to the registered URL."""
+    return _MANAGEMENT_OPENER.open(request, timeout=timeout)
+
+
 _MAX_MANAGEMENT_RESPONSE_BYTES = 2 * 1024 * 1024
 
 _UNSAFE_EMPTY_MANAGEMENT_PATH = "Unsafe proxy management path: empty path."
@@ -258,7 +274,7 @@ class ProxyClient:
         timeout = float(timeout_seconds or self.timeout_seconds)
         error_url = self._safe_url_context(url)
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with _open_management_request(request, timeout=timeout) as response:
                 raw, response_too_large = _read_management_response_text(response)
                 if response_too_large:
                     msg = (
