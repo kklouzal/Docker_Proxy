@@ -2668,13 +2668,21 @@ class SquidController(_CoreSquidController):
             return b"", str(exc).encode("utf-8", errors="replace")
 
     def stop_squid(self):
+        with _exclusive_squid_lifecycle_lock():
+            return self._stop_squid_locked()
+
+    def _stop_squid_locked(self):
         try:
             proc = self._run(
                 ["squid", "-k", "shutdown"],
                 capture_output=True,
                 timeout=12,
             )
-            return proc.stdout or b"", proc.stderr or b""
+            stdout = proc.stdout or b""
+            stderr = proc.stderr or b""
+            if proc.returncode != 0 and not stderr:
+                stderr = f"squid shutdown failed rc={proc.returncode}".encode()
+            return stdout, stderr
         except FileNotFoundError:
             return b"", b"squid binary not found"
         except Exception as exc:

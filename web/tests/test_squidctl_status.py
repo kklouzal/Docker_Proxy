@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import contextlib
 import threading
 import time
 from types import SimpleNamespace
@@ -1553,6 +1554,84 @@ def test_start_squid_fails_closed_when_lifecycle_flock_fails(
     assert "refusing to mutate Squid" in str(exc_info.value)
     assert "flock-secret" not in str(exc_info.value)
     assert "flock-secret" not in caplog.text
+
+
+def test_stop_squid_serializes_with_other_lifecycle_mutations(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from services import squidctl  # type: ignore
+
+    monkeypatch.setenv("SQUID_LIFECYCLE_LOCK_DIR", str(tmp_path))
+    stop_entered = threading.Event()
+    release_stop = threading.Event()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(tuple(args))
+        if args == ["squid", "-k", "shutdown"]:
+            stop_entered.set()
+            assert release_stop.wait(timeout=5)
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    controller = squidctl.SquidController(cmd_run=fake_run)
+    stop_thread = threading.Thread(target=controller.stop_squid)
+    start_thread = threading.Thread(target=controller.start_squid)
+
+    stop_thread.start()
+    assert stop_entered.wait(timeout=5)
+    start_thread.start()
+    time.sleep(0.05)
+    assert calls == [("squid", "-k", "shutdown")]
+
+    release_stop.set()
+    stop_thread.join(timeout=5)
+    start_thread.join(timeout=5)
+
+    assert calls == [
+        ("squid", "-k", "shutdown"),
+        ("supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"),
+    ]
+
+
+def test_stop_squid_fails_closed_when_lifecycle_locking_is_unavailable(
+    monkeypatch,
+) -> None:
+    from services import squid_core, squidctl  # type: ignore
+
+    calls: list[list[str]] = []
+    controller = squidctl.SquidController(
+        cmd_run=lambda args, **_kwargs: calls.append(list(args)),
+    )
+
+    @contextlib.contextmanager
+    def unavailable_lock():
+        raise squid_core.SquidLifecycleLockError
+        yield
+
+    monkeypatch.setattr(squidctl, "_exclusive_squid_lifecycle_lock", unavailable_lock)
+
+    with pytest.raises(squid_core.SquidLifecycleLockError):
+        controller.stop_squid()
+
+    assert calls == []
+
+
+def test_stop_squid_reports_nonzero_exit_without_stderr() -> None:
+    from services import squidctl  # type: ignore
+
+    controller = squidctl.SquidController(
+        cmd_run=lambda _args, **_kwargs: SimpleNamespace(
+            returncode=1,
+            stdout=b"No running copy\n",
+            stderr=b"",
+        ),
+    )
+
+    stdout, stderr = controller.stop_squid()
+
+    assert stdout == b"No running copy\n"
+    assert stderr == b"squid shutdown failed rc=1"
 
 
 def test_restart_squid_accepts_supervisor_auto_restart_race(monkeypatch) -> None:
