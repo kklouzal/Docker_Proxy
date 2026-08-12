@@ -264,6 +264,125 @@ def test_live_stats_max_pending_rows_is_at_least_commit_batch(
     assert ("LIVE_STATS_MAX_PENDING_ROWS", 50) in env_int_calls
 
 
+def test_live_stats_seed_replays_more_than_seed_window_without_skipping(
+    monkeypatch, tmp_path, live_stats
+) -> None:
+    log_path = tmp_path / "access.log"
+    lines = [
+        f"17777700{i:02d}.1\t-\t192.0.2.10\tGET\thttps://d{i}.example/a\tTCP_MISS/200\t100\n"
+        for i in range(7)
+    ]
+    log_path.write_text("".join(lines), encoding="utf-8")
+    state = live_stats._SeedCheckpoint(
+        source_path=str(log_path),
+        device_id=log_path.stat().st_dev,
+        inode=log_path.stat().st_ino,
+        byte_offset=0,
+        checkpoint_sha256=live_stats.hashlib.sha256(b"").hexdigest(),
+    )
+    flushed: list[list[str]] = []
+
+    class Result:
+        def __init__(self, row=None) -> None:
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql: str, params=()):
+            nonlocal state
+            if "SELECT source_path" in sql:
+                return Result(
+                    (
+                        state.source_path,
+                        state.device_id,
+                        state.inode,
+                        state.byte_offset,
+                        state.checkpoint_sha256,
+                    )
+                )
+            if "INSERT INTO live_stats_seed_state" in sql:
+                state = live_stats._SeedCheckpoint(*params[1:6])
+                return Result()
+            message = f"unexpected SQL: {sql}"
+            raise AssertionError(message)
+
+    store = live_stats.LiveStatsStore(access_log_path=str(log_path), seed_max_lines=2)
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", Conn)
+    monkeypatch.setattr(
+        store,
+        "_flush_batch_with_conn",
+        lambda _conn, batch, **_kwargs: flushed.append(list(batch["domains"])),
+    )
+
+    store.seed_from_recent_log()
+
+    assert flushed == [
+        ["d0.example", "d1.example"],
+        ["d2.example", "d3.example"],
+        ["d4.example", "d5.example"],
+        ["d6.example"],
+    ]
+    assert state.byte_offset == log_path.stat().st_size
+
+
+def test_live_stats_capacity_pauses_consumption_instead_of_dropping(
+    monkeypatch, tmp_path, live_stats
+) -> None:
+    import pymysql  # type: ignore
+
+    log_path = tmp_path / "access.log"
+    log_path.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    store = live_stats.LiveStatsStore(access_log_path=str(log_path))
+    reads = 0
+    real_open = live_stats.pathlib.Path.open
+
+    class Handle:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def seek(self, *_args):
+            return 0
+
+        def tell(self):
+            return reads
+
+        def readline(self):
+            nonlocal reads
+            reads += 1
+            return f"line {reads}\n"
+
+    monkeypatch.setenv("LIVE_STATS_COMMIT_BATCH", "25")
+    monkeypatch.setenv("LIVE_STATS_MAX_PENDING_ROWS", "25")
+    monkeypatch.setattr(store, "seed_from_recent_log", lambda: None)
+    monkeypatch.setattr(store, "_accumulate_line", lambda batch, _line: True)
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: (_ for _ in ()).throw(pymysql.err.OperationalError(2003, "down")),
+    )
+    monkeypatch.setattr(live_stats.pathlib.Path, "open", lambda *_a, **_k: Handle())
+    monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(live_stats, "log_database_unavailable", lambda *_a: None)
+
+    with pytest.raises(StopLoop):
+        store._tail_loop()
+
+    assert reads == 25
+    monkeypatch.setattr(live_stats.pathlib.Path, "open", real_open)
+
+
 def test_live_stats_commit_cadence_uses_monotonic_time(
     monkeypatch, tmp_path, live_stats
 ) -> None:

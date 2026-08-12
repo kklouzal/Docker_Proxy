@@ -703,7 +703,7 @@ class LiveStatsStore:
                 inode = int(getattr(stat, "st_ino", 0) or 0)
                 size = int(getattr(stat, "st_size", 0) or 0)
                 start = 0
-                if (
+                resumes_checkpoint = (
                     previous is not None
                     and previous.source_path == self.access_log_path
                     and previous.device_id == device_id
@@ -711,7 +711,8 @@ class LiveStatsStore:
                     and 0 <= previous.byte_offset <= size
                     and self._checkpoint_sha256(handle, previous.byte_offset)
                     == previous.checkpoint_sha256
-                ):
+                )
+                if resumes_checkpoint:
                     start = previous.byte_offset
                 else:
                     start = max(0, size - (self.seed_max_lines * 512))
@@ -720,9 +721,20 @@ class LiveStatsStore:
                         if handle.read(1) != b"\n":
                             handle.readline()
                             start = handle.tell()
-
                 handle.seek(start, os.SEEK_SET)
-                data = handle.read()
+                if resumes_checkpoint:
+                    chunks: list[bytes] = []
+                    for _ in range(max(1, self.seed_max_lines)):
+                        chunk = handle.readline()
+                        if not chunk or not chunk.endswith(b"\n"):
+                            break
+                        chunks.append(chunk)
+                    data = b"".join(chunks)
+                else:
+                    # A missing/stale checkpoint intentionally seeds only the
+                    # recent bounded window. Once a checkpoint is valid, replay
+                    # proceeds oldest-first in bounded chunks without skipping.
+                    data = handle.read()
                 complete_size = len(data)
                 if data and not data.endswith(b"\n"):
                     last_newline = data.rfind(b"\n")
@@ -730,7 +742,7 @@ class LiveStatsStore:
                 checkpoint_offset = start + complete_size
                 complete_data = data[:complete_size]
                 lines = complete_data.decode("utf-8", errors="replace").splitlines()
-                if len(lines) > self.seed_max_lines:
+                if not resumes_checkpoint and len(lines) > self.seed_max_lines:
                     lines = lines[-self.seed_max_lines :]
                 checkpoint = _SeedCheckpoint(
                     source_path=self.access_log_path,
@@ -837,25 +849,35 @@ class LiveStatsStore:
         except Exception:
             return
         self.init_db()
-        with self._connect() as conn:
-            with guarded_proxy_write(conn, get_proxy_id()) as guard:
-                previous = self._seed_checkpoint(conn, guard.proxy_id)
-                snapshot = self._read_seed_delta(previous)
-                if snapshot is None:
-                    return
-                lines, checkpoint = snapshot
-                batch = self._new_batch()
-                pending = 0
-                for line in lines:
-                    if self._accumulate_line(batch, line):
-                        pending += 1
-                if pending:
-                    self._flush_batch_with_conn(
-                        conn,
-                        batch,
-                        proxy_id=guard.proxy_id,
-                    )
-                self._save_seed_checkpoint(conn, guard.proxy_id, checkpoint)
+        previous: _SeedCheckpoint | None = None
+        while True:
+            with self._connect() as conn:
+                with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                    previous = self._seed_checkpoint(conn, guard.proxy_id)
+                    snapshot = self._read_seed_delta(previous)
+                    if snapshot is None:
+                        return
+                    lines, checkpoint = snapshot
+                    batch = self._new_batch()
+                    pending = 0
+                    for line in lines:
+                        if self._accumulate_line(batch, line):
+                            pending += 1
+                    if pending:
+                        self._flush_batch_with_conn(
+                            conn,
+                            batch,
+                            proxy_id=guard.proxy_id,
+                        )
+                    self._save_seed_checkpoint(conn, guard.proxy_id, checkpoint)
+            if checkpoint.byte_offset >= path.stat().st_size:
+                return
+            if previous is not None and checkpoint.byte_offset <= previous.byte_offset:
+                logger.warning(
+                    "Live stats startup replay made no checkpoint progress at byte offset %s; replay paused",
+                    checkpoint.byte_offset,
+                )
+                return
 
     def start_background(self) -> None:
         with self._start_lock:
@@ -949,7 +971,6 @@ class LiveStatsStore:
         # Tail new lines.
         path = self.access_log_path
         last_inode: int | None = None
-        drop_state: dict[str, float] = {"last_log_ts": -60.0}
         batch = self._new_batch()
         pending = 0
         last_commit = time.monotonic()
@@ -1006,24 +1027,35 @@ class LiveStatsStore:
                     # Start at end so we don't reprocess the whole file.
                     f.seek(0, os.SEEK_END)
                     while not self._stop_event.is_set():
+                        if pending >= max_pending_rows:
+                            now = time.monotonic()
+                            if flush_backoff.can_attempt(now):
+                                try:
+                                    flush_pending()
+                                except DATABASE_ERRORS as exc:
+                                    delay = record_deferred_flush(now)
+                                    log_database_unavailable(
+                                        logger,
+                                        "live_stats.capacity_commit.db",
+                                        f"Live stats tailer paused log consumption at the bounded pending capacity while MySQL is unavailable; retrying in about {delay:.1f}s",
+                                        exc,
+                                    )
+                                except Exception:
+                                    log_exception_throttled(
+                                        logger,
+                                        "live_stats.capacity_commit",
+                                        interval_seconds=300.0,
+                                        message="Live stats tailer capacity flush failed; log consumption remains paused",
+                                    )
+                                    last_commit = now
+                            if pending >= max_pending_rows:
+                                time.sleep(poll_interval)
+                                continue
                         line = f.readline()
                         if line:
                             try:
                                 if self._accumulate_line(batch, line):
                                     pending += 1
-                                    if pending > max_pending_rows:
-                                        dropped = pending
-                                        self._clear_batch(batch)
-                                        pending = 0
-                                        last_commit = time.monotonic()
-                                        now_log = time.monotonic()
-                                        if now_log - drop_state["last_log_ts"] >= 60.0:
-                                            drop_state["last_log_ts"] = now_log
-                                            logger.warning(
-                                                "Live stats tailer pending rows exceeded %s; dropped %s aggregated rows while database flush is unavailable",
-                                                max_pending_rows,
-                                                dropped,
-                                            )
                             except Exception:
                                 log_exception_throttled(
                                     logger,
