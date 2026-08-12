@@ -49,7 +49,9 @@ def ensure_generated_column(
     column_name: str,
     ddl: str,
 ) -> None:
-    _schema_lifecycle.ensure_column(conn, table_name=table_name, column_name=column_name, ddl=ddl)
+    _schema_lifecycle.ensure_column(
+        conn, table_name=table_name, column_name=column_name, ddl=ddl
+    )
 
 
 def ensure_index(
@@ -59,7 +61,9 @@ def ensure_index(
     index_name: str,
     ddl: str,
 ) -> None:
-    _schema_lifecycle.ensure_index(conn, table_name=table_name, index_name=index_name, ddl=ddl)
+    _schema_lifecycle.ensure_index(
+        conn, table_name=table_name, index_name=index_name, ddl=ddl
+    )
 
 
 def _lock_readable_prefix(namespace: str) -> str:
@@ -92,7 +96,9 @@ def mysql_advisory_lock(
     timeout_seconds: int = _ADVISORY_LOCK_TIMEOUT_SECONDS,
 ):
     name = scoped_lock_name(namespace, scope)
-    row = conn.execute("SELECT GET_LOCK(%s, %s) AS acquired", (name, timeout_seconds)).fetchone()
+    row = conn.execute(
+        "SELECT GET_LOCK(%s, %s) AS acquired", (name, timeout_seconds)
+    ).fetchone()
     acquired = False
     if row is not None:
         try:
@@ -124,5 +130,7 @@ def mysql_advisory_lock(
         try:
             conn.execute("DO RELEASE_LOCK(%s)", (name,))
         except Exception:
-            # The connection wrapper will discard/rollback broken connections as needed.
-            pass
+            # Advisory locks are connection-scoped and survive transaction rollback.
+            # If release is uncertain, do not let a pooled session retain the lock.
+            if hasattr(conn, "_discard_on_close"):
+                conn._discard_on_close = True

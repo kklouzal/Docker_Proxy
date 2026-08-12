@@ -93,6 +93,34 @@ def test_scoped_lock_name_is_always_within_mysql_name_limit() -> None:
         assert len(_lock_digest(lock_name)) == 24
 
 
+def test_mysql_advisory_lock_discards_connection_when_release_fails() -> None:
+    class Conn:
+        _discard_on_close = False
+
+        def execute(self, sql, params=()):
+            if "GET_LOCK" in str(sql):
+                return _SqlResult([{"acquired": 1}])
+            if "RELEASE_LOCK" in str(sql):
+                msg = "connection lost during advisory lock release"
+                raise RuntimeError(msg)
+            msg = f"Unexpected SQL: {sql}"
+            raise AssertionError(msg)
+
+        def commit(self) -> None:
+            pass
+
+    conn = Conn()
+
+    with revision_lifecycle.mysql_advisory_lock(
+        conn,
+        namespace="proxy_config_revisions.active",
+        scope="edge-a",
+    ):
+        pass
+
+    assert conn._discard_on_close is True
+
+
 def test_duplicate_active_repair_uses_deterministic_partition_update() -> None:
     calls: list[str] = []
 
