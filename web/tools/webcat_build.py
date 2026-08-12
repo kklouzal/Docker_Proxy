@@ -5,10 +5,12 @@ import argparse
 import csv
 import hashlib
 import ipaddress
+import itertools
 import json
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import tarfile
 import tempfile
@@ -95,15 +97,18 @@ def _domain_from_feed_line(
     return d if _looks_like_host(d) else ""
 
 
-def _collect_from_category_dir(root: Path) -> list[tuple[str, str]]:
+def _collect_from_category_dir(root: Path) -> Iterable[tuple[str, str]]:
     """Accepts a directory of per-category text files.
 
     Each file name (stem) is treated as the category. Each file contains domains,
     one per line, with optional comments.
 
     This matches how many categorized blacklists are distributed.
+
+    Yields:
+        Normalized domain/category pairs.
+
     """
-    pairs: list[tuple[str, str]] = []
     for p in sorted(root.rglob("*")):
         if not p.is_file():
             continue
@@ -122,79 +127,85 @@ def _collect_from_category_dir(root: Path) -> list[tuple[str, str]]:
                 inline_comment_markers=("#", ";"),
             )
             if d:
-                pairs.append((d, cat))
-    return pairs
+                yield d, cat
 
 
-def _collect_from_csv(path: Path) -> list[tuple[str, str]]:
-    """Accept CSV/TSV-ish files with at least domain + category columns."""
-    pairs: list[tuple[str, str]] = []
+def _collect_from_csv(path: Path) -> Iterable[tuple[str, str]]:
+    """Stream a CSV/TSV-ish file.
 
+    Yields:
+        Normalized domain/category pairs.
+
+    """
     # Attempt to sniff delimiter
-    raw = path.read_text(encoding="utf-8", errors="replace")
-    sample = raw[:32_768]
-    dialect = None
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",\t;")
-    except Exception:
-        dialect = csv.excel
+    with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        sample = handle.read(32_768)
+        handle.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",\t;")
+        except Exception:
+            dialect = csv.excel
 
-    reader = csv.reader(raw.splitlines(), dialect)
+        reader = csv.reader(handle, dialect)
+        header: list[str] | None = None
+        for row in reader:
+            yield from _pairs_from_csv_row(row, header)
+            if header is None and _is_csv_header(row):
+                header = [c.strip().lower() for c in row]
 
-    header: list[str] | None = None
-    for row in reader:
-        if not row:
-            continue
-        if header is None:
-            # header if it looks like one
-            lower = [c.strip().lower() for c in row]
-            if any(c in {"domain", "host", "hostname"} for c in lower) and any(
-                c in {"category", "categories", "cat"} for c in lower
-            ):
-                header = lower
-                continue
-            # else treat as data
-        if header is not None:
-            idx_domain = (
-                header.index("domain")
-                if "domain" in header
-                else (
-                    header.index("host")
-                    if "host" in header
-                    else header.index("hostname")
-                )
+
+def _is_csv_header(row: list[str]) -> bool:
+    lower = [c.strip().lower() for c in row]
+    return any(c in {"domain", "host", "hostname"} for c in lower) and any(
+        c in {"category", "categories", "cat"} for c in lower
+    )
+
+
+def _pairs_from_csv_row(
+    row: list[str], header: list[str] | None
+) -> Iterable[tuple[str, str]]:
+    if not row:
+        return
+    if header is None:
+        if _is_csv_header(row):
+            return
+    if header is not None:
+        idx_domain = (
+            header.index("domain")
+            if "domain" in header
+            else (
+                header.index("host") if "host" in header else header.index("hostname")
             )
-            idx_cat = (
-                header.index("category")
-                if "category" in header
-                else (
-                    header.index("categories")
-                    if "categories" in header
-                    else header.index("cat")
-                )
+        )
+        idx_cat = (
+            header.index("category")
+            if "category" in header
+            else (
+                header.index("categories")
+                if "categories" in header
+                else header.index("cat")
             )
-            if idx_domain >= len(row) or idx_cat >= len(row):
-                continue
-            domain = row[idx_domain]
-            cats = row[idx_cat]
-        else:
-            # Assume first 2 columns are domain/category
-            if len(row) < 2:
-                continue
-            domain, cats = row[0], row[1]
+        )
+        if idx_domain >= len(row) or idx_cat >= len(row):
+            return
+        domain = row[idx_domain]
+        cats = row[idx_cat]
+    else:
+        # Assume first 2 columns are domain/category
+        if len(row) < 2:
+            return
+        domain, cats = row[0], row[1]
 
-        d = _norm_domain(domain)
-        if not _looks_like_host(d):
-            continue
+    d = _norm_domain(domain)
+    if not _looks_like_host(d):
+        return
 
-        # categories can be comma/pipe/space separated
-        cat_tokens = re.split(r"[|,\s]+", str(cats))
-        for ct in cat_tokens:
-            c = _norm_category(ct)
-            if c:
-                pairs.append((d, c))
-
-    return pairs
+    # categories can be comma/pipe/space separated
+    cat_tokens = re.split(r"[|,\s]+", str(cats))
+    for ct in cat_tokens:
+        c = _norm_category(ct)
+        if c:
+            yield d, c
 
 
 def _is_internal_host(hostname: str) -> bool:
@@ -722,7 +733,7 @@ def _cleanup_stale_build_tables(conn, *, current_suffix: str) -> None:
 
 
 def _build_db(
-    pairs: Sequence[tuple[str, str]],
+    pairs: Iterable[tuple[str, str]],
     *,
     source: str,
     aliases: dict[str, str] | None = None,
@@ -757,111 +768,121 @@ def _build_db(
     category_insert_sql = f"INSERT INTO {_quote_table_name(stages['webcat_categories'])}(category, domains) VALUES(%s,%s)"
     alias_insert_sql = f"INSERT INTO {_quote_table_name(stages['webcat_aliases'])}(alias,canonical) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE canonical=incoming.canonical"
 
-    domain_categories: dict[str, set[str]] = {}
-    for d, c in pairs:
-        domain = _norm_domain(d)
-        category = _norm_category(c)
-        if not domain or not category:
-            continue
-        cats = domain_categories.setdefault(domain, set())
-        cats.add(category)
-
-    category_counts: dict[str, int] = {}
-    domain_rows: list[tuple[str, str]] = []
-    unique_pairs = 0
-    for domain in sorted(domain_categories):
-        categories = sorted(domain_categories[domain])
-        if not categories:
-            continue
-        domain_rows.append((domain, "|".join(categories)))
-        for category in categories:
-            category_counts[category] = category_counts.get(category, 0) + 1
-            unique_pairs += 1
-    category_rows = [
-        (category, count) for category, count in sorted(category_counts.items())
-    ]
-
-    domains_built = len(domain_rows)
-    with _connect() as conn:
+    with tempfile.TemporaryDirectory(prefix="webcat_aggregate_") as aggregate_dir:
+        aggregate = sqlite3.connect(Path(aggregate_dir) / "pairs.sqlite3")
         try:
-            _init_db(conn)
-            _cleanup_stale_build_tables(conn, current_suffix=suffix)
-            webcat_hygiene.drop_tables(
-                conn, list(stages.values()) + list(old_tables.values())
+            aggregate.execute(
+                "CREATE TABLE pairs(domain TEXT NOT NULL, category TEXT NOT NULL, "
+                "PRIMARY KEY(domain, category)) WITHOUT ROWID"
             )
-            for live, stage in stages.items():
-                conn.execute(
-                    f"CREATE TABLE {_quote_table_name(stage)} LIKE {_quote_table_name(live)}",
+            source_pairs = 0
+            for d, c in pairs:
+                domain = _norm_domain(d)
+                category = _norm_category(c)
+                if not domain or not category:
+                    continue
+                source_pairs += 1
+                aggregate.execute(
+                    "INSERT OR IGNORE INTO pairs(domain, category) VALUES(?, ?)",
+                    (domain, category),
                 )
-            webcat_hygiene.commit_if_supported(conn)
+            aggregate.commit()
+            unique_pairs = aggregate.execute("SELECT COUNT(*) FROM pairs").fetchone()[0]
+            domains_built = aggregate.execute(
+                "SELECT COUNT(DISTINCT domain) FROM pairs"
+            ).fetchone()[0]
 
-            if domain_rows:
-                for start_idx in range(0, len(domain_rows), batch_size):
-                    conn.executemany(
-                        domain_insert_sql,
-                        domain_rows[start_idx : start_idx + batch_size],
+            with _connect() as conn:
+                try:
+                    _init_db(conn)
+                    _cleanup_stale_build_tables(conn, current_suffix=suffix)
+                    webcat_hygiene.drop_tables(
+                        conn, list(stages.values()) + list(old_tables.values())
                     )
-                webcat_hygiene.commit_if_supported(conn)
-
-            if category_rows:
-                for start_idx in range(0, len(category_rows), batch_size):
-                    conn.executemany(
-                        category_insert_sql,
-                        category_rows[start_idx : start_idx + batch_size],
-                    )
-                webcat_hygiene.commit_if_supported(conn)
-
-            alias_rows: list[tuple[str, str]] = []
-            if aliases:
-                for alias, canonical in sorted(aliases.items()):
-                    if alias and canonical and alias != canonical:
-                        alias_rows.append((alias, canonical))
-                if alias_rows:
-                    conn.executemany(alias_insert_sql, alias_rows)
+                    for live, stage in stages.items():
+                        conn.execute(
+                            f"CREATE TABLE {_quote_table_name(stage)} LIKE {_quote_table_name(live)}",
+                        )
                     webcat_hygiene.commit_if_supported(conn)
 
-            _upsert_meta_table(conn, stages["webcat_meta"], "built_ts", str(_now()))
-            _upsert_meta_table(conn, stages["webcat_meta"], "source", source)
-            _upsert_meta_table(
-                conn,
-                stages["webcat_meta"],
-                "source_sha256",
-                source_sha256,
-            )
-            _upsert_meta_table(
-                conn,
-                stages["webcat_meta"],
-                "domains",
-                str(domains_built),
-            )
-            _upsert_meta_table(conn, stages["webcat_meta"], "pairs", str(unique_pairs))
-            _upsert_meta_table(
-                conn,
-                stages["webcat_meta"],
-                "source_pairs",
-                str(len(pairs)),
-            )
-            _upsert_meta_table(
-                conn,
-                stages["webcat_meta"],
-                "aliases",
-                str(len(alias_rows)),
-            )
-            rename_parts: list[str] = []
-            for live, stage in stages.items():
-                rename_parts.extend(
-                    (
-                        f"{_quote_table_name(live)} TO {_quote_table_name(old_tables[live])}",
-                        f"{_quote_table_name(stage)} TO {_quote_table_name(live)}",
-                    ),
-                )
-            conn.execute("RENAME TABLE " + ", ".join(rename_parts))
-            webcat_hygiene.drop_tables(conn, list(old_tables.values()))
-        except Exception:
-            webcat_hygiene.drop_tables(
-                conn, list(stages.values()) + list(old_tables.values())
-            )
-            raise
+                    domain_cursor = aggregate.execute(
+                        "SELECT domain, GROUP_CONCAT(category, '|') FROM "
+                        "(SELECT domain, category FROM pairs ORDER BY domain, category) "
+                        "GROUP BY domain ORDER BY domain"
+                    )
+                    while rows := domain_cursor.fetchmany(batch_size):
+                        conn.executemany(domain_insert_sql, rows)
+                    webcat_hygiene.commit_if_supported(conn)
+
+                    category_cursor = aggregate.execute(
+                        "SELECT category, COUNT(*) FROM pairs GROUP BY category "
+                        "ORDER BY category"
+                    )
+                    while rows := category_cursor.fetchmany(batch_size):
+                        conn.executemany(category_insert_sql, rows)
+                    webcat_hygiene.commit_if_supported(conn)
+
+                    alias_rows = [
+                        (alias, canonical)
+                        for alias, canonical in sorted((aliases or {}).items())
+                        if alias and canonical and alias != canonical
+                    ]
+                    for start_idx in range(0, len(alias_rows), batch_size):
+                        conn.executemany(
+                            alias_insert_sql,
+                            alias_rows[start_idx : start_idx + batch_size],
+                        )
+                    if alias_rows:
+                        webcat_hygiene.commit_if_supported(conn)
+
+                    _upsert_meta_table(
+                        conn, stages["webcat_meta"], "built_ts", str(_now())
+                    )
+                    _upsert_meta_table(conn, stages["webcat_meta"], "source", source)
+                    _upsert_meta_table(
+                        conn,
+                        stages["webcat_meta"],
+                        "source_sha256",
+                        source_sha256,
+                    )
+                    _upsert_meta_table(
+                        conn,
+                        stages["webcat_meta"],
+                        "domains",
+                        str(domains_built),
+                    )
+                    _upsert_meta_table(
+                        conn, stages["webcat_meta"], "pairs", str(unique_pairs)
+                    )
+                    _upsert_meta_table(
+                        conn,
+                        stages["webcat_meta"],
+                        "source_pairs",
+                        str(source_pairs),
+                    )
+                    _upsert_meta_table(
+                        conn,
+                        stages["webcat_meta"],
+                        "aliases",
+                        str(len(alias_rows)),
+                    )
+                    rename_parts: list[str] = []
+                    for live, stage in stages.items():
+                        rename_parts.extend(
+                            (
+                                f"{_quote_table_name(live)} TO {_quote_table_name(old_tables[live])}",
+                                f"{_quote_table_name(stage)} TO {_quote_table_name(live)}",
+                            ),
+                        )
+                    conn.execute("RENAME TABLE " + ", ".join(rename_parts))
+                    webcat_hygiene.drop_tables(conn, list(old_tables.values()))
+                except Exception:
+                    webcat_hygiene.drop_tables(
+                        conn, list(stages.values()) + list(old_tables.values())
+                    )
+                    raise
+        finally:
+            aggregate.close()
     return domains_built, unique_pairs
 
 
@@ -869,7 +890,7 @@ def _collect(
     source_path: Path,
     *,
     provider: str = "auto",
-) -> tuple[list[tuple[str, str]], str, dict[str, str]]:
+) -> tuple[Iterable[tuple[str, str]], str, dict[str, str]]:
     provider = (provider or "auto").strip().lower()
     if provider not in {"auto", "ut1", "category-dir", "csv"}:
         msg = f"Unsupported webcat provider: {provider}"
@@ -1125,11 +1146,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         pairs, source_label, aliases = _collect(source_path, provider=args.provider)
     except ValueError:
         return 3
-    if not pairs:
+    pair_iter = iter(pairs)
+    first_pair = next(pair_iter, None)
+    if first_pair is None:
         return 3
 
     _domains, _total_pairs = _build_db(
-        pairs,
+        itertools.chain((first_pair,), pair_iter),
         source=source_label,
         aliases=aliases,
         source_sha256=source_sha256,

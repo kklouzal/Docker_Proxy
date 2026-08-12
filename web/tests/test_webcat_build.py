@@ -100,7 +100,7 @@ def test_category_dir_accepts_hosts_file_records_without_broadening() -> None:
 
         pairs, source, aliases = webcat_build._collect(root, provider="category-dir")
 
-        assert pairs == [
+        assert list(pairs) == [
             ("ads.example", "ads"),
             ("tracker.example", "ads"),
             ("bad.example", "ads"),
@@ -400,7 +400,7 @@ def test_zip_collect_replaces_stale_extraction_symlink_without_following_it() ->
 
         pairs, source, aliases = webcat_build._collect(zip_path)
 
-        assert pairs == [("example.com", "adult")]
+        assert list(pairs) == [("example.com", "adult")]
         assert source == f"ut1zip:{zip_path}"
         assert aliases == {}
         assert keep.read_text(encoding="utf-8") == "preserve me"
@@ -847,7 +847,7 @@ def test_provider_category_dir_can_parse_non_ut1_archive() -> None:
             tar_path, provider="category-dir"
         )
 
-        assert pairs == [("example.com", "adult")]
+        assert list(pairs) == [("example.com", "adult")]
         assert source.startswith("tar:")
         assert aliases == {}
 
@@ -864,7 +864,7 @@ def test_csv_category_column_splits_comma_pipe_and_space_separators() -> None:
 
         pairs = webcat_build._collect_from_csv(feed_path)
 
-        assert pairs == [
+        assert list(pairs) == [
             ("example.com", "ads"),
             ("example.com", "malware"),
             ("example.com", "tracking"),
