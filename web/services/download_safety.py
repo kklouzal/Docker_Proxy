@@ -471,6 +471,7 @@ def open_download_url(
             )
         except urllib.error.HTTPError as exc:
             if exc.code not in {301, 302, 303, 307, 308}:
+                exc.close()
                 raise
             try:
                 location = (

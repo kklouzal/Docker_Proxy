@@ -446,11 +446,11 @@ def test_validate_download_url_accepts_ordinary_percent_encoded_path_params_quer
     monkeypatch.setattr(
         download_safety.socket,
         "getaddrinfo",
-        lambda host, *_args, **_kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0))
-        ]
-        if host == "public.example"
-        else (_ for _ in ()).throw(AssertionError(f"unexpected host: {host}")),
+        lambda host, *_args, **_kwargs: (
+            [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0))]
+            if host == "public.example"
+            else (_ for _ in ()).throw(AssertionError(f"unexpected host: {host}"))
+        ),
     )
 
     parsed = download_safety.validate_download_url(
@@ -854,7 +854,9 @@ def test_download_connection_shares_timeout_across_vetted_address_attempts(
         def monotonic(self):
             return next(ticks)
 
-    monkeypatch.setattr(download_safety.socket, "create_connection", fake_create_connection)
+    monkeypatch.setattr(
+        download_safety.socket, "create_connection", fake_create_connection
+    )
     monkeypatch.setitem(download_safety.__dict__, "time", _Clock())
 
     create_connection = download_safety._create_download_connection(addresses)
@@ -1069,6 +1071,43 @@ def test_open_download_url_closes_rejected_redirect_response(
         )
 
     assert redirect_body.closed
+
+
+def test_open_download_url_closes_non_redirect_http_error_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0))
+        ],
+    )
+    error_body = io.BytesIO(b"not modified")
+
+    class _Opener:
+        def open(self, req, **_kwargs):
+            raise download_safety.urllib.error.HTTPError(
+                req.full_url, 304, "Not Modified", {}, error_body
+            )
+
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_args, **_kwargs: _Opener(),
+    )
+
+    with pytest.raises(download_safety.urllib.error.HTTPError) as error:
+        download_safety.open_download_url(
+            "https://public.example/feed.csv",
+            timeout=1,
+            user_agent="unit-test-agent",
+        )
+
+    assert error.value.code == 304
+    assert error_body.closed
 
 
 def test_open_download_url_preserves_extra_headers_on_same_origin_redirect(
