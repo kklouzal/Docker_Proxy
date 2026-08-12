@@ -153,11 +153,6 @@ from services.proxy_logs import (
 )
 from services.proxy_registry import get_proxy_registry as _default_get_proxy_registry
 from services.proxy_sync import canonical_registered_proxy_id, request_proxy_reconcile
-from services.report_schedule_recipients import (
-    REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES,
-    normalize_report_schedule_recipients,
-    report_schedule_recipient_error_code,
-)
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import extract_domain as _extract_domain
 from services.safe_browsing_v5 import SafeBrowsingStore
@@ -7075,18 +7070,12 @@ def observability_settings():
 def observability_report_schedules():
     queries = get_observability_queries()
     pane = _normalize_choice(request.form.get("pane"), _OBSERVABILITY_PANES, "reports")
-    cadence = _normalize_choice(
-        request.form.get("cadence"),
-        ("daily", "weekly"),
-        "daily",
-    )
     report_format = _normalize_choice(
         request.form.get("format"),
         ("csv", "json", "jsonl"),
         "csv",
     )
     privacy = _truthy_form_values("privacy", default=True)
-    enabled = _truthy_form_values("enabled", default=True)
     window_i = _bounded_int(
         request.form.get("window"),
         default=OBSERVABILITY_DEFAULT_WINDOW,
@@ -7094,48 +7083,21 @@ def observability_report_schedules():
         maximum=7 * 24 * 3600,
     )
     name = (request.form.get("name") or "").strip()
-    recipients = request.form.get("recipients") or ""
-    try:
-        normalized_recipients = normalize_report_schedule_recipients(recipients)
-    except ValueError as exc:
-        recipient_error_code = report_schedule_recipient_error_code(exc)
-        detail = REPORT_SCHEDULE_RECIPIENT_ERROR_MESSAGES.get(
-            recipient_error_code,
-            "Report recipients could not be validated.",
-        )
-        _record_audit_event(
-            "observability_report_schedule_save",
-            ok=False,
-            detail=detail,
-        )
-        return _redirect_to(
-            "observability",
-            pane="reports",
-            window=window_i,
-            privacy=_query_flag(privacy),
-            schedule_error="recipient",
-            schedule_recipient_error=recipient_error_code,
-        )
     try:
         schedule = queries.save_report_schedule(
             name=name,
-            cadence=cadence,
-            recipients=normalized_recipients,
             pane=pane,
             report_format=report_format,
             privacy=privacy,
             window_seconds=window_i,
-            enabled=enabled,
         )
         _OBSERVABILITY_RESULT_CACHE.clear()
         saved_pane = str(schedule.get("pane") or pane)
         saved_format = str(schedule.get("report_format") or report_format)
         saved_privacy = bool(schedule.get("privacy", privacy))
-        recipient_count = _recipient_count_for_audit(schedule.get("recipients"))
         detail = (
-            f"saved manual {cadence} {saved_pane} observability report preset; "
-            f"format={saved_format}; privacy={'on' if saved_privacy else 'off'}; "
-            f"recipients={recipient_count}"
+            f"saved manual {saved_pane} observability export preset; "
+            f"format={saved_format}; privacy={'on' if saved_privacy else 'off'}"
         )
         _record_audit_event(
             "observability_report_schedule_save",

@@ -1745,8 +1745,8 @@ def test_save_report_schedule_returns_inserted_row_instead_of_sorted_first(
 
     assert weekly["id"] == 22
     assert weekly["name"] == "Weekly inserted second"
-    assert weekly["cadence"] == "weekly"
-    assert weekly["recipients"] == "weekly@example.com"
+    assert weekly["cadence"] == "manual"
+    assert weekly["recipients"] == ""
     assert any(
         "WHERE proxy_id = %s AND id = %s" in sql and params == ("default", 22)
         for sql, params in conn.calls
@@ -1826,12 +1826,12 @@ def test_save_report_schedule_normalizes_and_deduplicates_recipients(
         report_format="json",
     )
 
-    assert saved["recipients"] == (
+    assert saved["recipients"] == ""
+    assert conn.insert_params is not None
+    assert conn.insert_params[4] == (
         "Ops@example.com, alerts@example.com, ops@example.com, "
         "reports+daily@example.co.uk"
     )
-    assert conn.insert_params is not None
-    assert conn.insert_params[4] == saved["recipients"]
 
 
 @pytest.mark.parametrize(
@@ -1933,15 +1933,12 @@ def test_report_schedules_exclude_persisted_runtime_state_from_manual_presets(
             "id": 41,
             "enabled": True,
             "name": "Legacy scheduled-looking preset",
-            "cadence": "daily",
-            "recipients": "ops@example.com",
+            "cadence": "manual",
+            "recipients": "",
             "pane": "reports",
             "report_format": "csv",
             "privacy": True,
             "window_seconds": 3600,
-            "next_run_ts": 0,
-            "last_run_ts": 0,
-            "last_status": "saved preset",
             "delivery_status": "manual_export_only",
             "updated_ts": 777777,
         }

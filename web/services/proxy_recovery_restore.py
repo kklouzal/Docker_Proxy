@@ -96,7 +96,9 @@ _INT_COLUMNS: Final = frozenset(
     }
 )
 _BYTES_COLUMNS: Final = frozenset({"archive_blob"})
-_HEX_SHA_COLUMNS: Final = frozenset({"artifact_sha256", "bundle_sha256", "cert_sha256", "config_sha256"})
+_HEX_SHA_COLUMNS: Final = frozenset(
+    {"artifact_sha256", "bundle_sha256", "cert_sha256", "config_sha256"}
+)
 _PROXY_COLUMNS: Final = frozenset({"proxy_id"})
 
 _MAX_ROWS_BY_TABLE: Final = MappingProxyType(
@@ -317,17 +319,25 @@ def build_restore_plan(
     restore_ts = int(time.time() if now_ts is None else now_ts)
     bundle_proxy = proxy_recovery.normalize_proxy_id(bundle.proxy_id)
     if bundle_proxy != proxy_key:
-        raise ProxyRecoveryRestoreError("recovery bundle proxy id does not match target proxy id")
-    source_control_plane_id = _normalize_control_plane_id(bundle.source_control_plane_id)
+        raise ProxyRecoveryRestoreError(
+            "recovery bundle proxy id does not match target proxy id"
+        )
+    source_control_plane_id = _normalize_control_plane_id(
+        bundle.source_control_plane_id
+    )
     bundle_content_sha256 = _normalize_sha256_hex(bundle.integrity.content_sha256)
 
     payload_by_table: dict[str, proxy_recovery.RecoveryTablePayload] = {}
     for payload in bundle.tables:
         if payload.name in payload_by_table:
-            raise ProxyRecoveryRestoreError(f"duplicate recovery table payload {payload.name!r}")
+            raise ProxyRecoveryRestoreError(
+                f"duplicate recovery table payload {payload.name!r}"
+            )
         payload_by_table[payload.name] = payload
     if tuple(payload_by_table) != _EXPECTED_TABLE_ORDER:
-        raise ProxyRecoveryRestoreError("recovery bundle table coverage does not match restore contract")
+        raise ProxyRecoveryRestoreError(
+            "recovery bundle table coverage does not match restore contract"
+        )
 
     pac_profile_ids: set[int] = set()
     plans: list[RestoreTablePlan] = []
@@ -384,7 +394,9 @@ def restore_recovery_bundle(
         use_cache=False,
     )
     if first_decision.proxy_id != plan.proxy_id:
-        raise ProxyRecoveryRestoreError("target proxy id resolved unexpectedly during restore")
+        raise ProxyRecoveryRestoreError(
+            "target proxy id resolved unexpectedly during restore"
+        )
 
     lock_name = proxy_lifecycle_lock_name(plan.proxy_id)
     acquired = False
@@ -400,7 +412,9 @@ def restore_recovery_bundle(
             use_cache=False,
         )
         if second_decision.proxy_id != plan.proxy_id:
-            raise ProxyRecoveryRestoreError("target proxy id changed during restore lock acquisition")
+            raise ProxyRecoveryRestoreError(
+                "target proxy id changed during restore lock acquisition"
+            )
 
         conn.execute("START TRANSACTION")
         in_transaction = True
@@ -462,7 +476,9 @@ def read_validate_and_restore(
     now_ts: int | None = None,
     max_bundle_bytes: int | None = None,
 ) -> RestoreResult:
-    resolved_max_bundle_bytes = proxy_recovery.resolve_max_bundle_bytes(max_bundle_bytes)
+    resolved_max_bundle_bytes = proxy_recovery.resolve_max_bundle_bytes(
+        max_bundle_bytes
+    )
     bundle = proxy_recovery.read_recovery_bundle(
         target_proxy_id,
         expected_source_control_plane_id=expected_source_control_plane_id,
@@ -474,12 +490,18 @@ def read_validate_and_restore(
 
 
 def validate_restore_contract() -> None:
-    registry_tables = tuple(spec.table_name for spec in proxy_recovery.recovery_registry())
+    registry_tables = tuple(
+        spec.table_name for spec in proxy_recovery.recovery_registry()
+    )
     if registry_tables != _EXPECTED_TABLE_ORDER:
-        raise ProxyRecoveryRestoreError("restore contract does not match recovery registry")
+        raise ProxyRecoveryRestoreError(
+            "restore contract does not match recovery registry"
+        )
     for plan in recovery_export_query_plans():
         if _EXPECTED_TABLE_COLUMNS[plan.table_name] != plan.columns:
-            raise ProxyRecoveryRestoreError("restore columns do not match recovery export contract")
+            raise ProxyRecoveryRestoreError(
+                "restore columns do not match recovery export contract"
+            )
 
 
 def _validate_rows(
@@ -491,25 +513,42 @@ def _validate_rows(
 ) -> tuple[tuple[Any, ...], ...]:
     max_rows = _MAX_ROWS_BY_TABLE[table_name]
     if len(raw_rows) > max_rows:
-        raise ProxyRecoveryRestoreError(f"recovery table {table_name} exceeds row limit")
+        raise ProxyRecoveryRestoreError(
+            f"recovery table {table_name} exceeds row limit"
+        )
     if table_name in _ACTIVE_REVISION_TABLES and len(raw_rows) > 1:
-        raise ProxyRecoveryRestoreError(f"recovery table {table_name} has multiple active revisions")
-    if table_name in {"admin_ui_https_settings", "observability_settings", "pac_proxy_chain_settings"} and len(raw_rows) > 1:
-        raise ProxyRecoveryRestoreError(f"recovery table {table_name} has multiple singleton rows")
+        raise ProxyRecoveryRestoreError(
+            f"recovery table {table_name} has multiple active revisions"
+        )
+    if (
+        table_name
+        in {
+            "admin_ui_https_settings",
+            "observability_settings",
+            "pac_proxy_chain_settings",
+        }
+        and len(raw_rows) > 1
+    ):
+        raise ProxyRecoveryRestoreError(
+            f"recovery table {table_name} has multiple singleton rows"
+        )
 
     rows: list[tuple[Any, ...]] = []
     seen_keys: set[tuple[Any, ...]] = set()
     natural_key = _NATURAL_KEYS[table_name]
     for raw in raw_rows:
         if not hasattr(raw, "keys"):
-            raise ProxyRecoveryRestoreError(f"recovery row for {table_name} is not a mapping")
+            raise ProxyRecoveryRestoreError(
+                f"recovery row for {table_name} is not a mapping"
+            )
         raw_keys = tuple(raw.keys())
-        legacy_policy_exception = (
-            table_name == "policy_exceptions"
-            and set(raw_keys) == set(expected_columns) - {"method"}
-        )
+        legacy_policy_exception = table_name == "policy_exceptions" and set(
+            raw_keys
+        ) == set(expected_columns) - {"method"}
         if set(raw_keys) != set(expected_columns) and not legacy_policy_exception:
-            raise ProxyRecoveryRestoreError(f"recovery row columns for {table_name} do not match restore contract")
+            raise ProxyRecoveryRestoreError(
+                f"recovery row columns for {table_name} do not match restore contract"
+            )
         normalized = tuple(
             _normalize_column_value(
                 table_name,
@@ -526,7 +565,9 @@ def _validate_rows(
         if natural_key:
             key = tuple(by_col[column] for column in natural_key)
             if key in seen_keys:
-                raise ProxyRecoveryRestoreError(f"duplicate natural key in recovery table {table_name}")
+                raise ProxyRecoveryRestoreError(
+                    f"duplicate natural key in recovery table {table_name}"
+                )
             seen_keys.add(key)
         rows.append(normalized)
     if table_name == "proxy_config_revisions":
@@ -538,7 +579,9 @@ def _validate_rows(
     if table_name == "webfilter_settings":
         keys = {dict(zip(expected_columns, row, strict=True))["k"] for row in rows}
         if not keys.issubset(_EXACT_WEBFILTER_KEYS):
-            raise ProxyRecoveryRestoreError("webfilter restore contains unsupported setting key")
+            raise ProxyRecoveryRestoreError(
+                "webfilter restore contains unsupported setting key"
+            )
     if table_name == "observability_report_schedules":
         _validate_observability_report_schedule_rows(rows, expected_columns)
     return tuple(rows)
@@ -570,17 +613,25 @@ def _validate_observability_report_schedule_rows(
     for row in rows:
         by_col = dict(zip(columns, row, strict=True))
         cadence = str(by_col.get("cadence") or "").strip().lower()
-        if cadence not in {"daily", "weekly"}:
-            raise ProxyRecoveryRestoreError("observability_report_schedules cadence is invalid")
+        if cadence not in {"manual", "daily", "weekly"}:
+            raise ProxyRecoveryRestoreError(
+                "observability_report_schedules cadence is invalid"
+            )
         report_format = str(by_col.get("report_format") or "").strip().lower()
         if report_format not in {"csv", "json", "jsonl"}:
-            raise ProxyRecoveryRestoreError("observability_report_schedules report_format is invalid")
+            raise ProxyRecoveryRestoreError(
+                "observability_report_schedules report_format is invalid"
+            )
         pane = str(by_col.get("pane") or "").strip().lower()
         if pane not in _OBSERVABILITY_REPORT_SCHEDULE_PANES:
-            raise ProxyRecoveryRestoreError("observability_report_schedules pane is invalid")
+            raise ProxyRecoveryRestoreError(
+                "observability_report_schedules pane is invalid"
+            )
         window_seconds = int(by_col.get("window_seconds") or 0)
         if window_seconds < 300 or window_seconds > 7 * 24 * 3600:
-            raise ProxyRecoveryRestoreError("observability_report_schedules window_seconds is invalid")
+            raise ProxyRecoveryRestoreError(
+                "observability_report_schedules window_seconds is invalid"
+            )
 
 
 def _validate_proxy_config_revision_digests(
@@ -669,7 +720,9 @@ def _normalize_column_value(
     if column in _PROXY_COLUMNS:
         normalized = proxy_recovery.normalize_proxy_id(value)
         if normalized != proxy_key:
-            raise ProxyRecoveryRestoreError(f"{table_name}.{column} does not match target proxy id")
+            raise ProxyRecoveryRestoreError(
+                f"{table_name}.{column} does not match target proxy id"
+            )
         return normalized
     if column in _INT_COLUMNS:
         if isinstance(value, bool):
@@ -677,11 +730,19 @@ def _normalize_column_value(
         elif not isinstance(value, int):
             raise ProxyRecoveryRestoreError(f"{table_name}.{column} must be an integer")
         if value < 0:
-            raise ProxyRecoveryRestoreError(f"{table_name}.{column} must be non-negative")
-        if table_name == "observability_report_schedules" and column in {"enabled", "privacy"} and value not in {0, 1}:
+            raise ProxyRecoveryRestoreError(
+                f"{table_name}.{column} must be non-negative"
+            )
+        if (
+            table_name == "observability_report_schedules"
+            and column in {"enabled", "privacy"}
+            and value not in {0, 1}
+        ):
             raise ProxyRecoveryRestoreError(f"{table_name}.{column} must be 0 or 1")
         if column == "expires_ts" and value and value <= now_ts:
-            raise ProxyRecoveryRestoreError("policy exception in recovery bundle is expired")
+            raise ProxyRecoveryRestoreError(
+                "policy exception in recovery bundle is expired"
+            )
         return int(value)
     if column in _BYTES_COLUMNS:
         if not isinstance(value, bytes):
@@ -692,16 +753,24 @@ def _normalize_column_value(
     if "\x00" in value:
         raise ProxyRecoveryRestoreError(f"{table_name}.{column} contains a NUL byte")
     if len(value.encode("utf-8", errors="surrogatepass")) > 4 * 1024 * 1024:
-        raise ProxyRecoveryRestoreError(f"{table_name}.{column} exceeds restore field size limit")
+        raise ProxyRecoveryRestoreError(
+            f"{table_name}.{column} exceeds restore field size limit"
+        )
     if table_name == "observability_report_schedules":
         value = _normalize_observability_report_schedule_text(column, value)
-    if column in _HEX_SHA_COLUMNS and (len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value)):
-        raise ProxyRecoveryRestoreError(f"{table_name}.{column} must be lowercase sha256 hex")
+    if column in _HEX_SHA_COLUMNS and (
+        len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value)
+    ):
+        raise ProxyRecoveryRestoreError(
+            f"{table_name}.{column} must be lowercase sha256 hex"
+        )
     return value
 
 
 def _normalize_observability_report_schedule_text(column: str, value: str) -> str:
     if column == "recipients":
+        if value == "":
+            return ""
         try:
             return normalize_report_schedule_recipients(value)
         except ValueError as exc:
@@ -723,11 +792,15 @@ def _validate_pac_children(
     if not rows:
         return
     if not pac_profile_ids:
-        raise ProxyRecoveryRestoreError(f"{table_name} has child rows without PAC profiles")
+        raise ProxyRecoveryRestoreError(
+            f"{table_name} has child rows without PAC profiles"
+        )
     for row in rows:
         source_profile_id = int(row[0])
         if source_profile_id not in pac_profile_ids:
-            raise ProxyRecoveryRestoreError(f"{table_name} references an unknown PAC profile")
+            raise ProxyRecoveryRestoreError(
+                f"{table_name} references an unknown PAC profile"
+            )
 
 
 def _read_target_identity(conn: Any, *, for_update: bool = False) -> str:
@@ -735,7 +808,9 @@ def _read_target_identity(conn: Any, *, for_update: bool = False) -> str:
         try:
             identity = read_control_plane_identity(conn)
         except Exception as exc:
-            raise ProxyRecoveryRestoreError("target control plane identity is invalid") from exc
+            raise ProxyRecoveryRestoreError(
+                "target control plane identity is invalid"
+            ) from exc
         if identity is None:
             raise ProxyRecoveryRestoreError("target control plane identity is missing")
         return _normalize_control_plane_id(identity)
@@ -810,7 +885,9 @@ def _skip_result_if_already_decided(
             target_identity,
             reason="bundle source is the current control plane",
         )
-    marker_state = _adoption_marker_state(conn, plan, target_identity, for_update=for_update)
+    marker_state = _adoption_marker_state(
+        conn, plan, target_identity, for_update=for_update
+    )
     if marker_state == "same_target":
         return _restore_result(
             _RESTORE_STATUS_ALREADY_ADOPTED,
@@ -819,7 +896,9 @@ def _skip_result_if_already_decided(
             reason="target control plane already adopted this proxy bundle once",
         )
     if marker_state == "ambiguous":
-        raise ProxyRecoveryRestoreError("target proxy has a conflicting recovery adoption marker")
+        raise ProxyRecoveryRestoreError(
+            "target proxy has a conflicting recovery adoption marker"
+        )
     return None
 
 
@@ -838,9 +917,15 @@ def _adoption_marker_state(
     pair_row = conn.execute(pair_sql, (plan.proxy_id, target_identity)).fetchone()
     if pair_row is not None:
         try:
-            source_id = _normalize_control_plane_id(_row_value(pair_row, "source_control_plane_id", 0))
-            marker_target = _normalize_control_plane_id(_row_value(pair_row, "target_control_plane_id", 1))
-            bundle_sha = _normalize_sha256_hex(_row_value(pair_row, "bundle_content_sha256", 2))
+            source_id = _normalize_control_plane_id(
+                _row_value(pair_row, "source_control_plane_id", 0)
+            )
+            marker_target = _normalize_control_plane_id(
+                _row_value(pair_row, "target_control_plane_id", 1)
+            )
+            bundle_sha = _normalize_sha256_hex(
+                _row_value(pair_row, "bundle_content_sha256", 2)
+            )
         except ProxyRecoveryRestoreError:
             return "ambiguous"
         status = str(_row_value(pair_row, "status", 3) or "").strip().lower()
@@ -887,9 +972,15 @@ def _freshness_failure_reason(conn: Any, proxy_id: str) -> str:
 
 
 def _fresh_adblock_lists(conn: Any, _proxy_id: str) -> str:
-    rows = _rows(conn, "SELECT `key`, url, enabled FROM adblock_lists ORDER BY `key` ASC")
+    rows = _rows(
+        conn, "SELECT `key`, url, enabled FROM adblock_lists ORDER BY `key` ASC"
+    )
     actual = {
-        (str(_row_value(row, "key", 0) or ""), str(_row_value(row, "url", 1) or ""), int(_row_value(row, "enabled", 2) or 0))
+        (
+            str(_row_value(row, "key", 0) or ""),
+            str(_row_value(row, "url", 1) or ""),
+            int(_row_value(row, "enabled", 2) or 0),
+        )
         for row in rows
     }
     allowed = {(key, url, 0) for key, url in _ADBLOCK_DEFAULT_LISTS.items()}
@@ -900,7 +991,10 @@ def _fresh_adblock_lists(conn: Any, _proxy_id: str) -> str:
 
 def _fresh_adblock_settings(conn: Any, _proxy_id: str) -> str:
     rows = _rows(conn, "SELECT k, v FROM adblock_settings ORDER BY k ASC")
-    actual = {str(_row_value(row, "k", 0) or ""): str(_row_value(row, "v", 1) or "") for row in rows}
+    actual = {
+        str(_row_value(row, "k", 0) or ""): str(_row_value(row, "v", 1) or "")
+        for row in rows
+    }
     if actual and actual != dict(_ADBLOCK_DEFAULT_SETTINGS):
         return "adblock settings are not canonical schema defaults"
     return ""
@@ -919,7 +1013,10 @@ def _fresh_no_certificate_bundles(conn: Any, _proxy_id: str) -> str:
 
 
 def _fresh_admin_ui_https_settings(conn: Any, _proxy_id: str) -> str:
-    rows = _rows(conn, "SELECT enabled, certfile, keyfile, san_tokens FROM admin_ui_https_settings WHERE id=1")
+    rows = _rows(
+        conn,
+        "SELECT enabled, certfile, keyfile, san_tokens FROM admin_ui_https_settings WHERE id=1",
+    )
     if not rows:
         return ""
     if len(rows) == 1:
@@ -938,7 +1035,11 @@ def _fresh_observability_settings(conn: Any, _proxy_id: str) -> str:
     rows = _rows(conn, "SELECT retention_days FROM observability_settings WHERE id=1")
     if not rows:
         return ""
-    if len(rows) == 1 and int(_row_value(rows[0], "retention_days", 0) or 0) == _OBSERVABILITY_DEFAULT_RETENTION_DAYS:
+    if (
+        len(rows) == 1
+        and int(_row_value(rows[0], "retention_days", 0) or 0)
+        == _OBSERVABILITY_DEFAULT_RETENTION_DAYS
+    ):
         return ""
     return "observability settings are not canonical schema defaults"
 
@@ -959,7 +1060,12 @@ def _fresh_directory_auth_profiles(conn: Any, _proxy_id: str) -> str:
         return ""
     columns = _EXPECTED_TABLE_COLUMNS["directory_auth_profiles"]
     actual = tuple(_project_row(row, columns) for row in rows)
-    expected = tuple(dict(row) for row in sorted(_DIRECTORY_DEFAULT_ROWS, key=lambda item: str(item["provider"])))
+    expected = tuple(
+        dict(row)
+        for row in sorted(
+            _DIRECTORY_DEFAULT_ROWS, key=lambda item: str(item["provider"])
+        )
+    )
     if actual == expected:
         return ""
     return "directory auth profiles are not canonical schema defaults"
@@ -978,32 +1084,50 @@ def _fresh_saml_auth_profiles(conn: Any, _proxy_id: str) -> str:
     )
     if not rows:
         return ""
-    actual = tuple(_project_row(row, _EXPECTED_TABLE_COLUMNS["saml_auth_profiles"]) for row in rows)
+    actual = tuple(
+        _project_row(row, _EXPECTED_TABLE_COLUMNS["saml_auth_profiles"]) for row in rows
+    )
     if actual == (dict(_SAML_DEFAULT_ROW),):
         return ""
     return "SAML auth profile is not the canonical schema default"
 
 
 def _fresh_no_proxy_config_revision(conn: Any, proxy_id: str) -> str:
-    if _count(conn, "SELECT COUNT(*) AS count FROM proxy_config_revisions WHERE proxy_id=%s", (proxy_id,)):
+    if _count(
+        conn,
+        "SELECT COUNT(*) AS count FROM proxy_config_revisions WHERE proxy_id=%s",
+        (proxy_id,),
+    ):
         return "proxy config revision already exists for target proxy"
     return ""
 
 
 def _fresh_no_pac_profiles(conn: Any, proxy_id: str) -> str:
-    if _count(conn, "SELECT COUNT(*) AS count FROM pac_profiles WHERE proxy_id=%s", (proxy_id,)):
+    if _count(
+        conn,
+        "SELECT COUNT(*) AS count FROM pac_profiles WHERE proxy_id=%s",
+        (proxy_id,),
+    ):
         return "PAC profiles already exist for target proxy"
     return ""
 
 
 def _fresh_no_pac_backup_proxies(conn: Any, proxy_id: str) -> str:
-    if _count(conn, "SELECT COUNT(*) AS count FROM pac_backup_proxies WHERE proxy_id=%s", (proxy_id,)):
+    if _count(
+        conn,
+        "SELECT COUNT(*) AS count FROM pac_backup_proxies WHERE proxy_id=%s",
+        (proxy_id,),
+    ):
         return "PAC backup proxies already exist for target proxy"
     return ""
 
 
 def _fresh_pac_proxy_chain_settings(conn: Any, proxy_id: str) -> str:
-    rows = _rows(conn, "SELECT direct_enabled FROM pac_proxy_chain_settings WHERE proxy_id=%s", (proxy_id,))
+    rows = _rows(
+        conn,
+        "SELECT direct_enabled FROM pac_proxy_chain_settings WHERE proxy_id=%s",
+        (proxy_id,),
+    )
     if not rows:
         return ""
     if len(rows) == 1 and int(_row_value(rows[0], "direct_enabled", 0) or 0) == 1:
@@ -1012,37 +1136,72 @@ def _fresh_pac_proxy_chain_settings(conn: Any, proxy_id: str) -> str:
 
 
 def _fresh_no_policy_exceptions(conn: Any, proxy_id: str) -> str:
-    if _count(conn, "SELECT COUNT(*) AS count FROM policy_exceptions WHERE proxy_id=%s", (proxy_id,)):
+    if _count(
+        conn,
+        "SELECT COUNT(*) AS count FROM policy_exceptions WHERE proxy_id=%s",
+        (proxy_id,),
+    ):
         return "policy exceptions already exist for target proxy"
     return ""
 
 
 def _fresh_no_sslfilter_rows(conn: Any, proxy_id: str) -> str:
-    if _count(conn, "SELECT COUNT(*) AS count FROM sslfilter_domains WHERE proxy_id=%s", (proxy_id,)):
+    if _count(
+        conn,
+        "SELECT COUNT(*) AS count FROM sslfilter_domains WHERE proxy_id=%s",
+        (proxy_id,),
+    ):
         return "SSL filter rows already exist for target proxy"
-    if _count(conn, "SELECT COUNT(*) AS count FROM sslfilter_src_nets WHERE proxy_id=%s", (proxy_id,)):
+    if _count(
+        conn,
+        "SELECT COUNT(*) AS count FROM sslfilter_src_nets WHERE proxy_id=%s",
+        (proxy_id,),
+    ):
         return "SSL filter rows already exist for target proxy"
-    if _count(conn, "SELECT COUNT(*) AS count FROM sslfilter_settings WHERE proxy_id=%s", (proxy_id,)):
+    if _count(
+        conn,
+        "SELECT COUNT(*) AS count FROM sslfilter_settings WHERE proxy_id=%s",
+        (proxy_id,),
+    ):
         return "SSL filter rows already exist for target proxy"
     return ""
 
 
 def _fresh_webfilter_settings(conn: Any, proxy_id: str) -> str:
-    rows = _rows(conn, "SELECT k, v FROM webfilter_settings WHERE proxy_id=%s ORDER BY k ASC", (proxy_id,))
+    rows = _rows(
+        conn,
+        "SELECT k, v FROM webfilter_settings WHERE proxy_id=%s ORDER BY k ASC",
+        (proxy_id,),
+    )
     if not rows:
         return ""
-    actual = {str(_row_value(row, "k", 0) or ""): str(_row_value(row, "v", 1) or "") for row in rows}
+    actual = {
+        str(_row_value(row, "k", 0) or ""): str(_row_value(row, "v", 1) or "")
+        for row in rows
+    }
     if actual == dict(_WEBFILTER_DEFAULT_SETTINGS):
         return ""
     return "webfilter settings are not canonical target defaults"
 
 
 def _fresh_no_proxy_table_rows(conn: Any, proxy_id: str) -> str:
-    if _count(conn, "SELECT COUNT(*) AS count FROM webfilter_whitelist WHERE proxy_id=%s", (proxy_id,)):
+    if _count(
+        conn,
+        "SELECT COUNT(*) AS count FROM webfilter_whitelist WHERE proxy_id=%s",
+        (proxy_id,),
+    ):
         return "target proxy declarative rows already exist"
-    if _count(conn, "SELECT COUNT(*) AS count FROM adblock_proxy_meta WHERE proxy_id=%s", (proxy_id,)):
+    if _count(
+        conn,
+        "SELECT COUNT(*) AS count FROM adblock_proxy_meta WHERE proxy_id=%s",
+        (proxy_id,),
+    ):
         return "target proxy declarative rows already exist"
-    if _count(conn, "SELECT COUNT(*) AS count FROM observability_report_schedules WHERE proxy_id=%s", (proxy_id,)):
+    if _count(
+        conn,
+        "SELECT COUNT(*) AS count FROM observability_report_schedules WHERE proxy_id=%s",
+        (proxy_id,),
+    ):
         return "target proxy declarative rows already exist"
     return ""
 
@@ -1052,7 +1211,9 @@ def _count(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> int:
     try:
         return int(_row_value(row, "count", 0) or 0)
     except Exception as exc:
-        raise ProxyRecoveryRestoreError("freshness probe returned an invalid count") from exc
+        raise ProxyRecoveryRestoreError(
+            "freshness probe returned an invalid count"
+        ) from exc
 
 
 def _rows(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> tuple[Any, ...]:
@@ -1090,7 +1251,9 @@ def _acquire_lifecycle_lock(conn: Any, lock_name: str, timeout_seconds: int) -> 
     except Exception:
         acquired = False
     if not acquired:
-        raise ProxyLifecycleWriteError("timed out acquiring proxy lifecycle recovery lock")
+        raise ProxyLifecycleWriteError(
+            "timed out acquiring proxy lifecycle recovery lock"
+        )
     return True
 
 
@@ -1148,11 +1311,15 @@ def _apply_restore_plan(conn: Any, plan: RestorePlan, target_identity: str) -> N
             _insert_webfilter_whitelist(conn, table.rows, plan.now_ts)
         elif table.table_name == "adblock_proxy_meta":
             if table.rows:
-                raise ProxyRecoveryRestoreError("adblock_proxy_meta restore is intentionally empty")
+                raise ProxyRecoveryRestoreError(
+                    "adblock_proxy_meta restore is intentionally empty"
+                )
         elif table.table_name == "observability_report_schedules":
             _insert_observability_report_schedules(conn, table.rows, plan.now_ts)
         else:
-            raise ProxyRecoveryRestoreError(f"unsupported restore table {table.table_name}")
+            raise ProxyRecoveryRestoreError(
+                f"unsupported restore table {table.table_name}"
+            )
     _insert_adoption_marker(conn, plan, target_identity)
 
 
@@ -1168,15 +1335,25 @@ def _insert_many(conn: Any, sql: str, rows: tuple[tuple[Any, ...], ...]) -> None
 
 
 def _insert_adblock_lists(conn: Any, rows: tuple[tuple[Any, ...], ...]) -> None:
-    _insert_many(conn, "INSERT INTO adblock_lists(`key`, url, enabled) VALUES(%s,%s,%s)", rows)
+    _insert_many(
+        conn, "INSERT INTO adblock_lists(`key`, url, enabled) VALUES(%s,%s,%s)", rows
+    )
 
 
 def _insert_adblock_settings(conn: Any, rows: tuple[tuple[Any, ...], ...]) -> None:
     _insert_many(conn, "INSERT INTO adblock_settings(k, v) VALUES(%s,%s)", rows)
 
 
-def _insert_adblock_artifact_revision(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
-    for artifact_sha256, archive_blob, report_json, settings_version, enabled_lists_json in rows:
+def _insert_adblock_artifact_revision(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
+    for (
+        artifact_sha256,
+        archive_blob,
+        report_json,
+        settings_version,
+        enabled_lists_json,
+    ) in rows:
         conn.execute(
             """
             INSERT INTO adblock_artifact_revisions(
@@ -1184,11 +1361,20 @@ def _insert_adblock_artifact_revision(conn: Any, rows: tuple[tuple[Any, ...], ..
                 enabled_lists_json, created_by, created_ts, is_active
             ) VALUES(%s,%s,%s,%s,'recovery',%s,'proxy-recovery',%s,1)
             """,
-            (artifact_sha256, archive_blob, report_json, settings_version, enabled_lists_json, now_ts),
+            (
+                artifact_sha256,
+                archive_blob,
+                report_json,
+                settings_version,
+                enabled_lists_json,
+                now_ts,
+            ),
         )
 
 
-def _insert_certificate_bundle_revision(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
+def _insert_certificate_bundle_revision(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
     for bundle_sha256, cert_sha256, cert_pem, key_pem, chain_pem in rows:
         conn.execute(
             """
@@ -1201,7 +1387,9 @@ def _insert_certificate_bundle_revision(conn: Any, rows: tuple[tuple[Any, ...], 
         )
 
 
-def _insert_admin_ui_https_settings(conn: Any, rows: tuple[tuple[Any, ...], ...]) -> None:
+def _insert_admin_ui_https_settings(
+    conn: Any, rows: tuple[tuple[Any, ...], ...]
+) -> None:
     for enabled, certfile, keyfile, san_tokens in rows:
         conn.execute(
             """
@@ -1212,7 +1400,9 @@ def _insert_admin_ui_https_settings(conn: Any, rows: tuple[tuple[Any, ...], ...]
         )
 
 
-def _insert_observability_settings(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
+def _insert_observability_settings(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
     for (retention_days,) in rows:
         conn.execute(
             "INSERT INTO observability_settings(id, retention_days, updated_ts) VALUES(1,%s,%s)",
@@ -1220,7 +1410,9 @@ def _insert_observability_settings(conn: Any, rows: tuple[tuple[Any, ...], ...],
         )
 
 
-def _insert_directory_auth_profiles(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
+def _insert_directory_auth_profiles(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
     for row in rows:
         conn.execute(
             """
@@ -1235,7 +1427,9 @@ def _insert_directory_auth_profiles(conn: Any, rows: tuple[tuple[Any, ...], ...]
         )
 
 
-def _insert_saml_auth_profiles(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
+def _insert_saml_auth_profiles(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
     for row in rows:
         conn.execute(
             """
@@ -1251,7 +1445,9 @@ def _insert_saml_auth_profiles(conn: Any, rows: tuple[tuple[Any, ...], ...], now
         )
 
 
-def _insert_proxy_config_revision(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
+def _insert_proxy_config_revision(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
     for proxy_id, config_sha256, config_text in rows:
         conn.execute(
             """
@@ -1263,7 +1459,9 @@ def _insert_proxy_config_revision(conn: Any, rows: tuple[tuple[Any, ...], ...], 
         )
 
 
-def _insert_pac_profiles(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> dict[int, int]:
+def _insert_pac_profiles(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> dict[int, int]:
     mapping: dict[int, int] = {}
     for source_profile_id, proxy_id, name, client_cidr in rows:
         result = conn.execute(
@@ -1272,7 +1470,9 @@ def _insert_pac_profiles(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: i
         )
         target_id = int(getattr(result, "lastrowid", 0) or 0)
         if target_id <= 0:
-            raise ProxyRecoveryRestoreError("PAC profile insert did not return a target id")
+            raise ProxyRecoveryRestoreError(
+                "PAC profile insert did not return a target id"
+            )
         if int(source_profile_id) in mapping:
             raise ProxyRecoveryRestoreError("duplicate PAC source profile mapping")
         mapping[int(source_profile_id)] = target_id
@@ -1287,7 +1487,10 @@ def _insert_pac_direct_domains(
     _insert_many(
         conn,
         "INSERT INTO pac_direct_domains(profile_id, domain) VALUES(%s,%s)",
-        tuple((_mapped_profile_id(pac_profile_map, source_profile_id), domain) for source_profile_id, domain in rows),
+        tuple(
+            (_mapped_profile_id(pac_profile_map, source_profile_id), domain)
+            for source_profile_id, domain in rows
+        ),
     )
 
 
@@ -1299,7 +1502,10 @@ def _insert_pac_direct_dst_nets(
     _insert_many(
         conn,
         "INSERT INTO pac_direct_dst_nets(profile_id, cidr) VALUES(%s,%s)",
-        tuple((_mapped_profile_id(pac_profile_map, source_profile_id), cidr) for source_profile_id, cidr in rows),
+        tuple(
+            (_mapped_profile_id(pac_profile_map, source_profile_id), cidr)
+            for source_profile_id, cidr in rows
+        ),
     )
 
 
@@ -1310,7 +1516,9 @@ def _mapped_profile_id(pac_profile_map: dict[int, int], source_profile_id: int) 
     return target_id
 
 
-def _insert_pac_backup_proxies(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
+def _insert_pac_backup_proxies(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
     _insert_many(
         conn,
         "INSERT INTO pac_backup_proxies(proxy_id, proxy_host, proxy_port, position, created_ts) VALUES(%s,%s,%s,%s,%s)",
@@ -1318,7 +1526,9 @@ def _insert_pac_backup_proxies(conn: Any, rows: tuple[tuple[Any, ...], ...], now
     )
 
 
-def _insert_pac_proxy_chain_settings(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
+def _insert_pac_proxy_chain_settings(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
     _insert_many(
         conn,
         "INSERT INTO pac_proxy_chain_settings(proxy_id, direct_enabled, updated_ts) VALUES(%s,%s,%s)",
@@ -1326,8 +1536,19 @@ def _insert_pac_proxy_chain_settings(conn: Any, rows: tuple[tuple[Any, ...], ...
     )
 
 
-def _insert_policy_exceptions(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
-    for proxy_id, block_type, client_ip, domain, category, method, admin_note, expires_ts in rows:
+def _insert_policy_exceptions(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
+    for (
+        proxy_id,
+        block_type,
+        client_ip,
+        domain,
+        category,
+        method,
+        admin_note,
+        expires_ts,
+    ) in rows:
         conn.execute(
             """
             INSERT INTO policy_exceptions(
@@ -1350,7 +1571,9 @@ def _insert_policy_exceptions(conn: Any, rows: tuple[tuple[Any, ...], ...], now_
         )
 
 
-def _insert_sslfilter_domains(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
+def _insert_sslfilter_domains(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
     _insert_many(
         conn,
         "INSERT INTO sslfilter_domains(proxy_id, policy, domain, added_ts) VALUES(%s,%s,%s,%s)",
@@ -1358,7 +1581,9 @@ def _insert_sslfilter_domains(conn: Any, rows: tuple[tuple[Any, ...], ...], now_
     )
 
 
-def _insert_sslfilter_src_nets(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
+def _insert_sslfilter_src_nets(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
     _insert_many(
         conn,
         "INSERT INTO sslfilter_src_nets(proxy_id, policy, cidr, added_ts) VALUES(%s,%s,%s,%s)",
@@ -1367,14 +1592,22 @@ def _insert_sslfilter_src_nets(conn: Any, rows: tuple[tuple[Any, ...], ...], now
 
 
 def _insert_sslfilter_settings(conn: Any, rows: tuple[tuple[Any, ...], ...]) -> None:
-    _insert_many(conn, "INSERT INTO sslfilter_settings(proxy_id, `key`, value) VALUES(%s,%s,%s)", rows)
+    _insert_many(
+        conn,
+        "INSERT INTO sslfilter_settings(proxy_id, `key`, value) VALUES(%s,%s,%s)",
+        rows,
+    )
 
 
 def _insert_webfilter_settings(conn: Any, rows: tuple[tuple[Any, ...], ...]) -> None:
-    _insert_many(conn, "INSERT INTO webfilter_settings(proxy_id, k, v) VALUES(%s,%s,%s)", rows)
+    _insert_many(
+        conn, "INSERT INTO webfilter_settings(proxy_id, k, v) VALUES(%s,%s,%s)", rows
+    )
 
 
-def _insert_webfilter_whitelist(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
+def _insert_webfilter_whitelist(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
     _insert_many(
         conn,
         "INSERT INTO webfilter_whitelist(proxy_id, pattern, added_ts) VALUES(%s,%s,%s)",
@@ -1382,7 +1615,9 @@ def _insert_webfilter_whitelist(conn: Any, rows: tuple[tuple[Any, ...], ...], no
     )
 
 
-def _insert_observability_report_schedules(conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int) -> None:
+def _insert_observability_report_schedules(
+    conn: Any, rows: tuple[tuple[Any, ...], ...], now_ts: int
+) -> None:
     _insert_many(
         conn,
         """

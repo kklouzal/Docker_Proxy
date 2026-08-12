@@ -115,9 +115,15 @@ _REQUIRED_INDEXES: tuple[tuple[str, str], ...] = (
     ("proxy_config_revisions", "uniq_proxy_config_revisions_active_proxy"),
     ("proxy_config_applications", "idx_proxy_config_applications_proxy_revision_ts"),
     ("certificate_bundle_revisions", "uniq_certificate_bundle_revisions_active"),
-    ("proxy_certificate_applications", "idx_proxy_certificate_applications_proxy_revision_ts"),
+    (
+        "proxy_certificate_applications",
+        "idx_proxy_certificate_applications_proxy_revision_ts",
+    ),
     ("adblock_artifact_revisions", "uniq_adblock_artifact_revisions_active"),
-    ("proxy_adblock_artifact_applications", "idx_proxy_adblock_artifact_apply_proxy_revision_ts"),
+    (
+        "proxy_adblock_artifact_applications",
+        "idx_proxy_adblock_artifact_apply_proxy_revision_ts",
+    ),
     ("proxy_operations", "idx_proxy_operations_proxy_status_created_id"),
     ("proxy_operations", "idx_proxy_operations_proxy_started_id"),
     ("proxy_operations", "idx_proxy_operations_proxy_updated_id"),
@@ -170,7 +176,11 @@ def _row_value(row: Any, key: str, index: int = 0) -> Any:
 
 def _table_names(conn: Any) -> set[str]:
     return {
-        str(_row_value(row, "table_name") or _row_value(row, "TABLE_NAME") or _row_value(row, "table_name", 0))
+        str(
+            _row_value(row, "table_name")
+            or _row_value(row, "TABLE_NAME")
+            or _row_value(row, "table_name", 0)
+        )
         for row in _rows(
             conn,
             """
@@ -185,8 +195,16 @@ def _table_names(conn: Any) -> set[str]:
 def _column_names(conn: Any) -> set[tuple[str, str]]:
     return {
         (
-            str(_row_value(row, "table_name") or _row_value(row, "TABLE_NAME") or _row_value(row, "table_name", 0)),
-            str(_row_value(row, "column_name") or _row_value(row, "COLUMN_NAME") or _row_value(row, "column_name", 1)),
+            str(
+                _row_value(row, "table_name")
+                or _row_value(row, "TABLE_NAME")
+                or _row_value(row, "table_name", 0)
+            ),
+            str(
+                _row_value(row, "column_name")
+                or _row_value(row, "COLUMN_NAME")
+                or _row_value(row, "column_name", 1)
+            ),
         )
         for row in _rows(
             conn,
@@ -202,8 +220,16 @@ def _column_names(conn: Any) -> set[tuple[str, str]]:
 def _index_names(conn: Any) -> set[tuple[str, str]]:
     return {
         (
-            str(_row_value(row, "table_name") or _row_value(row, "TABLE_NAME") or _row_value(row, "table_name", 0)),
-            str(_row_value(row, "index_name") or _row_value(row, "INDEX_NAME") or _row_value(row, "index_name", 1)),
+            str(
+                _row_value(row, "table_name")
+                or _row_value(row, "TABLE_NAME")
+                or _row_value(row, "table_name", 0)
+            ),
+            str(
+                _row_value(row, "index_name")
+                or _row_value(row, "INDEX_NAME")
+                or _row_value(row, "index_name", 1)
+            ),
         )
         for row in _rows(
             conn,
@@ -218,12 +244,16 @@ def _index_names(conn: Any) -> set[tuple[str, str]]:
 
 class MysqlStateInvariantQueryError(RuntimeError):
     def __init__(self, context: str, reason: str) -> None:
-        super().__init__(f"failed MySQL state validation invariant query ({context}): {reason}")
+        super().__init__(
+            f"failed MySQL state validation invariant query ({context}): {reason}"
+        )
         self.context = context
         self.reason = reason
 
     @classmethod
-    def from_exception(cls, context: str, exc: Exception) -> MysqlStateInvariantQueryError:
+    def from_exception(
+        cls, context: str, exc: Exception
+    ) -> MysqlStateInvariantQueryError:
         return cls(context, f"{type(exc).__name__}: {exc}")
 
 
@@ -262,7 +292,9 @@ def _report_schedule_recipient_rows(conn: Any) -> list[Any]:
         raise MysqlStateInvariantQueryError.from_exception(context, exc) from exc
 
 
-def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore") -> MysqlStateValidationResult:
+def validate_mysql_state(
+    conn: Any | None = None, *, phase: str = "post-restore"
+) -> MysqlStateValidationResult:
     """Validate backup/export preflight and restored MySQL state invariants.
 
     The check is read-only and intentionally conservative. It verifies that the
@@ -296,29 +328,49 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
         checksum = str(_row_value(row, "checksum", 1) or "")
         error = str(_row_value(row, "error", 2) or "")
         if status != "applied":
-            result.error(f"schema migration version {latest} is not applied (status={status or 'missing'})")
+            result.error(
+                f"schema migration version {latest} is not applied (status={status or 'missing'})"
+            )
         expected_checksum = latest_schema_checksum()
         if not checksum or len(checksum) != 64:
-            result.error(f"schema migration version {latest} has missing/invalid checksum")
+            result.error(
+                f"schema migration version {latest} has missing/invalid checksum"
+            )
         elif checksum != expected_checksum:
-            result.error(f"schema migration version {latest} checksum drift: database has {checksum}, code expects {expected_checksum}")
+            result.error(
+                f"schema migration version {latest} checksum drift: database has {checksum}, code expects {expected_checksum}"
+            )
         if status == "applied" and error:
-            result.warning(f"schema migration version {latest} is applied but retains error text")
+            result.warning(
+                f"schema migration version {latest} is applied but retains error text"
+            )
         result.details["schema_version"] = latest
         result.details["schema_status"] = status
         result.details["schema_checksum"] = checksum
         result.details["expected_schema_checksum"] = expected_checksum
 
         columns = _column_names(active_conn)
-        missing_columns = [f"{table}.{column}" for table, column in _REQUIRED_COLUMNS if (table, column) not in columns]
+        missing_columns = [
+            f"{table}.{column}"
+            for table, column in _REQUIRED_COLUMNS
+            if (table, column) not in columns
+        ]
         if missing_columns:
-            result.error("missing generated/idempotency columns: " + ", ".join(missing_columns))
+            result.error(
+                "missing generated/idempotency columns: " + ", ".join(missing_columns)
+            )
             return result
 
         indexes = _index_names(active_conn)
-        missing_indexes = [f"{table}.{index}" for table, index in _REQUIRED_INDEXES if (table, index) not in indexes]
+        missing_indexes = [
+            f"{table}.{index}"
+            for table, index in _REQUIRED_INDEXES
+            if (table, index) not in indexes
+        ]
         if missing_indexes:
-            result.error("missing generated/idempotency indexes: " + ", ".join(missing_indexes))
+            result.error(
+                "missing generated/idempotency indexes: " + ", ".join(missing_indexes)
+            )
 
         try:
             duplicate_active_config = _count_row(
@@ -336,7 +388,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_config_revisions duplicate active proxy scopes",
             )
             if duplicate_active_config:
-                result.error(f"proxy_config_revisions has {duplicate_active_config} proxy scopes with multiple active rows")
+                result.error(
+                    f"proxy_config_revisions has {duplicate_active_config} proxy scopes with multiple active rows"
+                )
 
             active_certificate = _count_row(
                 active_conn,
@@ -369,7 +423,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_operations duplicate active idempotency keys",
             )
             if duplicate_active_ops:
-                result.error(f"proxy_operations has {duplicate_active_ops} duplicate active idempotency keys")
+                result.error(
+                    f"proxy_operations has {duplicate_active_ops} duplicate active idempotency keys"
+                )
 
             orphan_aliases = _count_row(
                 active_conn,
@@ -382,7 +438,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_id_aliases orphan targets",
             )
             if orphan_aliases:
-                result.error(f"proxy_id_aliases has {orphan_aliases} aliases targeting missing proxy_instances rows")
+                result.error(
+                    f"proxy_id_aliases has {orphan_aliases} aliases targeting missing proxy_instances rows"
+                )
 
             tombstone_conflicts = _count_row(
                 active_conn,
@@ -395,7 +453,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_lifecycle_tombstones terminal live conflicts",
             )
             if tombstone_conflicts:
-                result.error(f"proxy_lifecycle_tombstones has {tombstone_conflicts} terminal tombstone(s) that still have live proxy_instances rows")
+                result.error(
+                    f"proxy_lifecycle_tombstones has {tombstone_conflicts} terminal tombstone(s) that still have live proxy_instances rows"
+                )
 
             alias_tombstone_conflicts = _count_row(
                 active_conn,
@@ -408,7 +468,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_id_aliases lifecycle tombstone consistency",
             )
             if alias_tombstone_conflicts:
-                result.error(f"proxy_id_aliases has {alias_tombstone_conflicts} aliases inconsistent with lifecycle tombstones")
+                result.error(
+                    f"proxy_id_aliases has {alias_tombstone_conflicts} aliases inconsistent with lifecycle tombstones"
+                )
 
             invalid_recovery_adoptions = _count_row(
                 active_conn,
@@ -422,7 +484,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_recovery_adoptions marker contract",
             )
             if invalid_recovery_adoptions:
-                result.error(f"proxy_recovery_adoptions has {invalid_recovery_adoptions} invalid marker contract row(s)")
+                result.error(
+                    f"proxy_recovery_adoptions has {invalid_recovery_adoptions} invalid marker contract row(s)"
+                )
 
             blocked_recovery_adoptions = _count_row(
                 active_conn,
@@ -435,7 +499,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_recovery_adoptions lifecycle-blocked markers",
             )
             if blocked_recovery_adoptions:
-                result.error(f"proxy_recovery_adoptions has {blocked_recovery_adoptions} marker row(s) on lifecycle-blocked proxy ids")
+                result.error(
+                    f"proxy_recovery_adoptions has {blocked_recovery_adoptions} marker row(s) on lifecycle-blocked proxy ids"
+                )
 
             orphan_config_revisions = _count_row(
                 active_conn,
@@ -449,7 +515,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_config_revisions orphan ownership",
             )
             if orphan_config_revisions:
-                result.error(f"proxy_config_revisions has {orphan_config_revisions} row(s) owned by missing proxies without tombstones")
+                result.error(
+                    f"proxy_config_revisions has {orphan_config_revisions} row(s) owned by missing proxies without tombstones"
+                )
 
             orphan_application_owners = _count_row(
                 active_conn,
@@ -475,7 +543,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy application ledgers orphan ownership",
             )
             if orphan_application_owners:
-                result.error(f"proxy application ledgers have {orphan_application_owners} row(s) owned by missing proxies without tombstones")
+                result.error(
+                    f"proxy application ledgers have {orphan_application_owners} row(s) owned by missing proxies without tombstones"
+                )
 
             invalid_config_applications = _count_row(
                 active_conn,
@@ -491,7 +561,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_config_applications revision/evidence integrity",
             )
             if invalid_config_applications:
-                result.error(f"proxy_config_applications has {invalid_config_applications} invalid revision/evidence row(s)")
+                result.error(
+                    f"proxy_config_applications has {invalid_config_applications} invalid revision/evidence row(s)"
+                )
 
             invalid_certificate_applications = _count_row(
                 active_conn,
@@ -506,7 +578,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_certificate_applications revision/evidence integrity",
             )
             if invalid_certificate_applications:
-                result.error(f"proxy_certificate_applications has {invalid_certificate_applications} invalid revision/evidence row(s)")
+                result.error(
+                    f"proxy_certificate_applications has {invalid_certificate_applications} invalid revision/evidence row(s)"
+                )
 
             invalid_adblock_applications = _count_row(
                 active_conn,
@@ -521,7 +595,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_adblock_artifact_applications revision/evidence integrity",
             )
             if invalid_adblock_applications:
-                result.error(f"proxy_adblock_artifact_applications has {invalid_adblock_applications} invalid revision/evidence row(s)")
+                result.error(
+                    f"proxy_adblock_artifact_applications has {invalid_adblock_applications} invalid revision/evidence row(s)"
+                )
 
             orphan_operations = _count_row(
                 active_conn,
@@ -535,7 +611,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_operations orphan ownership",
             )
             if orphan_operations:
-                result.error(f"proxy_operations has {orphan_operations} row(s) owned by missing proxies without tombstones")
+                result.error(
+                    f"proxy_operations has {orphan_operations} row(s) owned by missing proxies without tombstones"
+                )
 
             orphan_pac_profiles = _count_row(
                 active_conn,
@@ -549,7 +627,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="pac_profiles orphan ownership",
             )
             if orphan_pac_profiles:
-                result.error(f"pac_profiles has {orphan_pac_profiles} row(s) owned by missing proxies without tombstones")
+                result.error(
+                    f"pac_profiles has {orphan_pac_profiles} row(s) owned by missing proxies without tombstones"
+                )
 
             orphan_pac_direct_domains = _count_row(
                 active_conn,
@@ -562,7 +642,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="pac_direct_domains orphan profile ownership",
             )
             if orphan_pac_direct_domains:
-                result.error(f"pac_direct_domains has {orphan_pac_direct_domains} row(s) with missing pac_profiles parents")
+                result.error(
+                    f"pac_direct_domains has {orphan_pac_direct_domains} row(s) with missing pac_profiles parents"
+                )
 
             orphan_pac_direct_dst_nets = _count_row(
                 active_conn,
@@ -575,7 +657,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="pac_direct_dst_nets orphan profile ownership",
             )
             if orphan_pac_direct_dst_nets:
-                result.error(f"pac_direct_dst_nets has {orphan_pac_direct_dst_nets} row(s) with missing pac_profiles parents")
+                result.error(
+                    f"pac_direct_dst_nets has {orphan_pac_direct_dst_nets} row(s) with missing pac_profiles parents"
+                )
 
             orphan_pac_backup_proxies = _count_row(
                 active_conn,
@@ -589,7 +673,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="pac_backup_proxies orphan ownership",
             )
             if orphan_pac_backup_proxies:
-                result.error(f"pac_backup_proxies has {orphan_pac_backup_proxies} row(s) owned by missing proxies without tombstones")
+                result.error(
+                    f"pac_backup_proxies has {orphan_pac_backup_proxies} row(s) owned by missing proxies without tombstones"
+                )
 
             orphan_pac_chain_settings = _count_row(
                 active_conn,
@@ -603,7 +689,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="pac_proxy_chain_settings orphan ownership",
             )
             if orphan_pac_chain_settings:
-                result.error(f"pac_proxy_chain_settings has {orphan_pac_chain_settings} row(s) owned by missing proxies without tombstones")
+                result.error(
+                    f"pac_proxy_chain_settings has {orphan_pac_chain_settings} row(s) owned by missing proxies without tombstones"
+                )
 
             orphan_report_schedules = _count_row(
                 active_conn,
@@ -617,19 +705,23 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="observability_report_schedules orphan ownership",
             )
             if orphan_report_schedules:
-                result.error(f"observability_report_schedules has {orphan_report_schedules} row(s) owned by missing proxies without tombstones")
+                result.error(
+                    f"observability_report_schedules has {orphan_report_schedules} row(s) owned by missing proxies without tombstones"
+                )
 
             invalid_report_schedule_cadence = _count_row(
                 active_conn,
                 """
                 SELECT COUNT(*) AS n
                 FROM observability_report_schedules
-                WHERE cadence NOT IN ('daily','weekly')
+                WHERE cadence NOT IN ('manual','daily','weekly')
                 """,
                 context="observability_report_schedules cadence values",
             )
             if invalid_report_schedule_cadence:
-                result.error(f"observability_report_schedules has {invalid_report_schedule_cadence} row(s) with invalid cadence values")
+                result.error(
+                    f"observability_report_schedules has {invalid_report_schedule_cadence} row(s) with invalid cadence values"
+                )
 
             invalid_report_schedule_format = _count_row(
                 active_conn,
@@ -641,10 +733,17 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="observability_report_schedules format values",
             )
             if invalid_report_schedule_format:
-                result.error(f"observability_report_schedules has {invalid_report_schedule_format} row(s) with invalid format values")
+                result.error(
+                    f"observability_report_schedules has {invalid_report_schedule_format} row(s) with invalid format values"
+                )
 
-            report_schedule_recipient_rows = _report_schedule_recipient_rows(active_conn)
-            if len(report_schedule_recipient_rows) > _REPORT_SCHEDULE_RECIPIENT_SCAN_LIMIT:
+            report_schedule_recipient_rows = _report_schedule_recipient_rows(
+                active_conn
+            )
+            if (
+                len(report_schedule_recipient_rows)
+                > _REPORT_SCHEDULE_RECIPIENT_SCAN_LIMIT
+            ):
                 result.error(
                     "observability_report_schedules recipient validation exceeded "
                     f"the {_REPORT_SCHEDULE_RECIPIENT_SCAN_LIMIT}-row safety limit"
@@ -653,12 +752,19 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 invalid_report_schedule_recipients = 0
                 for recipient_row in report_schedule_recipient_rows:
                     recipients = _row_value(recipient_row, "recipients")
+                    if recipients == "":
+                        continue
                     try:
-                        normalized_recipients = normalize_report_schedule_recipients(recipients)
+                        normalized_recipients = normalize_report_schedule_recipients(
+                            recipients
+                        )
                     except ValueError:
                         invalid_report_schedule_recipients += 1
                         continue
-                    if not isinstance(recipients, str) or normalized_recipients != recipients:
+                    if (
+                        not isinstance(recipients, str)
+                        or normalized_recipients != recipients
+                    ):
                         invalid_report_schedule_recipients += 1
                 if invalid_report_schedule_recipients:
                     result.error(
@@ -676,7 +782,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="observability_report_schedules timestamp values",
             )
             if invalid_report_schedule_times:
-                result.error(f"observability_report_schedules has {invalid_report_schedule_times} row(s) with invalid timestamp values")
+                result.error(
+                    f"observability_report_schedules has {invalid_report_schedule_times} row(s) with invalid timestamp values"
+                )
 
             invalid_operation_states = _count_row(
                 active_conn,
@@ -688,7 +796,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_operations invalid status values",
             )
             if invalid_operation_states:
-                result.error(f"proxy_operations has {invalid_operation_states} row(s) with invalid status values")
+                result.error(
+                    f"proxy_operations has {invalid_operation_states} row(s) with invalid status values"
+                )
 
             stale_claim_tokens = _count_row(
                 active_conn,
@@ -701,7 +811,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_operations terminal active request/claim state",
             )
             if stale_claim_tokens:
-                result.error(f"proxy_operations has {stale_claim_tokens} terminal row(s) retaining active request/claim state")
+                result.error(
+                    f"proxy_operations has {stale_claim_tokens} terminal row(s) retaining active request/claim state"
+                )
 
             active_lifecycle = _count_row(
                 active_conn,
@@ -713,7 +825,9 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
                 context="proxy_instances active lifecycle transitions",
             )
             if active_lifecycle:
-                result.warning(f"{active_lifecycle} proxy lifecycle transition(s) are in progress or paused")
+                result.warning(
+                    f"{active_lifecycle} proxy lifecycle transition(s) are in progress or paused"
+                )
         except MysqlStateInvariantQueryError as exc:
             result.error(str(exc))
     finally:
@@ -723,8 +837,14 @@ def validate_mysql_state(conn: Any | None = None, *, phase: str = "post-restore"
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate Docker_Proxy MySQL backup/restore invariants.")
-    parser.add_argument("--phase", default="post-restore", choices=("pre-backup", "post-restore", "audit"))
+    parser = argparse.ArgumentParser(
+        description="Validate Docker_Proxy MySQL backup/restore invariants."
+    )
+    parser.add_argument(
+        "--phase",
+        default="post-restore",
+        choices=("pre-backup", "post-restore", "audit"),
+    )
     args = parser.parse_args(argv)
     result = validate_mysql_state(phase=args.phase)
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))  # noqa: T201

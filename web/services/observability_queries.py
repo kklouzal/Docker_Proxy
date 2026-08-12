@@ -196,11 +196,7 @@ class ObservabilityQueries:
             f"ELSE {hostish} "
             "END"
         )
-        return (
-            "LOWER(TRIM(BOTH '.' FROM "
-            f"{host}"
-            "))"
-        )
+        return f"LOWER(TRIM(BOTH '.' FROM {host}))"
 
     @staticmethod
     def _not_cached_reason_sql(
@@ -1331,15 +1327,12 @@ class ObservabilityQueries:
             "id": int(row[0] or 0),
             "enabled": bool(row[1]),
             "name": str(row[2] or ""),
-            "cadence": str(row[3] or "daily"),
-            "recipients": str(row[4] or ""),
+            "cadence": "manual",
+            "recipients": "",
             "pane": str(row[5] or "reports"),
             "report_format": str(row[6] or "csv"),
             "privacy": bool(row[7]),
             "window_seconds": int(row[8] or 86400),
-            "next_run_ts": 0,
-            "last_run_ts": 0,
-            "last_status": "saved preset",
             "delivery_status": "manual_export_only",
             "updated_ts": int(row[9] or 0),
         }
@@ -1366,20 +1359,22 @@ class ObservabilityQueries:
         self,
         *,
         name: str,
-        cadence: str,
-        recipients: str,
+        cadence: str = "manual",
+        recipients: str = "",
         pane: str = "reports",
         report_format: str = "csv",
         privacy: bool = True,
         window_seconds: int = 86400,
         enabled: bool = True,
     ) -> dict[str, Any]:
-        recipients_s = normalize_report_schedule_recipients(recipients)
+        recipients_s = (
+            normalize_report_schedule_recipients(recipients) if recipients else ""
+        )
         self._ensure_report_schedule_db()
         now = int(time.time())
         cadence_s = str(cadence or "daily").strip().lower()
-        if cadence_s not in {"daily", "weekly"}:
-            cadence_s = "daily"
+        if cadence_s not in {"manual", "daily", "weekly"}:
+            cadence_s = "manual"
         pane_s = str(pane or "reports").strip().lower()
         if pane_s not in {
             "reports",
@@ -1396,9 +1391,7 @@ class ObservabilityQueries:
         if fmt_s not in {"csv", "json", "jsonl"}:
             fmt_s = "csv"
         window_i = max(300, min(7 * 24 * 3600, int(window_seconds or 86400)))
-        name_s = (
-            str(name or "").strip()[:120] or f"{cadence_s.title()} observability report"
-        )
+        name_s = str(name or "").strip()[:120] or "Observability export preset"
         with self._connect() as conn:
             with guarded_proxy_write(conn, get_proxy_id()) as guard:
                 result = conn.execute(
@@ -2090,10 +2083,7 @@ class ObservabilityQueries:
                 add_icap_source_rows(
                     "slow_icap",
                     slow_icap_rows,
-                    {
-                        (str(row[0] or ""), str(row[1] or ""))
-                        for row in slow_icap_rows
-                    },
+                    {(str(row[0] or ""), str(row[1] or "")) for row in slow_icap_rows},
                     f"""
                     SELECT domain, service_family, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
                            MAX(ts) AS last_seen, MAX(icap_time_ms) AS max_icap_ms
@@ -2301,7 +2291,9 @@ class ObservabilityQueries:
                 "observations": sum(int(row.get("count") or 0) for row in all_rows),
                 "domains": len(domain_subjects),
                 "runtime_subjects": len(runtime_subjects),
-                "latest": max([int(row.get("last_seen") or 0) for row in all_rows] or [0]),
+                "latest": max(
+                    [int(row.get("last_seen") or 0) for row in all_rows] or [0]
+                ),
                 "http3_candidates": sum(
                     1 for row in all_rows if row.get("kind") == "http3_alt_svc"
                 ),

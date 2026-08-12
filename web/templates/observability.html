@@ -45,16 +45,7 @@
   {% endif %}
 {% elif pane == 'reports' %}
   {% if request.args.get('schedule_saved') == '1' %}
-  <div class="surface-note small">Report preset saved for manual export. It stores the selected lens, export format, window, privacy mode, and recipient labels, but no automatic delivery is configured yet.</div>
-  {% elif request.args.get('schedule_error') == 'recipient' %}
-  {% set schedule_recipient_error_messages = {
-    'required': 'At least one report recipient is required.',
-    'control_chars': 'Report recipients must not contain control characters or newlines.',
-    'empty_entry': 'Report recipients must not contain empty recipient entries.',
-    'invalid_email': 'Report recipients must be valid email addresses.',
-    'too_long': 'Report recipients must be 512 characters or fewer after normalization.'
-  } %}
-  <div class="surface-note small">Report preset was not saved. {{ schedule_recipient_error_messages.get(request.args.get('schedule_recipient_error'), 'Report recipients could not be validated.') }}</div>
+  <div class="surface-note small">Manual export preset saved. Use Export now to download the selected lens, format, window, and privacy mode.</div>
   {% elif request.args.get('schedule_error') == '1' %}
   <div class="surface-note small">Report preset was not saved. Check Admin UI logs for the database error.</div>
   {% endif %}
@@ -729,32 +720,17 @@
         {{ csrf_field() }}
         <input type="hidden" name="pane" value="reports" />
         <input type="hidden" name="window" value="{{ window }}" />
-        <div class="row-2">
-          <div>
+        <div>
             <label for="schedule_name">Report name</label>
             <input id="schedule_name" name="name" type="text" value="{{ window_label }} reporting digest" />
-          </div>
-          <div>
-            <label for="schedule_recipients">Recipients</label>
-            <input id="schedule_recipients" name="recipients" type="text" placeholder="{{ 'Privacy-protected recipients' if privacy else 'ops@example.com, admin@example.com' }}" />
-          </div>
         </div>
-        <div class="row-2">
-          <div>
-            <label for="schedule_cadence">Cadence</label>
-            <select id="schedule_cadence" name="cadence">
-              <option value="daily">Daily</option>
-              <option value="weekly">Weekly</option>
-            </select>
-          </div>
-          <div>
-            <label for="schedule_format">Format</label>
-            <select id="schedule_format" name="format">
-              <option value="csv">CSV</option>
-              <option value="json">JSON</option>
-              <option value="jsonl">JSON Lines / SIEM</option>
-            </select>
-          </div>
+        <div>
+          <label for="schedule_format">Format</label>
+          <select id="schedule_format" name="format">
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+            <option value="jsonl">JSON Lines / SIEM</option>
+          </select>
         </div>
         <div>
           <input type="hidden" name="privacy" value="0" />
@@ -768,10 +744,10 @@
     <div class="card-header"><h2 class="card-title">Saved manual presets</h2><span class="badge">manual export only</span></div>
     <div class="card-body">
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>Name</th><th>Refresh hint</th><th>Format</th><th class="num">Delivery</th></tr></thead>
+        <thead><tr><th>Name</th><th>Lens / window</th><th>Format</th><th class="num">Action</th></tr></thead>
         <tbody>
         {% for row in payload.schedules %}
-          <tr><td><div class="stack-sm"><span>{{ row.name }}</span><span class="small">{{ row.recipients or 'Recipients hidden in privacy mode' }}</span></div></td><td>{{ row.cadence }}</td><td>{{ row.report_format }}{% if row.privacy %} &middot; private{% endif %}</td><td class="num"><span class="small">manual export only</span></td></tr>
+          <tr><td>{{ row.name }}</td><td>{{ row.pane }} &middot; {{ row.window_seconds }}s</td><td>{{ row.report_format }}{% if row.privacy %} &middot; private{% endif %}</td><td class="num"><a class="btn primary" href="{{ url_for('observability_export', pane=row.pane, window=row.window_seconds, format=row.report_format, privacy=('1' if row.privacy else '0')) }}">Export now</a></td></tr>
         {% else %}
           <tr><td colspan="4" class="muted">No manual report presets are saved yet.</td></tr>
         {% endfor %}

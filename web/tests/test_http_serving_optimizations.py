@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import sys
 
+import pytest
 from flask import Flask, Response
 
 from .admin_route_test_utils import csrf_token, load_admin_app, login_client
@@ -190,9 +191,13 @@ class ReportsPrivacyLeakQueries(CountingObservabilityQueries):
             "schedules": [
                 {
                     "name": "Daily report",
+                    "cadence": "daily",
                     "recipients": "ops@example.com",
+                    "pane": "reports",
                     "report_format": "csv",
                     "privacy": True,
+                    "window_seconds": 3600,
+                    "delivery_status": "manual_export_only",
                 }
             ],
             "export_contracts": [],
@@ -596,35 +601,26 @@ def test_observability_reports_pane_json_export_and_metrics_routes_render(
     assert b"docker_proxy_observability_requests" in metrics.data
 
 
-def test_observability_reports_privacy_ui_scrubs_saved_preset_recipients(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("privacy", ["0", "1"])
+def test_observability_reports_ui_omits_legacy_recipients_and_offers_manual_export(
+    monkeypatch, tmp_path, privacy
 ) -> None:
     queries = ReportsPrivacyLeakQueries()
     loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
     client = loaded.module.app.test_client()
     login_client(client)
 
-    response = client.get("/observability?pane=reports&window=3600&privacy=1")
+    response = client.get(f"/observability?pane=reports&window=3600&privacy={privacy}")
 
     assert response.status_code == 200
     assert b"Daily report" in response.data
-    assert b"Recipients hidden in privacy mode" in response.data
     assert b"ops@example.com" not in response.data
-
-
-def test_observability_reports_raw_ui_preserves_saved_preset_recipients(
-    monkeypatch, tmp_path
-) -> None:
-    queries = ReportsPrivacyLeakQueries()
-    loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
-    client = loaded.module.app.test_client()
-    login_client(client)
-
-    response = client.get("/observability?pane=reports&window=3600&privacy=0")
-
-    assert response.status_code == 200
-    assert b"Daily report" in response.data
-    assert b"ops@example.com" in response.data
+    assert b"Recipients hidden in privacy mode" not in response.data
+    assert b"Export now" in response.data
+    assert (
+        b"/observability/export?pane=reports&amp;window=3600&amp;format=csv&amp;privacy=1"
+        in response.data
+    )
 
 
 def test_observability_reports_privacy_export_scrubs_user_identifiers_across_formats(
@@ -696,26 +692,22 @@ class ExplodingReportScheduleQueries(CountingObservabilityQueries):
         raise self.exc
 
 
-def test_observability_report_schedule_invalid_recipient_redirects_to_safe_specific_feedback(
+def test_observability_report_schedule_ignores_legacy_delivery_fields(
     monkeypatch, tmp_path
 ) -> None:
-    queries = ExplodingReportScheduleQueries(
-        AssertionError("invalid recipients should not be persisted")
-    )
+    queries = CountingObservabilityQueries()
     loaded = load_admin_app(monkeypatch, tmp_path, observability_queries=queries)
     client = loaded.module.app.test_client()
     login_client(client)
 
-    raw_recipient = "very-sensitive-user"
-    token = csrf_token(client, "/observability?pane=reports")
     response = client.post(
         "/observability/report-schedules",
         data={
-            "csrf_token": token,
-            "name": "Bad recipient digest",
-            "recipients": raw_recipient,
-            "cadence": "daily",
-            "format": "jsonl",
+            "csrf_token": csrf_token(client, "/observability?pane=reports"),
+            "name": "Reusable export",
+            "recipients": "not-an-email",
+            "cadence": "weekly",
+            "format": "json",
             "privacy": "1",
             "window": "3600",
             "pane": "reports",
@@ -724,97 +716,7 @@ def test_observability_report_schedule_invalid_recipient_redirects_to_safe_speci
     )
 
     assert response.status_code == 302
-    location = response.headers["Location"]
-    assert "schedule_error=recipient" in location
-    assert "schedule_recipient_error=invalid_email" in location
-    assert raw_recipient not in location
-    assert queries.save_calls == 0
-    record = loaded.audit_store.records[-1]
-    assert record["kind"] == "observability_report_schedule_save"
-    assert record["ok"] is False
-    assert record["detail"] == "Report recipients must be valid email addresses."
-    assert raw_recipient not in record["detail"]
-
-    rendered = client.get(location)
-
-    assert rendered.status_code == 200
-    assert (
-        b"Report preset was not saved. Report recipients must be valid email addresses."
-        in rendered.data
-    )
-    assert raw_recipient.encode() not in rendered.data
-    assert (
-        b"recipient is required and the database must be reachable" not in rendered.data
-    )
-
-
-def test_observability_report_schedule_recipient_feedback_codes_are_specific_and_safe(
-    monkeypatch, tmp_path
-) -> None:
-    loaded = load_admin_app(monkeypatch, tmp_path)
-    client = loaded.module.app.test_client()
-    login_client(client)
-
-    cases = [
-        ("", "required", b"At least one report recipient is required."),
-        (
-            "ops@example.com, ;alerts@example.com",
-            "empty_entry",
-            b"Report recipients must not contain empty recipient entries.",
-        ),
-        (
-            "ops@example.com\r\nBcc: secret-recipient@example.com",
-            "control_chars",
-            b"Report recipients must not contain control characters or newlines.",
-        ),
-        (
-            "\nops@example.com",
-            "control_chars",
-            b"Report recipients must not contain control characters or newlines.",
-        ),
-        (
-            "ops@example.com\n",
-            "control_chars",
-            b"Report recipients must not contain control characters or newlines.",
-        ),
-        (
-            ", ".join(f"recipient{idx:02d}@example.com" for idx in range(40)),
-            "too_long",
-            b"Report recipients must be 512 characters or fewer after normalization.",
-        ),
-    ]
-    for raw_recipient, code, message in cases:
-        response = client.post(
-            "/observability/report-schedules",
-            data={
-                "csrf_token": csrf_token(client, "/observability?pane=reports"),
-                "name": "Bad recipient digest",
-                "recipients": raw_recipient,
-                "cadence": "daily",
-                "format": "csv",
-                "privacy": "1",
-                "window": "3600",
-                "pane": "reports",
-            },
-            follow_redirects=False,
-        )
-
-        assert response.status_code == 302
-        location = response.headers["Location"]
-        assert "schedule_error=recipient" in location
-        assert f"schedule_recipient_error={code}" in location
-        if raw_recipient:
-            assert raw_recipient not in location
-        assert loaded.audit_store.records[-1]["detail"].encode() == message
-        if raw_recipient:
-            assert raw_recipient not in loaded.audit_store.records[-1]["detail"]
-
-        rendered = client.get(location)
-
-        assert rendered.status_code == 200
-        assert message in rendered.data
-        if raw_recipient:
-            assert raw_recipient.encode() not in rendered.data
+    assert "schedule_saved=1" in response.headers["Location"]
 
 
 def test_observability_report_schedule_generic_save_error_stays_generic(
@@ -893,8 +795,8 @@ def test_observability_report_schedule_post_records_configuration(
     record = loaded.audit_store.records[-1]
     assert record["kind"] == "observability_report_schedule_save"
     assert record["ok"] is True
-    assert "saved manual daily reports observability report preset" in record["detail"]
-    assert "recipients=1" in record["detail"]
+    assert "saved manual reports observability export preset" in record["detail"]
+    assert "recipients" not in record["detail"]
     assert "privacy=on" in record["detail"]
     assert "ops@example.com" not in record["detail"]
 
