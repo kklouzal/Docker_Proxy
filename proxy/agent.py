@@ -69,6 +69,12 @@ def _run_once_logged(key: str, message: str, func) -> tuple[bool, object | None]
         return False, None
 
 
+def _sync_result_ok(result: object | None) -> bool:
+    return bool(
+        getattr(result, "get", lambda _key, _default=None: _default)("ok", False),
+    )
+
+
 def _sync_loop(runtime, *, force: bool = False):
     if bool(getattr(runtime, "recovery_initial_capture_required", False)):
         ensure_startup_schema = getattr(runtime, "ensure_startup_schema", None)
@@ -77,8 +83,10 @@ def _sync_loop(runtime, *, force: bool = False):
     runtime.start_background_tasks()
     result = runtime.sync_from_db(force=force)
     capture_recovery_bundle = getattr(runtime, "capture_recovery_bundle", None)
-    if callable(capture_recovery_bundle) and bool(
-        getattr(runtime, "recovery_initial_capture_required", False),
+    if (
+        callable(capture_recovery_bundle)
+        and bool(getattr(runtime, "recovery_initial_capture_required", False))
+        and _sync_result_ok(result)
     ):
         capture_recovery_bundle(
             reason="startup_initial",
@@ -153,12 +161,20 @@ def start_agent() -> None:
             and startup_recovery is not None
             and bool(getattr(startup_recovery, "capture_required", False))
         ):
-            if registered_ok and bootstrap_ok and background_ok and sync_ok:
+            if (
+                registered_ok
+                and bootstrap_ok
+                and background_ok
+                and sync_ok
+                and _sync_result_ok(sync_result)
+            ):
                 capture_recovery_bundle(
                     reason="startup_initial",
                     required=True,
                     changed=bool(
-                        getattr(sync_result, "get", lambda _key, _default=None: _default)(
+                        getattr(
+                            sync_result, "get", lambda _key, _default=None: _default
+                        )(
                             "changed",
                             False,
                         ),
