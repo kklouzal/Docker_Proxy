@@ -1072,36 +1072,69 @@ rm -f /etc/supervisor.d/icap.conf || true
 # Run the SQLite-backed adblock ICAP helper immediately so Squid's ICAP
 # OPTIONS checks succeed quickly. AV still runs through c-icap and can wait
 # for the remote clamd backend without impacting adblock.
+icap_base_is_usable() {
+    value="$1"
+    workers="$2"
+    case "$value" in
+        ''|*[!0-9]*|??????*) return 1 ;;
+    esac
+    [ "$value" -ge 1 ] && [ "$value" -le $((65536 - workers)) ]
+}
+
+icap_ranges_overlap() {
+    left="$1"
+    right="$2"
+    workers="$3"
+    [ "$left" -lt $((right + workers)) ] && [ "$right" -lt $((left + workers)) ]
+}
+
+allocate_icap_base() {
+    candidate="$1"
+    workers="$2"
+    shift 2
+    if ! icap_base_is_usable "$candidate" "$workers"; then
+        candidate=1
+    fi
+    max_base=$((65536 - workers))
+    checked=0
+    while [ "$checked" -lt "$max_base" ]; do
+        available=1
+        for occupied in "$@"; do
+            if icap_ranges_overlap "$candidate" "$occupied" "$workers"; then
+                available=0
+                break
+            fi
+        done
+        if [ "$available" = "1" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        candidate=$((candidate + 1))
+        if [ "$candidate" -gt "$max_base" ]; then
+            candidate=1
+        fi
+        checked=$((checked + 1))
+    done
+    return 1
+}
+
 CICAP_PORT_RAW="${CICAP_PORT:-14000}"
-case "$CICAP_PORT_RAW" in
-    ''|*[!0-9]*) CICAP_PORT=14000 ;;
-    *) CICAP_PORT="$CICAP_PORT_RAW" ;;
-esac
+if ! icap_base_is_usable "$CICAP_PORT_RAW" "$WORKERS"; then
+    CICAP_PORT_RAW=14000
+fi
+CICAP_PORT="$(allocate_icap_base "$CICAP_PORT_RAW" "$WORKERS")"
 
 CICAP_AV_PORT_RAW="${CICAP_AV_PORT:-14001}"
-case "$CICAP_AV_PORT_RAW" in
-    ''|*[!0-9]*) CICAP_AV_PORT=14001 ;;
-    *) CICAP_AV_PORT="$CICAP_AV_PORT_RAW" ;;
-esac
-
-# Keep ICAP listener ranges non-overlapping.  The historical adblock/AV defaults
-# (14000/14001) collide when WORKERS > 1, so align AV to the first safe port
-# after the adblock range while preserving already-safe explicit layouts.
-if [ "$CICAP_AV_PORT" -lt $((CICAP_PORT + WORKERS)) ] && [ "$CICAP_PORT" -lt $((CICAP_AV_PORT + WORKERS)) ]; then
-    CICAP_AV_PORT=$((CICAP_PORT + WORKERS))
+if ! icap_base_is_usable "$CICAP_AV_PORT_RAW" "$WORKERS"; then
+    CICAP_AV_PORT_RAW=14001
 fi
+CICAP_AV_PORT="$(allocate_icap_base "$CICAP_AV_PORT_RAW" "$WORKERS" "$CICAP_PORT")"
 
 CICAP_AV_RESP_PORT_RAW="${CICAP_AV_RESP_PORT:-$((CICAP_AV_PORT + WORKERS))}"
-case "$CICAP_AV_RESP_PORT_RAW" in
-    ''|*[!0-9]*) CICAP_AV_RESP_PORT=$((CICAP_AV_PORT + WORKERS)) ;;
-    *) CICAP_AV_RESP_PORT="$CICAP_AV_RESP_PORT_RAW" ;;
-esac
-if [ "$CICAP_AV_RESP_PORT" -lt $((CICAP_PORT + WORKERS)) ] && [ "$CICAP_PORT" -lt $((CICAP_AV_RESP_PORT + WORKERS)) ]; then
-    CICAP_AV_RESP_PORT=$((CICAP_AV_PORT + WORKERS))
+if ! icap_base_is_usable "$CICAP_AV_RESP_PORT_RAW" "$WORKERS"; then
+    CICAP_AV_RESP_PORT_RAW=$((CICAP_AV_PORT + WORKERS))
 fi
-if [ "$CICAP_AV_RESP_PORT" -lt $((CICAP_AV_PORT + WORKERS)) ] && [ "$CICAP_AV_PORT" -lt $((CICAP_AV_RESP_PORT + WORKERS)) ]; then
-    CICAP_AV_RESP_PORT=$((CICAP_AV_PORT + WORKERS))
-fi
+CICAP_AV_RESP_PORT="$(allocate_icap_base "$CICAP_AV_RESP_PORT_RAW" "$WORKERS" "$CICAP_PORT" "$CICAP_AV_PORT")"
 
 CLAMD_HOST_RAW="$(printf '%s' "${CLAMD_HOST:-127.0.0.1}" | tr -d '\r')"
 CLAMD_HOST="$(sanitize_bind_host "$CLAMD_HOST_RAW")"

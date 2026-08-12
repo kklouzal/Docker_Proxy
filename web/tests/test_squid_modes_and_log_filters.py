@@ -1944,3 +1944,90 @@ def test_squid_icap_include_never_renders_legacy_regex_shortcut() -> None:
     assert "adblock_regex_allow" not in rendered
     assert "adblock_regex_block" not in rendered
     assert "http_access deny adblock_regex_block" not in rendered
+
+
+def test_icap_port_bases_normalize_invalid_overflow_and_overlap() -> None:
+    from services.squid_core import (  # type: ignore
+        _clamav_respmod_stream_port_base,
+        _icap_port_bases,
+    )
+
+    assert _icap_port_bases(4, adblock_port="0", av_port="65536") == (14000, 14004)
+    assert _icap_port_bases(4, adblock_port="65533", av_port="65532") == (
+        14000,
+        65532,
+    )
+    assert _icap_port_bases(4, adblock_port="65532", av_port="65529") == (
+        65532,
+        1,
+    )
+    assert (
+        _clamav_respmod_stream_port_base(
+            4,
+            adblock_port="65532",
+            av_port="65529",
+            respmod_port="-1",
+        )
+        == 5
+    )
+
+
+def test_icap_port_bases_preserve_valid_explicit_layout() -> None:
+    from services.squid_core import (  # type: ignore
+        _clamav_respmod_stream_port_base,
+        _icap_port_bases,
+    )
+
+    assert _icap_port_bases(3, adblock_port="24000", av_port="25000") == (
+        24000,
+        25000,
+    )
+    assert (
+        _clamav_respmod_stream_port_base(
+            3,
+            adblock_port="24000",
+            av_port="25000",
+            respmod_port="26000",
+        )
+        == 26000
+    )
+
+
+def test_entrypoint_icap_port_normalization_matches_runtime_helpers() -> None:
+    import os
+    import re
+    import subprocess
+    from pathlib import Path
+
+    entrypoint = Path("docker/entrypoint.sh").read_text(encoding="utf-8")
+    match = re.search(
+        r"^icap_base_is_usable\(\) \{.*?^CICAP_AV_RESP_PORT=.*?$",
+        entrypoint,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None
+
+    def normalize(workers: int, **ports: str) -> tuple[int, int, int]:
+        result = subprocess.run(
+            [
+                "sh",
+                "-eu",
+                "-c",
+                f'WORKERS={workers}\n{match.group(0)}\nprintf \'%s %s %s\\n\' "$CICAP_PORT" "$CICAP_AV_PORT" "$CICAP_AV_RESP_PORT"',
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **ports},
+        )
+        return tuple(map(int, result.stdout.split()))  # type: ignore[return-value]
+
+    assert normalize(
+        4, CICAP_PORT="0", CICAP_AV_PORT="65536", CICAP_AV_RESP_PORT="-1"
+    ) == (14000, 14004, 14008)
+    assert normalize(
+        4, CICAP_PORT="65532", CICAP_AV_PORT="65529", CICAP_AV_RESP_PORT="65530"
+    ) == (65532, 1, 5)
+    assert normalize(
+        3, CICAP_PORT="24000", CICAP_AV_PORT="25000", CICAP_AV_RESP_PORT="26000"
+    ) == (24000, 25000, 26000)

@@ -80,6 +80,25 @@ def _sanitize_clamd_host(value: object) -> str:
     return host
 
 
+def _icap_base_is_usable(port: int, workers: int) -> bool:
+    return 1 <= port <= 65536 - workers
+
+
+def _allocate_icap_base(candidate: int, workers: int, *occupied: int) -> int:
+    max_base = 65536 - workers
+    if not _icap_base_is_usable(candidate, workers):
+        candidate = 1
+    for _ in range(max_base):
+        if all(
+            not (candidate < base + workers and base < candidate + workers)
+            for base in occupied
+        ):
+            return candidate
+        candidate = candidate + 1 if candidate < max_base else 1
+    msg = "no usable ICAP listener range"
+    raise ValueError(msg)
+
+
 def _icap_port_bases(
     workers: int, *, adblock_port: object = None, av_port: object = None
 ) -> tuple[int, int]:
@@ -88,15 +107,16 @@ def _icap_port_bases(
         os.environ.get("CICAP_PORT") if adblock_port is None else adblock_port,
         14000,
     )
+    if not _icap_base_is_usable(adblock_base, count):
+        adblock_base = 14000
+    adblock_base = _allocate_icap_base(adblock_base, count)
     av_base = _parse_port(
         os.environ.get("CICAP_AV_PORT") if av_port is None else av_port,
         14001,
     )
-    # Keep the adblock and AV listener ranges disjoint.  Defaults (14000/14001)
-    # collide as soon as workers > 1, so align AV to the first safe port after
-    # the adblock range while preserving already-safe explicit layouts.
-    if av_base < adblock_base + count and adblock_base < av_base + count:
-        av_base = adblock_base + count
+    if not _icap_base_is_usable(av_base, count):
+        av_base = 14001
+    av_base = _allocate_icap_base(av_base, count, adblock_base)
     return adblock_base, av_base
 
 
@@ -117,11 +137,9 @@ def _clamav_respmod_stream_port_base(
         os.environ.get("CICAP_AV_RESP_PORT") if respmod_port is None else respmod_port,
         av_base + count,
     )
-    if stream_base < adblock_base + count and adblock_base < stream_base + count:
-        stream_base = max(adblock_base + count, av_base + count)
-    if stream_base < av_base + count and av_base < stream_base + count:
-        stream_base = max(adblock_base + count, av_base + count)
-    return stream_base
+    if not _icap_base_is_usable(stream_base, count):
+        stream_base = av_base + count
+    return _allocate_icap_base(stream_base, count, adblock_base, av_base)
 
 
 def _clamd_host_is_remote(host: object) -> bool:
