@@ -433,6 +433,9 @@ def test_proxy_agent_retries_deferred_required_initial_capture_in_sync_loop() ->
     class Runtime:
         recovery_initial_capture_required = True
 
+        def ensure_startup_schema(self) -> None:
+            calls.append("schema")
+
         def start_background_tasks(self) -> None:
             calls.append("background")
 
@@ -442,12 +445,73 @@ def test_proxy_agent_retries_deferred_required_initial_capture_in_sync_loop() ->
 
         def capture_recovery_bundle(self, *, reason, required=False, changed=False):
             calls.append(f"capture:{reason}:{required}:{changed}")
+            self.recovery_initial_capture_required = False
             return {"ok": True}
 
     result = agent._sync_loop(Runtime(), force=False)
 
     assert result == {"ok": True, "changed": True}
-    assert calls == ["background", "sync:False", "capture:startup_initial:True:True"]
+    assert calls == [
+        "schema",
+        "sync:False",
+        "capture:startup_initial:True:True",
+        "background",
+    ]
+
+
+def test_proxy_agent_required_capture_failure_stays_required_and_retryable() -> None:
+    from services.proxy_recovery_startup import (  # type: ignore
+        ProxyRecoveryCaptureError,
+    )
+
+    from proxy import agent  # type: ignore
+
+    calls: list[str] = []
+
+    class Runtime:
+        recovery_initial_capture_required = True
+        capture_attempts = 0
+
+        def ensure_startup_schema(self) -> None:
+            calls.append("schema")
+
+        def start_background_tasks(self) -> None:
+            calls.append("background")
+
+        def sync_from_db(self, *, force=False):
+            calls.append(f"sync:{force}")
+            return {"ok": True, "changed": False}
+
+        def capture_recovery_bundle(self, *, reason, required=False, changed=False):
+            calls.append(f"capture:{reason}:{required}:{changed}")
+            assert required is True
+            self.capture_attempts += 1
+            if self.capture_attempts == 1:
+                message = "disk unavailable"
+                raise ProxyRecoveryCaptureError(message)
+            self.recovery_initial_capture_required = False
+            return {"ok": True, "skipped": False}
+
+    runtime = Runtime()
+    with pytest.raises(ProxyRecoveryCaptureError, match="disk unavailable"):
+        agent._sync_loop(runtime, force=False)
+
+    assert runtime.recovery_initial_capture_required is True
+    assert "background" not in calls
+
+    result = agent._sync_loop(runtime, force=False)
+
+    assert result == {"ok": True, "changed": False}
+    assert runtime.recovery_initial_capture_required is False
+    assert calls == [
+        "schema",
+        "sync:False",
+        "capture:startup_initial:True:False",
+        "schema",
+        "sync:False",
+        "capture:startup_initial:True:False",
+        "background",
+    ]
 
 
 def test_proxy_agent_defers_required_capture_when_sync_result_failed() -> None:
@@ -475,7 +539,7 @@ def test_proxy_agent_defers_required_capture_when_sync_result_failed() -> None:
     result = agent._sync_loop(Runtime(), force=False)
 
     assert result == {"ok": False, "changed": True, "detail": "apply failed"}
-    assert calls == ["schema", "background", "sync:False"]
+    assert calls == ["schema", "sync:False"]
 
 
 def test_proxy_agent_sync_loop_retries_background_tasks_before_sync() -> None:

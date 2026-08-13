@@ -77,11 +77,16 @@ def _sync_result_ok(result: object | None) -> bool:
 
 
 def _sync_loop(runtime, *, force: bool = False):
-    if bool(getattr(runtime, "recovery_initial_capture_required", False)):
+    initial_capture_required = bool(
+        getattr(runtime, "recovery_initial_capture_required", False)
+    )
+    if initial_capture_required:
         ensure_startup_schema = getattr(runtime, "ensure_startup_schema", None)
         if callable(ensure_startup_schema):
             ensure_startup_schema()
-    runtime.start_background_tasks()
+    else:
+        runtime.start_background_tasks()
+
     result = runtime.sync_from_db(force=force)
     capture_recovery_bundle = getattr(runtime, "capture_recovery_bundle", None)
     if (
@@ -99,6 +104,10 @@ def _sync_loop(runtime, *, force: bool = False):
                 ),
             ),
         )
+    if initial_capture_required and not bool(
+        getattr(runtime, "recovery_initial_capture_required", False)
+    ):
+        runtime.start_background_tasks()
     return result
 
 
