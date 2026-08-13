@@ -924,6 +924,51 @@ def test_admin_ui_startup_adds_tls_args_only_when_enabled() -> None:
     assert args[args.index("--keyfile") + 1] == "/certs/admin.key"
 
 
+@pytest.mark.parametrize(
+    ("environ", "gunicorn_bind", "health_host", "port"),
+    [
+        ({}, "0.0.0.0:5000", "127.0.0.1", 5000),
+        ({"ADMIN_UI_PORT": "8443"}, "0.0.0.0:8443", "127.0.0.1", 8443),
+        ({"ADMIN_UI_BIND": "9443"}, "0.0.0.0:9443", "127.0.0.1", 9443),
+        ({"ADMIN_UI_BIND": ":7443"}, "0.0.0.0:7443", "127.0.0.1", 7443),
+        ({"ADMIN_UI_BIND": "*:6443"}, "0.0.0.0:6443", "127.0.0.1", 6443),
+        ({"ADMIN_UI_BIND": "10.0.0.8:5443"}, "10.0.0.8:5443", "10.0.0.8", 5443),
+        ({"ADMIN_UI_BIND": "localhost:4443"}, "localhost:4443", "localhost", 4443),
+        ({"ADMIN_UI_BIND": "[::]:3443"}, "[::]:3443", "::1", 3443),
+        ({"ADMIN_UI_BIND": "[::1]:2443"}, "[::1]:2443", "::1", 2443),
+    ],
+)
+def test_admin_ui_bind_contract(environ, gunicorn_bind, health_host, port) -> None:
+    module = _load_start_admin_ui_module()
+
+    bind = module.resolve_admin_ui_bind(environ)
+
+    assert (bind.gunicorn_bind, bind.health_host, bind.port) == (
+        gunicorn_bind,
+        health_host,
+        port,
+    )
+
+
+@pytest.mark.parametrize(
+    "environ",
+    [
+        {"ADMIN_UI_PORT": "not-a-port"},
+        {"ADMIN_UI_BIND": "host"},
+        {"ADMIN_UI_BIND": "host:not-a-port"},
+        {"ADMIN_UI_BIND": "::1:5000"},
+        {"ADMIN_UI_BIND": "[::1]"},
+        {"ADMIN_UI_BIND": "host:0"},
+        {"ADMIN_UI_BIND": "host:65536"},
+    ],
+)
+def test_admin_ui_bind_contract_rejects_unsupported_forms(environ) -> None:
+    module = _load_start_admin_ui_module()
+
+    with pytest.raises(ValueError):
+        module.resolve_admin_ui_bind(environ)
+
+
 def test_admin_ui_startup_uses_saved_https_settings_after_first_save() -> None:
     module = _load_start_admin_ui_module()
 
@@ -1278,14 +1323,13 @@ def test_admin_healthcheck_does_not_queue_behind_wsgi_workers() -> None:
     assert "urllib.request" not in healthcheck
     assert "[g]unicorn.*wsgi:app" in healthcheck
     assert "socket.create_connection" in healthcheck
-    assert 'os.environ.get("ADMIN_UI_BIND")' in healthcheck
-    assert 'os.environ.get("ADMIN_UI_PORT")' in healthcheck
-    assert '("127.0.0.1", _health_port())' in healthcheck
+    assert "from tools.start_admin_ui import resolve_admin_ui_bind" in healthcheck
+    assert "(bind.health_host, bind.port)" in healthcheck
     assert '("127.0.0.1", 5000)' not in healthcheck
     assert "whether gunicorn is currently speaking HTTP or HTTPS" in healthcheck
 
 
-def test_admin_healthcheck_resolves_runtime_port_from_launcher_env() -> None:
+def test_admin_healthcheck_resolves_runtime_address_from_launcher_env() -> None:
     healthcheck = _read("docker/healthcheck.admin.sh")
     script = healthcheck.split("python3 - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
 
@@ -1308,16 +1352,15 @@ def test_admin_healthcheck_resolves_runtime_port_from_launcher_env() -> None:
     )
 
     cases = [
-        ({}, 5000),
-        ({"ADMIN_UI_PORT": "8443"}, 8443),
-        ({"ADMIN_UI_BIND": "0.0.0.0:9443", "ADMIN_UI_PORT": "8443"}, 9443),
-        ({"ADMIN_UI_BIND": "127.0.0.1:7443"}, 7443),
-        ({"ADMIN_UI_BIND": "[::]:6443"}, 6443),
-        ({"ADMIN_UI_BIND": ":5443"}, 5443),
-        ({"ADMIN_UI_BIND": "4443"}, 4443),
+        ({}, "127.0.0.1", 5000),
+        ({"ADMIN_UI_PORT": "8443"}, "127.0.0.1", 8443),
+        ({"ADMIN_UI_BIND": "0.0.0.0:9443"}, "127.0.0.1", 9443),
+        ({"ADMIN_UI_BIND": "10.0.0.8:7443"}, "10.0.0.8", 7443),
+        ({"ADMIN_UI_BIND": "[::]:6443"}, "::1", 6443),
+        ({"ADMIN_UI_BIND": "[::1]:5443"}, "::1", 5443),
     ]
 
-    for env_overrides, expected_port in cases:
+    for env_overrides, expected_host, expected_port in cases:
         env = {
             key: value
             for key, value in os.environ.items()
@@ -1331,11 +1374,12 @@ def test_admin_healthcheck_resolves_runtime_port_from_launcher_env() -> None:
                 f"{harness}\n{script}\nprint(json.dumps(captures[-1]))",
             ],
             check=True,
+            cwd=REPO_ROOT / "web",
             env=env,
             capture_output=True,
             text=True,
         )
-        assert result.stdout.strip() == f'["127.0.0.1", {expected_port}, 2]'
+        assert result.stdout.strip() == f'["{expected_host}", {expected_port}, 2]'
 
 
 def test_admin_healthcheck_tcp_failure_exits_without_traceback() -> None:
@@ -1355,6 +1399,7 @@ def test_admin_healthcheck_tcp_failure_exits_without_traceback() -> None:
     result = subprocess.run(
         [sys.executable, "-c", script],
         check=False,
+        cwd=REPO_ROOT / "web",
         capture_output=True,
         text=True,
     )

@@ -24,6 +24,7 @@ GUNICORN_NUMERIC_DEFAULTS = {
     "WEB_GRACEFUL_TIMEOUT": "30",
     "WEB_KEEPALIVE": "5",
 }
+BIND_ALL_IPV4 = "0.0.0.0"  # noqa: S104 - intentional container listener wildcard
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,61 @@ class AdminUiHttpsRuntimeConfig:
     keyfile: str
     source: str
     error: str = ""
+
+
+@dataclass(frozen=True)
+class AdminUiBindConfig:
+    gunicorn_bind: str
+    health_host: str
+    port: int
+
+
+def _parse_port(value: str, *, source: str) -> int:
+    if not re.fullmatch(r"[0-9]+", value):
+        message = f"{source} port must be a decimal integer"
+        raise ValueError(message)
+    port = int(value)
+    if not 1 <= port <= 65535:
+        message = f"{source} port must be between 1 and 65535"
+        raise ValueError(message)
+    return port
+
+
+def resolve_admin_ui_bind(environ: Mapping[str, str]) -> AdminUiBindConfig:
+    """Return one strict Gunicorn/healthcheck bind contract."""
+    raw_bind = (environ.get("ADMIN_UI_BIND") or "").strip()
+    if not raw_bind:
+        raw_port = (environ.get("ADMIN_UI_PORT") or "5000").strip()
+        port = _parse_port(raw_port, source="ADMIN_UI_PORT")
+        return AdminUiBindConfig(f"{BIND_ALL_IPV4}:{port}", "127.0.0.1", port)
+
+    if raw_bind.isdigit():
+        port = _parse_port(raw_bind, source="ADMIN_UI_BIND")
+        return AdminUiBindConfig(f"{BIND_ALL_IPV4}:{port}", "127.0.0.1", port)
+
+    if raw_bind.startswith("["):
+        match = re.fullmatch(r"\[([^]]+)]:(\d+)", raw_bind)
+        if match is None:
+            message = "ADMIN_UI_BIND bracketed IPv6 form must be [address]:port"
+            raise ValueError(message)
+        host, raw_port = match.groups()
+        port = _parse_port(raw_port, source="ADMIN_UI_BIND")
+        health_host = "::1" if host == "::" else host
+        return AdminUiBindConfig(f"[{host}]:{port}", health_host, port)
+
+    if raw_bind.count(":") != 1:
+        message = (
+            "ADMIN_UI_BIND must be port, host:port, or bracketed IPv6 [address]:port"
+        )
+        raise ValueError(message)
+    host, raw_port = raw_bind.rsplit(":", 1)
+    port = _parse_port(raw_port, source="ADMIN_UI_BIND")
+    if any(character.isspace() for character in host):
+        message = "ADMIN_UI_BIND host must not contain whitespace"
+        raise ValueError(message)
+    health_host = "127.0.0.1" if host in {"", BIND_ALL_IPV4, "*"} else host
+    gunicorn_host = BIND_ALL_IPV4 if host in {"", "*"} else host
+    return AdminUiBindConfig(f"{gunicorn_host}:{port}", health_host, port)
 
 
 def _truthy(value: object | None) -> bool:
@@ -257,10 +313,7 @@ def build_gunicorn_argv(
     environ: Mapping[str, str],
     config: AdminUiHttpsRuntimeConfig,
 ) -> list[str]:
-    bind = (
-        environ.get("ADMIN_UI_BIND")
-        or f"0.0.0.0:{environ.get('ADMIN_UI_PORT') or '5000'}"
-    )
+    bind = resolve_admin_ui_bind(environ).gunicorn_bind
     numeric = effective_gunicorn_numeric_env(environ)
     argv = [
         "python3",

@@ -13,37 +13,12 @@ import os
 import socket
 import sys
 
-
-def _port_from_bind(bind):
-    bind = (bind or "").strip()
-    if not bind:
-        return None
-    if bind.isdigit():
-        return int(bind)
-    if bind.startswith("["):
-        _host, sep, rest = bind.partition("]")
-        if sep and rest.startswith(":") and rest[1:].isdigit():
-            return int(rest[1:])
-        return None
-    if bind.startswith(":") and bind[1:].isdigit():
-        return int(bind[1:])
-    if ":" in bind:
-        port = bind.rsplit(":", 1)[1]
-        if port.isdigit():
-            return int(port)
-    return None
-
-
-def _health_port():
-    port = _port_from_bind(os.environ.get("ADMIN_UI_BIND"))
-    if port is not None:
-        return port
-    return _port_from_bind(os.environ.get("ADMIN_UI_PORT")) or 5000
-
+from tools.start_admin_ui import resolve_admin_ui_bind
 
 try:
-    with socket.create_connection(("127.0.0.1", _health_port()), timeout=2):
+    bind = resolve_admin_ui_bind(os.environ)
+    with socket.create_connection((bind.health_host, bind.port), timeout=2):
         pass
-except OSError:
+except (OSError, ValueError):
     sys.exit(1)
 PY
