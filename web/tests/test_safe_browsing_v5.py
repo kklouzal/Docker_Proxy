@@ -377,8 +377,33 @@ def test_safe_browsing_checker_reports_matching_list_for_threat(monkeypatch) -> 
     )
 
 
+def test_safe_browsing_opener_disables_ambient_proxies() -> None:
+    proxy_handlers = [
+        handler
+        for handler in safe_browsing_v5._SAFE_BROWSING_OPENER.handlers
+        if isinstance(handler, safe_browsing_v5.urllib.request.ProxyHandler)
+    ]
+
+    assert proxy_handlers == []
+
+
+def test_safe_browsing_redirects_fail_closed_before_forwarding_api_key() -> None:
+    request = safe_browsing_v5.urllib.request.Request(
+        "https://safebrowsing.googleapis.com/v5/hashes:search?key=***"
+    )
+
+    with pytest.raises(RuntimeError, match="redirects are not allowed"):
+        safe_browsing_v5._RejectSafeBrowsingRedirects().redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://attacker.example/collect",
+        )
+
+
 def test_safe_browsing_request_json_reports_response_size_limit(monkeypatch) -> None:
-    from services import safe_browsing_v5
 
     class FakeResponse:
         def __enter__(self):
@@ -397,7 +422,7 @@ def test_safe_browsing_request_json_reports_response_size_limit(monkeypatch) -> 
         return FakeResponse()
 
     monkeypatch.setenv("SAFE_BROWSING_MAX_RESPONSE_BYTES", "1024")
-    monkeypatch.setattr(safe_browsing_v5.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(safe_browsing_v5, "_open_safe_browsing_request", fake_urlopen)
 
     try:
         SafeBrowsingStore()._request_json("/hashLists:batchGet", "key", [])

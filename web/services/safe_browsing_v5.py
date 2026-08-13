@@ -54,6 +54,23 @@ _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", 
 logger = logging.getLogger(__name__)
 
 
+class _RejectSafeBrowsingRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        error = "Google Safe Browsing redirects are not allowed"
+        raise RuntimeError(error)
+
+
+_SAFE_BROWSING_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    _RejectSafeBrowsingRedirects(),
+)
+
+
+def _open_safe_browsing_request(request: urllib.request.Request, *, timeout: int):
+    """Open directly and reject redirects so the API key stays with Google."""
+    return _SAFE_BROWSING_OPENER.open(request, timeout=timeout)
+
+
 def parse_duration_seconds(value: object, default: int = 0) -> int:
     text = str(value or "").strip()
     if not text:
@@ -754,7 +771,7 @@ class SafeBrowsingStore:
             minimum=1024,
             maximum=256 * 1024 * 1024,
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open_safe_browsing_request(req, timeout=timeout) as resp:
             data = resp.read(max_response_bytes + 1)
         if len(data) > max_response_bytes:
             msg = (
