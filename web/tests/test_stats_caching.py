@@ -734,8 +734,10 @@ def test_cachemgr_sanitizes_proxy_env(monkeypatch) -> None:
         returncode = 0
         stdout = "OK"
 
-    def fake_run(cmd, capture_output, text, timeout, env=None):
+    def fake_run(cmd, stdout, stderr, timeout, env=None):
+        assert cmd[0] == "/usr/bin/squidclient"
         captured["env"] = env
+        stdout.write(b"OK")
         return P()
 
     monkeypatch.setattr(stats.subprocess, "run", fake_run)
@@ -749,3 +751,42 @@ def test_cachemgr_sanitizes_proxy_env(monkeypatch) -> None:
     assert "ALL_PROXY" not in env
     assert "127.0.0.1" in env.get("NO_PROXY", "")
     assert "localhost" in env.get("NO_PROXY", "")
+
+
+@pytest.mark.parametrize(
+    ("section", "host", "port"),
+    [
+        ("shutdown", "127.0.0.1", 3128),
+        ("5min", "cache.example", 3128),
+        ("5min", "127.0.0.1", 0),
+        ("5min", "127.0.0.1", 65536),
+        ("5min", "127.0.0.1", True),
+    ],
+)
+def test_cachemgr_rejects_untrusted_probe_inputs(
+    monkeypatch, section, host, port
+) -> None:
+    monkeypatch.setenv("STATS_USE_CACHEMGR", "1")
+    monkeypatch.setattr(stats.shutil, "which", lambda name: "/usr/bin/squidclient")
+    monkeypatch.setattr(
+        stats.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("invalid probe must not execute"),
+    )
+
+    assert stats.get_squid_mgr_text(section, host, port) is None
+
+
+def test_cachemgr_rejects_oversized_output(monkeypatch) -> None:
+    monkeypatch.setenv("STATS_USE_CACHEMGR", "1")
+    monkeypatch.setattr(stats.shutil, "which", lambda name: "/usr/bin/squidclient")
+
+    class P:
+        returncode = 0
+
+    def fake_run(cmd, stdout, stderr, timeout, env=None):
+        stdout.write(b"x" * (stats._CACHEMGR_MAX_OUTPUT_BYTES + 1))
+        return P()
+
+    monkeypatch.setattr(stats.subprocess, "run", fake_run)
+    assert stats.get_squid_mgr_text("5min") is None

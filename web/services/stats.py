@@ -8,6 +8,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -44,6 +45,9 @@ _CACHE_CPU_VALUE: dict[str, Any] | None = None
 _CPU_SAMPLE_DEFAULT_SECONDS = 0.15
 # Keep env-tuned CPU sampling useful while preventing unbounded stats/UI latency.
 _CPU_SAMPLE_MAX_SECONDS = 1.0
+_CACHEMGR_SECTIONS = frozenset({"5min", "info"})
+_CACHEMGR_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_CACHEMGR_MAX_OUTPUT_BYTES = 256 * 1024
 
 
 @dataclass
@@ -204,18 +208,24 @@ def _run(
     cmd: list[str],
     timeout: float = 2.0,
     env: dict[str, str] | None = None,
+    max_output_bytes: int = _CACHEMGR_MAX_OUTPUT_BYTES,
 ) -> str | None:
     try:
-        p = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
-        if p.returncode != 0:
+        with tempfile.TemporaryFile() as stdout:
+            p = subprocess.run(
+                cmd,
+                stdout=stdout,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                env=env,
+            )
+            if p.returncode != 0:
+                return None
+            stdout.seek(0)
+            data = stdout.read(max_output_bytes + 1)
+        if len(data) > max_output_bytes:
             return None
-        return p.stdout
+        return data.decode("utf-8", errors="replace")
     except Exception:
         return None
 
@@ -231,8 +241,13 @@ def get_squid_mgr_text(
     if not _env_flag("STATS_USE_CACHEMGR", "0"):
         return None
 
-    # Requires squidclient in the image and cachemgr allowed for localhost.
-    if shutil.which("squidclient") is None:
+    if section not in _CACHEMGR_SECTIONS or host not in _CACHEMGR_HOSTS:
+        return None
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        return None
+
+    squidclient = shutil.which("squidclient")
+    if squidclient is None or not pathlib.Path(squidclient).is_absolute():
         return None
 
     # Avoid accidental self-proxying if the container has proxy env vars set.
@@ -258,7 +273,7 @@ def get_squid_mgr_text(
     safe_env["no_proxy"] = merged
 
     return _run(
-        ["squidclient", "-h", host, "-p", str(port), f"mgr:{section}"],
+        [squidclient, "-h", host, "-p", str(port), f"mgr:{section}"],
         env=safe_env,
     )
 
