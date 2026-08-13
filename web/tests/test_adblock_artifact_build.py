@@ -386,6 +386,126 @@ def test_materialize_archive_to_directory_replaces_target_and_writes_marker(
     assert artifacts_module.read_materialized_artifact_sha(target) == "abc123"
 
 
+def test_deterministic_archive_deduplicates_known_aliases_and_materializes_views(
+    tmp_path: Path,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    duplicate = b'{"id":"same-rule"}\n'
+    file_map = {
+        "network_kind_domain_only.jsonl": duplicate,
+        "request_index_domain.jsonl": duplicate,
+        "network_kind_host_anchored.jsonl": duplicate,
+        "request_index_host.jsonl": duplicate,
+        "network_kind_regex.jsonl": duplicate,
+        "request_index_regex.jsonl": duplicate,
+        "cosmetic_elemhide_exception.jsonl": duplicate,
+        "cosmetic_exception.jsonl": duplicate,
+        "request_lookup.sqlite": b"sqlite-substrate",
+    }
+
+    archive_blob = artifacts_module._build_deterministic_archive(file_map)
+    with zipfile.ZipFile(io.BytesIO(archive_blob)) as zf:
+        names = set(zf.namelist())
+        manifest = json.loads(zf.read("artifact-aliases.json"))
+
+    assert manifest == {
+        "aliases": {
+            "cosmetic_elemhide_exception.jsonl": "cosmetic_exception.jsonl",
+            "network_kind_domain_only.jsonl": "request_index_domain.jsonl",
+            "network_kind_host_anchored.jsonl": "request_index_host.jsonl",
+            "network_kind_regex.jsonl": "request_index_regex.jsonl",
+        },
+        "format_version": 1,
+    }
+    assert set(manifest["aliases"]).isdisjoint(names)
+    assert set(manifest["aliases"].values()) <= names
+
+    target = tmp_path / "compiled"
+    artifacts_module.materialize_archive_to_directory(
+        target,
+        archive_blob=archive_blob,
+        artifact_sha256=artifacts_module._calculate_artifact_sha(file_map),
+    )
+
+    for alias, source in manifest["aliases"].items():
+        assert (target / alias).read_bytes() == (target / source).read_bytes()
+    assert (target / "request_lookup.sqlite").read_bytes() == b"sqlite-substrate"
+
+
+def test_deterministic_archive_preserves_nonidentical_alias_candidates() -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    file_map = {
+        "network_kind_domain_only.jsonl": b"diagnostic-view\n",
+        "request_index_domain.jsonl": b"runtime-view\n",
+    }
+
+    archive_blob = artifacts_module._build_deterministic_archive(file_map)
+    with zipfile.ZipFile(io.BytesIO(archive_blob)) as zf:
+        assert set(zf.namelist()) == set(file_map)
+        assert zf.read("network_kind_domain_only.jsonl") == b"diagnostic-view\n"
+        assert zf.read("request_index_domain.jsonl") == b"runtime-view\n"
+
+
+def test_materialize_archive_rejects_unsafe_alias_manifest_without_replace(
+    tmp_path: Path,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    target = tmp_path / "compiled"
+    target.mkdir()
+    (target / "settings.json").write_text("existing", encoding="utf-8")
+    manifest = json.dumps(
+        {
+            "aliases": {"network_kind_domain_only.jsonl": "../escape.jsonl"},
+            "format_version": 1,
+        }
+    )
+
+    with pytest.raises(ValueError, match="unsafe archive member"):
+        artifacts_module.materialize_archive_to_directory(
+            target,
+            archive_blob=_zip_blob(
+                {
+                    "artifact-aliases.json": manifest,
+                    "request_index_domain.jsonl": "data",
+                }
+            ),
+        )
+
+    assert (target / "settings.json").read_text(encoding="utf-8") == "existing"
+    assert not (tmp_path / "escape.jsonl").exists()
+
+
+def test_alias_expansion_counts_toward_extract_budget_without_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    target = tmp_path / "compiled"
+    target.mkdir()
+    (target / "settings.json").write_text("existing", encoding="utf-8")
+    file_map = {
+        "network_kind_domain_only.jsonl": b"12345678",
+        "request_index_domain.jsonl": b"12345678",
+    }
+    archive_blob = artifacts_module._build_deterministic_archive(file_map)
+    archived_size = sum(
+        info.file_size
+        for info in zipfile.ZipFile(io.BytesIO(archive_blob)).infolist()
+    )
+    monkeypatch.setenv(
+        "ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES",
+        str(archived_size + len(file_map["request_index_domain.jsonl"]) - 1),
+    )
+
+    with pytest.raises(ValueError, match="extract limit"):
+        artifacts_module.materialize_archive_to_directory(
+            target,
+            archive_blob=archive_blob,
+        )
+
+    assert (target / "settings.json").read_text(encoding="utf-8") == "existing"
+
+
 def test_materialize_archive_to_directory_rejects_unsafe_member_without_replace(
     tmp_path: Path,
 ) -> None:
@@ -454,6 +574,77 @@ def test_materialize_archive_to_directory_rejects_excess_members_without_replace
     assert artifacts_module.read_materialized_artifact_sha(target) == ""
 
 
+@pytest.mark.parametrize(
+    ("limit_env", "limit", "file_map", "error_match"),
+    [
+        (
+            "ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES",
+            "8",
+            {"rules.jsonl": b"123456789"},
+            "extract limit",
+        ),
+        (
+            "ADBLOCK_ARTIFACT_EXTRACT_MAX_MEMBERS",
+            "2",
+            {
+                "report.json": b"{}",
+                "rules.jsonl": b"",
+                "settings.json": b"{}",
+            },
+            "member limit",
+        ),
+    ],
+)
+def test_create_revision_from_directory_rejects_artifact_outside_runtime_budget_before_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit_env: str,
+    limit: str,
+    file_map: dict[str, bytes],
+    error_match: str,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    for relative_path, content in file_map.items():
+        output_path = artifact_dir / relative_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(content)
+    monkeypatch.setenv(limit_env, limit)
+
+    artifact_store = artifacts_module.AdblockArtifactStore()
+    persisted = False
+
+    def reject_persistence(**_kwargs):
+        nonlocal persisted
+        persisted = True
+        pytest.fail("oversized artifact must not reach persistence")
+
+    monkeypatch.setattr(artifact_store, "create_revision", reject_persistence)
+
+    with pytest.raises(
+        artifacts_module.AdblockArtifactArchiveError,
+        match=error_match,
+    ):
+        artifact_store.create_revision_from_directory(
+            artifact_dir,
+            settings_version=1,
+            enabled_lists=["easylist"],
+        )
+
+    assert persisted is False
+
+
+def test_default_artifact_budget_is_above_legacy_256_mib_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    monkeypatch.delenv("ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES", raising=False)
+
+    assert artifacts_module._adblock_artifact_extract_max_bytes() == 1024**3
+    assert artifacts_module._adblock_artifact_extract_max_bytes() > 256 * 1024**2
+
+
 def test_build_active_artifact_packages_compiled_lists_and_settings(
     tmp_path, monkeypatch
 ) -> None:
@@ -494,7 +685,17 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
                 "request_lookup.sqlite",
                 "settings.json",
                 "report.json",
+                "artifact-aliases.json",
             } <= names
+            aliases = json.loads(zf.read("artifact-aliases.json"))["aliases"]
+            domain_member = aliases.get(
+                "network_kind_domain_only.jsonl",
+                "network_kind_domain_only.jsonl",
+            )
+            regex_member = aliases.get(
+                "network_kind_regex.jsonl",
+                "network_kind_regex.jsonl",
+            )
             assert "domains_allow.txt" not in names
             assert "domains_block.txt" not in names
             assert "regex_allow.txt" not in names
@@ -505,10 +706,10 @@ def test_build_active_artifact_packages_compiled_lists_and_settings(
             report = json.loads(
                 zf.read("report.json").decode("utf-8", errors="replace")
             )
-            request_index_domain = zf.read("request_index_domain.jsonl").decode(
+            request_index_domain = zf.read(domain_member).decode(
                 "utf-8", errors="replace"
             )
-            request_index_regex = zf.read("request_index_regex.jsonl").decode(
+            request_index_regex = zf.read(regex_member).decode(
                 "utf-8", errors="replace"
             )
             lookup_conn = _read_zipped_sqlite(zf, "request_lookup.sqlite", tmp_path)

@@ -505,6 +505,8 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     env_example = _read("config/app.env.example")
     assert "# CICAP_AV_RESP_PORT=" in env_example
     assert "# ADBLOCK_CACHE_TTL=3600" in env_example
+    assert "ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES=1073741824" in env_example
+    assert "ADBLOCK_ARTIFACT_EXTRACT_MAX_MEMBERS=256" in env_example
     assert "# ADBLOCK_RULE_CACHE_MAX=50000" in env_example
     assert "# ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES=8388608" in env_example
     assert "MYSQL_MAX_ALLOWED_PACKET=256M" in env_example
@@ -518,6 +520,20 @@ def test_common_compose_env_surface_is_documented_in_env_example() -> None:
     )
 
     assert [name for name in compose_env_names if name not in env_example] == []
+
+
+def test_adblock_artifact_budget_is_shared_across_builder_and_proxy() -> None:
+    compose = _read("docker-compose.common.yml")
+    readme = _read("README.md")
+
+    assert compose.count("<<: *shared-app-env") == 2
+    for variable, default in (
+        ("ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES", "1073741824"),
+        ("ADBLOCK_ARTIFACT_EXTRACT_MAX_MEMBERS", "256"),
+    ):
+        marker = f"{variable}: ${{{variable}:-{default}}}"
+        assert marker in compose
+        assert variable in readme
 
 
 def test_management_token_packaging_fails_closed_without_public_default() -> None:

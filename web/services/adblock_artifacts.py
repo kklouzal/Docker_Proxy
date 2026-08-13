@@ -46,9 +46,22 @@ from services.runtime_helpers import now_ts as _now
 logger = logging.getLogger(__name__)
 
 _ARTIFACT_SHA_FILENAME = ".artifact-sha256"
+_ARTIFACT_ALIASES_FILENAME = "artifact-aliases.json"
+_ARTIFACT_ALIASES_FORMAT_VERSION = 1
 _DEFAULT_COMPILED_DIR = "/var/lib/squid-flask-proxy/adblock/compiled"
 _DEFAULT_SETTINGS_FILENAME = "settings.json"
 _BUILDER_SOURCE_KINDS = {"background", "compile"}
+
+# These compiler views are byte-for-byte identical for current artifacts. Keep
+# one authoritative member in the persisted ZIP, then restore the historical
+# filename as a hard link (or copy where links are unavailable) when runtime
+# materializes it. Old archives without a manifest remain unchanged/readable.
+_COMPILED_ARTIFACT_ALIAS_CANDIDATES = {
+    "network_kind_domain_only.jsonl": "request_index_domain.jsonl",
+    "network_kind_host_anchored.jsonl": "request_index_host.jsonl",
+    "network_kind_regex.jsonl": "request_index_regex.jsonl",
+    "cosmetic_elemhide_exception.jsonl": "cosmetic_exception.jsonl",
+}
 
 
 _BUILDER_RETRYABLE_MYSQL_CODES = {1205, 1213}
@@ -59,7 +72,12 @@ _ARTIFACT_PRUNE_MAX_BATCHES = 4
 _ARTIFACT_PRUNE_LOCK_NAME = "docker_proxy:adblock_artifact_prune"
 _ARTIFACT_PRUNE_LOCK_TIMEOUT_SECONDS = 0
 
-_ARTIFACT_EXTRACT_MAX_BYTES = 256 * 1024 * 1024
+# Compiled artifacts contain both line-oriented indexes and a SQLite lookup
+# database, so legitimate production payloads can exceed 256 MiB. Keep this
+# bounded well below the hard ceiling while leaving enough room for those
+# generated artifacts. The same resolver is used by build, recovery validation,
+# and runtime materialization.
+_ARTIFACT_EXTRACT_MAX_BYTES = 1024 * 1024 * 1024
 _ARTIFACT_EXTRACT_MAX_MEMBERS = 256
 
 
@@ -110,6 +128,15 @@ class _AdblockArchiveBudget:
     def add_chunk(self, chunk: bytes) -> None:
         self.total_read_bytes += len(chunk)
         if self.total_read_bytes > self.max_bytes:
+            msg = (
+                "Adblock artifact archive exceeded extract limit "
+                f"({self.max_bytes} bytes)."
+            )
+            raise AdblockArtifactArchiveError(msg)
+
+    def add_materialized_bytes(self, byte_count: int) -> None:
+        self.total_declared_bytes += max(0, int(byte_count))
+        if self.total_declared_bytes > self.max_bytes:
             msg = (
                 "Adblock artifact archive exceeded extract limit "
                 f"({self.max_bytes} bytes)."
@@ -1490,7 +1517,61 @@ def _load_directory_files(directory: str | os.PathLike[str]) -> dict[str, bytes]
     return file_map
 
 
+def _deduplicate_generated_artifact_files(
+    file_map: dict[str, bytes],
+) -> dict[str, bytes]:
+    if _ARTIFACT_ALIASES_FILENAME in file_map:
+        msg = "Generated adblock artifact contains a reserved alias manifest."
+        raise AdblockArtifactArchiveError(msg)
+
+    aliases = {
+        alias: source
+        for alias, source in _COMPILED_ARTIFACT_ALIAS_CANDIDATES.items()
+        if alias in file_map
+        and source in file_map
+        and file_map[alias] == file_map[source]
+    }
+    if not aliases:
+        return file_map
+
+    deduplicated = dict(file_map)
+    for alias in aliases:
+        del deduplicated[alias]
+    deduplicated[_ARTIFACT_ALIASES_FILENAME] = (
+        json.dumps(
+            {
+                "aliases": aliases,
+                "format_version": _ARTIFACT_ALIASES_FORMAT_VERSION,
+            },
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    return deduplicated
+
+
+def _validate_generated_artifact_budget(file_map: dict[str, bytes]) -> None:
+    max_bytes = _adblock_artifact_extract_max_bytes()
+    max_members = _adblock_artifact_extract_max_members()
+    member_count = len(file_map)
+    if member_count > max_members:
+        msg = (
+            "Generated adblock artifact exceeded member limit "
+            f"({max_members})."
+        )
+        raise AdblockArtifactArchiveError(msg)
+    payload_bytes = sum(len(content) for content in file_map.values())
+    if payload_bytes > max_bytes:
+        msg = (
+            "Generated adblock artifact exceeded extract limit "
+            f"({max_bytes} bytes)."
+        )
+        raise AdblockArtifactArchiveError(msg)
+
+
 def _calculate_artifact_sha(file_map: dict[str, bytes]) -> str:
+    file_map = _deduplicate_generated_artifact_files(file_map)
     digest = hashlib.sha256()
     for rel_path in sorted(file_map):
         digest.update(rel_path.encode("utf-8", errors="replace"))
@@ -1501,6 +1582,11 @@ def _calculate_artifact_sha(file_map: dict[str, bytes]) -> str:
 
 
 def _build_deterministic_archive(file_map: dict[str, bytes]) -> bytes:
+    # Reject an artifact before it can become authoritative if the proxy or
+    # recovery validator would later be unable to consume its fully
+    # materialized (alias-expanded) payload.
+    _validate_generated_artifact_budget(file_map)
+    file_map = _deduplicate_generated_artifact_files(file_map)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for rel_path in sorted(file_map):
@@ -1562,6 +1648,88 @@ def _safe_adblock_archive_member_name(name: str) -> str | None:
         msg = f"Refusing to extract unsafe archive member: {normalized}"
         raise AdblockArtifactArchiveError(msg)
     return norm
+
+
+def _parse_artifact_aliases(manifest_payload: bytes) -> dict[str, str]:
+    try:
+        manifest = json.loads(manifest_payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        msg = "Adblock artifact alias manifest is invalid."
+        raise AdblockArtifactArchiveError(msg) from exc
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest) != {"aliases", "format_version"}
+        or manifest.get("format_version") != _ARTIFACT_ALIASES_FORMAT_VERSION
+        or not isinstance(manifest.get("aliases"), dict)
+    ):
+        msg = "Adblock artifact alias manifest is invalid."
+        raise AdblockArtifactArchiveError(msg)
+
+    aliases: dict[str, str] = {}
+    for raw_alias, raw_source in manifest["aliases"].items():
+        if not isinstance(raw_alias, str) or not isinstance(raw_source, str):
+            msg = "Adblock artifact alias manifest is invalid."
+            raise AdblockArtifactArchiveError(msg)
+        alias = _safe_adblock_archive_member_name(raw_alias)
+        source = _safe_adblock_archive_member_name(raw_source)
+        if (
+            alias is None
+            or source is None
+            or alias in {_ARTIFACT_ALIASES_FILENAME, source}
+            or alias not in _COMPILED_ARTIFACT_ALIAS_CANDIDATES
+            or _COMPILED_ARTIFACT_ALIAS_CANDIDATES[alias] != source
+            or alias in aliases
+        ):
+            msg = "Adblock artifact alias manifest is invalid."
+            raise AdblockArtifactArchiveError(msg)
+        aliases[alias] = source
+    return aliases
+
+
+def _load_artifact_aliases(payload_dir: Path) -> dict[str, str]:
+    manifest_path = payload_dir / _ARTIFACT_ALIASES_FILENAME
+    if not manifest_path.exists():
+        return {}
+    try:
+        return _parse_artifact_aliases(manifest_path.read_bytes())
+    except OSError as exc:
+        msg = "Adblock artifact alias manifest is invalid."
+        raise AdblockArtifactArchiveError(msg) from exc
+
+
+def _validate_artifact_alias_members(
+    aliases: dict[str, str],
+    members: tuple[tuple[zipfile.ZipInfo, str], ...],
+    budget: _AdblockArchiveBudget,
+) -> None:
+    members_by_name = {normalized: info for info, normalized in members}
+    materialized_bytes = 0
+    for alias, source in aliases.items():
+        if alias in members_by_name or source not in members_by_name:
+            msg = "Adblock artifact alias manifest references invalid members."
+            raise AdblockArtifactArchiveError(msg)
+        materialized_bytes += int(members_by_name[source].file_size or 0)
+    budget.add_materialized_bytes(materialized_bytes)
+
+
+def _materialize_artifact_aliases(
+    payload_dir: Path,
+    members: tuple[tuple[zipfile.ZipInfo, str], ...],
+    budget: _AdblockArchiveBudget,
+) -> None:
+    aliases = _load_artifact_aliases(payload_dir)
+    _validate_artifact_alias_members(aliases, members, budget)
+    for alias, source in aliases.items():
+        source_path = payload_dir / source
+        alias_path = payload_dir / alias
+        if not source_path.is_file() or alias_path.exists():
+            msg = "Adblock artifact alias manifest references invalid members."
+            raise AdblockArtifactArchiveError(msg)
+        alias_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(source_path, alias_path)
+        except OSError:
+            shutil.copyfile(source_path, alias_path)
 
 
 def _open_adblock_artifact_archive(archive_blob: bytes) -> zipfile.ZipFile:
@@ -1633,14 +1801,26 @@ def adblock_archive_artifact_sha256(archive_blob: bytes) -> str:
     with _open_adblock_artifact_archive(archive_blob) as archive:
         budget = _adblock_archive_budget()
         members = _validated_adblock_archive_members(archive, budget)
+        manifest_payload = bytearray()
         for info, _normalized in sorted(
             members,
             key=lambda member: member[0].filename,
         ):
             digest.update(info.filename.encode("utf-8", errors="replace"))
             digest.update(b"\0")
-            _read_adblock_archive_member(archive, info, budget, digest.update)
+            if info.filename == _ARTIFACT_ALIASES_FILENAME:
+
+                def consume_manifest(chunk: bytes) -> None:
+                    digest.update(chunk)
+                    manifest_payload.extend(chunk)
+
+                _read_adblock_archive_member(archive, info, budget, consume_manifest)
+            else:
+                _read_adblock_archive_member(archive, info, budget, digest.update)
             digest.update(b"\0")
+        if manifest_payload:
+            aliases = _parse_artifact_aliases(bytes(manifest_payload))
+            _validate_artifact_alias_members(aliases, members, budget)
     return digest.hexdigest()
 
 
@@ -1668,6 +1848,8 @@ def materialize_archive_to_directory(
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with Path(dest).open("wb") as dst:
                     _read_adblock_archive_member(zf, info, budget, dst.write)
+
+        _materialize_artifact_aliases(payload_dir, members, budget)
 
         if artifact_sha256:
             (payload_dir / _ARTIFACT_SHA_FILENAME).write_text(
