@@ -775,6 +775,12 @@ def test_live_adblock_list_settings_refresh_and_flush_workflows(
 def test_live_proxy_sync_materializes_adblock_artifact_revision(
     admin_client: LiveStackClient, tmp_path
 ) -> None:
+    store = _adblock_store()
+    # Drain refresh operations queued by the preceding workflow before publishing
+    # this fixture; an already-running compiler could otherwise supersede it.
+    store.clear_refresh_requested()
+    _sync_primary_proxy(admin_client, force=False)
+
     artifact_dir = tmp_path / "adblock-artifact"
     settings_version = _write_live_adblock_artifact(
         artifact_dir,
@@ -791,7 +797,6 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
         created_by="live-tests",
         source_kind="live-fixture",
     )
-    store = _adblock_store()
     _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.request_cache_flush)
     pre_sync_page = admin_client.admin_request("/adblock")
     assert "Selected proxy adblock runtime evidence" in pre_sync_page.text
@@ -813,17 +818,15 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
         sync_payload.get("adblock_changed") is False
         and "already using the active adblock artifact" in sync_detail
     )
+    assert sync_payload.get("adblock_revision_id") == revision.revision_id
+    assert sync_payload.get("adblock_application_id") is not None
 
-    deadline = time.time() + 60.0
-    latest_apply = None
-    while time.time() < deadline:
-        latest_apply = _adblock_artifacts_store().latest_apply(
-            LIVE_CONFIG.primary_proxy_id,
-            revision_id=revision.revision_id,
-        )
-        if latest_apply is not None:
-            break
-        time.sleep(1.0)
+    # Management sync is synchronous: successful revision evidence must already
+    # be durable when the response returns.
+    latest_apply = _adblock_artifacts_store().latest_apply(
+        LIVE_CONFIG.primary_proxy_id,
+        revision_id=revision.revision_id,
+    )
     assert latest_apply is not None
     assert latest_apply.revision_id == revision.revision_id
     assert latest_apply.ok is True

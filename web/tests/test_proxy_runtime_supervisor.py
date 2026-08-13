@@ -7480,6 +7480,7 @@ def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() 
             "ok": True,
             "changed": True,
             "revision_id": 44,
+            "application_id": 73,
             "adblock_settings_version": 15,
             "artifact_sha256": "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "current_adblock_artifact_sha256": "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -7534,6 +7535,7 @@ def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() 
 
     assert result["ok"] is True
     assert result["adblock_revision_id"] == 44
+    assert result["adblock_application_id"] == 73
     assert (
         result["artifact_sha256"]
         == "manual-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

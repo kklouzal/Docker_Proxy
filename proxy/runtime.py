@@ -4551,6 +4551,9 @@ class ProxyRuntime:
         adblock_changed = bool(adblock_result.get("changed", False))
         adblock_evidence = {
             "adblock_revision_id": _int_or_none(adblock_result.get("revision_id")),
+            "adblock_application_id": _int_or_none(
+                adblock_result.get("application_id"),
+            ),
             "adblock_settings_version": _int_or_none(
                 adblock_result.get("adblock_settings_version"),
             ),
