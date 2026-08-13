@@ -483,6 +483,22 @@ def _posted_optional_int_reader(field: str) -> FieldReader:
     return reader
 
 
+def _posted_clearable_optional_int_reader(field: str) -> FieldReader:
+    def reader(form: FormMap, current: Any, _max_workers: int) -> tuple[bool, Any]:
+        raw = form.get(field)
+        if raw is None:
+            return False, current
+        text = str(raw).strip()
+        if text == "":
+            return True, None
+        try:
+            return True, int(text)
+        except ValueError:
+            return False, current
+
+    return reader
+
+
 def _posted_optional_int_or_none_reader(field: str) -> FieldReader:
     def reader(form: FormMap, current: Any, _max_workers: int) -> tuple[bool, Any]:
         raw = form.get(field)
@@ -709,7 +725,7 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "cache_dir",
         "number",
         _tunable_optional("cache_dir_rock_swap_timeout_ms"),
-        _posted_optional_int_reader("cache_dir_rock_swap_timeout_ms"),
+        _posted_clearable_optional_int_reader("cache_dir_rock_swap_timeout_ms"),
         minimum=0,
         step=1,
         help_text="Leave blank to let Squid use its own behavior.",
@@ -1639,7 +1655,7 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "happy_eyeballs_connect_gap",
         "number",
         _tunable_optional("happy_eyeballs_connect_gap_ms"),
-        _posted_optional_int_reader("happy_eyeballs_connect_gap_ms"),
+        _posted_clearable_optional_int_reader("happy_eyeballs_connect_gap_ms"),
         minimum=0,
         step=1,
         help_text="Optional global delay between spare Happy Eyeballs attempts.",
@@ -1652,7 +1668,7 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "happy_eyeballs_connect_limit",
         "number",
         _tunable_optional("happy_eyeballs_connect_limit"),
-        _posted_optional_int_reader("happy_eyeballs_connect_limit"),
+        _posted_clearable_optional_int_reader("happy_eyeballs_connect_limit"),
         minimum=0,
         step=1,
         help_text="0 disables concurrent spare attempts; blank uses Squid's unlimited default.",

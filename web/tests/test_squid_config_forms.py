@@ -485,6 +485,31 @@ def test_build_template_options_from_form_blank_optional_values_do_not_override(
     assert options["visible_hostname"] == "proxy-host"
 
 
+def test_build_template_options_from_form_can_clear_optional_directives() -> None:
+    caching = build_template_options_from_form(
+        {"cache_dir_rock_swap_timeout_ms": 250},
+        {"cache_dir_rock_swap_timeout_ms": ""},
+        form_kind="caching",
+        max_workers=4,
+    )
+    network = build_template_options_from_form(
+        {
+            "happy_eyeballs_connect_gap_ms": 50,
+            "happy_eyeballs_connect_limit": 2,
+        },
+        {
+            "happy_eyeballs_connect_gap_ms": "",
+            "happy_eyeballs_connect_limit": "",
+        },
+        form_kind="network",
+        max_workers=4,
+    )
+
+    assert caching["cache_dir_rock_swap_timeout_ms"] is None
+    assert network["happy_eyeballs_connect_gap_ms"] is None
+    assert network["happy_eyeballs_connect_limit"] is None
+
+
 def test_build_template_options_bounds_numeric_form_and_persisted_values() -> None:
     from services.squidctl import SquidController  # type: ignore
 
