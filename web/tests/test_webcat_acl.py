@@ -126,6 +126,19 @@ def test_webcat_acl_refreshes_snapshot_lock_while_building(
     class FakeConn:
         native = FakeNative()
 
+        def execute(self, sql, _params=None):
+            class Result:
+                def fetchone(self):
+                    return ("123",)
+
+            return Result()
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
         def close(self) -> None:
             return None
 
@@ -137,6 +150,90 @@ def test_webcat_acl_refreshes_snapshot_lock_while_building(
     assert db._build_snapshot_from_db(expected_built_ts=123) is True
     assert len(refresh_calls) >= 2
     assert all(fd is not None for fd in refresh_calls)
+
+
+def test_webcat_acl_snapshot_metadata_and_domains_share_mysql_snapshot(
+    tmp_path, monkeypatch
+) -> None:
+    webcat_acl = _webcat_acl_module()
+    snapshot_dir = tmp_path / "snapshot"
+    monkeypatch.setenv("WEBFILTER_SNAPSHOT_DIR", str(snapshot_dir))
+
+    class FakeCursor:
+        def __init__(self, conn) -> None:
+            self.conn = conn
+            self.fetched = False
+
+        def execute(self, *_args, **_kwargs) -> None:
+            assert self.conn.snapshot_generation is not None
+            # Simulate a concurrent atomic table publication after the SELECT
+            # starts. A consistent snapshot must retain generation 100.
+            self.conn.live_generation = 200
+
+        def fetchmany(self, _size):
+            if self.fetched:
+                return []
+            self.fetched = True
+            generation = self.conn.snapshot_generation or self.conn.live_generation
+            return (
+                [("old.example", "adult")]
+                if generation == 100
+                else [("new.example", "games")]
+            )
+
+        def close(self) -> None:
+            return None
+
+    class FakeNative:
+        def __init__(self, conn) -> None:
+            self.conn = conn
+
+        def cursor(self):
+            return FakeCursor(self.conn)
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.live_generation = 100
+            self.snapshot_generation = None
+            self.native = FakeNative(self)
+            self.closed = False
+
+        def execute(self, sql, _params=None):
+            if sql.startswith("START TRANSACTION"):
+                self.snapshot_generation = self.live_generation
+
+                class EmptyResult:
+                    pass
+
+                return EmptyResult()
+
+            assert "webcat_meta" in sql
+            generation = self.snapshot_generation or self.live_generation
+
+            class Result:
+                def fetchone(self):
+                    return (str(generation),)
+
+            return Result()
+
+        def commit(self) -> None:
+            self.snapshot_generation = None
+
+        def rollback(self) -> None:
+            self.snapshot_generation = None
+
+        def close(self) -> None:
+            self.closed = True
+
+    db = webcat_acl._Db()
+    conn = FakeConn()
+    monkeypatch.setattr(db, "_connect", lambda: conn)
+
+    assert db._build_snapshot_from_db(expected_built_ts=100) is True
+    assert conn.closed is True
+    assert db._local_snapshot_built_ts == 100
+    assert db._lookup_categories_from_snapshot("old.example") == {"adult"}
+    assert db._lookup_categories_from_snapshot("new.example") == set()
 
 
 def test_webcat_acl_normalizes_explicit_proxy_uri_host() -> None:
@@ -313,6 +410,19 @@ def test_webcat_acl_clears_cached_remote_connection_after_snapshot_build(
 
         def __init__(self) -> None:
             self.closed = False
+
+        def execute(self, sql, _params=None):
+            class Result:
+                def fetchone(self):
+                    return ("123",)
+
+            return Result()
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
 
         def close(self) -> None:
             self.closed = True

@@ -451,7 +451,24 @@ class _Db:
             )
             local_db.execute("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)")
 
-            built_ts = int(expected_built_ts or self._load_remote_built_ts() or _now())
+            # Read publication metadata and domains from one MySQL snapshot.  The
+            # builder atomically renames all live WebCat tables, but a metadata
+            # read on a separate connection can otherwise race that rename and
+            # stamp domain rows from a different publication.
+            remote_conn.execute("START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT")
+            built_row = remote_conn.execute(
+                "SELECT v FROM webcat_meta WHERE k=%s",
+                ("built_ts",),
+            ).fetchone()
+            built_ts = (
+                int(str(built_row[0]).strip())
+                if built_row and built_row[0] is not None and str(built_row[0]).strip()
+                else 0
+            )
+            if built_ts <= 0 or built_ts < int(expected_built_ts or 0):
+                remote_conn.rollback()
+                return self._load_snapshot_from_disk(force=True)
+
             row_count = 0
             cur = remote_conn.native.cursor()
             try:
@@ -478,6 +495,7 @@ class _Db:
             finally:
                 with contextlib.suppress(Exception):
                     cur.close()
+            remote_conn.commit()
 
             local_db.execute(
                 "INSERT INTO meta(k, v) VALUES('built_ts', ?)",
