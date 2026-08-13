@@ -215,7 +215,9 @@ def test_policy_request_store_approval_duplicate_lookup_and_insert_include_metho
     assert duplicate_lookup
     assert duplicate_lookup[0][1][5] == "GET"
     insert_calls = [
-        (sql, params) for sql, params in conn.calls if "INSERT INTO policy_exceptions" in sql
+        (sql, params)
+        for sql, params in conn.calls
+        if "INSERT INTO policy_exceptions" in sql
     ]
     assert insert_calls
     assert "category,method,created_ts" in insert_calls[0][0]
@@ -278,6 +280,84 @@ def test_policy_request_store_commits_approval_before_releasing_proxy_guard(
     store.approve_request(7, reviewer="admin", admin_note="ok")
 
     assert conn.events.index("commit") < conn.events.index("guard-released")
+
+
+class _PolicyMutationConn:
+    native = object()
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, *_exc):
+        if exc_type is None:
+            self.commit()
+        return False
+
+    def commit(self) -> None:
+        self.events.append("commit")
+
+    def execute(self, sql, params=()):
+        text = " ".join(str(sql).split())
+        params_t = tuple(params or ())
+        self.calls.append((text, params_t))
+        if "SELECT GET_LOCK" in text:
+            return _PolicyApproveResult({"acquired": 1})
+        return _PolicyApproveResult(rowcount=1)
+
+
+def test_policy_request_store_commits_selected_proxy_close_before_releasing_proxy_guard(
+    monkeypatch,
+) -> None:
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    conn = _PolicyMutationConn()
+    store = module.PolicyRequestStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(module, "now_ts", lambda: 1000)
+
+    store.close_request(7, reviewer="admin", status="rejected", proxy_id="edge-a")
+
+    release_index = next(
+        index
+        for index, (sql, _params) in enumerate(conn.calls)
+        if "RELEASE_LOCK" in sql
+    )
+    assert "UPDATE policy_requests SET status=%s" in conn.calls[release_index - 1][0]
+    assert conn.events == ["commit", "commit"]
+
+
+def test_policy_request_store_commits_selected_proxy_revoke_before_releasing_proxy_guard(
+    monkeypatch,
+) -> None:
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    conn = _PolicyMutationConn()
+    store = module.PolicyRequestStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(module, "now_ts", lambda: 1000)
+
+    store.revoke_exception(11, revoked_by="admin", proxy_id="edge-a")
+
+    release_index = next(
+        index
+        for index, (sql, _params) in enumerate(conn.calls)
+        if "RELEASE_LOCK" in sql
+    )
+    assert (
+        "UPDATE policy_exceptions SET status='revoked'"
+        in conn.calls[release_index - 1][0]
+    )
+    assert conn.events == ["commit", "commit"]
 
 
 def test_policy_request_store_rejects_unsupported_approval_before_exception_write(
@@ -522,7 +602,10 @@ def test_policy_request_store_keeps_legacy_empty_method_exception_broad(
     assert broad_exception.method == ""
     assert method_exception.method == "CONNECT"
     assert method_exception.id != broad_exception.id
-    assert [(ex.id, ex.method) for ex in store.active_webfilter_exceptions(proxy_id="edge-a")] == [
+    assert [
+        (ex.id, ex.method)
+        for ex in store.active_webfilter_exceptions(proxy_id="edge-a")
+    ] == [
         (broad_exception.id, ""),
         (method_exception.id, "CONNECT"),
     ]
@@ -717,7 +800,10 @@ def test_webfilter_materialization_scopes_exceptions_to_enforced_categories(
     assert "acl webfilter_exception_src_7 src 192.168.1.55" in text
     assert "acl webfilter_exception_dst_7 dstdomain bad.example .bad.example" in text
     assert "acl webfilter_exception_method_7 method GET" in text
-    assert "http_access allow webfilter_exception_src_7 webfilter_exception_dst_7 webfilter_exception_method_7" in text
+    assert (
+        "http_access allow webfilter_exception_src_7 webfilter_exception_dst_7 webfilter_exception_method_7"
+        in text
+    )
     assert "webfilter_exception_src_8" not in text
     assert "bad domain.example" not in text
     assert "webfilter_exception_src_9" not in text
@@ -915,7 +1001,9 @@ def test_proxy_public_policy_request_rejects_malformed_form_parse(
 
         return Store()
 
-    monkeypatch.setattr(proxy_app.app.request_class, "form", property(raise_bad_request))
+    monkeypatch.setattr(
+        proxy_app.app.request_class, "form", property(raise_bad_request)
+    )
     monkeypatch.setattr(proxy_app, "get_policy_request_store", get_store)
     res = proxy_app.app.test_client().post(
         "/policy-request",

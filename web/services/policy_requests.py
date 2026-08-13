@@ -563,6 +563,8 @@ class PolicyRequestStore:
                             guard.proxy_id,
                         ),
                     )
+                    if max(0, int(getattr(result, "rowcount", 0) or 0)) > 0:
+                        c.commit()
             else:
                 result = c.execute(
                     f"UPDATE {self.REQUEST_TABLE} SET status=%s,admin_note=%s,updated_ts=%s,reviewed_ts=%s,reviewer=%s WHERE id=%s AND status='pending'",
@@ -609,6 +611,8 @@ class PolicyRequestStore:
                             guard.proxy_id,
                         ),
                     )
+                    if max(0, int(getattr(result, "rowcount", 0) or 0)) > 0:
+                        c.commit()
             else:
                 result = c.execute(
                     f"UPDATE {self.EXCEPTION_TABLE} SET status='revoked',updated_ts=%s,revoked_ts=%s,revoked_by=%s,admin_note=CASE WHEN %s='' THEN admin_note ELSE %s END WHERE id=%s AND status='active'",
