@@ -302,60 +302,50 @@ class OperationLedger:
         """Enforce the per-proxy hard cap while preserving every active row.
 
         Active rows consume retention slots but are never victims. Terminal rows
-        are ranked newest-first by ``updated_ts, id`` and are deleted when their
-        zero-based terminal rank plus the active-row count reaches the cap. The
-        single DELETE avoids an offset/select/delete race and makes timestamp ties
-        deterministic. A just-created/completed operation may be protected from
-        becoming its own transaction's victim; when active rows already fill all
-        slots, the next lifecycle write safely converges the temporary overflow.
+        are ranked newest-first by ``updated_ts, id``. Victims are selected and
+        locked before deletion, avoiding MySQL error 1093 without reintroducing a
+        select/delete race. A just-created/completed operation may be protected;
+        the next lifecycle write converges any resulting temporary overflow.
         """
-        result = conn.execute(
+        rows = conn.execute(
             """
-            DELETE target
-            FROM proxy_operations AS target
-            JOIN (
-                SELECT victim_id
-                FROM (
-                    SELECT candidate.id AS victim_id
-                    FROM proxy_operations AS candidate
-                    WHERE candidate.proxy_id=%s
-                      AND candidate.id<>%s
-                      AND candidate.status IN ('applied','superseded','failed')
-                      AND (
-                          (
-                              SELECT COUNT(*)
-                              FROM proxy_operations AS active
-                              WHERE active.proxy_id=candidate.proxy_id
-                                AND active.status IN ('pending','applying')
-                          )
-                          +
-                          (
-                              SELECT COUNT(*)
-                              FROM proxy_operations AS newer
-                              WHERE newer.proxy_id=candidate.proxy_id
-                                AND newer.status IN ('applied','superseded','failed')
-                                AND (
-                                    newer.updated_ts>candidate.updated_ts
-                                    OR (
-                                        newer.updated_ts=candidate.updated_ts
-                                        AND newer.id>candidate.id
-                                    )
-                                )
-                          )
-                      ) >= %s
-                ) AS ranked_victims
-            ) AS victims ON victims.victim_id=target.id
-            WHERE target.proxy_id=%s
-              AND target.status IN ('applied','superseded','failed')
+            SELECT candidate.id AS victim_id
+            FROM proxy_operations AS candidate
+            WHERE candidate.proxy_id=%s
+              AND candidate.id<>%s
+              AND candidate.status IN ('applied','superseded','failed')
+              AND (
+                  (SELECT COUNT(*) FROM proxy_operations AS active
+                   WHERE active.proxy_id=candidate.proxy_id
+                     AND active.status IN ('pending','applying'))
+                  +
+                  (SELECT COUNT(*) FROM proxy_operations AS newer
+                   WHERE newer.proxy_id=candidate.proxy_id
+                     AND newer.status IN ('applied','superseded','failed')
+                     AND (newer.updated_ts>candidate.updated_ts OR
+                          (newer.updated_ts=candidate.updated_ts
+                           AND newer.id>candidate.id)))
+              ) >= %s
+            FOR UPDATE
             """,
-            (
-                proxy_id,
-                int(protected_operation_id or 0),
-                OPERATION_HISTORY_LIMIT,
-                proxy_id,
-            ),
-        )
-        return max(0, int(getattr(result, "rowcount", 0) or 0))
+            (proxy_id, int(protected_operation_id or 0), OPERATION_HISTORY_LIMIT),
+        ).fetchall()
+        victim_ids = [int(row["victim_id"]) for row in rows]
+        deleted = 0
+        for offset in range(0, len(victim_ids), 500):
+            batch = victim_ids[offset : offset + 500]
+            placeholders = ",".join(["%s"] * len(batch))
+            result = conn.execute(
+                f"""
+                DELETE FROM proxy_operations
+                WHERE proxy_id=%s
+                  AND status IN ('applied','superseded','failed')
+                  AND id IN ({placeholders})
+                """,
+                (proxy_id, *batch),
+            )
+            deleted += max(0, int(getattr(result, "rowcount", 0) or 0))
+        return deleted
 
     def _prune_all_history(self, conn) -> int:
         """Converge pre-existing per-proxy ledgers during schema migration."""

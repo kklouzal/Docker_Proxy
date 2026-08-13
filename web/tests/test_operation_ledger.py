@@ -177,9 +177,8 @@ class _RetentionConnection:
         if compact.startswith("SELECT DISTINCT proxy_id FROM proxy_operations"):
             proxies = sorted({str(row["proxy_id"]) for row in self.rows.values()})
             return _Result([{"proxy_id": proxy_id} for proxy_id in proxies])
-        if compact.startswith("DELETE target FROM proxy_operations AS target"):
-            proxy_id, protected_id, limit, target_proxy_id = params
-            assert proxy_id == target_proxy_id
+        if compact.startswith("SELECT candidate.id AS victim_id"):
+            proxy_id, protected_id, limit = params
             proxy_rows = [
                 row
                 for row in self.rows.values()
@@ -202,6 +201,17 @@ class _RetentionConnection:
                 int(row["id"])
                 for row in terminals[keep_terminal:]
                 if int(row["id"]) != int(protected_id)
+            }
+            return _Result([{"victim_id": row_id} for row_id in sorted(victims)])
+        if compact.startswith("DELETE FROM proxy_operations"):
+            proxy_id, *victim_ids = params
+            victims = {
+                int(row_id)
+                for row_id in victim_ids
+                if int(row_id) in self.rows
+                and self.rows[int(row_id)]["proxy_id"] == proxy_id
+                and self.rows[int(row_id)]["status"]
+                in {"applied", "superseded", "failed"}
             }
             for row_id in victims:
                 del self.rows[row_id]
@@ -228,6 +238,19 @@ def _retention_rows(
         )
         for offset in range(count)
     ]
+
+
+def test_retention_sql_avoids_mysql_1093_target_table_delete() -> None:
+    from services.operation_ledger import OperationLedger
+
+    conn = _RetentionConnection(_retention_rows("edge-a", 129))
+
+    assert OperationLedger()._prune_proxy_history(conn, "edge-a") == 1
+    statements = [sql for sql, _params in conn.queries]
+    assert statements[0].startswith("SELECT candidate.id AS victim_id")
+    assert statements[0].endswith("FOR UPDATE")
+    assert statements[1].startswith("DELETE FROM proxy_operations")
+    assert "JOIN (" not in statements[1]
 
 
 def test_retention_keeps_exactly_128_terminal_operations() -> None:
