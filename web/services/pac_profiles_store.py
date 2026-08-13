@@ -459,6 +459,7 @@ class PacProfilesStore:
         with self._connect() as conn:
             with guarded_proxy_write(conn, get_proxy_id()) as guard:
                 proxy_id = guard.proxy_id
+                self._lock_backup_proxy_chain(conn, proxy_id)
                 existing = conn.execute(
                     """
                     SELECT id FROM pac_backup_proxies
@@ -488,6 +489,16 @@ class PacProfilesStore:
                 )
                 return PacBackupProxyMutation(True, "", int(cur.lastrowid), True)
 
+    def _lock_backup_proxy_chain(self, conn, proxy_id: str) -> None:
+        # The owner row exists for every writable proxy and remains lockable
+        # when the backup chain is empty.  Holding it until the surrounding
+        # connection context commits serializes all chain mutations for this
+        # proxy without blocking mutations for other proxies.
+        conn.execute(
+            "SELECT proxy_id FROM proxy_instances WHERE proxy_id=%s LIMIT 1 FOR UPDATE",
+            (proxy_id,),
+        ).fetchone()
+
     def _ordered_backup_proxy_ids(self, conn, proxy_id: str) -> list[int]:
         rows = conn.execute(
             "SELECT id FROM pac_backup_proxies WHERE proxy_id=%s ORDER BY position ASC, id ASC",
@@ -510,6 +521,7 @@ class PacProfilesStore:
         with self._connect() as conn:
             with guarded_proxy_write(conn, get_proxy_id()) as guard:
                 proxy_id = guard.proxy_id
+                self._lock_backup_proxy_chain(conn, proxy_id)
                 existing = conn.execute(
                     "SELECT 1 FROM pac_backup_proxies WHERE id=%s AND proxy_id=%s LIMIT 1",
                     (bid, proxy_id),
@@ -530,6 +542,7 @@ class PacProfilesStore:
         with self._connect() as conn:
             with guarded_proxy_write(conn, get_proxy_id()) as guard:
                 proxy_id = guard.proxy_id
+                self._lock_backup_proxy_chain(conn, proxy_id)
                 ordered_ids = self._ordered_backup_proxy_ids(conn, proxy_id)
                 if bid not in ordered_ids:
                     return False
@@ -563,9 +576,7 @@ class PacProfilesStore:
                     (guard.proxy_id,),
                 ).fetchone()
                 current_enabled = (
-                    1
-                    if current is None
-                    else int(current["direct_enabled"] or 0)
+                    1 if current is None else int(current["direct_enabled"] or 0)
                 )
                 if current_enabled == normalized_enabled:
                     return PacBooleanMutation(False)
@@ -602,7 +613,9 @@ class PacProfilesStore:
                 False,
             )
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in nm):
-            return PacProfileMutation(False, "Name contains invalid characters.", None, False)
+            return PacProfileMutation(
+                False, "Name contains invalid characters.", None, False
+            )
 
         cidr_norm, err = _normalize_client_cidr(client_cidr)
         if cidr_norm is None:
@@ -648,7 +661,9 @@ class PacProfilesStore:
                         (pid, proxy_id),
                     ).fetchone()
                     if existing is None:
-                        return PacProfileMutation(False, "Profile not found.", None, False)
+                        return PacProfileMutation(
+                            False, "Profile not found.", None, False
+                        )
                     existing_domains = tuple(
                         str(row["domain"])
                         for row in conn.execute(

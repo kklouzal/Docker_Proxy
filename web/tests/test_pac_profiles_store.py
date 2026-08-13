@@ -315,6 +315,48 @@ def test_backup_proxy_mutations_report_changed_status(monkeypatch) -> None:
     assert all(params[-1] == "default" for params in position_updates)
 
 
+def test_backup_proxy_mutations_lock_proxy_owner_before_chain_reads(
+    monkeypatch,
+) -> None:
+    _, conn, store = _patched_store(monkeypatch)
+
+    duplicate = store.add_backup_proxy(
+        proxy_host="backup-a.example",
+        proxy_port=3128,
+    )
+    assert store.move_backup_proxy(22, "up") is True
+    assert store.delete_backup_proxy(21) is True
+
+    assert duplicate.ok is True
+    assert duplicate.backup_proxy_id == 21
+    assert duplicate.changed is False
+
+    lock_indexes = [
+        index
+        for index, (sql, params) in enumerate(conn.calls)
+        if sql.startswith("SELECT proxy_id FROM proxy_instances")
+        and "FOR UPDATE" in sql
+        and params == ("default",)
+    ]
+    chain_read_indexes = [
+        index
+        for index, (sql, _params) in enumerate(conn.calls)
+        if "FROM pac_backup_proxies" in sql
+        and sql.lstrip().startswith(("SELECT id", "SELECT 1"))
+    ]
+
+    assert len(lock_indexes) == 3
+    assert len(chain_read_indexes) == 4
+    assert lock_indexes[0] < chain_read_indexes[0]
+    assert lock_indexes[1] < chain_read_indexes[1]
+    assert lock_indexes[2] < chain_read_indexes[2]
+    assert lock_indexes[2] < chain_read_indexes[3]
+    assert not any(
+        sql.lstrip().startswith("INSERT INTO pac_backup_proxies")
+        for sql, _params in conn.calls
+    )
+
+
 def test_backup_proxy_move_noop_does_not_resequence(monkeypatch) -> None:
     _, conn, store = _patched_store(monkeypatch)
 
