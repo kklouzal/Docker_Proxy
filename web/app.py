@@ -1,5 +1,6 @@
 import contextlib
 import csv
+import fcntl
 import hashlib
 import inspect
 import io
@@ -225,6 +226,41 @@ from services.winhttp_registry_builder import (
     normalize_reg_binary_export,
 )
 from werkzeug.exceptions import HTTPException
+
+_ADMIN_UI_WEB_RESTART_LOCK_PATH = "/run/docker-proxy-admin-ui-web-restart.lock"
+_ADMIN_UI_WEB_RESTART_LOG_PATH = "/run/docker-proxy-admin-ui-web-restart.log"
+_ADMIN_UI_WEB_RESTART_HELPER = """\
+import os
+import subprocess
+import sys
+import time
+
+lock_fd = int(sys.argv[1])
+supervisorctl = sys.argv[2]
+log_path = sys.argv[3]
+time.sleep(0.2)
+try:
+    completed = subprocess.run(
+        [supervisorctl, "-c", "/etc/supervisord.conf", "restart", "web"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    outcome = f"exit={completed.returncode}"
+    output = (completed.stdout + completed.stderr).strip()
+except subprocess.TimeoutExpired as exc:
+    outcome = "timeout"
+    output = str(exc)
+except Exception as exc:
+    outcome = f"helper-error={type(exc).__name__}"
+    output = str(exc)
+try:
+    with open(log_path, "a", encoding="utf-8") as stream:
+        stream.write(f"admin-ui web restart {outcome}: {output[:2000]}\\n")
+finally:
+    os.close(lock_fd)
+"""
+
 
 ADMIN_UI_SSL_CERTFILE = "/etc/squid/ssl/certs/admin-ui.crt"
 ADMIN_UI_SSL_KEYFILE = "/etc/squid/ssl/certs/admin-ui.key"
@@ -5042,18 +5078,35 @@ def _restart_admin_ui_web_process() -> tuple[bool, str]:
     supervisorctl = shutil.which("supervisorctl")
     if not supervisorctl:
         return False, "supervisorctl is not available in this runtime."
+    lock_file = None
+    try:
+        lock_file = pathlib.Path(_ADMIN_UI_WEB_RESTART_LOCK_PATH).open(
+            "a+", encoding="utf-8"
+        )
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        if lock_file is not None:
+            lock_file.close()
+        return False, "An Admin UI web restart request is already in progress."
+    except Exception as exc:
+        if lock_file is not None:
+            lock_file.close()
+        return False, public_error_message(
+            exc,
+            default="Failed to serialize the Admin UI web restart request.",
+        )
     try:
         subprocess.Popen(
             [
                 sys.executable,
                 "-c",
-                (
-                    "import subprocess, time; "
-                    "time.sleep(0.2); "
-                    f"subprocess.run([{supervisorctl!r}, '-c', '/etc/supervisord.conf', 'restart', 'web'], timeout=10)"
-                ),
+                _ADMIN_UI_WEB_RESTART_HELPER,
+                str(lock_file.fileno()),
+                supervisorctl,
+                _ADMIN_UI_WEB_RESTART_LOG_PATH,
             ],
             close_fds=True,
+            pass_fds=(lock_file.fileno(),),
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -5064,7 +5117,12 @@ def _restart_admin_ui_web_process() -> tuple[bool, str]:
             exc,
             default="Failed to request Admin UI web restart.",
         )
-    return True, "Admin UI web restart requested; reconnect using the selected scheme."
+    finally:
+        lock_file.close()
+    return True, (
+        "Admin UI web restart request admitted; reconnect using the selected scheme. "
+        f"The asynchronous result is recorded in {_ADMIN_UI_WEB_RESTART_LOG_PATH}."
+    )
 
 
 def _webfilter_category_refresh_required(

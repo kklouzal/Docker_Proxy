@@ -76,8 +76,16 @@ def test_admin_ui_web_restart_helper_bounds_supervisorctl_call(
     monkeypatch, tmp_path
 ) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        loaded.module, "_ADMIN_UI_WEB_RESTART_LOCK_PATH", str(tmp_path / "restart.lock")
+    )
+    monkeypatch.setattr(
+        loaded.module, "_ADMIN_UI_WEB_RESTART_LOG_PATH", str(tmp_path / "restart.log")
+    )
     popen_calls = []
-    monkeypatch.setattr(loaded.module.shutil, "which", lambda name: "/usr/bin/supervisorctl")
+    monkeypatch.setattr(
+        loaded.module.shutil, "which", lambda name: "/usr/bin/supervisorctl"
+    )
     monkeypatch.setattr(
         loaded.module.subprocess,
         "Popen",
@@ -87,43 +95,76 @@ def test_admin_ui_web_restart_helper_bounds_supervisorctl_call(
     ok, detail = loaded.module._restart_admin_ui_web_process()
 
     assert ok is True
-    assert detail == "Admin UI web restart requested; reconnect using the selected scheme."
+    assert "restart request admitted" in detail
+    assert "asynchronous result is recorded" in detail
     assert len(popen_calls) == 1
     helper_argv = popen_calls[0][0][0]
-    helper_source = helper_argv[helper_argv.index("-c") + 1]
+    assert (
+        helper_argv[helper_argv.index("-c") + 1]
+        == loaded.module._ADMIN_UI_WEB_RESTART_HELPER
+    )
+    assert helper_argv[-2:] == [
+        "/usr/bin/supervisorctl",
+        loaded.module._ADMIN_UI_WEB_RESTART_LOG_PATH,
+    ]
+    assert popen_calls[0][1]["pass_fds"] == (int(helper_argv[-3]),)
 
-    run_calls = []
-    sleep_calls = []
 
-    class FakeSubprocess:
-        @staticmethod
-        def run(*args, **kwargs) -> None:
-            run_calls.append((args, kwargs))
-
-    class FakeTime:
-        @staticmethod
-        def sleep(seconds) -> None:
-            sleep_calls.append(seconds)
-
-    exec(  # noqa: S102 - execute the fixed, generated helper source under fakes
-        helper_source,
-        {
-            "__builtins__": {
-                "__import__": lambda name, *args: {
-                    "subprocess": FakeSubprocess,
-                    "time": FakeTime,
-                }[name]
-            }
-        },
+def test_admin_ui_web_restart_helper_reports_launch_failure(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        loaded.module, "_ADMIN_UI_WEB_RESTART_LOCK_PATH", str(tmp_path / "restart.lock")
+    )
+    monkeypatch.setattr(
+        loaded.module, "_ADMIN_UI_WEB_RESTART_LOG_PATH", str(tmp_path / "restart.log")
+    )
+    monkeypatch.setattr(
+        loaded.module.shutil, "which", lambda name: "/usr/bin/supervisorctl"
+    )
+    monkeypatch.setattr(
+        loaded.module.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("launch failed")),
     )
 
-    assert sleep_calls == [0.2]
-    assert run_calls == [
-        (
-            (["/usr/bin/supervisorctl", "-c", "/etc/supervisord.conf", "restart", "web"],),
-            {"timeout": 10},
-        )
-    ]
+    ok, detail = loaded.module._restart_admin_ui_web_process()
+
+    assert ok is False
+    assert detail == "Failed to request Admin UI web restart."
+
+
+def test_admin_ui_web_restart_helper_rejects_concurrent_request(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        loaded.module, "_ADMIN_UI_WEB_RESTART_LOCK_PATH", str(tmp_path / "restart.lock")
+    )
+    monkeypatch.setattr(
+        loaded.module, "_ADMIN_UI_WEB_RESTART_LOG_PATH", str(tmp_path / "restart.log")
+    )
+    monkeypatch.setattr(
+        loaded.module.shutil, "which", lambda name: "/usr/bin/supervisorctl"
+    )
+    monkeypatch.setattr(
+        loaded.module.fcntl,
+        "flock",
+        lambda *args: (_ for _ in ()).throw(BlockingIOError()),
+    )
+    monkeypatch.setattr(
+        loaded.module.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not launch")
+        ),
+    )
+
+    ok, detail = loaded.module._restart_admin_ui_web_process()
+
+    assert ok is False
+    assert detail == "An Admin UI web restart request is already in progress."
 
 
 def test_certificate_download_allows_only_active_ca_crt(monkeypatch, tmp_path) -> None:
@@ -932,8 +973,10 @@ def test_regenerate_admin_ui_https_certificate_reports_restart_failure(
     monkeypatch.setattr(
         loaded.module,
         "_restart_admin_ui_web_process",
-        lambda: restart_calls.append(True)
-        or (False, "supervisorctl is not available in this runtime."),
+        lambda: (
+            restart_calls.append(True)
+            or (False, "supervisorctl is not available in this runtime.")
+        ),
     )
     client = loaded.module.app.test_client()
     login_client(client)
