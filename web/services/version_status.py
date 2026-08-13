@@ -25,6 +25,23 @@ _MAX_VERSION_STATUS_CACHE_ENTRIES = 128
 _CACHE_LOCK_STRIPES = 16
 
 
+class _RejectGitHubRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        error = "GitHub API redirects are not allowed."
+        raise RuntimeError(error)
+
+
+_GITHUB_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    _RejectGitHubRedirects(),
+)
+
+
+def _open_github_request(request: urllib.request.Request, *, timeout: float):
+    """Open directly, without redirects, so bearer credentials stay on GitHub."""
+    return _GITHUB_OPENER.open(request, timeout=timeout)
+
+
 def _clean(value: object | None) -> str:
     return str(value or "").strip()
 
@@ -201,7 +218,7 @@ class VersionStatusClient:
                 maximum=10.0,
             )
         )
-        self.urlopen = urlopen or urllib.request.urlopen  # noqa: S310
+        self.urlopen = urlopen or _open_github_request
         self.monotonic = monotonic or time.monotonic
         self._cache: OrderedDict[str, tuple[float, CompareResult]] = OrderedDict()
         self._cache_lock = threading.Lock()

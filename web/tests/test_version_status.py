@@ -4,9 +4,11 @@ import io
 import json
 import threading
 import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import pytest
 from services import version_status
 from services.version_status import (
     _MAX_GITHUB_API_RESPONSE_BYTES,
@@ -46,6 +48,48 @@ def _branch_ref_response(request, sha: str = "f" * 40) -> _Response:
     branch = urllib.parse.unquote(branch)
     return _json_response(
         {"ref": f"refs/heads/{branch}", "object": {"type": "commit", "sha": sha}}
+    )
+
+
+def test_github_opener_disables_ambient_proxies() -> None:
+    proxy_handlers = [
+        handler
+        for handler in version_status._GITHUB_OPENER.handlers
+        if isinstance(handler, urllib.request.ProxyHandler)
+    ]
+
+    assert proxy_handlers == []
+
+
+def test_github_redirects_fail_closed_before_copying_bearer_token() -> None:
+    request = urllib.request.Request(
+        "https://api.github.com/repos/owner/repo/git/ref/heads/main",
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    with pytest.raises(RuntimeError, match="redirects are not allowed"):
+        version_status._RejectGitHubRedirects().redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://attacker.invalid/collect",
+        )
+
+
+def test_compare_revision_reports_redirect_rejection_to_operator() -> None:
+    def urlopen(_request, *, timeout):
+        error = "GitHub API redirects are not allowed."
+        raise RuntimeError(error)
+
+    status = VersionStatusClient(
+        repository="owner/repo", token="secret", urlopen=urlopen
+    ).compare_revision("abc123")
+
+    assert status.state == "unknown"
+    assert status.detail == (
+        "GitHub version check failed: GitHub API redirects are not allowed."
     )
 
 
@@ -275,7 +319,7 @@ def test_default_client_failure_is_retried_and_can_recover(
             }
         )
 
-    monkeypatch.setattr(version_status.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(version_status, "_open_github_request", urlopen)
 
     failed = build_component_version_status({"revision": "retry-revision"})
     recovered = build_component_version_status({"revision": "retry-revision"})
@@ -590,7 +634,7 @@ def test_default_client_cache_isolates_revisions_and_tracks_config_changes(
             }
         )
 
-    monkeypatch.setattr(version_status.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(version_status, "_open_github_request", urlopen)
 
     revision_a = build_component_version_status({"revision": "revision-a"})
     revision_a["detail"] = "mutated by caller"
@@ -681,7 +725,7 @@ def test_api_version_status_reuses_compare_cache_across_admin_and_proxy(
             }
         )
 
-    monkeypatch.setattr(version_status.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(version_status, "_open_github_request", urlopen)
     client = loaded.module.app.test_client()
     login_client(client)
 
