@@ -39,8 +39,7 @@ def _repeatedly_unquote(value: str, *, max_passes: int = 8) -> tuple[str, bool]:
 
 def _unsafe_ldap_url_text(value: str) -> bool:
     return any(
-        ch.isspace() or ord(ch) < 32 or ord(ch) == 127 or ch == "\\"
-        for ch in value
+        ch.isspace() or ord(ch) < 32 or ord(ch) == 127 or ch == "\\" for ch in value
     )
 
 
@@ -49,10 +48,7 @@ def _unsafe_ldap_authority(value: str) -> bool:
     if nested:
         return True
     return any(
-        ch.isspace()
-        or ord(ch) < 32
-        or ord(ch) == 127
-        or ch in "/?#@\\"
+        ch.isspace() or ord(ch) < 32 or ord(ch) == 127 or ch in "/?#@\\"
         for ch in decoded
     )
 
@@ -777,11 +773,21 @@ class DirectoryAuthStore:
                     raise_exceptions=True,
                 )
                 conn.open()
-                if self._should_start_tls(profile, server_url):
-                    conn.start_tls()
-                conn.bind()
+                if getattr(conn, "closed", False):
+                    msg = "LDAP connection open failed."
+                    raise RuntimeError(msg)
+                if self._should_start_tls(profile, server_url) and not conn.start_tls():
+                    msg = "LDAP StartTLS failed."
+                    raise RuntimeError(msg)
+                if not conn.bind():
+                    msg = "LDAP service bind failed."
+                    raise RuntimeError(msg)
                 base_dn = self._join_dn("", profile.base_dn)
-                conn.search(base_dn, "(objectClass=*)", attributes=["dn"], size_limit=1)
+                if not conn.search(
+                    base_dn, "(objectClass=*)", attributes=["dn"], size_limit=1
+                ):
+                    msg = "LDAP base search failed."
+                    raise RuntimeError(msg)
                 return conn, ldap3
             except Exception as exc:
                 last_exc = exc
@@ -820,9 +826,12 @@ class DirectoryAuthStore:
                     raise_exceptions=True,
                 )
                 conn.open()
-                if self._should_start_tls(profile, server_url):
-                    conn.start_tls()
-                conn.bind()
+                if getattr(conn, "closed", False):
+                    continue
+                if self._should_start_tls(profile, server_url) and not conn.start_tls():
+                    continue
+                if not conn.bind():
+                    continue
                 return True
             except Exception:
                 continue

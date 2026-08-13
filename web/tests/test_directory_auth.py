@@ -964,9 +964,7 @@ def test_directory_auth_allows_required_group_short_name_for_realistic_ad_forms(
         def search(self, _base, search_filter, **_kwargs):
             if search_filter == "(sAMAccountName=alice)":
                 self.entries = [
-                    SimpleNamespace(
-                        entry_dn="CN=Alice,CN=Users,DC=example,DC=local"
-                    )
+                    SimpleNamespace(entry_dn="CN=Alice,CN=Users,DC=example,DC=local")
                 ]
             elif search_filter == "(member=CN=Alice,CN=Users,DC=example,DC=local)":
                 self.entries = [group_entry]
@@ -1004,7 +1002,9 @@ def test_directory_auth_allows_required_group_short_name_for_realistic_ad_forms(
         ),
         (
             "Domain Admins",
-            SimpleNamespace(entry_dn="CN=Not Domain Admins,CN=Users,DC=example,DC=local"),
+            SimpleNamespace(
+                entry_dn="CN=Not Domain Admins,CN=Users,DC=example,DC=local"
+            ),
         ),
         (
             "Domain Admins",
@@ -1038,9 +1038,7 @@ def test_directory_auth_rejects_required_group_near_matches_and_dn_downgrade(
         def search(self, _base, search_filter, **_kwargs):
             if search_filter == "(sAMAccountName=alice)":
                 self.entries = [
-                    SimpleNamespace(
-                        entry_dn="CN=Alice,CN=Users,DC=example,DC=local"
-                    )
+                    SimpleNamespace(entry_dn="CN=Alice,CN=Users,DC=example,DC=local")
                 ]
             elif search_filter == "(member=CN=Alice,CN=Users,DC=example,DC=local)":
                 self.entries = [group_entry]
@@ -1076,14 +1074,17 @@ def test_plain_ldap_user_bind_does_not_require_tls(monkeypatch) -> None:
         def __init__(self, *args, **kwargs) -> None:
             calls.append(("connect", kwargs))
 
-        def open(self) -> None:
+        def open(self) -> bool:
             calls.append(("open", None))
+            return True
 
-        def start_tls(self) -> None:
+        def start_tls(self) -> bool:
             calls.append(("start_tls", None))
+            return True
 
-        def bind(self) -> None:
+        def bind(self) -> bool:
             calls.append(("bind", None))
+            return True
 
         def unbind(self) -> None:
             calls.append(("unbind", None))
@@ -1121,17 +1122,20 @@ def _install_failing_first_ldap(monkeypatch):
             self.kwargs = kwargs
             calls.append(("connect", server.url, kwargs["user"]))
 
-        def open(self) -> None:
+        def open(self) -> bool:
             calls.append(("open", self.server.url))
             if "bad" in self.server.url:
                 msg = "connection failed"
                 raise RuntimeError(msg)
+            return True
 
-        def start_tls(self) -> None:
+        def start_tls(self) -> bool:
             calls.append(("start_tls", self.server.url))
+            return True
 
-        def bind(self) -> None:
+        def bind(self) -> bool:
             calls.append(("bind", self.server.url))
+            return True
 
         def search(self, *args, **kwargs) -> bool:
             calls.append(("search", self.server.url))
@@ -1183,3 +1187,101 @@ def test_user_bind_falls_back_to_next_server_url(monkeypatch) -> None:
     assert ("open", "ldaps://bad.example.org:636") in calls
     assert ("bind", "ldaps://good.example.org:636") in calls
     assert ("unbind", "ldaps://good.example.org:636") in calls
+
+
+@pytest.mark.parametrize("failed_operation", ["open", "start_tls", "bind", "search"])
+def test_service_connection_false_operation_falls_back(
+    monkeypatch, failed_operation
+) -> None:
+    calls = []
+
+    class FakeServer:
+        def __init__(self, url, **_kwargs) -> None:
+            self.url = url
+
+    class FakeConnection:
+        def __init__(self, server, **_kwargs) -> None:
+            self.server = server
+            self.closed = False
+
+        def open(self) -> None:
+            calls.append(("open", self.server.url))
+            self.closed = failed_operation == "open" and "first" in self.server.url
+
+        def start_tls(self) -> bool:
+            calls.append(("start_tls", self.server.url))
+            return not (failed_operation == "start_tls" and "first" in self.server.url)
+
+        def bind(self) -> bool:
+            calls.append(("bind", self.server.url))
+            return not (failed_operation == "bind" and "first" in self.server.url)
+
+        def search(self, *_args, **_kwargs) -> bool:
+            calls.append(("search", self.server.url))
+            return not (failed_operation == "search" and "first" in self.server.url)
+
+        def unbind(self) -> None:
+            calls.append(("unbind", self.server.url))
+
+    fake_ldap3 = SimpleNamespace(
+        NONE=0,
+        Server=FakeServer,
+        Connection=FakeConnection,
+        Tls=SimpleNamespace,
+    )
+    monkeypatch.setitem(sys.modules, "ldap3", fake_ldap3)
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("ldap"),
+        server_urls="ldap://first.example.org:389\nldap://second.example.org:389",
+        use_starttls=failed_operation == "start_tls",
+        bind_password=store._encrypt("bind-secret"),
+    )
+
+    conn, _ldap3 = store._service_connection(profile)
+
+    assert conn.server.url == "ldap://second.example.org:389"
+    assert ("unbind", "ldap://first.example.org:389") in calls
+    store._safe_unbind(conn)
+
+
+def test_user_bind_false_result_falls_back_and_rejects_when_all_fail(
+    monkeypatch,
+) -> None:
+    successful_server = "ldap://second.example.org:389"
+
+    class FakeServer:
+        def __init__(self, url, **_kwargs) -> None:
+            self.url = url
+
+    class FakeConnection:
+        def __init__(self, server, **_kwargs) -> None:
+            self.server = server
+            self.closed = False
+
+        def open(self) -> None:
+            return None
+
+        def bind(self) -> bool:
+            return self.server.url == successful_server
+
+        def unbind(self) -> None:
+            return None
+
+    fake_ldap3 = SimpleNamespace(
+        NONE=0,
+        Server=FakeServer,
+        Connection=FakeConnection,
+        Tls=SimpleNamespace,
+    )
+    monkeypatch.setitem(sys.modules, "ldap3", fake_ldap3)
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("ldap"),
+        server_urls="ldap://first.example.org:389\nldap://second.example.org:389",
+    )
+
+    assert store._user_bind(profile, "uid=alice,dc=example,dc=org", "secret") is True
+
+    successful_server = ""
+    assert store._user_bind(profile, "uid=alice,dc=example,dc=org", "wrong") is False
