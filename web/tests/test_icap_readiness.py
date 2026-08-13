@@ -535,6 +535,57 @@ def test_icap_readiness_reports_status_file_write_failures(tmp_path) -> None:
     assert "failed to write ICAP readiness status file" in payload["status_file_error"]
 
 
+def test_icap_readiness_status_write_ignores_hostile_predictable_temp_symlink(
+    tmp_path,
+) -> None:
+    import icap_readiness  # type: ignore
+
+    status_file = tmp_path / "status.json"
+    victim = tmp_path / "victim.json"
+    victim.write_text("do not overwrite\n", encoding="utf-8")
+    stale_tmp = tmp_path / f".{status_file.name}.{icap_readiness.os.getpid()}.tmp"
+    stale_tmp.symlink_to(victim)
+
+    assert icap_readiness._write_status(str(status_file), {"ok": True}) is None
+
+    assert victim.read_text(encoding="utf-8") == "do not overwrite\n"
+    assert stale_tmp.is_symlink()
+    assert json.loads(status_file.read_text(encoding="utf-8")) == {"ok": True}
+
+
+def test_icap_readiness_status_write_uses_private_permissions(tmp_path) -> None:
+    import icap_readiness  # type: ignore
+
+    status_file = tmp_path / "status.json"
+    previous_umask = icap_readiness.os.umask(0)
+    try:
+        assert icap_readiness._write_status(str(status_file), {"ok": True}) is None
+    finally:
+        icap_readiness.os.umask(previous_umask)
+
+    assert status_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_icap_readiness_status_write_cleans_temp_after_replace_failure(
+    tmp_path, monkeypatch
+) -> None:
+    import icap_readiness  # type: ignore
+
+    status_file = tmp_path / "status.json"
+
+    def fail_replace(_source, _target) -> None:
+        message = "synthetic replace failure"
+        raise OSError(message)
+
+    monkeypatch.setattr(icap_readiness.Path, "replace", fail_replace)
+
+    error = icap_readiness._write_status(str(status_file), {"ok": True})
+
+    assert error is not None
+    assert "synthetic replace failure" in error
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_squid_ready_start_delegates_numeric_env_parsing_to_readiness() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     script = (repo_root / "docker" / "squid_ready_start.sh").read_text(encoding="utf-8")

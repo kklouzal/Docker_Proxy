@@ -17,6 +17,7 @@ import os
 import re
 import socket
 import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -314,14 +315,33 @@ def _result_to_json(result: ProbeResult) -> dict[str, object]:
 def _write_status(path: str, payload: dict[str, object]) -> str | None:
     if not path:
         return None
+    tmp_path: str | None = None
     try:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
-        tmp.replace(target)
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            os.fchmod(tmp_file.fileno(), 0o600)
+            tmp_file.write(json.dumps(payload, sort_keys=True) + "\n")
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        Path(tmp_path).replace(target)
+        tmp_path = None
+        directory_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except OSError as exc:
         return f"failed to write ICAP readiness status file {path}: {exc}"
+    finally:
+        if tmp_path is not None:
+            try:
+                Path(tmp_path).unlink()
+            except FileNotFoundError:
+                pass
     return None
 
 
