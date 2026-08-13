@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import errno
+import fcntl
 import hashlib
 import inspect
 import ipaddress
 import json
 import os
 import shutil
+import stat
 import tempfile
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -93,12 +95,49 @@ def _lock_for_pac_materialization_target(
 
 @contextlib.contextmanager
 def _locked_pac_materialization_target(target: str | os.PathLike[str]):
-    lock = _lock_for_pac_materialization_target(target)
+    """Serialize publication in this process and across local processes."""
+    target_path = Path(target)
+    lock = _lock_for_pac_materialization_target(target_path)
     lock.acquire()
+    fd: int | None = None
     try:
+        lock_path = target_path.parent / f".{target_path.name}.materialize.lock"
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(lock_path, flags, 0o600)
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            msg = "PAC materialization lock is not a regular file"
+            raise OSError(msg)
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
+        if fd is not None:
+            os.close(fd)
         lock.release()
+
+
+def _exchange_directories(first: Path, second: Path) -> None:
+    """Atomically exchange two directory names on supported Linux filesystems."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = libc.renameat2
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    encoded_first = os.fsencode(first)
+    encoded_second = os.fsencode(second)
+    if (
+        renameat2(-100, encoded_first, -100, encoded_second, 2) != 0
+    ):  # AT_FDCWD, RENAME_EXCHANGE
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(first), str(second))
 
 
 def _fsync_dir(path: str | os.PathLike[str]) -> None:
@@ -889,28 +928,21 @@ def _materialize_proxy_pac_state_from_stage(
         _write_pac_text_file(dest, str(item.content or ""))
     _fsync_dir(payload_dir)
 
-    parent = target.parent
     with _locked_pac_materialization_target(target):
         try:
             if target.exists():
-                backup_dir = parent / (
-                    f".pac-backup-{os.getpid()}-{int(time.time() * 1000)}"
-                )
-                if backup_dir.exists():
-                    shutil.rmtree(backup_dir, ignore_errors=True)
-                    _fsync_parent_dir(backup_dir)
-                Path(str(target)).replace(str(backup_dir))
-                _fsync_parent_dir(target)
-
-            Path(str(payload_dir)).replace(str(target))
+                _exchange_directories(target, payload_dir)
+                backup_dir = payload_dir
+            else:
+                Path(str(payload_dir)).replace(str(target))
             _fsync_parent_dir(target)
             if backup_dir is not None:
                 shutil.rmtree(backup_dir, ignore_errors=True)
                 _fsync_parent_dir(backup_dir)
         except Exception:
-            if backup_dir is not None and backup_dir.exists() and not target.exists():
+            if backup_dir is not None and backup_dir.exists() and target.exists():
                 with contextlib.suppress(Exception):
-                    Path(str(backup_dir)).replace(str(target))
+                    _exchange_directories(target, backup_dir)
                     _fsync_parent_dir(target)
             raise
 
@@ -946,7 +978,9 @@ def _manifest_profile_id(value: object) -> int | None:
     return None
 
 
-def _manifest_profile_order_key(profile_id: int | None, order: int) -> tuple[int, int, int]:
+def _manifest_profile_order_key(
+    profile_id: int | None, order: int
+) -> tuple[int, int, int]:
     if profile_id is not None:
         return (0, profile_id, order)
     return (1, order, order)
