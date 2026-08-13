@@ -165,6 +165,323 @@ class _LifecycleConnection:
         return False
 
 
+class _RetentionConnection:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = {int(row["id"]): dict(row) for row in rows}
+        self.queries: list[tuple[str, tuple[object, ...]]] = []
+
+    def execute(self, sql, params=()):
+        compact = " ".join(str(sql).split())
+        params = tuple(params or ())
+        self.queries.append((compact, params))
+        if compact.startswith("SELECT DISTINCT proxy_id FROM proxy_operations"):
+            proxies = sorted({str(row["proxy_id"]) for row in self.rows.values()})
+            return _Result([{"proxy_id": proxy_id} for proxy_id in proxies])
+        if compact.startswith("DELETE target FROM proxy_operations AS target"):
+            proxy_id, protected_id, limit, target_proxy_id = params
+            assert proxy_id == target_proxy_id
+            proxy_rows = [
+                row
+                for row in self.rows.values()
+                if row["proxy_id"] == proxy_id
+            ]
+            active_count = sum(
+                row["status"] in {"pending", "applying"} for row in proxy_rows
+            )
+            terminals = sorted(
+                (
+                    row
+                    for row in proxy_rows
+                    if row["status"] in {"applied", "superseded", "failed"}
+                ),
+                key=lambda row: (int(row["updated_ts"]), int(row["id"])),
+                reverse=True,
+            )
+            keep_terminal = max(0, int(limit) - active_count)
+            victims = {
+                int(row["id"])
+                for row in terminals[keep_terminal:]
+                if int(row["id"]) != int(protected_id)
+            }
+            for row_id in victims:
+                del self.rows[row_id]
+            result = _Result()
+            result.rowcount = len(victims)
+            return result
+        return _Result()
+
+
+def _retention_rows(
+    proxy_id: str,
+    count: int,
+    *,
+    status: str = "applied",
+    first_id: int = 1,
+    updated_ts: int | None = None,
+) -> list[dict[str, object]]:
+    return [
+        _operation_row(
+            id=first_id + offset,
+            proxy_id=proxy_id,
+            status=status,
+            updated_ts=updated_ts if updated_ts is not None else first_id + offset,
+        )
+        for offset in range(count)
+    ]
+
+
+def test_retention_keeps_exactly_128_terminal_operations() -> None:
+    from services.operation_ledger import OperationLedger
+
+    conn = _RetentionConnection(_retention_rows("edge-a", 128))
+
+    assert OperationLedger()._prune_proxy_history(conn, "edge-a") == 0
+    assert len(conn.rows) == 128
+
+
+def test_retention_permanently_deletes_129th_terminal_with_deterministic_ties() -> None:
+    from services.operation_ledger import OperationLedger
+
+    conn = _RetentionConnection(
+        _retention_rows("edge-a", 129, updated_ts=500),
+    )
+
+    assert OperationLedger()._prune_proxy_history(conn, "edge-a") == 1
+    assert set(conn.rows) == set(range(2, 130))
+
+
+def test_retention_protects_active_rows_and_converges_after_they_finish() -> None:
+    from services.operation_ledger import OperationLedger
+
+    rows = [
+        *_retention_rows("edge-a", 129, status="pending"),
+        *_retention_rows("edge-a", 3, first_id=1000),
+    ]
+    conn = _RetentionConnection(rows)
+    ledger = OperationLedger()
+
+    assert ledger._prune_proxy_history(conn, "edge-a") == 3
+    assert len(conn.rows) == 129
+    assert all(row["status"] == "pending" for row in conn.rows.values())
+
+    conn.rows[1]["status"] = "applied"
+    conn.rows[1]["updated_ts"] = 2000
+    assert (
+        ledger._prune_proxy_history(
+            conn,
+            "edge-a",
+            protected_operation_id=1,
+        )
+        == 0
+    )
+    assert len(conn.rows) == 129
+    assert 1 in conn.rows
+
+    conn.rows[2]["status"] = "applied"
+    conn.rows[2]["updated_ts"] = 2001
+    assert (
+        ledger._prune_proxy_history(
+            conn,
+            "edge-a",
+            protected_operation_id=2,
+        )
+        == 1
+    )
+    assert len(conn.rows) == 128
+    assert 1 not in conn.rows
+    assert 2 in conn.rows
+
+
+def test_retention_is_per_proxy_and_preexisting_oversized_ledgers_converge() -> None:
+    from services.operation_ledger import OperationLedger
+
+    rows = [
+        *_retention_rows("edge-a", 140),
+        *_retention_rows("edge-b", 135, first_id=1000),
+    ]
+    conn = _RetentionConnection(rows)
+
+    assert OperationLedger()._prune_all_history(conn) == 19
+    assert sum(row["proxy_id"] == "edge-a" for row in conn.rows.values()) == 128
+    assert sum(row["proxy_id"] == "edge-b" for row in conn.rows.values()) == 128
+
+
+def test_create_prunes_in_transaction_after_idempotent_upsert(monkeypatch) -> None:
+    from services.operation_ledger import OperationLedger
+
+    class _CreateConnection(_Connection):
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("INSERT INTO proxy_operations"):
+                result = _Result()
+                result.lastrowid = 11
+                return result
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([_operation_row(id=11)])
+            return _Result()
+
+    conn = _CreateConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr(ledger, "_prune_proxy_history", lambda _conn, proxy, **_kwargs: 0)
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+
+    operation = ledger.create_operation(
+        "edge-a",
+        operation_type="config_apply",
+        subject="Squid config",
+        summary="Apply revision",
+        target_kind="config_revision",
+        target_ref=42,
+        request_hash="a" * 64,
+    )
+
+    assert operation.operation_id == 11
+    sql = [query for query, _params in conn.queries]
+    assert sql[0].startswith("INSERT INTO proxy_operations")
+    assert sql[-1].startswith("SELECT id, proxy_id, status")
+    assert conn.committed is True
+
+
+def test_mark_terminal_prunes_before_returning_retained_row(monkeypatch) -> None:
+    from services.operation_ledger import OperationLedger
+
+    conn = _Connection()
+    ledger = OperationLedger()
+    prune_calls: list[str] = []
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr(
+        ledger,
+        "_prune_proxy_history",
+        lambda _conn, proxy, **_kwargs: prune_calls.append(proxy) or 0,
+    )
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 456)
+
+    operation = ledger.mark_status(7, status="applied")
+
+    assert operation is not None
+    assert operation.operation_id == 7
+    assert prune_calls == ["edge-a"]
+
+
+def test_create_prune_failure_rolls_back_and_returns_no_operation(monkeypatch) -> None:
+    from services.operation_ledger import OperationLedger
+
+    class _FailingCreateConnection(_Connection):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rolled_back = False
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("INSERT INTO proxy_operations"):
+                result = _Result()
+                result.lastrowid = 11
+                return result
+            return _Result()
+
+        def __exit__(self, exc_type, exc, tb):
+            if exc_type is None:
+                self.committed = True
+            else:
+                self.rolled_back = True
+            return False
+
+    conn = _FailingCreateConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr(
+        ledger,
+        "_prune_proxy_history",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("prune failed")),
+    )
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+
+    with pytest.raises(RuntimeError, match="prune failed"):
+        ledger.create_operation(
+            "edge-a",
+            operation_type="config_apply",
+            subject="Squid config",
+            summary="Apply revision",
+            target_kind="config_revision",
+            target_ref=42,
+            request_hash="a" * 64,
+        )
+
+    assert conn.committed is False
+    assert conn.rolled_back is True
+
+
+def test_create_commits_prune_before_releasing_proxy_guard(monkeypatch) -> None:
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from services.operation_ledger import OperationLedger
+
+    class _NativeCreateConnection(_Connection):
+        native = object()
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.events: list[str] = []
+
+        def execute(self, sql, params=()):
+            compact = " ".join(str(sql).split())
+            params = tuple(params or ())
+            self.queries.append((compact, params))
+            if compact.startswith("INSERT INTO proxy_operations"):
+                result = _Result()
+                result.lastrowid = 11
+                return result
+            if compact.startswith("SELECT id, proxy_id, status"):
+                return _Result([_operation_row(id=11)])
+            return _Result()
+
+        def commit(self):
+            self.events.append("commit")
+
+    @contextmanager
+    def observed_guard(_conn, proxy_id, **_kwargs):
+        try:
+            yield SimpleNamespace(proxy_id=str(proxy_id))
+        finally:
+            conn.events.append("guard-released")
+
+    conn = _NativeCreateConnection()
+    ledger = OperationLedger()
+    monkeypatch.setattr(ledger, "init_db", lambda: None)
+    monkeypatch.setattr(ledger, "_connect", lambda: conn)
+    monkeypatch.setattr(
+        ledger,
+        "_prune_proxy_history",
+        lambda *_args, **_kwargs: conn.events.append("prune") or 0,
+    )
+    monkeypatch.setattr(
+        "services.operation_ledger.guarded_proxy_write",
+        observed_guard,
+    )
+    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+
+    ledger.create_operation(
+        "edge-a",
+        operation_type="config_apply",
+        subject="Squid config",
+        summary="Apply revision",
+        target_kind="config_revision",
+        target_ref=42,
+        request_hash="a" * 64,
+    )
+
+    assert conn.events[:3] == ["prune", "commit", "guard-released"]
+
+
 def test_init_db_backfills_active_request_keys_before_unique_index(monkeypatch) -> None:
     from services.operation_ledger import OperationLedger
 

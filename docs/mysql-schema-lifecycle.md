@@ -1,6 +1,6 @@
 # MySQL schema lifecycle hardening
 
-Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 26.
+Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 27.
 
 ## Version ownership
 
@@ -32,6 +32,7 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 | 24 | `live_stats_seed_checkpoint` | Adds the proxy-scoped durable access-log checkpoint used to seed only unseen complete lines after process restarts. |
 | 25 | `diagnostic_icap_extended_metadata` | Adds ICAP service, outcome, status, timing, and byte-count metadata columns to `diagnostic_icap_events` for durable extended diagnostic evidence. |
 | 26 | `observability_manual_export_preset_contract` | Canonicalizes `observability_report_schedules` as manual-export presets: `cadence='manual'`, empty recipients, zero next/last runtime timestamps, and `last_status='manual_export_only'`. |
+| 27 | `operation_ledger_hard_retention_cap` | Physically prunes pre-existing terminal `proxy_operations` history until each proxy has at most 128 rows, except while its protected active `pending`/`applying` rows alone require overflow; lifecycle writes maintain and converge the same bound afterward. |
 
 ## Lifecycle model
 

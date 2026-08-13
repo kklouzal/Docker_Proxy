@@ -105,6 +105,7 @@ from services.observability_queries import (
     normalize_runtime_health_state_errors,
 )
 from services.operation_ledger import (
+    OPERATION_HISTORY_LIMIT,
     get_operation_ledger,
     normalize_operation_target_ref,
 )
@@ -741,7 +742,10 @@ def _latest_operation(
     operation_types: set[str] | None = None,
 ):
     try:
-        operations = get_operation_ledger().list_operations(proxy_id, limit=100)
+        operations = get_operation_ledger().list_operations(
+            proxy_id,
+            limit=OPERATION_HISTORY_LIMIT,
+        )
     except Exception:
         return None
 
@@ -6234,7 +6238,7 @@ def operations_status():
     proxy_id = get_proxy_id()
     ledger = get_operation_ledger()
     try:
-        operations = ledger.list_operations(proxy_id, limit=100)
+        operations = ledger.list_operations(proxy_id, limit=OPERATION_HISTORY_LIMIT)
         operation_counts = ledger.counts_by_status(proxy_id)
     except Exception:
         operations = []
@@ -6367,10 +6371,13 @@ def api_operations():
                 proxy_id,
                 after_updated_ts=after_ts,
                 after_id=after_id,
-                limit=100,
+                limit=OPERATION_HISTORY_LIMIT,
             )
         else:
-            operations = ledger.list_operations(proxy_id, limit=100)
+            operations = ledger.list_operations(
+                proxy_id,
+                limit=OPERATION_HISTORY_LIMIT,
+            )
         counts = ledger.counts_by_status(proxy_id)
         return jsonify(
             {

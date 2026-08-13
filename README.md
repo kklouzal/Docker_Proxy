@@ -266,10 +266,11 @@ Control-plane cleanup preserves active config/certificate/adblock artifact
 revisions, keeps recent apply/operation/policy history, expires stale temporary
 policy exceptions, and removes expired Safe Browsing cache rows. Tune
 `MYSQL_CONTROL_PLANE_RETENTION_DAYS`, `MYSQL_HOUSEKEEPING_KEEP_REVISIONS`,
-`MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_OPERATIONS`,
-`MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, and
+`MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, and
 `MYSQL_HOUSEKEEPING_KEEP_MAINTENANCE_RUNS` only when a deployment needs more
-audit depth or tighter storage bounds.
+audit depth or tighter storage bounds. Operations are always hard-capped at 128
+rows per proxy (active rows are protected); `MYSQL_HOUSEKEEPING_KEEP_OPERATIONS`
+can lower, but never raise, that scheduled-housekeeping bound.
 
 ## Core capabilities
 

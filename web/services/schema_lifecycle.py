@@ -28,7 +28,7 @@ from services.sql_identifiers import normalize_mysql_identifier
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 26
+_SCHEMA_VERSION = 27
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -552,6 +552,10 @@ def _init_operation_ledger_schema(_conn: Any) -> None:
 
 def _backfill_operation_ledger_active_request_keys(conn: Any) -> None:
     importlib.import_module("services.operation_ledger").get_operation_ledger()._backfill_active_request_keys(conn)
+
+
+def _prune_operation_ledger_history(conn: Any) -> None:
+    importlib.import_module("services.operation_ledger").get_operation_ledger()._prune_all_history(conn)
 
 
 def _init_audit_schema(conn: Any) -> None:
@@ -1503,6 +1507,16 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                            OR last_run_ts<>0 OR last_status<>'manual_export_only'
                         """
                     ),
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=27,
+            name="operation_ledger_hard_retention_cap",
+            data_steps=(
+                SchemaDataStep(
+                    "prune_operation_ledger_history",
+                    _prune_operation_ledger_history,
                 ),
             ),
         ),

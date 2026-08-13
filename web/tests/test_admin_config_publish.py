@@ -646,7 +646,7 @@ def test_operations_api_returns_ledger_entries(monkeypatch, tmp_path) -> None:
     class Ledger:
         def list_operations(self, proxy_id, *, limit):
             assert proxy_id == "edge-a"
-            assert limit == 100
+            assert limit == 128
             return [Op()]
 
         def counts_by_status(self, proxy_id):
@@ -667,6 +667,27 @@ def test_operations_api_returns_ledger_entries(monkeypatch, tmp_path) -> None:
         {"operation_id": 7, "status": "pending", "updated_ts": 123}
     ]
     assert data["counts"]["pending"] == 1
+
+
+def test_operations_page_requests_full_retained_history(monkeypatch, tmp_path) -> None:
+    admin_app = _load_admin_app(monkeypatch, tmp_path)
+
+    class Ledger:
+        def list_operations(self, proxy_id, *, limit):
+            assert proxy_id == "edge-a"
+            assert limit == 128
+            return []
+
+        def counts_by_status(self, proxy_id):
+            assert proxy_id == "edge-a"
+            return {}
+
+    monkeypatch.setattr(admin_app, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(admin_app, "get_operation_ledger", Ledger)
+    monkeypatch.setattr(admin_app, "render_template", lambda *_args, **_kwargs: "ok")
+
+    with admin_app.app.test_request_context("/operations"):
+        assert admin_app.operations_status() == "ok"
 
 
 @pytest.mark.parametrize(
@@ -726,7 +747,7 @@ def test_operations_api_uses_valid_since_cursor_args(monkeypatch, tmp_path) -> N
             assert proxy_id == "edge-a"
             assert after_updated_ts == 123
             assert after_id == 7
-            assert limit == 100
+            assert limit == 128
             return [Op()]
 
         def counts_by_status(self, proxy_id):

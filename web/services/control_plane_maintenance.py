@@ -577,9 +577,9 @@ def _run_one_prune(
     )
     keep_operations = _env_int(
         "MYSQL_HOUSEKEEPING_KEEP_OPERATIONS",
-        500,
+        128,
         minimum=1,
-        maximum=50000,
+        maximum=128,
     )
     keep_policy_rows = _env_int(
         "MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS",

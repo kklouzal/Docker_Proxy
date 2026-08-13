@@ -22,6 +22,7 @@ from services.proxy_write_guard import guarded_proxy_write
 
 OPERATION_STATUSES = ("pending", "applying", "applied", "superseded", "failed")
 TERMINAL_STATUSES = {"applied", "superseded", "failed"}
+OPERATION_HISTORY_LIMIT = 128
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SHA256_TARGET_KINDS = frozenset({"policy_state", "pac_state"})
 
@@ -291,6 +292,87 @@ class OperationLedger:
             """,
         )
 
+    def _prune_proxy_history(
+        self,
+        conn,
+        proxy_id: str,
+        *,
+        protected_operation_id: int = 0,
+    ) -> int:
+        """Enforce the per-proxy hard cap while preserving every active row.
+
+        Active rows consume retention slots but are never victims. Terminal rows
+        are ranked newest-first by ``updated_ts, id`` and are deleted when their
+        zero-based terminal rank plus the active-row count reaches the cap. The
+        single DELETE avoids an offset/select/delete race and makes timestamp ties
+        deterministic. A just-created/completed operation may be protected from
+        becoming its own transaction's victim; when active rows already fill all
+        slots, the next lifecycle write safely converges the temporary overflow.
+        """
+        result = conn.execute(
+            """
+            DELETE target
+            FROM proxy_operations AS target
+            JOIN (
+                SELECT victim_id
+                FROM (
+                    SELECT candidate.id AS victim_id
+                    FROM proxy_operations AS candidate
+                    WHERE candidate.proxy_id=%s
+                      AND candidate.id<>%s
+                      AND candidate.status IN ('applied','superseded','failed')
+                      AND (
+                          (
+                              SELECT COUNT(*)
+                              FROM proxy_operations AS active
+                              WHERE active.proxy_id=candidate.proxy_id
+                                AND active.status IN ('pending','applying')
+                          )
+                          +
+                          (
+                              SELECT COUNT(*)
+                              FROM proxy_operations AS newer
+                              WHERE newer.proxy_id=candidate.proxy_id
+                                AND newer.status IN ('applied','superseded','failed')
+                                AND (
+                                    newer.updated_ts>candidate.updated_ts
+                                    OR (
+                                        newer.updated_ts=candidate.updated_ts
+                                        AND newer.id>candidate.id
+                                    )
+                                )
+                          )
+                      ) >= %s
+                ) AS ranked_victims
+            ) AS victims ON victims.victim_id=target.id
+            WHERE target.proxy_id=%s
+              AND target.status IN ('applied','superseded','failed')
+            """,
+            (
+                proxy_id,
+                int(protected_operation_id or 0),
+                OPERATION_HISTORY_LIMIT,
+                proxy_id,
+            ),
+        )
+        return max(0, int(getattr(result, "rowcount", 0) or 0))
+
+    def _prune_all_history(self, conn) -> int:
+        """Converge pre-existing per-proxy ledgers during schema migration."""
+        rows = conn.execute(
+            "SELECT DISTINCT proxy_id FROM proxy_operations ORDER BY proxy_id ASC",
+        ).fetchall()
+        return sum(
+            self._prune_proxy_history(conn, normalize_proxy_id(row["proxy_id"]))
+            for row in rows
+        )
+
+    @staticmethod
+    def _commit_before_guard_release(conn) -> None:
+        """Commit real MySQL writes while the per-proxy advisory lock is held."""
+        if hasattr(conn, "native") and hasattr(conn, "commit"):
+            conn.commit()
+
     def _init_db_on_connection(self, conn) -> None:
         conn.execute(
             """
@@ -366,6 +448,7 @@ class OperationLedger:
             conn.execute(
                 "ALTER TABLE proxy_operations ADD UNIQUE KEY uniq_proxy_operations_active_request (proxy_id, request_key)",
             )
+        self._prune_all_history(conn)
 
     def _schema_current_on_connection(self, conn) -> bool:
         if not hasattr(conn, "native"):
@@ -508,10 +591,17 @@ class OperationLedger:
                                 int(cur.lastrowid or 0),
                             ),
                         )
-                    return conn.execute(
+                    self._prune_proxy_history(
+                        conn,
+                        proxy_key,
+                        protected_operation_id=int(cur.lastrowid or 0),
+                    )
+                    row = conn.execute(
                         f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1",
                         (int(cur.lastrowid or 0),),
                     ).fetchone()
+                    self._commit_before_guard_release(conn)
+                    return row
 
         row = run_mysql_operation_with_retry(
             _create,
@@ -527,7 +617,7 @@ class OperationLedger:
         self,
         proxy_id: object | None,
         *,
-        limit: int = 100,
+        limit: int = OPERATION_HISTORY_LIMIT,
         statuses: list[str] | None = None,
     ) -> list[ProxyOperation]:
         self.init_db()
@@ -556,7 +646,7 @@ class OperationLedger:
         *,
         after_updated_ts: int = 0,
         after_id: int = 0,
-        limit: int = 100,
+        limit: int = OPERATION_HISTORY_LIMIT,
     ) -> list[ProxyOperation]:
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
@@ -736,6 +826,8 @@ class OperationLedger:
                         """,
                         (now, guarded_proxy_key, cutoff, max_requeues),
                     )
+                    self._prune_proxy_history(conn, guarded_proxy_key)
+                    self._commit_before_guard_release(conn)
                     return int(getattr(cur, "rowcount", 0) or 0)
 
         return int(
@@ -794,10 +886,12 @@ class OperationLedger:
                         f"UPDATE proxy_operations SET status='applying', started_ts=%s, updated_ts=%s, claim_token=%s WHERE proxy_id=%s AND status='pending' AND id IN ({placeholders})",
                         (now, now, claim_token, guarded_proxy_key, *ids),
                     )
-                    return conn.execute(
+                    claimed = conn.execute(
                         f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE proxy_id=%s AND status='applying' AND claim_token=%s AND id IN ({placeholders}) ORDER BY created_ts ASC, id ASC",
                         (guarded_proxy_key, claim_token, *ids),
                     ).fetchall()
+                    self._commit_before_guard_release(conn)
+                    return claimed
 
         claimed_rows = run_mysql_operation_with_retry(
             _claim,
@@ -866,10 +960,18 @@ class OperationLedger:
                             guarded_proxy_key,
                         ),
                     )
-                    return conn.execute(
+                    if status in TERMINAL_STATUSES:
+                        self._prune_proxy_history(
+                            conn,
+                            guarded_proxy_key,
+                            protected_operation_id=int(operation_id or 0),
+                        )
+                    row = conn.execute(
                         f"SELECT {self._SELECT_COLUMNS} FROM proxy_operations WHERE id=%s LIMIT 1",
                         (int(operation_id or 0),),
                     ).fetchone()
+                    self._commit_before_guard_release(conn)
+                    return row
 
         row = run_mysql_operation_with_retry(
             _mark,
