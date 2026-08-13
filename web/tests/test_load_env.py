@@ -70,6 +70,24 @@ def test_load_env_accepts_common_env_file_syntax_without_sourcing(
     }
 
 
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_load_env_accepts_quoted_values_with_whitespace_or_comment_tails(
+    tmp_path: Path,
+    quote: str,
+) -> None:
+    app_env = tmp_path / "app.env"
+    app_env.write_text(
+        f"QUOTED_HASH={quote}first{quote}   \n"
+        f"SINGLE_QUOTED={quote}second{quote}\t # conventional comment\n",
+        encoding="utf-8",
+    )
+
+    env = _load_env_probe(app_env)
+
+    assert env["QUOTED_HASH"] == "first"
+    assert env["SINGLE_QUOTED"] == "second"
+
+
 @pytest.mark.parametrize(
     ("content", "line_number", "diagnostic"),
     [
@@ -77,6 +95,21 @@ def test_load_env_accepts_common_env_file_syntax_without_sourcing(
         (b"BAD-NAME=secret-value\n", 1, "invalid environment variable name"),
         (b'GOOD="unterminated secret\n', 1, "unterminated quoted value"),
         (b"GOOD='unterminated secret\n", 1, "unterminated quoted value"),
+        (
+            b'GOOD=ok\nBAD="secret-value"garbage\n',
+            2,
+            "unexpected trailing characters after quoted value",
+        ),
+        (
+            b"GOOD=ok\nBAD='secret-value' garbage\n",
+            2,
+            "unexpected trailing characters after quoted value",
+        ),
+        (
+            b'GOOD=ok\nBAD="secret-value"#not-whitespace-prefixed\n',
+            2,
+            "unexpected trailing characters after quoted value",
+        ),
     ],
 )
 def test_load_env_rejects_malformed_input_without_echoing_values(
@@ -101,3 +134,33 @@ def test_load_env_rejects_malformed_input_without_echoing_values(
     assert f"line {line_number}: {diagnostic}" in result.stderr
     assert "secret" not in result.stderr
     assert result.stdout == ""
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_load_env_does_not_partially_apply_valid_lines_before_malformed_line(
+    tmp_path: Path,
+    quote: str,
+) -> None:
+    app_env = tmp_path / "app.env"
+    app_env.write_text(
+        f"EARLIER_VALUE=must-not-be-exported\nBAD={quote}hidden{quote}garbage\n",
+        encoding="utf-8",
+    )
+    script = (REPO_ROOT / "docker" / "load-env.sh").read_text(encoding="utf-8")
+    script = script.replace("/config/app.env", str(app_env))
+    probe = """
+trap 'printf "EARLIER_VALUE=%s\\n" "${EARLIER_VALUE-unset}"' EXIT
+unset EARLIER_VALUE
+"""
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", probe + script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "line 2: unexpected trailing characters after quoted value" in result.stderr
+    assert "hidden" not in result.stderr
+    assert result.stdout == "EARLIER_VALUE=unset\n"

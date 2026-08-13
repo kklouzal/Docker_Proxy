@@ -18,7 +18,7 @@ if [ -f /config/app.env ]; then
             printf "load-env: app.env: line %d: %s\n", NR, reason > "/dev/stderr"
             exit 2
         }
-        function parse_value(value,    ch, i, out, prev, quote) {
+        function parse_value(value,    ch, i, out, prev, quote, tail) {
             sub(/\r$/, "", value)
             value = ltrim(value)
             quote = substr(value, 1, 1)
@@ -27,7 +27,11 @@ if [ -f /config/app.env ]; then
                 for (i = 2; i <= length(value); i++) {
                     ch = substr(value, i, 1)
                     if (ch == quote) {
-                        return out
+                        tail = substr(value, i + 1)
+                        if (tail == "" || tail ~ /^[ \t]+#/) {
+                            return out
+                        }
+                        fail("unexpected trailing characters after quoted value")
                     }
                     out = out ch
                 }
