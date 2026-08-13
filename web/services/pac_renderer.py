@@ -12,12 +12,12 @@ import os
 import shutil
 import stat
 import tempfile
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
+from services.keyed_locks import KeyedLockRegistry
 from services.pac_private_local import (
     LOCAL_DOMAIN_SUFFIXES,
     PAC_PRIVATE_LOCAL_IPV4_NETS,
@@ -74,49 +74,36 @@ _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
     getattr(errno, "ENOTSUP", errno.EINVAL),
     getattr(errno, "EOPNOTSUPP", errno.EINVAL),
 }
-_PAC_MATERIALIZATION_TARGET_LOCKS_GUARD = threading.Lock()
-_PAC_MATERIALIZATION_TARGET_LOCKS: dict[str, threading.Lock] = {}
+_PAC_MATERIALIZATION_TARGET_LOCKS = KeyedLockRegistry[str]()
 
 
 def _pac_materialization_target_key(path: str | os.PathLike[str]) -> str:
     return str(Path(path).resolve(strict=False))
 
 
-def _lock_for_pac_materialization_target(
-    path: str | os.PathLike[str],
-) -> threading.Lock:
-    target_key = _pac_materialization_target_key(path)
-    with _PAC_MATERIALIZATION_TARGET_LOCKS_GUARD:
-        return _PAC_MATERIALIZATION_TARGET_LOCKS.setdefault(
-            target_key,
-            threading.Lock(),
-        )
-
-
 @contextlib.contextmanager
 def _locked_pac_materialization_target(target: str | os.PathLike[str]):
     """Serialize publication in this process and across local processes."""
     target_path = Path(target)
-    lock = _lock_for_pac_materialization_target(target_path)
-    lock.acquire()
+    target_key = _pac_materialization_target_key(target_path)
     fd: int | None = None
-    try:
-        lock_path = target_path.parent / f".{target_path.name}.materialize.lock"
-        flags = os.O_CREAT | os.O_RDWR
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        fd = os.open(lock_path, flags, 0o600)
-        opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode):
-            msg = "PAC materialization lock is not a regular file"
-            raise OSError(msg)
-        os.fchmod(fd, 0o600)
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
-    finally:
-        if fd is not None:
-            os.close(fd)
-        lock.release()
+    with _PAC_MATERIALIZATION_TARGET_LOCKS.locked([target_key]):
+        try:
+            lock_path = target_path.parent / f".{target_path.name}.materialize.lock"
+            flags = os.O_CREAT | os.O_RDWR
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(lock_path, flags, 0o600)
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode):
+                msg = "PAC materialization lock is not a regular file"
+                raise OSError(msg)
+            os.fchmod(fd, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            if fd is not None:
+                os.close(fd)
 
 
 def _exchange_directories(first: Path, second: Path) -> None:

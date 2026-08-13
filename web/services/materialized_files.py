@@ -6,31 +6,21 @@ import hashlib
 import os
 import pathlib
 import tempfile
-import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from services.keyed_locks import KeyedLockRegistry
 from services.runtime_helpers import fsync_parent_dir as _fsync_parent_dir
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 _RUNTIME_FILE_MODE = 0o644
-_MANAGED_PATH_LOCKS_GUARD = threading.Lock()
-_MANAGED_PATH_LOCKS: dict[str, threading.Lock] = {}
+_MANAGED_PATH_LOCKS = KeyedLockRegistry[str]()
 
 
 def _managed_path_key(path: str) -> str:
     return str(pathlib.Path(path).resolve(strict=False))
-
-
-def _locks_for_paths(paths: list[str]) -> list[tuple[str, threading.Lock]]:
-    path_keys = sorted({_managed_path_key(path) for path in paths})
-    with _MANAGED_PATH_LOCKS_GUARD:
-        return [
-            (path_key, _MANAGED_PATH_LOCKS.setdefault(path_key, threading.Lock()))
-            for path_key in path_keys
-        ]
 
 
 def _interprocess_lock_path(path_key: str) -> pathlib.Path:
@@ -41,37 +31,32 @@ def _interprocess_lock_path(path_key: str) -> pathlib.Path:
 
 @contextlib.contextmanager
 def _locked_materialized_paths(paths: list[str]) -> Iterator[None]:
-    keyed_locks = _locks_for_paths(paths)
-    acquired: list[threading.Lock] = []
+    path_keys = sorted({_managed_path_key(path) for path in paths})
     lock_files: list[int] = []
-    try:
-        for _path_key, lock in keyed_locks:
-            lock.acquire()
-            acquired.append(lock)
-        for path_key, _lock in keyed_locks:
-            lock_path = _interprocess_lock_path(path_key)
-            lock_path.parent.mkdir(exist_ok=True, parents=True)
-            flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            try:
-                fd = os.open(lock_path, flags, 0o600)
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            except OSError:
-                with contextlib.suppress(UnboundLocalError):
+    with _MANAGED_PATH_LOCKS.locked(path_keys):
+        try:
+            for path_key in path_keys:
+                lock_path = _interprocess_lock_path(path_key)
+                lock_path.parent.mkdir(exist_ok=True, parents=True)
+                flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                try:
+                    fd = os.open(lock_path, flags, 0o600)
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                except OSError:
+                    with contextlib.suppress(UnboundLocalError):
+                        os.close(fd)
+                    msg = "Unable to serialize managed file update"
+                    raise RuntimeError(msg) from None
+                lock_files.append(fd)
+            yield
+        finally:
+            for fd in reversed(lock_files):
+                with contextlib.suppress(OSError):
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                with contextlib.suppress(OSError):
                     os.close(fd)
-                msg = "Unable to serialize managed file update"
-                raise RuntimeError(msg) from None
-            lock_files.append(fd)
-        yield
-    finally:
-        for fd in reversed(lock_files):
-            with contextlib.suppress(OSError):
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            with contextlib.suppress(OSError):
-                os.close(fd)
-        for lock in reversed(acquired):
-            lock.release()
 
 
 @dataclass(frozen=True)
