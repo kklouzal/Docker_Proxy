@@ -16,12 +16,13 @@ logger = logging.getLogger(__name__)
 
 _started = False
 _started_loop_names: set[str] = set()
+_loop_threads: list[threading.Thread] = []
 _start_lock = threading.Lock()
 
 
-def _loop(interval: float, func) -> None:
+def _loop(interval: float, func, stop_event: threading.Event) -> None:
     loop_name = getattr(func, "__name__", "agent-loop")
-    while True:
+    while not stop_event.is_set():
         try:
             func()
         except Exception as exc:
@@ -32,7 +33,7 @@ def _loop(interval: float, func) -> None:
                 unexpected_message=f"Proxy agent loop '{loop_name}' failed",
                 exc=exc,
             )
-        time.sleep(interval)
+        stop_event.wait(interval)
 
 
 def _log_recoverable_or_unexpected(
@@ -76,7 +77,14 @@ def _sync_result_ok(result: object | None) -> bool:
     )
 
 
-def _sync_loop(runtime, *, force: bool = False):
+def _sync_loop(
+    runtime,
+    *,
+    force: bool = False,
+    stop_event: threading.Event | None = None,
+):
+    if stop_event is not None and stop_event.is_set():
+        return None
     initial_capture_required = bool(
         getattr(runtime, "recovery_initial_capture_required", False)
     )
@@ -87,7 +95,11 @@ def _sync_loop(runtime, *, force: bool = False):
     else:
         runtime.start_background_tasks()
 
+    if stop_event is not None and stop_event.is_set():
+        return None
     result = runtime.sync_from_db(force=force)
+    if stop_event is not None and stop_event.is_set():
+        return result
     capture_recovery_bundle = getattr(runtime, "capture_recovery_bundle", None)
     if (
         callable(capture_recovery_bundle)
@@ -104,20 +116,24 @@ def _sync_loop(runtime, *, force: bool = False):
                 ),
             ),
         )
-    if initial_capture_required and not bool(
-        getattr(runtime, "recovery_initial_capture_required", False)
+    if (
+        initial_capture_required
+        and not bool(getattr(runtime, "recovery_initial_capture_required", False))
+        and not (stop_event is not None and stop_event.is_set())
     ):
         runtime.start_background_tasks()
     return result
 
 
-def start_agent() -> None:
+def start_agent(*, stop_event: threading.Event | None = None) -> None:
     global _started
     with _start_lock:
         if _started:
             return
 
         runtime = get_runtime()
+        if stop_event is not None and stop_event.is_set():
+            return
         startup_recovery = None
         startup_schema_ok = True
         ensure_startup_schema = getattr(runtime, "ensure_startup_schema", None)
@@ -136,6 +152,8 @@ def start_agent() -> None:
                 "Initial startup schema migration failed",
                 ensure_startup_schema,
             )
+        if stop_event is not None and stop_event.is_set():
+            return
 
         # MySQL/control-plane outages must not kill the local proxy agent.  The
         # proxy data plane, public PAC/WPAD listener, and supervisor health are
@@ -147,24 +165,38 @@ def start_agent() -> None:
                 "Initial proxy registration failed",
                 runtime.ensure_registered,
             )
-            bootstrap_ok, _bootstrap = _run_once_logged(
-                "proxy.agent.initial_bootstrap",
-                "Initial proxy revision bootstrap failed",
-                runtime.bootstrap_revision_if_missing,
-            )
-            background_ok, _background = _run_once_logged(
-                "proxy.agent.initial_background",
-                "Initial proxy background task startup failed",
-                runtime.start_background_tasks,
-            )
-            sync_ok, sync_result = _run_once_logged(
-                "proxy.agent.initial_sync",
-                "Initial proxy sync failed",
-                lambda: runtime.sync_from_db(force=False),
-            )
+            if stop_event is not None and stop_event.is_set():
+                bootstrap_ok = background_ok = sync_ok = False
+                sync_result = None
+            else:
+                bootstrap_ok, _bootstrap = _run_once_logged(
+                    "proxy.agent.initial_bootstrap",
+                    "Initial proxy revision bootstrap failed",
+                    runtime.bootstrap_revision_if_missing,
+                )
+                if stop_event is not None and stop_event.is_set():
+                    background_ok = sync_ok = False
+                    sync_result = None
+                else:
+                    background_ok, _background = _run_once_logged(
+                        "proxy.agent.initial_background",
+                        "Initial proxy background task startup failed",
+                        runtime.start_background_tasks,
+                    )
+                    if stop_event is not None and stop_event.is_set():
+                        sync_ok = False
+                        sync_result = None
+                    else:
+                        sync_ok, sync_result = _run_once_logged(
+                            "proxy.agent.initial_sync",
+                            "Initial proxy sync failed",
+                            lambda: runtime.sync_from_db(force=False),
+                        )
         else:
             registered_ok = bootstrap_ok = background_ok = sync_ok = False
             sync_result = None
+        if stop_event is not None and stop_event.is_set():
+            return
         capture_recovery_bundle = getattr(runtime, "capture_recovery_bundle", None)
         if (
             callable(capture_recovery_bundle)
@@ -214,18 +246,24 @@ def start_agent() -> None:
             (
                 "proxy-sync-loop",
                 sync_interval,
-                lambda: _sync_loop(runtime, force=False),
+                lambda: _sync_loop(
+                    runtime,
+                    force=False,
+                    stop_event=stop_event,
+                ),
             ),
         )
         for name, interval, func in loops:
             if name in _started_loop_names:
                 continue
-            threading.Thread(
+            thread = threading.Thread(
                 target=_loop,
-                args=(interval, func),
+                args=(interval, func, stop_event or threading.Event()),
                 name=name,
                 daemon=True,
-            ).start()
+            )
+            thread.start()
+            _loop_threads.append(thread)
             _started_loop_names.add(name)
         _started = True
         _started_loop_names.clear()
@@ -239,8 +277,11 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, request_shutdown)
     signal.signal(signal.SIGINT, request_shutdown)
-    start_agent()
+    start_agent(stop_event=stop_event)
     stop_event.wait()
+    deadline = time.monotonic() + 10.0
+    for thread in tuple(_loop_threads):
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
     runtime = get_runtime()
     if not runtime.stop_background_tasks(timeout=10.0):
         logger.warning(

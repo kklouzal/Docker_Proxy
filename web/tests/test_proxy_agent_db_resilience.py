@@ -561,6 +561,51 @@ def test_proxy_agent_sync_loop_retries_background_tasks_before_sync() -> None:
     assert calls == ["background", "sync:False"]
 
 
+def test_proxy_agent_sync_loop_does_not_restart_background_after_shutdown() -> None:
+    from proxy import agent  # type: ignore
+
+    calls: list[str] = []
+    stop_event = agent.threading.Event()
+
+    class Runtime:
+        recovery_initial_capture_required = True
+
+        def ensure_startup_schema(self) -> None:
+            calls.append("schema")
+
+        def sync_from_db(self, *, force=False):
+            calls.append(f"sync:{force}")
+            stop_event.set()
+            self.recovery_initial_capture_required = False
+            return {"ok": True, "changed": False}
+
+        def start_background_tasks(self) -> None:
+            calls.append("background")
+
+    result = agent._sync_loop(Runtime(), stop_event=stop_event)
+
+    assert result == {"ok": True, "changed": False}
+    assert calls == ["schema", "sync:False"]
+
+
+def test_proxy_agent_loop_shutdown_interrupts_wait_and_prevents_next_iteration() -> (
+    None
+):
+    from proxy import agent  # type: ignore
+
+    stop_event = agent.threading.Event()
+    calls = 0
+
+    def run_once() -> None:
+        nonlocal calls
+        calls += 1
+        stop_event.set()
+
+    agent._loop(3600.0, run_once, stop_event)
+
+    assert calls == 1
+
+
 def test_proxy_agent_logs_database_outages_without_traceback(monkeypatch) -> None:
     import pymysql  # type: ignore
 
