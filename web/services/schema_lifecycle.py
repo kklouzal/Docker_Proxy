@@ -1581,12 +1581,29 @@ def apply_schema_migration(
                         _apply_spec(conn, spec)
                     finally:
                         _MIGRATION_CONTEXT.active = previous_context
-                    results.append(_finish_migration(conn, spec))
-                    conn.commit()
                 except Exception as exc:
-                    _fail_migration(conn, spec, exc)
-                    conn.commit()
+                    try:
+                        conn.rollback()
+                    except Exception as rollback_exc:
+                        exc.add_note(
+                            "Schema migration rollback failed; failure status was not recorded: "
+                            f"{rollback_exc.__class__.__name__}: {rollback_exc}"
+                        )
+                        raise exc from rollback_exc
+                    try:
+                        _fail_migration(conn, spec, exc)
+                        conn.commit()
+                    except Exception as recording_exc:
+                        exc.add_note(
+                            "Schema migration failure status could not be committed: "
+                            f"{recording_exc.__class__.__name__}: {recording_exc}"
+                        )
                     raise
+                result = _finish_migration(conn, spec)
+                # A failed COMMIT has an ambiguous outcome, so it must not be
+                # handled by writing a compensating failed status.
+                conn.commit()
+                results.append(result)
                 return results
 
     return run_mysql_operation_with_retry(_run)

@@ -207,6 +207,133 @@ def test_schema_migration_failure_is_observable_and_retryable() -> None:
     assert attempts == 2
 
 
+def test_schema_migration_rolls_back_data_before_recording_failure() -> None:
+    conn = _Conn()
+
+    class DataStepError(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("data step failed")
+
+    def fn(_conn):
+        raise DataStepError
+
+    with pytest.raises(RuntimeError, match="data step failed"):
+        schema_lifecycle.apply_schema_migration(
+            _spec(fn=fn),
+            connect_factory=lambda: conn,
+            require_privileges=False,
+        )
+
+    rollback_index = conn.ops.index("rollback")
+    failed_update_index = next(
+        index
+        for index, operation in enumerate(conn.ops)
+        if operation.startswith("UPDATE schema_migrations SET status='failed'")
+    )
+    assert rollback_index < failed_update_index
+
+
+def test_schema_migration_rollback_failure_preserves_original_error() -> None:
+    class RollbackError(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("rollback failed")
+
+    class RollbackFailingConnection(_Conn):
+        def rollback(self) -> None:
+            self.ops.append("rollback")
+            raise RollbackError
+
+    conn = RollbackFailingConnection()
+
+    class DataError(ValueError):
+        def __init__(self) -> None:
+            super().__init__("original data failure")
+
+    def fn(_conn):
+        raise DataError
+
+    with pytest.raises(ValueError, match="original data failure") as caught:
+        schema_lifecycle.apply_schema_migration(
+            _spec(fn=fn),
+            connect_factory=lambda: conn,
+            require_privileges=False,
+        )
+
+    assert any("rollback failed" in note for note in caught.value.__notes__)
+    assert not any(
+        operation.startswith("UPDATE schema_migrations SET status='failed'")
+        for operation in conn.ops
+    )
+
+
+def test_schema_migration_failure_recording_commit_preserves_original_error() -> None:
+    class FailureCommitError(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("failure record commit failed")
+
+    class CommitFailingConnection(_Conn):
+        def __init__(self) -> None:
+            super().__init__()
+            self.commit_count = 0
+
+        def commit(self) -> None:
+            self.commit_count += 1
+            self.ops.append("commit")
+            if self.commit_count == 2:
+                raise FailureCommitError
+
+    conn = CommitFailingConnection()
+
+    class DataError(ValueError):
+        def __init__(self) -> None:
+            super().__init__("original data failure")
+
+    def fn(_conn):
+        raise DataError
+
+    with pytest.raises(ValueError, match="original data failure") as caught:
+        schema_lifecycle.apply_schema_migration(
+            _spec(fn=fn),
+            connect_factory=lambda: conn,
+            require_privileges=False,
+        )
+
+    assert any(
+        "failure status could not be committed" in note
+        for note in caught.value.__notes__
+    )
+
+
+def test_schema_migration_ambiguous_finish_commit_does_not_record_failed() -> None:
+    class FinishCommitError(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("ambiguous finish commit")
+
+    class CommitFailingConnection(_Conn):
+        def __init__(self) -> None:
+            super().__init__()
+            self.commit_count = 0
+
+        def commit(self) -> None:
+            self.commit_count += 1
+            self.ops.append("commit")
+            if self.commit_count == 2:
+                raise FinishCommitError
+
+    conn = CommitFailingConnection()
+    with pytest.raises(RuntimeError, match="ambiguous finish commit"):
+        schema_lifecycle.apply_schema_migration(
+            _spec(),
+            connect_factory=lambda: conn,
+            require_privileges=False,
+        )
+
+    assert not any(
+        operation.startswith("UPDATE schema_migrations SET status='failed'")
+        for operation in conn.ops
+    )
+
+
 def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
     all_specs = schema_lifecycle._migration_specs()
     specs = all_specs[:-3]
