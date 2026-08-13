@@ -21,7 +21,7 @@ if APP_ROOT not in sys.path:
 
 import contextlib  # noqa: E402
 
-from services.db import DATABASE_ERRORS, connect, mysql_error_code  # noqa: E402
+from services.db import connect  # noqa: E402
 from services.domain_normalization import normalize_domain as _norm_domain  # noqa: E402
 from services.errors import redact_sensitive_text  # noqa: E402
 from services.helper_runtime import (  # noqa: E402
@@ -42,6 +42,7 @@ from services.proxy_write_guard import (  # noqa: E402
 from services.runtime_helpers import env_float as _env_float  # noqa: E402
 from services.runtime_helpers import env_int as _env_int  # noqa: E402
 from services.runtime_helpers import now_ts as _now  # noqa: E402
+from services.schema_lifecycle import ensure_column, ensure_index  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -715,45 +716,11 @@ class _BlockedLogDb:
 
     @staticmethod
     def _ensure_column(conn, table_name: str, column_name: str, ddl: str) -> None:
-        exists = conn.execute(
-            """
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = DATABASE()
-              AND table_name = %s
-              AND column_name = %s
-            LIMIT 1
-            """,
-            (table_name, column_name),
-        ).fetchone()
-        if exists:
-            return
-        try:
-            conn.execute(ddl)
-        except DATABASE_ERRORS as exc:
-            if mysql_error_code(exc) != 1060:
-                raise
+        ensure_column(conn, table_name=table_name, column_name=column_name, ddl=ddl)
 
     @staticmethod
     def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
-        exists = conn.execute(
-            """
-            SELECT 1
-            FROM information_schema.statistics
-            WHERE table_schema = DATABASE()
-              AND table_name = %s
-              AND index_name = %s
-            LIMIT 1
-            """,
-            (table_name, index_name),
-        ).fetchone()
-        if exists:
-            return
-        try:
-            conn.execute(ddl)
-        except DATABASE_ERRORS as exc:
-            if mysql_error_code(exc) != 1061:
-                raise
+        ensure_index(conn, table_name=table_name, index_name=index_name, ddl=ddl)
 
     def _start_locked(self) -> None:
         if self.max_rows <= 0 or self._writer_started or not self._accepting:

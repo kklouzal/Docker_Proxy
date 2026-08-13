@@ -81,10 +81,19 @@ def test_safe_browsing_cache_expiry_indexes_bootstrap():
     sql = _joined(conn)
     assert "KEY idx_safe_browsing_cache_expiry(expires_ts)" in sql
     assert "KEY idx_safe_browsing_negative_expiry(expires_ts)" in sql
-    assert "ALTER TABLE safe_browsing_hash_prefixes ADD COLUMN generation BIGINT NOT NULL DEFAULT 0" in sql
+    assert (
+        "ALTER TABLE safe_browsing_hash_prefixes ADD COLUMN generation BIGINT NOT NULL DEFAULT 0"
+        in sql
+    )
     assert "idx_safe_browsing_list_generation (list_name, generation)" in sql
-    assert "ALTER TABLE safe_browsing_full_hash_cache ADD INDEX idx_safe_browsing_cache_expiry (expires_ts)" in sql
-    assert "ALTER TABLE safe_browsing_negative_cache ADD INDEX idx_safe_browsing_negative_expiry (expires_ts)" in sql
+    assert (
+        "ALTER TABLE safe_browsing_full_hash_cache ADD INDEX idx_safe_browsing_cache_expiry (expires_ts)"
+        in sql
+    )
+    assert (
+        "ALTER TABLE safe_browsing_negative_cache ADD INDEX idx_safe_browsing_negative_expiry (expires_ts)"
+        in sql
+    )
 
 
 def test_adblock_retention_indexes_bootstrap():
@@ -97,7 +106,9 @@ def test_adblock_retention_indexes_bootstrap():
     assert "KEY idx_adblock_counts_day (day)" in sql
     assert "KEY idx_adblock_events_ts_id (ts, id)" in sql
     assert "ALTER TABLE adblock_counts ADD INDEX idx_adblock_counts_day (day)" in sql
-    assert "ALTER TABLE adblock_events ADD INDEX idx_adblock_events_ts_id (ts, id)" in sql
+    assert (
+        "ALTER TABLE adblock_events ADD INDEX idx_adblock_events_ts_id (ts, id)" in sql
+    )
     for key in (
         "cache_flush_requested",
         "cache_last_flush",
@@ -118,16 +129,43 @@ def test_diagnostic_global_retention_indexes_bootstrap(monkeypatch):
     sql = _joined(conn)
     assert "KEY idx_diagnostic_requests_ts_id (ts, id)" in sql
     assert "KEY idx_diagnostic_icap_ts_id (ts, id)" in sql
-    assert "KEY idx_diagnostic_requests_proxy_tx_ts_id (proxy_id, master_xaction, ts, id)" in sql
-    assert "KEY idx_diagnostic_requests_proxy_domain_ts_id (proxy_id, domain, ts, id)" in sql
-    assert "KEY idx_diagnostic_icap_proxy_domain_service_ts_id (proxy_id, domain, service_family, ts, id)" in sql
-    assert "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_ts_id (ts, id)" in sql
-    assert "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_ts_id (ts, id)" in sql
-    assert "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_tx_ts_id (proxy_id, master_xaction, ts, id)" in sql
-    assert "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_domain_ts_id (proxy_id, domain, ts, id)" in sql
-    assert "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_proxy_domain_service_ts_id (proxy_id, domain, service_family, ts, id)" in sql
+    assert (
+        "KEY idx_diagnostic_requests_proxy_tx_ts_id (proxy_id, master_xaction, ts, id)"
+        in sql
+    )
+    assert (
+        "KEY idx_diagnostic_requests_proxy_domain_ts_id (proxy_id, domain, ts, id)"
+        in sql
+    )
+    assert (
+        "KEY idx_diagnostic_icap_proxy_domain_service_ts_id (proxy_id, domain, service_family, ts, id)"
+        in sql
+    )
+    assert (
+        "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_ts_id (ts, id)"
+        in sql
+    )
+    assert (
+        "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_ts_id (ts, id)"
+        in sql
+    )
+    assert (
+        "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_tx_ts_id (proxy_id, master_xaction, ts, id)"
+        in sql
+    )
+    assert (
+        "ALTER TABLE diagnostic_requests ADD INDEX idx_diagnostic_requests_proxy_domain_ts_id (proxy_id, domain, ts, id)"
+        in sql
+    )
+    assert (
+        "ALTER TABLE diagnostic_icap_events ADD INDEX idx_diagnostic_icap_proxy_domain_service_ts_id (proxy_id, domain, service_family, ts, id)"
+        in sql
+    )
     assert "KEY idx_diagnostic_policy_tags_ts_only(ts, proxy_id, request_id)" in sql
-    assert "ALTER TABLE diagnostic_policy_tags ADD INDEX idx_diagnostic_policy_tags_ts_only (ts, proxy_id, request_id)" in sql
+    assert (
+        "ALTER TABLE diagnostic_policy_tags ADD INDEX idx_diagnostic_policy_tags_ts_only (ts, proxy_id, request_id)"
+        in sql
+    )
 
 
 def test_live_stats_global_last_seen_indexes_bootstrap(monkeypatch):
@@ -141,12 +179,26 @@ def test_live_stats_global_last_seen_indexes_bootstrap(monkeypatch):
     assert "KEY idx_live_stats_domains_last_seen (last_seen, domain)" in sql
     assert "KEY idx_live_stats_clients_last_seen (last_seen, ip)" in sql
     assert "KEY idx_live_stats_client_domains_last_seen (last_seen, ip, domain)" in sql
-    assert "KEY idx_live_stats_client_domain_nocache_last_seen (last_seen, row_key)" in sql
+    assert (
+        "KEY idx_live_stats_client_domain_nocache_last_seen (last_seen, row_key)" in sql
+    )
     assert "CREATE TABLE IF NOT EXISTS live_stats_seed_state" in sql
-    assert "ALTER TABLE live_stats_domains ADD INDEX idx_live_stats_domains_last_seen (last_seen, domain)" in sql
-    assert "ALTER TABLE live_stats_clients ADD INDEX idx_live_stats_clients_last_seen (last_seen, ip)" in sql
-    assert "ALTER TABLE live_stats_client_domains ADD INDEX idx_live_stats_client_domains_last_seen (last_seen, ip, domain)" in sql
-    assert "ALTER TABLE live_stats_client_domain_nocache ADD INDEX idx_live_stats_client_domain_nocache_last_seen (last_seen, row_key)" in sql
+    assert (
+        "ALTER TABLE live_stats_domains ADD INDEX idx_live_stats_domains_last_seen (last_seen, domain)"
+        in sql
+    )
+    assert (
+        "ALTER TABLE live_stats_clients ADD INDEX idx_live_stats_clients_last_seen (last_seen, ip)"
+        in sql
+    )
+    assert (
+        "ALTER TABLE live_stats_client_domains ADD INDEX idx_live_stats_client_domains_last_seen (last_seen, ip, domain)"
+        in sql
+    )
+    assert (
+        "ALTER TABLE live_stats_client_domain_nocache ADD INDEX idx_live_stats_client_domain_nocache_last_seen (last_seen, row_key)"
+        in sql
+    )
 
 
 def test_webfilter_blocked_log_retention_index_bootstrap():
@@ -158,8 +210,14 @@ def test_webfilter_blocked_log_retention_index_bootstrap():
     sql = _joined(conn)
     assert "KEY idx_webfilter_blocked_log_ts_id (ts, id)" in sql
     assert "KEY idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)" in sql
-    assert "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)" in sql
-    assert "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)" in sql
+    assert (
+        "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)"
+        in sql
+    )
+    assert (
+        "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)"
+        in sql
+    )
 
 
 def test_webcat_acl_blocked_log_writer_retention_index_bootstrap():
@@ -180,8 +238,14 @@ def test_webcat_acl_blocked_log_writer_retention_index_bootstrap():
     )
 
     sql = _joined(conn)
-    assert "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)" in sql
-    assert "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)" in sql
+    assert (
+        "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)"
+        in sql
+    )
+    assert (
+        "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)"
+        in sql
+    )
 
 
 def test_control_plane_retention_index_manifest_matches_prune_queries():
@@ -201,8 +265,7 @@ def test_control_plane_retention_index_manifest_matches_prune_queries():
 
     for table, fragment in expected.items():
         ddl = "\n".join(
-            index_ddl
-            for _name, index_ddl in CONTROL_PLANE_RETENTION_INDEXES[table]
+            index_ddl for _name, index_ddl in CONTROL_PLANE_RETENTION_INDEXES[table]
         )
         assert fragment in ddl
     policy_exception_ddl = "\n".join(
@@ -221,7 +284,6 @@ def test_operation_ledger_schema_bootstraps_bounded_progress_indexes(monkeypatch
     conn = _FakeConn()
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr(ledger, "_column_exists", lambda *_args: True)
     monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
 
     ledger.init_db()

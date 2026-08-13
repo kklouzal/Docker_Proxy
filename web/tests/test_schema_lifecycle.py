@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import pymysql
 import pytest
 
 WEB_ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,21 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 from services import schema_lifecycle  # type: ignore  # noqa: E402
+
+
+class _DdlRaceConn:
+    def __init__(self, error: BaseException | None = None) -> None:
+        self.error = error
+        self.executed: list[str] = []
+
+    def execute(self, sql: str, _params=()):
+        text = " ".join(sql.split())
+        if text.startswith("SELECT 1 FROM information_schema"):
+            return _Result()
+        self.executed.append(text)
+        if self.error is not None:
+            raise self.error
+        return _Result()
 
 
 class _Result:
@@ -64,9 +80,13 @@ class _Conn:
         if text.startswith("DROP TABLE schema_privilege_probe_"):
             return _Result()
         if "FROM information_schema.tables" in text:
-            exists = params and params[0] == "schema_migrations" and bool(self.migrations)
+            exists = (
+                params and params[0] == "schema_migrations" and bool(self.migrations)
+            )
             return _Result([{"1": 1}] if exists else [])
-        if text.startswith("SELECT version, name, checksum, status, error FROM schema_migrations"):
+        if text.startswith(
+            "SELECT version, name, checksum, status, error FROM schema_migrations"
+        ):
             row = self.migrations.get(int(params[0]))
             return _Result([row] if row else [])
         if text.startswith("INSERT INTO schema_migrations"):
@@ -128,6 +148,62 @@ def test_runtime_schema_readiness_propagates_probe_failure() -> None:
         schema_lifecycle.runtime_schema_current_applied(FailingProbeConnection())
 
     assert caught.value is probe_error
+
+
+@pytest.mark.parametrize(
+    ("helper", "duplicate_code", "object_name", "ddl"),
+    [
+        (
+            schema_lifecycle.ensure_column,
+            1060,
+            "new_column",
+            "ALTER TABLE sample ADD COLUMN new_column INT",
+        ),
+        (
+            schema_lifecycle.ensure_index,
+            1061,
+            "idx_sample",
+            "ALTER TABLE sample ADD INDEX idx_sample (id)",
+        ),
+    ],
+)
+def test_ensure_schema_object_tolerates_duplicate_ddl_race(
+    helper, duplicate_code, object_name, ddl
+) -> None:
+    conn = _DdlRaceConn(pymysql.OperationalError(duplicate_code, "duplicate"))
+
+    kwargs = {"table_name": "sample", "ddl": ddl}
+    kwargs["column_name" if duplicate_code == 1060 else "index_name"] = object_name
+
+    assert helper(conn, **kwargs) is False
+    assert conn.executed == [ddl]
+
+
+@pytest.mark.parametrize(
+    ("helper", "name_key", "ddl"),
+    [
+        (
+            schema_lifecycle.ensure_column,
+            "column_name",
+            "ALTER TABLE sample ADD COLUMN new_column INT",
+        ),
+        (
+            schema_lifecycle.ensure_index,
+            "index_name",
+            "ALTER TABLE sample ADD INDEX idx_sample (id)",
+        ),
+    ],
+)
+def test_ensure_schema_object_propagates_non_duplicate_ddl_error(
+    helper, name_key, ddl
+) -> None:
+    error = pymysql.OperationalError(1142, "ALTER denied")
+    conn = _DdlRaceConn(error)
+
+    with pytest.raises(pymysql.OperationalError) as caught:
+        helper(conn, table_name="sample", ddl=ddl, **{name_key: "object_name"})
+
+    assert caught.value is error
 
 
 def test_schema_migration_records_applied_and_skips_already_applied() -> None:
@@ -372,7 +448,10 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
     manual_spec = all_specs[-2]
     assert manual_spec.version == 26
     assert manual_spec.name == "observability_manual_export_preset_contract"
-    assert manual_spec.data_steps[0].name == "canonicalize_observability_manual_export_presets"
+    assert (
+        manual_spec.data_steps[0].name
+        == "canonicalize_observability_manual_export_presets"
+    )
     assert specs[-9].version == 16
     assert specs[-9].name == "control_plane_identity"
     assert specs[-8].version == 17
@@ -396,7 +475,10 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
     assert "control_plane_id CHAR(36) NOT NULL" in specs[-9].tables[0].create_sql
     assert specs[-8].tables[0].table == "proxy_recovery_adoptions"
     assert "proxy_id VARCHAR(64) NOT NULL" in specs[-8].tables[0].create_sql
-    assert "PRIMARY KEY(proxy_id, target_control_plane_id)" in specs[-8].tables[0].create_sql
+    assert (
+        "PRIMARY KEY(proxy_id, target_control_plane_id)"
+        in specs[-8].tables[0].create_sql
+    )
     assert specs[-7].columns[0].table == "policy_exceptions"
     assert specs[-7].columns[0].name == "method"
     assert specs[-6].columns[0].table == "proxy_operations"
@@ -408,7 +490,9 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "uniq_proxy_operations_active_request",
     ]
     assert specs[-6].indexes[-1].unique is True
-    assert specs[-6].data_steps[0].name == "operation_ledger_active_request_key_backfill"
+    assert (
+        specs[-6].data_steps[0].name == "operation_ledger_active_request_key_backfill"
+    )
     assert specs[-5].columns[0].table == "webfilter_blocked_log"
     assert specs[-5].columns[0].name == "proxy_id"
     assert [index.name for index in specs[-5].indexes] == [
@@ -427,11 +511,23 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         ("proxy_adblock_artifact_applications", "artifact_sha256"),
     ]
     assert [(index.table, index.name) for index in specs[-2].indexes] == [
-        ("proxy_config_applications", "idx_proxy_config_applications_proxy_revision_ts"),
-        ("proxy_certificate_applications", "idx_proxy_certificate_applications_proxy_revision_ts"),
-        ("proxy_adblock_artifact_applications", "idx_proxy_adblock_artifact_apply_proxy_revision_ts"),
+        (
+            "proxy_config_applications",
+            "idx_proxy_config_applications_proxy_revision_ts",
+        ),
+        (
+            "proxy_certificate_applications",
+            "idx_proxy_certificate_applications_proxy_revision_ts",
+        ),
+        (
+            "proxy_adblock_artifact_applications",
+            "idx_proxy_adblock_artifact_apply_proxy_revision_ts",
+        ),
     ]
-    assert specs[-2].data_steps[0].name == "application_ledger_evidence_completion_backfill"
+    assert (
+        specs[-2].data_steps[0].name
+        == "application_ledger_evidence_completion_backfill"
+    )
     assert specs[-1].tables[0].table == "live_stats_seed_state"
     assert [(column.table, column.name) for column in all_specs[-3].columns] == [
         ("diagnostic_icap_events", "icap_service"),
@@ -460,16 +556,26 @@ class _ApplicationLedgerEvidenceBackfillConn:
         params = tuple(params or ())
         self.ops.append(text)
         if "FROM information_schema.columns" in text:
-            return _Result([{"1": 1}] if (str(params[0]), str(params[1])) in self.columns else [])
+            return _Result(
+                [{"1": 1}] if (str(params[0]), str(params[1])) in self.columns else []
+            )
         if text.startswith("ALTER TABLE") and "ADD COLUMN" in text:
-            if text.startswith("ALTER TABLE proxy_config_applications ADD COLUMN config_sha256"):
+            if text.startswith(
+                "ALTER TABLE proxy_config_applications ADD COLUMN config_sha256"
+            ):
                 self.columns.add(("proxy_config_applications", "config_sha256"))
                 return _Result()
-            if text.startswith("ALTER TABLE proxy_certificate_applications ADD COLUMN bundle_sha256"):
+            if text.startswith(
+                "ALTER TABLE proxy_certificate_applications ADD COLUMN bundle_sha256"
+            ):
                 self.columns.add(("proxy_certificate_applications", "bundle_sha256"))
                 return _Result()
-            if text.startswith("ALTER TABLE proxy_adblock_artifact_applications ADD COLUMN artifact_sha256"):
-                self.columns.add(("proxy_adblock_artifact_applications", "artifact_sha256"))
+            if text.startswith(
+                "ALTER TABLE proxy_adblock_artifact_applications ADD COLUMN artifact_sha256"
+            ):
+                self.columns.add(
+                    ("proxy_adblock_artifact_applications", "artifact_sha256")
+                )
                 return _Result()
         if text.startswith("UPDATE proxy_config_applications app"):
             return _Result(rowcount=1)
@@ -481,7 +587,9 @@ class _ApplicationLedgerEvidenceBackfillConn:
         raise AssertionError(msg)
 
 
-def test_application_ledger_evidence_backfill_repairs_all_missing_evidence_columns() -> None:
+def test_application_ledger_evidence_backfill_repairs_all_missing_evidence_columns() -> (
+    None
+):
     conn = _ApplicationLedgerEvidenceBackfillConn()
 
     schema_lifecycle._backfill_application_ledger_evidence(conn)
@@ -492,16 +600,25 @@ def test_application_ledger_evidence_backfill_repairs_all_missing_evidence_colum
         ("proxy_adblock_artifact_applications", "artifact_sha256"),
     }
     assert any(
-        op.startswith("ALTER TABLE proxy_certificate_applications ADD COLUMN bundle_sha256")
+        op.startswith(
+            "ALTER TABLE proxy_certificate_applications ADD COLUMN bundle_sha256"
+        )
         for op in conn.ops
     )
     assert any(
-        op.startswith("ALTER TABLE proxy_adblock_artifact_applications ADD COLUMN artifact_sha256")
+        op.startswith(
+            "ALTER TABLE proxy_adblock_artifact_applications ADD COLUMN artifact_sha256"
+        )
         for op in conn.ops
     )
     assert any(op.startswith("UPDATE proxy_config_applications app") for op in conn.ops)
-    assert any(op.startswith("UPDATE proxy_certificate_applications app") for op in conn.ops)
-    assert any(op.startswith("UPDATE proxy_adblock_artifact_applications app") for op in conn.ops)
+    assert any(
+        op.startswith("UPDATE proxy_certificate_applications app") for op in conn.ops
+    )
+    assert any(
+        op.startswith("UPDATE proxy_adblock_artifact_applications app")
+        for op in conn.ops
+    )
 
 
 class _IdentityConn:
@@ -533,13 +650,19 @@ def test_control_plane_identity_is_stable_idempotent_and_concurrency_safe() -> N
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         identities = list(
-            executor.map(lambda _i: schema_lifecycle.ensure_control_plane_identity(conn), range(24)),
+            executor.map(
+                lambda _i: schema_lifecycle.ensure_control_plane_identity(conn),
+                range(24),
+            ),
         )
 
     assert len(set(identities)) == 1
     assert schema_lifecycle.read_control_plane_identity(conn) == identities[0]
     assert schema_lifecycle.ensure_control_plane_identity(conn) == identities[0]
-    assert schema_lifecycle.normalize_control_plane_identity(identities[0].upper()) == identities[0]
+    assert (
+        schema_lifecycle.normalize_control_plane_identity(identities[0].upper())
+        == identities[0]
+    )
     assert len(conn.insert_candidates) == 25
     assert identities[0] in conn.insert_candidates
 
@@ -562,7 +685,9 @@ class _CurrentSchemaConn:
     def execute(self, sql: str, params=()):
         text = " ".join(str(sql).split())
         self.ops.append(text)
-        if text.startswith("SELECT version, name, checksum, status, error FROM schema_migrations"):
+        if text.startswith(
+            "SELECT version, name, checksum, status, error FROM schema_migrations"
+        ):
             return _Result(
                 [
                     {
@@ -626,7 +751,9 @@ class _FreshLazySchemaConn:
     def execute(self, sql: str, params=()):
         text = " ".join(str(sql).split())
         self.ops.append(text)
-        if text.startswith("SELECT version, name, checksum, status, error FROM schema_migrations"):
+        if text.startswith(
+            "SELECT version, name, checksum, status, error FROM schema_migrations"
+        ):
             return _Result()
         if text.startswith("CREATE TABLE IF NOT EXISTS "):
             columns = _column_names_from_create_table(text)
@@ -658,7 +785,9 @@ def test_sslfilter_lazy_fresh_schema_has_unique_columns(monkeypatch) -> None:
     ]
 
 
-def test_lazy_store_init_db_skips_hot_path_ddl_when_schema_current(tmp_path, monkeypatch) -> None:
+def test_lazy_store_init_db_skips_hot_path_ddl_when_schema_current(
+    tmp_path, monkeypatch
+) -> None:
     from services.adblock_artifacts import AdblockArtifactStore
     from services.adblock_store import AdblockStore
     from services.audit_store import AuditStore

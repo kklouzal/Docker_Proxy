@@ -20,7 +20,6 @@ from services.db import (
     DATABASE_ERRORS,
     connect,
     mysql_advisory_lock,
-    mysql_error_code,
     mysql_schema_lock_timeout_seconds,
 )
 from services.domain_normalization import normalize_domain as _norm_domain
@@ -28,6 +27,7 @@ from services.errors import public_error_message
 from services.logutil import log_database_unavailable
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
+from services.schema_lifecycle import ensure_column, ensure_index
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -104,9 +104,7 @@ def _decode_b64(text: object, *, field: str) -> bytes:
         msg = f"Google Safe Browsing {field} must use one base64 alphabet"
         raise ValueError(msg)
     expected_padding = (-len(data)) % 4
-    if expected_padding == 3 or (
-        padding_length and padding_length != expected_padding
-    ):
+    if expected_padding == 3 or (padding_length and padding_length != expected_padding):
         msg = f"Google Safe Browsing {field} must be correctly padded base64"
         raise ValueError(msg)
     try:
@@ -677,45 +675,11 @@ class SafeBrowsingStore:
 
     @staticmethod
     def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
-        exists = conn.execute(
-            """
-            SELECT 1
-            FROM information_schema.statistics
-            WHERE table_schema = DATABASE()
-              AND table_name = %s
-              AND index_name = %s
-            LIMIT 1
-            """,
-            (table_name, index_name),
-        ).fetchone()
-        if exists:
-            return
-        try:
-            conn.execute(ddl)
-        except DATABASE_ERRORS as exc:
-            if mysql_error_code(exc) != 1061:
-                raise
+        ensure_index(conn, table_name=table_name, index_name=index_name, ddl=ddl)
 
     @staticmethod
     def _ensure_column(conn, table_name: str, column_name: str, ddl: str) -> None:
-        exists = conn.execute(
-            """
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = DATABASE()
-              AND table_name = %s
-              AND column_name = %s
-            LIMIT 1
-            """,
-            (table_name, column_name),
-        ).fetchone()
-        if exists:
-            return
-        try:
-            conn.execute(ddl)
-        except DATABASE_ERRORS as exc:
-            if mysql_error_code(exc) != 1060:
-                raise
+        ensure_column(conn, table_name=table_name, column_name=column_name, ddl=ddl)
 
     @staticmethod
     def selected_lists(values: Sequence[str] | str | None) -> tuple[str, ...]:
@@ -807,7 +771,9 @@ class SafeBrowsingStore:
                         if isinstance(version, bytes):
                             version = _urlsafe_b64(version)
                         versions[name] = str(version)
-            params: list[tuple[str, str]] = [("names", name) for name in requested_names]
+            params: list[tuple[str, str]] = [
+                ("names", name) for name in requested_names
+            ]
             params.extend(("version", version) for version in versions.values())
             response = self._request_json(
                 "/hashLists:batchGet",
@@ -1071,7 +1037,9 @@ class SafeBrowsingStore:
             raise ValueError(msg)
         items = response.get("fullHashes", [])
         if not isinstance(items, list):
-            msg = "Google Safe Browsing hash search response fullHashes must be an array"
+            msg = (
+                "Google Safe Browsing hash search response fullHashes must be an array"
+            )
             raise ValueError(msg)
 
         details_by_hash: dict[bytes, list[dict[str, object]]] = {}
@@ -1086,7 +1054,9 @@ class SafeBrowsingStore:
                 raise ValueError(msg)
             details = item.get("fullHashDetails", [])
             if not isinstance(details, list):
-                msg = "Google Safe Browsing hash search fullHashDetails must be an array"
+                msg = (
+                    "Google Safe Browsing hash search fullHashDetails must be an array"
+                )
                 raise ValueError(msg)
             normalized_details: list[dict[str, object]] = []
             for detail in details:
@@ -1146,7 +1116,9 @@ class SafeBrowsingStore:
             thread.start()
             self._started = True
 
-    def _persist_updater_status(self, set_status, status: tuple[bool, str, int]) -> None:
+    def _persist_updater_status(
+        self, set_status, status: tuple[bool, str, int]
+    ) -> None:
         self._pending_status = status
         set_status(*status)
         self._pending_status = None
@@ -1565,7 +1537,9 @@ class SafeBrowsingLocalChecker:
                     )
                 else:
                     try:
-                        response, duration = self._store.search_hashes(api_key, [prefix])
+                        response, duration = self._store.search_hashes(
+                            api_key, [prefix]
+                        )
                     except Exception:
                         self.close()
                         cache_final_verdict = False

@@ -9,16 +9,18 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.db import (
-    DATABASE_ERRORS,
     connect,
     mysql_advisory_lock,
-    mysql_error_code,
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
 )
 from services.errors import redact_sensitive_text
 from services.proxy_context import normalize_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
+from services.schema_lifecycle import (
+    ensure_column,
+    ensure_index,
+)
 
 OPERATION_STATUSES = ("pending", "applying", "applied", "superseded", "failed")
 TERMINAL_STATUSES = {"applied", "superseded", "failed"}
@@ -156,36 +158,11 @@ class OperationLedger:
     def _connect(self):
         return connect()
 
-    def _column_exists(self, conn, table_name: str, column_name: str) -> bool:
-        row = conn.execute(
-            """
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = DATABASE() AND table_name = %s AND column_name = %s
-            LIMIT 1
-            """,
-            (table_name, column_name),
-        ).fetchone()
-        return row is not None
-
-    def _index_exists(self, conn, table_name: str, index_name: str) -> bool:
-        row = conn.execute(
-            """
-            SELECT 1 FROM information_schema.statistics
-            WHERE table_schema = DATABASE() AND table_name = %s AND index_name = %s
-            LIMIT 1
-            """,
-            (table_name, index_name),
-        ).fetchone()
-        return row is not None
-
     def _ensure_index(self, conn, table_name: str, index_name: str, ddl: str) -> None:
-        if self._index_exists(conn, table_name, index_name):
-            return
-        try:
-            conn.execute(ddl)
-        except DATABASE_ERRORS as exc:
-            if mysql_error_code(exc) != 1061:
-                raise
+        ensure_index(conn, table_name=table_name, index_name=index_name, ddl=ddl)
+
+    def _ensure_column(self, conn, table_name: str, column_name: str, ddl: str) -> None:
+        ensure_column(conn, table_name=table_name, column_name=column_name, ddl=ddl)
 
     def _request_key(
         self,
@@ -394,26 +371,25 @@ class OperationLedger:
             )
             """,
         )
-        if not self._column_exists(conn, "proxy_operations", "request_key"):
-            conn.execute(
+        for column_name, ddl in (
+            (
+                "request_key",
                 "ALTER TABLE proxy_operations ADD COLUMN request_key CHAR(64) NULL DEFAULT NULL AFTER request_hash",
-            )
-        if not self._column_exists(conn, "proxy_operations", "claim_token"):
-            conn.execute(
+            ),
+            (
+                "claim_token",
                 "ALTER TABLE proxy_operations ADD COLUMN claim_token CHAR(32) NULL DEFAULT NULL AFTER request_key",
-            )
-        if not self._column_exists(
-            conn,
-            "proxy_operations",
-            "stale_requeue_count",
-        ):
-            conn.execute(
+            ),
+            (
+                "stale_requeue_count",
                 "ALTER TABLE proxy_operations ADD COLUMN stale_requeue_count INT NOT NULL DEFAULT 0 AFTER updated_ts",
-            )
-        if not self._column_exists(conn, "proxy_operations", "force_sync"):
-            conn.execute(
+            ),
+            (
+                "force_sync",
                 "ALTER TABLE proxy_operations ADD COLUMN force_sync TINYINT(1) NOT NULL DEFAULT 0 AFTER stale_requeue_count",
-            )
+            ),
+        ):
+            self._ensure_column(conn, "proxy_operations", column_name, ddl)
         self._backfill_active_request_keys(conn)
         for index_name, ddl in (
             (
@@ -430,14 +406,12 @@ class OperationLedger:
             ),
         ):
             self._ensure_index(conn, "proxy_operations", index_name, ddl)
-        if not self._index_exists(
+        self._ensure_index(
             conn,
             "proxy_operations",
             "uniq_proxy_operations_active_request",
-        ):
-            conn.execute(
-                "ALTER TABLE proxy_operations ADD UNIQUE KEY uniq_proxy_operations_active_request (proxy_id, request_key)",
-            )
+            "ALTER TABLE proxy_operations ADD UNIQUE KEY uniq_proxy_operations_active_request (proxy_id, request_key)",
+        )
         self._prune_all_history(conn)
 
     def _schema_current_on_connection(self, conn) -> bool:

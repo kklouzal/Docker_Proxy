@@ -180,9 +180,7 @@ class _RetentionConnection:
         if compact.startswith("SELECT candidate.id AS victim_id"):
             proxy_id, protected_id, limit = params
             proxy_rows = [
-                row
-                for row in self.rows.values()
-                if row["proxy_id"] == proxy_id
+                row for row in self.rows.values() if row["proxy_id"] == proxy_id
             ]
             active_count = sum(
                 row["status"] in {"pending", "applying"} for row in proxy_rows
@@ -349,7 +347,9 @@ def test_create_prunes_in_transaction_after_idempotent_upsert(monkeypatch) -> No
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr(ledger, "_prune_proxy_history", lambda _conn, proxy, **_kwargs: 0)
+    monkeypatch.setattr(
+        ledger, "_prune_proxy_history", lambda _conn, proxy, **_kwargs: 0
+    )
     monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
 
     operation = ledger.create_operation(
@@ -511,8 +511,6 @@ def test_init_db_backfills_active_request_keys_before_unique_index(monkeypatch) 
     conn = _Connection()
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr(ledger, "_column_exists", lambda *_args: True)
-    monkeypatch.setattr(ledger, "_index_exists", lambda *_args: False)
     monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
 
     ledger.init_db()
@@ -575,20 +573,6 @@ def test_init_db_trusts_current_runtime_schema_without_requirement_probes(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     monkeypatch.setattr(
-        ledger,
-        "_column_exists",
-        lambda *_args: pytest.fail(
-            "current schema must not trigger hot-path column probes"
-        ),
-    )
-    monkeypatch.setattr(
-        ledger,
-        "_index_exists",
-        lambda *_args: pytest.fail(
-            "current schema must not trigger hot-path index probes"
-        ),
-    )
-    monkeypatch.setattr(
         "services.schema_lifecycle.runtime_schema_ready_for_lazy_store",
         lambda _conn: True,
     )
@@ -606,12 +590,6 @@ def test_init_db_repairs_missing_operation_requirements_when_schema_unknown(
     conn = _Connection()
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr(
-        ledger,
-        "_column_exists",
-        lambda _conn, _table, column: column != "stale_requeue_count",
-    )
-    monkeypatch.setattr(ledger, "_index_exists", lambda *_args: True)
     monkeypatch.setattr(
         "services.schema_lifecycle.runtime_schema_ready_for_lazy_store",
         lambda _conn: False,
