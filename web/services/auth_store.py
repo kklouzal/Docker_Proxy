@@ -21,6 +21,22 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_SECRET_PATH = "/var/lib/squid-flask-proxy/flask_secret.key"
+LOCAL_PASSWORD_MIN_LENGTH = 12
+LOCAL_PASSWORD_MAX_LENGTH = 1024
+
+
+def _validate_local_password(password: str | None) -> str:
+    password = password or ""
+    if not password:
+        msg = "Password is required."
+        raise ValueError(msg)
+    if len(password) < LOCAL_PASSWORD_MIN_LENGTH:
+        msg = "Password must be between 12 and 1024 characters."
+        raise ValueError(msg)
+    if len(password) > LOCAL_PASSWORD_MAX_LENGTH:
+        msg = "Password must be between 12 and 1024 characters."
+        raise ValueError(msg)
+    return password
 
 
 @dataclass(frozen=True)
@@ -78,13 +94,7 @@ class AuthStore:
         the empty-store check and insert atomic across concurrent web workers.
         """
         self.ensure_schema()
-        password = password or ""
-        if len(password) < 12:
-            msg = "Bootstrap password must be at least 12 characters."
-            raise ValueError(msg)
-        if len(password) > 1024:
-            msg = "Bootstrap password is too long."
-            raise ValueError(msg)
+        password = _validate_local_password(password)
         with (
             self._connect() as conn,
             mysql_advisory_lock(
@@ -287,12 +297,7 @@ class AuthStore:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", u):
             msg = "Username may only include letters, numbers, underscore, dash, dot."
             raise ValueError(msg)
-        if password is None or password == "":
-            msg = "Password is required."
-            raise ValueError(msg)
-        if len(password) < 4:
-            msg = "Password must be at least 4 characters."
-            raise ValueError(msg)
+        password = _validate_local_password(password)
 
         now = int(time.time())
         pw_hash = generate_password_hash(password)
@@ -312,12 +317,7 @@ class AuthStore:
         if not u:
             msg = "Username is required."
             raise ValueError(msg)
-        if new_password is None or new_password == "":
-            msg = "Password is required."
-            raise ValueError(msg)
-        if len(new_password) < 4:
-            msg = "Password must be at least 4 characters."
-            raise ValueError(msg)
+        new_password = _validate_local_password(new_password)
 
         now = int(time.time())
         pw_hash = generate_password_hash(new_password)

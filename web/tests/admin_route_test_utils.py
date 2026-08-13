@@ -43,6 +43,9 @@ class FakeAuthStore:
         if not password:
             msg = "Password is required."
             raise ValueError(msg)
+        if not 12 <= len(password) <= 1024:
+            msg = "Password must be between 12 and 1024 characters."
+            raise ValueError(msg)
         if username in self.passwords:
             msg = "User already exists."
             raise ValueError(msg)
@@ -56,6 +59,9 @@ class FakeAuthStore:
             raise ValueError(msg)
         if not new_password:
             msg = "Password is required."
+            raise ValueError(msg)
+        if not 12 <= len(new_password) <= 1024:
+            msg = "Password must be between 12 and 1024 characters."
             raise ValueError(msg)
         self.passwords[username] = new_password
         self.password_changes.append((username, new_password))

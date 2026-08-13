@@ -212,6 +212,34 @@ def test_administration_user_post_is_audited_without_password(
     assert "secret-password" not in record["detail"]
 
 
+def test_administration_local_password_policy_is_operator_clear(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    body = client.get("/administration?tab=status").get_data(as_text=True)
+    assert "Local passwords must be 12-1024 characters." in body
+    assert 'name="password" type="password" minlength="12" maxlength="1024"' in body
+    assert 'name="new_password" type="password" minlength="12" maxlength="1024"' in body
+
+    token = csrf_token(client, "/administration")
+    response = client.post(
+        "/administration",
+        data={
+            "csrf_token": token,
+            "action": "add_user",
+            "username": "operator",
+            "password": "short",
+        },
+        follow_redirects=True,
+    )
+    assert "Password must be between 12 and 1024 characters." in response.get_data(
+        as_text=True
+    )
+
+
 def test_directory_secret_provider_prefers_flask_secret_key(
     monkeypatch, tmp_path
 ) -> None:
@@ -333,8 +361,14 @@ def test_auth_provider_actions_submit_directory_form_payload(
     ad_body = client.get("/administration?tab=active_directory").get_data(as_text=True)
 
     assert 'id="ldap-auth-provider-form"' in ldap_body
-    assert 'form="ldap-auth-provider-form" name="action" value="test_auth_provider"' in ldap_body
-    assert 'form="ldap-auth-provider-form" name="action" value="scan_auth_provider"' in ldap_body
+    assert (
+        'form="ldap-auth-provider-form" name="action" value="test_auth_provider"'
+        in ldap_body
+    )
+    assert (
+        'form="ldap-auth-provider-form" name="action" value="scan_auth_provider"'
+        in ldap_body
+    )
     assert 'id="active_directory-auth-provider-form"' in ad_body
     assert (
         'form="active_directory-auth-provider-form" name="action" '

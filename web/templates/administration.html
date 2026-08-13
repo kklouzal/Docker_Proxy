@@ -122,7 +122,7 @@
         <span class="badge">always available</span>
     </div>
     <div class="card-body">
-        <div class="surface-note small">Keep at least one local admin account so directory outages cannot lock operators out of the control plane.</div>
+        <div class="surface-note small">Keep at least one local admin account so directory outages cannot lock operators out of the control plane. Local passwords must be 12-1024 characters.</div>
         <div class="table-wrap">
             <table class="table">
                 <thead>
@@ -146,7 +146,7 @@
                                     <input type="hidden" name="action" value="set_password">
                                     <input type="hidden" name="username" value="{{ u.username }}">
                                     <label class="sr-only" for="new-password-{{ loop.index }}">New password for {{ u.username }}</label>
-                                    <input id="new-password-{{ loop.index }}" class="inline-input" name="new_password" type="password" placeholder="New password" aria-label="New password for {{ u.username }}">
+                                    <input id="new-password-{{ loop.index }}" class="inline-input" name="new_password" type="password" minlength="12" maxlength="1024" required placeholder="New password" aria-label="New password for {{ u.username }}">
                                     <button class="btn" type="submit" aria-label="Change password for {{ u.username }}">Change</button>
                                 </form>
                                 <form action="{{ url_for('administration', tab='status') }}" method="post">
@@ -183,7 +183,7 @@
             </div>
             <div>
                 <label for="password">Password</label>
-                <input id="password" name="password" type="password" required>
+                <input id="password" name="password" type="password" minlength="12" maxlength="1024" required>
             </div>
             <div class="actions">
                 <button class="btn primary" type="submit">Add</button>

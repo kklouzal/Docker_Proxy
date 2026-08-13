@@ -295,29 +295,33 @@ def test_auth_store_username_and_password_validation(tmp_path) -> None:
 
     for username in ("", "has space", "bad@name", "x" * 65):
         with pytest.raises(ValueError):
-            store.add_user(username, "pass")
+            store.add_user(username, "valid-password")
 
-    for password in ("", "123"):
-        with pytest.raises(ValueError):
+    for password in ("", "123", "x" * 1025):
+        with pytest.raises(ValueError, match=r"required|between 12 and 1024"):
             store.add_user("ok", password)
 
-    store.add_user("user_1", "1234")
-    assert store.verify_user("user_1", "1234") is True
+    store.add_user("user_1", "123456789012")
+    assert store.verify_user("user_1", "123456789012") is True
     assert store.verify_user("user_1", "nope") is False
 
     with pytest.raises(ValueError, match="already exists"):
-        store.add_user("user_1", "abcd")
+        store.add_user("user_1", "another-valid-password")
 
     with pytest.raises(ValueError, match="not found"):
-        store.set_password("missing", "abcd")
+        store.set_password("missing", "another-valid-password")
+
+    for password in ("", "short", "x" * 1025):
+        with pytest.raises(ValueError, match=r"required|between 12 and 1024"):
+            store.set_password("user_1", password)
 
     with pytest.raises(ValueError, match="not found"):
         store.delete_user("missing")
 
-    store.set_password("user_1", "abcd")
-    assert store.verify_user("user_1", "abcd") is True
+    store.set_password("user_1", "updated-password")
+    assert store.verify_user("user_1", "updated-password") is True
     store.delete_user("user_1")
-    assert store.verify_user("user_1", "abcd") is False
+    assert store.verify_user("user_1", "updated-password") is False
 
 
 def test_explicit_bootstrap_creates_only_first_user(tmp_path) -> None:
@@ -334,8 +338,8 @@ def test_explicit_bootstrap_rejects_unbounded_passwords(tmp_path) -> None:
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "secret.key")
     store = _auth_store_module().AuthStore(secret_path=str(tmp_path / "secret.key"))
 
-    with pytest.raises(ValueError, match="at least 12"):
+    with pytest.raises(ValueError, match="between 12 and 1024"):
         store.bootstrap_admin("admin", "too-short")
-    with pytest.raises(ValueError, match="too long"):
+    with pytest.raises(ValueError, match="between 12 and 1024"):
         store.bootstrap_admin("admin", "x" * 1025)
     assert store.any_users() is False
