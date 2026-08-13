@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from services import (  # type: ignore
     adblock_artifacts,
     safe_browsing_v5,
@@ -182,6 +184,169 @@ def test_webfilter_background_retries_failed_webfilter_thread_start(
     assert store._started is True
     assert webfilter_attempts == [True, True]
     assert safe_browsing_starts == [True]
+
+
+def test_webfilter_background_stop_is_bounded_idempotent_and_restartable(
+    monkeypatch,
+) -> None:
+    store = webfilter_store.WebFilterStore()
+    iterations = 0
+    iteration_seen = threading.Event()
+    safe_browsing_stops: list[float] = []
+
+    def run_until_stopped() -> None:
+        nonlocal iterations
+        iterations += 1
+        iteration_seen.set()
+        store._stop_event.wait(60.0)
+
+    monkeypatch.setattr(store, "_loop", run_until_stopped)
+    monkeypatch.setattr(
+        store._safe_browsing_store,
+        "start_background",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        store._safe_browsing_store,
+        "stop_background",
+        lambda *, timeout: safe_browsing_stops.append(timeout) or True,
+    )
+    monkeypatch.setattr(webfilter_store.atexit, "register", lambda _func: None)
+
+    store.start_background()
+    assert iteration_seen.wait(1.0)
+    assert store.stop_background(timeout=1.0) is True
+    assert store.stop_background(timeout=1.0) is True
+
+    iteration_seen.clear()
+    store.start_background()
+    assert iteration_seen.wait(1.0)
+    assert store.stop_background(timeout=1.0) is True
+
+    assert iterations == 2
+    assert len(safe_browsing_stops) == 3
+    assert store._started is False
+    assert store._thread is None
+
+
+def test_safe_browsing_background_stop_interrupts_poll_and_allows_restart(
+    monkeypatch,
+) -> None:
+    store = safe_browsing_v5.SafeBrowsingStore()
+    iterations = 0
+    iteration_seen = threading.Event()
+
+    def run_once(_get_settings, _set_status) -> None:
+        nonlocal iterations
+        iterations += 1
+        iteration_seen.set()
+
+    monkeypatch.setenv("SAFE_BROWSING_POLL_SECONDS", "3600")
+    monkeypatch.setattr(store, "_run_updater_once", run_once)
+
+    store.start_background(lambda: None, lambda *_args: None)
+    assert iteration_seen.wait(1.0)
+    assert store.stop_background(timeout=1.0) is True
+
+    iteration_seen.clear()
+    store.start_background(lambda: None, lambda *_args: None)
+    assert iteration_seen.wait(1.0)
+    assert store.stop_background(timeout=1.0) is True
+
+    assert iterations == 2
+    assert store._started is False
+    assert store._thread is None
+
+
+def test_safe_browsing_stop_cannot_pass_start_before_thread_is_owned(
+    monkeypatch,
+) -> None:
+    store = safe_browsing_v5.SafeBrowsingStore()
+    real_thread = threading.Thread
+    start_entered = threading.Event()
+    release_start = threading.Event()
+    stop_finished = threading.Event()
+
+    class BlockingStartThread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            start_entered.set()
+            assert release_start.wait(1.0)
+
+        def join(self, _timeout: float) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+    monkeypatch.setattr(safe_browsing_v5.threading, "Thread", BlockingStartThread)
+
+    starter = real_thread(
+        target=store.start_background, args=(lambda: None, lambda *_args: None)
+    )
+    starter.start()
+    assert start_entered.wait(1.0)
+    stopper = real_thread(
+        target=lambda: (store.stop_background(timeout=1.0), stop_finished.set())
+    )
+    stopper.start()
+    assert not stop_finished.wait(0.05)
+    release_start.set()
+    starter.join(1.0)
+    stopper.join(1.0)
+
+    assert stop_finished.is_set()
+    assert store._started is False
+    assert store._thread is None
+
+
+def test_webfilter_stop_cannot_pass_start_before_thread_is_owned(monkeypatch) -> None:
+    store = webfilter_store.WebFilterStore()
+    real_thread = threading.Thread
+    start_entered = threading.Event()
+    release_start = threading.Event()
+    stop_finished = threading.Event()
+
+    class BlockingStartThread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            start_entered.set()
+            assert release_start.wait(1.0)
+
+        def join(self, _timeout: float) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+    monkeypatch.setattr(webfilter_store.threading, "Thread", BlockingStartThread)
+    monkeypatch.setattr(
+        store._safe_browsing_store, "start_background", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        store._safe_browsing_store, "stop_background", lambda *, timeout: True
+    )
+    monkeypatch.setattr(webfilter_store.atexit, "register", lambda _func: None)
+
+    starter = real_thread(target=store.start_background)
+    starter.start()
+    assert start_entered.wait(1.0)
+    stopper = real_thread(
+        target=lambda: (store.stop_background(timeout=1.0), stop_finished.set())
+    )
+    stopper.start()
+    assert not stop_finished.wait(0.05)
+    release_start.set()
+    starter.join(1.0)
+    stopper.join(1.0)
+
+    assert stop_finished.is_set()
+    assert store._started is False
+    assert store._thread is None
 
 
 def test_safe_browsing_background_start_defers_database_init(monkeypatch) -> None:

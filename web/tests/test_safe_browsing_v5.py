@@ -69,7 +69,9 @@ def test_safe_browsing_canonicalization_normalizes_controls_path_ip_and_idn() ->
     assert canonicalize_url("http://☃.example/%2525") == "http://xn--n3h.example/%25"
 
 
-def test_safe_browsing_canonicalization_preserves_encoded_fragment_marker_in_path() -> None:
+def test_safe_browsing_canonicalization_preserves_encoded_fragment_marker_in_path() -> (
+    None
+):
     assert canonicalize_url("http://host.com/ab%23cd") == "http://host.com/ab%23cd"
     assert url_expressions("http://host.com/ab%23cd") == [
         "host.com/ab%23cd",
@@ -651,9 +653,7 @@ def test_safe_browsing_search_hashes_normalizes_known_fields_and_base64(
 
     assert full_hashes == [
         {
-            "fullHash": base64.urlsafe_b64encode(target)
-            .decode("ascii")
-            .rstrip("="),
+            "fullHash": base64.urlsafe_b64encode(target).decode("ascii").rstrip("="),
             "fullHashDetails": [
                 {
                     "threatType": "FUTURE_THREAT_TYPE",
@@ -706,7 +706,9 @@ def test_safe_browsing_checker_fails_open_for_malformed_hash_search_response(
     checker = SafeBrowsingLocalChecker(api_key="test", selected_lists=("mw-4b",))
     target = b"abcd" + b"a" * 28
     monkeypatch.setattr(safe_browsing_v5, "expression_hashes", lambda _url: [target])
-    monkeypatch.setattr(checker, "_synchronize_local_cache_versions", lambda _lists: None)
+    monkeypatch.setattr(
+        checker, "_synchronize_local_cache_versions", lambda _lists: None
+    )
     monkeypatch.setattr(checker, "_local_lists_for_prefix", lambda _prefix: ("mw-4b",))
     monkeypatch.setattr(
         checker, "_cache_lookup", lambda _prefix, _hashes, _lists=None: None
@@ -726,7 +728,9 @@ def test_safe_browsing_checker_fails_open_for_malformed_hash_search_response(
 
     monkeypatch.setattr(checker, "_cache_search_response", fail_cache)
 
-    assert checker.check_url("http://malformed-response.example/") == SafeBrowsingVerdict(
+    assert checker.check_url(
+        "http://malformed-response.example/"
+    ) == SafeBrowsingVerdict(
         "safe",
         reason="full-hash confirmation unavailable",
     )
@@ -746,7 +750,9 @@ def test_safe_browsing_checker_rejects_full_hash_for_unrequested_prefix(
         "expression_hashes",
         lambda _url: [requested, other_expression],
     )
-    monkeypatch.setattr(checker, "_synchronize_local_cache_versions", lambda _lists: None)
+    monkeypatch.setattr(
+        checker, "_synchronize_local_cache_versions", lambda _lists: None
+    )
     monkeypatch.setattr(
         checker,
         "_local_lists_for_prefix",
@@ -808,9 +814,7 @@ def test_safe_browsing_cache_skips_wrong_prefix_and_duplicate_full_hash() -> Non
     )
 
     inserts = [
-        params
-        for sql, params in executed
-        if "safe_browsing_full_hash_cache" in sql
+        params for sql, params in executed if "safe_browsing_full_hash_cache" in sql
     ]
     assert len(inserts) == 1
     assert inserts[0][0:4] == (requested[:4], requested, "MALWARE", "mw-4b")
@@ -886,9 +890,7 @@ def _stateful_local_list_checker(url: str, *, prefix_present: bool):
             if "FROM safe_browsing_hash_prefixes" in normalized:
                 state["prefix_queries"] += 1
                 prefix = params[0]
-                return Result(
-                    [("mw-4b",)] if prefix in state["prefixes"] else []
-                )
+                return Result([("mw-4b",)] if prefix in state["prefixes"] else [])
             if "FROM safe_browsing_full_hash_cache" in normalized:
                 state["full_hash_queries"] += 1
                 return Result([(target, "MALWARE", "mw-4b")])
@@ -2562,7 +2564,7 @@ def test_safe_browsing_updater_retries_failed_status_write_without_refetching(
 
     monkeypatch.setattr(store, "update_lists", update_lists)
     monkeypatch.setattr(safe_browsing_v5, "_now", lambda: 1000)
-    monkeypatch.setattr(safe_browsing_v5.time, "sleep", stop_after_retry)
+    monkeypatch.setattr(store._stop_event, "wait", stop_after_retry)
 
     with pytest.raises(StopLoopError):
         store._loop(get_settings, set_status)
@@ -2589,7 +2591,9 @@ def test_safe_browsing_updater_reports_success_only_after_update(
     monkeypatch.setattr(store, "update_lists", lambda _settings: (True, "", 7200))
     monkeypatch.setattr(safe_browsing_v5, "_now", lambda: 1000)
 
-    store._run_updater_once(_batch_update_settings, lambda *args: status_calls.append(args))
+    store._run_updater_once(
+        _batch_update_settings, lambda *args: status_calls.append(args)
+    )
 
     assert status_calls == [
         (False, "", 2800),
@@ -2616,8 +2620,8 @@ def test_safe_browsing_updater_reports_unexpected_provider_failure(
     monkeypatch.setattr(store, "update_lists", fail_provider)
     monkeypatch.setattr(safe_browsing_v5, "_now", lambda: 1000)
     monkeypatch.setattr(
-        safe_browsing_v5.time,
-        "sleep",
+        store._stop_event,
+        "wait",
         lambda _seconds: (_ for _ in ()).throw(StopLoopError),
     )
 
@@ -2630,7 +2634,9 @@ def test_safe_browsing_updater_reports_unexpected_provider_failure(
     ]
 
 
-def test_safe_browsing_update_lists_redacts_api_key_from_url_errors(monkeypatch) -> None:
+def test_safe_browsing_update_lists_redacts_api_key_from_url_errors(
+    monkeypatch,
+) -> None:
     class FakeResult:
         def fetchone(self):
             return None
@@ -2758,7 +2764,7 @@ def test_safe_browsing_cache_lookup_does_not_delete_expired_rows(monkeypatch) ->
         "cached full-hash match",
     )
     assert queries
-    assert all(not query.upper().startswith('DELETE ') for query in queries)
+    assert all(not query.upper().startswith("DELETE ") for query in queries)
 
 
 def test_safe_browsing_hash_list_replacement_marks_generation_before_prune(
@@ -2785,7 +2791,10 @@ def test_safe_browsing_hash_list_replacement_marks_generation_before_prune(
         def execute(self, sql, params=None):
             normalized = " ".join(str(sql).split())
             self.executed.append((normalized, tuple(params or ())))
-            if "FROM safe_browsing_hash_prefixes WHERE list_name=%s ORDER BY prefix" in normalized:
+            if (
+                "FROM safe_browsing_hash_prefixes WHERE list_name=%s ORDER BY prefix"
+                in normalized
+            ):
                 return Result(rows=[(b"zzzz",)])
             if normalized.startswith("DELETE FROM safe_browsing_hash_prefixes"):
                 return Result(rowcount=1)

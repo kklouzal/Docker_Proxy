@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import re
 import threading
@@ -71,7 +72,9 @@ def _sanitize_blocked_log_url(value: object) -> str:
     try:
         parsed = urlsplit(raw)
     except Exception:
-        return clean_text(_strip_blocked_log_url_userinfo(text).split("#", 1)[0], max_len=2000)
+        return clean_text(
+            _strip_blocked_log_url_userinfo(text).split("#", 1)[0], max_len=2000
+        )
     if parsed.scheme and parsed.netloc:
         host = parsed.hostname or ""
         if host:
@@ -84,8 +87,13 @@ def _sanitize_blocked_log_url(value: object) -> str:
             except ValueError:
                 pass
             query = _redact_blocked_log_query(parsed.query)
-            return clean_text(urlunsplit((parsed.scheme, netloc, parsed.path, query, "")), max_len=2000)
-        return clean_text(_strip_blocked_log_url_userinfo(text).split("#", 1)[0], max_len=2000)
+            return clean_text(
+                urlunsplit((parsed.scheme, netloc, parsed.path, query, "")),
+                max_len=2000,
+            )
+        return clean_text(
+            _strip_blocked_log_url_userinfo(text).split("#", 1)[0], max_len=2000
+        )
     return clean_text(text.split("#", 1)[0], max_len=2000)
 
 
@@ -108,6 +116,9 @@ class WebFilterStore(WebFilterStoreBase):
         )
         self._started = False
         self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._atexit_registered = False
         self._safe_browsing_store = SafeBrowsingStore()
 
     def _init_extra_schema(self, conn) -> None:
@@ -636,17 +647,48 @@ class WebFilterStore(WebFilterStoreBase):
     def start_background(self) -> None:
         with self._lock:
             if not self._started:
+                self._stop_event.clear()
                 thread = threading.Thread(
                     target=self._loop,
                     name="webfilter-updater",
                     daemon=True,
                 )
-                thread.start()
+                self._thread = thread
                 self._started = True
+                try:
+                    thread.start()
+                except Exception:
+                    self._thread = None
+                    self._started = False
+                    raise
+                if not self._atexit_registered:
+                    atexit.register(self.stop_background)
+                    self._atexit_registered = True
             self._safe_browsing_store.start_background(
                 self._safe_browsing_settings,
                 self._record_safe_browsing_status,
             )
+
+    def stop_background(self, *, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._lock:
+            self._stop_event.set()
+            thread = self._thread
+        safe_browsing_stopped = self._safe_browsing_store.stop_background(
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
+        if thread is not None:
+            join = getattr(thread, "join", None)
+            if join is not None:
+                join(max(0.0, deadline - time.monotonic()))
+        is_alive = getattr(thread, "is_alive", None)
+        updater_stopped = thread is None or is_alive is None or not is_alive()
+        if updater_stopped:
+            with self._lock:
+                if self._thread is thread:
+                    self._thread = None
+                    self._started = False
+        return updater_stopped and safe_browsing_stopped
 
     def _safe_browsing_settings(self):
         self.init_db()
@@ -685,7 +727,7 @@ class WebFilterStore(WebFilterStoreBase):
         error_sleep = float(
             _env_int("WEBFILTER_ERROR_BACKOFF_SECONDS", 30, minimum=5, maximum=300),
         )
-        while True:
+        while not self._stop_event.is_set():
             sleep_seconds = enabled_sleep
             try:
                 self.init_db()
@@ -714,7 +756,7 @@ class WebFilterStore(WebFilterStoreBase):
                         with self._connect() as conn:
                             self._clear_refresh_requested_conn(conn)
                     sleep_seconds = disabled_sleep
-                    time.sleep(sleep_seconds)
+                    self._stop_event.wait(sleep_seconds)
                     continue
 
                 now = _now()
@@ -761,7 +803,7 @@ class WebFilterStore(WebFilterStoreBase):
                     message="webfilter background loop iteration failed",
                 )
                 sleep_seconds = error_sleep
-            time.sleep(sleep_seconds)
+            self._stop_event.wait(sleep_seconds)
 
 
 _store: WebFilterStore | None = None

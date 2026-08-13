@@ -141,7 +141,7 @@ def test_webfilter_loop_uses_error_backoff_for_database_outages(monkeypatch) -> 
     monkeypatch.setenv("WEBFILTER_ERROR_BACKOFF_SECONDS", "7")
     monkeypatch.setattr(store, "init_db", fail_init_db)
     monkeypatch.setattr(m, "log_database_unavailable", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(m.time, "sleep", stop_after_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", stop_after_sleep)
 
     with pytest.raises(StopLoopError):
         store._loop()
@@ -218,7 +218,7 @@ def test_webfilter_loop_preserves_refresh_request_after_failed_build(
     monkeypatch.setattr(store, "_record_attempt_conn", record_attempt)
     monkeypatch.setattr(store, "_clear_refresh_requested_conn", clear_refresh)
     monkeypatch.setattr(store, "_set_next_run_conn", set_next_run)
-    monkeypatch.setattr(m.time, "sleep", stop_after_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", stop_after_sleep)
 
     with pytest.raises(StopLoopError):
         store._loop()

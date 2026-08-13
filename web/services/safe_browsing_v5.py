@@ -593,6 +593,8 @@ class SafeBrowsingStore:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
         self._started = False
         self._pending_status: tuple[bool, str, int] | None = None
 
@@ -1107,14 +1109,35 @@ class SafeBrowsingStore:
         with self._lock:
             if self._started:
                 return
+            self._stop_event.clear()
             thread = threading.Thread(
                 target=self._loop,
                 args=(get_settings, set_status),
                 name="safe-browsing-updater",
                 daemon=True,
             )
-            thread.start()
+            self._thread = thread
             self._started = True
+            try:
+                thread.start()
+            except Exception:
+                self._thread = None
+                self._started = False
+                raise
+
+    def stop_background(self, *, timeout: float = 5.0) -> bool:
+        with self._lock:
+            self._stop_event.set()
+            thread = self._thread
+        if thread is not None:
+            thread.join(max(0.0, timeout))
+        stopped = thread is None or not thread.is_alive()
+        if stopped:
+            with self._lock:
+                if self._thread is thread:
+                    self._thread = None
+                    self._started = False
+        return stopped
 
     def _persist_updater_status(
         self, set_status, status: tuple[bool, str, int]
@@ -1162,7 +1185,7 @@ class SafeBrowsingStore:
 
     def _loop(self, get_settings, set_status) -> None:
         poll = _env_int("SAFE_BROWSING_POLL_SECONDS", 300, minimum=30, maximum=3600)
-        while True:
+        while not self._stop_event.is_set():
             try:
                 self._run_updater_once(get_settings, set_status)
             except DATABASE_ERRORS as exc:
@@ -1174,7 +1197,7 @@ class SafeBrowsingStore:
                 )
             except Exception:
                 pass
-            time.sleep(poll)
+            self._stop_event.wait(poll)
 
 
 class SafeBrowsingLocalChecker:
