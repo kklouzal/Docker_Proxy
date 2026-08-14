@@ -495,6 +495,35 @@ def test_auth_provider_certificate_upload_is_passed_to_store(
     assert directory_store.saved[0][1]["ca_bundle_upload"] == b"cert-bytes"
 
 
+def test_auth_provider_certificate_upload_rejects_oversize_before_store(
+    monkeypatch, tmp_path
+) -> None:
+    directory_store = FakeDirectoryAuthStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=ldap")
+
+    response = client.post(
+        "/administration?tab=ldap",
+        data={
+            "csrf_token": token,
+            "action": "save_auth_provider",
+            "provider": "ldap",
+            "ca_bundle_file": (
+                io.BytesIO(b"x" * (64 * 1024 + 1)),
+                "oversize.crt",
+            ),
+        },
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert "CA certificate material is too large (max 64 KiB)." in response.text
+    assert directory_store.saved == []
+
+
 def test_enabling_directory_provider_disables_saml_provider(
     monkeypatch, tmp_path
 ) -> None:

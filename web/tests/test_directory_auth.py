@@ -628,6 +628,36 @@ def test_normalize_ca_bundle_validates_uploaded_certificate() -> None:
     assert normalized.endswith("-----END CERTIFICATE-----\n")
 
 
+def test_normalize_ca_bundle_rejects_oversize_before_certificate_parsing(
+    monkeypatch,
+) -> None:
+    parsed = []
+
+    def load_pem(_raw: bytes):
+        parsed.append(True)
+        message = "oversize material must not be parsed"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(
+        "services.directory_auth.x509.load_pem_x509_certificate", load_pem
+    )
+
+    with pytest.raises(ValueError, match=r"too large.*64 KiB"):
+        DirectoryAuthStore.normalize_ca_bundle(b"x" * (64 * 1024 + 1))
+
+    assert parsed == []
+
+
+def test_profile_rejects_oversize_pasted_ca_before_persistence() -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+
+    with pytest.raises(ValueError, match=r"too large.*64 KiB"):
+        store._ca_bundle_from_payload(
+            {"ca_bundle": "x" * (64 * 1024 + 1)},
+            "existing certificate",
+        )
+
+
 def test_filter_presets_replace_raw_filter_fields() -> None:
     store = DirectoryAuthStore(lambda: "stable-secret")
 

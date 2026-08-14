@@ -83,6 +83,10 @@ def _canonical_ldap_server_host(hostname: str) -> str:
 PROVIDER_LDAP = "ldap"
 PROVIDER_ACTIVE_DIRECTORY = "active_directory"
 DIRECTORY_PROVIDERS = (PROVIDER_LDAP, PROVIDER_ACTIVE_DIRECTORY)
+# Directory CA bundles are persisted in a SQL TEXT column. Bound both submitted
+# and normalized material to keep certificate parsing and persistence within the
+# same resource contract.
+DIRECTORY_CA_BUNDLE_MAX_BYTES = 64 * 1024
 PROVIDER_LABELS = {
     PROVIDER_LDAP: "LDAP",
     PROVIDER_ACTIVE_DIRECTORY: "Active Directory",
@@ -1281,6 +1285,9 @@ class DirectoryAuthStore:
         if not raw_bytes:
             msg = "Uploaded CA certificate file was empty."
             raise ValueError(msg)
+        if len(raw_bytes) > DIRECTORY_CA_BUNDLE_MAX_BYTES:
+            msg = "CA certificate material is too large (max 64 KiB)."
+            raise ValueError(msg)
         blocks = []
         text = raw_bytes.decode("utf-8", errors="ignore")
         for match in re.finditer(
@@ -1302,7 +1309,11 @@ class DirectoryAuthStore:
             blocks.append(
                 cert.public_bytes(serialization.Encoding.PEM).decode().strip()
             )
-        return "\n".join(blocks) + "\n"
+        normalized = "\n".join(blocks) + "\n"
+        if len(normalized.encode("utf-8")) > DIRECTORY_CA_BUNDLE_MAX_BYTES:
+            msg = "Normalized CA certificate bundle is too large (max 64 KiB)."
+            raise ValueError(msg)
+        return normalized
 
 
 _directory_auth_store: DirectoryAuthStore | None = None

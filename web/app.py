@@ -69,7 +69,11 @@ from services.config_revisions import (
 from services.diagnostic_store import (
     get_diagnostic_store as _default_get_diagnostic_store,
 )
-from services.directory_auth import DIRECTORY_PROVIDERS, get_directory_auth_store
+from services.directory_auth import (
+    DIRECTORY_CA_BUNDLE_MAX_BYTES,
+    DIRECTORY_PROVIDERS,
+    get_directory_auth_store,
+)
 from services.error_pages import (
     list_error_pages,
     missing_template_names,
@@ -5781,7 +5785,11 @@ def _handle_auth_provider_post():
                 payload[checkbox_field] = submitted_values[-1]
         ca_upload = request.files.get("ca_bundle_file")
         if ca_upload is not None and ca_upload.filename:
-            payload["ca_bundle_upload"] = ca_upload.read()
+            uploaded = ca_upload.read(DIRECTORY_CA_BUNDLE_MAX_BYTES + 1)
+            if len(uploaded) > DIRECTORY_CA_BUNDLE_MAX_BYTES:
+                msg = "CA certificate material is too large (max 64 KiB)."
+                raise ValueError(msg)
+            payload["ca_bundle_upload"] = uploaded
         return payload
 
     try:
