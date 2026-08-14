@@ -232,17 +232,18 @@ supervisor_program_running() {
 
 env_enabled() {
     case "$(printf '%s' "${1:-0}" | tr '[:upper:]' '[:lower:]')" in
-        1|true|yes|on|required|strict) return 0 ;;
-        *) return 1 ;;
+        1|true|yes|on|enabled|required|strict) return 0 ;;
+        0|false|no|off|disabled|optional|'') return 1 ;;
+        *) [ "${2:-0}" = "1" ] ;;
     esac
 }
 
 clamav_required() {
-    env_enabled "${CLAMAV_REQUIRED:-}" || env_enabled "${FILE_SECURITY_AV_REQUIRED:-}"
+    env_enabled "${CLAMAV_REQUIRED:-}" 1 || env_enabled "${FILE_SECURITY_AV_REQUIRED:-}" 1
 }
 
 adblock_icap_required() {
-    env_enabled "${ADBLOCK_ICAP_REQUIRED:-}"
+    env_enabled "${ADBLOCK_ICAP_REQUIRED:-}" 1
 }
 
 clamd_host_is_remote() {

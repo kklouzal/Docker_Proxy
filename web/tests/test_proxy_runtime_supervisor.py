@@ -5620,6 +5620,33 @@ def test_runtime_icap_include_honors_explicit_required_adblock_mode(
     assert "icap://127.0.0.1:14000/adblockreq bypass=off" in include
 
 
+def test_runtime_security_flags_fail_safe_on_malformed_values(monkeypatch) -> None:
+    from services.squid_core import SquidController, _clamav_required_from_env
+
+    monkeypatch.setenv("CLAMAV_REQUIRED", "typo")
+    monkeypatch.setenv("ADBLOCK_ENABLED", "typo")
+    monkeypatch.setenv("ADBLOCK_ICAP_REQUIRED", "typo")
+
+    controller = SquidController()
+    include = controller._render_icap_include("workers 1\n")
+
+    assert _clamav_required_from_env() is True
+    assert controller._adblock_routing_enabled is True
+    assert "icap://127.0.0.1:14000/adblockreq bypass=off" in include
+
+
+def test_packaged_security_flags_fail_safe_on_malformed_values() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    entrypoint = (repo_root / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+    healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(encoding="utf-8")
+
+    assert 'env_enabled "$CLAMAV_REQUIRED_RAW" 1' in entrypoint
+    assert 'env_enabled "$ADBLOCK_ENABLED_RAW" 1' in entrypoint
+    assert 'env_enabled "${ADBLOCK_ICAP_REQUIRED:-}" 1' in entrypoint
+    assert 'env_enabled "${CLAMAV_REQUIRED:-}" 1' in healthcheck
+    assert 'env_enabled "${ADBLOCK_ICAP_REQUIRED:-}" 1' in healthcheck
+
+
 def test_packaged_proxy_supervisor_stops_squid_process_group() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     supervisord = (repo_root / "docker" / "supervisord.proxy.conf").read_text(

@@ -16,6 +16,7 @@ from services.health_checks import (
     send_sample_respmod_to,
     test_clamd_eicar,
 )
+from services.runtime_helpers import security_env_bool
 from services.squid_core import (
     _clamav_respmod_stream_port_base,
     _clamd_host_is_remote,
@@ -52,10 +53,7 @@ def _resolve_host_port_override(
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    value = (os.environ.get(name) or "").strip().lower()
-    if not value:
-        return default
-    return value in {"1", "true", "yes", "on", "enabled", "required", "strict"}
+    return security_env_bool(name, default=default)
 
 
 def _proxy_http_port() -> int:
@@ -508,8 +506,7 @@ def send_sample_av_icap(
     ):
         result = {
             **result,
-            "detail": "Connection refused by ClamAV backend: "
-            f"{result.get('detail')}",
+            "detail": f"Connection refused by ClamAV backend: {result.get('detail')}",
         }
     return annotate_service_target(
         result,

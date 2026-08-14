@@ -11,7 +11,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-TRUE_VALUES = {"1", "true", "yes", "on", "required", "strict"}
+TRUE_VALUES = {"1", "true", "yes", "on", "enabled", "required", "strict"}
+FALSE_VALUES = {"0", "false", "no", "off", "disabled", "optional"}
 DEFAULT_CLAMD_PORT = 3310
 DEFAULT_CICAP_AV_PORT = 14001
 CRLF = b"\r\n"
@@ -90,8 +91,13 @@ def _parse_icap_start_line(header: bytes) -> tuple[str, str, str]:
     return method_token.upper(), service_uri, version
 
 
-def env_enabled(value: str | None) -> bool:
-    return (value or "").strip().lower() in TRUE_VALUES
+def env_enabled(value: str | None, *, invalid_default: bool = False) -> bool:
+    normalized = (value or "").strip().lower()
+    if normalized in TRUE_VALUES:
+        return True
+    if not normalized or normalized in FALSE_VALUES:
+        return False
+    return invalid_default
 
 
 def _recv_clamd_ping_reply(sock: socket.socket) -> bytes:
@@ -1318,8 +1324,10 @@ def main(argv: list[str]) -> int:
     conf_path = argv[1]
     host = (os.environ.get("CLAMD_HOST") or "127.0.0.1").strip() or "127.0.0.1"
     port = _parse_port(os.environ.get("CLAMD_PORT"), default=DEFAULT_CLAMD_PORT)
-    required = env_enabled(os.environ.get("CLAMAV_REQUIRED")) or env_enabled(
-        os.environ.get("FILE_SECURITY_AV_REQUIRED")
+    required = env_enabled(
+        os.environ.get("CLAMAV_REQUIRED"), invalid_default=True
+    ) or env_enabled(
+        os.environ.get("FILE_SECURITY_AV_REQUIRED"), invalid_default=True
     )
 
     if clamd_ready(host, port):

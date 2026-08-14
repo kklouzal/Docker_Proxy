@@ -17,6 +17,21 @@ _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
     getattr(errno, "EOPNOTSUPP", errno.EINVAL),
 }
 
+_ENV_TRUE_VALUES = frozenset(
+    {"1", "true", "yes", "on", "enabled", "required", "strict"}
+)
+_ENV_FALSE_VALUES = frozenset({"0", "false", "no", "off", "disabled", "optional"})
+
+
+def security_env_bool(name: str, *, default: bool) -> bool:
+    """Parse a security-mode environment flag without weakening on typos."""
+    value = (os.environ.get(name) or "").strip().lower()
+    if not value:
+        return default
+    if value in _ENV_TRUE_VALUES:
+        return True
+    return value not in _ENV_FALSE_VALUES
+
 
 def fsync_parent_dir(path: str | os.PathLike[str]) -> None:
     """Best-effort fsync of the directory containing path."""
@@ -171,7 +186,9 @@ def authority_has_empty_explicit_port(netloc: str) -> bool:
     authority = str(netloc or "").rsplit("@", 1)[-1]
     if authority.startswith("["):
         closing_bracket = authority.find("]")
-        return authority[closing_bracket + 1 :] == ":" if closing_bracket >= 0 else False
+        return (
+            authority[closing_bracket + 1 :] == ":" if closing_bracket >= 0 else False
+        )
     return authority.endswith(":") and ":" in authority
 
 

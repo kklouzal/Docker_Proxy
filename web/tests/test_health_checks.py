@@ -1330,6 +1330,24 @@ def test_forwarding_path_health_is_local_bounded_and_attributed(monkeypatch) -> 
     assert "forwarding path is degraded" in result["detail"]
 
 
+def test_forwarding_path_health_treats_malformed_required_flag_as_closed(
+    monkeypatch,
+) -> None:
+    proxy_health = _proxy_health_module()
+    monkeypatch.setenv("CLAMAV_REQUIRED", "typo")
+    monkeypatch.setattr(
+        proxy_health,
+        "check_http_proxy_forwarding",
+        lambda **_kwargs: {"ok": False, "detail": "timed out"},
+    )
+
+    result = proxy_health.check_forwarding_path_health(timeout=0.3)
+
+    assert result["clamav_required"] is True
+    assert result["fail_mode"] == "closed"
+    assert result["fail_open"] is False
+
+
 def test_forwarding_path_health_no_longer_targets_public_listener_self_dependency(
     monkeypatch,
 ) -> None:

@@ -22,8 +22,9 @@ esac
 
 env_enabled() {
     case "$(printf '%s' "${1:-0}" | tr '[:upper:]' '[:lower:]')" in
-        1|true|yes|on|required|strict) return 0 ;;
-        *) return 1 ;;
+        1|true|yes|on|enabled|required|strict) return 0 ;;
+        0|false|no|off|disabled|optional|'') return 1 ;;
+        *) [ "${2:-0}" = "1" ] ;;
     esac
 }
 
@@ -1163,7 +1164,7 @@ esac
 CLAMAV_REQUIRED_RAW="${CLAMAV_REQUIRED:-}"
 CLAMAV_REQUIRED=0
 AV_BYPASS=on
-if env_enabled "$CLAMAV_REQUIRED_RAW" || env_enabled "${FILE_SECURITY_AV_REQUIRED:-}"; then
+if env_enabled "$CLAMAV_REQUIRED_RAW" 1 || env_enabled "${FILE_SECURITY_AV_REQUIRED:-}" 1; then
     CLAMAV_REQUIRED=1
     AV_BYPASS=off
 fi
@@ -1174,11 +1175,11 @@ fi
 # include from adblock_settings.enabled after the database is reachable.
 ADBLOCK_ENABLED_RAW="${ADBLOCK_ENABLED:-1}"
 ADBLOCK_ROUTING_ENABLED=0
-if env_enabled "$ADBLOCK_ENABLED_RAW"; then
+if env_enabled "$ADBLOCK_ENABLED_RAW" 1; then
     ADBLOCK_ROUTING_ENABLED=1
 fi
 ADBLOCK_BYPASS=on
-if env_enabled "${ADBLOCK_ICAP_REQUIRED:-}"; then
+if env_enabled "${ADBLOCK_ICAP_REQUIRED:-}" 1; then
     ADBLOCK_BYPASS=off
 fi
 

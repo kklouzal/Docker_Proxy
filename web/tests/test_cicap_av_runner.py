@@ -109,6 +109,24 @@ def test_required_unavailable_clamd_serves_fail_closed_placeholder(monkeypatch) 
     assert calls == [("/etc/c-icap/av.conf", "127.0.0.1", 3310, False)]
 
 
+def test_malformed_required_mode_serves_fail_closed_placeholder(monkeypatch) -> None:
+    runner = _load_runner()
+    calls: list[tuple[str, str, int, bool]] = []
+
+    monkeypatch.setenv("CLAMAV_REQUIRED", "typo")
+    monkeypatch.setattr(runner, "clamd_ready", lambda _host, _port: False)
+    monkeypatch.setattr(
+        runner,
+        "run_unavailable_placeholder",
+        lambda conf_path, *, host, port, fail_open: calls.append(
+            (conf_path, host, port, fail_open),
+        ),
+    )
+
+    assert runner.main(["cicap_av_runner.py", "/etc/c-icap/av.conf"]) == 0
+    assert calls == [("/etc/c-icap/av.conf", "127.0.0.1", 3310, False)]
+
+
 def test_main_clamps_invalid_clamd_port_to_default(monkeypatch) -> None:
     runner = _load_runner()
     calls: list[tuple[str, str, int, bool]] = []

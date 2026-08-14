@@ -24,6 +24,7 @@ from services.clamav_config_forms import (
 )
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
+from services.runtime_helpers import security_env_bool
 from services.squid_listeners import parse_squid_listeners
 
 logger = logging.getLogger(__name__)
@@ -36,10 +37,7 @@ _ADBLOCK_ICAP_METHODS = "GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
 
 
 def _env_flag(name: str, default: bool) -> bool:
-    value = (os.environ.get(name) or "").strip().lower()
-    if not value:
-        return default
-    return value in {"1", "true", "yes", "on", "enabled", "required", "strict"}
+    return security_env_bool(name, default=default)
 
 
 def _clamav_required_from_env() -> bool:
