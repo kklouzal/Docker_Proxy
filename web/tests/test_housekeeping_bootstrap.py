@@ -223,14 +223,14 @@ def test_housekeeping_retention_setting_falls_back_to_default(
 def test_housekeeping_lock_retry_skips_sleep_after_final_failure(
     monkeypatch, housekeeping
 ) -> None:
+    import pymysql
+
     sleeps: list[float] = []
 
-    monkeypatch.setattr(housekeeping, "OPERATIONAL_ERRORS", (RuntimeError,))
     monkeypatch.setattr(housekeeping.time, "sleep", sleeps.append)
 
     def fail_locked():
-        msg = "database is locked"
-        raise RuntimeError(msg)
+        raise pymysql.OperationalError(1213, "localized deadlock message")
 
     try:
         housekeeping._run_with_db_lock_retry(
@@ -238,8 +238,8 @@ def test_housekeeping_lock_retry_skips_sleep_after_final_failure(
             attempts=3,
             base_sleep_seconds=0.5,
         )
-    except RuntimeError as exc:
-        assert "database is locked" in str(exc)
+    except pymysql.OperationalError as exc:
+        assert exc.args[0] == 1213
     else:
         msg = "expected lock retry exhaustion to raise the last lock error"
         raise AssertionError(msg)

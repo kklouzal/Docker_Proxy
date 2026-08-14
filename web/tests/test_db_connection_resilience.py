@@ -1199,6 +1199,54 @@ def test_transaction_retry_replays_lock_wait_timeout(monkeypatch) -> None:
     assert attempts["count"] == 2
 
 
+def test_lock_contention_retry_uses_numeric_code_not_message(monkeypatch) -> None:
+    import pymysql  # type: ignore
+    from services import db  # type: ignore
+
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    def operation() -> str:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise pymysql.err.OperationalError(1205, "localized server message")
+        return "ok"
+
+    assert (
+        db.run_mysql_lock_contention_with_retry(
+            operation,
+            attempts=2,
+            base_delay_seconds=0.25,
+            max_delay_seconds=1.0,
+            sleep_fn=sleeps.append,
+        )
+        == "ok"
+    )
+    assert attempts["count"] == 2
+    assert sleeps == [0.25]
+
+
+@pytest.mark.parametrize("code", [2003, 2006, 2013])
+def test_lock_contention_retry_does_not_replay_connection_errors(code) -> None:
+    import pymysql  # type: ignore
+    from services import db  # type: ignore
+
+    attempts = {"count": 0}
+
+    def operation() -> None:
+        attempts["count"] += 1
+        raise pymysql.err.OperationalError(code, "ambiguous connection failure")
+
+    with pytest.raises(pymysql.err.OperationalError):
+        db.run_mysql_lock_contention_with_retry(
+            operation,
+            attempts=4,
+            base_delay_seconds=0,
+            max_delay_seconds=1,
+        )
+    assert attempts["count"] == 1
+
+
 def test_transaction_retry_replays_deadlock_with_bounded_jitter(monkeypatch) -> None:
     import pymysql  # type: ignore
     from services import db  # type: ignore

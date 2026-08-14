@@ -9,6 +9,26 @@ CertificateBundleRevision = certificate_bundles.CertificateBundleRevision
 CertificateBundleStore = certificate_bundles.CertificateBundleStore
 
 
+def test_certificate_bundle_lock_retry_uses_shared_numeric_policy(monkeypatch) -> None:
+    import pymysql
+
+    store = CertificateBundleStore()
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    def operation() -> str:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise pymysql.OperationalError(1213, "localized message")
+        return "ok"
+
+    monkeypatch.setattr(certificate_bundles.time, "sleep", sleeps.append)
+
+    assert store._with_db_lock_retry(operation, attempts=2) == "ok"
+    assert attempts["count"] == 2
+    assert sleeps == [0.1]
+
+
 def test_certificate_bundle_revision_fullchain_and_to_bundle() -> None:
     revision = CertificateBundleRevision(
         revision_id=7,

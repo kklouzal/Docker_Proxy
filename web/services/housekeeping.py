@@ -14,7 +14,7 @@ from services.control_plane_maintenance import (
     maintain_control_plane_tables,
     prune_control_plane_tables,
 )
-from services.db import OPERATIONAL_ERRORS
+from services.db import run_mysql_lock_contention_with_retry
 from services.diagnostic_store import get_diagnostic_store
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled, should_log
@@ -39,40 +39,21 @@ _lock = threading.Lock()
 _SUNDAY = 6
 
 
-def _is_db_locked(exc: BaseException) -> bool:
-    if not isinstance(exc, OPERATIONAL_ERRORS):
-        return False
-    text = str(exc).lower()
-    return (
-        "database is locked" in text
-        or "lock wait timeout" in text
-        or "deadlock found" in text
-    )
-
-
 def _run_with_db_lock_retry(
     fn,
     *,
     attempts: int = 8,
     base_sleep_seconds: float = 0.5,
 ) -> Any:
-    """Run `fn` with exponential backoff on transient database lock errors."""
-    last_exc: BaseException | None = None
-    for i in range(max(1, int(attempts))):
-        try:
-            return fn()
-        except Exception as exc:
-            last_exc = exc
-            if not _is_db_locked(exc):
-                raise
-            if i >= max(1, int(attempts)) - 1:
-                raise
-            # Backoff: 0.5s, 1s, 2s, 4s, ... (capped)
-            sleep_s = min(30.0, float(base_sleep_seconds) * (2**i))
-            time.sleep(sleep_s)
-    if last_exc is not None:
-        raise last_exc
-    return None
+    """Run a replay-safe housekeeping operation after MySQL lock contention."""
+    return run_mysql_lock_contention_with_retry(
+        fn,
+        attempts=attempts,
+        base_delay_seconds=base_sleep_seconds,
+        max_delay_seconds=30.0,
+        operation_name="housekeeping transaction",
+        sleep_fn=time.sleep,
+    )
 
 
 def current_retention_days(default: int = 30) -> int:

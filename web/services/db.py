@@ -324,6 +324,11 @@ def _is_retryable_mysql_transaction_error(exc: BaseException) -> bool:
     return code in _MYSQL_TRANSACTION_RETRY_CODES
 
 
+def is_mysql_lock_contention_error(exc: BaseException) -> bool:
+    """Return whether MySQL unambiguously rejected work for lock contention."""
+    return _is_retryable_mysql_transaction_error(exc)
+
+
 def _is_retryable_mysql_error(exc: BaseException) -> bool:
     """Backward-compatible predicate for tests and old importers.
 
@@ -469,6 +474,47 @@ def run_mysql_operation_with_retry(
         retry_predicate=_is_retryable_mysql_transaction_error,
         operation_name=operation_name,
     )
+
+
+def run_mysql_lock_contention_with_retry(
+    operation,
+    *,
+    attempts: int,
+    base_delay_seconds: float,
+    max_delay_seconds: float,
+    operation_name: str = "mysql transaction",
+    sleep_fn=None,
+):
+    """Replay a proven-safe operation only after MySQL 1205/1213 failures.
+
+    Callers choose their bounded attempt/backoff policy. Disconnect, connection
+    acquisition, and other operational errors are raised without replay.
+    """
+    attempt_count = max(1, int(attempts))
+    sleeper = time.sleep if sleep_fn is None else sleep_fn
+    for attempt in range(attempt_count):
+        try:
+            return operation()
+        except Exception as exc:
+            if not is_mysql_lock_contention_error(exc) or attempt >= attempt_count - 1:
+                raise
+            delay = min(
+                max(0.0, float(max_delay_seconds)),
+                max(0.0, float(base_delay_seconds)) * (2**attempt),
+            )
+            with contextlib.suppress(Exception):
+                logger.warning(
+                    "Retrying %s after transient MySQL %s (attempt %s/%s, delay %.3fs): %s",
+                    operation_name,
+                    mysql_error_classification(exc),
+                    attempt + 1,
+                    attempt_count,
+                    delay,
+                    exc,
+                )
+            sleeper(delay)
+    msg = "unreachable MySQL lock-contention retry state"
+    raise RuntimeError(msg)
 
 
 def mysql_schema_lock_timeout_seconds(default: int = 30) -> int:

@@ -10,7 +10,7 @@ from services.application_ledgers import (
     normalize_sha256_evidence,
 )
 from services.certificate_core import CertificateBundle
-from services.db import OPERATIONAL_ERRORS, connect
+from services.db import connect, run_mysql_lock_contention_with_retry
 from services.proxy_context import normalize_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
 from services.revision_lifecycle import (
@@ -159,32 +159,15 @@ class CertificateBundleStore:
     def _connect(self):
         return connect()
 
-    def _is_transient_db_lock(self, exc: BaseException) -> bool:
-        if not isinstance(exc, OPERATIONAL_ERRORS):
-            return False
-        text = str(exc).lower()
-        return (
-            "deadlock found" in text
-            or "lock wait timeout" in text
-            or "try restarting transaction" in text
-        )
-
     def _with_db_lock_retry(self, fn, *, attempts: int = 4):
-        last_exc: BaseException | None = None
-        for i in range(max(1, int(attempts))):
-            try:
-                return fn()
-            except Exception as exc:
-                last_exc = exc
-                if (
-                    not self._is_transient_db_lock(exc)
-                    or i >= max(1, int(attempts)) - 1
-                ):
-                    raise
-                time.sleep(min(1.0, 0.1 * (2**i)))
-        if last_exc is not None:
-            raise last_exc
-        return fn()
+        return run_mysql_lock_contention_with_retry(
+            fn,
+            attempts=attempts,
+            base_delay_seconds=0.1,
+            max_delay_seconds=1.0,
+            operation_name="certificate bundle transaction",
+            sleep_fn=time.sleep,
+        )
 
     def init_db(self) -> None:
         if self._schema_ready:
@@ -493,7 +476,9 @@ class CertificateBundleStore:
         return revision
 
     def activate_revision(self, revision_id: object) -> CertificateBundleRevision:
-        return self._with_db_lock_retry(lambda: self._activate_revision_once(revision_id))
+        return self._with_db_lock_retry(
+            lambda: self._activate_revision_once(revision_id)
+        )
 
     def _activate_revision_once(self, revision_id: object) -> CertificateBundleRevision:
         self.init_db()
@@ -751,7 +736,14 @@ class CertificateBundleStore:
                     updated_by=incoming.updated_by,
                     updated_ts=incoming.updated_ts
                 """,
-                (1 if enabled_value else 0, cert_path, key_path, san_text, updater, now),
+                (
+                    1 if enabled_value else 0,
+                    cert_path,
+                    key_path,
+                    san_text,
+                    updater,
+                    now,
+                ),
             )
         return self.get_admin_ui_https_settings()
 

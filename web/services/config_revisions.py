@@ -11,7 +11,7 @@ from services.application_ledgers import (
     normalize_sha256_evidence,
     row_value,
 )
-from services.db import OPERATIONAL_ERRORS, connect
+from services.db import connect, run_mysql_lock_contention_with_retry
 from services.proxy_context import normalize_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
 from services.revision_lifecycle import (
@@ -65,32 +65,15 @@ class ConfigRevisionStore:
     def _connect(self):
         return connect()
 
-    def _is_transient_db_lock(self, exc: BaseException) -> bool:
-        if not isinstance(exc, OPERATIONAL_ERRORS):
-            return False
-        text = str(exc).lower()
-        return (
-            "deadlock found" in text
-            or "lock wait timeout" in text
-            or "try restarting transaction" in text
-        )
-
     def _with_db_lock_retry(self, fn, *, attempts: int = 4):
-        last_exc: BaseException | None = None
-        for i in range(max(1, int(attempts))):
-            try:
-                return fn()
-            except Exception as exc:
-                last_exc = exc
-                if (
-                    not self._is_transient_db_lock(exc)
-                    or i >= max(1, int(attempts)) - 1
-                ):
-                    raise
-                time.sleep(min(1.0, 0.1 * (2**i)))
-        if last_exc is not None:
-            raise last_exc
-        return fn()
+        return run_mysql_lock_contention_with_retry(
+            fn,
+            attempts=attempts,
+            base_delay_seconds=0.1,
+            max_delay_seconds=1.0,
+            operation_name="config revision transaction",
+            sleep_fn=time.sleep,
+        )
 
     def init_db(self) -> None:
         if self._schema_ready:
@@ -412,9 +395,7 @@ class ConfigRevisionStore:
                         (target_id, proxy_key),
                     ).fetchone()
                     if existing is None:
-                        msg = (
-                            f"Config revision {target_id} was not found for proxy {proxy_key}."
-                        )
+                        msg = f"Config revision {target_id} was not found for proxy {proxy_key}."
                         raise ValueError(msg)
                     conn.execute(
                         "UPDATE proxy_config_revisions SET is_active=0 WHERE proxy_id=%s AND is_active=1 AND id<>%s",
