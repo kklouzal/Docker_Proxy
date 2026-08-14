@@ -1616,6 +1616,67 @@ def test_all_compatibility_presets_preflight_catalog_before_writes(
     assert "malformed: bad domain: Invalid domain length." in error
 
 
+def test_compatibility_preset_install_rolls_back_every_domain_on_mid_write_failure(
+    monkeypatch,
+) -> None:
+    import services.sslfilter_store as module  # type: ignore
+
+    monkeypatch.setattr(
+        module,
+        "COMPATIBILITY_PRESETS",
+        (
+            module.CompatibilityPreset(
+                id="atomic",
+                title="Atomic",
+                description="Atomic install fixture",
+                domains=("one.example", "two.example"),
+            ),
+        ),
+    )
+
+    class FailingConnection:
+        def __init__(self) -> None:
+            self.pending: list[str] = []
+            self.persisted: list[str] = []
+            self.insert_count = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, _exc, _tb) -> bool:
+            if exc_type is None:
+                self.persisted.extend(self.pending)
+            self.pending.clear()
+            return False
+
+        def execute(self, sql: str, params=()):
+            if sql.startswith("SELECT domain FROM sslfilter_domains"):
+                return SimpleNamespace(fetchall=list)
+            if sql.startswith("INSERT IGNORE INTO sslfilter_domains"):
+                self.insert_count += 1
+                if self.insert_count == 2:
+                    message = "injected second-domain write failure"
+                    raise RuntimeError(message)
+                self.pending.append(str(params[2]))
+                return SimpleNamespace(rowcount=1)
+            raise AssertionError(sql)
+
+    connection = FailingConnection()
+    store = module.SslFilterStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: connection)
+    monkeypatch.setattr(
+        store,
+        "list_all",
+        lambda: SimpleNamespace(no_bump_domains=[]),
+    )
+
+    with pytest.raises(RuntimeError, match="injected second-domain write failure"):
+        store.install_compatibility_preset("atomic")
+
+    assert connection.persisted == []
+
+
 def test_all_compatibility_presets_remains_effectively_deduped_and_idempotent(
     monkeypatch,
 ) -> None:
@@ -1643,18 +1704,30 @@ def test_all_compatibility_presets_remains_effectively_deduped_and_idempotent(
     store = module.SslFilterStore()
     current_domains: list[str] = []
     added_domains: list[str] = []
-    monkeypatch.setattr(
-        store,
-        "list_all",
-        lambda: SimpleNamespace(no_bump_domains=list(current_domains)),
-    )
 
-    def fake_add_domain(_policy: str, domain: str) -> tuple[bool, str, str]:
-        current_domains.append(domain)
-        added_domains.append(domain)
-        return True, "", domain
+    class Connection:
+        def __enter__(self):
+            return self
 
-    monkeypatch.setattr(store, "add_domain", fake_add_domain)
+        def __exit__(self, _exc_type, _exc, _tb) -> bool:
+            return False
+
+        def execute(self, sql: str, params=()):
+            if sql.startswith("SELECT domain FROM sslfilter_domains"):
+                return SimpleNamespace(
+                    fetchall=lambda: [(domain,) for domain in current_domains],
+                )
+            if sql.startswith("INSERT IGNORE INTO sslfilter_domains"):
+                domain = str(params[2])
+                if domain in current_domains:
+                    return SimpleNamespace(rowcount=0)
+                current_domains.append(domain)
+                added_domains.append(domain)
+                return SimpleNamespace(rowcount=1)
+            raise AssertionError(sql)
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", Connection)
 
     assert store.install_compatibility_preset("all") == (2, 2, "")
     assert added_domains == ["*.example.com", "other.example"]

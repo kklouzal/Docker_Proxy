@@ -253,26 +253,27 @@ def test_sslfilter_preset_install_attempts_only_missing_effective_domains(
     current_domains = ["*.example.com"]
     added_domains: list[str] = []
 
-    monkeypatch.setattr(
-        store,
-        "list_all",
-        lambda: SimpleNamespace(
-            no_bump_domains=list(current_domains),
-            no_cache_domains=[],
-            no_bump_src_nets=[],
-            no_cache_src_nets=[],
-            exclude_private_nets=True,
-            inspection_enabled=True,
-        ),
-    )
+    class Connection:
+        def __enter__(self):
+            return self
 
-    def fake_add_domain(policy: str, domain: str) -> tuple[bool, str, str]:
-        assert policy == "nobump"
-        added_domains.append(domain)
-        current_domains.append(domain)
-        return True, "", domain
+        def __exit__(self, _exc_type, _exc, _tb) -> bool:
+            return False
 
-    monkeypatch.setattr(store, "add_domain", fake_add_domain)
+        def execute(self, sql: str, params=()):
+            if sql.startswith("SELECT domain FROM sslfilter_domains"):
+                return SimpleNamespace(
+                    fetchall=lambda: [(domain,) for domain in current_domains],
+                )
+            if sql.startswith("INSERT IGNORE INTO sslfilter_domains"):
+                domain = str(params[2])
+                current_domains.append(domain)
+                added_domains.append(domain)
+                return SimpleNamespace(rowcount=1)
+            raise AssertionError(sql)
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "_connect", Connection)
 
     added, attempted, error = store.install_compatibility_preset("overlap")
 

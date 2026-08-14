@@ -551,25 +551,32 @@ class SslFilterStore:
         if catalog_errors:
             return 0, 0, "; ".join(catalog_errors[:3])
 
-        current = _dedupe_squid_domains(self.list_all().no_bump_domains)
-        added = 0
-        attempted = 0
-        errors: list[str] = []
-        for _preset, effective in evaluated:
-            for domain in effective.domains:
-                if _squid_domain_is_effectively_configured(domain, current):
-                    continue
-                attempted += 1
-                ok, err, canonical = self.add_domain("nobump", domain)
-                if not ok:
-                    if err:
-                        errors.append(f"{domain}: {err}")
-                    continue
-                added += 1
-                squid_domain = _normalize_domain_for_squid(canonical)
-                if squid_domain:
-                    current = _dedupe_squid_domains([*current, squid_domain])
-        return added, attempted, "; ".join(errors[:3])
+        self.init_db()
+        with self._connect() as conn:
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                rows = conn.execute(
+                    "SELECT domain FROM sslfilter_domains WHERE proxy_id=%s AND policy=%s ORDER BY domain ASC",
+                    (guard.proxy_id, "nobump"),
+                ).fetchall()
+                current = _dedupe_squid_domains([str(row[0]) for row in rows])
+                missing: list[str] = []
+                for _preset, effective in evaluated:
+                    for domain in effective.domains:
+                        if _squid_domain_is_effectively_configured(domain, current):
+                            continue
+                        missing.append(domain)
+                        squid_domain = _normalize_domain_for_squid(domain)
+                        if squid_domain:
+                            current = _dedupe_squid_domains([*current, squid_domain])
+
+                added = 0
+                for domain in missing:
+                    result = conn.execute(
+                        "INSERT IGNORE INTO sslfilter_domains(proxy_id, policy, domain, added_ts) VALUES(%s,%s,%s,%s)",
+                        (guard.proxy_id, "nobump", domain, int(_now())),
+                    )
+                    added += max(0, int(result.rowcount))
+        return added, len(missing), ""
 
     def render_materialized_state(self) -> SslFilterMaterializedState:
         rules = self.list_all()
