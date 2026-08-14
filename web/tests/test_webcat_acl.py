@@ -1,6 +1,7 @@
 import importlib
 import os
 import time
+from pathlib import Path
 from typing import NoReturn
 
 import pytest
@@ -194,6 +195,79 @@ def test_webcat_acl_snapshot_lock_old_owner_cannot_refresh_or_release_new_lock(
     assert new_owner._snapshot_lock_path.stat().st_mtime_ns == new_mtime_ns
     assert new_owner._owns_snapshot_lock(new_fd)
     new_owner._release_snapshot_lock(new_fd)
+
+
+def test_webcat_acl_rejects_corrupt_completed_snapshot_before_publication(
+    tmp_path, monkeypatch
+) -> None:
+    webcat_acl = _webcat_acl_module()
+    snapshot_dir = tmp_path / "snapshot"
+    snapshot_dir.mkdir()
+    snapshot_path = snapshot_dir / "webcat.sqlite"
+    monkeypatch.setenv("WEBFILTER_SNAPSHOT_DIR", str(snapshot_dir))
+
+    with webcat_acl.sqlite3.connect(snapshot_path) as conn:
+        conn.execute(
+            "CREATE TABLE domains (domain TEXT PRIMARY KEY, categories TEXT NOT NULL)"
+        )
+        conn.execute("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)")
+        conn.execute("INSERT INTO meta VALUES('built_ts', '100')")
+        conn.execute("INSERT INTO meta VALUES('row_count', '0')")
+    known_good = snapshot_path.read_bytes()
+
+    class FakeCursor:
+        def execute(self, *_args, **_kwargs) -> None:
+            return None
+
+        def fetchmany(self, _size):
+            return []
+
+        def close(self) -> None:
+            return None
+
+    class FakeRemote:
+        native = type("Native", (), {"cursor": lambda self: FakeCursor()})()
+
+        def execute(self, *_args, **_kwargs):
+            return type("Result", (), {"fetchone": lambda self: ("200",)})()
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    real_connect = webcat_acl.sqlite3.connect
+
+    class CorruptOnClose:
+        def __init__(self, conn, path) -> None:
+            self._conn = conn
+            self._path = path
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def close(self) -> None:
+            self._conn.close()
+            self._path.write_bytes(b"not a sqlite database")
+
+    def corrupting_connect(database, *args, **kwargs):
+        conn = real_connect(database, *args, **kwargs)
+        path = Path(database) if isinstance(database, (str, Path)) else None
+        if path is not None and ".tmp-" in path.name:
+            return CorruptOnClose(conn, path)
+        return conn
+
+    db = webcat_acl._Db()
+    monkeypatch.setattr(db, "_connect", FakeRemote)
+    monkeypatch.setattr(webcat_acl.sqlite3, "connect", corrupting_connect)
+
+    assert db._build_snapshot_from_db(expected_built_ts=200) is False
+    assert snapshot_path.read_bytes() == known_good
+    assert not list(snapshot_dir.glob("webcat.sqlite.tmp-*"))
 
 
 def test_webcat_acl_snapshot_metadata_and_domains_share_mysql_snapshot(

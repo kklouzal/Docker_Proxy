@@ -344,6 +344,37 @@ class _Db:
             if conn is not None:
                 self._close_remote_conn(conn)
 
+    def _validate_snapshot_file(
+        self,
+        path: Path,
+        *,
+        expected_built_ts: int,
+        expected_row_count: int,
+    ) -> bool:
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(
+                f"file:{path.as_posix()}?mode=ro",
+                uri=True,
+                timeout=1.0,
+            )
+            integrity = conn.execute("PRAGMA quick_check").fetchone()
+            if integrity != ("ok",):
+                return False
+            meta = dict(conn.execute("SELECT k, v FROM meta"))
+            if int(meta.get("built_ts", 0)) != int(expected_built_ts):
+                return False
+            if int(meta.get("row_count", -1)) != int(expected_row_count):
+                return False
+            actual_row_count = conn.execute("SELECT COUNT(*) FROM domains").fetchone()
+            return actual_row_count == (int(expected_row_count),)
+        except Exception:
+            return False
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+
     def _build_snapshot_from_db(self, *, expected_built_ts: int = 0) -> bool:
         lock_fd = self._acquire_snapshot_lock()
         if lock_fd is None:
@@ -437,6 +468,12 @@ class _Db:
             local_db.commit()
             local_db.close()
             local_db = None
+            if not self._validate_snapshot_file(
+                tmp_path,
+                expected_built_ts=built_ts,
+                expected_row_count=row_count,
+            ):
+                return False
             Path(tmp_path).replace(self._snapshot_path)
             return self._load_snapshot_from_disk(force=True)
         except Exception:
