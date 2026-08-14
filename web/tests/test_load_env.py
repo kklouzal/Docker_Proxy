@@ -165,3 +165,41 @@ unset EARLIER_VALUE
     assert "line 2: unexpected trailing characters after quoted value" in result.stderr
     assert "hidden" not in result.stderr
     assert result.stdout == "EARLIER_VALUE=unset\n"
+
+
+def test_load_env_keeps_normalized_secrets_in_memory_and_preserves_caller_traps(
+    tmp_path: Path,
+) -> None:
+    app_env = tmp_path / "app.env"
+    app_env.write_text(
+        "SECRET=literal '$HOME' `not-a-command` $(also-not-a-command)\n",
+        encoding="utf-8",
+    )
+    script = (REPO_ROOT / "docker" / "load-env.sh").read_text(encoding="utf-8")
+    script = script.replace("/config/app.env", str(app_env))
+    unwritable_tmp = tmp_path / "not-a-directory"
+    unwritable_tmp.write_text("occupied", encoding="utf-8")
+    caller_trap = "trap 'printf \"caller-exit-trap\\\\n\"' EXIT\n"
+    probe = "printf 'SECRET=%s\\n' \"$SECRET\"\n"
+
+    result = run_test_process(
+        ["/bin/sh", "-c", caller_trap + script + probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={"TMPDIR": str(unwritable_tmp)},
+    )
+
+    assert result.stdout == (
+        "SECRET=literal '$HOME' `not-a-command` $(also-not-a-command)\n"
+        "caller-exit-trap\n"
+    )
+    assert result.stderr == ""
+
+
+def test_load_env_does_not_use_a_secret_bearing_temporary_file() -> None:
+    script = (REPO_ROOT / "docker" / "load-env.sh").read_text(encoding="utf-8")
+
+    assert "mktemp" not in script
+    assert "env_tmp" not in script
+    assert "trap " not in script

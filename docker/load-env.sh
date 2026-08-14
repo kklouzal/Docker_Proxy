@@ -1,8 +1,9 @@
 #!/bin/sh
 
 if [ -f /config/app.env ]; then
-    env_tmp="$(mktemp "${TMPDIR:-/tmp}/load-env.XXXXXX")" || exit 1
-    awk '
+    # Parse the complete file before applying anything.  Keep the normalized
+    # assignments in shell memory so mounted secrets are never copied to disk.
+    env_exports="$(awk '
         function ltrim(value) {
             sub(/^[ \t]+/, "", value)
             return value
@@ -69,18 +70,16 @@ if [ -f /config/app.env ]; then
             if (key !~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
                 fail("invalid environment variable name")
             }
-            print key "=" parse_value(substr(line, eq + 1))
+            value = parse_value(substr(line, eq + 1))
+            quote = sprintf("%c", 39)
+            escaped_quote = quote "\\" quote quote
+            gsub(quote, escaped_quote, value)
+            print "export " key "=" quote value quote
         }
-    ' /config/app.env > "$env_tmp" || {
-        status=$?
-        rm -f "$env_tmp"
-        exit "$status"
-    }
+    ' /config/app.env)" || exit $?
 
-    while IFS= read -r line || [ -n "$line" ]; do
-        key="${line%%=*}"
-        val="${line#*=}"
-        export "$key=$val"
-    done < "$env_tmp"
-    rm -f "$env_tmp"
+    # The parser admits only validated names and emits single-quoted literal
+    # values, so this evaluates assignments rather than app.env shell syntax.
+    eval "$env_exports"
+    unset env_exports
 fi
