@@ -1,4 +1,6 @@
 import importlib
+import os
+import time
 from typing import NoReturn
 
 import pytest
@@ -150,6 +152,47 @@ def test_webcat_acl_refreshes_snapshot_lock_while_building(
     assert db._build_snapshot_from_db(expected_built_ts=123) is True
     assert len(refresh_calls) >= 2
     assert all(fd is not None for fd in refresh_calls)
+
+
+def test_webcat_acl_snapshot_lock_reclaims_stale_owner(tmp_path, monkeypatch) -> None:
+    webcat_acl = _webcat_acl_module()
+    monkeypatch.setenv("WEBFILTER_SNAPSHOT_DIR", str(tmp_path / "snapshot"))
+    db = webcat_acl._Db()
+    db._snapshot_lock_stale_seconds = 1.0
+    db._snapshot_dir.mkdir(parents=True)
+    db._snapshot_lock_path.write_text("stale")
+    stale_time = time.time() - 2.0
+    os.utime(db._snapshot_lock_path, (stale_time, stale_time))
+
+    fd = db._acquire_snapshot_lock()
+
+    assert fd is not None
+    assert db._owns_snapshot_lock(fd)
+    db._release_snapshot_lock(fd)
+    assert not db._snapshot_lock_path.exists()
+
+
+def test_webcat_acl_snapshot_lock_old_owner_cannot_refresh_or_release_new_lock(
+    tmp_path, monkeypatch
+) -> None:
+    webcat_acl = _webcat_acl_module()
+    monkeypatch.setenv("WEBFILTER_SNAPSHOT_DIR", str(tmp_path / "snapshot"))
+    old_owner = webcat_acl._Db()
+    new_owner = webcat_acl._Db()
+
+    old_fd = old_owner._acquire_snapshot_lock()
+    assert old_fd is not None
+    old_owner._snapshot_lock_path.unlink()
+    new_fd = new_owner._acquire_snapshot_lock()
+    assert new_fd is not None
+    new_mtime_ns = new_owner._snapshot_lock_path.stat().st_mtime_ns
+
+    old_owner._refresh_snapshot_lock(old_fd)
+    old_owner._release_snapshot_lock(old_fd)
+
+    assert new_owner._snapshot_lock_path.stat().st_mtime_ns == new_mtime_ns
+    assert new_owner._owns_snapshot_lock(new_fd)
+    new_owner._release_snapshot_lock(new_fd)
 
 
 def test_webcat_acl_snapshot_metadata_and_domains_share_mysql_snapshot(

@@ -20,6 +20,7 @@ if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
 import contextlib  # noqa: E402
+import fcntl  # noqa: E402
 
 from services.db import connect  # noqa: E402
 from services.domain_normalization import normalize_domain as _norm_domain  # noqa: E402
@@ -193,6 +194,9 @@ class _Db:
         )
         self._snapshot_path = self._snapshot_dir / "webcat.sqlite"
         self._snapshot_lock_path = self._snapshot_dir / ".webcat.sqlite.lock"
+        self._snapshot_lock_guard_path = (
+            self._snapshot_dir / ".webcat.sqlite.lock.guard"
+        )
         self._snapshot_refresh_seconds = _env_float(
             "WEBFILTER_SNAPSHOT_REFRESH_SECONDS",
             30.0,
@@ -283,48 +287,81 @@ class _Db:
         with self._snapshot_state_lock:
             return self._local_conn is not None
 
-    def _acquire_snapshot_lock(self) -> int | None:
+    @contextlib.contextmanager
+    def _snapshot_lock_guard(self):
         self._snapshot_dir.mkdir(parents=True, exist_ok=True)
-        for _ in range(2):
+        guard_fd = os.open(
+            self._snapshot_lock_guard_path, os.O_CREAT | os.O_RDWR, 0o600
+        )
+        try:
+            fcntl.flock(guard_fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            with contextlib.suppress(Exception):
+                fcntl.flock(guard_fd, fcntl.LOCK_UN)
+            os.close(guard_fd)
+
+    def _owns_snapshot_lock(self, fd: int) -> bool:
+        try:
+            held = os.fstat(fd)
+            current = self._snapshot_lock_path.stat()
+            return (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
+        except OSError:
+            return False
+
+    def _acquire_snapshot_lock(self) -> int | None:
+        with self._snapshot_lock_guard():
             try:
                 fd = os.open(
                     self._snapshot_lock_path,
                     os.O_CREAT | os.O_EXCL | os.O_WRONLY,
                     0o600,
                 )
-                with contextlib.suppress(Exception):
-                    os.write(fd, str(os.getpid()).encode("ascii", errors="ignore"))
-                return fd
             except FileExistsError:
                 try:
                     stale = (
                         time.time() - self._snapshot_lock_path.stat().st_mtime
                     ) > self._snapshot_lock_stale_seconds
-                except Exception:
-                    stale = False
+                except OSError:
+                    return None
                 if not stale:
                     return None
                 try:
-                    self._snapshot_lock_path.unlink(missing_ok=True)
-                except Exception:
+                    self._snapshot_lock_path.unlink()
+                    fd = os.open(
+                        self._snapshot_lock_path,
+                        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                        0o600,
+                    )
+                except OSError:
                     return None
-        return None
+            with contextlib.suppress(Exception):
+                os.write(fd, str(os.getpid()).encode("ascii", errors="ignore"))
+            return fd
 
     def _release_snapshot_lock(self, fd: int | None) -> None:
-        if fd is not None:
+        if fd is None:
+            return
+        try:
+            with self._snapshot_lock_guard():
+                if self._owns_snapshot_lock(fd):
+                    self._snapshot_lock_path.unlink()
+        except OSError:
+            pass
+        finally:
             with contextlib.suppress(Exception):
                 os.close(fd)
-        with contextlib.suppress(Exception):
-            self._snapshot_lock_path.unlink(missing_ok=True)
 
     def _refresh_snapshot_lock(self, fd: int | None) -> None:
         if fd is None:
             return
         try:
-            # Keep the lock's mtime fresh so long-running snapshot builds are
-            # never mistaken for stale locks and re-entered by another helper.
-            os.utime(self._snapshot_lock_path, None)
-        except Exception:
+            with self._snapshot_lock_guard():
+                if self._owns_snapshot_lock(fd):
+                    # Refresh the owned inode, not whichever lock currently
+                    # happens to occupy the shared pathname.
+                    os.utime(fd, None)
+        except OSError:
             pass
 
     def _swap_local_snapshot(
