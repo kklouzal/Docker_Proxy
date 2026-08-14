@@ -753,6 +753,10 @@ class PacProfilesStore:
             ip = ip_address((client_ip or "").strip())
         except Exception:
             ip = None
+        if ip is not None and getattr(ip, "ipv4_mapped", None) is not None:
+            # Keep diagnostic/admin selection aligned with PAC serving when a
+            # WSGI/proxy stack reports an IPv4 client as IPv4-mapped IPv6.
+            ip = ip.ipv4_mapped
 
         def id_key(p: PacProfile) -> int:
             return int(p.id)

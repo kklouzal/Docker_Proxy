@@ -2025,3 +2025,28 @@ def test_pac_profile_match_uses_manifest_specificity_without_database() -> None:
     assert store.match_profile_for_client_ip("10.99.4.70").name == "Corp"
     assert store.match_profile_for_client_ip("192.0.2.44").name == "Catch-all"
     assert store.match_profile_for_client_ip("not-an-ip").name == "Catch-all"
+
+
+def test_pac_profile_match_normalizes_ipv4_mapped_clients_without_affecting_ipv6() -> (
+    None
+):
+    from services import pac_profiles_store  # type: ignore
+
+    store = pac_profiles_store.PacProfilesStore()
+    profiles = [
+        pac_profiles_store.PacProfile(1, "IPv4", "10.2.3.0/24", [], [], 1),
+        pac_profiles_store.PacProfile(2, "IPv6", "2001:db8:1::/64", [], [], 2),
+        pac_profiles_store.PacProfile(3, "Catch-all", "", [], [], 3),
+    ]
+    store.list_profiles = lambda: profiles  # type: ignore[method-assign]
+
+    dotted_profile = store.match_profile_for_client_ip("10.2.3.44")
+    mapped_profile = store.match_profile_for_client_ip("::ffff:10.2.3.44")
+    assert dotted_profile is not None
+    assert mapped_profile is not None
+    assert mapped_profile.id == dotted_profile.id
+    assert store.match_profile_for_client_ip("2001:db8:1::44").name == "IPv6"
+    assert store.match_profile_for_client_ip("not-an-ip").name == "Catch-all"
+
+    store.list_profiles = lambda: profiles[:-1]  # type: ignore[method-assign]
+    assert store.match_profile_for_client_ip("not-an-ip") is None
