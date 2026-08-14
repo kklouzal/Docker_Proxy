@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import unquote, urlsplit
-from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
+from urllib.request import (
+    HTTPRedirectHandler,
+    HTTPSHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
 from xml.sax.saxutils import escape as xml_escape
 
 try:
@@ -518,6 +524,7 @@ class SamlAuthStore:
             headers=_SAML_METADATA_REQUEST_HEADERS,
         )
         opener = build_opener(
+            ProxyHandler({}),
             HTTPSHandler(context=context),
             _SamlMetadataRedirectHandler(require_https=profile.require_https),
         )

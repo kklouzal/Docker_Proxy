@@ -794,6 +794,54 @@ def _use_fake_metadata_opener(monkeypatch, response: _FakeMetadataResponse):
     return opened_requests
 
 
+def test_saml_fetch_disables_ambient_proxy_and_preserves_tls_redirect_handlers(
+    monkeypatch,
+) -> None:
+    store = MemorySamlAuthStore()
+    profile = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/metadata.xml",
+            "ca_bundle": "test custom CA",
+            "require_https": "1",
+        }
+    )
+    monkeypatch.setenv("HTTPS_PROXY", "http://ambient-proxy.example.test:8080")
+    monkeypatch.setenv("NO_PROXY", "adfs.example.local")
+    context = saml_auth.ssl.SSLContext(saml_auth.ssl.PROTOCOL_TLS_CLIENT)
+    context_calls = []
+    captured_handlers = []
+
+    def fake_create_default_context(*, cadata=None):
+        context_calls.append(cadata)
+        return context
+
+    class FakeOpener:
+        def open(self, request, *, timeout):
+            assert request.full_url == profile.metadata_url
+            assert timeout == profile.timeout_seconds
+            return _FakeMetadataResponse(SAMPLE_METADATA.encode(), profile.metadata_url)
+
+    def fake_build_opener(*handlers):
+        captured_handlers.extend(handlers)
+        return FakeOpener()
+
+    monkeypatch.setattr(
+        saml_auth.ssl, "create_default_context", fake_create_default_context
+    )
+    monkeypatch.setattr(saml_auth, "build_opener", fake_build_opener)
+
+    assert store.fetch_metadata(profile) == SAMPLE_METADATA
+    assert context_calls == ["test custom CA"]
+    assert len(captured_handlers) == 3
+    proxy_handler, https_handler, redirect_handler = captured_handlers
+    assert isinstance(proxy_handler, saml_auth.ProxyHandler)
+    assert proxy_handler.proxies == {}
+    assert isinstance(https_handler, saml_auth.HTTPSHandler)
+    assert https_handler._context is context
+    assert isinstance(redirect_handler, saml_auth._SamlMetadataRedirectHandler)
+    assert redirect_handler._require_https is True
+
+
 def test_saml_fetch_rejects_https_metadata_redirect_before_unsafe_fetch(
     monkeypatch,
 ) -> None:
