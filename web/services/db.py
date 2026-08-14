@@ -59,9 +59,16 @@ class CompatRow(UserDict[str, Any]):
 
 
 class CompatResult:
-    def __init__(self, cursor: Any, *, on_close: Any = None) -> None:
+    def __init__(
+        self,
+        cursor: Any,
+        *,
+        on_close: Any = None,
+        on_error: Any = None,
+    ) -> None:
         self._cursor = cursor
         self._on_close = on_close
+        self._on_error = on_error
         self._closed = False
         self._columns = tuple(
             (d[0] if d else "") for d in (getattr(cursor, "description", None) or [])
@@ -100,11 +107,16 @@ class CompatResult:
             return CompatRow(self._columns, row)
         return row
 
+    def _handle_fetch_error(self, exc: BaseException) -> None:
+        if self._on_error is not None:
+            self._on_error(exc)
+        self.close()
+
     def fetchone(self) -> Any:
         try:
             row = self._cursor.fetchone()
-        except Exception:
-            self.close()
+        except Exception as exc:
+            self._handle_fetch_error(exc)
             raise
         if row is None or self._is_exhausted():
             self.close()
@@ -112,7 +124,12 @@ class CompatResult:
 
     def fetchall(self) -> list[Any]:
         try:
-            return [self._convert_row(r) for r in self._cursor.fetchall()]
+            rows = self._cursor.fetchall()
+        except Exception as exc:
+            self._handle_fetch_error(exc)
+            raise
+        try:
+            return [self._convert_row(r) for r in rows]
         finally:
             self.close()
 
@@ -140,8 +157,16 @@ class CompatConnection:
         self._discard_on_close = False
         self._results: set[CompatResult] = set()
 
+    def _mark_discard_for_error(self, exc: BaseException) -> None:
+        if _should_discard_native_connection(exc):
+            self._discard_on_close = True
+
     def _result(self, cursor: Any) -> CompatResult:
-        result = CompatResult(cursor, on_close=self._results.discard)
+        result = CompatResult(
+            cursor,
+            on_close=self._results.discard,
+            on_error=self._mark_discard_for_error,
+        )
         if not result._closed:
             self._results.add(result)
         return result
