@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from typing import ClassVar
 
 import pymysql
@@ -142,6 +144,58 @@ def test_diagnostic_background_starts_even_when_initial_db_is_down(monkeypatch, 
     assert all(thread.started for thread in _FakeThread.created)
 
 
+def test_timeseries_sampler_stops_promptly_and_restarts_same_store(monkeypatch) -> None:
+    store = timeseries_store.TimeSeriesStore()
+    sampled = threading.Event()
+    sample_count = 0
+
+    monkeypatch.setenv("TIMESERIES_STARTUP_JITTER_SECONDS", "0")
+    monkeypatch.setattr(store, "insert_snapshot", lambda _stats: sampled.set())
+
+    def get_stats() -> dict[str, bool]:
+        nonlocal sample_count
+        sample_count += 1
+        return {"ok": True}
+
+    store.start_background(get_stats)
+    assert sampled.wait(1.0)
+
+    started = time.monotonic()
+    assert store.stop_background(timeout=0.5) is True
+    assert time.monotonic() - started < 0.5
+    assert store._started is False
+    assert store._thread is None
+
+    sampled.clear()
+    store.start_background(get_stats)
+    assert sampled.wait(1.0)
+    assert sample_count >= 2
+    assert store.stop_background(timeout=0.5) is True
+
+
+def test_timeseries_sampler_timeout_preserves_live_worker_ownership() -> None:
+    class LiveThread:
+        def start(self) -> None:
+            pass
+
+        def join(self, _timeout: float) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return True
+
+    store = timeseries_store.TimeSeriesStore()
+    worker = LiveThread()
+    store._thread = worker  # type: ignore[assignment]
+    store._started = True
+
+    assert store.stop_background(timeout=0.0) is False
+    store.start_background(dict)
+
+    assert store._thread is worker
+    assert store._started is True
+
+
 def test_timeseries_rollup_cadence_is_configurable_and_not_every_snapshot(monkeypatch) -> None:
     class StopLoopError(Exception):
         pass
@@ -170,7 +224,7 @@ def test_timeseries_rollup_cadence_is_configurable_and_not_every_snapshot(monkey
         if current["sleeps"] >= 4:
             raise StopLoopError
 
-    monkeypatch.setattr(timeseries_store.time, "sleep", fake_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", fake_sleep)
     monkeypatch.setattr(store, "insert_snapshot", lambda _stats: calls.append("snapshot"))
     monkeypatch.setattr(store, "rollup_and_prune", lambda: calls.append("rollup"))
 

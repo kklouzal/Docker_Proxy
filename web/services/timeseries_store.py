@@ -473,8 +473,11 @@ class TimeSeriesStore:
 
     def start_background(self, get_stats_func) -> None:
         with self._start_lock:
-            if self._started:
+            if self._thread is not None and self._thread.is_alive():
+                self._started = True
                 return
+            self._thread = None
+            self._started = False
 
             sample_backoff = DatabaseWriteBackoff.from_env(
                 "TIMESERIES_SAMPLE_DB",
@@ -560,7 +563,8 @@ class TimeSeriesStore:
                             rollup_backoff.next_attempt_at,
                         )
 
-                    time.sleep(1.0)
+                    if self._stop_event.wait(1.0):
+                        break
 
             t = threading.Thread(target=loop, name="timeseries-sampler", daemon=True)
             self._stop_event.clear()
@@ -569,11 +573,17 @@ class TimeSeriesStore:
             self._started = True
 
     def stop_background(self, *, timeout: float = 5.0) -> bool:
-        self._stop_event.set()
-        thread = self._thread
-        if thread is not None:
-            thread.join(max(0.0, timeout))
-        return thread is None or not thread.is_alive()
+        with self._start_lock:
+            self._stop_event.set()
+            thread = self._thread
+            if thread is not None:
+                thread.join(max(0.0, timeout))
+                if thread.is_alive():
+                    self._started = True
+                    return False
+            self._thread = None
+            self._started = False
+            return True
 
 
 _store: TimeSeriesStore | None = None
