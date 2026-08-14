@@ -228,7 +228,7 @@ def test_materialize_certificate_bundle_fsyncs_parent_directories_after_publish(
 
     certificate_core.materialize_certificate_bundle(tmp_path, bundle)
 
-    assert parent_fsyncs == [tmp_path.name] * 8
+    assert parent_fsyncs == [tmp_path.name] * 10
     assert (tmp_path / "ca.crt").read_text(encoding="utf-8") == CERT_A
     assert (tmp_path / "ca.key").read_text(encoding="utf-8") == KEY_A
     assert (tmp_path / "uploaded_ca.pfx").read_bytes() == b"pfx-bytes"
@@ -268,6 +268,9 @@ def test_restore_certificate_material_snapshot_fsyncs_rollback_replaces_and_unli
     assert (tmp_path / "ca.key").read_bytes() == b"restored-key"
     assert not (tmp_path / "uploaded_ca.pfx").exists()
     assert (tmp_path / ".ca-material.json").read_bytes() == b"{}\n"
+    assert stat.S_IMODE((tmp_path / "ca.crt").stat().st_mode) == 0o644
+    assert stat.S_IMODE((tmp_path / "ca.key").stat().st_mode) == 0o640
+    assert stat.S_IMODE((tmp_path / ".ca-material.json").stat().st_mode) == 0o600
 
 
 def test_materialize_certificate_bundle_surfaces_publish_directory_fsync_io_failure(
@@ -285,7 +288,7 @@ def test_materialize_certificate_bundle_surfaces_publish_directory_fsync_io_fail
         nonlocal directory_fsync_count
         if stat.S_ISDIR(certificate_core.os.fstat(fd).st_mode):
             directory_fsync_count += 1
-            if directory_fsync_count == 3:
+            if directory_fsync_count == 5:
                 raise OSError(errno.EIO, "directory fsync failed")
         real_fsync(fd)
 
@@ -298,7 +301,41 @@ def test_materialize_certificate_bundle_surfaces_publish_directory_fsync_io_fail
 
     assert (tmp_path / "ca.crt").read_text(encoding="utf-8") == CERT_A
     assert not (tmp_path / "ca.key").exists()
-    assert not (tmp_path / ".ca-material.json").exists()
+    assert (tmp_path / ".ca-material.json").exists()
+
+
+def test_first_materialize_failure_after_key_publish_leaves_fail_closed_marker(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        certificate_core, "_extract_certificate_metadata", lambda _cert: ("", "", "")
+    )
+    bundle = certificate_core.build_certificate_bundle(
+        CERT_A,
+        KEY_A,
+        source_kind="uploaded_pfx",
+        original_pfx_bytes=b"pfx-bytes",
+    )
+    original_replace = Path.replace
+
+    def fail_after_key_replace(self: Path, target: object) -> Path:
+        result = original_replace(self, target)
+        if Path(target).name == "ca.key":
+            message = "simulated failure after key replace"
+            raise RuntimeError(message)
+        return result
+
+    monkeypatch.setattr(Path, "replace", fail_after_key_replace)
+
+    with pytest.raises(RuntimeError, match="simulated failure after key replace"):
+        certificate_core.materialize_certificate_bundle(tmp_path, bundle)
+
+    assert (tmp_path / "ca.crt").exists()
+    assert (tmp_path / "ca.key").exists()
+    assert not (tmp_path / "uploaded_ca.pfx").exists()
+    assert (tmp_path / ".ca-material.json").exists()
+    assert certificate_core.load_local_certificate_bundle(tmp_path) is None
 
 
 def test_materialize_and_load_certificate_bundle_round_trip_and_manage_pfx_file(
@@ -320,6 +357,8 @@ def test_materialize_and_load_certificate_bundle_round_trip_and_manage_pfx_file(
     assert (tmp_path / "ca.crt").read_text(encoding="utf-8") == CERT_A + CERT_B
     assert (tmp_path / "ca.key").read_text(encoding="utf-8") == KEY_A
     assert (tmp_path / "uploaded_ca.pfx").read_bytes() == b"pfx-bytes"
+    assert stat.S_IMODE((tmp_path / "ca.key").stat().st_mode) == 0o640
+    assert stat.S_IMODE((tmp_path / "uploaded_ca.pfx").stat().st_mode) == 0o600
 
     loaded = certificate_core.load_local_certificate_bundle(tmp_path)
     assert loaded is not None

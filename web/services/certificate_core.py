@@ -295,14 +295,16 @@ def _ensure_existing_certificate_material_marker(
     )
     if marker_path is None or marker_path.exists():
         return
-    base = pathlib.Path(ca_dir)
-    if (base / cert_name).exists() and (base / key_name).exists():
-        _write_certificate_material_marker(
-            ca_dir,
-            cert_name=cert_name,
-            key_name=key_name,
-            pfx_name=pfx_name,
-        )
+    # A missing marker must still become a fail-closed transaction sentinel.
+    # This matters on the first installation: if publication fails after both
+    # cert and key replacements but before the final marker, readers must not
+    # accept a generation whose optional PFX has not yet been published.
+    _write_certificate_material_marker(
+        ca_dir,
+        cert_name=cert_name,
+        key_name=key_name,
+        pfx_name=pfx_name,
+    )
 
 
 def _certificate_material_marker_matches_current(
@@ -456,7 +458,9 @@ def _certificate_validity_detail(cert: x509.Certificate) -> str:
     return ""
 
 
-def _validate_tls_material_paths_unlocked(certfile: str, keyfile: str) -> TlsMaterialValidation:
+def _validate_tls_material_paths_unlocked(
+    certfile: str, keyfile: str
+) -> TlsMaterialValidation:
     cert_status, cert = _path_status(
         certfile,
         parser=_load_pem_certificate,
@@ -508,7 +512,9 @@ def _validate_tls_material_paths_unlocked(certfile: str, keyfile: str) -> TlsMat
     )
 
 
-def _managed_material_pair(certfile: str, keyfile: str) -> tuple[str, str, str, str] | None:
+def _managed_material_pair(
+    certfile: str, keyfile: str
+) -> tuple[str, str, str, str] | None:
     cert_path = pathlib.Path((certfile or "").strip())
     key_path = pathlib.Path((keyfile or "").strip())
     if not cert_path.name or not key_path.name or cert_path.parent != key_path.parent:
@@ -516,7 +522,11 @@ def _managed_material_pair(certfile: str, keyfile: str) -> tuple[str, str, str, 
     marker_name = _certificate_material_marker_name(cert_path.name, key_path.name)
     if not marker_name:
         return None
-    pfx_name = "uploaded_ca.pfx" if cert_path.name == "ca.crt" and key_path.name == "ca.key" else ""
+    pfx_name = (
+        "uploaded_ca.pfx"
+        if cert_path.name == "ca.crt" and key_path.name == "ca.key"
+        else ""
+    )
     return str(cert_path.parent), cert_path.name, key_path.name, pfx_name
 
 
@@ -574,7 +584,13 @@ def sanitize_admin_ui_certificate_san_token(token: object) -> str:
         from urllib.parse import urlsplit
 
         parsed = urlsplit(value)
-        if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+        if (
+            parsed.username
+            or parsed.password
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
             return ""
         value = _admin_ui_certificate_san_authority_host(parsed)
     elif value.startswith("["):
@@ -687,7 +703,9 @@ def _load_bundle_ca_material(
             x509.BasicConstraints,
         ).value
     except x509.ExtensionNotFound as exc:
-        msg = "Admin UI HTTPS leaf generation requires a CA basic constraints extension."
+        msg = (
+            "Admin UI HTTPS leaf generation requires a CA basic constraints extension."
+        )
         raise ValueError(msg) from exc
     if not basic_constraints.ca:
         msg = "Admin UI HTTPS leaf generation requires a CA certificate."
@@ -964,6 +982,12 @@ def restore_certificate_material_snapshot(
                 pathlib.Path(tmp_path).replace(path_obj)
                 _fsync_parent_dir(path_obj)
                 tmp_path = ""
+                if path_obj.name == "ca.crt":
+                    path_obj.chmod(0o644)
+                elif path_obj.name == "ca.key":
+                    path_obj.chmod(0o640)
+                elif path_obj.name in {"uploaded_ca.pfx", ".ca-material.json"}:
+                    path_obj.chmod(0o600)
             finally:
                 if tmp_path:
                     with contextlib.suppress(OSError):
@@ -1042,6 +1066,7 @@ def materialize_certificate_bundle(
             if tmp_pfx_path:
                 pathlib.Path(tmp_pfx_path).replace(dest_pfx)
                 _fsync_parent_dir(dest_pfx)
+                pathlib.Path(dest_pfx).chmod(0o600)
                 tmp_pfx_path = ""
             elif pathlib.Path(dest_pfx).exists():
                 _unlink_with_parent_fsync(dest_pfx)
