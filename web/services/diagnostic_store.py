@@ -845,8 +845,11 @@ class DiagnosticStore:
 
     def start_background(self) -> None:
         with self._start_lock:
-            if self._started:
+            if any(thread.is_alive() for thread in self._threads):
+                self._started = True
                 return
+            self._threads = []
+            self._started = False
             try:
                 self.init_db()
                 self.seed_from_recent_logs()
@@ -893,11 +896,17 @@ class DiagnosticStore:
             self._started = True
 
     def stop_background(self, *, timeout: float = 5.0) -> bool:
-        self._stop_event.set()
-        deadline = time.monotonic() + max(0.0, timeout)
-        for thread in self._threads:
-            thread.join(max(0.0, deadline - time.monotonic()))
-        return all(not thread.is_alive() for thread in self._threads)
+        with self._start_lock:
+            self._stop_event.set()
+            deadline = time.monotonic() + max(0.0, timeout)
+            for thread in self._threads:
+                thread.join(max(0.0, deadline - time.monotonic()))
+            if any(thread.is_alive() for thread in self._threads):
+                self._started = True
+                return False
+            self._threads = []
+            self._started = False
+            return True
 
     def _read_last_lines(self, path: str, *, max_lines: int) -> list[str]:
         lines = read_bounded_complete_lines(

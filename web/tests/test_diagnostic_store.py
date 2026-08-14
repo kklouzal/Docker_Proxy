@@ -1,6 +1,7 @@
 import ipaddress
 from contextlib import nullcontext
 from types import SimpleNamespace
+from typing import ClassVar
 
 from services.diagnostic_store import (
     DiagnosticStore,
@@ -11,6 +12,68 @@ from services.diagnostic_store import (
 )
 
 from .mysql_test_utils import configure_test_mysql_env
+
+
+class _LifecycleThread:
+    created: ClassVar[list["_LifecycleThread"]] = []
+
+    def __init__(self, *, target, name=None, args=(), daemon=None):
+        self.target = target
+        self.name = name
+        self.args = args
+        self.daemon = daemon
+        self.alive = False
+        self.created.append(self)
+
+    def start(self) -> None:
+        self.alive = True
+
+    def join(self, _timeout: float) -> None:
+        self.alive = False
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+
+def test_background_clean_stop_allows_same_store_to_restart(monkeypatch) -> None:
+    _LifecycleThread.created.clear()
+    store = DiagnosticStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "seed_from_recent_logs", lambda: None)
+    monkeypatch.setattr("services.diagnostic_store.threading.Thread", _LifecycleThread)
+
+    store.start_background()
+    first_workers = list(store._threads)
+    assert store.stop_background(timeout=0.0) is True
+    assert store._started is False
+    assert store._threads == []
+
+    store.start_background()
+
+    assert store._started is True
+    assert len(store._threads) == 2
+    assert all(worker not in first_workers for worker in store._threads)
+
+
+def test_background_stop_timeout_preserves_live_worker_ownership(monkeypatch) -> None:
+    class StuckThread(_LifecycleThread):
+        def join(self, _timeout: float) -> None:
+            pass
+
+    _LifecycleThread.created.clear()
+    store = DiagnosticStore()
+    worker = StuckThread(target=lambda: None)
+    worker.start()
+    store._threads = [worker]
+    store._started = True
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(store, "seed_from_recent_logs", lambda: None)
+
+    assert store.stop_background(timeout=0.0) is False
+    store.start_background()
+
+    assert store._started is True
+    assert store._threads == [worker]
 
 
 def _candidate_request_row(
@@ -177,7 +240,9 @@ def test_domain_time_candidate_queries_order_ties_by_id(monkeypatch) -> None:
     assert [row["correlation_kind"] for row in candidates] == ["domain_time"] * 4
 
 
-def test_policy_candidate_query_ignores_blank_client_ip_for_domain_time_match(monkeypatch) -> None:
+def test_policy_candidate_query_ignores_blank_client_ip_for_domain_time_match(
+    monkeypatch,
+) -> None:
     captured_sql: list[str] = []
     captured_params: list[tuple[object, ...]] = []
 
