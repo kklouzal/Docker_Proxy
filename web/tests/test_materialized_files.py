@@ -134,3 +134,42 @@ def test_write_managed_text_files_rolls_back_publish_on_directory_fsync_io_failu
 
     assert target.read_text(encoding="utf-8") == "old\n"
     assert list(tmp_path.glob(".managed-*")) == []
+
+
+@pytest.mark.parametrize("target_kind", ["symlink", "fifo", "directory"])
+def test_write_managed_text_files_rejects_nonregular_existing_target(
+    tmp_path, target_kind
+) -> None:
+    materialized_files = _materialized_files_module()
+    target = tmp_path / "managed.conf"
+    external = tmp_path / "external.conf"
+    external.write_text("secret\n", encoding="utf-8")
+    if target_kind == "symlink":
+        target.symlink_to(external)
+    elif target_kind == "fifo":
+        target.parent.mkdir(exist_ok=True, parents=True)
+        materialized_files.os.mkfifo(target)
+    else:
+        target.mkdir()
+
+    with pytest.raises(RuntimeError, match="not a regular file"):
+        materialized_files.write_managed_text_files((str(target), "new\n"))
+
+    assert external.read_text(encoding="utf-8") == "secret\n"
+    assert not list(tmp_path.glob(".managed-*"))
+
+
+def test_write_managed_text_files_rejects_symlink_parent(tmp_path) -> None:
+    materialized_files = _materialized_files_module()
+    external = tmp_path / "external"
+    external.mkdir()
+    linked_parent = tmp_path / "linked"
+    linked_parent.symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="unsafe parent component"):
+        materialized_files.write_managed_text_files(
+            (str(linked_parent / "managed.conf"), "new\n")
+        )
+
+    assert not (external / "managed.conf").exists()
+    assert not list(external.glob(".materialized-lock-*"))

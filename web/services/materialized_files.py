@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import os
 import pathlib
+import stat
 import tempfile
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -20,7 +21,29 @@ _MANAGED_PATH_LOCKS = KeyedLockRegistry[str]()
 
 
 def _managed_path_key(path: str) -> str:
-    return str(pathlib.Path(path).resolve(strict=False))
+    return os.path.abspath(path)  # noqa: PTH100 -- preserve symlink identity
+
+
+def _validate_managed_path(path: str) -> None:
+    """Reject links and non-directory ancestors, and non-regular targets."""
+    target = pathlib.Path(
+        os.path.abspath(path)  # noqa: PTH100 -- inspect rather than resolve links
+    )
+    for parent in reversed(target.parents):
+        try:
+            parent_stat = parent.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(parent_stat.st_mode) or not stat.S_ISDIR(parent_stat.st_mode):
+            msg = f"Managed file path has an unsafe parent component: {path!r}"
+            raise RuntimeError(msg)
+    try:
+        target_stat = target.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(target_stat.st_mode) or not stat.S_ISREG(target_stat.st_mode):
+        msg = f"Managed file target is not a regular file: {path!r}"
+        raise RuntimeError(msg)
 
 
 def _interprocess_lock_path(path_key: str) -> pathlib.Path:
@@ -36,6 +59,7 @@ def _locked_materialized_paths(paths: list[str]) -> Iterator[None]:
     with _MANAGED_PATH_LOCKS.locked(path_keys):
         try:
             for path_key in path_keys:
+                _validate_managed_path(path_key)
                 lock_path = _interprocess_lock_path(path_key)
                 lock_path.parent.mkdir(exist_ok=True, parents=True)
                 flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
@@ -65,6 +89,35 @@ class _FileBackup:
     content: bytes = b""
     mode: int = _RUNTIME_FILE_MODE
     owner: tuple[int, int] | None = None
+
+
+def _read_regular_file_backup(path: str) -> _FileBackup:
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return _FileBackup(existed=False)
+    except OSError:
+        msg = f"Unable to safely read managed file target: {path!r}"
+        raise RuntimeError(msg) from None
+    try:
+        target_stat = os.fstat(fd)
+        if not stat.S_ISREG(target_stat.st_mode):
+            msg = f"Managed file target is not a regular file: {path!r}"
+            raise RuntimeError(msg)
+        with os.fdopen(fd, "rb") as existing:
+            fd = -1
+            return _FileBackup(
+                existed=True,
+                content=existing.read(),
+                mode=target_stat.st_mode & 0o777,
+                owner=(target_stat.st_uid, target_stat.st_gid),
+            )
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 def _write_staged_file(
@@ -140,17 +193,8 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
         ):
             try:
                 for target_key, path, _content in materialized_files:
-                    try:
-                        stat = pathlib.Path(path).stat()
-                        with pathlib.Path(path).open("rb") as existing:
-                            backups[target_key] = _FileBackup(
-                                existed=True,
-                                content=existing.read(),
-                                mode=stat.st_mode & 0o777,
-                                owner=(stat.st_uid, stat.st_gid),
-                            )
-                    except FileNotFoundError:
-                        backups[target_key] = _FileBackup(existed=False)
+                    _validate_managed_path(path)
+                    backups[target_key] = _read_regular_file_backup(path)
 
                 for target_key, path, content in materialized_files:
                     backup = backups[target_key]
@@ -166,6 +210,7 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
                 for (target_key, path, _content), temp_path in zip(
                     materialized_files, temp_paths, strict=False
                 ):
+                    _validate_managed_path(path)
                     os.replace(temp_path, path)  # noqa: PTH105
                     replaced_paths.append((target_key, path))
                     _fsync_parent_dir(path)
