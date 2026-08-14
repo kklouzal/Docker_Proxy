@@ -1,0 +1,12 @@
+title = "Docker Proxy Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic PEM-shaped strings used only to exercise certificate parsing and recovery tests."
+targetRules = ["private-key"]
+paths = [
+  '''(?:^|/)web/tests/test_certificate_core\.py$''',
+  '''(?:^|/)web/tests/test_proxy_recovery_restore\.py$''',
+]

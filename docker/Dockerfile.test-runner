@@ -9,5 +9,8 @@ WORKDIR /workspace
 COPY web/requirements.txt /tmp/requirements/requirements.txt
 COPY web/requirements-dev.txt /tmp/requirements/requirements-dev.txt
 
+# Runtime/test dependencies are fully pinned in the copied requirements files;
+# pip itself intentionally follows the base image's supported upgrade stream.
+# hadolint ignore=DL3013
 RUN python -m pip install --upgrade pip \
     && python -m pip install -r /tmp/requirements/requirements-dev.txt

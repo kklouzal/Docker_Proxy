@@ -9,7 +9,9 @@ set -eu
 export DISABLE_BACKGROUND="${DISABLE_BACKGROUND:-0}"
 
 # Keep DB sizing and the eventual Gunicorn argv on the launcher's single
-# sanitization contract. Its output is always five decimal integer tokens.
+# sanitization contract. Its output is always five decimal integer tokens, and
+# intentional word splitting maps those tokens onto the positional parameters.
+# shellcheck disable=SC2046
 set -- $(python3 /app/tools/start_admin_ui.py --print-effective-gunicorn-env)
 export WEB_WORKERS="$1"
 export WEB_THREADS="$2"

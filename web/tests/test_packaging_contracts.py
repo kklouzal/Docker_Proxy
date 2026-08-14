@@ -373,6 +373,35 @@ def test_local_deterministic_test_command_matches_ci_mysql_exclusion() -> None:
     assert expected_marker in _read("README.md")
 
 
+def test_publish_workflow_enforces_static_and_local_image_security_gates() -> None:
+    workflow = _read(".github/workflows/publish-ghcr.yml")
+    static_job = _workflow_job_body(workflow, "static-analysis")
+    ruff_job = _workflow_job_body(workflow, "ruff-check")
+    build_job = _workflow_job_body(workflow, "build-test-images")
+
+    for marker in (
+        "actionlint -color=false",
+        "zizmor --offline --format github",
+        "shellcheck",
+        "hadolint",
+        "docker compose -f docker-compose.yml config --quiet",
+        "docker compose -f docker-compose.ghcr.yml config --quiet",
+        "docker compose -f docker-compose.server002.yml config --quiet",
+        "gitleaks dir --no-banner --redact",
+    ):
+        assert marker in static_job
+
+    assert "needs: static-analysis" in ruff_job
+    assert "load: true" in build_job
+    assert "aquasecurity/trivy-action@" in build_job
+    assert "image-ref: docker-proxy-${{ matrix.image }}:ci" in build_job
+    assert "scanners: vuln" in build_job
+    assert "vuln-type: os,library" in build_job
+    assert "severity: HIGH,CRITICAL" in build_job
+    assert "ignore-unfixed: true" in build_job
+    assert 'exit-code: "1"' in build_job
+
+
 def test_ghcr_publish_passes_runtime_version_build_args() -> None:
     workflow = _read(".github/workflows/publish-ghcr.yml")
     proxy = _read("docker/Dockerfile.proxy")
@@ -403,7 +432,7 @@ def test_ghcr_publish_passes_runtime_version_build_args() -> None:
         assert "date -u +'%Y-%m-%dT%H:%M:%SZ'" in job
         assert '>> "$GITHUB_OUTPUT"' in job
         assert job.index("id: build-date") < job.index(
-            "uses: docker/build-push-action@v7"
+            "uses: docker/build-push-action@"
         )
         assert "${{ github.event.head_commit.timestamp || github.run_id }}" not in job
         assert job.count("BUILD_DATE=${{ steps.build-date.outputs.value }}") == 1

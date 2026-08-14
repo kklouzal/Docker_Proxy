@@ -24,21 +24,116 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  static-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install pinned static-analysis tools
+        shell: bash
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ZIZMOR_VERSION: "1.29.0"
+          SHELLCHECK_VERSION: "0.11.0"
+          HADOLINT_VERSION: "2.15.1"
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          set -euo pipefail
+          bin="${RUNNER_TEMP}/static-analysis-bin"
+          downloads="${RUNNER_TEMP}/static-analysis-downloads"
+          mkdir -p "$bin" "$downloads"
+
+          curl --fail --silent --show-error --location \
+            --output "$downloads/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $downloads/actionlint.tar.gz" | sha256sum --check
+          tar -xzf "$downloads/actionlint.tar.gz" -C "$downloads" actionlint
+          install -m 0755 "$downloads/actionlint" "$bin/actionlint"
+
+          curl --fail --silent --show-error --location \
+            --output "$downloads/zizmor.tar.gz" \
+            "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "dd96df044a6e8538d5f423790f453bdd03d49e5b2bcc38214acc41a2f1297839  $downloads/zizmor.tar.gz" | sha256sum --check
+          tar -xzf "$downloads/zizmor.tar.gz" -C "$downloads" zizmor
+          install -m 0755 "$downloads/zizmor" "$bin/zizmor"
+
+          curl --fail --silent --show-error --location \
+            --output "$downloads/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  $downloads/shellcheck.tar.xz" | sha256sum --check
+          tar -xJf "$downloads/shellcheck.tar.xz" -C "$downloads"
+          install -m 0755 "$downloads/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" "$bin/shellcheck"
+
+          curl --fail --silent --show-error --location \
+            --output "$downloads/hadolint" \
+            "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-x86_64"
+          echo "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  $downloads/hadolint" | sha256sum --check
+          install -m 0755 "$downloads/hadolint" "$bin/hadolint"
+
+          curl --fail --silent --show-error --location \
+            --output "$downloads/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $downloads/gitleaks.tar.gz" | sha256sum --check
+          tar -xzf "$downloads/gitleaks.tar.gz" -C "$downloads" gitleaks
+          install -m 0755 "$downloads/gitleaks" "$bin/gitleaks"
+
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Validate GitHub Actions workflows
+        run: actionlint -color=false .github/workflows/*.yml
+
+      - name: Audit GitHub Actions security
+        run: zizmor --offline --format github .github/workflows
+
+      - name: Check tracked shell scripts
+        shell: bash
+        run: git ls-files -z '*.sh' '**/*.sh' | xargs -0 --no-run-if-empty shellcheck
+
+      - name: Lint tracked Dockerfiles
+        shell: bash
+        run: git ls-files -z 'Dockerfile*' '**/Dockerfile*' | xargs -0 --no-run-if-empty -n1 hadolint
+
+      - name: Validate supported Compose combinations
+        shell: bash
+        env:
+          MYSQL_ROOT_PASSWORD: static…lder
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.ghcr.yml config --quiet
+          docker compose -f docker-compose.server002.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.mysql.yml config --quiet
+          docker compose -f docker-compose.ghcr.yml -f docker-compose.mysql.yml config --quiet
+          docker compose -f docker-compose.server002.yml -f docker-compose.mysql.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.live-tests.yml config --quiet
+
+      - name: Scan current checked-out repository content for secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          scan_root="${RUNNER_TEMP}/gitleaks-current-tree"
+          mkdir -p "$scan_root"
+          git ls-files -z | xargs -0 --no-run-if-empty cp --parents --target-directory "$scan_root"
+          gitleaks dir --no-banner --redact --config .gitleaks.toml "$scan_root"
+
   ruff-check:
+    needs: static-analysis
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            web/requirements.txt
-            web/requirements-dev.txt
 
       - name: Install lint dependencies
         run: |
@@ -57,16 +152,14 @@ jobs:
     needs: ruff-check
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            web/requirements.txt
-            web/requirements-dev.txt
 
       - name: Install test dependencies
         run: |
@@ -108,16 +201,14 @@ jobs:
       DISABLE_BACKGROUND: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            web/requirements.txt
-            web/requirements-dev.txt
 
       - name: Install test dependencies
         run: |
@@ -150,10 +241,12 @@ jobs:
             dockerfile: docker/Dockerfile.proxy
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - name: Compute OCI build date
         id: build-date
@@ -161,7 +254,7 @@ jobs:
         run: echo "value=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
       - name: Build local test image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -174,13 +267,28 @@ jobs:
             BUILD_DATE=${{ steps.build-date.outputs.value }}
             IMAGE_NAME=docker-proxy-${{ matrix.image }}:ci
 
+      - name: Scan exact local image for actionable vulnerabilities
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: docker-proxy-${{ matrix.image }}:ci
+          scanners: vuln
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+          version: v0.73.0
+
   live-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     needs: build-test-images
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Build live-test stack
         run: docker compose -f docker-compose.yml -f docker-compose.live-tests.yml build
@@ -219,16 +327,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -236,7 +346,7 @@ jobs:
 
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.image }}
           tags: |
@@ -252,7 +362,7 @@ jobs:
         run: echo "value=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
