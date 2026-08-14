@@ -484,6 +484,26 @@ def test_advproxy_command_wraps_escaped_json_as_single_settings_argument() -> No
     )
 
 
+@pytest.mark.parametrize("scope", ["system", "users", "machine&whoami", ""])
+def test_advproxy_command_rejects_unknown_scope_instead_of_silently_using_machine(
+    scope: str,
+) -> None:
+    with pytest.raises(WinHttpBuilderError, match="scope must be machine or user"):
+        build_advproxy_command(scope=scope, settings_json="{}")  # type: ignore[arg-type]
+
+
+def test_contract_output_rejects_tampered_advproxy_scope() -> None:
+    with pytest.raises(WinHttpBuilderError, match="scope must be machine or user"):
+        build_contract_output(
+            {
+                "proxy_host": "proxy.example",
+                "proxy_port": 3128,
+                "destination_schemes": ["http"],
+                "advproxy_scope": "system",
+            },
+        )
+
+
 def test_advproxy_command_preserves_json_quotes_as_one_settings_argument() -> None:
     settings = build_advproxy_settings_json(
         proxy_string="http=proxy.example:3128;https=proxy.example:3128",

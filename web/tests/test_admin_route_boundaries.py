@@ -2027,6 +2027,31 @@ def test_winhttp_registry_builder_normalizes_exported_reg_binary(
     assert "2800000000000000030000000000000000000000" in response.get_data(as_text=True)
 
 
+def test_winhttp_registry_builder_rejects_tampered_advproxy_scope(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/tools/winhttp-registry",
+        data={
+            "csrf_token": csrf_token(client, "/tools/winhttp-registry"),
+            "action": "generate",
+            "proxy_host": "proxy.example",
+            "proxy_port": "3128",
+            "destination_schemes": ["http"],
+            "advproxy_scope": "system",
+        },
+    )
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "advproxy setting scope must be machine or user." in text
+    assert "netsh winhttp set advproxy" not in text
+
+
 def test_lossy_proxy_id_query_does_not_select_colliding_registered_id(
     monkeypatch, tmp_path
 ) -> None:

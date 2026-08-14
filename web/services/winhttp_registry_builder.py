@@ -844,8 +844,18 @@ def build_advproxy_command(
     scope: Literal["machine", "user"],
     settings_json: str,
 ) -> str:
-    chosen_scope = scope if scope in ADVPROXY_SCOPES else "machine"
+    chosen_scope = _normalize_advproxy_scope(scope)
     return f"netsh winhttp set advproxy setting-scope={chosen_scope} settings={_quote_windows_command_argument(settings_json)}"
+
+
+def _normalize_advproxy_scope(value: object) -> Literal["machine", "user"]:
+    chosen_scope = str(value or "").strip().lower()
+    if chosen_scope == "machine":
+        return "machine"
+    if chosen_scope == "user":
+        return "user"
+    msg = "advproxy setting scope must be machine or user."
+    raise WinHttpBuilderError(msg)
 
 
 def _validate_settings_file_name(filename: str) -> str:
@@ -981,11 +991,7 @@ def build_contract_output(form: dict[str, Any]) -> WinHttpContractOutput:
         form.get("bypass_list") or "",
         include_local=_form_bool(form, "include_local_bypass"),
     )
-    scope = (
-        "user"
-        if str(form.get("advproxy_scope") or "").strip().lower() == "user"
-        else "machine"
-    )
+    scope = _normalize_advproxy_scope(form.get("advproxy_scope") or "machine")
 
     warnings = list(proxy_warnings)
     if not bypass_string:
