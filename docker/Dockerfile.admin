@@ -112,6 +112,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/schema_lifecycle.py \
 	web/services/saml_auth.py \
     web/services/safe_browsing_v5.py \
+	web/services/short_lived_cache.py \
 	web/services/sql_identifiers.py \
 	web/services/squid_core.py \
 	web/services/squid_config_forms.py \
