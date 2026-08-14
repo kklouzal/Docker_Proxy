@@ -9,11 +9,11 @@ if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
 
 from services.adblock_store import AdblockStore  # noqa: E402
+from services.blocked_log_runtime import BlockedLogDb  # noqa: E402
 from services.diagnostic_store import DiagnosticStore  # noqa: E402
 from services.live_stats import LiveStatsStore  # noqa: E402
 from services.safe_browsing_v5 import SafeBrowsingStore  # noqa: E402
 from services.webfilter_store import WebFilterStore  # noqa: E402
-from tools.webcat_acl import _BlockedLogDb  # noqa: E402
 
 
 class _Result:
@@ -222,7 +222,7 @@ def test_webfilter_blocked_log_retention_index_bootstrap():
 
 def test_webcat_acl_blocked_log_writer_retention_index_bootstrap():
     conn = _FakeConn()
-    writer = _BlockedLogDb(max_rows=100)
+    writer = BlockedLogDb(max_rows=100)
 
     writer._ensure_index(
         conn,

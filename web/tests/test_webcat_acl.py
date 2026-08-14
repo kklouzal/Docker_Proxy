@@ -4,6 +4,7 @@ import time
 from typing import NoReturn
 
 import pytest
+from services import blocked_log_runtime
 
 from .mysql_test_utils import configure_test_mysql_env
 
@@ -480,7 +481,7 @@ def test_webcat_acl_clears_cached_remote_connection_after_snapshot_build(
 
 
 def test_blocked_log_db_closes_connection_when_schema_init_fails(monkeypatch) -> None:
-    webcat_acl = _webcat_acl_module()
+    _webcat_acl_module()
 
     closed: list[bool] = []
 
@@ -492,9 +493,9 @@ def test_blocked_log_db_closes_connection_when_schema_init_fails(monkeypatch) ->
         def close(self):
             closed.append(True)
 
-    monkeypatch.setattr(webcat_acl, "connect", FakeConn)
+    monkeypatch.setattr(blocked_log_runtime, "connect", FakeConn)
 
-    db = webcat_acl._BlockedLogDb(max_rows=10)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=10)
 
     assert db._connect() is None
     assert closed == [True]
@@ -502,9 +503,9 @@ def test_blocked_log_db_closes_connection_when_schema_init_fails(monkeypatch) ->
 
 
 def test_blocked_log_db_keeps_block_when_source_ip_unavailable(monkeypatch) -> None:
-    webcat_acl = _webcat_acl_module()
+    _webcat_acl_module()
 
-    db = webcat_acl._BlockedLogDb(max_rows=10)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=10)
     monkeypatch.setattr(db, "_start_locked", lambda: None)
     monkeypatch.setattr(db, "_proxy_id", lambda: "default")
 
@@ -519,11 +520,11 @@ def test_blocked_log_db_keeps_block_when_source_ip_unavailable(monkeypatch) -> N
 
 
 def test_blocked_log_db_sanitizes_untrusted_log_fields(monkeypatch) -> None:
-    webcat_acl = _webcat_acl_module()
+    _webcat_acl_module()
 
-    db = webcat_acl._BlockedLogDb(max_rows=10)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=10)
     monkeypatch.setattr(db, "_start_locked", lambda: None)
-    monkeypatch.setattr(webcat_acl, "_now", lambda: 999)
+    monkeypatch.setattr(blocked_log_runtime, "_now", lambda: 999)
 
     db.insert(
         ts=-1,
@@ -543,9 +544,9 @@ def test_blocked_log_db_sanitizes_untrusted_log_fields(monkeypatch) -> None:
 
 
 def test_blocked_log_db_sanitizes_url_edge_cases(monkeypatch) -> None:
-    webcat_acl = _webcat_acl_module()
+    _webcat_acl_module()
 
-    db = webcat_acl._BlockedLogDb(max_rows=10)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=10)
     monkeypatch.setattr(db, "_start_locked", lambda: None)
 
     cases = [
@@ -587,7 +588,7 @@ def test_blocked_log_db_sanitizes_url_edge_cases(monkeypatch) -> None:
 def test_blocked_log_db_close_flushes_accepted_events_and_closes_connection(
     monkeypatch,
 ) -> None:
-    webcat_acl = _webcat_acl_module()
+    _webcat_acl_module()
 
     flushed = []
 
@@ -599,7 +600,7 @@ def test_blocked_log_db_close_flushes_accepted_events_and_closes_connection(
             self.closed += 1
 
     conn = FakeConn()
-    db = webcat_acl._BlockedLogDb(max_rows=10)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=10)
 
     def fake_connect():
         db._conn = conn
@@ -637,7 +638,7 @@ def test_blocked_log_db_close_terminates_when_connection_unavailable(
     webcat_acl = _webcat_acl_module()
 
     attempted = webcat_acl.threading.Event()
-    db = webcat_acl._BlockedLogDb(max_rows=10)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=10)
     db._batch_size = 1
 
     def unavailable():
@@ -673,7 +674,7 @@ def test_blocked_log_db_close_has_bounded_join_and_writer_owns_connection_close(
             self.closed += 1
 
     conn = FakeConn()
-    db = webcat_acl._BlockedLogDb(max_rows=10)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=10)
     db._batch_size = 1
 
     def fake_connect():
@@ -705,9 +706,9 @@ def test_blocked_log_db_close_has_bounded_join_and_writer_owns_connection_close(
 def test_blocked_log_db_preserves_batch_when_connection_unavailable(
     monkeypatch,
 ) -> None:
-    webcat_acl = _webcat_acl_module()
+    _webcat_acl_module()
 
-    db = webcat_acl._BlockedLogDb(max_rows=10)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=10)
     batch = [(123, "192.0.2.10", "http://blocked.example/", "adult")]
     monkeypatch.setattr(db, "_connect", lambda: None)
 
@@ -719,7 +720,7 @@ def test_blocked_log_db_preserves_batch_when_connection_unavailable(
 
 
 def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
-    webcat_acl = _webcat_acl_module()
+    _webcat_acl_module()
 
     closed: list[bool] = []
     rolled_back: list[bool] = []
@@ -731,7 +732,7 @@ def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
         def close(self) -> None:
             closed.append(True)
 
-    class BrokenBlockedLogDb(webcat_acl._BlockedLogDb):
+    class BrokenBlockedLogDb(blocked_log_runtime.BlockedLogDb):
         def _flush(self, conn, batch) -> None:
             msg = "insert failed"
             raise RuntimeError(msg)
@@ -754,7 +755,7 @@ def test_blocked_log_db_preserves_batch_after_flush_error() -> None:
 def test_blocked_log_db_does_not_retry_committed_batch_after_prune_error(
     monkeypatch,
 ) -> None:
-    webcat_acl = _webcat_acl_module()
+    _webcat_acl_module()
 
     class FakeConn:
         def __init__(self) -> None:
@@ -784,8 +785,8 @@ def test_blocked_log_db_does_not_retry_committed_batch_after_prune_error(
         msg = "prune failed after insert commit"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr(webcat_acl, "guarded_proxy_rows", fake_guarded_rows)
-    db = webcat_acl._BlockedLogDb(max_rows=10)
+    monkeypatch.setattr(blocked_log_runtime, "guarded_proxy_rows", fake_guarded_rows)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=10)
     db._inserts = 999
     monkeypatch.setattr(db, "_prune_old_rows", fail_prune)
     conn = FakeConn()
@@ -800,7 +801,7 @@ def test_blocked_log_db_does_not_retry_committed_batch_after_prune_error(
 
 
 def test_blocked_log_db_uses_proxy_write_guard_canonical_proxy(monkeypatch) -> None:
-    webcat_acl = _webcat_acl_module()
+    _webcat_acl_module()
 
     class Result:
         rowcount = 1
@@ -829,8 +830,8 @@ def test_blocked_log_db_uses_proxy_write_guard_canonical_proxy(monkeypatch) -> N
         )()
 
     monkeypatch.setenv("PROXY_INSTANCE_ID", "edge-old")
-    monkeypatch.setattr(webcat_acl, "guarded_proxy_rows", fake_guarded_rows)
-    db = webcat_acl._BlockedLogDb(max_rows=10)
+    monkeypatch.setattr(blocked_log_runtime, "guarded_proxy_rows", fake_guarded_rows)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=10)
     conn = FakeConn()
 
     db._flush(conn, [(123, "192.0.2.10", "http://blocked.example/", "adult")])
@@ -839,7 +840,7 @@ def test_blocked_log_db_uses_proxy_write_guard_canonical_proxy(monkeypatch) -> N
 
 
 def test_blocked_log_db_drops_lifecycle_blocked_batches(monkeypatch) -> None:
-    webcat_acl = _webcat_acl_module()
+    _webcat_acl_module()
     from services.proxy_write_guard import ProxyLifecycleWriteError  # type: ignore
 
     class FakeConn:
@@ -857,8 +858,8 @@ def test_blocked_log_db_drops_lifecycle_blocked_batches(monkeypatch) -> None:
         msg = "Proxy 'edge-old' has been removed"
         raise ProxyLifecycleWriteError(msg)
 
-    monkeypatch.setattr(webcat_acl, "guarded_proxy_rows", reject_rows)
-    db = webcat_acl._BlockedLogDb(max_rows=10)
+    monkeypatch.setattr(blocked_log_runtime, "guarded_proxy_rows", reject_rows)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=10)
     conn = FakeConn()
     batch = [(123, "192.0.2.10", "http://blocked.example/", "adult")]
 
@@ -871,7 +872,7 @@ def test_blocked_log_db_drops_lifecycle_blocked_batches(monkeypatch) -> None:
 
 
 def test_blocked_log_db_drops_reloaded_lifecycle_blocked_batches(monkeypatch) -> None:
-    webcat_acl = _webcat_acl_module()
+    _webcat_acl_module()
     from services import proxy_write_guard  # type: ignore
 
     class FakeConn:
@@ -895,8 +896,8 @@ def test_blocked_log_db_drops_reloaded_lifecycle_blocked_batches(monkeypatch) ->
         msg = "Proxy 'edge-old' has been removed"
         raise reloaded_guard.ProxyLifecycleWriteError(msg)
 
-    monkeypatch.setattr(webcat_acl, "guarded_proxy_rows", reject_rows)
-    db = webcat_acl._BlockedLogDb(max_rows=10)
+    monkeypatch.setattr(blocked_log_runtime, "guarded_proxy_rows", reject_rows)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=10)
     conn = FakeConn()
     batch = [(123, "192.0.2.10", "http://blocked.example/", "adult")]
 
@@ -910,7 +911,7 @@ def test_blocked_log_db_drops_reloaded_lifecycle_blocked_batches(monkeypatch) ->
 
 
 def test_blocked_log_prune_uses_bounded_ordered_delete(monkeypatch) -> None:
-    webcat_acl = _webcat_acl_module()
+    _webcat_acl_module()
 
     class Result:
         def __init__(self, rows=(), rowcount=0) -> None:
@@ -943,7 +944,7 @@ def test_blocked_log_prune_uses_bounded_ordered_delete(monkeypatch) -> None:
 
     monkeypatch.setenv("WEBFILTER_LOG_PRUNE_CHUNK_SIZE", "2")
     monkeypatch.setenv("WEBFILTER_LOG_PRUNE_MAX_ROWS", "2")
-    db = webcat_acl._BlockedLogDb(max_rows=3)
+    db = blocked_log_runtime.BlockedLogDb(max_rows=3)
     conn = FakeConn()
 
     db._prune_old_rows(conn, "webfilter_blocked_log", "edge-a")

@@ -62,6 +62,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/audit_store.py \
 	web/services/auth_store.py \
 	web/services/background_guard.py \
+	web/services/blocked_log_runtime.py \
 	web/services/bounded_delete.py \
 	web/services/client_identity_cache.py \
 	web/services/certificate_core.py \

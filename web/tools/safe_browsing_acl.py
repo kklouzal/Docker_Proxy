@@ -26,10 +26,7 @@ from services.safe_browsing_v5 import SafeBrowsingLocalChecker  # noqa: E402
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-try:
-    from tools.webcat_acl import _BlockedLogDb  # type: ignore
-except Exception:  # pragma: no cover - logging is best-effort in helper startup
-    _BlockedLogDb = None  # type: ignore
+from services.blocked_log_runtime import BlockedLogDb  # noqa: E402
 
 
 def _parse_line(line: str) -> tuple[str | None, str, str]:
@@ -85,13 +82,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         fail_mode=args.fail,
         selected_lists=",".join(args.selected_lists or []),
     )
-    log_db = (
-        _BlockedLogDb(max_rows=int(args.log_max_rows))
-        if _BlockedLogDb is not None
-        else None
-    )
-    if log_db is not None:
-        log_db.start()
+    log_db = BlockedLogDb(max_rows=int(args.log_max_rows))
+    log_db.start()
     try:
         for raw in sys.stdin:
             channel_id, src_ip, url = _parse_line(raw)
@@ -110,7 +102,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     category = "google-safe-browsing"
                     if verdict.threat_type:
                         category += "/" + verdict.threat_type.lower().replace("_", "-")
-                if unsafe and log_db is not None:
+                if unsafe:
                     with contextlib.suppress(Exception):
                         log_db.insert(
                             ts=int(__import__("time").time()),

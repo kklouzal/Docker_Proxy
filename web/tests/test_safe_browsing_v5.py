@@ -1556,7 +1556,7 @@ def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:
             )
 
     outputs = []
-    monkeypatch.setattr(safe_browsing_acl, "_BlockedLogDb", FakeLogDb)
+    monkeypatch.setattr(safe_browsing_acl, "BlockedLogDb", FakeLogDb)
     monkeypatch.setattr(safe_browsing_acl, "SafeBrowsingLocalChecker", FakeChecker)
     monkeypatch.setattr(
         safe_browsing_acl.sys, "stdin", ["192.0.2.10 203.0.113.5 http://bad.example/\n"]

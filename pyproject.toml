@@ -162,6 +162,7 @@ ignore = [
 
 # SHA-1 is used only for non-security fingerprints/cache keys in these files.
 "web/services/adblock_store.py" = ["S310", "S324"]
+"web/services/blocked_log_runtime.py" = ["S608"]
 "web/services/diagnostic_store.py" = ["S324", "S608"]
 "web/services/live_stats.py" = ["S324", "S608"]
 "web/services/ssl_errors_store.py" = ["S324", "S608"]
