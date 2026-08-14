@@ -6,6 +6,7 @@ import stat
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
@@ -29,6 +30,7 @@ class RecoveryExportQueryPlan:
 class CapturedRecoveryState:
     proxy_id: str
     source_control_plane_id: str
+    created_ts: str
     tables: tuple[proxy_recovery.RecoveryTablePayload, ...]
 
 
@@ -377,23 +379,36 @@ def capture_recovery_state(
     proxy_id: str,
     *,
     now_ts: int | None = None,
+    max_bundle_bytes: int | None = None,
 ) -> CapturedRecoveryState:
     validate_export_query_plan_coverage()
     normalized_proxy_id = proxy_recovery.normalize_proxy_id(proxy_id)
     snapshot_ts = int(time.time() if now_ts is None else now_ts)
+    created_ts = (
+        datetime.fromtimestamp(snapshot_ts, UTC)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    validated_limit = proxy_recovery.resolve_max_bundle_bytes(max_bundle_bytes)
     conn.execute("START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT")
     try:
         source_control_plane_id = read_control_plane_identity(conn)
         if source_control_plane_id is None:
             msg = "control plane identity is missing; run schema migration first"
             raise proxy_recovery.ProxyRecoveryError(msg)
-        tables = tuple(
-            proxy_recovery.RecoveryTablePayload(
-                plan.table_name,
-                tuple(_rows_for_plan(conn, plan, normalized_proxy_id, snapshot_ts)),
-            )
-            for plan in EXPORT_QUERY_PLANS
+        budget = _CaptureSizeBudget(
+            normalized_proxy_id,
+            source_control_plane_id,
+            created_ts,
+            validated_limit,
         )
+        tables = []
+        for plan in EXPORT_QUERY_PLANS:
+            rows = tuple(
+                _rows_for_plan(conn, plan, normalized_proxy_id, snapshot_ts, budget)
+            )
+            tables.append(proxy_recovery.RecoveryTablePayload(plan.table_name, rows))
         conn.commit()
     except Exception:
         rollback = getattr(conn, "rollback", None)
@@ -403,7 +418,8 @@ def capture_recovery_state(
     return CapturedRecoveryState(
         proxy_id=normalized_proxy_id,
         source_control_plane_id=source_control_plane_id,
-        tables=tables,
+        created_ts=created_ts,
+        tables=tuple(tables),
     )
 
 
@@ -455,17 +471,21 @@ def capture_and_write_recovery_bundle(
     max_bundle_bytes: int | None = None,
 ) -> Path:
     normalized_proxy_id = proxy_recovery.normalize_proxy_id(proxy_id)
+    validated_limit = proxy_recovery.resolve_max_bundle_bytes(max_bundle_bytes)
     with _recovery_capture_lock(normalized_proxy_id, recovery_dir):
         # The lock must precede the DB snapshot: locking only publication allows
         # a slow, older snapshot to replace a newer bundle.
         with connect_factory() as conn:
-            captured = capture_recovery_state(conn, normalized_proxy_id)
+            captured = capture_recovery_state(
+                conn, normalized_proxy_id, max_bundle_bytes=validated_limit
+            )
         return proxy_recovery.write_recovery_bundle(
             captured.proxy_id,
             captured.tables,
             source_control_plane_id=captured.source_control_plane_id,
+            created_ts=captured.created_ts,
             recovery_dir=recovery_dir,
-            max_bundle_bytes=max_bundle_bytes,
+            max_bundle_bytes=validated_limit,
         )
 
 
@@ -474,9 +494,58 @@ def _rows_for_plan(
     plan: RecoveryExportQueryPlan,
     proxy_id: str,
     now_ts: int,
-) -> tuple[Mapping[str, Any], ...]:
-    rows = conn.execute(plan.sql, _params_for_plan(plan, proxy_id, now_ts)).fetchall()
-    return tuple(_normalize_row(row, plan.columns) for row in rows)
+    budget: _CaptureSizeBudget,
+) -> Iterator[Mapping[str, Any]]:
+    result = conn.execute(plan.sql, _params_for_plan(plan, proxy_id, now_ts))
+    for row in result:
+        normalized = _normalize_row(row, plan.columns)
+        budget.add_row(plan.table_name, normalized)
+        yield normalized
+
+
+class _CaptureSizeBudget:
+    """Exact final-envelope byte accounting without retaining encoded copies."""
+
+    def __init__(
+        self,
+        proxy_id: str,
+        source_control_plane_id: str,
+        created_ts: str,
+        limit: int,
+    ) -> None:
+        empty_tables = [
+            {"name": plan.table_name, "rows": []} for plan in EXPORT_QUERY_PLANS
+        ]
+        envelope = {
+            "format_version": proxy_recovery.FORMAT_VERSION,
+            "proxy_id": proxy_id,
+            "source_control_plane_id": source_control_plane_id,
+            "created_ts": created_ts,
+            "schema_version": proxy_recovery.DATA_SCHEMA_VERSION,
+            "tables": empty_tables,
+            "integrity": {
+                "content_sha256": "0" * 64,
+                "mac_alg": proxy_recovery.MAC_ALGORITHM,
+                "mac": "0" * 64,
+            },
+        }
+        self.size = len(proxy_recovery.serialize_envelope(envelope))
+        self.limit = limit
+        self.row_counts: dict[str, int] = {}
+        self._check()
+
+    def add_row(self, table_name: str, row: Mapping[str, Any]) -> None:
+        encoded = proxy_recovery._encode_json_value(dict(row))
+        self.size += len(proxy_recovery._canonical_json_bytes(encoded))
+        if self.row_counts.get(table_name, 0):
+            self.size += 1
+        self.row_counts[table_name] = self.row_counts.get(table_name, 0) + 1
+        self._check()
+
+    def _check(self) -> None:
+        if self.size > self.limit:
+            msg = "recovery bundle exceeds maximum size during database capture"
+            raise proxy_recovery.ProxyRecoveryError(msg)
 
 
 def _params_for_plan(

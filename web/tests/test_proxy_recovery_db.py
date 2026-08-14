@@ -31,6 +31,9 @@ class _Result:
     def fetchall(self):
         return list(self._rows)
 
+    def __iter__(self):
+        return iter(self._rows)
+
 
 class _StrictExportConn:
     def __init__(
@@ -300,7 +303,7 @@ def test_concurrent_capture_serializes_snapshot_before_publish(
     second_snapshot_started = threading.Event()
     writes: list[str] = []
 
-    def capture_state(_conn, proxy_id):
+    def capture_state(_conn, proxy_id, **_kwargs):
         name = threading.current_thread().name
         if name == "older-capture":
             first_snapshot_started.set()
@@ -310,6 +313,7 @@ def test_concurrent_capture_serializes_snapshot_before_publish(
         return SimpleNamespace(
             proxy_id=proxy_id,
             source_control_plane_id=_SOURCE_CONTROL_PLANE_ID,
+            created_ts="2026-08-14T05:07:00Z",
             tables=((name,),),
         )
 
@@ -439,3 +443,89 @@ def test_capture_and_write_is_all_or_nothing_and_does_not_fsync_inside_db_contex
     assert writes[-1]["kwargs"]["source_control_plane_id"] == _SOURCE_CONTROL_PLANE_ID
     assert good_conn.commits == 1
     assert good_conn.closed is True
+
+
+def test_capture_budget_stops_streaming_wide_bytes_and_rolls_back() -> None:
+    consumed = 0
+
+    class StreamingResult:
+        def __iter__(self):
+            nonlocal consumed
+            for index in range(10_000):
+                consumed += 1
+                yield {
+                    "key": f"list-{index}",
+                    "url": b"x" * 700,
+                    "enabled": 1,
+                }
+
+        def fetchall(self):
+            pytest.fail("capture must not materialize the complete result set")
+
+    class StreamingConn(_StrictExportConn):
+        def execute(self, sql: str, params=()):
+            if _sql(sql) == _sql(recovery_db.recovery_export_query_plans()[0].sql):
+                return StreamingResult()
+            return super().execute(sql, params)
+
+    conn = StreamingConn(expected_now_ts=987654321)
+    with pytest.raises(
+        proxy_recovery.ProxyRecoveryError,
+        match="exceeds maximum size during database capture",
+    ):
+        recovery_db.capture_recovery_state(
+            conn,
+            "edge-01",
+            now_ts=987654321,
+            max_bundle_bytes=4096,
+        )
+
+    assert consumed < 10
+    assert conn.commits == 0
+    assert conn.rollbacks == 1
+
+
+def test_capture_budget_matches_successful_canonical_bundle_size(
+    tmp_path: Path,
+) -> None:
+    conn = _StrictExportConn(
+        {
+            "adblock_artifact_revisions": [
+                {
+                    "artifact_sha256": "a" * 64,
+                    "archive_blob": b"binary\x00payload",
+                    "report_json": "{}",
+                    "settings_version": 1,
+                    "enabled_lists_json": "[]",
+                }
+            ]
+        },
+        expected_now_ts=987654321,
+    )
+    captured = recovery_db.capture_recovery_state(
+        conn,
+        "edge-01",
+        now_ts=987654321,
+        max_bundle_bytes=16_384,
+    )
+    bundle = proxy_recovery.create_recovery_bundle(
+        captured.proxy_id,
+        captured.tables,
+        source_control_plane_id=captured.source_control_plane_id,
+        created_ts=captured.created_ts,
+        recovery_dir=tmp_path,
+        max_bundle_bytes=16_384,
+    )
+
+    assert len(proxy_recovery.serialize_recovery_bundle(bundle)) <= 16_384
+    restored = proxy_recovery.parse_recovery_bundle(
+        proxy_recovery.serialize_recovery_bundle(bundle),
+        expected_proxy_id="edge-01",
+        expected_source_control_plane_id=_SOURCE_CONTROL_PLANE_ID,
+        key=proxy_recovery.read_signing_key("edge-01", tmp_path),
+        max_bundle_bytes=16_384,
+    )
+    by_table = {table.name: table for table in restored.tables}
+    assert by_table["adblock_artifact_revisions"].rows[0]["archive_blob"] == (
+        b"binary\x00payload"
+    )
