@@ -439,25 +439,52 @@ def _safe_archive_member_name(name: str) -> str | None:
 
 
 _DEFAULT_MAX_EXTRACT_BYTES = 2 * 1024 * 1024 * 1024
+_DEFAULT_MAX_EXTRACT_MEMBERS = 100_000
+_DEFAULT_MAX_EXTRACT_PATH_CHARS = 4_096
 
 
-def _extract_max_bytes() -> int:
+def _positive_int_env(name: str, default: int) -> int:
     try:
-        max_bytes = int(
-            (
-                os.environ.get(
-                    "WEBCAT_MAX_EXTRACT_BYTES",
-                    str(_DEFAULT_MAX_EXTRACT_BYTES),
-                )
-                or str(_DEFAULT_MAX_EXTRACT_BYTES)
-            ).strip()
-            or str(_DEFAULT_MAX_EXTRACT_BYTES),
-        )
+        value = int((os.environ.get(name, str(default)) or str(default)).strip())
     except Exception:
-        return _DEFAULT_MAX_EXTRACT_BYTES
-    if max_bytes <= 0:
-        return _DEFAULT_MAX_EXTRACT_BYTES
-    return max_bytes
+        return default
+    return value if value > 0 else default
+
+
+def _extract_limits() -> tuple[int, int, int]:
+    return (
+        _positive_int_env("WEBCAT_MAX_EXTRACT_BYTES", _DEFAULT_MAX_EXTRACT_BYTES),
+        _positive_int_env("WEBCAT_MAX_EXTRACT_MEMBERS", _DEFAULT_MAX_EXTRACT_MEMBERS),
+        _positive_int_env(
+            "WEBCAT_MAX_EXTRACT_PATH_CHARS", _DEFAULT_MAX_EXTRACT_PATH_CHARS
+        ),
+    )
+
+
+def _admit_archive_member(
+    name: str | None,
+    seen_names: set[str],
+    member_count: int,
+    max_members: int,
+    max_path_chars: int,
+) -> int:
+    member_count += 1
+    if member_count > max_members:
+        msg = f"Archive member count exceeded limit ({max_members} members)."
+        raise ValueError(msg)
+    if name is None:
+        return member_count
+    if len(name) > max_path_chars:
+        msg = (
+            "Archive normalized member path exceeded limit "
+            f"({max_path_chars} characters): {name!r}."
+        )
+        raise ValueError(msg)
+    if name in seen_names:
+        msg = f"Archive contains duplicate normalized member path: {name!r}."
+        raise ValueError(msg)
+    seen_names.add(name)
+    return member_count
 
 
 def _extract_zip(zip_path: Path, out_dir: Path) -> None:
@@ -474,19 +501,19 @@ def _extract_zip(zip_path: Path, out_dir: Path) -> None:
 def _extract_zip_into(zip_path: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_root = out_dir.resolve()
-    max_bytes = _extract_max_bytes()
+    max_bytes, max_members, max_path_chars = _extract_limits()
 
     total = 0
+    member_count = 0
     seen_names: set[str] = set()
     with zipfile.ZipFile(zip_path, "r") as z:
         for info in z.infolist():
             name = _safe_archive_member_name(info.filename or "")
+            member_count = _admit_archive_member(
+                name, seen_names, member_count, max_members, max_path_chars
+            )
             if name is None:
                 continue
-            if name in seen_names:
-                msg = f"Archive contains duplicate normalized member path: {name!r}."
-                raise ValueError(msg)
-            seen_names.add(name)
 
             target = (out_dir / name).resolve()
             try:
@@ -551,23 +578,23 @@ def _extract_tar_into(tar_path: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_root = out_dir.resolve()
     # Supports .tar, .tar.gz, .tgz
-    max_bytes = _extract_max_bytes()
+    max_bytes, max_members, max_path_chars = _extract_limits()
     total = 0
+    member_count = 0
     seen_names: set[str] = set()
     with tarfile.open(tar_path, "r|*") as t:
         for m in t:
+            name = _safe_archive_member_name(m.name or "")
+            member_count = _admit_archive_member(
+                name, seen_names, member_count, max_members, max_path_chars
+            )
             # Preserve data-filter behavior: only directories and regular files are extracted.
             if not (m.isdir() or m.isfile()):
                 continue
 
             # Prevent path traversal / absolute paths, including Windows drive paths.
-            name = _safe_archive_member_name(m.name or "")
             if name is None:
                 continue
-            if name in seen_names:
-                msg = f"Archive contains duplicate normalized member path: {name!r}."
-                raise ValueError(msg)
-            seen_names.add(name)
 
             target = (out_dir / name).resolve()
             try:

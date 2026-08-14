@@ -249,6 +249,85 @@ def test_zip_extraction_rejects_duplicate_normalized_member_path() -> None:
         assert not out_dir.exists()
 
 
+@pytest.mark.parametrize("archive_kind", ["zip", "tar"])
+def test_extraction_rejects_directory_heavy_member_count_without_publication(
+    monkeypatch: pytest.MonkeyPatch, archive_kind: str
+) -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_member_limit_") as td:
+        archive_path = Path(td) / f"payload.{archive_kind}"
+        out_dir = Path(td) / "out"
+        if archive_kind == "zip":
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("one/", b"")
+                archive.writestr("two/", b"")
+            extract = webcat_build._extract_zip
+        else:
+            with tarfile.open(archive_path, "w") as archive:
+                for name in ("one", "two"):
+                    info = tarfile.TarInfo(name)
+                    info.type = tarfile.DIRTYPE
+                    archive.addfile(info)
+            extract = webcat_build._extract_tar
+
+        monkeypatch.setenv("WEBCAT_MAX_EXTRACT_MEMBERS", "1")
+        with pytest.raises(
+            ValueError, match=r"member count exceeded limit \(1 members\)"
+        ):
+            extract(archive_path, out_dir)
+        assert not out_dir.exists()
+
+
+@pytest.mark.parametrize("archive_kind", ["zip", "tar"])
+def test_extraction_rejects_long_normalized_path_without_publication(
+    monkeypatch: pytest.MonkeyPatch, archive_kind: str
+) -> None:
+    webcat_build = _import_webcat_build()
+
+    with tempfile.TemporaryDirectory(prefix="webcat_path_limit_") as td:
+        archive_path = Path(td) / f"payload.{archive_kind}"
+        out_dir = Path(td) / "out"
+        raw_name = "a/./bcd"  # Normalizes to five characters: a/bcd.
+        if archive_kind == "zip":
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr(raw_name, b"safe")
+            extract = webcat_build._extract_zip
+        else:
+            with tarfile.open(archive_path, "w") as archive:
+                info = tarfile.TarInfo(raw_name)
+                info.size = 4
+                archive.addfile(info, io.BytesIO(b"safe"))
+            extract = webcat_build._extract_tar
+
+        monkeypatch.setenv("WEBCAT_MAX_EXTRACT_PATH_CHARS", "4")
+        with pytest.raises(
+            ValueError, match=r"normalized member path exceeded limit \(4 characters\)"
+        ):
+            extract(archive_path, out_dir)
+        assert not out_dir.exists()
+
+
+@pytest.mark.parametrize("bad_value", ["not-an-int", "", "0", "-1"])
+@pytest.mark.parametrize(
+    ("name", "default"),
+    [
+        ("WEBCAT_MAX_EXTRACT_MEMBERS", 100_000),
+        ("WEBCAT_MAX_EXTRACT_PATH_CHARS", 4_096),
+    ],
+)
+def test_extraction_admission_uses_safe_defaults_for_invalid_configuration(
+    monkeypatch: pytest.MonkeyPatch, name: str, default: int, bad_value: str
+) -> None:
+    webcat_build = _import_webcat_build()
+    monkeypatch.setenv(name, bad_value)
+
+    _max_bytes, max_members, max_path_chars = webcat_build._extract_limits()
+
+    actual = max_members if name.endswith("MEMBERS") else max_path_chars
+    assert actual == default
+
+
 def test_zip_extraction_skips_windows_drive_and_unc_members() -> None:
     webcat_build = _import_webcat_build()
 
