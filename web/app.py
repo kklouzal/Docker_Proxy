@@ -169,6 +169,7 @@ from services.saml_auth import (
     resolve_saml_login,
 )
 from services.schema_lifecycle import ensure_startup_schema_if_configured
+from services.short_lived_cache import KeyedSingleFlight
 from services.squid_config_forms import (
     build_template_options,
     build_template_options_from_form,
@@ -343,6 +344,19 @@ _OBSERVABILITY_RESULT_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
 _OBSERVABILITY_RESULT_CACHE_LIMIT = 24
 _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS = 5.0
 _OBSERVABILITY_SEARCH_MAX_CHARS = 200
+_ADMIN_CACHE_SINGLE_FLIGHT = KeyedSingleFlight()
+
+
+def _copy_cached_value(value: Any) -> Any:
+    return dict(value) if isinstance(value, dict) else value
+
+
+def _clear_admin_runtime_caches() -> None:
+    _ADMIN_CACHE_SINGLE_FLIGHT.clear(
+        _PROXY_HEALTH_CACHE,
+        _OBSERVABILITY_SUMMARY_CACHE,
+        _OBSERVABILITY_RESULT_CACHE,
+    )
 
 
 def _proxy_health_timeout_seconds() -> float:
@@ -666,7 +680,7 @@ def set_observability_retention_settings(*, retention_days: object):
     )
 
 
-def _cached_proxy_health(
+def _cached_proxy_health_unlocked(
     proxy_id: str,
     *,
     timeout_seconds: float,
@@ -727,6 +741,26 @@ def _cached_proxy_health(
         return payload
     _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
     return payload
+
+
+def _cached_proxy_health(
+    proxy_id: str,
+    *,
+    timeout_seconds: float,
+    ttl_seconds: float = _PROXY_HEALTH_TTL_SECONDS,
+    full: bool = False,
+) -> dict[str, Any]:
+    key = (str(proxy_id or ""), float(timeout_seconds), bool(full))
+    return _ADMIN_CACHE_SINGLE_FLIGHT.run_cache_transaction(
+        _PROXY_HEALTH_CACHE,
+        key,
+        lambda: _cached_proxy_health_unlocked(
+            proxy_id,
+            timeout_seconds=timeout_seconds,
+            ttl_seconds=ttl_seconds,
+            full=full,
+        ),
+    )
 
 
 def _short_sha(value: object, *, length: int = 12) -> str:
@@ -1934,7 +1968,7 @@ def _adblock_runtime_state(
     }
 
 
-def _cached_admin_version_status() -> dict[str, Any]:
+def _cached_admin_version_status_unlocked() -> dict[str, Any]:
     global _ADMIN_VERSION_STATUS_CACHE
     now = time.monotonic()
     ttl_seconds = _env_float(
@@ -1963,6 +1997,13 @@ def _cached_admin_version_status() -> dict[str, Any]:
     payload = build_component_version_status(current_component_metadata("admin-ui"))
     _ADMIN_VERSION_STATUS_CACHE = (now, dict(payload))
     return payload
+
+
+def _cached_admin_version_status() -> dict[str, Any]:
+    return _ADMIN_CACHE_SINGLE_FLIGHT.run(
+        "admin-version-status",
+        _cached_admin_version_status_unlocked,
+    )
 
 
 def _proxy_version_status_from_health(health: dict[str, Any]) -> dict[str, Any]:
@@ -2051,17 +2092,15 @@ def _cached_observability_result(
     *,
     ttl_seconds: float = _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS,
 ) -> Any:
-    now = time.monotonic()
-    cached = _OBSERVABILITY_RESULT_CACHE.get(cache_key)
-    if cached is not None:
-        cached_at, payload = cached
-        if now - cached_at <= max(0.0, float(ttl_seconds)):
-            return dict(payload) if isinstance(payload, dict) else payload
-    payload = builder()
-    stored = dict(payload) if isinstance(payload, dict) else payload
-    _OBSERVABILITY_RESULT_CACHE[cache_key] = (now, stored)
-    _prune_observability_result_cache()
-    return dict(stored) if isinstance(stored, dict) else stored
+    return _ADMIN_CACHE_SINGLE_FLIGHT.get_or_build(
+        _OBSERVABILITY_RESULT_CACHE,
+        cache_key,
+        now=time.monotonic,
+        ttl_seconds=float(ttl_seconds),
+        builder=builder,
+        copy_value=_copy_cached_value,
+        prune=_prune_observability_result_cache,
+    )
 
 
 def _max_workers() -> int:
@@ -3886,19 +3925,23 @@ def _cached_observability_summary(
     window_i = max(300, int(window_i or OBSERVABILITY_DEFAULT_WINDOW))
     scoped_proxy_id = normalize_proxy_id(proxy_id)
     key = (scoped_proxy_id, window_i)
-    now = time.monotonic()
-    cached = _OBSERVABILITY_SUMMARY_CACHE.get(key)
-    if cached is not None:
-        cached_at, payload = cached
-        if now - cached_at <= max(0.0, float(_PROXY_OBSERVABILITY_TTL_SECONDS)):
-            return dict(payload)
-    token = set_proxy_id(scoped_proxy_id)
-    try:
-        summary, _label = _build_observability_snapshot(window_i)
-    finally:
-        reset_proxy_id(token)
-    _OBSERVABILITY_SUMMARY_CACHE[key] = (now, dict(summary))
-    return dict(summary)
+
+    def _build_summary() -> dict[str, int]:
+        token = set_proxy_id(scoped_proxy_id)
+        try:
+            summary, _label = _build_observability_snapshot(window_i)
+            return summary
+        finally:
+            reset_proxy_id(token)
+
+    return _ADMIN_CACHE_SINGLE_FLIGHT.get_or_build(
+        _OBSERVABILITY_SUMMARY_CACHE,
+        key,
+        now=time.monotonic,
+        ttl_seconds=float(_PROXY_OBSERVABILITY_TTL_SECONDS),
+        builder=_build_summary,
+        copy_value=dict,
+    )
 
 
 def _selected_proxy_running_config(proxy_id: str) -> tuple[str, str]:
@@ -6147,9 +6190,7 @@ def reconcile_proxy_identity():
         or active_after_resolved == renamed.proxy_id
     ):
         session["active_proxy_id"] = renamed.proxy_id
-    _PROXY_HEALTH_CACHE.clear()
-    _OBSERVABILITY_SUMMARY_CACHE.clear()
-    _OBSERVABILITY_RESULT_CACHE.clear()
+    _clear_admin_runtime_caches()
     _record_audit_event_for_proxy(
         renamed.proxy_id,
         "proxy_reconcile",
@@ -6217,9 +6258,7 @@ def remove_proxy():
             session["active_proxy_id"] = remaining[0].proxy_id
         else:
             session.pop("active_proxy_id", None)
-    _PROXY_HEALTH_CACHE.clear()
-    _OBSERVABILITY_SUMMARY_CACHE.clear()
-    _OBSERVABILITY_RESULT_CACHE.clear()
+    _clear_admin_runtime_caches()
     audit_proxy_id = normalize_proxy_id(
         session.get("active_proxy_id")
         or (remaining[0].proxy_id if remaining else get_default_proxy_id()),
@@ -7156,7 +7195,7 @@ def observability_report_schedules():
             privacy=privacy,
             window_seconds=window_i,
         )
-        _OBSERVABILITY_RESULT_CACHE.clear()
+        _ADMIN_CACHE_SINGLE_FLIGHT.clear(_OBSERVABILITY_RESULT_CACHE)
         saved_pane = str(schedule.get("pane") or pane)
         saved_format = str(schedule.get("report_format") or report_format)
         saved_privacy = bool(schedule.get("privacy", privacy))
@@ -8742,7 +8781,7 @@ def _check_icap_av() -> dict[str, Any]:
     return _app_runtime_services().check_icap_av()
 
 
-def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
+def _clamav_remote_health_unlocked(proxy_id: str) -> dict[str, Any]:
     timeout_seconds = _proxy_clamav_health_timeout_seconds()
     key = (str(proxy_id or ""), "clamav", float(timeout_seconds))
     now = time.monotonic()
@@ -8798,6 +8837,16 @@ def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
         return payload
     _PROXY_HEALTH_CACHE[key] = (now, dict(payload))
     return payload
+
+
+def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
+    timeout_seconds = _proxy_clamav_health_timeout_seconds()
+    key = (str(proxy_id or ""), "clamav", float(timeout_seconds))
+    return _ADMIN_CACHE_SINGLE_FLIGHT.run_cache_transaction(
+        _PROXY_HEALTH_CACHE,
+        key,
+        lambda: _clamav_remote_health_unlocked(proxy_id),
+    )
 
 
 def _send_sample_av_icap() -> dict[str, Any]:
