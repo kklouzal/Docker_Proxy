@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import subprocess
 
 import pytest
+
+from .subprocess_test_utils import run_test_process
 
 WEB_DIR = Path(__file__).resolve().parents[1]
 _SECRET_ENV_NAMES = ("FLASK_SECRET_KEY", "APP_SECRET_KEY", "SECRET_KEY")
@@ -97,7 +102,7 @@ def _import_admin_app(
         env["ADMIN_BOOTSTRAP_PASSWORD"] = bootstrap_password
     env["ADMIN_BOOTSTRAP_FAILURES"] = ",".join(bootstrap_failures)
 
-    return subprocess.run(
+    return run_test_process(
         [sys.executable, "-c", _BOOTSTRAP_PROBE],
         cwd=WEB_DIR,
         env=env,

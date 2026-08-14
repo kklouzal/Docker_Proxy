@@ -3,12 +3,13 @@ from __future__ import annotations
 import importlib
 import json
 import shutil
-import subprocess
 import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
+
+from .subprocess_test_utils import run_test_process
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -60,7 +61,7 @@ def test_apply_helpers_import_shared_common_when_executed_from_app_tools(
     )
     for script_name, output_name, safe_include in cases:
         out = tmp_path / output_name
-        result = subprocess.run(
+        result = run_test_process(
             [sys.executable, str(tools_dir / script_name), "--out", str(out)],
             cwd=tmp_path,
             check=False,

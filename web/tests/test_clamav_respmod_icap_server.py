@@ -6,13 +6,14 @@ import math
 import os
 import socket
 import struct
-import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
 import pytest
+
+from .subprocess_test_utils import run_test_process
 
 CLIENT_CREATE_CONNECTION = socket.create_connection
 
@@ -24,7 +25,7 @@ def test_direct_script_help_without_repo_on_pythonpath(tmp_path: Path) -> None:
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
 
-    result = subprocess.run(
+    result = run_test_process(
         [sys.executable, str(script), "--help"],
         cwd=tmp_path,
         env=env,

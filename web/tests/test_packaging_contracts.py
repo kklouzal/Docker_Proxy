@@ -4,13 +4,13 @@ import ast
 import importlib.util
 import os
 import re
-import subprocess
 import sys
 from types import SimpleNamespace
 
 import pytest
 
 from .mysql_test_utils import REPO_ROOT
+from .subprocess_test_utils import run_test_process
 
 
 def _read(path: str) -> str:
@@ -44,7 +44,7 @@ assert isinstance(entrypoint.app, Flask)
 assert entrypoint.app is application_module.app
 assert entrypoint.application is entrypoint.app
 """
-    result = subprocess.run(
+    result = run_test_process(
         [sys.executable, "-c", script],
         cwd=stage,
         check=False,
@@ -101,7 +101,7 @@ def _run_entrypoint_perf_tuning(config_path, *, children: int) -> None:
         "SQUID_DYNAMIC_CERT_MEM_CACHE_MB=256\n"
         'apply_squid_perf_tuning "$1"\n'
     )
-    subprocess.run(
+    run_test_process(
         ["/bin/sh", "-c", script, "entrypoint-perf-tuning-test", str(config_path)],
         check=True,
     )
@@ -768,7 +768,7 @@ def test_admin_ui_numeric_env_executable_boundary_handles_oversized_digits() -> 
         "WEB_GRACEFUL_TIMEOUT": "9" * 5000,
         "WEB_KEEPALIVE": "0",
     }
-    result = subprocess.run(
+    result = run_test_process(
         [
             sys.executable,
             "web/tools/start_admin_ui.py",
@@ -913,7 +913,7 @@ spec.loader.exec_module(module)
 config = module.resolve_admin_ui_https_config({"ADMIN_UI_HTTPS_ENABLED": "0"})
 assert config.source == "env"
 """
-    result = subprocess.run(
+    result = run_test_process(
         [sys.executable, "-c", script],
         cwd=REPO_ROOT / "web" / "tools",
         check=False,
@@ -1396,7 +1396,7 @@ def test_admin_healthcheck_resolves_runtime_address_from_launcher_env() -> None:
             if key not in {"ADMIN_UI_BIND", "ADMIN_UI_PORT"}
         }
         env.update(env_overrides)
-        result = subprocess.run(
+        result = run_test_process(
             [
                 sys.executable,
                 "-c",
@@ -1425,7 +1425,7 @@ def test_admin_healthcheck_tcp_failure_exits_without_traceback() -> None:
         1,
     )
 
-    result = subprocess.run(
+    result = run_test_process(
         [sys.executable, "-c", script],
         check=False,
         cwd=REPO_ROOT / "web",
@@ -1565,7 +1565,7 @@ def test_proxy_entrypoint_env_can_materialize_https_intercept_listener(
             "SQUID_HTTPS_INTERCEPT_PORT": "3130",
         },
     )
-    subprocess.run(
+    run_test_process(
         [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
         check=True,
         env=env,
@@ -1597,7 +1597,7 @@ def test_proxy_entrypoint_env_can_toggle_https_intercept_splice_rule(tmp_path) -
             "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY": "1",
         },
     )
-    subprocess.run(
+    run_test_process(
         [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
         check=True,
         env=env,
@@ -1615,7 +1615,7 @@ def test_proxy_entrypoint_env_can_toggle_https_intercept_splice_rule(tmp_path) -
     )
 
     env["SQUID_HTTPS_INTERCEPT_SPLICE_ONLY"] = "0"
-    subprocess.run(
+    run_test_process(
         [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
         check=True,
         env=env,
@@ -1656,7 +1656,7 @@ def test_proxy_entrypoint_env_disabling_https_intercept_removes_managed_splice(
             "SQUID_HTTPS_INTERCEPT_ENABLED": "0",
         },
     )
-    subprocess.run(
+    run_test_process(
         [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
         check=True,
         env=env,
@@ -1682,7 +1682,7 @@ def test_proxy_entrypoint_env_avoids_listener_port_collisions(tmp_path) -> None:
             "SQUID_HTTPS_INTERCEPT_PORT": "3131",
         },
     )
-    subprocess.run(
+    run_test_process(
         [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
         check=True,
         env=env,

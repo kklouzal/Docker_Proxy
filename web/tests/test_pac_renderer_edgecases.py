@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from .subprocess_test_utils import check_test_process_output
+
 
 def _proxy_record(public_host: str, **overrides: object) -> SimpleNamespace:
     data = {
@@ -60,7 +62,7 @@ def _evaluate_pac(rendered: str, host: str) -> str:
             f"process.stdout.write(FindProxyForURL('', {json.dumps(host)}));",
         ),
     )
-    return subprocess.check_output(["node", "-e", script], text=True)
+    return check_test_process_output(["node", "-e", script], text=True)
 
 
 def _evaluate_pac_with_dns_answer(rendered: str, host: str, dns_answer: str) -> str:
@@ -84,7 +86,7 @@ def _evaluate_pac_with_dns_answer(rendered: str, host: str, dns_answer: str) -> 
             f"process.stdout.write(FindProxyForURL('', {json.dumps(host)}));",
         ),
     )
-    return subprocess.check_output(["node", "-e", script], text=True)
+    return check_test_process_output(["node", "-e", script], text=True)
 
 
 def test_pac_url_and_proxy_host_normalization_handles_defaults_ports_and_ipv6() -> None:

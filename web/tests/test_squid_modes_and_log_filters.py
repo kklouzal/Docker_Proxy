@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from .mysql_test_utils import configure_test_mysql_env
+from .subprocess_test_utils import run_test_process
 
 
 def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(
@@ -2069,7 +2070,6 @@ def test_icap_port_bases_preserve_valid_explicit_layout() -> None:
 def test_entrypoint_icap_port_normalization_matches_runtime_helpers() -> None:
     import os
     import re
-    import subprocess
     from pathlib import Path
 
     entrypoint = Path("docker/entrypoint.sh").read_text(encoding="utf-8")
@@ -2081,7 +2081,7 @@ def test_entrypoint_icap_port_normalization_matches_runtime_helpers() -> None:
     assert match is not None
 
     def normalize(workers: int, **ports: str) -> tuple[int, int, int]:
-        result = subprocess.run(
+        result = run_test_process(
             [
                 "sh",
                 "-eu",

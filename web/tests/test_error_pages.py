@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
 
 from .admin_route_test_utils import add_web_to_path, load_admin_app, login_client
+from .subprocess_test_utils import run_test_process
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -89,7 +89,7 @@ class _ErrorPageAttributeScanner(HTMLParser):
 
 
 def test_tracked_squid_inventory_matches_audited_contract() -> None:
-    result = subprocess.run(
+    result = run_test_process(
         ["git", "ls-files", "squid"],
         cwd=REPO_ROOT,
         check=True,

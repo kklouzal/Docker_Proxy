@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from .subprocess_test_utils import run_test_process
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = REPO_ROOT / "docker" / "validate-management-token.sh"
@@ -33,7 +34,7 @@ def test_management_token_validator_rejects_missing_and_public_placeholder(
     else:
         env["PROXY_MANAGEMENT_TOKEN"] = token
 
-    result = subprocess.run(
+    result = run_test_process(
         ["sh", str(VALIDATOR)],
         env=env,
         capture_output=True,
@@ -50,7 +51,7 @@ def test_management_token_validator_rejects_missing_and_public_placeholder(
 def test_management_token_validator_accepts_configured_token_without_output() -> None:
     env = {**os.environ, "PROXY_MANAGEMENT_TOKEN": "private-test-token"}
 
-    result = subprocess.run(
+    result = run_test_process(
         ["sh", str(VALIDATOR)],
         env=env,
         capture_output=True,

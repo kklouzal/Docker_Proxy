@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-import subprocess
 import sys
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
+
+from .subprocess_test_utils import run_test_process
 
 
 def _compile_sample(tmp_path: Path, lines: list[str]) -> Path:
@@ -160,7 +161,7 @@ def test_script_entrypoint_compiles_explicit_enabled_lists_without_pythonpath(
     lists.mkdir()
     (lists / "easylist.txt").write_text("||script-entry.example^\n", encoding="utf-8")
 
-    result = subprocess.run(
+    result = run_test_process(
         [
             sys.executable,
             str(script),

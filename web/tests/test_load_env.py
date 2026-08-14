@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import shlex
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from .subprocess_test_utils import run_test_process
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,7 +31,7 @@ keys = [
 print(json.dumps({{key: os.environ.get(key) for key in keys}}, sort_keys=True))
 PY
 """
-    result = subprocess.run(
+    result = run_test_process(
         ["/bin/sh", "-c", script + probe],
         check=True,
         capture_output=True,
@@ -123,7 +124,7 @@ def test_load_env_rejects_malformed_input_without_echoing_values(
     script = (REPO_ROOT / "docker" / "load-env.sh").read_text(encoding="utf-8")
     script = script.replace("/config/app.env", str(app_env))
 
-    result = subprocess.run(
+    result = run_test_process(
         ["/bin/sh", "-c", script],
         check=False,
         capture_output=True,
@@ -153,7 +154,7 @@ trap 'printf "EARLIER_VALUE=%s\\n" "${EARLIER_VALUE-unset}"' EXIT
 unset EARLIER_VALUE
 """
 
-    result = subprocess.run(
+    result = run_test_process(
         ["/bin/sh", "-c", probe + script],
         check=False,
         capture_output=True,

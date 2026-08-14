@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import subprocess
 from pathlib import Path
+
+from .subprocess_test_utils import run_test_process
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "generate_ca.sh"
@@ -14,7 +15,7 @@ def _script_for_ca_dir(ca_dir: Path) -> str:
 
 
 def _run_openssl(*args: str) -> bytes:
-    result = subprocess.run(
+    result = run_test_process(
         ["openssl", *args],
         check=True,
         capture_output=True,
@@ -27,7 +28,7 @@ def _public_key_fingerprint(ca_dir: Path, source: str) -> str:
         public_key = _run_openssl("pkey", "-in", str(ca_dir / "ca.key"), "-pubout", "-outform", "DER")
     else:
         pem = _run_openssl("x509", "-in", str(ca_dir / "ca.crt"), "-pubkey", "-noout")
-        public_key = subprocess.run(
+        public_key = run_test_process(
             ["openssl", "pkey", "-pubin", "-outform", "DER"],
             input=pem,
             check=True,
@@ -72,7 +73,7 @@ def test_generate_ca_replaces_valid_but_mismatched_key_and_certificate(
     before_cert_fp = _public_key_fingerprint(ca_dir, "cert")
     assert before_key_fp != before_cert_fp
 
-    subprocess.run(
+    run_test_process(
         ["/bin/sh", "-c", _script_for_ca_dir(ca_dir)],
         check=True,
         capture_output=True,

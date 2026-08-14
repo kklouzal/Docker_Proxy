@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
+
+from .subprocess_test_utils import run_test_process
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "docker" / "squid_logrotate.sh"
 
@@ -26,7 +27,7 @@ def run_logrotate_once(
             "SQUID_LOG_ROTATE_LOGFILES": str(log_path),
         }
     )
-    subprocess.run(["/bin/sh", str(SCRIPT_PATH)], check=True, env=env)
+    run_test_process(["/bin/sh", str(SCRIPT_PATH)], check=True, env=env)
     return log_path
 
 
@@ -84,7 +85,7 @@ def test_squid_logrotate_uses_env_rotation_count_override(tmp_path: Path) -> Non
 
     for content in ("one\n", "two\n", "three\n"):
         log_path.write_text(content, encoding="utf-8")
-        subprocess.run(["/bin/sh", str(SCRIPT_PATH)], check=True, env=env)
+        run_test_process(["/bin/sh", str(SCRIPT_PATH)], check=True, env=env)
 
     assert log_path.read_text(encoding="utf-8") == ""
     assert (tmp_path / "icap.log.1").read_text(encoding="utf-8") == "three\n"

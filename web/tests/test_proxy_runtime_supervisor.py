@@ -15,6 +15,8 @@ from typing import NoReturn
 
 import pytest
 
+from .subprocess_test_utils import run_test_process
+
 POLICY_SHA_A = "a" * 64
 POLICY_SHA_B = "b" * 64
 POLICY_SHA_OLD = "c" * 64
@@ -44,7 +46,7 @@ def _healthcheck_forwarding_canary_url_script() -> str:
 
 
 def _healthcheck_forwarding_canary_url(**env_overrides: str) -> str:
-    result = subprocess.run(
+    result = run_test_process(
         [sys.executable, "-c", _healthcheck_forwarding_canary_url_script()],
         check=True,
         capture_output=True,
@@ -69,7 +71,7 @@ def _healthcheck_forwarding_canary_port_script() -> str:
 
 
 def _healthcheck_forwarding_canary_port(**env_overrides: str) -> str:
-    result = subprocess.run(
+    result = run_test_process(
         ["sh", "-c", _healthcheck_forwarding_canary_port_script()],
         check=True,
         capture_output=True,
@@ -99,7 +101,7 @@ def _entrypoint_forwarding_canary_path_script() -> str:
 
 
 def _entrypoint_forwarding_canary_path(**env_overrides: str) -> str:
-    result = subprocess.run(
+    result = run_test_process(
         ["sh", "-c", _entrypoint_forwarding_canary_path_script()],
         check=True,
         capture_output=True,
@@ -1507,7 +1509,7 @@ def test_init_ssl_db_permission_repair_fails_closed_on_chown_error(
 
     ssl_db = tmp_path / "ssl_db" / "store"
     (ssl_db / "certs").mkdir(parents=True)
-    result = subprocess.run(
+    result = run_test_process(
         ["sh", "-c", f"{function}\nrepair_ssl_db_permissions"],
         capture_output=True,
         text=True,
