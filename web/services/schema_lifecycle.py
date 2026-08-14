@@ -28,7 +28,7 @@ from services.sql_identifiers import normalize_mysql_identifier
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 27
+_SCHEMA_VERSION = 28
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -900,6 +900,10 @@ _CONTROL_PLANE_RETENTION_INDEXES: dict[str, tuple[tuple[str, str], ...]] = {
             "idx_policy_requests_proxy_updated_id",
             "ALTER TABLE policy_requests ADD INDEX idx_policy_requests_proxy_updated_id (proxy_id, updated_ts, id)",
         ),
+        (
+            "idx_policy_requests_proxy_status_client_id",
+            "ALTER TABLE policy_requests ADD INDEX idx_policy_requests_proxy_status_client_id (proxy_id, status, client_ip, id)",
+        ),
     ),
     "policy_exceptions": (
         (
@@ -1517,6 +1521,17 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                 SchemaDataStep(
                     "prune_operation_ledger_history",
                     _prune_operation_ledger_history,
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=28,
+            name="policy_request_public_admission_index",
+            indexes=(
+                SchemaIndexSpec(
+                    "policy_requests",
+                    "idx_policy_requests_proxy_status_client_id",
+                    "ALTER TABLE policy_requests ADD INDEX idx_policy_requests_proxy_status_client_id (proxy_id, status, client_ip, id)",
                 ),
             ),
         ),

@@ -7,6 +7,8 @@ import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from .mysql_test_utils import (
     configure_test_mysql_env,
     ensure_proxy_runtime_import_path,
@@ -420,6 +422,68 @@ def test_policy_request_store_normalizes_approves_lists_and_revokes(tmp_path) ->
     assert store.active_webfilter_exceptions(proxy_id="edge-a")[0].id == ex.id
     store.revoke_exception(ex.id, revoked_by="admin", admin_note="done")
     assert store.active_webfilter_exceptions(proxy_id="edge-a") == []
+
+
+def test_policy_request_store_deduplicates_and_bounds_pending_admission(
+    monkeypatch, tmp_path
+) -> None:
+    configure_test_mysql_env(tmp_path / "policy-request-admission")
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    monkeypatch.setenv("POLICY_REQUEST_MAX_PENDING_PER_CLIENT", "2")
+    monkeypatch.setenv("POLICY_REQUEST_MAX_PENDING_PER_PROXY", "3")
+    store = module.PolicyRequestStore()
+    store.init_db()
+
+    def create(domain: str, client_ip: str = "192.168.1.55"):
+        return store.create_request(
+            proxy_id="edge-a",
+            client_ip=client_ip,
+            request_url=f"https://{domain}/path",
+            domain=domain,
+            category="blocked",
+            method="GET",
+        )
+
+    first = create("one.example")
+    assert create("one.example").id == first.id
+    create("two.example")
+    with pytest.raises(module.PolicyRequestAdmissionError, match="awaiting review"):
+        create("three.example")
+    create("other.example", "192.168.1.56")
+    with pytest.raises(module.PolicyRequestAdmissionError, match="capacity"):
+        create("full.example", "192.168.1.57")
+    assert len(store.list_requests(statuses=["pending"], proxy_id="edge-a")) == 3
+
+
+def test_policy_request_pending_limit_env_values_are_safely_bounded(
+    monkeypatch,
+) -> None:
+    ensure_web_import_path()
+    from services import policy_requests
+
+    module = importlib.reload(policy_requests)
+    for value in ("", "0", "-1", "not-an-int", "100001"):
+        monkeypatch.setenv("POLICY_REQUEST_MAX_PENDING_PER_PROXY", value)
+        assert (
+            module._bounded_env_int(
+                "POLICY_REQUEST_MAX_PENDING_PER_PROXY",
+                default=module.POLICY_REQUEST_DEFAULT_MAX_PENDING_PER_PROXY,
+                maximum=module.POLICY_REQUEST_MAX_PENDING_PER_PROXY_LIMIT,
+            )
+            == module.POLICY_REQUEST_DEFAULT_MAX_PENDING_PER_PROXY
+        )
+    monkeypatch.setenv("POLICY_REQUEST_MAX_PENDING_PER_PROXY", "17")
+    assert (
+        module._bounded_env_int(
+            "POLICY_REQUEST_MAX_PENDING_PER_PROXY",
+            default=module.POLICY_REQUEST_DEFAULT_MAX_PENDING_PER_PROXY,
+            maximum=module.POLICY_REQUEST_MAX_PENDING_PER_PROXY_LIMIT,
+        )
+        == 17
+    )
 
 
 def test_policy_request_store_reuses_unexpired_duplicate_approval_scope(
@@ -929,6 +993,30 @@ def test_proxy_public_policy_request_rejects_oversized_form_before_store(
         as_text=True,
     )
     assert store_requested is False
+
+
+def test_proxy_public_policy_request_capacity_response_is_429(monkeypatch) -> None:
+    ensure_proxy_runtime_import_path()
+    monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    import proxy.app as proxy_app
+
+    proxy_app = importlib.reload(proxy_app)
+
+    class Store:
+        def create_request(self, **_kwargs):
+            raise proxy_app.PolicyRequestAdmissionError.proxy_capacity()
+
+    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    res = proxy_app.app.test_client().post(
+        "/policy-request",
+        base_url="http://localhost:80",
+        data={"domain": "bad.example"},
+    )
+
+    assert res.status_code == 429
+    assert "Request not accepted" in res.get_data(as_text=True)
+    assert "capacity is currently full" in res.get_data(as_text=True)
 
 
 def test_proxy_public_policy_request_rejects_parser_enforced_oversize(

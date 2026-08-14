@@ -23,7 +23,11 @@ from services.pac_http import (
     request_host_from_headers,
     resolve_pac,
 )
-from services.policy_requests import get_policy_request_store, normalize_client_ip
+from services.policy_requests import (
+    PolicyRequestAdmissionError,
+    get_policy_request_store,
+    normalize_client_ip,
+)
 from services.proxy_context import get_proxy_id
 from services.proxy_logs import (
     parse_proxy_log_max_bytes,
@@ -430,6 +434,13 @@ def public_policy_request() -> Any:
         )
         body = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Request submitted</title><style>body{{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}}main{{max-width:760px;margin:48px auto;padding:24px}}.card{{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}}code{{overflow-wrap:anywhere}}</style></head><body><main><section class="card"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #{req.id}: <code>{escape(req.domain)}</code></p></section></main></body></html>"""
         return Response(body, mimetype="text/html; charset=utf-8")
+    except PolicyRequestAdmissionError as exc:
+        detail = escape(public_error_message(exc))
+        return Response(
+            f"<!doctype html><title>Request not accepted</title><h1>Request not accepted</h1><p>{detail}</p>",
+            status=429,
+            mimetype="text/html; charset=utf-8",
+        )
     except Exception as exc:
         detail = escape(
             public_error_message(exc, default="The request could not be recorded."),

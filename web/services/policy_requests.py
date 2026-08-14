@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -29,6 +30,10 @@ APPROVABLE_BLOCK_TYPES = {"webfilter"}
 POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS = 24 * 60 * 60
 POLICY_EXCEPTION_MIN_DURATION_SECONDS = 60
 POLICY_EXCEPTION_MAX_DURATION_SECONDS = 30 * 24 * 60 * 60
+POLICY_REQUEST_DEFAULT_MAX_PENDING_PER_PROXY = 5000
+POLICY_REQUEST_DEFAULT_MAX_PENDING_PER_CLIENT = 20
+POLICY_REQUEST_MAX_PENDING_PER_PROXY_LIMIT = 100000
+POLICY_REQUEST_MAX_PENDING_PER_CLIENT_LIMIT = 1000
 _SAFE = re.compile(r"[^a-z0-9_.:-]+", re.IGNORECASE)
 _HTTP_METHOD = re.compile(r"^[A-Z0-9!#$%&'*+.^_`|~-]{1,16}$")
 _HOST_LABEL = re.compile(
@@ -135,6 +140,30 @@ def _bounded_duration_seconds(value: object) -> int:
         POLICY_EXCEPTION_MIN_DURATION_SECONDS,
         min(POLICY_EXCEPTION_MAX_DURATION_SECONDS, seconds),
     )
+
+
+def _bounded_env_int(name: str, *, default: int, maximum: int) -> int:
+    try:
+        value = int((os.environ.get(name) or "").strip())
+    except (TypeError, ValueError):
+        return default
+    return value if 1 <= value <= maximum else default
+
+
+class PolicyRequestAdmissionError(ValueError):
+    """A public submission was valid but cannot be admitted safely."""
+
+    @classmethod
+    def proxy_capacity(cls) -> PolicyRequestAdmissionError:
+        return cls(
+            "Policy request capacity is currently full. Please contact your administrator."
+        )
+
+    @classmethod
+    def client_capacity(cls) -> PolicyRequestAdmissionError:
+        return cls(
+            "You already have several requests awaiting review. Please contact your administrator."
+        )
 
 
 def normalize_block_type(v: object) -> str:
@@ -279,7 +308,7 @@ class PolicyRequestStore:
                 except Exception:
                     pass
                 c.execute(
-                    f"CREATE TABLE IF NOT EXISTS {self.REQUEST_TABLE}(id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', status VARCHAR(24) NOT NULL DEFAULT 'pending', block_type VARCHAR(32) NOT NULL DEFAULT 'webfilter', client_ip VARCHAR(64) NOT NULL, request_url TEXT NOT NULL, domain VARCHAR(255) NOT NULL, category VARCHAR(128) NOT NULL DEFAULT '', method VARCHAR(16) NOT NULL DEFAULT '', squid_error VARCHAR(64) NOT NULL DEFAULT '', user_note TEXT NOT NULL, admin_note TEXT NOT NULL, created_ts BIGINT NOT NULL, updated_ts BIGINT NOT NULL, reviewed_ts BIGINT NOT NULL DEFAULT 0, reviewer VARCHAR(128) NOT NULL DEFAULT '', exception_id BIGINT NULL, KEY idx_policy_requests_status_ts (status, created_ts, id), KEY idx_policy_requests_proxy_status_ts (proxy_id,status,created_ts,id), KEY idx_policy_requests_domain (domain), KEY idx_policy_requests_client (client_ip))",
+                    f"CREATE TABLE IF NOT EXISTS {self.REQUEST_TABLE}(id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', status VARCHAR(24) NOT NULL DEFAULT 'pending', block_type VARCHAR(32) NOT NULL DEFAULT 'webfilter', client_ip VARCHAR(64) NOT NULL, request_url TEXT NOT NULL, domain VARCHAR(255) NOT NULL, category VARCHAR(128) NOT NULL DEFAULT '', method VARCHAR(16) NOT NULL DEFAULT '', squid_error VARCHAR(64) NOT NULL DEFAULT '', user_note TEXT NOT NULL, admin_note TEXT NOT NULL, created_ts BIGINT NOT NULL, updated_ts BIGINT NOT NULL, reviewed_ts BIGINT NOT NULL DEFAULT 0, reviewer VARCHAR(128) NOT NULL DEFAULT '', exception_id BIGINT NULL, KEY idx_policy_requests_status_ts (status, created_ts, id), KEY idx_policy_requests_proxy_status_ts (proxy_id,status,created_ts,id), KEY idx_policy_requests_proxy_status_client_id (proxy_id,status,client_ip,id), KEY idx_policy_requests_domain (domain), KEY idx_policy_requests_client (client_ip))",
                 )
                 c.execute(
                     f"CREATE TABLE IF NOT EXISTS {self.EXCEPTION_TABLE}(id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', status VARCHAR(24) NOT NULL DEFAULT 'active', block_type VARCHAR(32) NOT NULL DEFAULT 'webfilter', client_ip VARCHAR(64) NOT NULL, domain VARCHAR(255) NOT NULL, category VARCHAR(128) NOT NULL DEFAULT '', method VARCHAR(16) NOT NULL DEFAULT '', created_ts BIGINT NOT NULL, updated_ts BIGINT NOT NULL, created_by VARCHAR(128) NOT NULL DEFAULT '', admin_note TEXT NOT NULL, expires_ts BIGINT NOT NULL DEFAULT 0, revoked_ts BIGINT NOT NULL DEFAULT 0, revoked_by VARCHAR(128) NOT NULL DEFAULT '', source_request_id BIGINT NULL, KEY idx_policy_exceptions_active (proxy_id,status,block_type,expires_ts), KEY idx_policy_exceptions_request (source_request_id), KEY idx_policy_exceptions_domain_client (proxy_id,domain,client_ip), KEY idx_policy_exceptions_scope (proxy_id,status,block_type,client_ip,domain,category,method,expires_ts))",
@@ -331,21 +360,57 @@ class PolicyRequestStore:
             msg = "A valid HTTP request method is required when provided."
             raise ValueError(msg)
         now = now_ts()
+        block_type_s = normalize_block_type(block_type)
+        category_s = _text(category, 128)
+        squid_error_s = _text(squid_error, 64)
+        user_note_s = _text(user_note, 2000, True)
+        max_proxy = _bounded_env_int(
+            "POLICY_REQUEST_MAX_PENDING_PER_PROXY",
+            default=POLICY_REQUEST_DEFAULT_MAX_PENDING_PER_PROXY,
+            maximum=POLICY_REQUEST_MAX_PENDING_PER_PROXY_LIMIT,
+        )
+        max_client = _bounded_env_int(
+            "POLICY_REQUEST_MAX_PENDING_PER_CLIENT",
+            default=POLICY_REQUEST_DEFAULT_MAX_PENDING_PER_CLIENT,
+            maximum=POLICY_REQUEST_MAX_PENDING_PER_CLIENT_LIMIT,
+        )
         with self._connect() as c:
             with guarded_proxy_write(c, p) as guard:
                 p = guard.proxy_id
+                row = c.execute(
+                    self._rsql(
+                        "WHERE proxy_id=%s AND status='pending' AND block_type=%s AND client_ip=%s AND domain=%s AND category=%s AND method=%s ORDER BY id ASC LIMIT 1"
+                    ),
+                    (p, block_type_s, ip, d, category_s, method_s),
+                ).fetchone()
+                if row:
+                    # Error pages legitimately retry. Return the existing pending
+                    # work item instead of amplifying durable rows/operator work.
+                    return _req(row)
+                proxy_pending = c.execute(
+                    f"SELECT COUNT(*) AS count FROM {self.REQUEST_TABLE} WHERE proxy_id=%s AND status='pending'",
+                    (p,),
+                ).fetchone()
+                if _i(proxy_pending, "count", 0) >= max_proxy:
+                    raise PolicyRequestAdmissionError.proxy_capacity()
+                client_pending = c.execute(
+                    f"SELECT COUNT(*) AS count FROM {self.REQUEST_TABLE} WHERE proxy_id=%s AND status='pending' AND client_ip=%s",
+                    (p, ip),
+                ).fetchone()
+                if _i(client_pending, "count", 0) >= max_client:
+                    raise PolicyRequestAdmissionError.client_capacity()
                 r = c.execute(
                     f"INSERT INTO {self.REQUEST_TABLE}(proxy_id,status,block_type,client_ip,request_url,domain,category,method,squid_error,user_note,admin_note,created_ts,updated_ts,reviewed_ts,reviewer,exception_id) VALUES(%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s,'',%s,%s,0,'',NULL)",
                     (
                         p,
-                        normalize_block_type(block_type),
+                        block_type_s,
                         ip,
                         url,
                         d,
-                        _text(category, 128),
+                        category_s,
                         method_s,
-                        _text(squid_error, 64),
-                        _text(user_note, 2000, True),
+                        squid_error_s,
+                        user_note_s,
                         now,
                         now,
                     ),
@@ -354,6 +419,7 @@ class PolicyRequestStore:
                     self._rsql("WHERE id=%s"),
                     (int(r.lastrowid or 0),),
                 ).fetchone()
+                c.commit()
         return _req(row)
 
     def list_requests(
