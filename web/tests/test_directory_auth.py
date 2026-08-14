@@ -111,6 +111,93 @@ def _test_ca_pem() -> str:
     return cert.public_bytes(serialization.Encoding.PEM).decode()
 
 
+class _ConcurrentDefaultProfileDatabase:
+    def __init__(self) -> None:
+        self.rows = {}
+        self.lock = threading.Lock()
+        self.insert_barrier = threading.Barrier(2)
+        self.sql = []
+
+    def connect(self):
+        database = self
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def execute(self, sql, params=()):
+                if sql.lstrip().startswith("SELECT provider"):
+                    with database.lock:
+                        row = database.rows.get(params[0])
+
+                    class Result:
+                        def fetchone(self):
+                            return row
+
+                    return Result()
+                assert "INSERT INTO directory_auth_profiles" in sql
+                database.insert_barrier.wait(timeout=5)
+                with database.lock:
+                    database.sql.append(sql)
+                    existing = database.rows.get(params[0])
+                    if existing is not None and "ON DUPLICATE KEY UPDATE" not in sql:
+                        msg = f"duplicate provider: {params[0]}"
+                        raise RuntimeError(msg)
+                    database.rows.setdefault(params[0], params)
+                return self
+
+        return Connection()
+
+
+class _ConcurrentDefaultProfileStore(DirectoryAuthStore):
+    def __init__(self, database) -> None:
+        super().__init__(lambda: "stable-secret")
+        self.database = database
+
+    def ensure_schema(self) -> None:
+        return None
+
+    def _connect(self):
+        return self.database.connect()
+
+
+def test_ensure_default_profiles_is_concurrency_safe() -> None:
+    database = _ConcurrentDefaultProfileDatabase()
+    stores = [_ConcurrentDefaultProfileStore(database) for _ in range(2)]
+    errors = []
+
+    def seed(store) -> None:
+        try:
+            store.ensure_default_profiles()
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=seed, args=(store,)) for store in stores]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert set(database.rows) == {"active_directory", "ldap"}
+
+
+def test_ensure_default_profiles_preserves_configured_row() -> None:
+    database = _ConcurrentDefaultProfileDatabase()
+    database.insert_barrier = threading.Barrier(1)
+    configured = ("ldap", "operator configuration sentinel")
+    database.rows["ldap"] = configured
+
+    _ConcurrentDefaultProfileStore(database).ensure_default_profiles()
+
+    assert database.rows["ldap"] is configured
+    assert "active_directory" in database.rows
+
+
 def test_bind_password_encryption_round_trips_without_plaintext() -> None:
     store = DirectoryAuthStore(lambda: "stable-secret")
     encrypted = store._encrypt("super-secret")

@@ -248,12 +248,6 @@ class DirectoryAuthStore:
         now = int(time.time())
         for provider in DIRECTORY_PROVIDERS:
             with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT provider FROM directory_auth_profiles WHERE provider = %s",
-                    (provider,),
-                ).fetchone()
-                if row:
-                    continue
                 defaults = self.default_profile(provider)
                 conn.execute(
                     """
@@ -265,6 +259,8 @@ class DirectoryAuthStore:
                         timeout_seconds, last_test_ok, last_test_ts,
                         last_test_detail, updated_ts
                     ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON DUPLICATE KEY UPDATE
+                        provider = directory_auth_profiles.provider
                     """,
                     (
                         provider,
