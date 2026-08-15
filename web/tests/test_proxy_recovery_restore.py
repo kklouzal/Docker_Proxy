@@ -697,6 +697,50 @@ def test_restore_normalizes_valid_pac_backup_proxy_url() -> None:
     assert backup_table.rows == (("edge-01", "backup.example", 8443, 1),)
 
 
+def test_restore_discards_legacy_adblock_runtime_bookkeeping() -> None:
+    rows = (
+        {"proxy_id": "edge-01", "k": "cache_current_size", "v": "42"},
+        {"proxy_id": "edge-01", "k": "cache_last_flush", "v": "1700000000"},
+        {"proxy_id": "edge-01", "k": "cache_flush_requested", "v": "0"},
+        {"proxy_id": "edge-01", "k": "cicap_access_inode", "v": "123"},
+        {"proxy_id": "edge-01", "k": "cicap_access_pos", "v": "456"},
+        {"proxy_id": "edge-01", "k": "enabled", "v": "1"},
+        {"proxy_id": "edge-01", "k": "unrelated_runtime_state", "v": "ignored"},
+    )
+
+    plan = restore.build_restore_plan(
+        _bundle_with_table_rows("adblock_proxy_meta", rows),
+        "edge-01",
+        now_ts=NOW,
+    )
+    proxy_meta = next(
+        table for table in plan.tables if table.table_name == "adblock_proxy_meta"
+    )
+
+    assert proxy_meta.rows == (("edge-01", "enabled", "1"),)
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        (
+            {"proxy_id": "edge-01", "k": "enabled", "v": "1"},
+            {"proxy_id": "edge-01", "k": "enabled", "v": "1"},
+        ),
+        ({"proxy_id": "edge-01", "k": "enabled", "v": "yes"},),
+    ],
+)
+def test_restore_rejects_duplicate_or_invalid_adblock_enabled_rows(
+    rows: tuple[dict[str, Any], ...],
+) -> None:
+    with pytest.raises(restore.ProxyRecoveryRestoreError):
+        restore.build_restore_plan(
+            _bundle_with_table_rows("adblock_proxy_meta", rows),
+            "edge-01",
+            now_ts=NOW,
+        )
+
+
 def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adoption() -> (
     None
 ):
@@ -1003,11 +1047,6 @@ def test_malformed_columns_types_duplicates_pac_orphans_and_active_cardinality_r
                     "expires_ts": NOW - 1,
                 },
             ),
-        },
-        {
-            "adblock_proxy_meta": (
-                {"proxy_id": "edge-01", "k": "source-only", "v": "excluded"},
-            )
         },
     ]
     for overrides in cases:

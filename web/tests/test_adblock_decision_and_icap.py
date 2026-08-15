@@ -1351,6 +1351,35 @@ def test_adblock_icap_server_closes_after_empty_preview_chunk_size(
         server.server_close()
 
 
+def test_adblock_icap_server_bind_failure_preserves_original_error() -> None:
+    class _TrackedEngine:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    engine = _TrackedEngine()
+    try:
+        with pytest.raises(OSError) as excinfo:
+            _AdblockIcapServer(
+                ("127.0.0.1", int(listener.getsockname()[1])),
+                engine=engine,  # type: ignore[arg-type]
+                access_log_path="/dev/null",
+                max_request_bytes=65536,
+            )
+
+        assert not isinstance(excinfo.value, AttributeError)
+        assert engine.close_calls == 1
+    finally:
+        listener.close()
+
+
 def test_adblock_icap_request_thread_closes_its_sqlite_connection(
     tmp_path: Path,
 ) -> None:

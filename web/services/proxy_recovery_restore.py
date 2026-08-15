@@ -99,6 +99,7 @@ _HEX_SHA_COLUMNS: Final = frozenset(
     {"artifact_sha256", "bundle_sha256", "cert_sha256", "config_sha256"}
 )
 _PROXY_COLUMNS: Final = frozenset({"proxy_id"})
+_MAX_LEGACY_ADBLOCK_PROXY_META_ROWS: Final = 100
 
 _MAX_ROWS_BY_TABLE: Final = MappingProxyType(
     {
@@ -545,7 +546,12 @@ def _validate_rows(
     now_ts: int,
 ) -> tuple[tuple[Any, ...], ...]:
     max_rows = _MAX_ROWS_BY_TABLE[table_name]
-    if len(raw_rows) > max_rows:
+    raw_max_rows = (
+        _MAX_LEGACY_ADBLOCK_PROXY_META_ROWS
+        if table_name == "adblock_proxy_meta"
+        else max_rows
+    )
+    if len(raw_rows) > raw_max_rows:
         raise ProxyRecoveryRestoreError(
             f"recovery table {table_name} exceeds row limit"
         )
@@ -602,7 +608,16 @@ def _validate_rows(
                     f"duplicate natural key in recovery table {table_name}"
                 )
             seen_keys.add(key)
+        if table_name == "adblock_proxy_meta" and by_col["k"] != "enabled":
+            # Older exporters captured cache and c-icap tailer bookkeeping from
+            # this mixed-purpose table. Validate its shape and proxy scope, but
+            # never replay that source-runtime state on a replacement proxy.
+            continue
         rows.append(normalized)
+    if len(rows) > max_rows:
+        raise ProxyRecoveryRestoreError(
+            f"recovery table {table_name} exceeds row limit"
+        )
     if table_name == "proxy_config_revisions":
         _validate_proxy_config_revision_digests(rows, expected_columns)
     if table_name == "adblock_artifact_revisions":

@@ -723,8 +723,8 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         block_recorder: Any | None = None,
         stats: HelperStats | None = None,
     ) -> None:
-        super().__init__(server_address, _AdblockIcapHandler)
         self.engine = engine
+        super().__init__(server_address, _AdblockIcapHandler)
         self.access_log_path = access_log_path
         self.max_request_bytes = max_request_bytes
         self.max_body_drain_bytes = max(8192, int(max_body_drain_bytes or 8192))
