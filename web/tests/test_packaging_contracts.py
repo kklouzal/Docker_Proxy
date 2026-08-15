@@ -122,11 +122,78 @@ def _python_module_imports_services(path: str) -> set[str]:
                     if alias.name != "*"
                 )
         elif isinstance(node, ast.Import):
-            for alias in node.names:
-                parts = alias.name.split(".")
-                if len(parts) >= 2 and parts[0] == "services":
-                    imports.add(f"{parts[1]}.py")
+            imports.update(
+                f"{alias.name.split('.')[1]}.py"
+                for alias in node.names
+                if alias.name.startswith("services.")
+            )
     return imports
+
+
+def _local_python_modules() -> dict[str, str]:
+    modules: dict[str, str] = {}
+    for directory, package in (
+        ("proxy", "proxy"),
+        ("web/services", "services"),
+        ("web/tools", "tools"),
+    ):
+        for path in sorted((REPO_ROOT / directory).glob("*.py")):
+            suffix = "" if path.name == "__init__.py" else f".{path.stem}"
+            modules[f"{package}{suffix}"] = str(path.relative_to(REPO_ROOT))
+    return modules
+
+
+def _local_imports(module: str, path: str, local_modules: set[str]) -> set[str]:
+    tree = ast.parse(_read(path), filename=path)
+    imports: set[str] = set()
+    for node in ast.walk(tree):
+        candidates: set[str] = set()
+        if isinstance(node, ast.Import):
+            candidates.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                package = module.rsplit(".", 1)[0]
+                parts = package.split(".")
+                base = ".".join(parts[: len(parts) - node.level + 1])
+                imported = ".".join(filter(None, (base, node.module or "")))
+            else:
+                imported = node.module or ""
+            candidates.add(imported)
+            candidates.update(
+                ".".join(filter(None, (imported, alias.name)))
+                for alias in node.names
+                if alias.name != "*"
+            )
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "import_module"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            # Repository dynamic imports use importlib.import_module with literals.
+            candidates.add(node.args[0].value)
+        imports.update(candidates & local_modules)
+    return imports
+
+
+def _missing_local_import_closure(
+    roots: set[str], packaged: set[str]
+) -> tuple[set[str], set[str]]:
+    modules = _local_python_modules()
+    reachable: set[str] = set()
+    pending = list(roots)
+    while pending:
+        module = pending.pop()
+        if module in reachable:
+            continue
+        assert module in modules, f"unknown local runtime entrypoint: {module}"
+        reachable.add(module)
+        pending.extend(
+            _local_imports(module, modules[module], set(modules)) - reachable
+        )
+    return reachable - packaged, reachable
 
 
 def _image_payload(dockerfile: str, pattern: str) -> set[str]:
@@ -280,23 +347,63 @@ def test_admin_wsgi_imports_flat_packaged_application(tmp_path) -> None:
     )
 
 
-def test_proxy_dockerfile_includes_direct_service_import_dependencies() -> None:
+PROXY_PYTHON_RUNTIME_ROOTS = {
+    "proxy.wsgi",
+    "proxy.agent",
+    "proxy.forwarding_canary",
+    "tools.adblock_compile",
+    "tools.adblock_icap_server",
+    "tools.clamav_respmod_icap_server",
+    "tools.safe_browsing_acl",
+    "tools.sslfilter_apply",
+    "tools.webcat_acl",
+    "tools.webfilter_apply",
+}
+
+
+def _proxy_packaged_local_modules() -> set[str]:
     copied_services = _proxy_image_payload(r"web/services/[\w_]+\.py")
     copied_tools = _proxy_image_payload(r"web/tools/[\w_]+\.py")
-    copied_roots = [
-        "proxy/agent.py",
-        "proxy/app.py",
-        "proxy/runtime.py",
-        *(f"web/services/{name}" for name in copied_services if name != "__init__.py"),
-        *(f"web/tools/{name}" for name in copied_tools),
-    ]
+    return {
+        "proxy",
+        *(f"proxy.{path.stem}" for path in (REPO_ROOT / "proxy").glob("*.py")),
+        "services",
+        *(f"services.{name[:-3]}" for name in copied_services if name != "__init__.py"),
+        *(f"tools.{name[:-3]}" for name in copied_tools if name != "__init__.py"),
+    }
 
-    required_services: set[str] = set()
-    for path in copied_roots:
-        required_services.update(_python_module_imports_services(path))
 
-    assert sorted(required_services - copied_services) == []
-    assert "bounded_delete.py" in copied_services
+def test_proxy_dockerfile_contains_transitive_local_import_closure() -> None:
+    supervisord = _read("docker/supervisord.proxy.conf")
+    entrypoint = _read("docker/entrypoint.sh")
+    for marker in ("proxy.wsgi:app", "proxy.agent", "proxy.forwarding_canary"):
+        assert marker in supervisord
+    for tool in sorted(
+        name.removeprefix("tools.")
+        for name in PROXY_PYTHON_RUNTIME_ROOTS
+        if name.startswith("tools.")
+    ):
+        assert (
+            f"/app/tools/{tool}.py" in entrypoint
+            or f"/app/tools/{tool}.py" in _read("web/services/webfilter_core.py")
+        )
+
+    missing, reachable = _missing_local_import_closure(
+        PROXY_PYTHON_RUNTIME_ROOTS, _proxy_packaged_local_modules()
+    )
+
+    assert sorted(missing) == []
+    assert "services.bounded_delete" in reachable
+
+
+def test_proxy_local_import_closure_detects_removed_transitive_module() -> None:
+    packaged = _proxy_packaged_local_modules()
+    missing, reachable = _missing_local_import_closure(
+        PROXY_PYTHON_RUNTIME_ROOTS, packaged - {"services.bounded_delete"}
+    )
+
+    assert "services.bounded_delete" in reachable
+    assert missing == {"services.bounded_delete"}
 
 
 def test_admin_dockerfile_includes_direct_service_import_dependencies() -> None:
