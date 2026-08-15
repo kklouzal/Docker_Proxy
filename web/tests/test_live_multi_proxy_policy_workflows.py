@@ -209,6 +209,10 @@ def test_live_remote_sslfilter_policy_mutation_operation_converges_selected_prox
     other_proxy_id = LIVE_CONFIG.primary_proxy_id
     domain = unique_domain("remote-policy-converge")
     other_before_sha = _build_policy_sha(other_proxy_id)
+    other_before_operation_ids = {
+        op.operation_id
+        for op in _operation_ledger().list_operations(other_proxy_id, limit=500)
+    }
 
     add_response = multi_proxy_admin.admin_post_form(
         with_proxy_id("/sslfilter", selected_proxy_id),
@@ -257,10 +261,18 @@ def test_live_remote_sslfilter_policy_mutation_operation_converges_selected_prox
 
     other_after_sha = _build_policy_sha(other_proxy_id)
     assert other_after_sha == other_before_sha
-    assert all(
-        str(getattr(op, "target_ref", "") or "") != desired_sha
-        for op in _operation_ledger().list_operations(other_proxy_id, limit=50)
+    other_after_operations = _operation_ledger().list_operations(
+        other_proxy_id,
+        limit=500,
     )
+    # target_ref is a content fingerprint, not a globally unique operation or
+    # proxy identity. Another proxy may legitimately have a historical operation
+    # for the same materialized bytes, so isolation is proven by operation-row
+    # identity plus the unchanged other-proxy materialization above.
+    assert {
+        op.operation_id for op in other_after_operations
+    } == other_before_operation_ids
+    assert all(op.proxy_id == other_proxy_id for op in other_after_operations)
 
     remove_response = multi_proxy_admin.admin_post_form(
         with_proxy_id("/sslfilter", selected_proxy_id),
