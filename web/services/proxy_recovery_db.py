@@ -60,6 +60,7 @@ EXPORT_QUERY_PLANS: Final = (
         """
         SELECT k, v
         FROM adblock_settings
+        WHERE k<>'enabled'
         ORDER BY k ASC
         """,
         _PARAM_NONE,
@@ -319,7 +320,7 @@ EXPORT_QUERY_PLANS: Final = (
         """
         SELECT proxy_id, k, v
         FROM adblock_proxy_meta
-        WHERE proxy_id=%s AND 1=0
+        WHERE proxy_id=%s AND k='enabled'
         ORDER BY k ASC
         """,
         _PARAM_PROXY,

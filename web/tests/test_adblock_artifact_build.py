@@ -62,7 +62,9 @@ def _import_adblock_store_module():
 
 
 class _FakeSqlResult:
-    def __init__(self, rows=None, *, rowcount: int = 0, lastrowid: int | None = None) -> None:
+    def __init__(
+        self, rows=None, *, rowcount: int = 0, lastrowid: int | None = None
+    ) -> None:
         self._rows = list(rows or [])
         self.rowcount = rowcount
         self.lastrowid = lastrowid
@@ -220,7 +222,9 @@ class _FakeAdblockRevisionConn:
                 reverse=True,
             )[:limit]
             return _FakeSqlResult([(row["id"],) for row in rows])
-        if text.startswith("UPDATE adblock_artifact_revisions SET is_active=0 WHERE id IN"):
+        if text.startswith(
+            "UPDATE adblock_artifact_revisions SET is_active=0 WHERE id IN"
+        ):
             ids = {int(value) for value in params}
             changed = 0
             for row in self.rows:
@@ -489,8 +493,7 @@ def test_alias_expansion_counts_toward_extract_budget_without_replace(
     }
     archive_blob = artifacts_module._build_deterministic_archive(file_map)
     archived_size = sum(
-        info.file_size
-        for info in zipfile.ZipFile(io.BytesIO(archive_blob)).infolist()
+        info.file_size for info in zipfile.ZipFile(io.BytesIO(archive_blob)).infolist()
     )
     monkeypatch.setenv(
         "ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES",
@@ -1203,11 +1206,11 @@ def test_manual_refresh_downloads_enabled_lists_even_when_adblock_disabled(
     assert downloaded == [selected]
     revision = result["revision"]
     assert revision is not None
-    assert revision.enabled_lists == []
-    assert created["settings"]["enabled"] is False
-    assert created["settings"]["enabled_lists"] == []
-    assert created["report"]["enabled_lists"] == []
-    assert created["report"]["breakdowns"]["lookup_index_counts"]["rules"] == 0
+    assert revision.enabled_lists == [selected]
+    assert created["settings"]["enabled"] is True
+    assert created["settings"]["enabled_lists"] == [selected]
+    assert created["report"]["enabled_lists"] == [selected]
+    assert created["report"]["breakdowns"]["lookup_index_counts"]["rules"] == 1
 
 
 def test_build_active_artifact_preserves_previous_when_enabled_list_missing(
@@ -2158,7 +2161,13 @@ def test_activation_commits_before_bounded_prune_cleanup(
     def tracking_connect():
         nonlocal connect_count
         connect_count += 1
-        label = "metadata" if connect_count == 1 else "activation" if connect_count == 2 else "cleanup"
+        label = (
+            "metadata"
+            if connect_count == 1
+            else "activation"
+            if connect_count == 2
+            else "cleanup"
+        )
         return TrackingConn(original_connect(), label)
 
     monkeypatch.setattr(revision_store, "_connect", tracking_connect)
@@ -2237,7 +2246,11 @@ def test_prune_revision_batch_keeps_active_and_previous_with_large_backlog() -> 
     revision_store = artifacts_module.AdblockArtifactStore()
     conn = _FakeAdblockRevisionConn(
         [
-            {"id": index, "created_ts": 10_000 + index, "is_active": 1 if index == 10 else 0}
+            {
+                "id": index,
+                "created_ts": 10_000 + index,
+                "is_active": 1 if index == 10 else 0,
+            }
             for index in range(1, 11)
         ],
     )

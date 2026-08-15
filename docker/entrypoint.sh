@@ -1303,7 +1303,7 @@ done
     echo "adaptation_service_set adblock_req_set ${adblock_services}"
     echo "adaptation_service_set av_req_set ${av_req_services}"
     echo "adaptation_service_set av_resp_set ${av_resp_services}"
-    echo "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
+    echo "acl icap_adblockable method GET HEAD POST OPTIONS PUT PATCH DELETE"
     if [ "$ADBLOCK_ROUTING_ENABLED" = "1" ]; then
         echo "adaptation_access adblock_req_set allow icap_adblockable"
     else

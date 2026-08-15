@@ -162,9 +162,7 @@ def _safe_decoded_path_segments(path: str) -> list[str] | None:
         decoded_segments.append(decoded_segment)
         repeatedly_decoded_segments.append(repeatedly_decoded_segment)
     if any(
-        "/" in segment
-        or "\\" in segment
-        or _has_unsafe_url_text(segment)
+        "/" in segment or "\\" in segment or _has_unsafe_url_text(segment)
         for segment in repeatedly_decoded_segments
     ):
         return None
@@ -319,7 +317,13 @@ def _parse_public_pac_url(raw_url: object | None) -> tuple[str, str, int, str]:
         if isinstance(parsed_ip, IPv6Address):
             parsed = urlsplit(
                 urlunsplit(
-                    (parsed.scheme, f"[{parsed.netloc}]", parsed.path, parsed.query, ""),
+                    (
+                        parsed.scheme,
+                        f"[{parsed.netloc}]",
+                        parsed.path,
+                        parsed.query,
+                        "",
+                    ),
                 ),
             )
     raw_scheme = str(parsed.scheme or "").lower()
@@ -628,6 +632,10 @@ class ProxyRegistry:
                         now,
                     ),
                 )
+                conn.execute(
+                    "INSERT IGNORE INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,'enabled','0')",
+                    (proxy_key,),
+                )
                 row = {
                     "proxy_id": proxy_key,
                     "display_name": (display_name or proxy_key).strip() or proxy_key,
@@ -664,7 +672,9 @@ class ProxyRegistry:
                     else row["management_url"],
                 )
                 next_public_host = _normalize_public_host(
-                    public_host if public_host is not None else row["public_host"] or "",
+                    public_host
+                    if public_host is not None
+                    else row["public_host"] or "",
                     allow_single_label=True,
                 )
                 next_public_pac_scheme = _normalize_public_scheme(
@@ -952,9 +962,17 @@ class ProxyRegistry:
                     ).fetchone()
                     if lifecycle_state is not None:
                         action = str(lifecycle_state["action"] or "")
-                        raw_target = str(lifecycle_state["target_proxy_id"] or "").strip()
-                        target_key = normalize_proxy_id(raw_target) if raw_target else ""
-                        if action == "renaming" and target_key and target_key != new_key:
+                        raw_target = str(
+                            lifecycle_state["target_proxy_id"] or ""
+                        ).strip()
+                        target_key = (
+                            normalize_proxy_id(raw_target) if raw_target else ""
+                        )
+                        if (
+                            action == "renaming"
+                            and target_key
+                            and target_key != new_key
+                        ):
                             msg = (
                                 f"Proxy {old_key!r} already has a rename in progress "
                                 f"to {target_key!r}; retry with that target to resume."
@@ -998,7 +1016,13 @@ class ProxyRegistry:
                         VALUES(%s,'renaming',%s,%s,%s,%s)
                         ON DUPLICATE KEY UPDATE action=VALUES(action), target_proxy_id=VALUES(target_proxy_id), detail=VALUES(detail), updated_ts=VALUES(updated_ts)
                         """,
-                        (old_key, new_key, f"Rename in progress to {new_key}.", now, now),
+                        (
+                            old_key,
+                            new_key,
+                            f"Rename in progress to {new_key}.",
+                            now,
+                            now,
+                        ),
                     )
                     self._clear_lifecycle_write_cache(old_key, new_key)
 
@@ -1064,7 +1088,13 @@ class ProxyRegistry:
                         VALUES(%s,'renamed',%s,%s,%s,%s)
                         ON DUPLICATE KEY UPDATE action=VALUES(action), target_proxy_id=VALUES(target_proxy_id), detail=VALUES(detail), updated_ts=VALUES(updated_ts)
                         """,
-                        (old_key, new_key, f"Proxy renamed to {new_key}.", now, int(time.time())),
+                        (
+                            old_key,
+                            new_key,
+                            f"Proxy renamed to {new_key}.",
+                            now,
+                            int(time.time()),
+                        ),
                     )
                     conn.execute(
                         "DELETE FROM proxy_lifecycle_tombstones WHERE proxy_id=%s",
@@ -1115,7 +1145,10 @@ class ProxyRegistry:
                             "SELECT action FROM proxy_lifecycle_tombstones WHERE proxy_id=%s LIMIT 1",
                             (proxy_key,),
                         ).fetchone()
-                        if tombstone is not None and str(tombstone["action"] or "") == "removed":
+                        if (
+                            tombstone is not None
+                            and str(tombstone["action"] or "") == "removed"
+                        ):
                             return
                         msg = f"Proxy {proxy_key!r} is not registered."
                         raise ValueError(msg)
@@ -1133,7 +1166,11 @@ class ProxyRegistry:
                         SET status='removing', detail=%s, updated_ts=%s
                         WHERE proxy_id=%s
                         """,
-                        ("Proxy removal in progress; new writes are rejected.", now_ts, proxy_key),
+                        (
+                            "Proxy removal in progress; new writes are rejected.",
+                            now_ts,
+                            proxy_key,
+                        ),
                     )
                     conn.execute(
                         """
@@ -1174,9 +1211,14 @@ class ProxyRegistry:
                         "DELETE FROM proxy_id_aliases WHERE proxy_id=%s",
                         (proxy_key,),
                     )
-                    deleted_alias_targets = max(0, int(getattr(result, "rowcount", 0) or 0))
+                    deleted_alias_targets = max(
+                        0, int(getattr(result, "rowcount", 0) or 0)
+                    )
                     if deleted_alias_targets:
-                        table_counts["proxy_id_aliases"] = table_counts.get("proxy_id_aliases", 0) + deleted_alias_targets
+                        table_counts["proxy_id_aliases"] = (
+                            table_counts.get("proxy_id_aliases", 0)
+                            + deleted_alias_targets
+                        )
 
                     result = conn.execute(
                         "DELETE FROM proxy_id_aliases WHERE alias_proxy_id=%s",
@@ -1205,16 +1247,26 @@ class ProxyRegistry:
                         SET action='removed', detail=%s, updated_ts=%s
                         WHERE proxy_id=%s
                         """,
-                        ("Proxy removed; scoped rows deleted.", int(time.time()), proxy_key),
+                        (
+                            "Proxy removed; scoped rows deleted.",
+                            int(time.time()),
+                            proxy_key,
+                        ),
                     )
                     conn.commit()
                     self._clear_lifecycle_write_cache(proxy_key)
                     attempt.committed = True
 
         run_mysql_operation_with_retry(_remove)
-        result_complete = True if lifecycle_result is None else lifecycle_result.complete
-        truncated_tables = () if lifecycle_result is None else lifecycle_result.truncated_tables
-        discovered_tables = () if lifecycle_result is None else lifecycle_result.discovered_tables
+        result_complete = (
+            True if lifecycle_result is None else lifecycle_result.complete
+        )
+        truncated_tables = (
+            () if lifecycle_result is None else lifecycle_result.truncated_tables
+        )
+        discovered_tables = (
+            () if lifecycle_result is None else lifecycle_result.discovered_tables
+        )
         iterations = 0 if lifecycle_result is None else lifecycle_result.iterations
         return ProxyRemovalResult(
             proxy_id=proxy_key,
@@ -1345,7 +1397,9 @@ class ProxyRegistry:
                         management_url or instance.management_url,
                     ),
                     _normalize_public_host(
-                        public_host if public_host is not None else instance.public_host,
+                        public_host
+                        if public_host is not None
+                        else instance.public_host,
                         allow_single_label=True,
                     ),
                     _normalize_public_scheme(

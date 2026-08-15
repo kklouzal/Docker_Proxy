@@ -57,7 +57,6 @@ _NON_BLOCKING_MODIFIER_OPTIONS = {
 _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
 # uBO's method= option is limited to the DNR request-method set.
 _SUPPORTED_METHOD_OPTIONS = {
-    "CONNECT",
     "DELETE",
     "GET",
     "HEAD",

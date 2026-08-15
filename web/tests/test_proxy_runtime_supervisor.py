@@ -7134,6 +7134,39 @@ def test_operation_completion_tracks_adblock_build_settings_version_target() -> 
     assert "queued settings version 12" in detail
 
 
+def test_operation_completion_requires_selected_proxy_adblock_runtime_target() -> None:
+    from proxy import runtime as runtime_module
+
+    op = SimpleNamespace(
+        operation_type="adblock_refresh",
+        target_kind="adblock_runtime_enabled",
+        target_ref="0",
+        request_hash="",
+    )
+
+    assert runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["adblock_refresh"],
+            "adblock_runtime_enabled": "0",
+        },
+    ) == ("applied", "runtime reconciled")
+
+    status, detail = runtime_module._operation_completion_status(
+        op,
+        default_status="applied",
+        detail="runtime reconciled",
+        result={
+            "executed_operation_types": ["adblock_refresh"],
+            "adblock_runtime_enabled": "1",
+        },
+    )
+    assert status == "superseded"
+    assert "queued adblock runtime enablement 0" in detail
+
+
 def test_operation_completion_rejects_mismatched_supported_target_kind() -> None:
     from proxy import runtime as runtime_module
 

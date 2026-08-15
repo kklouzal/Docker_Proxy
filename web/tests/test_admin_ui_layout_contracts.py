@@ -213,17 +213,28 @@ def test_spa_submit_interceptor_preserves_submitter_overrides() -> None:
     assert "getSubmitterFormAttribute(submitter, 'formmethod')" in js
     assert "getSubmitterFormAttribute(submitter, 'formenctype')" in js
     assert "getSubmitterFormAttribute(submitter, 'formtarget')" in js
-    assert "enctype !== 'multipart/form-data' && enctype !== 'application/x-www-form-urlencoded'" in js
+    assert (
+        "enctype !== 'multipart/form-data' && enctype !== 'application/x-www-form-urlencoded'"
+        in js
+    )
     assert "if (target && target !== '_self') return;" in js
     assert "buildUrlEncodedSubmitBody(form, event.submitter)" in js
     assert "buildSubmitFormData(form, event.submitter)" in js
 
 
-def test_administration_directory_provider_external_submitters_share_main_form() -> None:
+def test_administration_directory_provider_external_submitters_share_main_form() -> (
+    None
+):
     html = (TEMPLATES / "administration.html").read_text(encoding="utf-8")
 
-    assert 'form="{{ current_tab }}-auth-provider-form" name="action" value="scan_auth_provider"' in html
-    assert 'form="{{ current_tab }}-auth-provider-form" name="action" value="test_auth_provider"' in html
+    assert (
+        'form="{{ current_tab }}-auth-provider-form" name="action" value="scan_auth_provider"'
+        in html
+    )
+    assert (
+        'form="{{ current_tab }}-auth-provider-form" name="action" value="test_auth_provider"'
+        in html
+    )
 
 
 def test_spa_operation_polling_preserves_rendered_proxy_scope() -> None:
@@ -242,12 +253,13 @@ def test_webfilter_domain_test_surfaces_allowed_reason() -> None:
     assert "String(data.reason).trim()" in js
 
 
-def test_adblock_page_does_not_expose_unimplemented_decision_cache_controls() -> None:
+def test_adblock_page_exposes_scoped_runtime_and_shared_cache_controls() -> None:
     html = (TEMPLATES / "adblock.html").read_text(encoding="utf-8")
 
-    assert "Decision cache" not in html
-    assert "cache_ttl" not in html
-    assert "cache_max" not in html
+    assert 'value="save_runtime"' in html
+    assert "Shared decision cache" in html
+    assert 'name="cache_ttl"' in html
+    assert 'name="cache_max"' in html
     assert "Flush cache" not in html
 
 
@@ -356,8 +368,13 @@ def test_presentation_post_confirmations_survive_spa_intercepts() -> None:
     js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
 
     assert "onsubmit=" not in observability
-    assert 'data-confirm-message="Clear stored MySQL observability logs' in observability
-    assert 'data-confirm-message="Run observability database maintenance now?' in observability
+    assert (
+        'data-confirm-message="Clear stored MySQL observability logs' in observability
+    )
+    assert (
+        'data-confirm-message="Run observability database maintenance now?'
+        in observability
+    )
     assert "const confirmRequestedAction = (trigger, form = null)" in js
     assert "form.dataset.confirmMessage" in js
     assert "if (!confirmRequestedAction(event.submitter, form))" in js

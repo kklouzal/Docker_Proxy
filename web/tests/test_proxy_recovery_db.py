@@ -217,6 +217,9 @@ def test_capture_recovery_state_uses_snapshot_identity_exact_queries_and_normali
                 "revoked_ts": 0,
             },
         ],
+        "adblock_proxy_meta": [
+            {"proxy_id": "edge-01", "k": "enabled", "v": "1"},
+        ],
     }
     conn = _StrictExportConn(rows_by_table, expected_now_ts=987654321)
 
@@ -272,6 +275,9 @@ def test_capture_recovery_state_uses_snapshot_identity_exact_queries_and_normali
             "admin_note": "temporary",
             "expires_ts": 987654999,
         },
+    )
+    assert by_table["adblock_proxy_meta"].rows == (
+        {"proxy_id": "edge-01", "k": "enabled", "v": "1"},
     )
 
     executed_sql = [sql for sql, _params in conn.ops]

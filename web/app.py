@@ -3786,20 +3786,13 @@ def _present_adblock_build_state(
     if not isinstance(raw_status, dict):
         raw_status = {}
 
-    try:
-        settings_enabled = bool(
-            settings.get("enabled", True)
-            if isinstance(settings, dict)
-            else getattr(settings, "enabled", True)
-        )
-    except Exception:
-        settings_enabled = True
-    configured_enabled_lists = sorted(
+    # Artifact membership follows the shared subscription catalog. The selected
+    # proxy's runtime enablement only controls that proxy's Squid routing.
+    enabled_lists = sorted(
         str(row.get("key") or "").strip()
         for row in statuses
         if row.get("enabled") and str(row.get("key") or "").strip()
     )
-    enabled_lists = configured_enabled_lists if settings_enabled else []
     active_lists = sorted(
         str(item).strip()
         for item in (active_artifact.get("enabled_lists") or [])
@@ -3823,14 +3816,7 @@ def _present_adblock_build_state(
         "refresh_requested": refresh_requested,
         "settings_version": settings_version,
         "enabled_lists": enabled_lists,
-        "configured_enabled_lists": configured_enabled_lists,
         "active_lists": active_lists,
-        "artifact_empty_because_disabled": bool(
-            not settings_enabled
-            and artifact_available
-            and not active_lists
-            and configured_enabled_lists
-        ),
         "version_stale": version_stale,
         "lists_stale": lists_stale,
         "missing_enabled_artifact": missing_enabled_artifact,
@@ -4654,10 +4640,27 @@ def _adblock_runtime_refresh_target(*, store: Any | None = None) -> dict[str, st
 
 
 def _queue_adblock_runtime_refresh(
-    *, action: str, store: Any | None = None
+    *,
+    action: str,
+    store: Any | None = None,
+    runtime_enabled: bool | None = None,
 ) -> tuple[bool, str]:
     default = "Adblock changes were saved, but runtime refresh was not queued."
-    target = _adblock_runtime_refresh_target(store=store)
+    target = (
+        {
+            "target_kind": "adblock_runtime_enabled",
+            "target_ref": "1" if runtime_enabled else "0",
+            "request_hash": "",
+            "summary": (
+                "Adblock routing enablement queued for the selected proxy."
+                if runtime_enabled
+                else "Adblock routing disablement queued for the selected proxy."
+            ),
+            "detail_suffix": "",
+        }
+        if runtime_enabled is not None
+        else _adblock_runtime_refresh_target(store=store)
+    )
     detail = f"Admin requested adblock runtime refresh after {action}."
     if target.get("detail_suffix"):
         detail = f"{detail}\n{target['detail_suffix']}"
@@ -4672,7 +4675,7 @@ def _queue_adblock_runtime_refresh(
             request_hash=target["request_hash"],
             detail=detail,
             created_by=str(session.get("user") or ""),
-            force=True,
+            force=runtime_enabled is None,
         )
     except Exception as exc:
         log_exception_throttled(
@@ -4706,8 +4709,17 @@ def _redirect_adblock_queue_failure(detail: str):
     )
 
 
-def _queue_adblock_or_error(*, action: str, store: Any | None = None):
-    ok, detail = _queue_adblock_runtime_refresh(action=action, store=store)
+def _queue_adblock_or_error(
+    *,
+    action: str,
+    store: Any | None = None,
+    runtime_enabled: bool | None = None,
+):
+    ok, detail = _queue_adblock_runtime_refresh(
+        action=action,
+        store=store,
+        runtime_enabled=runtime_enabled,
+    )
     if not ok:
         return _redirect_adblock_queue_failure(detail)
     return None
@@ -4723,8 +4735,16 @@ def _handle_adblock_post(store: Any):
         store.request_refresh_now()
         if response := _queue_adblock_or_error(action="list save", store=store):
             return response
-    elif action == "save_settings":
+    elif action == "save_runtime":
         enabled = request.form.get("adblock_enabled") == "on"
+        store.set_runtime_enabled(enabled)
+        if response := _queue_adblock_or_error(
+            action="selected-proxy routing save",
+            store=store,
+            runtime_enabled=enabled,
+        ):
+            return response
+    elif action == "save_settings":
         cur = store.get_settings()
         cache_ttl = _bounded_int(
             request.form.get("cache_ttl"),
@@ -4738,10 +4758,14 @@ def _handle_adblock_post(store: Any):
             minimum=0,
             maximum=1_000_000,
         )
-        store.set_settings(enabled=enabled, cache_ttl=cache_ttl, cache_max=cache_max)
-        store.request_refresh_now()
-        if response := _queue_adblock_or_error(action="settings save", store=store):
-            return response
+        changed = store.set_shared_settings(cache_ttl=cache_ttl, cache_max=cache_max)
+        if changed:
+            store.request_refresh_now()
+            if response := _queue_adblock_or_error(
+                action="shared cache settings save",
+                store=store,
+            ):
+                return response
     elif action == "refresh":
         any_enabled = False
         try:

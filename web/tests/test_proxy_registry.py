@@ -815,6 +815,52 @@ def test_register_local_proxy_reconciles_stale_identity_by_management_url(
     assert registry.get_proxy("Proxy-PR") is not None
 
 
+def test_new_proxy_runtime_adblock_default_is_explicitly_disabled(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path / "proxy-adblock-default-disabled")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.init_db()
+    with registry._connect() as conn:
+        conn.execute(
+            "UPDATE adblock_settings SET v='1' WHERE k='enabled'",
+        )
+
+    registry.ensure_proxy("edge-created-after-migration")
+
+    with registry._connect() as conn:
+        row = conn.execute(
+            "SELECT v FROM adblock_proxy_meta WHERE proxy_id=%s AND k='enabled'",
+            ("edge-created-after-migration",),
+        ).fetchone()
+    assert row is not None
+    assert str(row["v"]) == "0"
+
+
+def test_ensure_existing_proxy_preserves_explicit_runtime_adblock_state(
+    tmp_path,
+) -> None:
+    configure_test_mysql_env(tmp_path / "proxy-adblock-existing-preserved")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-existing")
+    with registry._connect() as conn:
+        conn.execute(
+            "UPDATE adblock_proxy_meta SET v='1' WHERE proxy_id=%s AND k='enabled'",
+            ("edge-existing",),
+        )
+
+    registry.ensure_proxy("edge-existing", display_name="Existing")
+
+    with registry._connect() as conn:
+        row = conn.execute(
+            "SELECT v FROM adblock_proxy_meta WHERE proxy_id=%s AND k='enabled'",
+            ("edge-existing",),
+        ).fetchone()
+    assert str(row["v"]) == "1"
+
+
 def test_rename_proxy_rewrites_other_proxy_id_tables(tmp_path):
     configure_test_mysql_env(tmp_path / "proxy-identity-rename")
     proxy_registry = _proxy_registry()

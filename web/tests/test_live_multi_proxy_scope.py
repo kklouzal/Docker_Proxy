@@ -89,10 +89,8 @@ def test_live_remote_post_redirects_preserve_proxy_id(
         response = multi_proxy_admin.admin_post_form(
             with_proxy_id("/adblock", LIVE_CONFIG.remote_proxy_id),
             {
-                "action": "save_settings",
+                "action": "save_runtime",
                 "adblock_enabled": "on",
-                "cache_ttl": "90",
-                "cache_max": "4000",
             },
             csrf_path=with_proxy_id("/adblock", LIVE_CONFIG.remote_proxy_id),
             timeout_seconds=90.0,
@@ -112,10 +110,6 @@ def test_live_remote_post_redirects_preserve_proxy_id(
                 cache_ttl=int(original_settings.get("cache_ttl") or 0),
                 cache_max=int(original_settings.get("cache_max") or 0),
             )
-            # Saving adblock settings queues a background list rebuild. This route
-            # test only verifies proxy-id preservation; leaving an internet list
-            # refresh queued can starve later live proxy traffic assertions.
-            store.clear_refresh_requested()
         finally:
             reset_proxy_id(token)
 

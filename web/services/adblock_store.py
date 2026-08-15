@@ -90,7 +90,8 @@ _DEFAULT_LISTS = {
 
 
 _DEFAULT_SETTINGS = {
-    # Global on/off switch for ICAP decisions.
+    # Legacy fallback for deployments created before runtime enablement became
+    # proxy-scoped. Migration 30 copies this value into adblock_proxy_meta.
     "enabled": "0",
     # Cache URL allow/block decisions for performance.
     "cache_ttl": "3600",
@@ -283,6 +284,13 @@ class AdblockStore:
                 (proxy_id, k),
             )
 
+        legacy_enabled = _DEFAULT_SETTINGS["enabled"]
+        row = conn.execute(
+            "SELECT v FROM adblock_settings WHERE k='enabled'",
+        ).fetchone()
+        if row and row[0] is not None:
+            legacy_enabled = "1" if str(row[0]).strip() == "1" else "0"
+
         for key in (
             "cache_flush_requested",
             "cache_last_flush",
@@ -294,6 +302,10 @@ class AdblockStore:
                 "INSERT IGNORE INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,'0')",
                 (proxy_id, key),
             )
+        conn.execute(
+            "INSERT IGNORE INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,'enabled',%s)",
+            (proxy_id, legacy_enabled),
+        )
 
     @staticmethod
     def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
@@ -783,8 +795,14 @@ class AdblockStore:
         with self._connect() as conn:
             rows = conn.execute("SELECT k, v FROM adblock_settings").fetchall()
             m = {str(r[0]): str(r[1]) for r in rows}
+            legacy_enabled = (
+                "1"
+                if (m.get("enabled") or _DEFAULT_SETTINGS["enabled"]).strip() == "1"
+                else "0"
+            )
+            runtime_enabled = self._get_proxy_meta(conn, "enabled", legacy_enabled)
 
-        enabled = (m.get("enabled") or _DEFAULT_SETTINGS["enabled"]).strip() == "1"
+        enabled = runtime_enabled.strip() == "1"
         cache_ttl = as_int(
             m.get("cache_ttl") or _DEFAULT_SETTINGS["cache_ttl"],
             int(_DEFAULT_SETTINGS["cache_ttl"]),
@@ -804,18 +822,34 @@ class AdblockStore:
             "cache_max": cache_max,
         }
 
-    def set_settings(self, *, enabled: bool, cache_ttl: int, cache_max: int) -> None:
+    def set_runtime_enabled(self, enabled: bool) -> None:
+        """Persist selected-proxy routing without changing shared artifact state."""
+
+        def write() -> None:
+            with self._connect() as conn:
+                self._set_proxy_meta(conn, "enabled", "1" if enabled else "0")
+
+        self._with_db_write_retry(write)
+
+    def set_shared_settings(self, *, cache_ttl: int, cache_max: int) -> bool:
+        """Persist shared cache settings and return whether they changed."""
         cache_ttl = int(cache_ttl)
         cache_max = int(cache_max)
         cache_ttl = max(0, min(7 * 24 * 3600, cache_ttl))
         cache_max = max(0, min(1_000_000, cache_max))
 
-        def write() -> None:
+        def write() -> bool:
             with self._connect() as conn:
-                conn.execute(
-                    "INSERT INTO adblock_settings(k,v) VALUES('enabled',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
-                    ("1" if enabled else "0",),
-                )
+                rows = conn.execute(
+                    "SELECT k, v FROM adblock_settings WHERE k IN ('cache_ttl','cache_max')",
+                ).fetchall()
+                current = {str(row[0]): str(row[1]) for row in rows}
+                desired = {
+                    "cache_ttl": str(cache_ttl),
+                    "cache_max": str(cache_max),
+                }
+                if all(current.get(key) == value for key, value in desired.items()):
+                    return False
                 conn.execute(
                     "INSERT INTO adblock_settings(k,v) VALUES('cache_ttl',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
                     (str(cache_ttl),),
@@ -825,8 +859,14 @@ class AdblockStore:
                     (str(cache_max),),
                 )
                 self._bump_version(conn)
+                return True
 
-        self._with_db_write_retry(write)
+        return bool(self._with_db_write_retry(write))
+
+    def set_settings(self, *, enabled: bool, cache_ttl: int, cache_max: int) -> None:
+        """Compatibility API for callers intentionally updating both scopes."""
+        self.set_runtime_enabled(enabled)
+        self.set_shared_settings(cache_ttl=cache_ttl, cache_max=cache_max)
 
     def _bump_version(self, conn) -> None:
         cur = conn.execute(

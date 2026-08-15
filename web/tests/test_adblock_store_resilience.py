@@ -7,6 +7,41 @@ import pymysql
 from .mysql_test_utils import configure_test_mysql_env
 
 
+def test_adblock_runtime_enablement_is_scoped_per_proxy(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path / "adblock-proxy-scoped-enablement")
+
+    from services.adblock_store import AdblockStore  # type: ignore
+    from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
+    from services.proxy_registry import get_proxy_registry  # type: ignore
+
+    store = AdblockStore(lists_dir=str(tmp_path / "lists"))
+    registry = get_proxy_registry()
+    registry.init_db()
+    registry.ensure_proxy("proxy-a")
+    registry.ensure_proxy("proxy-b")
+    store.init_db()
+
+    token = set_proxy_id("proxy-a")
+    try:
+        store.set_settings(enabled=False, cache_ttl=120, cache_max=4096)
+        assert store.get_settings()["enabled"] is False
+    finally:
+        reset_proxy_id(token)
+
+    token = set_proxy_id("proxy-b")
+    try:
+        store.set_settings(enabled=True, cache_ttl=120, cache_max=4096)
+        assert store.get_settings()["enabled"] is True
+    finally:
+        reset_proxy_id(token)
+
+    token = set_proxy_id("proxy-a")
+    try:
+        assert store.get_settings()["enabled"] is False
+    finally:
+        reset_proxy_id(token)
+
+
 def test_adblock_fresh_default_is_disabled_and_init_preserves_explicit_opt_in(
     tmp_path,
 ) -> None:
@@ -26,6 +61,38 @@ def test_adblock_fresh_default_is_disabled_and_init_preserves_explicit_opt_in(
     reinitialized = AdblockStore(lists_dir=str(lists_dir))
     reinitialized.init_db()
     assert reinitialized.get_settings()["enabled"] is True
+
+
+def test_runtime_toggle_does_not_change_shared_artifact_state(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path / "adblock-runtime-toggle-shared-state")
+
+    from services.adblock_store import AdblockStore  # type: ignore
+
+    store = AdblockStore(lists_dir=str(tmp_path / "lists"))
+    store.init_db()
+    version = store.get_settings_version()
+    refresh_requested = store.get_refresh_requested()
+
+    store.set_runtime_enabled(True)
+
+    assert store.get_settings()["enabled"] is True
+    assert store.get_settings_version() == version
+    assert store.get_refresh_requested() == refresh_requested
+
+
+def test_shared_cache_settings_bump_version_only_when_changed(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path / "adblock-shared-cache-settings")
+
+    from services.adblock_store import AdblockStore  # type: ignore
+
+    store = AdblockStore(lists_dir=str(tmp_path / "lists"))
+    store.init_db()
+    version = store.get_settings_version()
+
+    assert store.set_shared_settings(cache_ttl=3600, cache_max=200000) is False
+    assert store.get_settings_version() == version
+    assert store.set_shared_settings(cache_ttl=120, cache_max=4096) is True
+    assert store.get_settings_version() == version + 1
 
 
 class _AdblockConn:

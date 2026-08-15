@@ -27,6 +27,7 @@ TERMINAL_STATUSES = {"applied", "superseded", "failed"}
 OPERATION_HISTORY_LIMIT = 128
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SHA256_TARGET_KINDS = frozenset({"policy_state", "pac_state"})
+_BOOLEAN_TARGET_KINDS = frozenset({"adblock_runtime_enabled"})
 
 
 def _text_or_default(value: object | None, *, default: str = "") -> str:
@@ -81,6 +82,12 @@ def normalize_operation_target_ref(
     existing revision-id/string contracts and are only bounded by the caller.
     """
     kind = _text_or_default(target_kind).strip()
+    if kind in _BOOLEAN_TARGET_KINDS:
+        text = _text_or_default(value).strip()
+        if text not in {"0", "1"}:
+            msg = f"Operation target_ref for {kind} must be 0 or 1."
+            raise ValueError(msg)
+        return text
     if kind not in _SHA256_TARGET_KINDS:
         return _limited_text(value, 255)
     if value is None or value is False or value == 0:

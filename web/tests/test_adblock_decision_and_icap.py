@@ -360,6 +360,7 @@ def test_adblock_decision_enforces_method_contract_without_cache_leakage(
         [
             "||negated-method.example^$method=~get",
             "||positive-method.example^$method=post|put",
+            "||connect-method.example^$method=connect",
             "||empty-method.example^$method=",
             "||unsupported-method.example^$method=trace",
         ],
@@ -381,6 +382,14 @@ def test_adblock_decision_enforces_method_contract_without_cache_leakage(
     positive_url = "https://positive-method.example/collect"
     assert engine.decide(positive_url, method="put").blocked is True
     assert engine.decide(positive_url, method="GET").blocked is False
+
+    assert (
+        engine.decide(
+            "https://connect-method.example/",
+            method="CONNECT",
+        ).blocked
+        is False
+    )
 
     assert (
         engine.decide("https://empty-method.example/collect", method="POST").blocked
@@ -1417,7 +1426,7 @@ def test_adblock_icap_request_thread_closes_its_sqlite_connection(
         gc.collect()
 
 
-def test_adblock_icap_server_blocks_connect_authority_requests(tmp_path: Path) -> None:
+def test_adblock_icap_server_allows_connect_authority_requests(tmp_path: Path) -> None:
     db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
     log_path = tmp_path / "cicap-access.log"
 
@@ -1448,12 +1457,11 @@ def test_adblock_icap_server_blocks_connect_authority_requests(tmp_path: Path) -
             + http
         )
         response = _send_icap(port, req)
-        assert response.startswith(b"ICAP/1.0 200")
+        assert response.startswith(b"ICAP/1.0 204")
         icap_header = response.split(b"\r\n\r\n", 1)[0]
         assert b"Connection: close" not in icap_header
-        assert b"HTTP/1.1 403 Forbidden" in response
-        log_text = log_path.read_text(encoding="utf-8")
-        assert "CONNECT https://ads.example:443/ HTTP/1.1" in log_text
+        assert b"HTTP/1.1 403 Forbidden" not in response
+        assert not log_path.exists()
     finally:
         server.shutdown()
         server.server_close()

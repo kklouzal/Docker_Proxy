@@ -412,7 +412,7 @@ def test_schema_migration_ambiguous_finish_commit_does_not_record_failed() -> No
 
 def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
     all_specs = schema_lifecycle._migration_specs()
-    specs = all_specs[:-5]
+    specs = all_specs[:-6]
     versions = [spec.version for spec in all_specs]
     names = {spec.name for spec in all_specs}
 
@@ -445,9 +445,10 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "operation_ledger_hard_retention_cap",
         "policy_request_public_admission_index",
         "diagnostic_file_security_policy_attribution",
+        "proxy_scoped_adblock_runtime_enablement",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 29
-    manual_spec = all_specs[-4]
+    assert schema_lifecycle.latest_schema_version() == 30
+    manual_spec = all_specs[-5]
     assert manual_spec.version == 26
     assert manual_spec.name == "observability_manual_export_preset_contract"
     assert (
@@ -531,7 +532,7 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         == "application_ledger_evidence_completion_backfill"
     )
     assert specs[-1].tables[0].table == "live_stats_seed_state"
-    assert [(column.table, column.name) for column in all_specs[-5].columns] == [
+    assert [(column.table, column.name) for column in all_specs[-6].columns] == [
         ("diagnostic_icap_events", "icap_service"),
         ("diagnostic_icap_events", "icap_outcome"),
         ("diagnostic_icap_events", "icap_status"),
@@ -540,16 +541,19 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         ("diagnostic_icap_events", "icap_bytes_sent"),
         ("diagnostic_icap_events", "icap_bytes_received"),
     ]
-    retention_spec = all_specs[-3]
+    retention_spec = all_specs[-4]
     assert retention_spec.version == 27
     assert retention_spec.name == "operation_ledger_hard_retention_cap"
     assert retention_spec.data_steps[0].name == "prune_operation_ledger_history"
-    admission_spec = all_specs[-2]
+    admission_spec = all_specs[-3]
     assert admission_spec.version == 28
     assert admission_spec.name == "policy_request_public_admission_index"
-    attribution_spec = all_specs[-1]
+    attribution_spec = all_specs[-2]
     assert attribution_spec.version == 29
     assert attribution_spec.columns[0].name == "file_security_policy"
+    enablement_spec = all_specs[-1]
+    assert enablement_spec.version == 30
+    assert enablement_spec.data_steps[0].name == "seed_proxy_adblock_runtime_enabled"
 
 
 class _ApplicationLedgerEvidenceBackfillConn:

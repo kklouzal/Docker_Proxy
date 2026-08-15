@@ -713,14 +713,23 @@ def test_live_adblock_list_settings_refresh_and_flush_workflows(
         save_settings_response = admin_client.admin_post_form(
             "/adblock",
             {
-                "action": "save_settings",
+                "action": "save_runtime",
                 "adblock_enabled": "on",
+            },
+            csrf_path="/adblock",
+        )
+        assert save_settings_response.status == 200
+
+        save_cache_response = admin_client.admin_post_form(
+            "/adblock",
+            {
+                "action": "save_settings",
                 "cache_ttl": "120",
                 "cache_max": "999",
             },
             csrf_path="/adblock",
         )
-        assert save_settings_response.status == 200
+        assert save_cache_response.status == 200
         settings = store.get_settings()
         assert settings["enabled"] is True
         assert settings["cache_ttl"] == 120

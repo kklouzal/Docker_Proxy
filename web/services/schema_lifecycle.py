@@ -28,7 +28,7 @@ from services.sql_identifiers import normalize_mysql_identifier
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 29
+_SCHEMA_VERSION = 30
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -644,6 +644,19 @@ def _init_adblock_runtime_schema(conn: Any) -> None:
     store_module.AdblockStore(
         lists_dir=os.environ.get("ADBLOCK_LISTS_DIR", ".")
     )._init_schema(conn)
+
+
+def _seed_proxy_adblock_runtime_enabled(conn: Any) -> None:
+    """Preserve legacy global enablement as each proxy's initial runtime state."""
+    conn.execute(
+        """
+        INSERT IGNORE INTO adblock_proxy_meta(proxy_id, k, v)
+        SELECT proxy.proxy_id, 'enabled',
+               CASE WHEN setting.v='1' THEN '1' ELSE '0' END
+        FROM proxy_instances proxy
+        LEFT JOIN adblock_settings setting ON setting.k='enabled'
+        """,
+    )
 
 
 def _init_webfilter_runtime_schema(conn: Any) -> None:
@@ -1615,6 +1628,16 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                     "diagnostic_requests",
                     "file_security_policy",
                     "ALTER TABLE diagnostic_requests ADD COLUMN file_security_policy VARCHAR(64) NOT NULL DEFAULT '' AFTER cache_bypass",
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=30,
+            name="proxy_scoped_adblock_runtime_enablement",
+            data_steps=(
+                SchemaDataStep(
+                    "seed_proxy_adblock_runtime_enabled",
+                    _seed_proxy_adblock_runtime_enabled,
                 ),
             ),
         ),

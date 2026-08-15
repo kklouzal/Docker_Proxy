@@ -33,7 +33,7 @@ _SQUID_LIFECYCLE_LOCK = threading.RLock()
 _SAFE_CLAMD_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
-_ADBLOCK_ICAP_METHODS = "GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
+_ADBLOCK_ICAP_METHODS = "GET HEAD POST OPTIONS PUT PATCH DELETE"
 
 
 def _env_flag(name: str, default: bool) -> bool:

@@ -92,7 +92,10 @@ class _StrictRestoreConn:
             if self.target_identity is None:
                 return _Result()
             return _Result([{"control_plane_id": self.target_identity}])
-        if text.startswith("SELECT source_control_plane_id, target_control_plane_id") and "FROM proxy_recovery_adoptions" in text:
+        if (
+            text.startswith("SELECT source_control_plane_id, target_control_plane_id")
+            and "FROM proxy_recovery_adoptions" in text
+        ):
             if not self.adoption_marker or params[1] != self.adoption_marker_target:
                 return _Result()
             return _Result(
@@ -106,14 +109,25 @@ class _StrictRestoreConn:
                     },
                 ],
             )
-        if text.startswith("SELECT target_control_plane_id FROM proxy_recovery_adoptions"):
+        if text.startswith(
+            "SELECT target_control_plane_id FROM proxy_recovery_adoptions"
+        ):
             if not self.adoption_marker:
                 return _Result()
             return _Result([{"target_control_plane_id": self.adoption_marker_target}])
-        if text.startswith("SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones"):
+        if text.startswith(
+            "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones"
+        ):
             if self.tombstone_action is None:
                 return _Result()
-            return _Result([{"action": self.tombstone_action, "target_proxy_id": self.tombstone_target}])
+            return _Result(
+                [
+                    {
+                        "action": self.tombstone_action,
+                        "target_proxy_id": self.tombstone_target,
+                    }
+                ]
+            )
         if text.startswith("SELECT status FROM proxy_instances"):
             if self.lifecycle_status is None:
                 return _Result()
@@ -127,7 +141,15 @@ class _StrictRestoreConn:
             return _Result()
         if text.startswith("SELECT `key`, url, enabled FROM adblock_lists"):
             if "adblock_lists" in self.nonfresh_tables:
-                return _Result([{"key": "custom", "url": "https://custom.invalid/list.txt", "enabled": 1}])
+                return _Result(
+                    [
+                        {
+                            "key": "custom",
+                            "url": "https://custom.invalid/list.txt",
+                            "enabled": 1,
+                        }
+                    ]
+                )
             if self.schema_defaults:
                 return _Result(
                     [
@@ -140,19 +162,41 @@ class _StrictRestoreConn:
             if "adblock_settings" in self.nonfresh_tables:
                 return _Result([{"k": "enabled", "v": "0"}])
             if self.schema_defaults:
-                return _Result([{"k": key, "v": value} for key, value in sorted(restore._ADBLOCK_DEFAULT_SETTINGS.items())])
+                return _Result(
+                    [
+                        {"k": key, "v": value}
+                        for key, value in sorted(
+                            restore._ADBLOCK_DEFAULT_SETTINGS.items()
+                        )
+                    ]
+                )
             return _Result()
-        if text.startswith("SELECT enabled, certfile, keyfile, san_tokens FROM admin_ui_https_settings"):
+        if text.startswith(
+            "SELECT enabled, certfile, keyfile, san_tokens FROM admin_ui_https_settings"
+        ):
             if "admin_ui_https_settings" in self.nonfresh_tables:
-                return _Result([{"enabled": 1, "certfile": "/cert", "keyfile": "/key", "san_tokens": "dns:admin"}])
+                return _Result(
+                    [
+                        {
+                            "enabled": 1,
+                            "certfile": "/cert",
+                            "keyfile": "/key",
+                            "san_tokens": "dns:admin",
+                        }
+                    ]
+                )
             if self.schema_defaults:
-                return _Result([{"enabled": 0, "certfile": "", "keyfile": "", "san_tokens": ""}])
+                return _Result(
+                    [{"enabled": 0, "certfile": "", "keyfile": "", "san_tokens": ""}]
+                )
             return _Result()
         if text.startswith("SELECT retention_days FROM observability_settings"):
             if "observability_settings" in self.nonfresh_tables:
                 return _Result([{"retention_days": 90}])
             if self.schema_defaults:
-                return _Result([{"retention_days": restore._OBSERVABILITY_DEFAULT_RETENTION_DAYS}])
+                return _Result(
+                    [{"retention_days": restore._OBSERVABILITY_DEFAULT_RETENTION_DAYS}]
+                )
             return _Result()
         if text.startswith("SELECT provider, enabled, server_urls"):
             if self.schema_defaults and "FROM directory_auth_profiles" in text:
@@ -172,10 +216,27 @@ class _StrictRestoreConn:
             if "webfilter_settings" in self.nonfresh_tables:
                 return _Result([{"k": "enabled", "v": "1"}])
             if self.schema_defaults:
-                return _Result([{"k": key, "v": value} for key, value in sorted(restore._WEBFILTER_DEFAULT_SETTINGS.items())])
+                return _Result(
+                    [
+                        {"k": key, "v": value}
+                        for key, value in sorted(
+                            restore._WEBFILTER_DEFAULT_SETTINGS.items()
+                        )
+                    ]
+                )
+            return _Result()
+        if text.startswith(
+            "SELECT v FROM adblock_proxy_meta WHERE proxy_id=%s AND k='enabled'"
+        ):
+            if "adblock_runtime_enabled" in self.nonfresh_tables:
+                return _Result([{"v": "1"}])
+            if self.schema_defaults:
+                return _Result([{"v": "0"}])
             return _Result()
         if text.startswith("SELECT COUNT(*) AS count"):
-            return _Result([{"count": 1 if _probe_table(text) in self.nonfresh_tables else 0}])
+            return _Result(
+                [{"count": 1 if _probe_table(text) in self.nonfresh_tables else 0}]
+            )
         if text == "START TRANSACTION":
             return _Result()
         if text.startswith("INSERT INTO pac_profiles"):
@@ -218,7 +279,12 @@ def _probe_table(sql: str) -> str:
     return ""
 
 
-def _bundle(*, proxy_id: str = "edge-01", source_id: str = SOURCE_ID, overrides: dict[str, tuple[dict[str, Any], ...]] | None = None) -> proxy_recovery.RecoveryBundle:
+def _bundle(
+    *,
+    proxy_id: str = "edge-01",
+    source_id: str = SOURCE_ID,
+    overrides: dict[str, tuple[dict[str, Any], ...]] | None = None,
+) -> proxy_recovery.RecoveryBundle:
     rows = _base_rows(proxy_id)
     for table, table_rows in (overrides or {}).items():
         rows[table] = table_rows
@@ -233,7 +299,9 @@ def _bundle(*, proxy_id: str = "edge-01", source_id: str = SOURCE_ID, overrides:
         created_ts="2026-01-01T00:00:00Z",
         schema_version=proxy_recovery.DATA_SCHEMA_VERSION,
         tables=tables,
-        integrity=proxy_recovery.IntegrityMetadata("a" * 64, proxy_recovery.MAC_ALGORITHM, "b" * 64),
+        integrity=proxy_recovery.IntegrityMetadata(
+            "a" * 64, proxy_recovery.MAC_ALGORITHM, "b" * 64
+        ),
     )
 
 
@@ -280,7 +348,13 @@ def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
     cfg_text = "http_port 3128"
     cfg_sha = hashlib.sha256(cfg_text.encode("utf-8", errors="replace")).hexdigest()
     return {
-        "adblock_lists": ({"key": "easylist", "url": "https://example.invalid/easy.txt", "enabled": 1},),
+        "adblock_lists": (
+            {
+                "key": "easylist",
+                "url": "https://example.invalid/easy.txt",
+                "enabled": 1,
+            },
+        ),
         "adblock_settings": ({"k": "enabled", "v": "1"},),
         "adblock_artifact_revisions": (
             {
@@ -288,7 +362,7 @@ def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
                 "archive_blob": archive_blob,
                 "report_json": "{}",
                 "settings_version": 2,
-                "enabled_lists_json": "[\"easylist\"]",
+                "enabled_lists_json": '["easylist"]',
             },
         ),
         "certificate_bundle_revisions": (
@@ -301,7 +375,12 @@ def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
             },
         ),
         "admin_ui_https_settings": (
-            {"enabled": 1, "certfile": "/cert.pem", "keyfile": "/key.pem", "san_tokens": "dns:proxy"},
+            {
+                "enabled": 1,
+                "certfile": "/cert.pem",
+                "keyfile": "/key.pem",
+                "san_tokens": "dns:proxy",
+            },
         ),
         "observability_settings": ({"retention_days": 90},),
         "directory_auth_profiles": (
@@ -345,11 +424,23 @@ def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
             {"proxy_id": proxy_id, "config_sha256": cfg_sha, "config_text": cfg_text},
         ),
         "pac_profiles": (
-            {"source_profile_id": 42, "proxy_id": proxy_id, "name": "default", "client_cidr": "10.0.0.0/24"},
+            {
+                "source_profile_id": 42,
+                "proxy_id": proxy_id,
+                "name": "default",
+                "client_cidr": "10.0.0.0/24",
+            },
         ),
         "pac_direct_domains": ({"source_profile_id": 42, "domain": "direct.example"},),
         "pac_direct_dst_nets": ({"source_profile_id": 42, "cidr": "10.10.0.0/16"},),
-        "pac_backup_proxies": ({"proxy_id": proxy_id, "proxy_host": "backup", "proxy_port": 3128, "position": 1},),
+        "pac_backup_proxies": (
+            {
+                "proxy_id": proxy_id,
+                "proxy_host": "backup",
+                "proxy_port": 3128,
+                "position": 1,
+            },
+        ),
         "pac_proxy_chain_settings": ({"proxy_id": proxy_id, "direct_enabled": 1},),
         "policy_exceptions": (
             {
@@ -363,15 +454,23 @@ def _base_rows(proxy_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
                 "expires_ts": NOW + 3600,
             },
         ),
-        "sslfilter_domains": ({"proxy_id": proxy_id, "policy": "splice", "domain": "bank.example"},),
-        "sslfilter_src_nets": ({"proxy_id": proxy_id, "policy": "bump", "cidr": "192.0.2.0/24"},),
-        "sslfilter_settings": ({"proxy_id": proxy_id, "key": "inspection_enabled", "value": "1"},),
+        "sslfilter_domains": (
+            {"proxy_id": proxy_id, "policy": "splice", "domain": "bank.example"},
+        ),
+        "sslfilter_src_nets": (
+            {"proxy_id": proxy_id, "policy": "bump", "cidr": "192.0.2.0/24"},
+        ),
+        "sslfilter_settings": (
+            {"proxy_id": proxy_id, "key": "inspection_enabled", "value": "1"},
+        ),
         "webfilter_settings": (
             {"proxy_id": proxy_id, "k": "enabled", "v": "1"},
             {"proxy_id": proxy_id, "k": "blocked_categories", "v": "ads"},
         ),
-        "webfilter_whitelist": ({"proxy_id": proxy_id, "pattern": "*.trusted.example"},),
-        "adblock_proxy_meta": (),
+        "webfilter_whitelist": (
+            {"proxy_id": proxy_id, "pattern": "*.trusted.example"},
+        ),
+        "adblock_proxy_meta": ({"proxy_id": proxy_id, "k": "enabled", "v": "1"},),
         "observability_report_schedules": (
             {
                 "proxy_id": proxy_id,
@@ -480,14 +579,17 @@ def test_restore_report_schedule_discards_legacy_delivery_fields() -> None:
         now_ts=NOW,
     )
     schedule = next(
-        table for table in plan.tables
+        table
+        for table in plan.tables
         if table.table_name == "observability_report_schedules"
     )
     assert schedule.rows[0][schedule.columns.index("cadence")] == "manual"
     assert schedule.rows[0][schedule.columns.index("recipients")] == ""
 
 
-def test_restore_report_schedule_maps_normalized_values_and_recovery_metadata_to_insert() -> None:
+def test_restore_report_schedule_maps_normalized_values_and_recovery_metadata_to_insert() -> (
+    None
+):
     row = {
         **_base_recovery_row("observability_report_schedules"),
         "enabled": 0,
@@ -595,7 +697,9 @@ def test_restore_normalizes_valid_pac_backup_proxy_url() -> None:
     assert backup_table.rows == (("edge-01", "backup.example", 8443, 1),)
 
 
-def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adoption() -> None:
+def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adoption() -> (
+    None
+):
     _artifact_sha, expected_archive_blob = _adblock_artifact(
         {"report.json": b"{}\n", "rules.db": b"compiled-rules"},
     )
@@ -617,11 +721,21 @@ def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adop
     assert "START TRANSACTION" in sqls
     start_index = sqls.index("START TRANSACTION")
     mutation_sqls = sqls[start_index + 1 :]
-    assert mutation_sqls[0].startswith("SELECT control_plane_id FROM control_plane_identity")
+    assert mutation_sqls[0].startswith(
+        "SELECT control_plane_id FROM control_plane_identity"
+    )
     assert any(sql.startswith("DELETE FROM adblock_lists") for sql in mutation_sqls)
-    assert any(sql.startswith("INSERT INTO adblock_artifact_revisions") for sql in mutation_sqls)
-    assert any(sql.startswith("INSERT INTO proxy_recovery_adoptions") for sql in mutation_sqls)
-    assert any(params and params[0] == 101 and params[1] == "direct.example" for _sql_text, params in conn.ops)
+    assert any(
+        sql.startswith("INSERT INTO adblock_artifact_revisions")
+        for sql in mutation_sqls
+    )
+    assert any(
+        sql.startswith("INSERT INTO proxy_recovery_adoptions") for sql in mutation_sqls
+    )
+    assert any(
+        params and params[0] == 101 and params[1] == "direct.example"
+        for _sql_text, params in conn.ops
+    )
     assert any(expected_archive_blob in params for _sql_text, params in conn.ops)
     assert not any("UPDATE control_plane_identity" in sql for sql in sqls)
     assert sqls[-1].startswith("DO RELEASE_LOCK")
@@ -635,7 +749,9 @@ def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adop
     assert policy_insert[1][5] == "GET"
 
 
-def test_restore_keeps_method_scoped_policy_exceptions_distinct_and_accepts_legacy_broad_rows() -> None:
+def test_restore_keeps_method_scoped_policy_exceptions_distinct_and_accepts_legacy_broad_rows() -> (
+    None
+):
     base = dict(_base_rows("edge-01")["policy_exceptions"][0])
     method_scoped = _bundle(
         overrides={
@@ -684,34 +800,59 @@ def test_restore_keeps_method_scoped_policy_exceptions_distinct_and_accepts_lega
 
 
 def test_identity_mismatch_same_identity_and_missing_identity_fail_closed() -> None:
-    same = restore.restore_recovery_bundle(_StrictRestoreConn(target_identity=SOURCE_ID), _bundle(), "edge-01", now_ts=NOW)
+    same = restore.restore_recovery_bundle(
+        _StrictRestoreConn(target_identity=SOURCE_ID), _bundle(), "edge-01", now_ts=NOW
+    )
     assert same.status == "same_control_plane"
     assert same.restored_rows == 0
     with pytest.raises(restore.ProxyRecoveryRestoreError, match="missing"):
-        restore.restore_recovery_bundle(_StrictRestoreConn(target_identity=None), _bundle(), "edge-01", now_ts=NOW)
+        restore.restore_recovery_bundle(
+            _StrictRestoreConn(target_identity=None), _bundle(), "edge-01", now_ts=NOW
+        )
     with pytest.raises(restore.ProxyRecoveryRestoreError, match="invalid"):
-        restore.restore_recovery_bundle(_StrictRestoreConn(target_identity="not-a-uuid"), _bundle(), "edge-01", now_ts=NOW)
+        restore.restore_recovery_bundle(
+            _StrictRestoreConn(target_identity="not-a-uuid"),
+            _bundle(),
+            "edge-01",
+            now_ts=NOW,
+        )
 
 
 def test_source_target_proxy_mismatch_rejects_before_database_access() -> None:
     conn = _StrictRestoreConn()
     with pytest.raises(restore.ProxyRecoveryRestoreError, match="proxy id"):
-        restore.restore_recovery_bundle(conn, _bundle(proxy_id="other"), "edge-01", now_ts=NOW)
+        restore.restore_recovery_bundle(
+            conn, _bundle(proxy_id="other"), "edge-01", now_ts=NOW
+        )
     assert conn.ops == []
 
 
-def test_lifecycle_blocked_marker_writes_fail_before_transaction_and_aliases_stay_blocked() -> None:
+def test_lifecycle_blocked_marker_writes_fail_before_transaction_and_aliases_stay_blocked() -> (
+    None
+):
     removed = _StrictRestoreConn(lifecycle_status="removed")
     with pytest.raises(Exception, match=r"status.*removed"):
         restore.restore_recovery_bundle(removed, _bundle(), "edge-01", now_ts=NOW)
     assert not any(sql.startswith("START TRANSACTION") for sql, _params in removed.ops)
-    assert not any(sql.startswith("INSERT INTO proxy_recovery_adoptions") for sql, _params in removed.ops)
+    assert not any(
+        sql.startswith("INSERT INTO proxy_recovery_adoptions")
+        for sql, _params in removed.ops
+    )
 
-    renamed_alias = _StrictRestoreConn(tombstone_action="renamed", tombstone_target="edge-new")
+    renamed_alias = _StrictRestoreConn(
+        tombstone_action="renamed", tombstone_target="edge-new"
+    )
     with pytest.raises(Exception, match="renamed to"):
-        restore.restore_recovery_bundle(renamed_alias, _bundle(proxy_id="edge-old"), "edge-old", now_ts=NOW)
-    assert not any(sql.startswith("START TRANSACTION") for sql, _params in renamed_alias.ops)
-    assert not any(sql.startswith("INSERT INTO proxy_recovery_adoptions") for sql, _params in renamed_alias.ops)
+        restore.restore_recovery_bundle(
+            renamed_alias, _bundle(proxy_id="edge-old"), "edge-old", now_ts=NOW
+        )
+    assert not any(
+        sql.startswith("START TRANSACTION") for sql, _params in renamed_alias.ops
+    )
+    assert not any(
+        sql.startswith("INSERT INTO proxy_recovery_adoptions")
+        for sql, _params in renamed_alias.ops
+    )
 
 
 def test_nonfresh_target_or_existing_adoption_marker_rejects_without_mutation() -> None:
@@ -719,21 +860,51 @@ def test_nonfresh_target_or_existing_adoption_marker_rejects_without_mutation() 
     result = restore.restore_recovery_bundle(conn, _bundle(), "edge-01", now_ts=NOW)
     assert result.status == "not_eligible"
     assert "webfilter" in result.reason
-    assert not any(sql.startswith(("START TRANSACTION", "DELETE", "INSERT")) for sql, _params in conn.ops)
+    assert not any(
+        sql.startswith(("START TRANSACTION", "DELETE", "INSERT"))
+        for sql, _params in conn.ops
+    )
 
-    marked = _StrictRestoreConn(adoption_marker=True, nonfresh_tables={"webfilter_settings"})
-    marked_result = restore.restore_recovery_bundle(marked, _bundle(), "edge-01", now_ts=NOW)
+    marked = _StrictRestoreConn(
+        adoption_marker=True, nonfresh_tables={"webfilter_settings"}
+    )
+    marked_result = restore.restore_recovery_bundle(
+        marked, _bundle(), "edge-01", now_ts=NOW
+    )
     assert marked_result.status == "already_adopted"
-    assert not any(sql.startswith(("START TRANSACTION", "DELETE", "INSERT")) for sql, _params in marked.ops)
+    assert not any(
+        sql.startswith(("START TRANSACTION", "DELETE", "INSERT"))
+        for sql, _params in marked.ops
+    )
 
-    ambiguous = _StrictRestoreConn(adoption_marker=True, adoption_marker_target="323e4567-e89b-42d3-a456-426614174000")
+    adblock_enabled = _StrictRestoreConn(nonfresh_tables={"adblock_runtime_enabled"})
+    enabled_result = restore.restore_recovery_bundle(
+        adblock_enabled,
+        _bundle(),
+        "edge-01",
+        now_ts=NOW,
+    )
+    assert enabled_result.status == "not_eligible"
+    assert "adblock runtime enablement" in enabled_result.reason
+
+    ambiguous = _StrictRestoreConn(
+        adoption_marker=True,
+        adoption_marker_target="323e4567-e89b-42d3-a456-426614174000",
+    )
     with pytest.raises(restore.ProxyRecoveryRestoreError, match="conflicting"):
         restore.restore_recovery_bundle(ambiguous, _bundle(), "edge-01", now_ts=NOW)
 
-    conflicting_bundle = _StrictRestoreConn(adoption_marker=True, adoption_marker_bundle_sha="c" * 64)
+    conflicting_bundle = _StrictRestoreConn(
+        adoption_marker=True, adoption_marker_bundle_sha="c" * 64
+    )
     with pytest.raises(restore.ProxyRecoveryRestoreError, match="conflicting"):
-        restore.restore_recovery_bundle(conflicting_bundle, _bundle(), "edge-01", now_ts=NOW)
-    assert not any(sql.startswith(("START TRANSACTION", "DELETE", "INSERT")) for sql, _params in conflicting_bundle.ops)
+        restore.restore_recovery_bundle(
+            conflicting_bundle, _bundle(), "edge-01", now_ts=NOW
+        )
+    assert not any(
+        sql.startswith(("START TRANSACTION", "DELETE", "INSERT"))
+        for sql, _params in conflicting_bundle.ops
+    )
 
     failed_marker = _StrictRestoreConn(
         adoption_marker=True,
@@ -744,7 +915,10 @@ def test_nonfresh_target_or_existing_adoption_marker_rejects_without_mutation() 
         restore.restore_recovery_bundle(failed_marker, _bundle(), "edge-01", now_ts=NOW)
     assert "conflicting" in str(excinfo.value)
     assert "secret" not in str(excinfo.value)
-    assert not any(sql.startswith(("START TRANSACTION", "DELETE", "INSERT")) for sql, _params in failed_marker.ops)
+    assert not any(
+        sql.startswith(("START TRANSACTION", "DELETE", "INSERT"))
+        for sql, _params in failed_marker.ops
+    )
 
 
 def test_different_fresh_target_can_independently_adopt() -> None:
@@ -758,9 +932,16 @@ def test_known_schema_defaults_are_fresh_and_replaced() -> None:
     conn = _StrictRestoreConn(schema_defaults=True)
     result = restore.restore_recovery_bundle(conn, _bundle(), "edge-01", now_ts=NOW)
     assert result.status == "adopted"
-    assert any(sql.startswith("DELETE FROM directory_auth_profiles") for sql, _params in conn.ops)
-    assert any(sql.startswith("DELETE FROM saml_auth_profiles") for sql, _params in conn.ops)
-    assert any(sql.startswith("DELETE FROM webfilter_settings") for sql, _params in conn.ops)
+    assert any(
+        sql.startswith("DELETE FROM directory_auth_profiles")
+        for sql, _params in conn.ops
+    )
+    assert any(
+        sql.startswith("DELETE FROM saml_auth_profiles") for sql, _params in conn.ops
+    )
+    assert any(
+        sql.startswith("DELETE FROM webfilter_settings") for sql, _params in conn.ops
+    )
 
 
 def test_lifecycle_rejection_and_lock_failure_fail_closed() -> None:
@@ -771,12 +952,18 @@ def test_lifecycle_rejection_and_lock_failure_fail_closed() -> None:
     assert not any(sql.startswith("START TRANSACTION") for sql, _params in locked.ops)
 
 
-def test_malformed_columns_types_duplicates_pac_orphans_and_active_cardinality_reject_before_writes() -> None:
+def test_malformed_columns_types_duplicates_pac_orphans_and_active_cardinality_reject_before_writes() -> (
+    None
+):
     mismatched_config_sha_rows = _base_rows("edge-01")["proxy_config_revisions"]
     mismatched_config_sha_row = dict(mismatched_config_sha_rows[0])
     mismatched_config_sha_row["config_sha256"] = "d" * 64
     cases = [
-        {"adblock_lists": ({"key": "easylist", "url": "u", "enabled": 1, "extra": "x"},)},
+        {
+            "adblock_lists": (
+                {"key": "easylist", "url": "u", "enabled": 1, "extra": "x"},
+            )
+        },
         {"adblock_lists": ({"key": "easylist", "url": "u", "enabled": "1"},)},
         {"proxy_config_revisions": (mismatched_config_sha_row,)},
         {
@@ -785,11 +972,23 @@ def test_malformed_columns_types_duplicates_pac_orphans_and_active_cardinality_r
                 {"proxy_id": "edge-01", "k": "enabled", "v": "0"},
             ),
         },
-        {"pac_direct_domains": ({"source_profile_id": 99, "domain": "orphan.example"},)},
+        {
+            "pac_direct_domains": (
+                {"source_profile_id": 99, "domain": "orphan.example"},
+            )
+        },
         {
             "proxy_config_revisions": (
-                {"proxy_id": "edge-01", "config_sha256": "c" * 64, "config_text": "one"},
-                {"proxy_id": "edge-01", "config_sha256": "d" * 64, "config_text": "two"},
+                {
+                    "proxy_id": "edge-01",
+                    "config_sha256": "c" * 64,
+                    "config_text": "one",
+                },
+                {
+                    "proxy_id": "edge-01",
+                    "config_sha256": "d" * 64,
+                    "config_text": "two",
+                },
             ),
         },
         {
@@ -805,12 +1004,18 @@ def test_malformed_columns_types_duplicates_pac_orphans_and_active_cardinality_r
                 },
             ),
         },
-        {"adblock_proxy_meta": ({"proxy_id": "edge-01", "k": "source-only", "v": "excluded"},)},
+        {
+            "adblock_proxy_meta": (
+                {"proxy_id": "edge-01", "k": "source-only", "v": "excluded"},
+            )
+        },
     ]
     for overrides in cases:
         conn = _StrictRestoreConn()
         with pytest.raises(restore.ProxyRecoveryRestoreError):
-            restore.restore_recovery_bundle(conn, _bundle(overrides=overrides), "edge-01", now_ts=NOW)
+            restore.restore_recovery_bundle(
+                conn, _bundle(overrides=overrides), "edge-01", now_ts=NOW
+            )
         assert conn.ops == []
 
 
@@ -880,7 +1085,9 @@ def test_config_revision_restore_recomputes_declared_sha_before_writes() -> None
     )
 
 
-def test_adblock_artifact_revision_restore_recomputes_declared_digest_before_writes() -> None:
+def test_adblock_artifact_revision_restore_recomputes_declared_digest_before_writes() -> (
+    None
+):
     artifact_sha, archive_blob = _adblock_artifact(
         {
             "report.json": b'{"rules": 42}\n',
@@ -1012,7 +1219,9 @@ def test_adblock_artifact_revision_restore_rejects_truncated_archive_before_writ
     assert conn.ops == []
 
 
-def test_adblock_artifact_revision_restore_rejects_mismatched_digest_before_writes() -> None:
+def test_adblock_artifact_revision_restore_rejects_mismatched_digest_before_writes() -> (
+    None
+):
     _artifact_sha, archive_blob = _adblock_artifact(
         {"report.json": b"{}\n", "squid/adblock.acl": b".ads.example\n"},
     )
@@ -1025,7 +1234,9 @@ def test_adblock_artifact_revision_restore_rejects_mismatched_digest_before_writ
     }
     conn = _StrictRestoreConn()
 
-    with pytest.raises(restore.ProxyRecoveryRestoreError, match="artifact revision digest"):
+    with pytest.raises(
+        restore.ProxyRecoveryRestoreError, match="artifact revision digest"
+    ):
         restore.restore_recovery_bundle(
             conn,
             _bundle(overrides={"adblock_artifact_revisions": (row,)}),
@@ -1035,10 +1246,14 @@ def test_adblock_artifact_revision_restore_rejects_mismatched_digest_before_writ
     assert conn.ops == []
 
 
-def test_certificate_bundle_revision_restore_recomputes_declared_digests_before_writes() -> None:
+def test_certificate_bundle_revision_restore_recomputes_declared_digests_before_writes() -> (
+    None
+):
     cert_pem = "-----BEGIN CERTIFICATE-----\nrestored-cert\n-----END CERTIFICATE-----\n"
     key_pem = "-----BEGIN PRIVATE KEY-----\nrestored-key\n-----END PRIVATE KEY-----\n"
-    chain_pem = "-----BEGIN CERTIFICATE-----\nrestored-chain\n-----END CERTIFICATE-----\n"
+    chain_pem = (
+        "-----BEGIN CERTIFICATE-----\nrestored-chain\n-----END CERTIFICATE-----\n"
+    )
     bundle_sha, cert_sha = _certificate_bundle_hashes(cert_pem, key_pem, chain_pem)
     bundle = _bundle(
         overrides={
@@ -1065,10 +1280,14 @@ def test_certificate_bundle_revision_restore_recomputes_declared_digests_before_
     )
 
 
-def test_certificate_bundle_revision_restore_rejects_mismatched_digests_before_writes() -> None:
+def test_certificate_bundle_revision_restore_rejects_mismatched_digests_before_writes() -> (
+    None
+):
     cert_pem = "-----BEGIN CERTIFICATE-----\nrestored-cert\n-----END CERTIFICATE-----\n"
     key_pem = "-----BEGIN PRIVATE KEY-----\nrestored-key\n-----END PRIVATE KEY-----\n"
-    chain_pem = "-----BEGIN CERTIFICATE-----\nrestored-chain\n-----END CERTIFICATE-----\n"
+    chain_pem = (
+        "-----BEGIN CERTIFICATE-----\nrestored-chain\n-----END CERTIFICATE-----\n"
+    )
     bundle_sha, cert_sha = _certificate_bundle_hashes(cert_pem, key_pem, chain_pem)
     cases = (
         ({"cert_sha256": "0" * 64}, "cert digest"),

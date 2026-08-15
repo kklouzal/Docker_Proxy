@@ -208,7 +208,9 @@ _RUNTIME_OPERATION_TARGET_KINDS: dict[str, frozenset[str]] = {
     "certificate_apply": frozenset({"certificate_revision"}),
     "certificate_revert": frozenset({"certificate_revision"}),
     "pac_refresh": frozenset({"pac_state"}),
-    "adblock_refresh": frozenset({"adblock_artifact", "adblock_artifact_build"}),
+    "adblock_refresh": frozenset(
+        {"adblock_artifact", "adblock_artifact_build", "adblock_runtime_enabled"}
+    ),
     "cache_clear": frozenset({"", "cache_epoch"}),
 }
 
@@ -425,8 +427,7 @@ def _call_sync_with_operations(func: Any, *, force: bool, operations: list[Any] 
     try:
         parameters = inspect.signature(func).parameters
         supports_operations = "operations" in parameters or any(
-            param.kind == inspect.Parameter.VAR_KEYWORD
-            for param in parameters.values()
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
         )
     except (TypeError, ValueError):
         supports_operations = True
@@ -517,6 +518,19 @@ def _operation_completion_status(
             default_status=default_status,
             detail=detail,
             result=result,
+        )
+
+    if target_kind == "adblock_runtime_enabled":
+        runtime_enabled = result.get("adblock_runtime_enabled")
+        runtime_ref = "" if runtime_enabled is None else str(runtime_enabled).strip()
+        return _operation_string_target_status(
+            label="adblock runtime enablement",
+            target_kind=target_kind,
+            target_ref=str(getattr(operation, "target_ref", "") or "").strip(),
+            applied_ref=runtime_ref,
+            current_ref=runtime_ref,
+            default_status=default_status,
+            detail=detail,
         )
 
     if target_kind == "certificate_revision":
@@ -743,7 +757,9 @@ def _operation_adblock_artifact_status(
     if applied_ref is None:
         applied_ref = _int_or_none(result.get("revision_id"))
     applied_hash = _normalized_result_hash(result.get("artifact_sha256"))
-    current_hash = _normalized_result_hash(result.get("current_adblock_artifact_sha256"))
+    current_hash = _normalized_result_hash(
+        result.get("current_adblock_artifact_sha256")
+    )
     if target_ref is None or not target_hash:
         op_detail = (
             "Adblock artifact operation completed reconciliation but did not include "
@@ -800,7 +816,9 @@ def _operation_adblock_build_status(
     if applied_ref is None:
         applied_ref = _int_or_none(result.get("revision_id"))
     applied_hash = _normalized_result_hash(result.get("artifact_sha256"))
-    current_hash = _normalized_result_hash(result.get("current_adblock_artifact_sha256"))
+    current_hash = _normalized_result_hash(
+        result.get("current_adblock_artifact_sha256")
+    )
     if target_ref is None:
         op_detail = (
             "Adblock artifact build operation completed reconciliation but did not include "
@@ -1747,11 +1765,7 @@ class ProxyRuntime:
                 f"pending={normalized_counts['pending']} "
                 f"applying={normalized_counts['applying']} "
                 f"failed={normalized_counts['failed']}"
-                + (
-                    "; proxy convergence is still in progress"
-                    if active_count
-                    else ""
-                )
+                + ("; proxy convergence is still in progress" if active_count else "")
             ),
             "counts": normalized_counts,
         }
@@ -1935,9 +1949,7 @@ class ProxyRuntime:
             program_name,
             timeout_seconds=remaining_timeout(),
         )
-        scaled_programs = [
-            program for program in programs if program != program_name
-        ]
+        scaled_programs = [program for program in programs if program != program_name]
         if not scaled_programs:
             return ok, detail
         results = [
@@ -1949,9 +1961,7 @@ class ProxyRuntime:
             )
             for program in scaled_programs
         ]
-        detail_parts = [
-            str(part or "").strip() for part in (detail, resolve_detail)
-        ]
+        detail_parts = [str(part or "").strip() for part in (detail, resolve_detail)]
         detail_parts.extend(
             str(result_detail or "").strip() for _ok, result_detail in results
         )
@@ -2128,7 +2138,9 @@ class ProxyRuntime:
         if stop_on_failure:
             command_timeout = remaining_timeout()
             if command_timeout is None:
-                details.append(f"Unable to run fail-safe stop for {program_name}: restart timeout exhausted.")
+                details.append(
+                    f"Unable to run fail-safe stop for {program_name}: restart timeout exhausted."
+                )
                 return False, "\n".join(part for part in details if part).strip()
             try:
                 stop = subprocess.run(
@@ -2187,8 +2199,7 @@ class ProxyRuntime:
                     and status_lines[0] == terminal_line
                     and len(terminal_parts) > 1
                     and terminal_parts[0] == program_name
-                    and terminal_parts[1]
-                    in {"STOPPED", "EXITED", "FATAL", "BACKOFF"}
+                    and terminal_parts[1] in {"STOPPED", "EXITED", "FATAL", "BACKOFF"}
                 )
             if terminal_ok:
                 details.append(f"Fail-safe stop confirmed for {program_name}.")
@@ -4473,9 +4484,7 @@ class ProxyRuntime:
         if str(policy_result.get("detail") or "").strip():
             detail_parts.append(str(policy_result.get("detail") or "").strip())
         if not policy_ok:
-            detail = (
-                "\n".join(detail_parts).strip() or "Policy materialization failed."
-            )
+            detail = "\n".join(detail_parts).strip() or "Policy materialization failed."
             self.registry.mark_apply_result(
                 self.proxy_id,
                 ok=False,
@@ -4499,7 +4508,9 @@ class ProxyRuntime:
                     "Queued adblock artifact build request was already cleared; reconciling the active adblock artifact.",
                 )
             else:
-                adblock_build_result = self._build_adblock_artifact_for_runtime_operation()
+                adblock_build_result = (
+                    self._build_adblock_artifact_for_runtime_operation()
+                )
                 if str(adblock_build_result.get("detail") or "").strip():
                     detail_parts.append(str(adblock_build_result["detail"]).strip())
                 if not bool(adblock_build_result.get("ok")):
@@ -4674,6 +4685,7 @@ class ProxyRuntime:
                 )[:16],
             )
         adblock_enabled = self._current_adblock_enabled()
+        adblock_evidence["adblock_runtime_enabled"] = "1" if adblock_enabled else "0"
         set_adblock_enabled = getattr(controller, "set_adblock_enabled", None)
         if callable(set_adblock_enabled):
             set_adblock_enabled(adblock_enabled)
@@ -4811,9 +4823,7 @@ class ProxyRuntime:
                 **pac_evidence,
                 **operation_evidence,
             }
-            if (
-                reload_required_after_runtime_materialization()
-            ) and not reload_ok:
+            if (reload_required_after_runtime_materialization()) and not reload_ok:
                 self.registry.mark_apply_result(
                     self.proxy_id,
                     ok=False,
@@ -4893,9 +4903,7 @@ class ProxyRuntime:
                     detail=detail,
                     current_config_sha=current_sha,
                 )
-            elif (
-                reload_required_after_runtime_materialization()
-            ) and not reload_ok:
+            elif (reload_required_after_runtime_materialization()) and not reload_ok:
                 self.registry.mark_apply_result(
                     self.proxy_id,
                     ok=False,
@@ -5007,9 +5015,7 @@ class ProxyRuntime:
                     detail=detail,
                     current_config_sha=current_sha,
                 )
-            elif (
-                reload_required_after_runtime_materialization()
-            ) and not reload_ok:
+            elif (reload_required_after_runtime_materialization()) and not reload_ok:
                 self.registry.mark_apply_result(
                     self.proxy_id,
                     ok=False,

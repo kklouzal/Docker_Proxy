@@ -1815,6 +1815,27 @@ def test_policy_and_pac_operation_target_refs_are_strict_sha256_and_normalized(
             target_ref="",
         )
 
+    assert (
+        ledger.create_operation(
+            "edge-a",
+            operation_type="adblock_refresh",
+            subject="Adblock routing",
+            summary="Disable selected proxy routing",
+            target_kind="adblock_runtime_enabled",
+            target_ref="0",
+        ).target_ref
+        == "0"
+    )
+    with pytest.raises(ValueError, match=r"target_ref.*adblock_runtime_enabled"):
+        ledger.create_operation(
+            "edge-a",
+            operation_type="adblock_refresh",
+            subject="Adblock routing",
+            summary="Invalid selected proxy routing",
+            target_kind="adblock_runtime_enabled",
+            target_ref="false",
+        )
+
 
 def test_duplicate_active_request_preserves_original_rollback_metadata(
     monkeypatch,

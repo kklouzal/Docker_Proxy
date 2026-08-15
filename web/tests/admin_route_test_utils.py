@@ -793,6 +793,16 @@ class FakeAdblockStore:
         self.settings.update(kwargs)
         self.settings_version += 1
 
+    def set_runtime_enabled(self, enabled: bool) -> None:
+        self.settings["enabled"] = bool(enabled)
+
+    def set_shared_settings(self, **kwargs: Any) -> bool:
+        changed = any(self.settings.get(key) != value for key, value in kwargs.items())
+        self.settings.update(kwargs)
+        if changed:
+            self.settings_version += 1
+        return changed
+
     def request_refresh_now(self) -> None:
         self.refresh_requested += 1
 

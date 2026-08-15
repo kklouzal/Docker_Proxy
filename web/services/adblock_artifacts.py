@@ -108,8 +108,7 @@ class _AdblockArchiveBudget:
         self.member_count += 1
         if self.member_count > self.max_members:
             msg = (
-                "Adblock artifact archive exceeded member limit "
-                f"({self.max_members})."
+                f"Adblock artifact archive exceeded member limit ({self.max_members})."
             )
             raise AdblockArtifactArchiveError(msg)
 
@@ -562,9 +561,12 @@ class AdblockArtifactStore:
                         if (
                             current_metadata is not None
                             and current_metadata.artifact_sha256 == artifact_sha256
-                            and current_metadata.settings_version == int(settings_version)
-                            and current_metadata.source_kind == (source_kind or "compile")[:64]
-                            and current_metadata.enabled_lists_json == enabled_lists_json
+                            and current_metadata.settings_version
+                            == int(settings_version)
+                            and current_metadata.source_kind
+                            == (source_kind or "compile")[:64]
+                            and current_metadata.enabled_lists_json
+                            == enabled_lists_json
                         ):
                             return conn.execute(
                                 "SELECT * FROM adblock_artifact_revisions WHERE id=%s LIMIT 1",
@@ -727,7 +729,9 @@ class AdblockArtifactStore:
                 ") "
                 "ORDER BY created_ts ASC, id ASC LIMIT %s"
             )
-            rows = conn.execute(sql, (*tuple(sorted(keep_ids)), int(batch_size))).fetchall()
+            rows = conn.execute(
+                sql, (*tuple(sorted(keep_ids)), int(batch_size))
+            ).fetchall()
         else:
             rows = conn.execute(
                 """
@@ -797,7 +801,9 @@ class AdblockArtifactStore:
                     (target_revision_id,),
                 ).fetchone()
                 if revision is None:
-                    msg = f"Adblock artifact revision {target_revision_id} was not found."
+                    msg = (
+                        f"Adblock artifact revision {target_revision_id} was not found."
+                    )
                     raise ValueError(msg)
                 evidence_sha = normalize_sha256_evidence(
                     artifact_sha256,
@@ -878,7 +884,6 @@ class AdblockArtifactStore:
             loaded_store = get_adblock_store()
             loaded_store.init_db()
             loaded_settings = loaded_store.get_settings()
-            loaded_settings_enabled = bool(loaded_settings.get("enabled"))
             loaded_settings_version = loaded_store.get_settings_version()
             loaded_statuses = loaded_store.list_statuses()
             loaded_enabled_statuses = [
@@ -888,7 +893,7 @@ class AdblockArtifactStore:
             return (
                 loaded_store,
                 loaded_settings,
-                loaded_settings_enabled,
+                True,
                 loaded_settings_version,
                 loaded_enabled_statuses,
                 loaded_previous,
@@ -1102,12 +1107,13 @@ class AdblockArtifactStore:
                 self.init_db()
                 store.init_db()
                 active = self.get_active_artifact()
-                settings = store.get_settings()
                 statuses = store.list_statuses()
                 enabled_statuses = [status for status in statuses if status.enabled]
                 refresh_requested = bool(store.get_refresh_requested())
                 settings_version = store.get_settings_version()
-                settings_enabled = bool(settings.get("enabled"))
+                # Subscription artifacts are shared; proxy enablement controls
+                # Squid routing and must not empty another proxy's artifact.
+                settings_enabled = True
                 active_lists_drift = _active_enabled_lists_drift(
                     active,
                     settings_enabled=settings_enabled,
@@ -1490,7 +1496,8 @@ def _write_settings_file(
     enabled_lists: list[str],
 ) -> None:
     payload = {
-        "enabled": bool(settings.get("enabled")),
+        # Kept for artifact format compatibility; runtime enablement is per proxy.
+        "enabled": True,
         "cache_ttl": int(settings.get("cache_ttl") or 0),
         "cache_max": int(settings.get("cache_max") or 0),
         "settings_version": int(settings_version),
@@ -1556,17 +1563,11 @@ def _validate_generated_artifact_budget(file_map: dict[str, bytes]) -> None:
     max_members = _adblock_artifact_extract_max_members()
     member_count = len(file_map)
     if member_count > max_members:
-        msg = (
-            "Generated adblock artifact exceeded member limit "
-            f"({max_members})."
-        )
+        msg = f"Generated adblock artifact exceeded member limit ({max_members})."
         raise AdblockArtifactArchiveError(msg)
     payload_bytes = sum(len(content) for content in file_map.values())
     if payload_bytes > max_bytes:
-        msg = (
-            "Generated adblock artifact exceeded extract limit "
-            f"({max_bytes} bytes)."
-        )
+        msg = f"Generated adblock artifact exceeded extract limit ({max_bytes} bytes)."
         raise AdblockArtifactArchiveError(msg)
 
 

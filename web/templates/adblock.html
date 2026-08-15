@@ -9,7 +9,7 @@
   <div class="page-hero-copy">
     <span class="page-eyebrow">ICAP policy</span>
     <h1 class="page-title">Ad Blocking</h1>
-    <p class="page-subtitle">Manage shared ad-blocking subscriptions and the live runtime statistics for {{ active_proxy.display_name }}.</p>
+    <p class="page-subtitle">Manage shared ad-blocking subscriptions and ad-block routing for {{ active_proxy.display_name }}.</p>
     <div class="hero-badges">
       <span class="badge {{ 'ok' if settings.enabled else 'danger' }}">{{ 'Enabled' if settings.enabled else 'Disabled' }}</span>
       <span class="badge">{{ statuses|length }} lists</span>
@@ -23,10 +23,10 @@
   </div>
 </section>
 
-{% call scope_notice('mixed', 'Shared subscriptions + selected proxy runtime', 'Ad-blocking subscriptions and baseline settings are shared across the control plane. Runtime cache metrics and recent blocks below belong only to ' ~ active_proxy.display_name ~ '.') %}
+{% call scope_notice('mixed', 'Shared subscriptions + selected proxy runtime', 'Subscription lists and cache defaults are shared. Ad-block routing, cache metrics, and recent blocks below belong only to ' ~ active_proxy.display_name ~ '.') %}
 <ul class="scope-details-list">
-  <li><strong>Shared:</strong> overall enablement, cache defaults, enabled subscription lists, and manual subscription refresh.</li>
-  <li><strong>{{ active_proxy.display_name }} only:</strong> live cache statistics, recent blocks, and flush-cache requests.</li>
+  <li><strong>Shared:</strong> cache defaults, enabled subscription lists, compiled artifact, and manual subscription refresh.</li>
+  <li><strong>{{ active_proxy.display_name }} only:</strong> ad-block routing enablement, live cache statistics, recent blocks, and flush-cache requests.</li>
 </ul>
 {% endcall %}
 
@@ -43,16 +43,16 @@
   <section class="card split-left">
     <div class="card-header">
       <div>
-        <h2 class="card-title">Shared baseline settings</h2>
-        <div class="small">Shared settings applied to ad blocking for every registered proxy.</div>
+          <h2 class="card-title">Selected-proxy runtime</h2>
+          <div class="small">Enable or disable ad-block request routing on {{ active_proxy.display_name }}.</div>
       </div>
-      {{ scope_chip('global') }}
+      {{ scope_chip('proxy') }}
     </div>
     <div class="card-body">
       <form method="post" action="{{ url_for('adblock') }}">
         {{ csrf_field() }}
         <div class="actions">
-          <button class="btn primary" type="submit" name="action" value="save_settings">Save settings</button>
+          <button class="btn primary" type="submit" name="action" value="save_runtime">Save routing</button>
         </div>
 
         <div class="form-grid-3">
@@ -60,13 +60,13 @@
             <label class="small field-note">Enabled</label>
             <label class="check-row">
               <input class="check" type="checkbox" name="adblock_enabled" {% if settings.enabled %}checked{% endif %} />
-              Enable ad blocking
+              Route eligible requests through ad blocking on {{ active_proxy.display_name }}
             </label>
           </div>
         </div>
 
         <div class="surface-note small">
-          This proxy performs URL and request-header matching through the adblock ICAP helper for browsing, tunnel setup, and common API methods.
+          Disabled means Squid does not route eligible requests to the adblock ICAP service on this proxy. CONNECT tunnel setup is never sent to ad blocking because it lacks reliable URL and request-context evidence.
         </div>
       </form>
     </div>
@@ -155,8 +155,36 @@
         </table></div>
 
         <div class="surface-note small">
-          If ad blocking is disabled or no lists are enabled, the ICAP service returns <span class="mono">204 No Content</span> and nothing is blocked.
+          If no lists are enabled, the shared artifact contains no blocking rules. A proxy with runtime routing disabled does not call the adblock ICAP service.
           Lists refresh automatically about every 12 hours after a successful download. Next refresh times assume the service is running.
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <section class="card split-right">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Shared decision cache</h2>
+        <div class="small">Defaults used by every proxy's adblock helper.</div>
+      </div>
+      {{ scope_chip('global') }}
+    </div>
+    <div class="card-body">
+      <form method="post" action="{{ url_for('adblock') }}">
+        {{ csrf_field() }}
+        <div class="form-grid-3">
+          <label>
+            <span class="small field-note">TTL seconds</span>
+            <input class="input" type="number" min="0" max="604800" name="cache_ttl" value="{{ settings.cache_ttl }}" />
+          </label>
+          <label>
+            <span class="small field-note">Maximum entries</span>
+            <input class="input" type="number" min="0" max="1000000" name="cache_max" value="{{ settings.cache_max }}" />
+          </label>
+        </div>
+        <div class="actions">
+          <button class="btn primary" type="submit" name="action" value="save_settings">Save shared cache settings</button>
         </div>
       </form>
     </div>
@@ -218,9 +246,6 @@
           <div><strong>Built:</strong> {{ fmt_ts(active_artifact.created_ts) if active_artifact.created_ts else 'unknown' }}{% if active_artifact.created_by %} by {{ active_artifact.created_by }}{% endif %} ({{ active_artifact.source_kind or 'compile' }})</div>
           <div><strong>Settings version:</strong> {{ active_artifact.settings_version }}</div>
           <div><strong>Compiled lists:</strong> {{ active_artifact.enabled_lists|join(', ') if active_artifact.enabled_lists else 'none' }}</div>
-          {% if artifact_build.artifact_empty_because_disabled %}
-            <div><strong>Artifact state:</strong> empty because ad blocking is disabled; selected lists remain {{ artifact_build.configured_enabled_lists|join(', ') }}.</div>
-          {% endif %}
           {% if artifact_build.archive_bytes %}<div><strong>Archive size:</strong> {{ (artifact_build.archive_bytes / 1048576)|round(1) }} MiB</div>{% endif %}
         </div>
       {% else %}

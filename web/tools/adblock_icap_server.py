@@ -350,9 +350,7 @@ def _block_response(url: str, raw_rule: str, *, close: bool = False) -> bytes:
 def _parse_chunk_size_line(line: bytes) -> int | None:
     parts = line.split(b";")
     size_token = parts[0]
-    if not size_token or not all(
-        ch in b"0123456789abcdefABCDEF" for ch in size_token
-    ):
+    if not size_token or not all(ch in b"0123456789abcdefABCDEF" for ch in size_token):
         return None
     size = int(size_token, 16)
     ieof_seen = False
@@ -378,8 +376,10 @@ def _chunk_trailers_parse(
             return cursor + len(_CRLF), False
         trailer_line = data[cursor:line_end]
         field_name = trailer_line.split(b":", 1)[0]
-        if b":" not in trailer_line or not field_name or any(
-            ch <= 0x20 or ch >= 0x7F for ch in field_name
+        if (
+            b":" not in trailer_line
+            or not field_name
+            or any(ch <= 0x20 or ch >= 0x7F for ch in field_name)
         ):
             return None, True
         cursor = line_end + len(_CRLF)
@@ -563,16 +563,10 @@ def _read_icap_message(
 
 
 def _connection_close_requested(header_blob: bytes) -> bool:
-    header_lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()[
-        1:
-    ]
+    header_lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:]
     connection_values = _header_values(header_lines, "connection")
     token_sets = {
-        frozenset(
-            item.strip().lower()
-            for item in value.split(",")
-            if item.strip()
-        )
+        frozenset(item.strip().lower() for item in value.split(",") if item.strip())
         for value in connection_values
     }
     return any("close" in tokens for tokens in token_sets) or len(token_sets) > 1
@@ -662,6 +656,17 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
             )
             if not url:
                 self.server.increment_stat("parse_miss")
+                if not _send_icap_response(self.request, _allow_response(close=close)):
+                    return
+                if close:
+                    return
+                continue
+
+            # CONNECT exposes only a tunnel authority, without URL/resource or
+            # first-/third-party context. Fail open for legacy Squid configs
+            # while upgraded routing excludes CONNECT before ICAP.
+            if http_method == "CONNECT":
+                self.server.increment_stat("allowed")
                 if not _send_icap_response(self.request, _allow_response(close=close)):
                     return
                 if close:

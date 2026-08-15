@@ -122,7 +122,7 @@ _MAX_ROWS_BY_TABLE: Final = MappingProxyType(
         "sslfilter_settings": 100,
         "webfilter_settings": 2,
         "webfilter_whitelist": 10_000,
-        "adblock_proxy_meta": 0,
+        "adblock_proxy_meta": 1,
         "observability_report_schedules": 200,
     }
 )
@@ -358,6 +358,37 @@ def build_restore_plan(
         if table_name in _PAC_CHILD_TABLES:
             _validate_pac_children(table_name, rows, pac_profile_ids)
         plans.append(RestoreTablePlan(table_name, expected_columns, rows))
+    legacy_enabled = next(
+        (
+            str(row[1])
+            for table in plans
+            if table.table_name == "adblock_settings"
+            for row in table.rows
+            if str(row[0]) == "enabled"
+        ),
+        None,
+    )
+    proxy_meta_index = next(
+        index
+        for index, table in enumerate(plans)
+        if table.table_name == "adblock_proxy_meta"
+    )
+    if legacy_enabled is not None and not plans[proxy_meta_index].rows:
+        plans[proxy_meta_index] = RestoreTablePlan(
+            "adblock_proxy_meta",
+            _EXPECTED_TABLE_COLUMNS["adblock_proxy_meta"],
+            ((proxy_key, "enabled", "1" if legacy_enabled == "1" else "0"),),
+        )
+    settings_index = next(
+        index
+        for index, table in enumerate(plans)
+        if table.table_name == "adblock_settings"
+    )
+    plans[settings_index] = RestoreTablePlan(
+        "adblock_settings",
+        _EXPECTED_TABLE_COLUMNS["adblock_settings"],
+        tuple(row for row in plans[settings_index].rows if str(row[0]) != "enabled"),
+    )
     return RestorePlan(
         proxy_id=proxy_key,
         source_control_plane_id=source_control_plane_id,
@@ -583,6 +614,14 @@ def _validate_rows(
         if not keys.issubset(_EXACT_WEBFILTER_KEYS):
             raise ProxyRecoveryRestoreError(
                 "webfilter restore contains unsupported setting key"
+            )
+    if table_name == "adblock_proxy_meta":
+        values = [dict(zip(expected_columns, row, strict=True)) for row in rows]
+        if any(
+            item["k"] != "enabled" or item["v"] not in {"0", "1"} for item in values
+        ):
+            raise ProxyRecoveryRestoreError(
+                "adblock runtime restore contains unsupported state"
             )
     if table_name == "observability_report_schedules":
         _validate_observability_report_schedule_rows(rows, expected_columns)
@@ -959,6 +998,7 @@ def _freshness_failure_reason(conn: Any, proxy_id: str) -> str:
         _fresh_no_policy_exceptions,
         _fresh_no_sslfilter_rows,
         _fresh_webfilter_settings,
+        _fresh_adblock_runtime_enabled,
         _fresh_no_proxy_table_rows,
     )
     for probe in probes:
@@ -1184,6 +1224,19 @@ def _fresh_webfilter_settings(conn: Any, proxy_id: str) -> str:
     return "webfilter settings are not canonical target defaults"
 
 
+def _fresh_adblock_runtime_enabled(conn: Any, proxy_id: str) -> str:
+    rows = _rows(
+        conn,
+        "SELECT v FROM adblock_proxy_meta WHERE proxy_id=%s AND k='enabled'",
+        (proxy_id,),
+    )
+    if not rows:
+        return ""
+    if len(rows) == 1 and str(_row_value(rows[0], "v", 0) or "") == "0":
+        return ""
+    return "adblock runtime enablement is not the canonical target default"
+
+
 def _fresh_no_proxy_table_rows(conn: Any, proxy_id: str) -> str:
     if _count(
         conn,
@@ -1193,7 +1246,7 @@ def _fresh_no_proxy_table_rows(conn: Any, proxy_id: str) -> str:
         return "target proxy declarative rows already exist"
     if _count(
         conn,
-        "SELECT COUNT(*) AS count FROM adblock_proxy_meta WHERE proxy_id=%s",
+        "SELECT COUNT(*) AS count FROM adblock_proxy_meta WHERE proxy_id=%s AND k<>'enabled'",
         (proxy_id,),
     ):
         return "target proxy declarative rows already exist"
@@ -1310,10 +1363,7 @@ def _apply_restore_plan(conn: Any, plan: RestorePlan, target_identity: str) -> N
         elif table.table_name == "webfilter_whitelist":
             _insert_webfilter_whitelist(conn, table.rows, plan.now_ts)
         elif table.table_name == "adblock_proxy_meta":
-            if table.rows:
-                raise ProxyRecoveryRestoreError(
-                    "adblock_proxy_meta restore is intentionally empty"
-                )
+            _insert_adblock_proxy_meta(conn, table.rows)
         elif table.table_name == "observability_report_schedules":
             _insert_observability_report_schedules(conn, table.rows, plan.now_ts)
         else:
@@ -1612,6 +1662,14 @@ def _insert_webfilter_whitelist(
         conn,
         "INSERT INTO webfilter_whitelist(proxy_id, pattern, added_ts) VALUES(%s,%s,%s)",
         tuple((*row, now_ts) for row in rows),
+    )
+
+
+def _insert_adblock_proxy_meta(conn: Any, rows: tuple[tuple[Any, ...], ...]) -> None:
+    _insert_many(
+        conn,
+        "INSERT INTO adblock_proxy_meta(proxy_id, k, v) VALUES(%s,%s,%s)",
+        rows,
     )
 
 

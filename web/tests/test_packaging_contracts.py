@@ -1443,7 +1443,7 @@ def test_adblock_icap_adapts_browsing_and_connect_methods() -> None:
 
     assert "adaptation_access adblock_req_set allow all" not in entrypoint
     assert (
-        "acl icap_adblockable method GET HEAD CONNECT POST OPTIONS PUT PATCH DELETE"
+        "acl icap_adblockable method GET HEAD POST OPTIONS PUT PATCH DELETE"
         in entrypoint
     )
     assert "adaptation_access adblock_req_set allow icap_adblockable" in entrypoint

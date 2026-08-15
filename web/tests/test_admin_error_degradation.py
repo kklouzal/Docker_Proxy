@@ -482,7 +482,7 @@ def test_adblock_page_surfaces_pending_subscription_downloads(
     assert "Stale lists" not in text
 
 
-def test_disabled_adblock_empty_artifact_is_not_marked_list_stale(
+def test_selected_proxy_disabled_does_not_change_shared_artifact_expectations(
     monkeypatch, tmp_path
 ) -> None:
     store = FakeAdblockStore()
@@ -518,7 +518,38 @@ def test_disabled_adblock_empty_artifact_is_not_marked_list_stale(
 
     assert response.status_code == 200
     assert "Disabled" in text
-    assert "empty because ad blocking is disabled" in text
-    assert "selected lists remain default" in text
-    assert "build pending" not in text
-    assert "Stale lists" not in text
+    assert "empty because ad blocking is disabled" not in text
+    assert "build pending" in text
+    assert "Stale lists" in text
+    assert "active artifact has none; enabled lists are default" in text
+
+
+def test_adblock_build_state_uses_shared_lists_when_selected_proxy_is_disabled(
+    monkeypatch, tmp_path
+) -> None:
+    class Store:
+        def get_settings_version(self):
+            return 2
+
+        def get_refresh_requested(self):
+            return 0
+
+        def get_artifact_build_status(self):
+            return {}
+
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    state = loaded.module._present_adblock_build_state(
+        Store(),
+        active_artifact={
+            "available": True,
+            "settings_version": 2,
+            "enabled_lists": [],
+        },
+        statuses=[{"key": "default", "enabled": True}],
+        settings={"enabled": False},
+    )
+
+    assert state["enabled_lists"] == ["default"]
+    assert state["lists_stale"] is True
+    assert state["pending"] is True
