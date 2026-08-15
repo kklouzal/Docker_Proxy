@@ -1459,12 +1459,14 @@ def test_admin_healthcheck_does_not_queue_behind_wsgi_workers() -> None:
     healthcheck = _read("docker/healthcheck.admin.sh")
 
     assert "urllib.request" not in healthcheck
-    assert "[g]unicorn.*wsgi:app" in healthcheck
+    assert 'Path("/proc").glob("[0-9]*")' in healthcheck
+    assert 'b"gunicorn" not in cmdline or b"wsgi:app" not in cmdline' in healthcheck
+    assert "parent_pid in processes" in healthcheck
     assert "socket.create_connection" in healthcheck
     assert "from tools.start_admin_ui import resolve_admin_ui_bind" in healthcheck
     assert "(bind.health_host, bind.port)" in healthcheck
     assert '("127.0.0.1", 5000)' not in healthcheck
-    assert "whether gunicorn is currently speaking HTTP or HTTPS" in healthcheck
+    assert "Do not issue an HTTP request" in healthcheck
 
 
 def test_admin_healthcheck_resolves_runtime_address_from_launcher_env() -> None:
@@ -1486,6 +1488,10 @@ def test_admin_healthcheck_resolves_runtime_address_from_launcher_env() -> None:
     script = script.replace(
         "import socket\n",
         "import socket\nsocket.create_connection = _capture\n",
+        1,
+    ).replace(
+        "    processes = gunicorn_app_processes()\n",
+        "    processes = {100: 1, 101: 100}\n",
         1,
     )
 
@@ -1531,6 +1537,32 @@ def test_admin_healthcheck_tcp_failure_exits_without_traceback() -> None:
             "    raise ConnectionRefusedError('refused')\n"
             "socket.create_connection = _raise_connection_error\n"
         ),
+        1,
+    ).replace(
+        "    processes = gunicorn_app_processes()\n",
+        "    processes = {100: 1, 101: 100}\n",
+        1,
+    )
+
+    result = run_test_process(
+        [sys.executable, "-c", script],
+        check=False,
+        cwd=REPO_ROOT / "web",
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "Traceback" not in result.stderr
+
+
+def test_admin_healthcheck_rejects_master_without_booted_wsgi_worker() -> None:
+    healthcheck = _read("docker/healthcheck.admin.sh")
+    script = healthcheck.split("python3 - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+    script = script.replace(
+        "    processes = gunicorn_app_processes()\n",
+        "    processes = {100: 1}\n",
         1,
     )
 
