@@ -91,6 +91,13 @@ _SYNC_CONTROL_LOCK = threading.RLock()
 _ADBLOCK_ICAP_SELF_HEAL_LOCK = threading.RLock()
 _ADBLOCK_ICAP_SELF_HEAL_FAILURE_THRESHOLD = 3
 _ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS = 600.0
+# A process-wide pool puts a hard ceiling on workers retained by health probes.
+# Per-request pools cannot cancel a running, non-cooperative callable and would
+# otherwise retain another worker after every timed-out management request.
+_LOCAL_HEALTH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=3,
+    thread_name_prefix="proxy-health",
+)
 
 
 def _adblock_icap_self_heal_failure_threshold() -> int:
@@ -1051,33 +1058,28 @@ def build_local_runtime_services(
         "clamd": max(float(tcp_timeout) + 0.5, 1.0),
     }
     results: dict[str, dict[str, Any]] = {}
-    executor = ThreadPoolExecutor(
-        max_workers=len(checks),
-        thread_name_prefix="proxy-health",
-    )
-    try:
-        futures = {
-            name: executor.submit(_call_health_check, func, **kwargs)
-            for name, (func, kwargs) in checks.items()
-        }
-        started_mono = time.monotonic()
-        for name, future in futures.items():
-            remaining = max(deadlines[name] - (time.monotonic() - started_mono), 0.0)
-            try:
-                results[name] = future.result(timeout=remaining)
-            except FutureTimeoutError:
-                future.cancel()
-                results[name] = {
-                    "ok": False,
-                    "detail": _health_timeout_detail(name, deadlines[name]),
-                }
-            except Exception as exc:
-                results[name] = {
-                    "ok": False,
-                    "detail": error_formatter(exc) if error_formatter else str(exc),
-                }
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+    futures = {
+        name: _LOCAL_HEALTH_EXECUTOR.submit(_call_health_check, func, **kwargs)
+        for name, (func, kwargs) in checks.items()
+    }
+    started_mono = time.monotonic()
+    for name, future in futures.items():
+        remaining = max(deadlines[name] - (time.monotonic() - started_mono), 0.0)
+        try:
+            results[name] = future.result(timeout=remaining)
+        except FutureTimeoutError:
+            # cancel() removes work that has not started. Running callables cannot
+            # be stopped by Future, but the shared pool bounds them process-wide.
+            future.cancel()
+            results[name] = {
+                "ok": False,
+                "detail": _health_timeout_detail(name, deadlines[name]),
+            }
+        except Exception as exc:
+            results[name] = {
+                "ok": False,
+                "detail": error_formatter(exc) if error_formatter else str(exc),
+            }
 
     clamd = results.get("clamd") or {"ok": False, "detail": "clamd health unavailable"}
     av_icap = results.get("av_icap") or {

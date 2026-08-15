@@ -5112,6 +5112,51 @@ def test_local_runtime_service_health_does_not_wait_for_stuck_probe(
     assert "timed out" in result["icap"]["detail"]
 
 
+def test_local_runtime_service_health_bounds_non_cooperative_probe_workers(
+    monkeypatch,
+) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    executor = runtime_module.ThreadPoolExecutor(
+        max_workers=3,
+        thread_name_prefix="test-proxy-health",
+    )
+    release = threading.Event()
+    started = 0
+    started_lock = threading.Lock()
+
+    def stuck_probe(**_kwargs):
+        nonlocal started
+        with started_lock:
+            started += 1
+        release.wait(timeout=10.0)
+        return {"ok": True, "detail": "late"}
+
+    monkeypatch.setattr(runtime_module, "_LOCAL_HEALTH_EXECUTOR", executor)
+    monkeypatch.setattr(runtime_module, "_check_icap_adblock", stuck_probe)
+    monkeypatch.setattr(runtime_module, "_check_icap_av", stuck_probe)
+    monkeypatch.setattr(runtime_module, "_check_clamd", stuck_probe)
+    monkeypatch.setattr(
+        runtime_module,
+        "_check_forwarding",
+        lambda **_kwargs: {"ok": True, "detail": "forwarding ok"},
+    )
+
+    try:
+        for _ in range(2):
+            result = runtime_module.build_local_runtime_services(
+                icap_timeout=0.01,
+                tcp_timeout=0.01,
+            )
+            assert all(not result[name]["ok"] for name in ("icap", "av_icap", "clamd"))
+
+        assert started == 3
+        assert len(executor._threads) == 3
+    finally:
+        release.set()
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
