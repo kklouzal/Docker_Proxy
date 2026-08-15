@@ -456,7 +456,9 @@ def test_live_pac_a_then_b_operation_truth_preserves_latest_materialization(
         assert pac_response.status == 200
         assert domain_b in pac_response.text
         assert domain_a not in pac_response.text
-        wait_for_admin_contains(admin_client, "/pac", "PAC materialized", timeout_seconds=30.0)
+        wait_for_admin_contains(
+            admin_client, "/pac", "PAC materialized", timeout_seconds=30.0
+        )
     finally:
         admin_client.admin_post_form(
             "/pac",
@@ -979,6 +981,8 @@ def test_live_policy_exception_request_public_submission_and_admin_lifecycle(
 def test_live_adblock_enforces_compiled_artifact_and_allow_exception(
     admin_client: LiveStackClient, tmp_path
 ) -> None:
+    store = _adblock_store()
+    original_settings = store.get_settings()
     artifacts = _adblock_artifacts_store()
     blocked_token = unique_token("live_adblock_block")
     allowed_token = unique_token("live_adblock_allow")
@@ -987,37 +991,54 @@ def test_live_adblock_enforces_compiled_artifact_and_allow_exception(
     blocked_path = f"/ads/{blocked_token}.json"
     allowed_path = f"/ads/{allowed_token}.json"
 
-    artifact_dir = tmp_path / "adblock-artifact"
-    settings_version = _write_live_adblock_artifact(
-        artifact_dir,
-        block_regexes=f"/.*{blocked_token}[.]json.*/\n/.*{allowed_token}[.]json.*/\n",
-        allow_regexes=f"/.*{allowed_token}[.]json.*/\n",
-    )
-    revision = artifacts.create_revision_from_directory(
-        artifact_dir,
-        settings_version=settings_version,
-        enabled_lists=["live-fixture"],
-        created_by="live-tests",
-        source_kind="live_enforcement",
-        activate=True,
-    )
+    try:
+        # Fresh installs intentionally default adblock routing off. This enforcement
+        # fixture must opt in explicitly before publishing an enabled artifact.
+        store.set_settings(
+            enabled=True,
+            cache_ttl=int(original_settings.get("cache_ttl") or 0),
+            cache_max=int(original_settings.get("cache_max") or 0),
+        )
+        assert store.get_settings()["enabled"] is True
 
-    sync_payload = _sync_primary_proxy(admin_client)
-    apply_row = artifacts.latest_apply(LIVE_CONFIG.primary_proxy_id)
-    assert apply_row is not None
-    assert apply_row.revision_id == revision.revision_id
-    assert apply_row.ok is True
+        artifact_dir = tmp_path / "adblock-artifact"
+        settings_version = _write_live_adblock_artifact(
+            artifact_dir,
+            block_regexes=f"/.*{blocked_token}[.]json.*/\n/.*{allowed_token}[.]json.*/\n",
+            allow_regexes=f"/.*{allowed_token}[.]json.*/\n",
+        )
+        revision = artifacts.create_revision_from_directory(
+            artifact_dir,
+            settings_version=settings_version,
+            enabled_lists=["live-fixture"],
+            created_by="live-tests",
+            source_kind="live_enforcement",
+            activate=True,
+        )
 
-    sync_detail = sync_payload.get("detail", "")
-    assert "Squid reconfigured for policy update." in sync_detail
+        sync_payload = _sync_primary_proxy(admin_client)
+        apply_row = artifacts.latest_apply(LIVE_CONFIG.primary_proxy_id)
+        assert apply_row is not None
+        assert apply_row.revision_id == revision.revision_id
+        assert apply_row.ok is True
 
-    blocked = _wait_for_proxy_status(admin_client, blocked_path, 403)
-    assert "ERR_ACCESS_DENIED" in blocked.text or "Access Denied" in blocked.text
-    allowed = wait_for_proxy_fixture_response(
-        admin_client, allowed_path, timeout_seconds=60.0
-    )
-    assert allowed.status == 200
-    assert allowed.json().get("path") == allowed_path
+        sync_detail = sync_payload.get("detail", "")
+        assert "Squid reconfigured for policy update." in sync_detail
+
+        blocked = _wait_for_proxy_status(admin_client, blocked_path, 403)
+        assert "ERR_ACCESS_DENIED" in blocked.text or "Access Denied" in blocked.text
+        allowed = wait_for_proxy_fixture_response(
+            admin_client, allowed_path, timeout_seconds=60.0
+        )
+        assert allowed.status == 200
+        assert allowed.json().get("path") == allowed_path
+    finally:
+        store.set_settings(
+            enabled=bool(original_settings.get("enabled")),
+            cache_ttl=int(original_settings.get("cache_ttl") or 0),
+            cache_max=int(original_settings.get("cache_max") or 0),
+        )
+        _sync_primary_proxy(admin_client)
 
 
 def test_live_webfilter_blocks_category_and_policy_exception_allows_same_client(
