@@ -18,7 +18,7 @@ from services.runtime_helpers import env_int as _env_int
 from services.sql_identifiers import quote_mysql_identifier
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Iterator, Sequence
 
 MYSQL_DEFAULT_DB = "squid_proxy"
 _MYSQL_CHARSET_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -132,6 +132,13 @@ class CompatResult:
             return [self._convert_row(r) for r in rows]
         finally:
             self.close()
+
+    def __iter__(self) -> Iterator[Any]:
+        while not self._closed:
+            row = self.fetchone()
+            if row is None:
+                break
+            yield row
 
 
 class _EmptyCursor:

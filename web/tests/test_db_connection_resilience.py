@@ -284,6 +284,44 @@ def test_compat_result_fetchone_defers_close_until_exhausted() -> None:
     assert cursor.closed is True
 
 
+def test_compat_result_iterates_rows_without_materializing_and_closes_cursor() -> None:
+    from services.db import CompatConnection  # type: ignore
+
+    class Cursor:
+        description = (("id",),)
+        rowcount = 2
+        lastrowid = None
+        rownumber = 0
+        closed = False
+        fetchall_called = False
+
+        def execute(self, *_args) -> None:
+            pass
+
+        def fetchone(self):
+            rows = [(1,), (2,)]
+            row = rows[self.rownumber]
+            self.rownumber += 1
+            return row
+
+        def fetchall(self):
+            self.fetchall_called = True
+            pytest.fail("streaming iteration must not materialize the result set")
+
+        def close(self) -> None:
+            self.closed = True
+
+    cursor = Cursor()
+    native = type("Native", (), {"cursor": lambda self: cursor})()
+    result = CompatConnection(native).execute("SELECT id FROM t")
+
+    rows = list(result)
+
+    assert [row["id"] for row in rows] == [1, 2]
+    assert cursor.fetchall_called is False
+    assert cursor.closed is True
+
+
 def test_compat_connection_closes_partial_result_and_write_cursor() -> None:
     from services.db import CompatConnection  # type: ignore
 

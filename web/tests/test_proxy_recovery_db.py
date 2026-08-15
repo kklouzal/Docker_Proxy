@@ -446,26 +446,33 @@ def test_capture_and_write_is_all_or_nothing_and_does_not_fsync_inside_db_contex
 
 
 def test_capture_budget_stops_streaming_wide_bytes_and_rolls_back() -> None:
+    from services.db import CompatResult  # type: ignore
+
     consumed = 0
 
-    class StreamingResult:
-        def __iter__(self):
+    class StreamingCursor:
+        description = (("key",), ("url",), ("enabled",))
+        rowcount = 10_000
+        lastrowid = None
+        rownumber = 0
+
+        def fetchone(self):
             nonlocal consumed
-            for index in range(10_000):
-                consumed += 1
-                yield {
-                    "key": f"list-{index}",
-                    "url": b"x" * 700,
-                    "enabled": 1,
-                }
+            index = self.rownumber
+            self.rownumber += 1
+            consumed += 1
+            return (f"list-{index}", b"x" * 700, 1)
 
         def fetchall(self):
             pytest.fail("capture must not materialize the complete result set")
 
+        def close(self) -> None:
+            pass
+
     class StreamingConn(_StrictExportConn):
         def execute(self, sql: str, params=()):
             if _sql(sql) == _sql(recovery_db.recovery_export_query_plans()[0].sql):
-                return StreamingResult()
+                return CompatResult(StreamingCursor())
             return super().execute(sql, params)
 
     conn = StreamingConn(expected_now_ts=987654321)
