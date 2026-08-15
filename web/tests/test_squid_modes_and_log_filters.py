@@ -269,6 +269,7 @@ def test_generate_icap_include_uses_supplied_workers_over_environment(
 
     include_path = tmp_path / "20-icap.conf"
     monkeypatch.setenv("SQUID_ICAP_INCLUDE_PATH", str(include_path))
+    monkeypatch.setenv("ADBLOCK_ENABLED", "1")
     monkeypatch.setenv("CICAP_PORT", "26000")
     monkeypatch.setenv("CICAP_AV_PORT", "26001")
     monkeypatch.setenv("SQUID_WORKERS", "1")

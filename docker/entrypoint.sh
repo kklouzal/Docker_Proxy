@@ -816,7 +816,7 @@ fi
 # remediation inference. It intentionally avoids cookies, authorization, and
 # full request/response header dumps on the proxy hot path.
 SAFE_LIVEUI_FMT='logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st'
-SAFE_DIAGNOSTIC_FMT='logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note\t%{Content-Type}<h\t%{Server}<h\t%{Cf-Mitigated}<h\t%{Alt-Svc}<h'
+SAFE_DIAGNOSTIC_FMT='logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note\t%{file_security_policy}note\t%{Content-Type}<h\t%{Server}<h\t%{Cf-Mitigated}<h\t%{Alt-Svc}<h'
 SAFE_ICAP_OBSERVE_FMT='logformat icapobserve %ts\t%master_xaction\t%>a\t%rm\t%ru\t%icap::tt\t%adapt::sum_trs\t%adapt::all_trs\t%{Host}>h\t%{User-Agent}>h\t%ssl::>sni\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note'
 for SQUID_CFG in /etc/squid/squid.conf "$PERSISTED_SQUID_CONF_PATH"; do
     if [ -f "$SQUID_CFG" ] && grep -q "^logformat liveui" "$SQUID_CFG" 2>/dev/null; then
@@ -1169,11 +1169,11 @@ if env_enabled "$CLAMAV_REQUIRED_RAW" 1 || env_enabled "${FILE_SECURITY_AV_REQUI
     AV_BYPASS=off
 fi
 
-# Startup cannot reliably read persisted UI settings. Keep first-boot/backwards
-# compatibility by routing adblock ICAP by default, allow operators to override
-# with ADBLOCK_ENABLED=0, and let proxy runtime reconciliation overwrite this
-# include from adblock_settings.enabled after the database is reachable.
-ADBLOCK_ENABLED_RAW="${ADBLOCK_ENABLED:-1}"
+# Startup cannot reliably read persisted UI settings. Keep fresh/missing state
+# disabled, honor an explicit ADBLOCK_ENABLED=1 opt-in, and let proxy runtime
+# reconciliation overwrite this include from adblock_settings.enabled after the
+# database is reachable.
+ADBLOCK_ENABLED_RAW="${ADBLOCK_ENABLED:-0}"
 ADBLOCK_ROUTING_ENABLED=0
 if env_enabled "$ADBLOCK_ENABLED_RAW" 1; then
     ADBLOCK_ROUTING_ENABLED=1
@@ -1314,18 +1314,12 @@ done
     echo "acl file_security_download_methods method GET HEAD"
     echo "acl file_security_range_request req_header Range .+"
     echo "acl file_security_partial_response http_status 206"
-    echo "acl file_security_risky_path urlpath_regex -i \\.(exe|dll|msi|bat|cmd|com|scr|ps1|vbs|jar|apk)($|[?#])"
-    echo "acl file_security_executable_path urlpath_regex -i \\.(exe|dll|msi|com|scr|jar|apk)($|[?#])"
-    echo "acl file_security_executable_mime req_header Content-Type -i (application/x-msdownload|application/x-msdos-program|application/x-ms-installer)"
-    echo "adaptation_access av_req_set allow file_security_upload_methods"
+    echo "# Startup fallback scans eligible downloads with AV. Upload scanning and strict extension/content denies are materialized from persisted UI policy."
     echo "adaptation_access av_req_set deny all"
     echo "adaptation_access av_resp_set deny file_security_range_request"
     echo "adaptation_access av_resp_set deny file_security_partial_response"
     echo "adaptation_access av_resp_set allow file_security_download_methods"
     echo "adaptation_access av_resp_set deny all"
-    echo "http_access deny file_security_risky_path"
-    echo "http_access deny file_security_executable_path"
-    echo "http_access deny file_security_executable_mime file_security_upload_methods"
 } > /etc/squid/conf.d/20-icap.conf
 
 # Normalize known distro path differences without overwriting user config

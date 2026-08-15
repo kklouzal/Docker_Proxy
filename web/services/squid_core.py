@@ -249,7 +249,7 @@ def _exclusive_squid_lifecycle_lock():
 
 class SquidController:
     _LIVEUI_LOGFORMAT = r"logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st"
-    _DIAGNOSTIC_LOGFORMAT = r"logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note\t%{Content-Type}<h\t%{Server}<h\t%{Cf-Mitigated}<h\t%{Alt-Svc}<h"
+    _DIAGNOSTIC_LOGFORMAT = r"logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note\t%{file_security_policy}note\t%{Content-Type}<h\t%{Server}<h\t%{Cf-Mitigated}<h\t%{Alt-Svc}<h"
     _ICAP_OBSERVE_LOGFORMAT = r"logformat icapobserve %ts\t%master_xaction\t%>a\t%rm\t%ru\t%icap::tt\t%adapt::sum_trs\t%adapt::all_trs\t%{Host}>h\t%{User-Agent}>h\t%ssl::>sni\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note\t%icap::<service_name\t%icap::to\t%icap::Hs\t%icap::tr\t%icap::tio\t%icap::>st\t%icap::<st"
 
     def __init__(
@@ -265,10 +265,11 @@ class SquidController:
         )
         self._run = cmd_run
         self._adblock_icap_revision_token = ""
-        # Startup has no reliable access to the UI database.  Default routing is
-        # enabled for first boot/backwards compatibility; runtime reconciliation
-        # and UI apply paths overwrite this from persisted adblock_settings.
-        self._adblock_routing_enabled = _env_flag("ADBLOCK_ENABLED", True)
+        # Startup has no reliable access to the UI database. Keep fresh/missing
+        # state disabled; runtime reconciliation and UI apply paths overwrite
+        # this from persisted adblock_settings, while an explicit env opt-in is
+        # still honored.
+        self._adblock_routing_enabled = _env_flag("ADBLOCK_ENABLED", False)
 
     def _atomic_write_file(self, path: str, content: str) -> None:
         target = Path(path)

@@ -28,7 +28,7 @@ from services.sql_identifiers import normalize_mysql_identifier
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 28
+_SCHEMA_VERSION = 29
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -92,8 +92,13 @@ class SchemaMigrationSpec:
         payload = {
             "version": self.version,
             "name": self.name,
-            "tables": [(item.table, _normalize_sql(item.create_sql)) for item in self.tables],
-            "columns": [(item.table, item.name, _normalize_sql(item.ddl)) for item in self.columns],
+            "tables": [
+                (item.table, _normalize_sql(item.create_sql)) for item in self.tables
+            ],
+            "columns": [
+                (item.table, item.name, _normalize_sql(item.ddl))
+                for item in self.columns
+            ],
             "indexes": [
                 (item.table, item.name, item.unique, _normalize_sql(item.ddl))
                 for item in self.indexes
@@ -140,7 +145,9 @@ def _raise_privilege_error(exc: BaseException) -> None:
     raise exc
 
 
-def _migration_assertion_error(table_name: str, object_name: str, object_type: str) -> RuntimeError:
+def _migration_assertion_error(
+    table_name: str, object_name: str, object_type: str
+) -> RuntimeError:
     return RuntimeError(
         f"MySQL schema migration is incomplete: missing {object_type} "
         f"{table_name}.{object_name}. Run startup schema migrations with a "
@@ -277,7 +284,9 @@ def read_control_plane_identity(conn: Any) -> str | None:
     ).fetchone()
     if row is None:
         return None
-    return normalize_control_plane_identity(str(_row_value(row, "control_plane_id", 0) or ""))
+    return normalize_control_plane_identity(
+        str(_row_value(row, "control_plane_id", 0) or "")
+    )
 
 
 def ensure_control_plane_identity(conn: Any) -> str:
@@ -348,7 +357,14 @@ def _record_event(
         INSERT INTO schema_migration_events(version, name, phase, status, detail, ts)
         VALUES(%s,%s,%s,%s,%s,%s)
         """,
-        (int(version), name[:190], phase[:32], status[:16], detail[:4000], int(time.time())),
+        (
+            int(version),
+            name[:190],
+            phase[:32],
+            status[:16],
+            detail[:4000],
+            int(time.time()),
+        ),
     )
 
 
@@ -380,7 +396,9 @@ def _start_migration(conn: Any, spec: SchemaMigrationSpec) -> None:
         """,
         (int(spec.version), spec.name[:190], spec.checksum, now),
     )
-    _record_event(conn, version=spec.version, name=spec.name, phase="start", status="running")
+    _record_event(
+        conn, version=spec.version, name=spec.name, phase="start", status="running"
+    )
 
 
 def _finish_migration(conn: Any, spec: SchemaMigrationSpec) -> SchemaMigrationResult:
@@ -393,7 +411,9 @@ def _finish_migration(conn: Any, spec: SchemaMigrationSpec) -> SchemaMigrationRe
         """,
         (now, int(spec.version)),
     )
-    _record_event(conn, version=spec.version, name=spec.name, phase="finish", status="applied")
+    _record_event(
+        conn, version=spec.version, name=spec.name, phase="finish", status="applied"
+    )
     row = _existing_migration(conn, spec.version)
     return SchemaMigrationResult(
         version=spec.version,
@@ -453,10 +473,22 @@ def repair_duplicate_active_rows(
 def _apply_spec(conn: Any, spec: SchemaMigrationSpec) -> None:
     for table in spec.tables:
         conn.execute(table.create_sql)
-        _record_event(conn, version=spec.version, name=spec.name, phase=f"table:{table.table}", status="ok")
+        _record_event(
+            conn,
+            version=spec.version,
+            name=spec.name,
+            phase=f"table:{table.table}",
+            status="ok",
+        )
     for step in spec.data_steps:
         step.apply(conn)
-        _record_event(conn, version=spec.version, name=spec.name, phase=f"data:{step.name}", status="ok")
+        _record_event(
+            conn,
+            version=spec.version,
+            name=spec.name,
+            phase=f"data:{step.name}",
+            status="ok",
+        )
     for column in spec.columns:
         changed = ensure_column(
             conn,
@@ -493,14 +525,18 @@ def _apply_embedded_schema(conn: Any, spec: SchemaMigrationSpec) -> None:
     for step in spec.data_steps:
         step.apply(conn)
     for column in spec.columns:
-        ensure_column(conn, table_name=column.table, column_name=column.name, ddl=column.ddl)
+        ensure_column(
+            conn, table_name=column.table, column_name=column.name, ddl=column.ddl
+        )
     for index in spec.indexes:
         ensure_index(conn, table_name=index.table, index_name=index.name, ddl=index.ddl)
 
 
 def _repair_revision_uniques(conn: Any) -> None:
     if table_exists(conn, "proxy_config_revisions"):
-        repair_duplicate_active_rows(conn, table_name="proxy_config_revisions", scope_column="proxy_id")
+        repair_duplicate_active_rows(
+            conn, table_name="proxy_config_revisions", scope_column="proxy_id"
+        )
     if table_exists(conn, "certificate_bundle_revisions"):
         repair_duplicate_active_rows(conn, table_name="certificate_bundle_revisions")
     if table_exists(conn, "adblock_artifact_revisions"):
@@ -535,27 +571,39 @@ def _init_proxy_registry_schema(_conn: Any) -> None:
 
 
 def _init_config_revision_schema(_conn: Any) -> None:
-    importlib.import_module("services.config_revisions").get_config_revisions().init_db()
+    importlib.import_module(
+        "services.config_revisions"
+    ).get_config_revisions().init_db()
 
 
 def _init_certificate_bundle_schema(_conn: Any) -> None:
-    importlib.import_module("services.certificate_bundles").get_certificate_bundles().init_db()
+    importlib.import_module(
+        "services.certificate_bundles"
+    ).get_certificate_bundles().init_db()
 
 
 def _init_adblock_artifact_schema(_conn: Any) -> None:
-    importlib.import_module("services.adblock_artifacts").get_adblock_artifacts().init_db()
+    importlib.import_module(
+        "services.adblock_artifacts"
+    ).get_adblock_artifacts().init_db()
 
 
 def _init_operation_ledger_schema(_conn: Any) -> None:
-    importlib.import_module("services.operation_ledger").get_operation_ledger().init_db()
+    importlib.import_module(
+        "services.operation_ledger"
+    ).get_operation_ledger().init_db()
 
 
 def _backfill_operation_ledger_active_request_keys(conn: Any) -> None:
-    importlib.import_module("services.operation_ledger").get_operation_ledger()._backfill_active_request_keys(conn)
+    importlib.import_module(
+        "services.operation_ledger"
+    ).get_operation_ledger()._backfill_active_request_keys(conn)
 
 
 def _prune_operation_ledger_history(conn: Any) -> None:
-    importlib.import_module("services.operation_ledger").get_operation_ledger()._prune_all_history(conn)
+    importlib.import_module(
+        "services.operation_ledger"
+    ).get_operation_ledger()._prune_all_history(conn)
 
 
 def _init_audit_schema(conn: Any) -> None:
@@ -593,7 +641,9 @@ def _init_audit_schema(conn: Any) -> None:
 
 def _init_adblock_runtime_schema(conn: Any) -> None:
     store_module = importlib.import_module("services.adblock_store")
-    store_module.AdblockStore(lists_dir=os.environ.get("ADBLOCK_LISTS_DIR", "."))._init_schema(conn)
+    store_module.AdblockStore(
+        lists_dir=os.environ.get("ADBLOCK_LISTS_DIR", ".")
+    )._init_schema(conn)
 
 
 def _init_webfilter_runtime_schema(conn: Any) -> None:
@@ -661,15 +711,21 @@ def _init_sslfilter_schema(_conn: Any) -> None:
 
 
 def _init_safe_browsing_schema(conn: Any) -> None:
-    importlib.import_module("services.safe_browsing_v5").SafeBrowsingStore.init_schema(conn)
+    importlib.import_module("services.safe_browsing_v5").SafeBrowsingStore.init_schema(
+        conn
+    )
 
 
 def _init_diagnostic_schema(_conn: Any) -> None:
-    importlib.import_module("services.diagnostic_store").get_diagnostic_store().init_db()
+    importlib.import_module(
+        "services.diagnostic_store"
+    ).get_diagnostic_store().init_db()
 
 
 def _init_ssl_errors_schema(_conn: Any) -> None:
-    importlib.import_module("services.ssl_errors_store").get_ssl_errors_store().init_db()
+    importlib.import_module(
+        "services.ssl_errors_store"
+    ).get_ssl_errors_store().init_db()
 
 
 def _init_live_stats_schema(_conn: Any) -> None:
@@ -677,7 +733,9 @@ def _init_live_stats_schema(_conn: Any) -> None:
 
 
 def _init_timeseries_schema(_conn: Any) -> None:
-    importlib.import_module("services.timeseries_store").get_timeseries_store().init_db()
+    importlib.import_module(
+        "services.timeseries_store"
+    ).get_timeseries_store().init_db()
 
 
 def _init_timeseries_metric_count_schema(conn: Any) -> None:
@@ -754,11 +812,15 @@ def _init_observability_schema(conn: Any) -> None:
 
 
 def _init_policy_schema(_conn: Any) -> None:
-    importlib.import_module("services.policy_requests").get_policy_request_store().init_db()
+    importlib.import_module(
+        "services.policy_requests"
+    ).get_policy_request_store().init_db()
 
 
 def _init_pac_schema(_conn: Any) -> None:
-    importlib.import_module("services.pac_profiles_store").get_pac_profiles_store().init_db()
+    importlib.import_module(
+        "services.pac_profiles_store"
+    ).get_pac_profiles_store().init_db()
 
 
 def _init_directory_auth_schema(conn: Any) -> None:
@@ -1212,17 +1274,25 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
         SchemaMigrationSpec(
             version=12,
             name="proxy_lifecycle_indexes",
-            data_steps=(SchemaDataStep("proxy_lifecycle", _init_proxy_lifecycle_schema),),
+            data_steps=(
+                SchemaDataStep("proxy_lifecycle", _init_proxy_lifecycle_schema),
+            ),
         ),
         SchemaMigrationSpec(
             version=13,
             name="control_plane_retention_indexes",
-            data_steps=(SchemaDataStep("control_plane_retention", _init_control_plane_retention_indexes),),
+            data_steps=(
+                SchemaDataStep(
+                    "control_plane_retention", _init_control_plane_retention_indexes
+                ),
+            ),
         ),
         SchemaMigrationSpec(
             version=14,
             name="schema_lifecycle_complete_runtime_assertions",
-            data_steps=(SchemaDataStep("runtime_assertion_cutover", lambda _conn: None),),
+            data_steps=(
+                SchemaDataStep("runtime_assertion_cutover", lambda _conn: None),
+            ),
         ),
         SchemaMigrationSpec(
             version=15,
@@ -1249,7 +1319,9 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                 ),
             ),
             data_steps=(
-                SchemaDataStep("ensure_control_plane_identity", _init_control_plane_identity),
+                SchemaDataStep(
+                    "ensure_control_plane_identity", _init_control_plane_identity
+                ),
             ),
         ),
         SchemaMigrationSpec(
@@ -1535,6 +1607,17 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                 ),
             ),
         ),
+        SchemaMigrationSpec(
+            version=29,
+            name="diagnostic_file_security_policy_attribution",
+            columns=(
+                SchemaColumnSpec(
+                    "diagnostic_requests",
+                    "file_security_policy",
+                    "ALTER TABLE diagnostic_requests ADD COLUMN file_security_policy VARCHAR(64) NOT NULL DEFAULT '' AFTER cache_bypass",
+                ),
+            ),
+        ),
     )
 
 
@@ -1558,7 +1641,11 @@ def apply_schema_migration(
                 mysql_schema_lock_timeout_seconds(60),
             ):
                 migrations_table_exists = table_exists(conn, "schema_migrations")
-                row = _existing_migration(conn, spec.version) if migrations_table_exists else None
+                row = (
+                    _existing_migration(conn, spec.version)
+                    if migrations_table_exists
+                    else None
+                )
                 if row is not None:
                     status = str(_row_value(row, "status", 3) or "")
                     checksum = str(_row_value(row, "checksum", 2) or "")
@@ -1590,7 +1677,9 @@ def apply_schema_migration(
                 _start_migration(conn, spec)
                 conn.commit()
                 try:
-                    previous_context = bool(getattr(_MIGRATION_CONTEXT, "active", False))
+                    previous_context = bool(
+                        getattr(_MIGRATION_CONTEXT, "active", False)
+                    )
                     _MIGRATION_CONTEXT.active = True
                     try:
                         _apply_spec(conn, spec)
@@ -1642,7 +1731,12 @@ def ensure_startup_schema() -> list[SchemaMigrationResult]:
 
 
 def startup_schema_configured() -> bool:
-    if (os.environ.get("MYSQL_SCHEMA_MIGRATIONS_DISABLED") or "").strip().lower() in {"1", "true", "yes", "on"}:
+    if (os.environ.get("MYSQL_SCHEMA_MIGRATIONS_DISABLED") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
         return False
     return any(
         (os.environ.get(name) or "").strip()

@@ -91,7 +91,7 @@ _DEFAULT_LISTS = {
 
 _DEFAULT_SETTINGS = {
     # Global on/off switch for ICAP decisions.
-    "enabled": "1",
+    "enabled": "0",
     # Cache URL allow/block decisions for performance.
     "cache_ttl": "3600",
     "cache_max": "200000",

@@ -200,6 +200,9 @@ _ADBLOCK_DEFAULT_LISTS: Final = MappingProxyType(
     },
 )
 _ADBLOCK_DEFAULT_SETTINGS: Final = MappingProxyType(
+    {"enabled": "0", "cache_ttl": "3600", "cache_max": "200000"},
+)
+_ADBLOCK_LEGACY_DEFAULT_SETTINGS: Final = MappingProxyType(
     {"enabled": "1", "cache_ttl": "3600", "cache_max": "200000"},
 )
 _OBSERVABILITY_DEFAULT_RETENTION_DAYS: Final = 30
@@ -989,7 +992,10 @@ def _fresh_adblock_settings(conn: Any, _proxy_id: str) -> str:
         str(_row_value(row, "k", 0) or ""): str(_row_value(row, "v", 1) or "")
         for row in rows
     }
-    if actual and actual != dict(_ADBLOCK_DEFAULT_SETTINGS):
+    if actual and actual not in (
+        dict(_ADBLOCK_DEFAULT_SETTINGS),
+        dict(_ADBLOCK_LEGACY_DEFAULT_SETTINGS),
+    ):
         return "adblock settings are not canonical schema defaults"
     return ""
 

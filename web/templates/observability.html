@@ -678,7 +678,7 @@
   <div class="card-header"><h2 class="card-title">Observed issues</h2><span class="badge">{{ payload.rows|length }} rows</span></div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Issue</th><th>Component</th><th>Subject</th><th class="num">Count</th><th class="num">Clients</th><th>Confidence</th><th>Evidence</th><th>Suggested remediation</th><th class="num">Actions</th></tr></thead>
+      <thead><tr><th>Issue</th><th>Component</th><th>Subject</th><th class="num">Count</th><th class="num">Clients</th><th>Last seen</th><th>Confidence</th><th>Evidence</th><th>Suggested remediation</th><th class="num">Actions</th></tr></thead>
       <tbody>
       {% for row in payload.rows %}
       <tr>
@@ -687,7 +687,7 @@
         <td class="mono">{{ row.subject }}</td>
         <td class="num">{{ row.count }}</td>
         <td class="num">{{ row.clients }}</td>
-        <td>{{ row.confidence }}</td>
+        <td>{% if row.last_seen %}{{ row.last_seen|datetimeformat }}{% else %}-{% endif %}<div class="small">within selected window</div></td><td>{{ row.confidence }}</td>
         <td class="small text-break">{{ row.evidence }}</td>
         <td class="small text-break">{{ row.recommended_action }}</td>
         <td class="num"><div class="table-action-stack">{% if row.subject and (row.subject_type or 'domain') == 'domain' %}{% if row.no_bump_domain_action %}<form method="post" action="{{ url_for('observability_remediation_no_bump_domain') }}">{{ csrf_field() }}<input type="hidden" name="domain" value="{{ row.no_bump_domain or row.subject }}" /><input type="hidden" name="window" value="{{ window }}" /><input type="hidden" name="limit" value="{{ limit }}" /><input type="hidden" name="sort" value="{{ sort }}" /><input type="hidden" name="q" value="{{ search }}" /><button class="btn primary" type="submit">Apply no-bump</button></form>{% endif %}{% if row.no_cache_domain_action %}<form method="post" action="{{ url_for('observability_remediation_no_cache_domain') }}">{{ csrf_field() }}<input type="hidden" name="domain" value="{{ row.no_cache_domain or row.subject }}" /><input type="hidden" name="window" value="{{ window }}" /><input type="hidden" name="limit" value="{{ limit }}" /><input type="hidden" name="sort" value="{{ sort }}" /><input type="hidden" name="q" value="{{ search }}" /><button class="btn primary" type="submit">Apply no-cache</button></form>{% endif %}<a class="btn ghost" href="{{ url_for('observability', pane='destinations', q=row.subject, window=window, limit=limit) }}">Inspect destination</a><a class="btn ghost" href="{{ url_for('observability', pane='ssl', q=row.subject, window=window, limit=limit) }}">Inspect SSL</a><a class="btn ghost" href="{{ url_for('sslfilter', domain=row.subject) }}">Inspect SSL Filtering</a>{% else %}<a class="btn ghost" href="{{ url_for('observability', pane='overview', window=window) }}">Inspect runtime overview</a>{% endif %}</div></td>

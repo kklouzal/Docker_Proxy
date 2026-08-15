@@ -4,6 +4,29 @@ from types import SimpleNamespace
 
 import pymysql
 
+from .mysql_test_utils import configure_test_mysql_env
+
+
+def test_adblock_fresh_default_is_disabled_and_init_preserves_explicit_opt_in(
+    tmp_path,
+) -> None:
+    configure_test_mysql_env(tmp_path / "adblock-default-disabled")
+
+    from services.adblock_store import AdblockStore  # type: ignore
+
+    lists_dir = tmp_path / "lists"
+    store = AdblockStore(lists_dir=str(lists_dir))
+    store.init_db()
+
+    assert store.get_settings()["enabled"] is False
+
+    store.set_settings(enabled=True, cache_ttl=120, cache_max=4096)
+    assert store.get_settings()["enabled"] is True
+
+    reinitialized = AdblockStore(lists_dir=str(lists_dir))
+    reinitialized.init_db()
+    assert reinitialized.get_settings()["enabled"] is True
+
 
 class _AdblockConn:
     def __init__(self, calls: list[str], *, fail_enabled_update_once: bool) -> None:

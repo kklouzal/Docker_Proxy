@@ -22,6 +22,7 @@ def _request_line(
     response_server: str = "",
     response_cf_mitigated: str = "",
     response_alt_svc: str = "",
+    file_security_policy: str = "",
 ) -> str:
     fields = [
         str(ts),
@@ -46,6 +47,7 @@ def _request_line(
         "",
         "",
         "",
+        file_security_policy,
         response_content_type,
         response_server,
         response_cf_mitigated,
@@ -442,6 +444,75 @@ def test_remediation_search_does_not_hide_ssl_generated_actions(
     assert payload["rows"][0]["count"] == 5
     assert payload["rows"][0]["severity"] == "high"
     assert payload["summary"]["observations"] == 5
+
+
+def test_policy_denial_queries_include_aborted_code_for_rollup_and_search(
+    monkeypatch,
+) -> None:
+    from services import observability_queries  # type: ignore
+
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self):
+            self.policy_sql: list[str] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, _params=()):
+            sql_text = str(sql)
+            if "TCP_DENIED_ABORTED/403" in sql_text:
+                self.policy_sql.append(sql_text)
+                if "LOWER(url) LIKE" not in sql_text:
+                    return FakeResult(
+                        [
+                            (
+                                "downloads.example",
+                                4,
+                                2,
+                                4002,
+                                "https://downloads.example/OAWrapper.exe",
+                                "TCP_DENIED_ABORTED/403",
+                                "file_security_risky_extension",
+                            ),
+                        ],
+                    )
+            return FakeResult([])
+
+    fake_conn = FakeConnection()
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", lambda: fake_conn)
+    monkeypatch.setattr(
+        queries,
+        "ssl_overview",
+        lambda **_kwargs: {"exclusion_candidates": []},
+    )
+
+    payload = queries.remediation_overview(
+        since=3900,
+        search="OAWrapper.exe",
+        limit=20,
+        summary={"request_records": 4},
+    )
+
+    assert len(fake_conn.policy_sql) == 2
+    assert all(
+        "result_code IN ('TCP_DENIED/403', 'TCP_DENIED_ABORTED/403')" in sql
+        for sql in fake_conn.policy_sql
+    )
+    assert len(payload["rows"]) == 1
+    assert payload["rows"][0]["kind"] == "proxy_policy_denial"
+    assert payload["rows"][0]["count"] == 4
+    assert payload["rows"][0]["clients"] == 2
 
 
 def test_remediation_overview_builds_icap_suggestion_rows(monkeypatch) -> None:
@@ -2165,3 +2236,95 @@ def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
         "icap_degraded",
         "slow_icap",
     }
+
+
+def test_remediation_surfaces_grouped_proxy_policy_denial_with_search_and_age(
+    tmp_path,
+) -> None:
+    configure_test_mysql_env(tmp_path / "observability-policy-denial")
+
+    from services import observability_queries  # type: ignore
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+
+    diag_store = DiagnosticStore()
+    diag_store.init_db()
+    for offset, (client, result_code) in enumerate(
+        (
+            ("192.0.2.10", "TCP_DENIED/403"),
+            ("192.0.2.11", "TCP_DENIED_ABORTED/403"),
+            ("192.0.2.10", "TCP_DENIED/403"),
+        ),
+    ):
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=4000 + offset,
+                client_ip=client,
+                method="GET",
+                url="https://wpc-download.gfe.nvidia.com/OAWrapper.exe",
+                result_code=result_code,
+                response_server="squid/7.1",
+                file_security_policy="file_security_risky_extension",
+            ),
+        )
+
+    payload = observability_queries.ObservabilityQueries().remediation_overview(
+        since=3900,
+        search="OAWrapper.exe",
+        limit=20,
+    )
+
+    assert len(payload["rows"]) == 1
+    row = payload["rows"][0]
+    assert row["kind"] == "proxy_policy_denial"
+    assert row["count"] == 3
+    assert row["clients"] == 2
+    assert row["last_seen"] == 4002
+    assert row["confidence"] == "high"
+    assert "file_security_risky_extension" in row["evidence"]
+    assert "OAWrapper.exe" in row["evidence"]
+    assert "no-bump" in row["recommended_action"]
+
+
+def test_remediation_repeated_proxy_5xx_ignores_singletons(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path / "observability-proxy-5xx")
+
+    from services import observability_queries  # type: ignore
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+
+    diag_store = DiagnosticStore()
+    diag_store.init_db()
+    for offset in range(3):
+        _insert_request(
+            diag_store,
+            _request_line(
+                ts=5000 + offset,
+                client_ip="192.0.2.10",
+                method="GET",
+                url="https://updates.example/payload.bin",
+                result_code="TCP_MISS/503",
+                response_server="squid/7.1",
+            ),
+        )
+    _insert_request(
+        diag_store,
+        _request_line(
+            ts=5003,
+            client_ip="192.0.2.10",
+            method="GET",
+            url="https://ad-noise.example/pixel",
+            result_code="TCP_MISS/502",
+            response_server="squid/7.1",
+        ),
+    )
+
+    payload = observability_queries.ObservabilityQueries().remediation_overview(
+        since=4900,
+        limit=20,
+    )
+
+    failures = [
+        row for row in payload["rows"] if row["kind"] == "proxy_generated_failure"
+    ]
+    assert [row["subject"] for row in failures] == ["updates.example"]
+    assert failures[0]["count"] == 3

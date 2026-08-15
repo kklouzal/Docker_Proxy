@@ -11,20 +11,21 @@ CLAMAV_SETTINGS_END = "# END SQUID-UI CLAMAV SETTINGS"
 LEGACY_RISKY_EXTENSIONS_WITH_WEB_ASSETS = (
     "exe dll msi bat cmd com scr ps1 vbs js jar apk"
 )
+AMBIGUOUS_PATH_EXTENSION = "com"
 LOCAL_CLAMD_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
 DEFAULTS: dict[str, Any] = {
     "clamav_fail_mode": "open",
     "file_security_preset": "balanced",
     "file_security_scan_downloads": True,
-    "file_security_scan_uploads": True,
-    "file_security_block_risky_extensions": True,
-    "file_security_risky_extensions": "exe dll msi bat cmd com scr ps1 vbs jar apk",
+    "file_security_scan_uploads": False,
+    "file_security_block_risky_extensions": False,
+    "file_security_risky_extensions": "exe dll msi bat cmd scr ps1 vbs jar apk",
     "file_security_block_archives": False,
     "file_security_archive_extensions": "zip 7z rar tar gz bz2 xz iso",
     "file_security_block_nested_archives": False,
-    "file_security_block_executable_content": True,
-    "file_security_executable_extensions": "exe dll msi com scr jar apk",
+    "file_security_block_executable_content": False,
+    "file_security_executable_extensions": "exe dll msi scr jar apk",
     "file_security_blocked_mime_types": "application/x-msdownload application/x-msdos-program application/x-ms-installer",
     "file_security_max_download_size": "0",
     "file_security_max_upload_size": "0",
@@ -40,7 +41,7 @@ DEFAULTS: dict[str, Any] = {
 _PRESET_DEFAULTS: dict[str, dict[str, Any]] = {
     "monitor": {
         "file_security_scan_downloads": True,
-        "file_security_scan_uploads": True,
+        "file_security_scan_uploads": False,
         "file_security_block_risky_extensions": False,
         "file_security_block_archives": False,
         "file_security_block_nested_archives": False,
@@ -177,7 +178,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Policy preset",
         "Squid + ICAP file policy",
         "select",
-        help_text="Balanced is the default foundation: scan uploads and downloads, block common executable payload names, and keep size/archive limits explicit.",
+        help_text="Balanced and Monitor leave file blocking off by default. Strict preselects the blocking controls; operators can adjust each control under any preset.",
         choices=(
             _choice("balanced", "Balanced"),
             _choice("monitor", "Monitor"),
@@ -198,7 +199,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Scan uploads",
         "adaptation_access av_req_set",
         "checkbox",
-        help_text="Send POST, PUT, and PATCH request bodies through ClamAV REQMod scanning where Squid/c-icap can adapt the request.",
+        help_text="Optional: send POST, PUT, and PATCH request bodies through ClamAV REQMod scanning where Squid/c-icap can adapt the request. Off by default.",
     ),
     _field(
         "virus_scan_scan_file_types",
@@ -224,7 +225,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Block risky extensions",
         "http_access deny urlpath_regex",
         "checkbox",
-        help_text="Block common script, installer, and binary file names before transfer.",
+        help_text="Optional under any preset: block common script, installer, and binary file names before transfer instead of sending them to download AV scanning.",
     ),
     _field(
         "file_security_risky_extensions",
@@ -232,8 +233,8 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Risky extensions",
         "urlpath_regex",
         "text",
-        help_text="Space or comma separated extensions without leading dots.",
-        placeholder="exe dll msi bat cmd com scr ps1 vbs js jar apk",
+        help_text="Space or comma separated extensions without leading dots. COM is intentionally left to AV scanning to avoid treating email/domain identifiers as DOS executables.",
+        placeholder="exe dll msi bat cmd scr ps1 vbs js jar apk",
     ),
     _field(
         "file_security_block_executable_content",
@@ -241,7 +242,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Block executable payload names",
         "http_access deny urlpath_regex / req_header Content-Type",
         "checkbox",
-        help_text="Block executable-looking file names and upload content-types before they reach the destination.",
+        help_text="Optional under any preset: block executable-looking download paths and executable upload content-types before transfer.",
     ),
     _field(
         "file_security_executable_extensions",
@@ -249,8 +250,8 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Executable extensions",
         "urlpath_regex",
         "text",
-        help_text="Space or comma separated executable extensions without leading dots.",
-        placeholder="exe dll msi com scr jar apk",
+        help_text="Space or comma separated executable extensions without leading dots. COM remains AV-scanned rather than filename-blocked.",
+        placeholder="exe dll msi scr jar apk",
     ),
     _field(
         "file_security_block_archives",
@@ -258,7 +259,7 @@ CLAMAV_FIELDS: tuple[ClamavFieldSpec, ...] = (
         "Block archives",
         "http_access deny urlpath_regex",
         "checkbox",
-        help_text="Block archive file names. Leave off for normal business use; enable for stricter environments.",
+        help_text="Optional under any preset: block archive file names before transfer.",
     ),
     _field(
         "file_security_archive_extensions",
@@ -384,7 +385,7 @@ CLAMAV_SECTIONS = (
             ClamavGroupSpec(
                 "blocking",
                 "File blocking",
-                "Fast Squid-side blocks for risky file names and executable-looking uploads.",
+                "Optional Squid-side file blocks. Balanced and Monitor leave them off by default; Strict preselects them, and operators can enable controls individually.",
                 (
                     "file_security_block_risky_extensions",
                     "file_security_risky_extensions",
@@ -395,7 +396,7 @@ CLAMAV_SECTIONS = (
             ClamavGroupSpec(
                 "archives",
                 "Archives",
-                "Archive controls with explicit metadata for nested archive handling.",
+                "Optional archive controls. Balanced and Monitor leave them off by default; Strict preselects them, and operators can enable controls individually.",
                 (
                     "file_security_block_archives",
                     "file_security_archive_extensions",
@@ -499,6 +500,14 @@ def _split_policy_tokens(value: Any) -> tuple[str, ...]:
     return tuple(tokens)
 
 
+def _without_ambiguous_com_extension(value: str) -> str:
+    return " ".join(
+        extension
+        for extension in _split_policy_tokens(value)
+        if extension != AMBIGUOUS_PATH_EXTENSION
+    )
+
+
 def _split_mime_tokens(value: Any) -> tuple[str, ...]:
     text = str(value or "").strip()
     if not text:
@@ -553,9 +562,23 @@ def render_file_security_policy_config(
     options: Mapping[str, Any] | None = None,
 ) -> str:
     opts = normalize_clamav_options(options)
-    risky_exts = _split_policy_tokens(opts["file_security_risky_extensions"])
+    # `urlpath_regex` sees the URL path, not just a filesystem filename. A
+    # terminal `.com` is therefore ambiguous with ordinary email/domain
+    # identifiers. Leave rare DOS COM payloads to AV/content inspection rather
+    # than creating either false positives or a broad `@`-based strict bypass.
+    risky_exts = tuple(
+        extension
+        for extension in _split_policy_tokens(opts["file_security_risky_extensions"])
+        if extension != AMBIGUOUS_PATH_EXTENSION
+    )
     archive_exts = _split_policy_tokens(opts["file_security_archive_extensions"])
-    exec_exts = _split_policy_tokens(opts["file_security_executable_extensions"])
+    exec_exts = tuple(
+        extension
+        for extension in _split_policy_tokens(
+            opts["file_security_executable_extensions"]
+        )
+        if extension != AMBIGUOUS_PATH_EXTENSION
+    )
     blocked_mimes = _split_mime_tokens(opts["file_security_blocked_mime_types"])
 
     lines = ["# Squid-side file security policy generated from the ClamAV page."]
@@ -574,19 +597,23 @@ def render_file_security_policy_config(
         ),
     )
 
-    if opts["file_security_block_risky_extensions"] and risky_exts:
+    block_risky = opts["file_security_block_risky_extensions"]
+    block_archives = opts["file_security_block_archives"]
+    block_executable = opts["file_security_block_executable_content"]
+
+    if block_risky and risky_exts:
         lines.append(
-            f"acl file_security_risky_path urlpath_regex -i \\.{_render_regex_tokens(risky_exts)}($|[?#])",
+            f"acl file_security_risky_path urlpath_regex -i ^[^?#]*\\.{_render_regex_tokens(risky_exts)}([?#].*)?$",
         )
-    if opts["file_security_block_archives"] and archive_exts:
+    if block_archives and archive_exts:
         lines.append(
-            f"acl file_security_archive_path urlpath_regex -i \\.{_render_regex_tokens(archive_exts)}($|[?#])",
+            f"acl file_security_archive_path urlpath_regex -i ^[^?#]*\\.{_render_regex_tokens(archive_exts)}([?#].*)?$",
         )
-    if opts["file_security_block_executable_content"] and exec_exts:
+    if block_executable and exec_exts:
         lines.append(
-            f"acl file_security_executable_path urlpath_regex -i \\.{_render_regex_tokens(exec_exts)}($|[?#])",
+            f"acl file_security_executable_path urlpath_regex -i ^[^?#]*\\.{_render_regex_tokens(exec_exts)}([?#].*)?$",
         )
-    if opts["file_security_block_executable_content"] and blocked_mimes:
+    if block_executable and blocked_mimes:
         lines.append(
             f"acl file_security_executable_mime req_header Content-Type -i {_render_regex_tokens(blocked_mimes)}",
         )
@@ -616,16 +643,34 @@ def render_file_security_policy_config(
             ],
         )
 
-    if opts["file_security_block_risky_extensions"] and risky_exts:
-        lines.append("http_access deny file_security_risky_path")
-    if opts["file_security_block_archives"] and archive_exts:
-        lines.append("http_access deny file_security_archive_path")
-    if opts["file_security_block_executable_content"]:
+    if block_risky and risky_exts:
+        lines.extend(
+            (
+                "note file_security_policy file_security_risky_extension file_security_risky_path",
+                "http_access deny file_security_risky_path",
+            ),
+        )
+    if block_archives and archive_exts:
+        lines.extend(
+            (
+                "note file_security_policy file_security_archive_extension file_security_archive_path",
+                "http_access deny file_security_archive_path",
+            ),
+        )
+    if block_executable:
         if exec_exts:
-            lines.append("http_access deny file_security_executable_path")
+            lines.extend(
+                (
+                    "note file_security_policy file_security_executable_extension file_security_executable_path",
+                    "http_access deny file_security_executable_path",
+                ),
+            )
         if blocked_mimes:
-            lines.append(
-                "http_access deny file_security_executable_mime file_security_upload_methods",
+            lines.extend(
+                (
+                    "note file_security_policy file_security_executable_upload_mime file_security_executable_mime file_security_upload_methods",
+                    "http_access deny file_security_executable_mime file_security_upload_methods",
+                ),
             )
 
     return "\n".join(lines).rstrip() + "\n"
@@ -671,12 +716,14 @@ def normalize_clamav_options(values: Mapping[str, Any] | None = None) -> dict[st
             source.get("file_security_block_risky_extensions"),
             bool(preset_defaults["file_security_block_risky_extensions"]),
         ),
-        "file_security_risky_extensions": _clean_token_list(
-            _migrate_legacy_risky_extensions(
-                source.get("file_security_risky_extensions"),
+        "file_security_risky_extensions": _without_ambiguous_com_extension(
+            _clean_token_list(
+                _migrate_legacy_risky_extensions(
+                    source.get("file_security_risky_extensions"),
+                    str(preset_defaults["file_security_risky_extensions"]),
+                ),
                 str(preset_defaults["file_security_risky_extensions"]),
             ),
-            str(preset_defaults["file_security_risky_extensions"]),
         ),
         "file_security_block_archives": _clean_bool(
             source.get("file_security_block_archives"),
@@ -694,9 +741,11 @@ def normalize_clamav_options(values: Mapping[str, Any] | None = None) -> dict[st
             source.get("file_security_block_executable_content"),
             bool(preset_defaults["file_security_block_executable_content"]),
         ),
-        "file_security_executable_extensions": _clean_token_list(
-            source.get("file_security_executable_extensions"),
-            str(preset_defaults["file_security_executable_extensions"]),
+        "file_security_executable_extensions": _without_ambiguous_com_extension(
+            _clean_token_list(
+                source.get("file_security_executable_extensions"),
+                str(preset_defaults["file_security_executable_extensions"]),
+            ),
         ),
         "file_security_blocked_mime_types": " ".join(
             _split_mime_tokens(
@@ -790,7 +839,9 @@ def read_clamav_options_from_form(
             {"file_security_preset": selected_preset},
         )
         for key in _PRESET_MANAGED_FIELDS:
-            if key not in submitted_field_keys and values.get(key) == current_values.get(key):
+            if key not in submitted_field_keys and values.get(
+                key
+            ) == current_values.get(key):
                 values[key] = preset_values[key]
     return normalize_clamav_options(values)
 

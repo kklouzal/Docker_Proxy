@@ -252,6 +252,7 @@ def _policy_tags(
     ssl_exception: str,
     webfilter_allow: str,
     cache_bypass: str,
+    file_security_policy: str = "",
 ) -> list[str]:
     tags: list[str] = []
     if exclusion_rule:
@@ -262,6 +263,8 @@ def _policy_tags(
         tags.append(f"webfilter:{webfilter_allow}")
     if cache_bypass:
         tags.append(f"cache:{cache_bypass}")
+    if file_security_policy:
+        tags.append(f"file_security:{file_security_policy}")
     return tags
 
 
@@ -369,14 +372,15 @@ def _normalize_request_row(row: Any) -> dict[str, Any]:
         "ssl_exception": _policy_text(row[21]),
         "webfilter_allow": _policy_text(row[22]),
         "cache_bypass": _policy_text(row[23]),
+        "file_security_policy": _policy_text(row[24] if len(row) > 24 else ""),
         "response_content_type": _safe_text(
-            row[24] if len(row) > 24 else "", max_len=255
+            row[25] if len(row) > 25 else "", max_len=255
         ),
-        "response_server": _safe_text(row[25] if len(row) > 25 else "", max_len=255),
+        "response_server": _safe_text(row[26] if len(row) > 26 else "", max_len=255),
         "response_cf_mitigated": _safe_text(
-            row[26] if len(row) > 26 else "", max_len=64
+            row[27] if len(row) > 27 else "", max_len=64
         ),
-        "response_alt_svc": _safe_text(row[27] if len(row) > 27 else "", max_len=512),
+        "response_alt_svc": _safe_text(row[28] if len(row) > 28 else "", max_len=512),
     }
     data["target_display"] = _request_target_display(data)
     data["policy_tags"] = _policy_tags(
@@ -384,6 +388,7 @@ def _normalize_request_row(row: Any) -> dict[str, Any]:
         ssl_exception=data["ssl_exception"],
         webfilter_allow=data["webfilter_allow"],
         cache_bypass=data["cache_bypass"],
+        file_security_policy=data["file_security_policy"],
     )
     data["tls_summary"] = _request_tls_summary(data)
     return data
@@ -567,6 +572,7 @@ class DiagnosticStore:
                                 ssl_exception VARCHAR(64) NOT NULL,
                                 webfilter_allow VARCHAR(64) NOT NULL,
                                 cache_bypass VARCHAR(64) NOT NULL,
+                                file_security_policy VARCHAR(64) NOT NULL DEFAULT '',
                                 response_content_type VARCHAR(255) NOT NULL DEFAULT '',
                                 response_server VARCHAR(255) NOT NULL DEFAULT '',
                                 response_cf_mitigated VARCHAR(64) NOT NULL DEFAULT '',
@@ -648,8 +654,12 @@ class DiagnosticStore:
                         )
                         for column_name, ddl in (
                             (
+                                "file_security_policy",
+                                "ALTER TABLE diagnostic_requests ADD COLUMN file_security_policy VARCHAR(64) NOT NULL DEFAULT '' AFTER cache_bypass",
+                            ),
+                            (
                                 "response_content_type",
-                                "ALTER TABLE diagnostic_requests ADD COLUMN response_content_type VARCHAR(255) NOT NULL DEFAULT '' AFTER cache_bypass",
+                                "ALTER TABLE diagnostic_requests ADD COLUMN response_content_type VARCHAR(255) NOT NULL DEFAULT '' AFTER file_security_policy",
                             ),
                             (
                                 "response_server",
@@ -1287,12 +1297,13 @@ class DiagnosticStore:
         user_agent = _safe_text(row[16], max_len=512)
         referer = _safe_text(row[17], max_len=512)
         policy_fields = _policy_fields_from_row(row, 18)
+        file_security_policy = _policy_text(row[22] if len(row) > 22 else "")
         response_content_type = _safe_text(
-            row[22] if len(row) > 22 else "", max_len=255
+            row[23] if len(row) > 23 else "", max_len=255
         )
-        response_server = _safe_text(row[23] if len(row) > 23 else "", max_len=255)
-        response_cf_mitigated = _safe_text(row[24] if len(row) > 24 else "", max_len=64)
-        response_alt_svc = _safe_text(row[25] if len(row) > 25 else "", max_len=512)
+        response_server = _safe_text(row[24] if len(row) > 24 else "", max_len=255)
+        response_cf_mitigated = _safe_text(row[25] if len(row) > 25 else "", max_len=64)
+        response_alt_svc = _safe_text(row[26] if len(row) > 26 else "", max_len=512)
         domain = _extract_domain(url, host=host, sni=sni)
         http_status = _parse_status(result_code)
 
@@ -1318,6 +1329,7 @@ class DiagnosticStore:
             "user_agent": user_agent,
             "referer": referer,
             **policy_fields,
+            "file_security_policy": file_security_policy,
             "response_content_type": response_content_type,
             "response_server": response_server,
             "response_cf_mitigated": response_cf_mitigated,
@@ -1366,6 +1378,7 @@ class DiagnosticStore:
             str(row["ssl_exception"]),
             str(row["webfilter_allow"]),
             str(row["cache_bypass"]),
+            str(row["file_security_policy"]),
             str(row["response_content_type"]),
             str(row["response_server"]),
             str(row["response_cf_mitigated"]),
@@ -1558,9 +1571,9 @@ class DiagnosticStore:
                 proxy_id, event_key, ts, duration_ms, client_ip, method, url, domain, result_code, http_status,
                 bytes, master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                 tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule, ssl_exception,
-                webfilter_allow, cache_bypass, response_content_type, response_server, response_cf_mitigated,
+                webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server, response_cf_mitigated,
                 response_alt_svc, raw, created_ts
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             batch.rows,
         )
@@ -1576,6 +1589,7 @@ class DiagnosticStore:
                 ssl_exception=_policy_text(row[23]),
                 webfilter_allow=_policy_text(row[24]),
                 cache_bypass=_policy_text(row[25]),
+                file_security_policy=_policy_text(row[26]),
             )
             tag_rows.extend((tag, row[0], row[1]) for tag in tags)
         if not tag_rows:
@@ -1671,7 +1685,7 @@ class DiagnosticStore:
                     ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
                     master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                     tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
+                    ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
                     response_cf_mitigated, response_alt_svc
                 FROM diagnostic_requests
                 {where_sql}
@@ -1881,7 +1895,7 @@ class DiagnosticStore:
                     ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
                     master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                     tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
+                    ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
                     response_cf_mitigated, response_alt_svc, id
                 FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_domain_ts_id)
                 WHERE proxy_id = %s
@@ -1913,7 +1927,7 @@ class DiagnosticStore:
                 list(before_rows) + list(after_rows),
                 center=center,
                 limit=lim,
-                id_index=28,
+                id_index=29,
             )
         ]
         icap_map = self._batch_list_icap_by_master_xactions(
@@ -1981,7 +1995,7 @@ class DiagnosticStore:
                     ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
                     master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                     tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
+                    ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
                     response_cf_mitigated, response_alt_svc, id
                 FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_ts)
                 WHERE {base_where_sql}
@@ -2012,7 +2026,7 @@ class DiagnosticStore:
                 list(before_rows) + list(after_rows),
                 center=center,
                 limit=lim,
-                id_index=28,
+                id_index=29,
             )
         ]
         icap_map = self._batch_list_icap_by_master_xactions(
@@ -2254,6 +2268,7 @@ class DiagnosticStore:
             WHEN 'ssl' THEN CASE WHEN COALESCE(NULLIF(NULLIF(TRIM(r.ssl_exception), ''), '-'), '') <> '' THEN CONCAT('ssl:', TRIM(r.ssl_exception)) ELSE '' END
             WHEN 'webfilter' THEN CASE WHEN COALESCE(NULLIF(NULLIF(TRIM(r.webfilter_allow), ''), '-'), '') <> '' THEN CONCAT('webfilter:', TRIM(r.webfilter_allow)) ELSE '' END
             WHEN 'cache' THEN CASE WHEN COALESCE(NULLIF(NULLIF(TRIM(r.cache_bypass), ''), '-'), '') <> '' THEN CONCAT('cache:', TRIM(r.cache_bypass)) ELSE '' END
+            WHEN 'file_security' THEN CASE WHEN COALESCE(NULLIF(NULLIF(TRIM(r.file_security_policy), ''), '-'), '') <> '' THEN CONCAT('file_security:', TRIM(r.file_security_policy)) ELSE '' END
             ELSE ''
         END
         """
@@ -2267,6 +2282,7 @@ class DiagnosticStore:
                 UNION ALL SELECT 'ssl'
                 UNION ALL SELECT 'webfilter'
                 UNION ALL SELECT 'cache'
+                UNION ALL SELECT 'file_security'
             ) p
             WHERE {where_sql} AND {tag_expr} <> ''
             """,
@@ -2299,7 +2315,7 @@ class DiagnosticStore:
                     ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
                     master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                     tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
+                    ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
                     response_cf_mitigated, response_alt_svc
                 FROM diagnostic_requests
                 {where_sql}

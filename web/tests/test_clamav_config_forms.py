@@ -20,9 +20,7 @@ def _directives(config_text: str) -> dict[str, str]:
     return directives
 
 
-def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract() -> (
-    None
-):
+def test_clamav_defaults_keep_upload_and_filename_blocking_controls_off() -> None:
     from services.clamav_config_forms import (
         DEFAULTS,
         normalize_clamav_options,
@@ -35,7 +33,10 @@ def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract()
     assert options["clamav_fail_mode"] == "open"
     assert options["file_security_preset"] == "balanced"
     assert options["file_security_scan_downloads"] is True
-    assert options["file_security_scan_uploads"] is True
+    assert options["file_security_scan_uploads"] is False
+    assert options["file_security_block_risky_extensions"] is False
+    assert options["file_security_block_archives"] is False
+    assert options["file_security_block_executable_content"] is False
     assert options["virus_scan_start_send_percent_after"] == "2M"
     assert options["virus_scan_send_percent_data"] == 5
     assert DEFAULTS["virus_scan_start_send_percent_after"] == "2M"
@@ -48,16 +49,21 @@ def test_clamav_defaults_preserve_download_progress_and_tail_blocking_contract()
     policy = render_file_security_policy_config()
     assert "request_body_max_size" not in policy
     assert "reply_body_max_size" not in policy
-    assert "adaptation_access av_req_set allow file_security_upload_methods" in policy
+    assert (
+        "adaptation_access av_req_set allow file_security_upload_methods" not in policy
+    )
     assert "adaptation_access av_resp_set deny file_security_range_request" in policy
     assert "adaptation_access av_resp_set deny file_security_partial_response" in policy
     assert (
         "adaptation_access av_resp_set allow file_security_download_methods" in policy
     )
-    assert "acl file_security_risky_path urlpath_regex -i \\.(exe|dll" in policy
+    assert "acl file_security_risky_path" not in policy
+    assert "http_access deny file_security_risky_path" not in policy
+    assert "acl file_security_executable_path" not in policy
+    assert "http_access deny file_security_executable_path" not in policy
+    assert "http_access deny file_security_executable_mime" not in policy
     assert "|js|" not in policy
-    assert "($|[?#])" in policy
-    assert "?:" not in policy
+    assert "OAWrapper.exe" not in policy
 
 
 def test_download_respmod_policy_remains_enabled_for_stream_safe_remote_clamd() -> None:
@@ -65,7 +71,9 @@ def test_download_respmod_policy_remains_enabled_for_stream_safe_remote_clamd() 
 
     policy = render_file_security_policy_config()
 
-    assert "adaptation_access av_req_set allow file_security_upload_methods" in policy
+    assert (
+        "adaptation_access av_req_set allow file_security_upload_methods" not in policy
+    )
     assert "adaptation_access av_resp_set deny file_security_range_request" in policy
     assert "adaptation_access av_resp_set deny file_security_partial_response" in policy
     assert (
@@ -86,7 +94,7 @@ def test_legacy_default_risky_extensions_drop_web_script_assets() -> None:
 
     assert (
         options["file_security_risky_extensions"]
-        == "exe dll msi bat cmd com scr ps1 vbs jar apk"
+        == "exe dll msi bat cmd scr ps1 vbs jar apk"
     )
 
 
@@ -124,6 +132,9 @@ def test_clamav_options_round_trip_and_fail_closed_rendering() -> None:
 
     options = extract_clamav_options(updated)
     assert options["clamav_fail_mode"] == "closed"
+    assert options["file_security_scan_uploads"] is True
+    assert options["file_security_block_risky_extensions"] is True
+    assert options["file_security_block_executable_content"] is True
     assert options["virus_scan_send_percent_data"] == 99
     assert options["virus_scan_allow_204_on"] is False
     assert options["file_security_max_download_size"] == "64M"
@@ -138,21 +149,220 @@ def test_clamav_options_round_trip_and_fail_closed_rendering() -> None:
     assert "request_body_max_size 32 MB" in policy
     assert "reply_body_max_size 64 MB" in policy
     assert "adaptation_access av_resp_set deny file_security_range_request" in policy
+    assert "acl file_security_risky_path" in policy
+    assert "acl file_security_archive_path" in policy
+    assert "acl file_security_executable_path" in policy
     assert (
-        "acl file_security_risky_path urlpath_regex -i \\.(exe|dll|js)($|[?#])"
+        "note file_security_policy file_security_risky_extension file_security_risky_path"
         in policy
     )
     assert (
-        "acl file_security_archive_path urlpath_regex -i \\.(zip|7z)($|[?#])" in policy
-    )
-    assert (
-        "acl file_security_executable_path urlpath_regex -i \\.(exe|dll|msi)($|[?#])"
+        "note file_security_policy file_security_archive_extension file_security_archive_path"
         in policy
     )
-    assert "?:" not in policy
+    assert (
+        "note file_security_policy file_security_executable_upload_mime file_security_executable_mime file_security_upload_methods"
+        in policy
+    )
+    assert "http_access deny file_security_risky_path" in policy
+    assert "http_access deny file_security_archive_path" in policy
+    assert "http_access deny file_security_executable_path" in policy
     assert (
         "http_access deny file_security_executable_mime file_security_upload_methods"
         in policy
+    )
+
+
+def test_strict_policy_blocks_only_path_extensions_and_attributes_denials() -> None:
+    from services.clamav_config_forms import render_file_security_policy_config
+
+    policy = render_file_security_policy_config({"file_security_preset": "strict"})
+
+    assert "^[^?#]*\\.(exe|dll|msi|bat|cmd|scr|ps1|vbs|jar|apk)([?#].*)?$" in policy
+    assert (
+        "note file_security_policy file_security_risky_extension file_security_risky_path"
+        in policy
+    )
+    assert (
+        "note file_security_policy file_security_executable_extension file_security_executable_path"
+        in policy
+    )
+    assert (
+        "note file_security_policy file_security_archive_extension file_security_archive_path"
+        in policy
+    )
+    assert "file_security_email_identifier" not in policy
+    assert "http_access deny file_security_risky_path" in policy
+    assert "http_access deny file_security_archive_path" in policy
+    assert "http_access deny file_security_executable_path" in policy
+
+
+def test_explicit_upload_scan_opt_in_survives_saved_config_round_trip() -> None:
+    from services.clamav_config_forms import (
+        apply_clamav_options_to_config,
+        extract_clamav_options,
+        render_file_security_policy_config,
+    )
+
+    saved = apply_clamav_options_to_config(
+        "workers 1\n",
+        {
+            "file_security_preset": "balanced",
+            "file_security_scan_uploads": True,
+        },
+    )
+    restored = extract_clamav_options(saved)
+
+    assert restored["file_security_scan_uploads"] is True
+    assert (
+        "adaptation_access av_req_set allow file_security_upload_methods"
+        in render_file_security_policy_config(restored)
+    )
+
+
+@pytest.mark.parametrize("preset", ["balanced", "monitor"])
+def test_non_strict_defaults_scan_without_pretransfer_extension_denial(
+    preset: str,
+) -> None:
+    from services.clamav_config_forms import render_file_security_policy_config
+
+    policy = render_file_security_policy_config({"file_security_preset": preset})
+
+    for filename in (
+        "OAWrapper.exe",
+        "vs_installer.msi",
+        "windows-update.exe",
+        "install.ps1",
+    ):
+        assert filename.lower().rsplit(".", 1)[1] in {
+            "exe",
+            "msi",
+            "ps1",
+        }
+    assert (
+        "adaptation_access av_resp_set allow file_security_download_methods" in policy
+    )
+    assert "http_access deny file_security_risky_path" not in policy
+    assert "http_access deny file_security_archive_path" not in policy
+    assert "http_access deny file_security_executable_path" not in policy
+    assert "http_access deny file_security_executable_mime" not in policy
+
+
+@pytest.mark.parametrize(
+    ("field", "acl", "note", "deny"),
+    [
+        (
+            "file_security_block_risky_extensions",
+            "acl file_security_risky_path",
+            "note file_security_policy file_security_risky_extension file_security_risky_path",
+            "http_access deny file_security_risky_path",
+        ),
+        (
+            "file_security_block_archives",
+            "acl file_security_archive_path",
+            "note file_security_policy file_security_archive_extension file_security_archive_path",
+            "http_access deny file_security_archive_path",
+        ),
+        (
+            "file_security_block_executable_content",
+            "acl file_security_executable_path",
+            "note file_security_policy file_security_executable_extension file_security_executable_path",
+            "http_access deny file_security_executable_path",
+        ),
+    ],
+)
+def test_balanced_explicit_block_opt_in_survives_form_and_config_round_trip(
+    field: str,
+    acl: str,
+    note: str,
+    deny: str,
+) -> None:
+    from services.clamav_config_forms import (
+        apply_clamav_options_to_config,
+        extract_clamav_options,
+        read_clamav_options_from_form,
+        render_file_security_policy_config,
+    )
+
+    submitted = read_clamav_options_from_form(
+        {"file_security_preset": "balanced", field: "on"},
+        {"file_security_preset": "balanced"},
+    )
+    restored = extract_clamav_options(
+        apply_clamav_options_to_config("workers 1\n", submitted),
+    )
+    policy = render_file_security_policy_config(restored)
+
+    assert restored["file_security_preset"] == "balanced"
+    assert restored[field] is True
+    assert acl in policy
+    assert note in policy
+    assert deny in policy
+
+
+def test_strict_acl_input_keeps_installers_blocked_without_com_false_positive() -> None:
+    import re
+
+    from services.clamav_config_forms import render_file_security_policy_config
+
+    policy = render_file_security_policy_config({"file_security_preset": "strict"})
+    regex_text = next(
+        line.rsplit(" -i ", 1)[1]
+        for line in policy.splitlines()
+        if line.startswith("acl file_security_risky_path ")
+    )
+    path_pattern = re.compile(regex_text, re.IGNORECASE)
+
+    # Squid urlpath_regex evaluates the request path; some builds retain its
+    # query suffix. In either case, a true installer suffix is before the query
+    # and remains blocked even when an email appears in the name or query.
+    assert path_pattern.fullmatch("/downloads/OAWrapper.exe")
+    assert path_pattern.fullmatch("/downloads/malware@vendor.exe")
+    assert path_pattern.fullmatch("/downloads/malware.exe?email=a@b.com")
+    assert path_pattern.fullmatch("/downloads/vs.msi?email=a%40b.com")
+    assert not path_pattern.fullmatch("/outlook/user@domain.com")
+    assert not path_pattern.fullmatch("/outlook/user%40domain.com")
+    assert not path_pattern.fullmatch("/lookup?user=person@domain.com")
+    assert not path_pattern.fullmatch("/lookup?user=person%40domain.com")
+
+
+def test_operator_supplied_com_extension_is_removed_from_strict_path_acl() -> None:
+    from services.clamav_config_forms import render_file_security_policy_config
+
+    policy = render_file_security_policy_config(
+        {
+            "file_security_preset": "strict",
+            "file_security_risky_extensions": "exe com msi",
+            "file_security_executable_extensions": "exe com",
+        },
+    )
+
+    assert "\\.(exe|msi)" in policy
+    assert (
+        "acl file_security_executable_path urlpath_regex -i ^[^?#]*\\.(exe)" in policy
+    )
+    assert "|com" not in policy
+    assert "com|" not in policy
+    assert "file_security_executable_mime" in policy
+
+
+def test_strict_policy_notes_use_the_exact_denial_acl_conditions() -> None:
+    from services.clamav_config_forms import render_file_security_policy_config
+
+    lines = render_file_security_policy_config(
+        {"file_security_preset": "strict"},
+    ).splitlines()
+
+    assert lines.index(
+        "note file_security_policy file_security_risky_extension file_security_risky_path",
+    ) + 1 == lines.index("http_access deny file_security_risky_path")
+    assert lines.index(
+        "note file_security_policy file_security_executable_extension file_security_executable_path",
+    ) + 1 == lines.index("http_access deny file_security_executable_path")
+    assert lines.index(
+        "note file_security_policy file_security_executable_upload_mime file_security_executable_mime file_security_upload_methods",
+    ) + 1 == lines.index(
+        "http_access deny file_security_executable_mime file_security_upload_methods",
     )
 
 
@@ -214,7 +424,7 @@ def test_clamav_monitor_preset_relaxes_untouched_blocking_controls() -> None:
 
     assert options["file_security_preset"] == "monitor"
     assert options["file_security_scan_downloads"] is True
-    assert options["file_security_scan_uploads"] is True
+    assert options["file_security_scan_uploads"] is False
     assert options["file_security_block_risky_extensions"] is False
     assert options["file_security_block_archives"] is False
     assert options["file_security_block_nested_archives"] is False
@@ -362,9 +572,12 @@ def test_squid_controller_materializes_clamav_runtime_files(
     )
     assert "request_body_max_size 64 MB" in include_text
     assert "reply_body_max_size 128 MB" in include_text
-    assert "acl file_security_risky_path urlpath_regex -i \\.(exe|dll" in include_text
-    assert "($|[?#])" in include_text
-    assert "?:" not in include_text
+    assert "acl file_security_risky_path" in include_text
+    assert "acl file_security_executable_path" in include_text
+    assert (
+        "note file_security_policy file_security_risky_extension file_security_risky_path"
+        in include_text
+    )
     assert "http_access deny file_security_risky_path" in include_text
     assert (
         "http_access deny file_security_executable_mime file_security_upload_methods"

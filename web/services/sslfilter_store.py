@@ -316,7 +316,7 @@ class SslFilterStore:
         self.init_db()
         with self._connect() as conn:
             v = self._get_setting_conn(conn, "inspection_enabled")
-        return True if v is None else (v == "1")
+        return False if v is None else (v == "1")
 
     def add_domain(
         self,
@@ -491,7 +491,7 @@ class SslFilterStore:
                     else (exclude_private_nets == "1")
                 ),
                 inspection_enabled=(
-                    True if inspection_enabled is None else (inspection_enabled == "1")
+                    False if inspection_enabled is None else (inspection_enabled == "1")
                 ),
             )
 

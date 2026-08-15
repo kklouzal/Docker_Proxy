@@ -178,10 +178,11 @@ def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) 
         assert current.no_bump_src_nets == ["192.168.44.0/24"]
         assert current.no_cache_src_nets == ["192.168.55.0/24"]
         assert current.exclude_private_nets is False
-        assert current.inspection_enabled is True
+        assert current.inspection_enabled is False
 
-        store.set_inspection_enabled(False)
-        assert store.list_all().inspection_enabled is False
+        store.set_inspection_enabled(True)
+        assert store.get_inspection_enabled() is True
+        assert store.list_all().inspection_enabled is True
 
         store.remove_domain("nobump", "*.example.com")
         store.remove_domain("nobump", "https://Bücher.Example:443/path")
@@ -298,6 +299,12 @@ def test_sslfilter_store_canonicalizes_dedupes_removes_and_materializes(
         assert [cidr for cidr, _ts in rows] == ["10.1.2.3/32"]
 
         store.apply_squid_include()
+        fresh_include = include_path.read_text(encoding="utf-8")
+        assert "ssl_bump splice all" in fresh_include
+        assert "ssl_bump splice sslfilter_nobump" not in fresh_include
+
+        store.set_inspection_enabled(True)
+        store.apply_squid_include()
         assert "10.1.2.3/32" in list_path.read_text(encoding="utf-8")
         assert "ssl_bump splice sslfilter_nobump" in include_path.read_text(
             encoding="utf-8"
@@ -329,6 +336,10 @@ def test_webfilter_category_refresh_only_tracks_active_category_policy(
 
     store = WebFilterStore()
     store.init_db()
+
+    fresh = store.get_settings()
+    assert fresh.enabled is False
+    assert "web filtering disabled" in store.render_materialized_state().include_text
 
     store.set_settings(
         enabled=False,

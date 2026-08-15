@@ -5622,6 +5622,21 @@ def test_runtime_icap_include_honors_explicit_required_adblock_mode(
     assert "icap://127.0.0.1:14000/adblockreq bypass=off" in include
 
 
+def test_runtime_adblock_routing_defaults_off_and_honors_explicit_opt_in(
+    monkeypatch,
+) -> None:
+    from services.squid_core import SquidController  # type: ignore
+
+    monkeypatch.delenv("ADBLOCK_ENABLED", raising=False)
+    assert SquidController()._adblock_routing_enabled is False
+
+    monkeypatch.setenv("ADBLOCK_ENABLED", "1")
+    assert SquidController()._adblock_routing_enabled is True
+
+    monkeypatch.setenv("ADBLOCK_ENABLED", "0")
+    assert SquidController()._adblock_routing_enabled is False
+
+
 def test_runtime_security_flags_fail_safe_on_malformed_values(monkeypatch) -> None:
     from services.squid_core import SquidController, _clamav_required_from_env
 
@@ -5643,10 +5658,27 @@ def test_packaged_security_flags_fail_safe_on_malformed_values() -> None:
     healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(encoding="utf-8")
 
     assert 'env_enabled "$CLAMAV_REQUIRED_RAW" 1' in entrypoint
+    assert 'ADBLOCK_ENABLED_RAW="${ADBLOCK_ENABLED:-0}"' in entrypoint
     assert 'env_enabled "$ADBLOCK_ENABLED_RAW" 1' in entrypoint
     assert 'env_enabled "${ADBLOCK_ICAP_REQUIRED:-}" 1' in entrypoint
     assert 'env_enabled "${CLAMAV_REQUIRED:-}" 1' in healthcheck
     assert 'env_enabled "${ADBLOCK_ICAP_REQUIRED:-}" 1' in healthcheck
+
+
+def test_packaged_startup_file_policy_keeps_upload_scanning_off() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    entrypoint = (repo_root / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+    generated_policy = entrypoint.split(
+        'echo "acl file_security_upload_methods method POST PUT PATCH"', 1
+    )[1].split("} > /etc/squid/conf.d/20-icap.conf", 1)[0]
+
+    assert "adaptation_access av_req_set deny all" in generated_policy
+    assert "adaptation_access av_req_set allow file_security_upload_methods" not in (
+        generated_policy
+    )
+    assert "http_access deny file_security_risky_path" not in generated_policy
+    assert "http_access deny file_security_executable_path" not in generated_policy
+    assert "http_access deny file_security_executable_mime" not in generated_policy
 
 
 def test_packaged_proxy_supervisor_stops_squid_process_group() -> None:

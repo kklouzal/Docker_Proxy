@@ -1949,6 +1949,40 @@ class ObservabilityQueries:
                 """,
                 (*icap_params, query_lim),
             ).fetchall()
+            policy_denial_rows = conn.execute(
+                f"""
+                SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
+                       MAX(ts) AS last_seen, MAX(url) AS sample_url,
+                       MAX(result_code) AS sample_result,
+                       MAX(COALESCE(NULLIF(file_security_policy, ''), 'squid_http_access')) AS policy_cause
+                FROM diagnostic_requests
+                {where_sql}
+                  AND result_code IN ('TCP_DENIED/403', 'TCP_DENIED_ABORTED/403')
+                  AND LOWER(COALESCE(response_server, '')) LIKE 'squid/%%'
+                GROUP BY domain,
+                         COALESCE(NULLIF(file_security_policy, ''), 'squid_http_access')
+                ORDER BY observations DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (*params, query_lim),
+            ).fetchall()
+            proxy_failure_rows = conn.execute(
+                f"""
+                SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
+                       MAX(ts) AS last_seen, MAX(url) AS sample_url,
+                       MAX(result_code) AS sample_result,
+                       MAX(COALESCE(response_server, '')) AS sample_server
+                FROM diagnostic_requests
+                {where_sql}
+                  AND http_status IN (502, 503, 504)
+                  AND LOWER(COALESCE(response_server, '')) LIKE 'squid/%%'
+                GROUP BY domain
+                HAVING observations >= 3
+                ORDER BY observations DESC, last_seen DESC
+                LIMIT %s
+                """,
+                (*params, query_lim),
+            ).fetchall()
 
             if search_value:
                 (
@@ -1970,6 +2004,8 @@ class ObservabilityQueries:
                         "response_server",
                         "response_cf_mitigated",
                         "response_alt_svc",
+                        "file_security_policy",
+                        "hierarchy_status",
                     ),
                     icap_search_columns=(
                         "domain",
@@ -2013,6 +2049,46 @@ class ObservabilityQueries:
                         OR (http_status = 403 AND LOWER(COALESCE(response_server, '')) LIKE '%%cloudflare%%')
                       )
                     GROUP BY domain
+                    ORDER BY observations DESC, last_seen DESC
+                    LIMIT %s
+                    """,
+                    source_params,
+                )
+                add_request_source_rows(
+                    "proxy_policy_denial",
+                    policy_denial_rows,
+                    {str(row[0] or "") for row in policy_denial_rows},
+                    f"""
+                    SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
+                           MAX(ts) AS last_seen, MAX(url) AS sample_url,
+                           MAX(result_code) AS sample_result,
+                           MAX(COALESCE(NULLIF(file_security_policy, ''), 'squid_http_access')) AS policy_cause
+                    FROM diagnostic_requests
+                    {source_where_sql}
+                      AND result_code IN ('TCP_DENIED/403', 'TCP_DENIED_ABORTED/403')
+                      AND LOWER(COALESCE(response_server, '')) LIKE 'squid/%%'
+                    GROUP BY domain,
+                             COALESCE(NULLIF(file_security_policy, ''), 'squid_http_access')
+                    ORDER BY observations DESC, last_seen DESC
+                    LIMIT %s
+                    """,
+                    source_params,
+                )
+                add_request_source_rows(
+                    "proxy_generated_failure",
+                    proxy_failure_rows,
+                    {str(row[0] or "") for row in proxy_failure_rows},
+                    f"""
+                    SELECT domain, COUNT(*) AS observations, COUNT(DISTINCT client_ip) AS clients,
+                           MAX(ts) AS last_seen, MAX(url) AS sample_url,
+                           MAX(result_code) AS sample_result,
+                           MAX(COALESCE(response_server, '')) AS sample_server
+                    FROM diagnostic_requests
+                    {source_where_sql}
+                      AND http_status IN (502, 503, 504)
+                      AND LOWER(COALESCE(response_server, '')) LIKE 'squid/%%'
+                    GROUP BY domain
+                    HAVING observations >= 3
                     ORDER BY observations DESC, last_seen DESC
                     LIMIT %s
                     """,
@@ -2156,6 +2232,45 @@ class ObservabilityQueries:
                 evidence=f"Repeated TCP_MISS_ABORTED media responses; sample type={row[4] or 'unknown'}",
             )
             for row in aborted_rows
+        )
+        suggestions.extend(
+            self._suggestion_row(
+                kind="proxy_policy_denial",
+                component="Squid access / file-security policy",
+                severity="high" if int(row[1] or 0) >= 3 else "medium",
+                title="Explicit proxy policy denial observed",
+                subject=str(row[0] or ""),
+                count=int(row[1] or 0),
+                clients=int(row[2] or 0),
+                last_seen=int(row[3] or 0),
+                confidence="high",
+                recommended_action=(
+                    "Review the ClamAV file-security policy and strict extension controls; "
+                    "inspect the denied request before adding a scoped exception. Do not use "
+                    "a no-bump rule for a generic http_access denial."
+                ),
+                evidence=(
+                    f"Proxy-generated {row[5] or 'TCP_DENIED/403'}; "
+                    f"cause={row[6] or 'squid_http_access'}; sample URL={row[4] or 'not captured'}"
+                ),
+            )
+            for row in policy_denial_rows
+        )
+        suggestions.extend(
+            self._suggestion_row(
+                kind="proxy_generated_failure",
+                component="Squid upstream connectivity",
+                severity="high" if int(row[1] or 0) >= 10 else "medium",
+                title="Repeated proxy-generated upstream failure observed",
+                subject=str(row[0] or ""),
+                count=int(row[1] or 0),
+                clients=int(row[2] or 0),
+                last_seen=int(row[3] or 0),
+                confidence="high",
+                recommended_action="Inspect destination connectivity, DNS, parent-proxy routing, and Squid cache logs. Repeated proxy-generated 502/503/504 responses are not evidence for a no-bump exception.",
+                evidence=f"Repeated {row[5] or 'proxy 5xx'} from {row[6] or 'Squid'}; sample URL={row[4] or 'not captured'}",
+            )
+            for row in proxy_failure_rows
         )
 
         def add_icap_suggestions(

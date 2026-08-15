@@ -61,6 +61,7 @@ def _request_row(
         "",
         "",
         "",
+        "",
         f"raw {seq}",
         ts + 1,
     )
@@ -141,8 +142,8 @@ def _seed_observability_rows(conn, *, center: int = 1_800_000_000) -> None:
             result_code, http_status, bytes, master_xaction, hierarchy_status, bump_mode,
             sni, tls_server_version, tls_server_cipher, tls_client_version, tls_client_cipher,
             host, user_agent, referer, exclusion_rule, ssl_exception, webfilter_allow,
-            cache_bypass, raw, created_ts
-        ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            cache_bypass, file_security_policy, raw, created_ts
+        ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         request_rows,
     )
@@ -228,7 +229,7 @@ def test_mysql_nearest_observability_readers_use_sargable_index_ranges(
             SELECT ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                   ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
+                   ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
                    response_cf_mitigated, response_alt_svc, id
             FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_domain_ts_id)
             WHERE proxy_id = %s AND domain = %s AND ts BETWEEN %s AND %s
@@ -243,7 +244,7 @@ def test_mysql_nearest_observability_readers_use_sargable_index_ranges(
             SELECT ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                   ssl_exception, webfilter_allow, cache_bypass, response_content_type, response_server,
+                   ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
                    response_cf_mitigated, response_alt_svc, id
             FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_domain_ts_id)
             WHERE proxy_id = %s AND domain = %s AND ts > %s AND ts <= %s

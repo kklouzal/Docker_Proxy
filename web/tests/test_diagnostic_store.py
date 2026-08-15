@@ -108,6 +108,7 @@ def _candidate_request_row(
         "",
         "",
         "",
+        "file_security_risky_extension",
         "text/html",
         "origin",
         "",
@@ -1037,6 +1038,7 @@ def test_normalized_request_row_preserves_response_metadata() -> None:
             "",
             "",
             "",
+            "file_security_risky_extension",
             "text/html",
             "cloudflare",
             "challenge",
@@ -1077,6 +1079,7 @@ def test_list_recent_requests_selects_response_metadata(monkeypatch) -> None:
         "",
         "",
         "",
+        "file_security_risky_extension",
         "text/html",
         "cloudflare",
         "challenge",
@@ -1465,6 +1468,7 @@ def test_request_parser_captures_remediation_response_metadata() -> None:
         "",
         "",
         "",
+        "file_security_risky_extension",
         "text/html",
         "cloudflare",
         "challenge",
@@ -1475,10 +1479,59 @@ def test_request_parser_captures_remediation_response_metadata() -> None:
     parsed = DiagnosticStore()._parse_request_log_line(line)
 
     assert parsed is not None
+    assert parsed["file_security_policy"] == "file_security_risky_extension"
     assert parsed["response_content_type"] == "text/html"
     assert parsed["response_server"] == "cloudflare"
     assert parsed["response_cf_mitigated"] == "challenge"
     assert parsed["response_alt_svc"].startswith("h3=")
+
+
+def test_file_security_note_materializes_structured_policy_tag() -> None:
+    from services.diagnostic_store import DiagnosticStore  # type: ignore
+
+    fields = [
+        "1710000010",
+        "1",
+        "10.0.0.8",
+        "GET",
+        "https://downloads.example/OAWrapper.exe",
+        "TCP_DENIED/403",
+        "512",
+        "tx-file-policy",
+        "HIER_NONE",
+        "bump",
+        "downloads.example",
+        "",
+        "",
+        "",
+        "",
+        "downloads.example",
+        "NvBackend/43.4.0.0",
+        "-",
+        "",
+        "",
+        "",
+        "",
+        "file_security_risky_extension",
+        "text/html",
+        "squid/7.1",
+        "",
+        "",
+    ]
+
+    parsed = DiagnosticStore()._parse_request_log_line("\t".join(fields))
+
+    assert parsed is not None
+    assert parsed["file_security_policy"] == "file_security_risky_extension"
+    from services.diagnostic_store import _policy_tags
+
+    assert _policy_tags(
+        exclusion_rule="",
+        ssl_exception="",
+        webfilter_allow="",
+        cache_bypass="",
+        file_security_policy=parsed["file_security_policy"],
+    ) == ["file_security:file_security_risky_extension"]
 
 
 def test_split_tsv_normalizes_escaped_delimiters_when_quoted_field_contains_real_tab():
