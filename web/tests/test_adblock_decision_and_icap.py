@@ -1460,13 +1460,16 @@ def test_adblock_icap_server_allows_connect_authority_requests(tmp_path: Path) -
     log_path = tmp_path / "cicap-access.log"
 
     from services.adblock_decision import AdblockDecisionEngine
+    from services.helper_runtime import HelperStats
     from tools.adblock_icap_server import _AdblockIcapServer
 
+    stats = HelperStats("test", emit_interval_seconds=3600)
     server = _AdblockIcapServer(
         ("127.0.0.1", 0),
         engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
         access_log_path=str(log_path),
         max_request_bytes=65536,
+        stats=stats,
     )
     port = int(server.server_address[1])
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1491,6 +1494,50 @@ def test_adblock_icap_server_allows_connect_authority_requests(tmp_path: Path) -
         assert b"Connection: close" not in icap_header
         assert b"HTTP/1.1 403 Forbidden" not in response
         assert not log_path.exists()
+        assert stats.counters == {"unsupported_http_method": 1, "allowed": 1}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_adblock_icap_server_fail_opens_unsupported_http_method(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+    log_path = tmp_path / "cicap-access.log"
+
+    from services.adblock_decision import AdblockDecisionEngine
+    from services.helper_runtime import HelperStats
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    stats = HelperStats("test", emit_interval_seconds=3600)
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
+        access_log_path=str(log_path),
+        max_request_bytes=65536,
+        stats=stats,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        http = b"TRACE http://ads.example/ HTTP/1.1\r\nHost: ads.example\r\n\r\n"
+        req = (
+            b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Encapsulated: req-hdr=0, null-body="
+            + str(len(http)).encode("ascii")
+            + b"\r\n\r\n"
+            + http
+        )
+
+        response = _send_icap(port, req)
+
+        assert response.startswith(b"ICAP/1.0 204")
+        assert b"HTTP/1.1 403 Forbidden" not in response
+        assert not log_path.exists()
+        assert stats.counters == {"unsupported_http_method": 1, "allowed": 1}
     finally:
         server.shutdown()
         server.server_close()

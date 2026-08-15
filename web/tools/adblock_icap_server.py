@@ -25,6 +25,7 @@ if str(app_root) not in sys.path:
     sys.path.insert(0, str(app_root))
 
 from services.adblock_decision import (  # noqa: E402
+    SUPPORTED_REQUEST_METHODS,
     AdblockDecision,
     AdblockDecisionEngine,
 )
@@ -662,10 +663,12 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
                     return
                 continue
 
-            # CONNECT exposes only a tunnel authority, without URL/resource or
-            # first-/third-party context. Fail open for legacy Squid configs
-            # while upgraded routing excludes CONNECT before ICAP.
-            if http_method == "CONNECT":
+            # Current Squid routing sends only this method set to adblock. Fail
+            # open, with distinct attribution, if a legacy/custom config sends
+            # CONNECT or another unsupported method rather than applying a
+            # generic URL rule under semantics the engine does not support.
+            if http_method not in SUPPORTED_REQUEST_METHODS:
+                self.server.increment_stat("unsupported_http_method")
                 self.server.increment_stat("allowed")
                 if not _send_icap_response(self.request, _allow_response(close=close)):
                     return

@@ -56,15 +56,17 @@ _NON_BLOCKING_MODIFIER_OPTIONS = {
 }
 _COMMON_SECOND_LEVEL_PUBLIC_SUFFIXES = {"ac", "co", "com", "edu", "gov", "net", "org"}
 # uBO's method= option is limited to the DNR request-method set.
-_SUPPORTED_METHOD_OPTIONS = {
-    "DELETE",
-    "GET",
-    "HEAD",
-    "OPTIONS",
-    "PATCH",
-    "POST",
-    "PUT",
-}
+SUPPORTED_REQUEST_METHODS = frozenset(
+    {
+        "DELETE",
+        "GET",
+        "HEAD",
+        "OPTIONS",
+        "PATCH",
+        "POST",
+        "PUT",
+    },
+)
 
 
 @dataclass(frozen=True)
@@ -492,13 +494,13 @@ class AdblockDecisionEngine:
                 option_value = str(item or "").strip().upper()
                 excluded = option_value.startswith("~")
                 option_method = option_value[1:] if excluded else option_value
-                if option_method not in _SUPPORTED_METHOD_OPTIONS:
+                if option_method not in SUPPORTED_REQUEST_METHODS:
                     return False
                 target = excluded_methods if excluded else included_methods
                 target.add(option_method)
 
             request_method = _normalize_method(method)
-            if request_method not in _SUPPORTED_METHOD_OPTIONS:
+            if request_method not in SUPPORTED_REQUEST_METHODS:
                 return False
             if included_methods and request_method not in included_methods:
                 return False
