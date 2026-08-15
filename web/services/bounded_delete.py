@@ -2,10 +2,10 @@ from __future__ import annotations
 
 # ruff: noqa: S608
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from services.runtime_helpers import env_int
 from services.sql_identifiers import quote_mysql_identifier
 
 logger = logging.getLogger(__name__)
@@ -46,14 +46,6 @@ class BoundedDeleteIncompleteError(RuntimeError):
         self.outcome_uncertain = bool(outcome_uncertain)
         self.cause = cause
         super().__init__(str(cause) or cause.__class__.__name__)
-
-
-def env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
-    try:
-        value = int((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = int(default)
-    return max(int(minimum), min(int(maximum), value))
 
 
 def default_chunk_size() -> int:

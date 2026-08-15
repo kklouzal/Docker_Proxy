@@ -15,6 +15,7 @@ from services.bounded_delete import (
 )
 from services.db import DATABASE_ERRORS, connect, mysql_error_code, table_exists
 from services.observability_maintenance import public_detail
+from services.runtime_helpers import env_int as _env_int
 from services.sql_identifiers import quote_mysql_identifier
 from services.webcat_hygiene import cleanup_stale_webcat_build_tables
 
@@ -153,14 +154,6 @@ class PolicyExceptionExpiryResult(BoundedDeleteResult):
     queue_attempts: int = 0
     queue_failures: int = 0
     queue_failure_detail: str = ""
-
-
-def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
-    try:
-        value = int((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = int(default)
-    return max(int(minimum), min(int(maximum), value))
 
 
 def normalize_control_plane_retention_days(value: object) -> int:
@@ -495,9 +488,7 @@ def _expire_policy_exceptions(*, now_ts: int) -> PolicyExceptionExpiryResult:
                 row_id = int(_row_value(row, "id", 0, 0) or 0)
                 if row_id <= 0:
                     continue
-                proxy_id = (
-                    str(_row_value(row, "proxy_id", 1, "") or "").strip().lower()
-                )
+                proxy_id = str(_row_value(row, "proxy_id", 1, "") or "").strip().lower()
                 ids_by_proxy.setdefault(proxy_id, []).append(row_id)
 
             updated = 0

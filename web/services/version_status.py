@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.runtime_helpers import env_float as _env_float
+from services.runtime_helpers import env_int as _env_int
 
 UNKNOWN_VALUE = "unknown"
 DEFAULT_GITHUB_REPOSITORY = "kklouzal/Docker_Proxy"
@@ -51,14 +52,6 @@ def _short_commit(value: object | None) -> str:
     if not raw:
         return UNKNOWN_VALUE
     return raw[:12]
-
-
-def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
-    try:
-        value = int(_clean(os.environ.get(name)) or default)
-    except Exception:
-        value = int(default)
-    return max(int(minimum), min(int(maximum), value))
 
 
 def _validated_compare_summary(compare: dict[str, Any]) -> tuple[str, int, int]:
