@@ -1269,6 +1269,84 @@ def test_webcat_domain_normalization_is_shared_and_idna() -> None:
     assert webcat_build._norm_domain("bad..example") == ""
 
 
+@pytest.mark.parametrize("bad_value", [None, "", "invalid", "0", "-1"])
+def test_extraction_limits_fallback_for_missing_or_invalid_positive_values(
+    monkeypatch: pytest.MonkeyPatch, bad_value: str | None
+) -> None:
+    webcat_build = _import_webcat_build()
+    names_and_defaults = (
+        ("WEBCAT_MAX_EXTRACT_BYTES", webcat_build._DEFAULT_MAX_EXTRACT_BYTES),
+        ("WEBCAT_MAX_EXTRACT_MEMBERS", webcat_build._DEFAULT_MAX_EXTRACT_MEMBERS),
+        ("WEBCAT_MAX_EXTRACT_PATH_CHARS", webcat_build._DEFAULT_MAX_EXTRACT_PATH_CHARS),
+    )
+    for name, _default in names_and_defaults:
+        if bad_value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, bad_value)
+    assert webcat_build._extract_limits() == tuple(
+        default for _name, default in names_and_defaults
+    )
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [
+        (None, 10_000),
+        ("", 10_000),
+        ("invalid", 10_000),
+        ("0", 500),
+        ("-1", 500),
+        ("499", 500),
+        ("500", 500),
+        ("20000", 20_000),
+        ("20001", 20_000),
+    ],
+)
+def test_db_batch_size_uses_default_and_bounds(
+    monkeypatch: pytest.MonkeyPatch, env_value: str | None, expected: int
+) -> None:
+    webcat_build = _import_webcat_build()
+    if env_value is None:
+        monkeypatch.delenv("WEBCAT_DB_BATCH_SIZE", raising=False)
+    else:
+        monkeypatch.setenv("WEBCAT_DB_BATCH_SIZE", env_value)
+    assert webcat_build._db_batch_size() == expected
+
+
+def test_connect_timeout_env_uses_defaults_minimums_and_config_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    webcat_build = _import_webcat_build()
+    from services.db import DatabaseConfig  # type: ignore
+
+    cfg = DatabaseConfig(
+        host="db",
+        port=3306,
+        user="user",
+        password="password",
+        database="db",
+        connect_timeout=40,
+        read_timeout=20,
+        write_timeout=400,
+    )
+    monkeypatch.setattr(webcat_build, "resolve_database_config", lambda: cfg)
+    captured = {}
+    monkeypatch.setattr(
+        webcat_build, "connect", lambda *, config: captured.setdefault("config", config)
+    )
+    monkeypatch.setenv("WEBCAT_MYSQL_CONNECT_TIMEOUT", "0")
+    monkeypatch.setenv("WEBCAT_MYSQL_READ_TIMEOUT", "invalid")
+    monkeypatch.setenv("WEBCAT_MYSQL_WRITE_TIMEOUT", "1")
+
+    webcat_build._connect()
+
+    resolved = captured["config"]
+    assert resolved.connect_timeout == 40
+    assert resolved.read_timeout == 300
+    assert resolved.write_timeout == 400
+
+
 def test_build_db_stages_then_renames_without_deleting_live_tables(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

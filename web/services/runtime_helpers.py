@@ -375,11 +375,20 @@ def env_int(
     *,
     minimum: int | None = None,
     maximum: int | None = None,
+    fallback_on_out_of_range: bool = False,
 ) -> int:
+    default_value = int(default)
     try:
-        value = int((os.environ.get(name) or str(default)).strip() or str(default))
+        value = int(
+            (os.environ.get(name) or str(default_value)).strip() or str(default_value)
+        )
     except Exception:
-        value = int(default)
+        value = default_value
+    if fallback_on_out_of_range and (
+        (minimum is not None and value < int(minimum))
+        or (maximum is not None and value > int(maximum))
+    ):
+        value = default_value
     if minimum is not None:
         value = max(int(minimum), value)
     if maximum is not None:

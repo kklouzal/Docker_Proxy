@@ -38,6 +38,7 @@ from services.download_safety import (  # noqa: E402
     open_download_url,
     validate_download_url,
 )
+from services.runtime_helpers import env_int  # noqa: E402
 from services.runtime_helpers import now_ts as _now  # noqa: E402
 
 if TYPE_CHECKING:
@@ -272,22 +273,12 @@ _DEFAULT_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 
 
 def _download_max_bytes() -> int:
-    try:
-        max_bytes = int(
-            (
-                os.environ.get(
-                    "WEBCAT_MAX_DOWNLOAD_BYTES",
-                    str(_DEFAULT_MAX_DOWNLOAD_BYTES),
-                )
-                or str(_DEFAULT_MAX_DOWNLOAD_BYTES)
-            ).strip()
-            or str(_DEFAULT_MAX_DOWNLOAD_BYTES),
-        )
-    except Exception:
-        return _DEFAULT_MAX_DOWNLOAD_BYTES
-    if max_bytes <= 0:
-        return _DEFAULT_MAX_DOWNLOAD_BYTES
-    return max_bytes
+    return env_int(
+        "WEBCAT_MAX_DOWNLOAD_BYTES",
+        _DEFAULT_MAX_DOWNLOAD_BYTES,
+        minimum=1,
+        fallback_on_out_of_range=True,
+    )
 
 
 def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
@@ -443,21 +434,14 @@ _DEFAULT_MAX_EXTRACT_MEMBERS = 100_000
 _DEFAULT_MAX_EXTRACT_PATH_CHARS = 4_096
 
 
-def _positive_int_env(name: str, default: int) -> int:
-    try:
-        value = int((os.environ.get(name, str(default)) or str(default)).strip())
-    except Exception:
-        return default
-    return value if value > 0 else default
-
-
 def _extract_limits() -> tuple[int, int, int]:
-    return (
-        _positive_int_env("WEBCAT_MAX_EXTRACT_BYTES", _DEFAULT_MAX_EXTRACT_BYTES),
-        _positive_int_env("WEBCAT_MAX_EXTRACT_MEMBERS", _DEFAULT_MAX_EXTRACT_MEMBERS),
-        _positive_int_env(
-            "WEBCAT_MAX_EXTRACT_PATH_CHARS", _DEFAULT_MAX_EXTRACT_PATH_CHARS
-        ),
+    return tuple(
+        env_int(name, default, minimum=1, fallback_on_out_of_range=True)
+        for name, default in (
+            ("WEBCAT_MAX_EXTRACT_BYTES", _DEFAULT_MAX_EXTRACT_BYTES),
+            ("WEBCAT_MAX_EXTRACT_MEMBERS", _DEFAULT_MAX_EXTRACT_MEMBERS),
+            ("WEBCAT_MAX_EXTRACT_PATH_CHARS", _DEFAULT_MAX_EXTRACT_PATH_CHARS),
+        )
     )
 
 
@@ -667,26 +651,21 @@ def _webcat_db_is_current(*, source_sha256: str) -> bool:
         return False
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        value = int((os.environ.get(name) or str(default)).strip() or str(default))
-    except Exception:
-        value = int(default)
-    return max(1, value)
-
-
 def _connect():
     cfg = resolve_database_config()
     cfg = replace(
         cfg,
         connect_timeout=max(
             cfg.connect_timeout,
-            _env_int("WEBCAT_MYSQL_CONNECT_TIMEOUT", 30),
+            env_int("WEBCAT_MYSQL_CONNECT_TIMEOUT", 30, minimum=1),
         ),
-        read_timeout=max(cfg.read_timeout, _env_int("WEBCAT_MYSQL_READ_TIMEOUT", 300)),
+        read_timeout=max(
+            cfg.read_timeout,
+            env_int("WEBCAT_MYSQL_READ_TIMEOUT", 300, minimum=1),
+        ),
         write_timeout=max(
             cfg.write_timeout,
-            _env_int("WEBCAT_MYSQL_WRITE_TIMEOUT", 300),
+            env_int("WEBCAT_MYSQL_WRITE_TIMEOUT", 300, minimum=1),
         ),
     )
     return connect(config=cfg)
@@ -759,6 +738,15 @@ def _cleanup_stale_build_tables(conn, *, current_suffix: str) -> None:
         return
 
 
+def _db_batch_size() -> int:
+    return env_int(
+        "WEBCAT_DB_BATCH_SIZE",
+        10_000,
+        minimum=500,
+        maximum=20_000,
+    )
+
+
 def _build_db(
     pairs: Iterable[tuple[str, str]],
     *,
@@ -783,13 +771,7 @@ def _build_db(
         )
     }
 
-    try:
-        batch_size = int(
-            (os.environ.get("WEBCAT_DB_BATCH_SIZE") or "10000").strip() or "10000",
-        )
-    except Exception:
-        batch_size = 10000
-    batch_size = max(500, min(20000, batch_size))
+    batch_size = _db_batch_size()
 
     domain_insert_sql = f"INSERT INTO {_quote_table_name(stages['webcat_domains'])}(domain, categories) VALUES(%s,%s)"
     category_insert_sql = f"INSERT INTO {_quote_table_name(stages['webcat_categories'])}(category, domains) VALUES(%s,%s)"
