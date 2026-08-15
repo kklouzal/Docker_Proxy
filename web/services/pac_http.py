@@ -103,6 +103,21 @@ def _forwarded_ip_chain(value: object | None) -> tuple[str, ...]:
     return tuple(addresses)
 
 
+def _ip_matches_networks(
+    parsed: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> bool:
+    candidates = [parsed]
+    mapped_ipv4 = getattr(parsed, "ipv4_mapped", None)
+    if mapped_ipv4 is not None:
+        candidates.append(mapped_ipv4)
+    return any(
+        candidate.version == network.version and candidate in network
+        for candidate in candidates
+        for network in networks
+    )
+
+
 def _forwarded_client_ip(value: object | None) -> str:
     chain = _forwarded_ip_chain(value)
     if not chain:
@@ -110,10 +125,7 @@ def _forwarded_client_ip(value: object | None) -> str:
     trusted_networks = _trusted_pac_header_networks()
     for address in reversed(chain):
         parsed = ipaddress.ip_address(address)
-        if not any(
-            parsed.version == network.version and parsed in network
-            for network in trusted_networks
-        ):
+        if not _ip_matches_networks(parsed, trusted_networks):
             return address
     return chain[0]
 
