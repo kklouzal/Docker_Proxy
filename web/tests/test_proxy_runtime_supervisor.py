@@ -192,6 +192,34 @@ def test_runtime_lock_flock_failure_closes_open_handle(monkeypatch, tmp_path) ->
     assert handle.closed is True
 
 
+def test_manual_rollback_uses_sync_transaction_lock(monkeypatch, tmp_path) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    lock_events: list[str] = []
+
+    @contextlib.contextmanager
+    def fake_lock(name, thread_lock):
+        assert name == "sync"
+        assert thread_lock is runtime_module._SYNC_CONTROL_LOCK
+        lock_events.append("enter")
+        try:
+            yield
+        finally:
+            lock_events.append("exit")
+
+    monkeypatch.setattr(runtime_module, "_exclusive_runtime_lock", fake_lock)
+    runtime._rollback_last_known_good_config_locked = lambda **_kwargs: (
+        lock_events.append("rollback")
+        or {"ok": True, "changed": True, "rolled_back": True}
+    )
+
+    result = runtime.rollback_last_known_good_config(reason="operator")
+
+    assert result["ok"] is True
+    assert lock_events == ["enter", "rollback", "exit"]
+
+
 def _cp(returncode: int, stdout: str = "", stderr: str = ""):
     return SimpleNamespace(
         returncode=returncode,
@@ -3193,6 +3221,171 @@ def test_squid_controller_apply_stages_config_with_atomic_writes(
     assert "# new" in persisted_conf.read_text(encoding="utf-8")
 
 
+def test_squid_controller_config_transactions_are_exclusive_and_ordered(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from services.squid_core import SquidController  # type: ignore
+
+    squid_conf = tmp_path / "squid.conf"
+    persisted_conf = tmp_path / "persisted.conf"
+    squid_conf.write_text("workers 1\n# old\n", encoding="utf-8")
+    controller = SquidController(str(squid_conf))
+    controller.persisted_squid_conf_path = str(persisted_conf)
+    controller.normalize_config_text = lambda text: text
+    controller.validate_config_text = lambda _text: (True, "validated")
+
+    entered = threading.Event()
+    release = threading.Event()
+    events: list[str] = []
+    active = 0
+    max_active = 0
+
+    def materialize(config_text, **_kwargs):
+        nonlocal active, max_active
+        marker = "first" if "first" in config_text else "second"
+        active += 1
+        max_active = max(max_active, active)
+        events.append(f"materialize:{marker}")
+        if marker == "first":
+            entered.set()
+            assert release.wait(timeout=2.0)
+        active -= 1
+        return True, "runtime current"
+
+    controller._materialize_clamav_runtime_files_locked = materialize
+    controller._reconfigure_squid_locked = lambda **_kwargs: (
+        events.append("reload") or (True, "reconfigured")
+    )
+    original_persist = controller._persist_good_config
+    controller._persist_good_config = lambda text: (
+        events.append("persist") or original_persist(text)
+    )
+
+    results: list[tuple[bool, str]] = []
+    first = threading.Thread(
+        target=lambda: results.append(
+            controller.apply_config_text("workers 1\n# first\n"),
+        ),
+        daemon=True,
+    )
+    second = threading.Thread(
+        target=lambda: results.append(
+            controller.apply_config_text("workers 1\n# second\n"),
+        ),
+        daemon=True,
+    )
+    first.start()
+    assert entered.wait(timeout=1.0)
+    second.start()
+    assert "materialize:second" not in events
+    release.set()
+    first.join(timeout=2.0)
+    second.join(timeout=2.0)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert max_active == 1
+    assert events == [
+        "materialize:first",
+        "reload",
+        "persist",
+        "materialize:second",
+        "reload",
+        "persist",
+    ]
+    assert all(ok for ok, _detail in results)
+    assert "# second" in squid_conf.read_text(encoding="utf-8")
+    assert "# second" in persisted_conf.read_text(encoding="utf-8")
+
+
+def test_squid_controller_apply_restores_config_and_runtime_after_mutation_error(
+    tmp_path,
+) -> None:
+    from services.squid_core import SquidController  # type: ignore
+
+    squid_conf = tmp_path / "squid.conf"
+    persisted_conf = tmp_path / "persisted.conf"
+    squid_conf.write_text("workers 1\n# current\n", encoding="utf-8")
+    persisted_conf.write_text("workers 1\n# current\n", encoding="utf-8")
+    controller = SquidController(str(squid_conf))
+    controller.persisted_squid_conf_path = str(persisted_conf)
+    controller.normalize_config_text = lambda text: text
+    controller.validate_config_text = lambda _text: (True, "validated")
+    state = {"runtime": "current"}
+
+    def fail_after_runtime_mutation(_text, **_kwargs):
+        state["runtime"] = "candidate"
+        return False, "runtime mutation failed"
+
+    controller._materialize_clamav_runtime_files_locked = fail_after_runtime_mutation
+    controller._snapshot_runtime_file = lambda _path: state["runtime"]
+    controller._snapshot_managed_icap_runtime_files = lambda: {
+        "runtime": state["runtime"],
+    }
+    controller._restore_runtime_file_snapshot = lambda _path, snapshot: state.update(
+        runtime=snapshot,
+    )
+    controller._restore_managed_icap_runtime_files = lambda snapshot: state.update(
+        runtime=snapshot["runtime"],
+    )
+    controller._supervisor_reread_update = lambda: (True, "runtime restored")
+
+    def restore_after_runtime_failure(**_kwargs):
+        squid_conf.write_text("workers 1\n# current\n", encoding="utf-8")
+        return False, "rolled back"
+
+    controller._restore_last_known_good_config_locked = restore_after_runtime_failure
+
+    ok, detail = controller.apply_config_text("workers 1\n# candidate\n")
+
+    assert ok is False
+    assert "rolled back" in detail
+    assert state["runtime"] == "current"
+    assert squid_conf.read_text(encoding="utf-8") == "workers 1\n# current\n"
+    assert persisted_conf.read_text(encoding="utf-8") == "workers 1\n# current\n"
+
+
+def test_squid_controller_apply_persist_failure_rolls_back_active_transaction(
+    tmp_path,
+) -> None:
+    from services.squid_core import SquidController  # type: ignore
+
+    squid_conf = tmp_path / "squid.conf"
+    persisted_conf = tmp_path / "persisted.conf"
+    squid_conf.write_text("workers 1\n# current\n", encoding="utf-8")
+    persisted_conf.write_text("workers 1\n# current\n", encoding="utf-8")
+    controller = SquidController(str(squid_conf))
+    controller.persisted_squid_conf_path = str(persisted_conf)
+    controller.normalize_config_text = lambda text: text
+    controller.validate_config_text = lambda _text: (True, "validated")
+    controller._materialize_clamav_runtime_files_locked = lambda *_args, **_kwargs: (
+        True,
+        "runtime current",
+    )
+    controller._reconfigure_squid_locked = lambda **_kwargs: (True, "reconfigured")
+    controller._persist_good_config = lambda _text: (_ for _ in ()).throw(
+        OSError("persist failed"),
+    )
+    rollback_calls: list[str] = []
+
+    def rollback(*, reason, fallback_config):
+        rollback_calls.append(reason)
+        squid_conf.write_text(fallback_config, encoding="utf-8")
+        return False, "restored pre-change config after persist failure"
+
+    controller._restore_last_known_good_config_locked = rollback
+
+    ok, detail = controller.apply_config_text("workers 1\n# candidate\n")
+
+    assert ok is False
+    assert rollback_calls
+    assert rollback_calls[0]
+    assert "restored pre-change" in detail
+    assert squid_conf.read_text(encoding="utf-8") == "workers 1\n# current\n"
+    assert persisted_conf.read_text(encoding="utf-8") == "workers 1\n# current\n"
+
+
 def test_squid_controller_atomic_write_preserves_existing_file_mode(tmp_path) -> None:
     from services.squid_core import SquidController  # type: ignore
 
@@ -3374,13 +3567,13 @@ def test_clamav_runtime_supervisor_update_restarts_squid_with_accept_only_probe(
     controller._wait_for_icap_readiness = lambda *, timeout: (True, "OPTIONS ready")
 
     def restart_squid(**kwargs):
-        calls.append(("restart_squid", kwargs))
+        calls.append(("restart_squid_locked", kwargs))
         return (
             True,
             "Squid HTTP listener is accepting connections and ICAP readiness is green.",
         )
 
-    controller.restart_squid = restart_squid
+    controller._restart_squid_locked = restart_squid
 
     ok, detail = controller.materialize_clamav_runtime_files(
         "workers 1\nhttp_port 3128\n",
@@ -3389,7 +3582,7 @@ def test_clamav_runtime_supervisor_update_restarts_squid_with_accept_only_probe(
 
     assert ok is True
     assert (
-        "restart_squid",
+        "restart_squid_locked",
         {"ready_timeout": 75.0, "require_http_response": False},
     ) in calls
     assert "Squid restarted after ICAP supervisor update." in detail

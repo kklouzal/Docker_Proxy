@@ -2415,6 +2415,23 @@ class ProxyRuntime:
         }
 
     def rollback_last_known_good_config(self, *, reason: str = "") -> dict[str, Any]:
+        try:
+            with _exclusive_runtime_lock("sync", _SYNC_CONTROL_LOCK):
+                return self._rollback_last_known_good_config_locked(reason=reason)
+        except _RuntimeLockError as exc:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "rolled_back": False,
+                "detail": str(exc),
+            }
+
+    def _rollback_last_known_good_config_locked(
+        self,
+        *,
+        reason: str = "",
+    ) -> dict[str, Any]:
         self._invalidate_health_cache()
         ok, detail = self.controller.restore_last_known_good_config(
             reason=reason or "Rollback requested.",
