@@ -9,6 +9,7 @@ import time
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from ipaddress import IPv6Address, ip_address
+from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 from services.db import (
@@ -18,6 +19,7 @@ from services.db import (
     mysql_error_code,
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
+    table_exists,
 )
 from services.proxy_context import get_default_proxy_id, normalize_proxy_id
 from services.proxy_lifecycle import (
@@ -51,6 +53,19 @@ from services.runtime_helpers import authority_has_empty_explicit_port
 
 def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
     return mysql_error_code(exc) in codes
+
+
+def _seed_new_proxy_adblock_runtime_default(conn: Any, proxy_id: str) -> None:
+    """Disable adblock for a new proxy when the feature schema is present."""
+    # Registry-only/lifecycle tests and partial deployments may initialize
+    # proxy_instances without the optional adblock runtime tables. Probe that
+    # exact capability rather than broadly suppressing database write errors.
+    if not table_exists(conn, "adblock_proxy_meta"):
+        return
+    conn.execute(
+        "INSERT IGNORE INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,'enabled','0')",
+        (proxy_id,),
+    )
 
 
 @dataclass
@@ -632,10 +647,7 @@ class ProxyRegistry:
                         now,
                     ),
                 )
-                conn.execute(
-                    "INSERT IGNORE INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,'enabled','0')",
-                    (proxy_key,),
-                )
+                _seed_new_proxy_adblock_runtime_default(conn, proxy_key)
                 row = {
                     "proxy_id": proxy_key,
                     "display_name": (display_name or proxy_key).strip() or proxy_key,

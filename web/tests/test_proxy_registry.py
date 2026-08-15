@@ -837,6 +837,43 @@ def test_new_proxy_runtime_adblock_default_is_explicitly_disabled(tmp_path) -> N
     assert str(row["v"]) == "0"
 
 
+def test_new_proxy_adblock_default_skips_only_absent_feature_table(
+    monkeypatch,
+) -> None:
+    proxy_registry = _proxy_registry()
+    import pymysql  # type: ignore
+
+    class Conn:
+        def __init__(self, error_code: int | None = None) -> None:
+            self.error_code = error_code
+            self.statements: list[tuple[str, tuple[object, ...]]] = []
+
+        def execute(self, sql, params=()):
+            self.statements.append((str(sql), tuple(params)))
+            if self.error_code is not None:
+                raise pymysql.OperationalError(self.error_code, "injected failure")
+
+    missing = Conn()
+    monkeypatch.setattr(proxy_registry, "table_exists", lambda *_args: False)
+    proxy_registry._seed_new_proxy_adblock_runtime_default(missing, "edge-a")
+    assert missing.statements == []
+
+    available = Conn()
+    monkeypatch.setattr(proxy_registry, "table_exists", lambda *_args: True)
+    proxy_registry._seed_new_proxy_adblock_runtime_default(available, "edge-a")
+    assert available.statements == [
+        (
+            "INSERT IGNORE INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,'enabled','0')",
+            ("edge-a",),
+        ),
+    ]
+
+    broken = Conn(1054)
+    with pytest.raises(pymysql.OperationalError) as exc_info:
+        proxy_registry._seed_new_proxy_adblock_runtime_default(broken, "edge-a")
+    assert exc_info.value.args[0] == 1054
+
+
 def test_ensure_existing_proxy_preserves_explicit_runtime_adblock_state(
     tmp_path,
 ) -> None:
