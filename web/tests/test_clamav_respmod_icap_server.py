@@ -4349,6 +4349,44 @@ def test_slow_clamd_scan_fails_closed_with_error_payload() -> None:
     assert b"clamd INSTREAM scan timed out" in response
 
 
+@pytest.mark.parametrize("name", ["CLAMAV_REQUIRED", "FILE_SECURITY_AV_REQUIRED"])
+@pytest.mark.parametrize(
+    ("value", "expected_fail_open"),
+    [
+        (None, True),
+        ("", True),
+        ("optional", True),
+        ("false", True),
+        ("required", False),
+        ("true", False),
+        ("malformed-required-mode", False),
+    ],
+)
+def test_respmod_runtime_args_security_required_mode_is_fail_closed(
+    monkeypatch, name: str, value: str | None, expected_fail_open: bool
+) -> None:
+    server = _load_server()
+    monkeypatch.delenv("CLAMAV_REQUIRED", raising=False)
+    monkeypatch.delenv("FILE_SECURITY_AV_REQUIRED", raising=False)
+    if value is not None:
+        monkeypatch.setenv(name, value)
+
+    args = server._parse_args([])
+
+    assert args.fail_open is expected_fail_open
+
+
+def test_respmod_runtime_args_explicit_fail_mode_overrides_environment(
+    monkeypatch,
+) -> None:
+    server = _load_server()
+    monkeypatch.setenv("CLAMAV_REQUIRED", "malformed-required-mode")
+
+    assert server._parse_args(["--fail-open"]).fail_open is True
+    monkeypatch.setenv("CLAMAV_REQUIRED", "optional")
+    assert server._parse_args(["--fail-closed"]).fail_open is False
+
+
 def test_respmod_runtime_args_bound_clients_and_concurrency(monkeypatch) -> None:
     server = _load_server()
     monkeypatch.setenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", "0.05")

@@ -28,7 +28,7 @@ app_root = Path(__file__).resolve().parent.parent
 if str(app_root) not in sys.path:
     sys.path.insert(0, str(app_root))
 
-from services.runtime_helpers import env_float, env_int  # noqa: E402
+from services.runtime_helpers import env_float, env_int, security_env_bool  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -117,13 +117,6 @@ class _BoundedWarning:
 
 
 scan_error_warning = _BoundedWarning()
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
@@ -1444,8 +1437,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fail-open", dest="fail_open", action="store_true")
     parser.add_argument("--fail-closed", dest="fail_open", action="store_false")
     parser.set_defaults(
-        fail_open=not _env_bool("CLAMAV_REQUIRED")
-        and not _env_bool("FILE_SECURITY_AV_REQUIRED")
+        fail_open=not security_env_bool("CLAMAV_REQUIRED", default=False)
+        and not security_env_bool("FILE_SECURITY_AV_REQUIRED", default=False)
     )
     args = parser.parse_args(argv)
     args.client_timeout = max(0.1, args.client_timeout)
