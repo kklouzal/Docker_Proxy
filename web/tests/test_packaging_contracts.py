@@ -507,6 +507,8 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
         "PROXY_PUBLIC_PAC_URL: ${LIVE_TEST_REMOTE_PAC_URL:-http://proxy-edge-2/proxy.pac}"
         in remote_proxy_block
     )
+    live_test_runner_block = live_compose.split("\n  live-tests:\n", 1)[1]
+    assert "DEFAULT_PROXY_ID: ${LIVE_TEST_PROXY_ID:-live}" in live_test_runner_block
     assert (
         "--max-allowed-packet=${LIVE_TEST_MYSQL_MAX_ALLOWED_PACKET:-256M}"
         in live_compose

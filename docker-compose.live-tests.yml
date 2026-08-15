@@ -183,6 +183,10 @@ services:
       LIVE_TEST_ENABLE: "1"
       LIVE_TEST_PRIMARY_PROXY_ID: ${LIVE_TEST_PROXY_ID:-live}
       LIVE_TEST_REMOTE_PROXY_ID: ${LIVE_TEST_REMOTE_PROXY_ID:-edge-2}
+      # Direct store assertions run in this process, outside an admin HTTP
+      # request's proxy context. Keep their default scope aligned with the
+      # primary proxy that the live stack registers during admin bootstrap.
+      DEFAULT_PROXY_ID: ${LIVE_TEST_PROXY_ID:-live}
       LIVE_TEST_ADMIN_URL: http://admin-ui:5000
       LIVE_TEST_PROXY_MANAGEMENT_URL: http://proxy:5000
       LIVE_TEST_REMOTE_PROXY_MANAGEMENT_URL: ${LIVE_TEST_REMOTE_PROXY_MANAGEMENT_URL:-http://proxy-edge-2:5000}
