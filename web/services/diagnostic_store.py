@@ -1002,7 +1002,7 @@ class DiagnosticStore:
         while not self._stop_event.is_set():
             try:
                 if not pathlib.Path(path).exists():
-                    time.sleep(max(1.0, poll_interval))
+                    self._stop_event.wait(max(1.0, poll_interval))
                     continue
 
                 st = os.stat(path)
@@ -1122,7 +1122,7 @@ class DiagnosticStore:
                                             )
                                     reopen_from_start = True
                                     break
-                                time.sleep(poll_interval)
+                                self._stop_event.wait(poll_interval)
                                 continue
                             last_complete_line_pos = line_pos
                             last_complete_line = line
@@ -1245,7 +1245,7 @@ class DiagnosticStore:
 
                         cursor_file_version = open_file_version()
                         verify_cursor = True
-                        time.sleep(poll_interval)
+                        self._stop_event.wait(poll_interval)
                     if self._stop_event.is_set():
                         try:
                             flush_pending()
@@ -1263,7 +1263,7 @@ class DiagnosticStore:
                     f"Diagnostic tailer deferred database work for {loop_name} while MySQL is unavailable",
                     exc,
                 )
-                time.sleep(max(5.0, poll_interval))
+                self._stop_event.wait(max(5.0, poll_interval))
             except Exception:
                 log_exception_throttled(
                     logger,
@@ -1271,7 +1271,7 @@ class DiagnosticStore:
                     interval_seconds=300.0,
                     message=f"Diagnostic tailer loop failed for {loop_name}",
                 )
-                time.sleep(max(1.0, poll_interval))
+                self._stop_event.wait(max(1.0, poll_interval))
 
     def _parse_request_log_line(self, line: str) -> dict[str, Any] | None:
         row = _split_tsv(line)

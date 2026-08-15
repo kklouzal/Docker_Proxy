@@ -883,7 +883,7 @@ class SslErrorsStore:
         while not self._stop_event.is_set():
             try:
                 if not pathlib.Path(path).exists():
-                    time.sleep(max(1.0, poll_interval))
+                    self._stop_event.wait(max(1.0, poll_interval))
                     continue
 
                 st = os.stat(path)
@@ -1065,7 +1065,7 @@ class SslErrorsStore:
 
                         cursor_file_version = open_file_version()
                         verify_cursor = True
-                        time.sleep(poll_interval)
+                        self._stop_event.wait(poll_interval)
                     if self._stop_event.is_set():
                         try:
                             flush_pending()
@@ -1083,7 +1083,7 @@ class SslErrorsStore:
                     "SSL errors tailer deferred database work while MySQL is unavailable",
                     exc,
                 )
-                time.sleep(max(5.0, poll_interval))
+                self._stop_event.wait(max(5.0, poll_interval))
             except Exception:
                 log_exception_throttled(
                     logger,
@@ -1091,7 +1091,7 @@ class SslErrorsStore:
                     interval_seconds=300.0,
                     message="SSL errors tailer loop failed",
                 )
-                time.sleep(max(1.0, poll_interval))
+                self._stop_event.wait(max(1.0, poll_interval))
 
     def list_errors(self, limit: int = 200) -> list[dict[str, Any]]:
         self.init_db()

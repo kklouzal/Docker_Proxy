@@ -978,7 +978,7 @@ class LiveStatsStore:
         while not self._stop_event.is_set():
             try:
                 if not pathlib.Path(path).exists():
-                    time.sleep(max(1.0, poll_interval))
+                    self._stop_event.wait(max(1.0, poll_interval))
                     continue
 
                 st = os.stat(path)
@@ -1049,7 +1049,7 @@ class LiveStatsStore:
                                     )
                                     last_commit = now
                             if pending >= max_pending_rows:
-                                time.sleep(poll_interval)
+                                self._stop_event.wait(poll_interval)
                                 continue
                         line = f.readline()
                         if line:
@@ -1166,7 +1166,7 @@ class LiveStatsStore:
                                     )
                             break
 
-                        time.sleep(poll_interval)
+                        self._stop_event.wait(poll_interval)
                     if self._stop_event.is_set():
                         try:
                             flush_pending()
@@ -1184,7 +1184,7 @@ class LiveStatsStore:
                     "Live stats tailer deferred database work while MySQL is unavailable",
                     exc,
                 )
-                time.sleep(max(5.0, poll_interval))
+                self._stop_event.wait(max(5.0, poll_interval))
             except Exception:
                 log_exception_throttled(
                     logger,
@@ -1192,7 +1192,7 @@ class LiveStatsStore:
                     interval_seconds=300.0,
                     message="Live stats tailer loop failed",
                 )
-                time.sleep(max(1.0, poll_interval))
+                self._stop_event.wait(max(1.0, poll_interval))
 
     def _query_rows(self, sql: str, params: tuple[Any, ...]) -> list[Row]:
         with self._connect() as conn:

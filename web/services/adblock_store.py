@@ -10,7 +10,6 @@ import os
 import pathlib
 import re
 import threading
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -465,7 +464,7 @@ class AdblockStore:
                     interval_seconds=300.0,
                     message="Adblock blocklog tailer loop failed",
                 )
-            time.sleep(1.0)
+            self._blocklog_stop_event.wait(1.0)
 
     def _ingest_new_cicap_lines(self, conn) -> None:
         path = self.cicap_access_log_path

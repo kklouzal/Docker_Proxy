@@ -55,7 +55,7 @@ def test_live_stats_tailer_does_not_open_db_connection_while_idle(
             AssertionError("idle tailer opened a DB connection")
         ),
     )
-    monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
 
     with pytest.raises(StopLoop):
         store._tail_loop()
@@ -212,7 +212,7 @@ def test_live_stats_tailer_retains_batch_across_rotation_and_backoff(
     monkeypatch.setattr(store, "_flush_batch_with_conn", flush_batch)
     monkeypatch.setattr(store, "_checkpoint_for_offset", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(live_stats.time, "monotonic", lambda: next(times, 999.0))
-    monkeypatch.setattr(live_stats.time, "sleep", stop_after_retry)
+    monkeypatch.setattr(store._stop_event, "wait", stop_after_retry)
     monkeypatch.setattr(live_stats.pathlib.Path, "exists", lambda _self: True)
     monkeypatch.setattr(
         live_stats.pathlib.Path, "open", lambda *_args, **_kwargs: next_handle()
@@ -255,7 +255,7 @@ def test_live_stats_max_pending_rows_is_at_least_commit_batch(
     monkeypatch.setenv("LIVE_STATS_MAX_PENDING_ROWS", "1")
     monkeypatch.setattr(store, "seed_from_recent_log", lambda: None)
     monkeypatch.setattr(live_stats, "_env_int", recording_env_int)
-    monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
     monkeypatch.setattr(live_stats.pathlib.Path, "exists", lambda _self: False)
 
     with pytest.raises(StopLoop):
@@ -373,7 +373,7 @@ def test_live_stats_capacity_pauses_consumption_instead_of_dropping(
         lambda: (_ for _ in ()).throw(pymysql.err.OperationalError(2003, "down")),
     )
     monkeypatch.setattr(live_stats.pathlib.Path, "open", lambda *_a, **_k: Handle())
-    monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
     monkeypatch.setattr(live_stats, "log_database_unavailable", lambda *_a: None)
 
     with pytest.raises(StopLoop):
@@ -454,7 +454,7 @@ def test_live_stats_commit_cadence_uses_monotonic_time(
     monkeypatch.setattr(
         live_stats.time, "monotonic", lambda: next(monotonic_times, 101.2)
     )
-    monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
     monkeypatch.setattr(
         live_stats.time,
         "time",
@@ -488,7 +488,7 @@ def test_diagnostic_tailer_does_not_open_db_connection_while_idle(
             AssertionError("idle tailer opened a DB connection")
         ),
     )
-    monkeypatch.setattr(diagnostic_store.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
 
     with pytest.raises(StopLoop):
         store._tail_file_loop(
@@ -545,7 +545,7 @@ def test_diagnostic_tailer_keeps_partial_line_until_newline(
     monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "1")
     monkeypatch.setattr(store, "_connect", Conn)
     monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: next(times, 101.0))
-    monkeypatch.setattr(diagnostic_store.time, "sleep", sleep)
+    monkeypatch.setattr(store._stop_event, "wait", sleep)
 
     with pytest.raises(StopLoop):
         store._tail_file_loop(
@@ -592,7 +592,7 @@ def test_diagnostic_tailer_restarts_at_zero_after_copytruncate_regrowth(
 
     monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "10")
     monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: 100.0)
-    monkeypatch.setattr(diagnostic_store.time, "sleep", sleep)
+    monkeypatch.setattr(store._stop_event, "wait", sleep)
 
     with pytest.raises(StopLoop):
         store._tail_file_loop(
@@ -649,7 +649,7 @@ def test_diagnostic_tailer_recovers_when_partial_line_rotates(
     monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "0.25")
     monkeypatch.setattr(store, "_connect", Conn)
     monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: next(times, 102.0))
-    monkeypatch.setattr(diagnostic_store.time, "sleep", sleep)
+    monkeypatch.setattr(store._stop_event, "wait", sleep)
 
     with pytest.raises(StopLoop):
         store._tail_file_loop(
@@ -685,7 +685,7 @@ def test_ssl_errors_tailer_does_not_open_db_connection_while_idle(
             AssertionError("idle tailer opened an unpooled DB connection")
         ),
     )
-    monkeypatch.setattr(ssl_errors_store.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
 
     with pytest.raises(StopLoop):
         store._tail_loop()
@@ -741,7 +741,7 @@ def test_ssl_errors_tailer_keeps_partial_line_until_newline(
         ),
     )
     monkeypatch.setattr(ssl_errors_store.time, "time", lambda: 100.0)
-    monkeypatch.setattr(ssl_errors_store.time, "sleep", sleep)
+    monkeypatch.setattr(store._stop_event, "wait", sleep)
 
     with pytest.raises(StopLoop):
         store._tail_loop()
@@ -801,7 +801,7 @@ def test_ssl_errors_tailer_idle_flush_uses_monotonic_elapsed_time(
         "time",
         lambda: (_ for _ in ()).throw(AssertionError("cadence used wall time")),
     )
-    monkeypatch.setattr(ssl_errors_store.time, "sleep", sleep)
+    monkeypatch.setattr(store._stop_event, "wait", sleep)
 
     with pytest.raises(StopLoop):
         store._tail_loop()
@@ -860,7 +860,7 @@ def test_ssl_errors_tailer_retries_idle_flush_after_database_error(
         "monotonic",
         lambda: next(monotonic_times, 102.3),
     )
-    monkeypatch.setattr(ssl_errors_store.time, "sleep", sleep)
+    monkeypatch.setattr(store._stop_event, "wait", sleep)
 
     with pytest.raises(StopLoop):
         store._tail_loop()
@@ -919,7 +919,7 @@ def test_ssl_errors_tailer_restarts_at_zero_after_copytruncate_regrowth(
         lambda _conn, domain, _category, _reason, _ts, _sample: domains.append(domain),
     )
     monkeypatch.setattr(ssl_errors_store.time, "time", lambda: 100.0)
-    monkeypatch.setattr(ssl_errors_store.time, "sleep", sleep)
+    monkeypatch.setattr(store._stop_event, "wait", sleep)
 
     with pytest.raises(StopLoop):
         store._tail_loop()
@@ -940,7 +940,7 @@ def test_ssl_errors_tailer_does_not_initialize_db_when_log_missing(
             AssertionError("missing-log tailer initialized the database")
         ),
     )
-    monkeypatch.setattr(ssl_errors_store.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
 
     with pytest.raises(StopLoop):
         store._tail_loop()
@@ -982,7 +982,7 @@ def test_adblock_blocklog_tailer_does_not_open_db_connection_when_log_missing(
             AssertionError("missing-log tailer opened a DB connection")
         ),
     )
-    monkeypatch.setattr(adblock_store.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(store._blocklog_stop_event, "wait", _stop_sleep)
 
     with pytest.raises(StopLoop):
         store._blocklog_tail_loop()
@@ -1302,7 +1302,7 @@ def test_adblock_blocklog_tailer_logs_database_outage_without_traceback(
             AssertionError("database outage used traceback logging")
         ),
     )
-    monkeypatch.setattr(adblock_store.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(store._blocklog_stop_event, "wait", _stop_sleep)
 
     with pytest.raises(StopLoop):
         store._blocklog_tail_loop()
@@ -1346,7 +1346,7 @@ def test_live_stats_tailer_logs_database_outage_without_traceback(
     )
     times = iter([100.0, 101.0, 102.0])
     monkeypatch.setattr(live_stats.time, "monotonic", lambda: next(times))
-    monkeypatch.setattr(live_stats.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
 
     class Handle:
         def __init__(self) -> None:
@@ -1414,7 +1414,7 @@ def test_diagnostic_tailer_logs_database_outage_without_traceback(
     )
     times = iter([100.0, 100.1, 102.0])
     monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: next(times, 102.0))
-    monkeypatch.setattr(diagnostic_store.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
 
     class Handle:
         def __init__(self) -> None:
@@ -1535,7 +1535,7 @@ def test_diagnostic_tailer_retains_rotation_rows_until_retry_succeeds(
     monkeypatch.setenv("DIAGNOSTIC_DB_WRITE_BACKOFF_JITTER_RATIO", "0")
     monkeypatch.setattr(store, "_connect", connect)
     monkeypatch.setattr(diagnostic_store.time, "monotonic", fake_monotonic)
-    monkeypatch.setattr(diagnostic_store.time, "sleep", stop_after_retry)
+    monkeypatch.setattr(store._stop_event, "wait", stop_after_retry)
     monkeypatch.setattr(diagnostic_store.pathlib.Path, "exists", lambda _self: True)
     monkeypatch.setattr(
         diagnostic_store.pathlib.Path,
@@ -1619,7 +1619,7 @@ def test_diagnostic_tailer_skips_rotation_flush_while_backoff_active(
     monkeypatch.setenv("DIAGNOSTIC_DB_WRITE_BACKOFF_JITTER_RATIO", "0")
     monkeypatch.setattr(store, "_connect", connect)
     monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: next(times, 100.3))
-    monkeypatch.setattr(diagnostic_store.time, "sleep", _stop_sleep)
+    monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
     monkeypatch.setattr(diagnostic_store.pathlib.Path, "exists", lambda _self: True)
     monkeypatch.setattr(
         diagnostic_store.pathlib.Path,
@@ -1645,3 +1645,72 @@ def test_diagnostic_tailer_skips_rotation_flush_while_backoff_active(
     assert [key for key, _message in outage_logs] == [
         "diagnostic_store.commit.test-diagnostic.db"
     ]
+
+
+@pytest.mark.parametrize(
+    ("module_fixture", "make_store", "start_name", "stop_name", "event_name"),
+    [
+        (
+            "adblock_store",
+            lambda module, path: module.AdblockStore(cicap_access_log_path=str(path)),
+            "start_blocklog_background",
+            "stop_blocklog_background",
+            "_blocklog_stop_event",
+        ),
+        (
+            "live_stats",
+            lambda module, path: module.LiveStatsStore(access_log_path=str(path)),
+            "start_background",
+            "stop_background",
+            "_stop_event",
+        ),
+        (
+            "ssl_errors_store",
+            lambda module, path: module.SslErrorsStore(cache_log_path=str(path)),
+            "start_background",
+            "stop_background",
+            "_stop_event",
+        ),
+        (
+            "diagnostic_store",
+            lambda module, path: module.DiagnosticStore(
+                access_log_path=str(path), icap_log_path=str(path)
+            ),
+            "start_background",
+            "stop_background",
+            "_stop_event",
+        ),
+    ],
+)
+def test_missing_log_poll_is_interruptible_by_bounded_stop(
+    request,
+    monkeypatch,
+    tmp_path,
+    module_fixture,
+    make_store,
+    start_name,
+    stop_name,
+    event_name,
+) -> None:
+    """A stop signal must wake tailers instead of waiting out their poll delay."""
+    module = request.getfixturevalue(module_fixture)
+    store = make_store(module, tmp_path / "missing.log")
+    entered_wait = __import__("threading").Event()
+    stop_event = getattr(store, event_name)
+    real_wait = stop_event.wait
+
+    def observed_wait(timeout: float) -> bool:
+        entered_wait.set()
+        return real_wait(timeout)
+
+    monkeypatch.setattr(stop_event, "wait", observed_wait)
+    if hasattr(store, "init_db"):
+        monkeypatch.setattr(store, "init_db", lambda: None)
+    if hasattr(store, "seed_from_recent_log"):
+        monkeypatch.setattr(store, "seed_from_recent_log", lambda: None)
+    if hasattr(store, "seed_from_recent_logs"):
+        monkeypatch.setattr(store, "seed_from_recent_logs", lambda: None)
+
+    getattr(store, start_name)()
+    assert entered_wait.wait(1.0), "tailer did not enter its interruptible poll wait"
+    assert getattr(store, stop_name)(timeout=0.25) is True
