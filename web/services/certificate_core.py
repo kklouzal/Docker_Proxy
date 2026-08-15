@@ -530,13 +530,20 @@ def _managed_material_pair(
     return str(cert_path.parent), cert_path.name, key_path.name, pfx_name
 
 
-def validate_tls_material_paths(certfile: str, keyfile: str) -> TlsMaterialValidation:
+def validate_tls_material_paths(
+    certfile: str, keyfile: str, *, _transaction_lock_held: bool = False
+) -> TlsMaterialValidation:
     managed_pair = _managed_material_pair(certfile, keyfile)
     if managed_pair is None or not pathlib.Path(managed_pair[0]).is_dir():
         return _validate_tls_material_paths_unlocked(certfile, keyfile)
 
     ca_dir, cert_name, key_name, pfx_name = managed_pair
-    with _certificate_material_read_lock(ca_dir):
+    lock_context = (
+        contextlib.nullcontext()
+        if _transaction_lock_held
+        else _certificate_material_read_lock(ca_dir)
+    )
+    with lock_context:
         validation = _validate_tls_material_paths_unlocked(certfile, keyfile)
         if validation.ready and not _certificate_material_marker_matches_current(
             ca_dir,
@@ -726,6 +733,7 @@ def materialize_admin_ui_server_certificate(
     bundle: CertificateBundle | object,
     *,
     san_tokens: Iterable[object] = (),
+    _transaction_lock_held: bool = False,
 ) -> AdminUiCertificateMaterial:
     pathlib.Path(ca_dir).mkdir(exist_ok=True, parents=True)
     ca_cert, ca_key = _load_bundle_ca_material(bundle)
@@ -804,32 +812,131 @@ def materialize_admin_ui_server_certificate(
             key_tmp.flush()
             os.fsync(key_tmp.fileno())
             tmp_key_path = key_tmp.name
-        with _certificate_material_install_lock(ca_dir):
+        lock_context = (
+            contextlib.nullcontext()
+            if _transaction_lock_held
+            else _certificate_material_install_lock(ca_dir)
+        )
+        with lock_context:
+            material_paths = (
+                pathlib.Path(certfile),
+                pathlib.Path(keyfile),
+                _certificate_material_marker_path(
+                    ca_dir,
+                    cert_name=ADMIN_UI_CERT_FILENAME,
+                    key_name=ADMIN_UI_KEY_FILENAME,
+                ),
+            )
+            previous_material = {
+                path: path.read_bytes() if path.exists() else None
+                for path in material_paths
+            }
             _ensure_existing_certificate_material_marker(
                 ca_dir,
                 cert_name=ADMIN_UI_CERT_FILENAME,
                 key_name=ADMIN_UI_KEY_FILENAME,
             )
-            _fsync_parent_dir(tmp_cert_path)
-            _fsync_parent_dir(tmp_key_path)
-            pathlib.Path(tmp_cert_path).replace(certfile)
-            _fsync_parent_dir(certfile)
-            tmp_cert_path = ""
-            pathlib.Path(tmp_key_path).replace(keyfile)
-            _fsync_parent_dir(keyfile)
-            tmp_key_path = ""
-            _set_best_effort_permissions(certfile, keyfile)
-            _write_certificate_material_marker(
-                ca_dir,
-                cert_name=ADMIN_UI_CERT_FILENAME,
-                key_name=ADMIN_UI_KEY_FILENAME,
-            )
+            try:
+                _fsync_parent_dir(tmp_cert_path)
+                _fsync_parent_dir(tmp_key_path)
+                pathlib.Path(tmp_cert_path).replace(certfile)
+                _fsync_parent_dir(certfile)
+                tmp_cert_path = ""
+                pathlib.Path(tmp_key_path).replace(keyfile)
+                _fsync_parent_dir(keyfile)
+                tmp_key_path = ""
+                _set_best_effort_permissions(certfile, keyfile)
+                _write_certificate_material_marker(
+                    ca_dir,
+                    cert_name=ADMIN_UI_CERT_FILENAME,
+                    key_name=ADMIN_UI_KEY_FILENAME,
+                )
+            except Exception:
+                _restore_material_paths(previous_material)
+                raise
     finally:
         for path in (tmp_cert_path, tmp_key_path):
             if path:
                 with contextlib.suppress(OSError):
                     _unlink_with_parent_fsync(path)
     return AdminUiCertificateMaterial(certfile=certfile, keyfile=keyfile, sans=sans)
+
+
+def _restore_material_paths(snapshot: dict[pathlib.Path, bytes | None]) -> None:
+    for path, content in snapshot.items():
+        if content is None:
+            if path.exists():
+                _unlink_with_parent_fsync(path)
+            continue
+        tmp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                "wb", delete=False, dir=path.parent
+            ) as tmp:
+                tmp.write(content)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+                tmp_path = tmp.name
+            pathlib.Path(tmp_path).replace(path)
+            _fsync_parent_dir(path)
+            tmp_path = ""
+        finally:
+            if tmp_path:
+                with contextlib.suppress(OSError):
+                    _unlink_with_parent_fsync(tmp_path)
+    cert_paths = [path for path in snapshot if path.name == ADMIN_UI_CERT_FILENAME]
+    key_paths = [path for path in snapshot if path.name == ADMIN_UI_KEY_FILENAME]
+    if cert_paths and key_paths and cert_paths[0].exists() and key_paths[0].exists():
+        _set_best_effort_permissions(str(cert_paths[0]), str(key_paths[0]))
+
+
+def snapshot_admin_ui_certificate_material(
+    ca_dir: str, *, _transaction_lock_held: bool = False
+) -> dict[pathlib.Path, bytes | None]:
+    lock_context = (
+        contextlib.nullcontext()
+        if _transaction_lock_held
+        else _certificate_material_read_lock(ca_dir)
+    )
+    with lock_context:
+        paths = (
+            pathlib.Path(ca_dir) / ADMIN_UI_CERT_FILENAME,
+            pathlib.Path(ca_dir) / ADMIN_UI_KEY_FILENAME,
+            _certificate_material_marker_path(
+                ca_dir,
+                cert_name=ADMIN_UI_CERT_FILENAME,
+                key_name=ADMIN_UI_KEY_FILENAME,
+            ),
+        )
+        return {path: path.read_bytes() if path.exists() else None for path in paths}
+
+
+def restore_admin_ui_certificate_material(
+    ca_dir: str,
+    snapshot: dict[pathlib.Path, bytes | None],
+    *,
+    _transaction_lock_held: bool = False,
+) -> None:
+    lock_context = (
+        contextlib.nullcontext()
+        if _transaction_lock_held
+        else _certificate_material_install_lock(ca_dir)
+    )
+    with lock_context:
+        _restore_material_paths(snapshot)
+
+
+@contextlib.contextmanager
+def admin_ui_certificate_material_transaction(ca_dir: str):
+    """Serialize Admin UI leaf publication with its persisted settings update.
+
+    The repository material lock is an OS ``flock``, so this boundary covers
+    threads and separate web-worker processes. Callers must pass
+    ``_transaction_lock_held=True`` to material helpers used inside it to avoid
+    recursively acquiring the non-reentrant file lock.
+    """
+    with _certificate_material_install_lock(ca_dir):
+        yield
 
 
 def _bundle_sha256(cert_pem: str, key_pem: str, chain_pem: str) -> str:

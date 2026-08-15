@@ -443,6 +443,53 @@ def test_validate_tls_material_paths_rejects_stale_admin_leaf_marker(tmp_path) -
     assert "transaction marker does not match" in validation.detail
 
 
+def test_admin_ui_leaf_publish_failure_restores_last_working_material(
+    tmp_path, monkeypatch
+) -> None:
+    bundle = _valid_ca_bundle()
+    certificate_core.materialize_admin_ui_server_certificate(
+        tmp_path, bundle, san_tokens=["old.example.test"]
+    )
+    before = certificate_core.snapshot_admin_ui_certificate_material(tmp_path)
+    original_replace = Path.replace
+    failed = False
+
+    def fail_after_cert_replace(self: Path, target: object) -> Path:
+        nonlocal failed
+        result = original_replace(self, target)
+        if Path(target).name == "admin-ui.crt" and not failed:
+            failed = True
+            message = "simulated leaf publication failure"
+            raise RuntimeError(message)
+        return result
+
+    monkeypatch.setattr(Path, "replace", fail_after_cert_replace)
+    with pytest.raises(RuntimeError, match="simulated leaf publication failure"):
+        certificate_core.materialize_admin_ui_server_certificate(
+            tmp_path, bundle, san_tokens=["new.example.test"]
+        )
+
+    assert certificate_core.snapshot_admin_ui_certificate_material(tmp_path) == before
+
+
+def test_admin_ui_material_transaction_serializes_other_publishers(tmp_path) -> None:
+    entered = threading.Event()
+    acquired = threading.Event()
+
+    def contender() -> None:
+        entered.set()
+        with certificate_core.admin_ui_certificate_material_transaction(tmp_path):
+            acquired.set()
+
+    with certificate_core.admin_ui_certificate_material_transaction(tmp_path):
+        thread = threading.Thread(target=contender)
+        thread.start()
+        assert entered.wait(timeout=1)
+        assert not acquired.wait(timeout=0.1)
+    thread.join(timeout=1)
+    assert acquired.is_set()
+
+
 def test_admin_ui_leaf_generation_uses_separate_server_cert_with_sans(tmp_path) -> None:
     bundle = _valid_ca_bundle()
     certificate_core.materialize_certificate_bundle(tmp_path, bundle)

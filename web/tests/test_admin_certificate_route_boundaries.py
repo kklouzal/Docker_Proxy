@@ -1261,6 +1261,71 @@ def test_admin_ui_https_preference_reports_restart_failure(
     assert bundles.admin_ui_https_settings.enabled is True
 
 
+def test_admin_ui_https_enable_restores_leaf_when_settings_save_fails(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile, keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    Path(certfile).write_bytes(b"old-cert")
+    Path(keyfile).write_bytes(b"old-key")
+    monkeypatch.setattr(
+        bundles,
+        "set_admin_ui_https_settings",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("settings unavailable")),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={"csrf_token": token, "enabled": "1"},
+        follow_redirects=False,
+    )
+
+    assert _location_params(response)["ok"] == ["0"]
+    assert Path(certfile).read_bytes() == b"old-cert"
+    assert Path(keyfile).read_bytes() == b"old-key"
+    assert bundles.admin_ui_https_settings.enabled is False
+
+
+def test_admin_ui_https_enable_restores_leaf_when_post_publish_validation_fails(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile, keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    Path(certfile).write_bytes(b"old-cert")
+    Path(keyfile).write_bytes(b"old-key")
+    monkeypatch.setattr(
+        loaded.module,
+        "_admin_ui_https_default_material_status",
+        lambda **_kwargs: {
+            "ready": False,
+            "cert_status": {"valid": False},
+            "key_status": {"valid": False},
+            "certfile": certfile,
+            "keyfile": keyfile,
+            "detail": "simulated validation failure",
+        },
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/certs")
+
+    response = client.post(
+        "/certs/admin-ui-https",
+        data={"csrf_token": token, "enabled": "1"},
+        follow_redirects=False,
+    )
+
+    assert _location_params(response)["ok"] == ["0"]
+    assert Path(certfile).read_bytes() == b"old-cert"
+    assert Path(keyfile).read_bytes() == b"old-key"
+    assert bundles.admin_ui_https_settings.enabled is False
+
+
 def test_admin_ui_https_preference_requires_bundle_for_default_material(
     monkeypatch, tmp_path
 ) -> None:

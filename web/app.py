@@ -49,10 +49,13 @@ from services.certificate_bundles import (
     get_certificate_bundles as _default_get_certificate_bundles,
 )
 from services.certificate_core import (
+    admin_ui_certificate_material_transaction,
     materialize_admin_ui_server_certificate,
     normalize_admin_ui_certificate_san_token,
     normalize_admin_ui_certificate_sans,
+    restore_admin_ui_certificate_material,
     sanitize_admin_ui_certificate_san_token,
+    snapshot_admin_ui_certificate_material,
     validate_tls_material_paths,
 )
 from services.clamav_config_forms import (
@@ -4842,9 +4845,13 @@ def _admin_ui_https_path_status(path: str) -> dict[str, Any]:
     }
 
 
-def _admin_ui_https_default_material_status() -> dict[str, Any]:
+def _admin_ui_https_default_material_status(
+    *, transaction_lock_held: bool = False
+) -> dict[str, Any]:
     validation = validate_tls_material_paths(
-        ADMIN_UI_SSL_CERTFILE, ADMIN_UI_SSL_KEYFILE
+        ADMIN_UI_SSL_CERTFILE,
+        ADMIN_UI_SSL_KEYFILE,
+        _transaction_lock_held=transaction_lock_held,
     )
     cert_status = validation.cert_status.__dict__
     key_status = validation.key_status.__dict__
@@ -4970,7 +4977,12 @@ def _admin_ui_https_converge_leaf_settings(settings: Any | None) -> Any | None:
         return settings
 
 
-def _materialize_admin_ui_https_leaf(bundle: Any, settings: Any | None = None):
+def _materialize_admin_ui_https_leaf(
+    bundle: Any,
+    settings: Any | None = None,
+    *,
+    transaction_lock_held: bool = False,
+):
     if settings is None:
         try:
             settings = get_certificate_bundles().get_admin_ui_https_settings()
@@ -4980,6 +4992,7 @@ def _materialize_admin_ui_https_leaf(bundle: Any, settings: Any | None = None):
         ADMIN_UI_CA_DIR,
         bundle,
         san_tokens=_admin_ui_https_leaf_san_tokens(settings),
+        _transaction_lock_held=transaction_lock_held,
     )
 
 
@@ -9750,58 +9763,94 @@ def update_admin_ui_https():
             msg="Generate or upload an SSL inspection CA bundle before enabling Admin UI HTTPS.",
         )
     material = None
+    material_snapshot = None
     persistent_san_tokens: tuple[str, ...] = ()
     if enabled:
         try:
-            leaf_settings = SimpleNamespace(
-                san_tokens=_admin_ui_https_format_san_tokens(configured_san_tokens),
-            )
-            material = _materialize_admin_ui_https_leaf(
-                bundle,
-                leaf_settings,
-            )
-            persistent_san_tokens = _admin_ui_https_persistent_san_tokens(
-                leaf_settings,
-            )
+            with admin_ui_certificate_material_transaction(ADMIN_UI_CA_DIR):
+                material_snapshot = snapshot_admin_ui_certificate_material(
+                    ADMIN_UI_CA_DIR, _transaction_lock_held=True
+                )
+                try:
+                    leaf_settings = SimpleNamespace(
+                        san_tokens=_admin_ui_https_format_san_tokens(
+                            configured_san_tokens
+                        ),
+                    )
+                    material = _materialize_admin_ui_https_leaf(
+                        bundle,
+                        leaf_settings,
+                        transaction_lock_held=True,
+                    )
+                    persistent_san_tokens = _admin_ui_https_persistent_san_tokens(
+                        leaf_settings,
+                    )
+                    material_status = _admin_ui_https_default_material_status(
+                        transaction_lock_held=True
+                    )
+                    if not material_status["ready"]:
+                        missing = []
+                        if not material_status["cert_status"]["valid"]:
+                            missing.append(material_status["certfile"])
+                        if not material_status["key_status"]["valid"]:
+                            missing.append(material_status["keyfile"])
+                        validation_message = (
+                            "Admin UI HTTPS requires the generated Admin UI server "
+                            "certificate and key to be mounted as valid PEM material "
+                            f"in the admin-ui container: {', '.join(missing)}. "
+                            f"{material_status['detail']}"
+                        )
+                        raise ValueError(validation_message)
+                    get_certificate_bundles().set_admin_ui_https_settings(
+                        enabled=True,
+                        certfile=material.certfile,
+                        keyfile=material.keyfile,
+                        san_tokens=_admin_ui_https_format_san_tokens(
+                            persistent_san_tokens
+                        ),
+                        updated_by=str(session.get("user") or ""),
+                    )
+                except Exception:
+                    try:
+                        restore_admin_ui_certificate_material(
+                            ADMIN_UI_CA_DIR,
+                            material_snapshot,
+                            _transaction_lock_held=True,
+                        )
+                    except Exception as restore_exc:
+                        restore_message = (
+                            "Admin UI HTTPS update failed and prior certificate "
+                            "material could not be restored."
+                        )
+                        raise RuntimeError(restore_message) from restore_exc
+                    raise
         except Exception as exc:
-            return _redirect_with_message(
-                "certs",
-                ok=False,
-                msg=(
+            detail = public_error_message(exc)
+            if isinstance(exc, ValueError) and str(exc).startswith(
+                "Admin UI HTTPS requires the generated"
+            ):
+                detail = str(exc)
+            else:
+                detail = (
                     "Admin UI HTTPS requires the active SSL inspection CA certificate "
                     "and key to generate a dedicated server certificate. "
-                    f"{public_error_message(exc)}"
-                ),
-            )
-    material_status = _admin_ui_https_default_material_status()
-    if enabled and not material_status["ready"]:
-        missing = []
-        if not material_status["cert_status"]["valid"]:
-            missing.append(material_status["certfile"])
-        if not material_status["key_status"]["valid"]:
-            missing.append(material_status["keyfile"])
-        return _redirect_with_message(
-            "certs",
-            ok=False,
-            msg=(
-                "Admin UI HTTPS requires the generated Admin UI server certificate "
-                f"and key to be mounted as valid PEM material in the admin-ui container: "
-                f"{', '.join(missing)}. {material_status['detail']}"
-            ),
-        )
+                    f"{detail}"
+                )
+            return _redirect_with_message("certs", ok=False, msg=detail)
     certfile = material.certfile if enabled and material is not None else ""
     keyfile = material.keyfile if enabled and material is not None else ""
 
     try:
-        get_certificate_bundles().set_admin_ui_https_settings(
-            enabled=enabled,
-            certfile=certfile,
-            keyfile=keyfile,
-            san_tokens=_admin_ui_https_format_san_tokens(
-                persistent_san_tokens if enabled else configured_san_tokens,
-            ),
-            updated_by=str(session.get("user") or ""),
-        )
+        if not enabled:
+            get_certificate_bundles().set_admin_ui_https_settings(
+                enabled=enabled,
+                certfile=certfile,
+                keyfile=keyfile,
+                san_tokens=_admin_ui_https_format_san_tokens(
+                    configured_san_tokens,
+                ),
+                updated_by=str(session.get("user") or ""),
+            )
         restart_ok, restart_detail = _restart_admin_ui_web_process()
         detail = "Saved Admin UI HTTPS preference. "
         detail += (
@@ -9822,7 +9871,9 @@ def update_admin_ui_https():
             )
         return _redirect_with_message("certs", ok=restart_ok, msg=detail)
     except Exception as exc:
-        app.logger.exception("Failed to save Admin UI HTTPS settings")
+        app.logger.exception(
+            "Failed to save Admin UI HTTPS settings or request restart"
+        )
         detail = public_error_message(
             exc,
             default="Failed to save Admin UI HTTPS settings.",
@@ -9850,16 +9901,30 @@ def regenerate_admin_ui_https_certificate():
                 ok=False,
                 msg="Generate or upload an SSL inspection CA bundle before regenerating the Admin UI HTTPS certificate.",
             )
-        material = _materialize_admin_ui_https_leaf(bundle, settings)
-        get_certificate_bundles().set_admin_ui_https_settings(
-            enabled=bool(getattr(settings, "enabled", False)),
-            certfile=material.certfile,
-            keyfile=material.keyfile,
-            san_tokens=_admin_ui_https_format_san_tokens(
-                _admin_ui_https_persistent_san_tokens(settings),
-            ),
-            updated_by=str(session.get("user") or ""),
-        )
+        with admin_ui_certificate_material_transaction(ADMIN_UI_CA_DIR):
+            material_snapshot = snapshot_admin_ui_certificate_material(
+                ADMIN_UI_CA_DIR, _transaction_lock_held=True
+            )
+            material = _materialize_admin_ui_https_leaf(
+                bundle, settings, transaction_lock_held=True
+            )
+            try:
+                get_certificate_bundles().set_admin_ui_https_settings(
+                    enabled=bool(getattr(settings, "enabled", False)),
+                    certfile=material.certfile,
+                    keyfile=material.keyfile,
+                    san_tokens=_admin_ui_https_format_san_tokens(
+                        _admin_ui_https_persistent_san_tokens(settings),
+                    ),
+                    updated_by=str(session.get("user") or ""),
+                )
+            except Exception:
+                restore_admin_ui_certificate_material(
+                    ADMIN_UI_CA_DIR,
+                    material_snapshot,
+                    _transaction_lock_held=True,
+                )
+                raise
         restart_ok, restart_detail = _restart_admin_ui_web_process()
         detail = (
             "Regenerated Admin UI HTTPS certificate without changing the active CA. "
