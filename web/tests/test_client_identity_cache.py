@@ -103,6 +103,64 @@ def test_client_identity_cache_coalesces_concurrent_normalized_misses(
     }
 
 
+def test_client_identity_cache_inflight_wait_allows_bounded_owner_publication_grace(
+    monkeypatch,
+) -> None:
+    cache = ClientIdentityCache(
+        success_ttl_seconds=30.0,
+        lookup_timeout_seconds=0.05,
+    )
+    lookup_started = threading.Event()
+    release_lookup = threading.Event()
+    waiter_started = threading.Event()
+    calls: list[str] = []
+    results: dict[str, dict[str, str]] = {}
+
+    def near_deadline_lookup(ip: str) -> tuple[str, str, str]:
+        calls.append(ip)
+        lookup_started.set()
+        release_lookup.wait(timeout=1.0)
+        return "host.example", "rdns", "resolved"
+
+    monkeypatch.setattr(cache, "_lookup_hostname", near_deadline_lookup)
+    owner = threading.Thread(
+        target=lambda: results.__setitem__("owner", cache.resolve("192.0.2.10"))
+    )
+    owner.start()
+    assert lookup_started.wait(timeout=0.5)
+
+    inflight = cache._inflight["192.0.2.10"]
+    original_wait = inflight.wait
+
+    def publish_during_grace(timeout: float | None = None) -> bool:
+        assert timeout is not None
+        assert timeout > cache.lookup_timeout_seconds
+        waiter_started.set()
+        assert not original_wait(timeout=cache.lookup_timeout_seconds)
+        release_lookup.set()
+        return original_wait(timeout=timeout - cache.lookup_timeout_seconds)
+
+    monkeypatch.setattr(inflight, "wait", publish_during_grace)
+    waiter = threading.Thread(
+        target=lambda: results.__setitem__("waiter", cache.resolve("192.0.2.10"))
+    )
+    waiter.start()
+    assert waiter_started.wait(timeout=0.5)
+
+    owner.join(timeout=0.5)
+    waiter.join(timeout=0.5)
+    assert not owner.is_alive()
+    assert not waiter.is_alive()
+    expected = {
+        "hostname": "host.example",
+        "hostname_source": "rdns",
+        "hostname_status": "resolved",
+    }
+    assert results == {"owner": expected, "waiter": expected}
+    assert calls == ["192.0.2.10"]
+    assert "192.0.2.10" not in cache._inflight
+
+
 def test_client_identity_cache_inflight_wait_is_bounded_without_cache_poisoning(
     monkeypatch,
 ) -> None:

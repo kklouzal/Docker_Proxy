@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 _REVERSE_DNS_LOOKUP_THREAD_LIMIT = 4
 _REVERSE_DNS_LOOKUP_SLOTS = threading.BoundedSemaphore(_REVERSE_DNS_LOOKUP_THREAD_LIMIT)
+_INFLIGHT_PUBLICATION_GRACE_SECONDS = 0.05
 _DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 _IDNA_DOT_TRANSLATION = str.maketrans(
     {
@@ -257,7 +258,15 @@ class ClientIdentityCache:
                 owns_lookup = False
 
         if not owns_lookup:
-            inflight.wait(timeout=self.lookup_timeout_seconds)
+            # The owner can finish its bounded resolver wait at the same instant as a
+            # duplicate exhausts the nominal lookup budget. Allow a small, bounded
+            # handoff window for the owner to publish and signal rather than racing
+            # that valid result with a false local timeout.
+            inflight.wait(
+                timeout=(
+                    self.lookup_timeout_seconds + _INFLIGHT_PUBLICATION_GRACE_SECONDS
+                )
+            )
             cached = self._get_cached(normalized)
             if cached is None:
                 return {
