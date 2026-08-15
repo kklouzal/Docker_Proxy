@@ -476,6 +476,14 @@ def test_profile_save_preserves_bracketed_ipv6_server_urls(tmp_path) -> None:
     assert profile.server_urls == "ldap://[2001:db8::1]:389\nldaps://[2001:db8::2]"
 
 
+@pytest.mark.parametrize("server_url", ["ldap://ldap.example.org:0", "ldaps://ldap.example.org:0"])
+def test_normalize_server_urls_rejects_explicit_zero_port(server_url: str) -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+
+    with pytest.raises(ValueError, match="valid ldap:// or ldaps:// URLs"):
+        store._normalize_server_urls(server_url)
+
+
 def test_join_dn_requires_base_dn_boundary() -> None:
     store = DirectoryAuthStore(lambda: "stable-secret")
 
@@ -501,6 +509,8 @@ def test_join_dn_requires_base_dn_boundary() -> None:
         ("ldap://ldap.example.org#frag", "valid ldap:// or ldaps:// URLs"),
         ("ldap://user@ldap.example.org", "valid ldap:// or ldaps:// URLs"),
         ("ldap://ldap.example.org:not-a-port", "valid ldap:// or ldaps:// URLs"),
+        ("ldap://ldap.example.org:0", "valid ldap:// or ldaps:// URLs"),
+        ("ldap://ldap.example.org:65536", "valid ldap:// or ldaps:// URLs"),
         ("ldap://ldap.example.org:", "valid ldap:// or ldaps:// URLs"),
         ("ldap://[2001:db8::1]:", "valid ldap:// or ldaps:// URLs"),
         ("ldap://2001:db8::1", "valid ldap:// or ldaps:// URLs"),

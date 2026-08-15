@@ -966,6 +966,7 @@ class DirectoryAuthStore:
                 or parsed.path
                 or parsed.query
                 or parsed.fragment
+                or port == 0
                 or authority_has_empty_explicit_port(parsed.netloc)
                 or _unsafe_ldap_authority(parsed.netloc)
             ):
