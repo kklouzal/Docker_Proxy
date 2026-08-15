@@ -364,6 +364,58 @@ def test_compat_connection_closes_partial_result_and_write_cursor() -> None:
     assert read_cursor.closed is True
 
 
+def test_partial_result_cursor_close_failure_discards_pooled_connection(
+    monkeypatch,
+) -> None:
+    from services import db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    calls: list[str] = []
+
+    class Cursor:
+        description = (("id",),)
+        rowcount = 2
+        lastrowid = None
+        rownumber = 0
+
+        def execute(self, *_args) -> None:
+            calls.append("execute")
+
+        def fetchone(self):
+            self.rownumber += 1
+            return (1,)
+
+        def close(self) -> NoReturn:
+            calls.append("cursor.close")
+            message = "unread result could not be drained"
+            raise RuntimeError(message)
+
+    class NativeConnection:
+        def cursor(self):
+            return Cursor()
+
+        def rollback(self) -> None:
+            calls.append("rollback")
+
+        def close(self) -> None:
+            calls.append("native.close")
+
+    cfg = db.DatabaseConfig(host="db", user="u", password="***", database="d")
+    key = db._pool_key(cfg)
+    with db._pool_condition:
+        db._pooled_connections[key] = db._PoolState(idle=[], active=1)
+
+    conn = db.CompatConnection(NativeConnection(), cfg=cfg)
+    result = conn.execute("SELECT id FROM t")
+    assert result.fetchone()[0] == 1
+    conn.close()
+
+    assert calls == ["execute", "cursor.close", "native.close"]
+    assert key not in db._pooled_connections
+    db.reset_mysql_ready_for_tests()
+
+
 @pytest.mark.parametrize("fetch_method", ["fetchone", "fetchall"])
 def test_fetch_connection_error_discards_pooled_connection(
     monkeypatch,

@@ -65,10 +65,12 @@ class CompatResult:
         *,
         on_close: Any = None,
         on_error: Any = None,
+        on_close_error: Any = None,
     ) -> None:
         self._cursor = cursor
         self._on_close = on_close
         self._on_error = on_error
+        self._on_close_error = on_close_error
         self._closed = False
         self._columns = tuple(
             (d[0] if d else "") for d in (getattr(cursor, "description", None) or [])
@@ -83,8 +85,11 @@ class CompatResult:
             return
         self._closed = True
         try:
-            with contextlib.suppress(Exception):
+            try:
                 self._cursor.close()
+            except Exception as exc:
+                if self._on_close_error is not None:
+                    self._on_close_error(exc)
         finally:
             if self._on_close is not None:
                 self._on_close(self)
@@ -168,11 +173,18 @@ class CompatConnection:
         if _should_discard_native_connection(exc):
             self._discard_on_close = True
 
+    def _mark_discard_for_result_close_error(self, _exc: BaseException) -> None:
+        # A cursor can fail while draining an unread server-side result.  The
+        # wire protocol/session state is then uncertain regardless of the
+        # exception class, so the native connection must not re-enter the pool.
+        self._discard_on_close = True
+
     def _result(self, cursor: Any) -> CompatResult:
         result = CompatResult(
             cursor,
             on_close=self._results.discard,
             on_error=self._mark_discard_for_error,
+            on_close_error=self._mark_discard_for_result_close_error,
         )
         if not result._closed:
             self._results.add(result)
