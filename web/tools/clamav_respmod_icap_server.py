@@ -28,6 +28,7 @@ app_root = Path(__file__).resolve().parent.parent
 if str(app_root) not in sys.path:
     sys.path.insert(0, str(app_root))
 
+from services.helper_runtime import HelperStats, helper_event  # noqa: E402
 from services.runtime_helpers import env_float, env_int, security_env_bool  # noqa: E402
 
 if TYPE_CHECKING:
@@ -1110,9 +1111,11 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
             start_line, headers = _split_headers(raw_header[:-4])
             method = _parse_start_line(start_line)
             if method == "OPTIONS":
+                self.server.record("options")
                 self._write_response(options_response())
                 return
             if method != "RESPMOD":
+                self.server.record("unsupported_methods")
                 self._write_response(
                     _icap_response(
                         "405 Method Not Allowed", {"Allow": "RESPMOD, OPTIONS"}
@@ -1234,17 +1237,32 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 result = self.server.scan_body(body)
                 can_use_204 = allow_204
             if result.infected:
+                self.server.record("infected")
                 response = blocked_response(result.signature)
             elif null_body:
+                self.server.record("clean")
                 response = clean_no_body_response(
                     allow_204=can_use_204, http_header=http_header
                 )
             else:
+                self.server.record("clean")
                 response = clean_response(
                     allow_204=can_use_204, http_header=http_header, body=body
                 )
             self._write_response(response)
         except Exception as exc:
+            self.server.record("errors")
+            if isinstance(exc, (IcapProtocolError, BodyTooLargeError)):
+                self.server.record("protocol_errors")
+            elif isinstance(
+                exc,
+                (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, EOFError),
+            ):
+                self.server.record("disconnects")
+            else:
+                self.server.record("scan_errors")
+            if isinstance(exc, (TimeoutError, socket.timeout)):
+                self.server.record("timeouts")
             if self.server.fail_open:
                 scan_error_warning.warning(
                     "fail-open after scan/protocol error: %s", exc
@@ -1260,11 +1278,13 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                             body_complete=body_complete,
                             null_body=null_body,
                         )
+                        self.server.record("fail_open_bypasses")
                 except OSError as write_exc:
                     scan_error_warning.warning(
                         "failed writing fail-open ICAP response: %s", write_exc
                     )
             else:
+                self.server.record("fail_closed_errors")
                 scan_error_warning.warning(
                     "fail-closed after scan/protocol error: %s", exc
                 )
@@ -1309,6 +1329,27 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self._scan_probe_lock = threading.Lock()
         self._scan_unavailable_until = 0.0
         self._scan_known_available_until = 0.0
+        self.stats = HelperStats("clamav_respmod", emit_interval_seconds=60.0)
+        self._telemetry_closed = False
+        helper_event(
+            "clamav_respmod",
+            "started",
+            fail_open=self.fail_open,
+            max_connections=self.max_connections,
+            max_scans=self.max_scans,
+            max_scan_bytes=self.max_scan_bytes,
+        )
+
+    def record(self, counter: str) -> None:
+        self.stats.increment(counter)
+        self.stats.emit_if_due()
+
+    def server_close(self) -> None:
+        if not self._telemetry_closed:
+            self._telemetry_closed = True
+            self.stats.emit_if_due(force=True)
+            helper_event("clamav_respmod", "stopped")
+        super().server_close()
 
     def process_request(
         self,
@@ -1316,6 +1357,7 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         client_address: tuple[str, int],
     ) -> None:
         if not self._request_slots.acquire(timeout=self.client_timeout):
+            self.record("overload_rejections")
             try:
                 request.settimeout(0.2)
                 request.sendall(

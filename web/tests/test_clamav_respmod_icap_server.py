@@ -4493,3 +4493,35 @@ def test_respmod_boundary_rejects_multiple_header_blocks() -> None:
         server._validate_respmod_encapsulated_header_boundaries(
             request_header + response_header, offsets
         )
+
+
+def test_respmod_shared_stats_classify_fail_open_scan_error(monkeypatch) -> None:
+    server = _load_server()
+
+    def create_connection(_address, timeout):
+        message = "private backend detail"
+        raise ConnectionRefusedError(message)
+
+    monkeypatch.setattr(server.socket, "create_connection", create_connection)
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_response(port, _sample_respmod_request(port), timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert icap_server.stats.counters == {
+        "errors": 1,
+        "scan_errors": 1,
+        "fail_open_bypasses": 1,
+    }
