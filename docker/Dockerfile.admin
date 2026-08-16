@@ -126,6 +126,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/stats.py \
 	web/services/timeseries_store.py \
 	web/services/ui_support.py \
+	web/services/url_validation.py \
 	web/services/version_status.py \
 	web/services/webcat_hygiene.py \
 	web/services/webfilter_core.py \

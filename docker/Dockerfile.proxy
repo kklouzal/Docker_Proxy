@@ -186,6 +186,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/sslfilter_store.py \
     web/services/stats.py \
     web/services/timeseries_store.py \
+    web/services/url_validation.py \
     web/services/version_status.py \
     web/services/webfilter_core.py \
     /app/services/
