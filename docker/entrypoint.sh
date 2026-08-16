@@ -4,6 +4,14 @@ set -eu
 
 # shellcheck source=/dev/null
 . /usr/local/bin/load-env.sh
+
+# Re-exec once while holding the same POSIX lifecycle lock used by live
+# management workers. Loading the environment first ensures both processes use
+# the same configured lock directory. startup-complete releases inherited FD 9.
+if [ "${SQUID_ENTRYPOINT_LOCK_HELD:-0}" != "1" ]; then
+    exec python3 /app/services/squid_transaction.py lock-exec /entrypoint.sh "$@"
+fi
+
 /usr/local/bin/validate-management-token.sh
 
 IPV6_DISABLED=0
@@ -638,6 +646,11 @@ fi
 # Ensure squid.conf is based on our template (needed for caching + ssl-bump).
 # If the file already looks like our managed config, keep it.
 PERSISTED_SQUID_CONF_PATH="${PERSISTED_SQUID_CONF_PATH:-/var/lib/squid-flask-proxy/squid.conf}"
+export PERSISTED_SQUID_CONF_PATH
+python3 /app/services/squid_transaction.py startup-begin \
+    --active /etc/squid/squid.conf \
+    --persisted "$PERSISTED_SQUID_CONF_PATH" \
+    --bootstrap-template /etc/squid/squid.conf.template
 if [ -f "$PERSISTED_SQUID_CONF_PATH" ]; then
     mkdir -p /etc/squid
     cp "$PERSISTED_SQUID_CONF_PATH" /etc/squid/squid.conf
@@ -740,7 +753,7 @@ fi
 # Normalize the logs we keep, collapse the duplicate live-only access log into the
 # richer structured access log, and disable store.log, which is pure per-object
 # overhead for this stack and is not consumed anywhere in-product.
-for SQUID_CFG in /etc/squid/squid.conf "$PERSISTED_SQUID_CONF_PATH"; do
+for SQUID_CFG in /etc/squid/squid.conf; do
     if [ ! -f "$SQUID_CFG" ]; then
         continue
     fi
@@ -798,18 +811,12 @@ fi
 # When IPv6 is disabled, normalize the default Squid bind to IPv4-only.
 if [ "$IPV6_DISABLED" = "1" ] && [ -f /etc/squid/squid.conf ]; then
     sed -i -E 's#^([[:space:]]*http_port[[:space:]]+)3128([[:space:]]+ssl-bump.*)$#\10.0.0.0:3128\2#' /etc/squid/squid.conf || true
-    if [ -f "$PERSISTED_SQUID_CONF_PATH" ]; then
-        sed -i -E 's#^([[:space:]]*http_port[[:space:]]+)3128([[:space:]]+ssl-bump.*)$#\10.0.0.0:3128\2#' "$PERSISTED_SQUID_CONF_PATH" || true
-    fi
 fi
 
 # Optional listener shaping: explicit proxy traffic stays on SQUID_HTTP_PORT,
 # while NAT-redirected plain HTTP can be accepted on a separate intercept port.
 # Firewall/router REDIRECT or DNAT rules are intentionally deployment-owned.
 normalize_http_port_listeners /etc/squid/squid.conf
-if [ -f "$PERSISTED_SQUID_CONF_PATH" ]; then
-    normalize_http_port_listeners "$PERSISTED_SQUID_CONF_PATH"
-fi
 
 # Performance + privacy: keep the live UI logformat lean and credential-free.
 # Diagnostic logging includes only bounded response metadata that drives
@@ -818,7 +825,7 @@ fi
 SAFE_LIVEUI_FMT='logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st'
 SAFE_DIAGNOSTIC_FMT='logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note\t%{file_security_policy}note\t%{Content-Type}<h\t%{Server}<h\t%{Cf-Mitigated}<h\t%{Alt-Svc}<h'
 SAFE_ICAP_OBSERVE_FMT='logformat icapobserve %ts\t%master_xaction\t%>a\t%rm\t%ru\t%icap::tt\t%adapt::sum_trs\t%adapt::all_trs\t%{Host}>h\t%{User-Agent}>h\t%ssl::>sni\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note'
-for SQUID_CFG in /etc/squid/squid.conf "$PERSISTED_SQUID_CONF_PATH"; do
+for SQUID_CFG in /etc/squid/squid.conf; do
     if [ -f "$SQUID_CFG" ] && grep -q "^logformat liveui" "$SQUID_CFG" 2>/dev/null; then
         sed -i -E "s#^logformat[[:space:]]+liveui[[:space:]].*#${SAFE_LIVEUI_FMT}#" "$SQUID_CFG"
     fi
@@ -888,12 +895,10 @@ EOF
 }
 
 ensure_auth_cookie_cache_deny /etc/squid/squid.conf
-ensure_auth_cookie_cache_deny "$PERSISTED_SQUID_CONF_PATH"
 
 # Stability: avoid problematic half-closed client connections.
 # We have observed Squid aborting with an internal assertion (SIGABRT) under some client
 # behaviors when half-closed connections are enabled. Disabling this is generally safer.
-# NOTE: this also patches the persisted volume copy so web UI re-applies don't revert.
 if [ -f /etc/squid/squid.conf ]; then
     if grep -qiE "^\s*half_closed_clients\s+" /etc/squid/squid.conf 2>/dev/null; then
         sed -i -E 's/^([[:space:]]*half_closed_clients[[:space:]]+).*/\1off/' /etc/squid/squid.conf || true
@@ -903,13 +908,6 @@ if [ -f /etc/squid/squid.conf ]; then
 # Stability: disable half-closed clients (safer with misbehaving clients).
 half_closed_clients off
 EOF
-    fi
-fi
-# Mirror the fix into the persisted copy on the data volume so that it
-# survives web-UI re-applies and future container restarts.
-if [ -f "$PERSISTED_SQUID_CONF_PATH" ]; then
-    if grep -qiE "^\s*half_closed_clients\s+" "$PERSISTED_SQUID_CONF_PATH" 2>/dev/null; then
-        sed -i -E 's/^([[:space:]]*half_closed_clients[[:space:]]+).*/\1off/' "$PERSISTED_SQUID_CONF_PATH" || true
     fi
 fi
 
@@ -972,9 +970,6 @@ EOF
 fi
 
 apply_squid_perf_tuning /etc/squid/squid.conf
-if [ -f "$PERSISTED_SQUID_CONF_PATH" ]; then
-    apply_squid_perf_tuning "$PERSISTED_SQUID_CONF_PATH"
-fi
 
 # Generate Squid include snippets for ICAP scaling.
 # We derive the worker count from squid.conf so UI edits like "workers 4" validate.
@@ -1371,8 +1366,14 @@ printf '[proxy-entrypoint] preparing squid cache dirs workers=%s existing_pidfil
     "$WORKERS" \
     "$(cat /var/run/squid.pid 2>/dev/null || true)" \
     "$(pgrep -x squid 2>/dev/null | paste -sd, - || true)"
-squid -z -f /etc/squid/squid.conf || \
-    printf '[proxy-entrypoint] squid cache-dir prepare exited nonzero; continuing to supervisord\n'
+if ! squid -z -f /etc/squid/squid.conf; then
+    printf '[proxy-entrypoint] squid cache-dir prepare failed; startup remains recovery-required\n' >&2
+    python3 /app/services/squid_transaction.py startup-fail \
+        --active /etc/squid/squid.conf \
+        --persisted "$PERSISTED_SQUID_CONF_PATH" \
+        --detail "Squid cache preparation failed during startup." || true
+    exit 1
+fi
 printf '[proxy-entrypoint] squid cache-dir prepare complete pidfile=%s squid_pids=%s\n' \
     "$(cat /var/run/squid.pid 2>/dev/null || true)" \
     "$(pgrep -x squid 2>/dev/null | paste -sd, - || true)"
@@ -1380,5 +1381,8 @@ rm -f /var/run/squid.pid || true
 printf '%s\n' "$WORKERS" > "$WORKERS_MARKER_PATH" 2>/dev/null || true
 
 # Start Supervisor to manage Squid and Flask
+python3 /app/services/squid_transaction.py startup-complete \
+    --active /etc/squid/squid.conf \
+    --persisted "$PERSISTED_SQUID_CONF_PATH"
 printf '[proxy-entrypoint] starting supervisord workers=%s\n' "$WORKERS"
 exec /usr/bin/supervisord -c /etc/supervisord.conf

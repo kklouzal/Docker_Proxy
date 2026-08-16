@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from subprocess import TimeoutExpired, run
@@ -26,11 +27,17 @@ from services.errors import public_error_message
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import security_env_bool
 from services.squid_listeners import parse_squid_listeners
+from services.squid_transaction import (
+    SquidTransactionJournal,
+    SquidTransactionRecoveryRequiredError,
+    default_journal_path,
+)
 
 logger = logging.getLogger(__name__)
 
 _SQUID_LIFECYCLE_LOCK = threading.RLock()
 _SQUID_LIFECYCLE_LOCK_STATE = threading.local()
+_SQUID_TRANSACTION_STATE = threading.local()
 _SAFE_CLAMD_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
@@ -200,6 +207,22 @@ class SquidLifecycleLockError(ValueError):
         super().__init__(self._MESSAGE)
 
 
+@dataclass(frozen=True)
+class SquidRuntimeMaterializationResult:
+    ok: bool
+    detail: str
+    squid_restarted: bool = False
+    changed: bool = False
+
+    def as_tuple(self) -> tuple[bool, str]:
+        return self.ok, self.detail
+
+    def __iter__(self):
+        # Preserve unpacking compatibility for existing internal test doubles.
+        yield self.ok
+        yield self.detail
+
+
 @contextlib.contextmanager
 def _exclusive_squid_lifecycle_lock():
     """Serialize Squid stop/start/reconfigure mutations across UI/API workers.
@@ -283,6 +306,79 @@ class SquidController:
         # still honored.
         self._adblock_routing_enabled = _env_flag("ADBLOCK_ENABLED", False)
 
+    def _transaction_runtime_paths(self, candidate_config: str = "") -> list[Path]:
+        current_config = self.get_current_config()
+        expected_runtime_paths: set[Path] = set()
+        # Journal the complete bounded namespace, not only paths implied by the
+        # pre-transaction config. This covers worker expansion and shrink even
+        # when a process dies before stale managed fragments are removed.
+        for config_text in dict.fromkeys((current_config, candidate_config)):
+            for workers in range(1, 5):
+                expected_runtime_paths.update(
+                    self._render_icap_supervisor_files(
+                        workers=workers,
+                        config_text=config_text,
+                    )
+                )
+        return sorted(
+            {
+                self._icap_include_path(),
+                self._virus_scan_config_path(),
+                *self._managed_icap_runtime_paths(),
+                *expected_runtime_paths,
+            },
+            key=str,
+        )
+
+    def _transaction_journal(
+        self, candidate_config: str = ""
+    ) -> SquidTransactionJournal:
+        return SquidTransactionJournal(
+            default_journal_path(self.persisted_squid_conf_path),
+            active_config=self.squid_conf_path,
+            persisted_config=self.persisted_squid_conf_path,
+            runtime_paths=self._transaction_runtime_paths(candidate_config),
+        )
+
+    def _begin_public_transaction(
+        self,
+        operation: str,
+        *,
+        target_config: str = "",
+    ) -> tuple[SquidTransactionJournal, bool]:
+        depth = int(getattr(_SQUID_TRANSACTION_STATE, "depth", 0) or 0)
+        if depth:
+            _SQUID_TRANSACTION_STATE.depth = depth + 1
+            return self._transaction_journal(target_config), False
+        journal = self._transaction_journal(target_config)
+        journal.begin(
+            operation,
+            intended_phase="mutation_terminal",
+            target_config=target_config,
+        )
+        _SQUID_TRANSACTION_STATE.depth = 1
+        return journal, True
+
+    @staticmethod
+    def _end_public_transaction_scope(owned: bool) -> None:
+        depth = int(getattr(_SQUID_TRANSACTION_STATE, "depth", 0) or 0)
+        _SQUID_TRANSACTION_STATE.depth = 0 if owned else max(0, depth - 1)
+
+    @staticmethod
+    def _finish_public_transaction(
+        journal: SquidTransactionJournal,
+        *,
+        owned: bool,
+        ok: bool,
+        detail: str,
+    ) -> None:
+        if not owned:
+            return
+        if ok:
+            journal.complete(detail=detail)
+        else:
+            journal.recovery_required(detail or "Squid lifecycle mutation failed.")
+
     def _atomic_write_file(self, path: str, content: str) -> None:
         target = Path(path)
         directory = target.parent
@@ -316,6 +412,18 @@ class SquidController:
                 with contextlib.suppress(Exception):
                     os.chown(tmp_path, owner[0], owner[1])
             tmp.replace(path)
+            try:
+                directory_fd = os.open(
+                    directory,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                )
+            except OSError:
+                directory_fd = -1
+            if directory_fd >= 0:
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
         finally:
             if tmp_path and Path(tmp_path).exists():
                 with contextlib.suppress(Exception):
@@ -367,6 +475,19 @@ class SquidController:
         fallback is the in-memory pre-change config captured during an apply.
         """
         detail_parts: list[str] = []
+        journal = self._transaction_journal(fallback_config)
+        journal_owned = not bool(
+            int(getattr(_SQUID_TRANSACTION_STATE, "depth", 0) or 0)
+        )
+        journal.read()
+        if journal_owned:
+            journal.begin(
+                "rollback_last_known_good",
+                intended_phase="rollback_runtime_ready",
+                target_config=fallback_config,
+            )
+            journal_owned = True
+        journal.phase("rollback_selecting_last_known_good")
         if reason:
             detail_parts.append(str(reason).strip())
 
@@ -389,6 +510,7 @@ class SquidController:
             detail_parts.append(
                 "No last-known-good Squid config is available to restore.",
             )
+            journal.recovery_required(detail_parts[-1])
             return False, "\n".join(part for part in detail_parts if part).strip()
 
         normalized = self.normalize_config_text(candidate)
@@ -399,6 +521,7 @@ class SquidController:
             )
             if validation_detail:
                 detail_parts.append(validation_detail)
+            journal.recovery_required("\n".join(detail_parts))
             return False, "\n".join(part for part in detail_parts if part).strip()
 
         current = self.get_current_config()
@@ -445,30 +568,32 @@ class SquidController:
                         default="Failed to restore the pre-rollback Squid runtime.",
                     ),
                 )
-            return False, "\n".join(
+            result = "\n".join(
                 part for part in [*detail_parts, *recovery_parts] if part
             ).strip()
+            journal.recovery_required(result)
+            return False, result
 
         try:
             self._atomic_write_file(self.squid_conf_path, normalized)
+            journal.phase("rollback_active_config_written")
         except Exception as exc:
             detail_parts.append(f"Failed to write restored Squid config: {exc}")
+            journal.recovery_required(detail_parts[-1])
             return False, "\n".join(part for part in detail_parts if part).strip()
 
-        ok_runtime, runtime_detail = self._materialize_clamav_runtime_files_locked(
+        runtime_result = self._materialize_clamav_runtime_files_locked(
             normalized,
         )
-        if runtime_detail:
-            detail_parts.append(runtime_detail)
-        if not ok_runtime:
+        if runtime_result.detail:
+            detail_parts.append(runtime_result.detail)
+        if not runtime_result.ok:
             return restore_pre_rollback_state(
                 "Last-known-good runtime files could not be materialized; rollback was not applied.",
             )
+        journal.phase("rollback_runtime_materialized")
 
-        runtime_restart_applied = (
-            "Squid restarted after ICAP supervisor update." in runtime_detail
-        )
-        if runtime_restart_applied:
+        if runtime_result.squid_restarted:
             ok_restart, restart_detail = True, ""
         else:
             ok_restart, restart_detail = self._restart_squid_locked()
@@ -478,6 +603,7 @@ class SquidController:
             return restore_pre_rollback_state(
                 "Rollback config was written, but Squid did not restart cleanly.",
             )
+        journal.phase("rollback_runtime_ready")
 
         try:
             self._persist_good_config(normalized)
@@ -498,6 +624,10 @@ class SquidController:
         detail_parts.append(
             f"Rolled back to last-known-good Squid config from {source}.",
         )
+        if journal_owned:
+            journal.complete(detail="\n".join(detail_parts), recovered=True)
+        else:
+            journal.phase("rollback_complete", recovery_status="restored")
         return True, "\n".join(part for part in detail_parts if part).strip()
 
     def _replace_or_append_directive(
@@ -1049,17 +1179,34 @@ stdout_logfile_maxbytes=0
         adblock_enabled: bool | None = None,
     ) -> tuple[bool, str]:
         with _exclusive_squid_lifecycle_lock():
-            return self._materialize_clamav_runtime_files_locked(
-                config_text,
-                adblock_enabled=adblock_enabled,
-            )
+            try:
+                journal, owned = self._begin_public_transaction(
+                    "materialize_clamav_runtime_files",
+                    target_config=config_text,
+                )
+            except SquidTransactionRecoveryRequiredError as exc:
+                return False, str(exc)
+            try:
+                result = self._materialize_clamav_runtime_files_locked(
+                    config_text,
+                    adblock_enabled=adblock_enabled,
+                )
+                self._finish_public_transaction(
+                    journal,
+                    owned=owned,
+                    ok=result.ok,
+                    detail=result.detail,
+                )
+                return result.as_tuple()
+            finally:
+                self._end_public_transaction_scope(owned)
 
     def _materialize_clamav_runtime_files_locked(
         self,
         config_text: str,
         *,
         adblock_enabled: bool | None = None,
-    ) -> tuple[bool, str]:
+    ) -> SquidRuntimeMaterializationResult:
         normalized = self.normalize_config_text(config_text or "")
         virus_path = self._virus_scan_config_path()
         icap_path = self._icap_include_path()
@@ -1071,14 +1218,15 @@ stdout_logfile_maxbytes=0
             for port in self._http_listener_ports(normalized)
         )
 
-        ok, detail = self._materialize_clamav_runtime_files_transaction_locked(
+        result = self._materialize_clamav_runtime_files_transaction_locked(
             normalized,
             adblock_enabled=adblock_enabled,
         )
-        if ok:
-            return ok, detail
+        if result.ok:
+            return result
 
-        recovery_parts = [str(detail or "").strip()]
+        recovery_parts = [str(result.detail or "").strip()]
+        squid_restarted = False
         try:
             self._restore_runtime_file_snapshot(virus_path, old_virus_scan_config)
             self._restore_runtime_file_snapshot(icap_path, old_icap_include)
@@ -1087,12 +1235,13 @@ stdout_logfile_maxbytes=0
             if reread_detail:
                 recovery_parts.append(reread_detail)
             if squid_was_running:
-                _restart_ok, restart_detail = self._restart_squid_locked(
+                restart_ok, restart_detail = self._restart_squid_locked(
                     ready_timeout=75.0,
                     require_http_response=False,
                 )
                 if restart_detail:
                     recovery_parts.append(restart_detail)
+                squid_restarted = bool(restart_ok)
         except Exception as exc:
             recovery_parts.append(
                 public_error_message(
@@ -1100,14 +1249,19 @@ stdout_logfile_maxbytes=0
                     default="Failed to restore the prior ICAP runtime files.",
                 ),
             )
-        return False, "\n".join(part for part in recovery_parts if part).strip()
+        return SquidRuntimeMaterializationResult(
+            False,
+            "\n".join(part for part in recovery_parts if part).strip(),
+            squid_restarted=squid_restarted,
+            changed=result.changed,
+        )
 
     def _materialize_clamav_runtime_files_transaction_locked(
         self,
         config_text: str,
         *,
         adblock_enabled: bool | None = None,
-    ) -> tuple[bool, str]:
+    ) -> SquidRuntimeMaterializationResult:
         try:
             normalized = self.normalize_config_text(config_text or "")
             workers = self._runtime_icap_workers(normalized)
@@ -1134,6 +1288,7 @@ stdout_logfile_maxbytes=0
             old_icap_include = self._snapshot_runtime_file(icap_path)
             old_icap_runtime_files = self._snapshot_managed_icap_runtime_files()
             changed = []
+            squid_restarted_for_supervisor = False
             if self._write_if_changed(virus_path, render_virus_scan_config(options)):
                 changed.append(str(virus_path))
             if self._write_if_changed(
@@ -1152,7 +1307,6 @@ stdout_logfile_maxbytes=0
                 )
             )
             if supervisor_changed:
-                squid_restarted_for_supervisor = False
                 squid_was_running = any(
                     self._tcp_listener_accepts(port)
                     for port in self._http_listener_ports(normalized)
@@ -1173,17 +1327,19 @@ stdout_logfile_maxbytes=0
                         )
                         stop_detail = self._decode_completed(stop)
                         if not self._wait_for_http_listener_absent(timeout=30.0):
-                            return (
+                            return SquidRuntimeMaterializationResult(
                                 False,
                                 "Squid HTTP listener did not release before ICAP supervisor update.",
+                                changed=bool(changed or supervisor_paths),
                             )
                     except Exception as exc:
-                        return (
+                        return SquidRuntimeMaterializationResult(
                             False,
                             public_error_message(
                                 exc,
                                 default="Failed to pause Squid before ICAP supervisor update.",
                             ),
+                            changed=bool(changed or supervisor_paths),
                         )
                 ok_supervisor, supervisor_detail = self._supervisor_reread_update()
                 if not ok_supervisor:
@@ -1194,10 +1350,11 @@ stdout_logfile_maxbytes=0
                     self._restore_runtime_file_snapshot(icap_path, old_icap_include)
                     self._restore_managed_icap_runtime_files(old_icap_runtime_files)
                     self._supervisor_reread_update()
-                    return (
+                    return SquidRuntimeMaterializationResult(
                         False,
                         supervisor_detail
                         or "Failed to reload ICAP supervisor runtime files.",
+                        changed=bool(changed or supervisor_paths),
                     )
                 if squid_was_running:
                     ok_icap = False
@@ -1218,23 +1375,34 @@ stdout_logfile_maxbytes=0
                         if str(part or "").strip()
                     )
                     if not ok_restart:
-                        return (
+                        return SquidRuntimeMaterializationResult(
                             False,
                             restart_detail
                             or "Squid restart failed after ICAP supervisor update.",
+                            changed=True,
                         )
                     if not ok_icap and not restart_detail:
-                        return (
+                        return SquidRuntimeMaterializationResult(
                             False,
                             icap_detail
                             or "ICAP services were not ready after supervisor update.",
+                            squid_restarted=True,
+                            changed=True,
                         )
                 if squid_restarted_for_supervisor:
                     changed.append("Squid restarted after ICAP supervisor update.")
                 changed.extend(supervisor_paths)
             if changed:
-                return True, "ClamAV runtime files updated: " + ", ".join(changed)
-            return True, "ClamAV runtime files already current."
+                return SquidRuntimeMaterializationResult(
+                    True,
+                    "ClamAV runtime files updated: " + ", ".join(changed),
+                    squid_restarted=squid_restarted_for_supervisor,
+                    changed=True,
+                )
+            return SquidRuntimeMaterializationResult(
+                True,
+                "ClamAV runtime files already current.",
+            )
         except Exception as exc:
             with contextlib.suppress(Exception):
                 if "virus_path" in locals():
@@ -1251,7 +1419,11 @@ stdout_logfile_maxbytes=0
                     self._restore_managed_icap_runtime_files(old_icap_runtime_files)
                     self._supervisor_reread_update()
             logger.exception("ClamAV runtime file materialization failed")
-            return False, public_error_message(exc)
+            return SquidRuntimeMaterializationResult(
+                False,
+                public_error_message(exc),
+                changed=bool(locals().get("changed")),
+            )
 
     def _supervisor_reread_update(self) -> tuple[bool, str]:
         try:
@@ -1833,10 +2005,21 @@ stdout_logfile_maxbytes=0
         listener_timeout: float = 20.0,
     ) -> tuple[bool, str]:
         with _exclusive_squid_lifecycle_lock():
-            return self._reconfigure_squid_locked(
-                timeout=timeout,
-                listener_timeout=listener_timeout,
-            )
+            try:
+                journal, owned = self._begin_public_transaction("reconfigure_squid")
+            except SquidTransactionRecoveryRequiredError as exc:
+                return False, str(exc)
+            try:
+                ok, detail = self._reconfigure_squid_locked(
+                    timeout=timeout,
+                    listener_timeout=listener_timeout,
+                )
+                self._finish_public_transaction(
+                    journal, owned=owned, ok=ok, detail=detail
+                )
+                return ok, detail
+            finally:
+                self._end_public_transaction_scope(owned)
 
     def _reconfigure_squid_locked(
         self,
@@ -1899,11 +2082,22 @@ stdout_logfile_maxbytes=0
         require_http_response: bool = True,
     ) -> tuple[bool, str]:
         with _exclusive_squid_lifecycle_lock():
-            return self._restart_squid_locked(
-                ready_timeout=ready_timeout,
-                accept_live_pid_restart=accept_live_pid_restart,
-                require_http_response=require_http_response,
-            )
+            try:
+                journal, owned = self._begin_public_transaction("restart_squid")
+            except SquidTransactionRecoveryRequiredError as exc:
+                return False, str(exc)
+            try:
+                ok, detail = self._restart_squid_locked(
+                    ready_timeout=ready_timeout,
+                    accept_live_pid_restart=accept_live_pid_restart,
+                    require_http_response=require_http_response,
+                )
+                self._finish_public_transaction(
+                    journal, owned=owned, ok=ok, detail=detail
+                )
+                return ok, detail
+            finally:
+                self._end_public_transaction_scope(owned)
 
     def _restart_squid_locked(
         self,
@@ -2360,7 +2554,18 @@ stdout_logfile_maxbytes=0
 
     def clear_disk_cache(self) -> tuple[bool, str]:
         with _exclusive_squid_lifecycle_lock():
-            return self._clear_disk_cache_locked()
+            try:
+                journal, owned = self._begin_public_transaction("clear_disk_cache")
+            except SquidTransactionRecoveryRequiredError as exc:
+                return False, str(exc)
+            try:
+                ok, detail = self._clear_disk_cache_locked()
+                self._finish_public_transaction(
+                    journal, owned=owned, ok=ok, detail=detail
+                )
+                return ok, detail
+            finally:
+                self._end_public_transaction_scope(owned)
 
     def _clear_disk_cache_locked(self) -> tuple[bool, str]:
         cache_paths = self._get_cache_dir_paths()
@@ -2496,7 +2701,7 @@ stdout_logfile_maxbytes=0
         if prepare_succeeded and not self._cleanup_after_cache_prepare(detail_parts):
             return False, "\n".join(part for part in detail_parts if part).strip()
 
-        ok_restart, restart_detail = self.restart_squid(
+        ok_restart, restart_detail = self._restart_squid_locked(
             ready_timeout=20.0,
             accept_live_pid_restart=True,
         )
@@ -2512,13 +2717,27 @@ stdout_logfile_maxbytes=0
             ok, details = self.validate_config_text(normalized_config)
             if not ok:
                 return False, details or "Squid config validation failed."
-            return self._apply_config_text_locked(normalized_config)
+            previous_depth = int(getattr(_SQUID_TRANSACTION_STATE, "depth", 0) or 0)
+            _SQUID_TRANSACTION_STATE.depth = previous_depth + 1
+            try:
+                return self._apply_config_text_locked(normalized_config)
+            finally:
+                _SQUID_TRANSACTION_STATE.depth = previous_depth
 
     def _apply_config_text_locked(
         self,
         normalized_config: str,
     ) -> tuple[bool, str]:
 
+        journal = self._transaction_journal()
+        try:
+            journal.begin(
+                "apply_config_text",
+                intended_phase="runtime_ready_and_lkg_persisted",
+                target_config=normalized_config,
+            )
+        except SquidTransactionRecoveryRequiredError as exc:
+            return False, str(exc)
         backup_path = self.squid_conf_path + ".bak"
         new_path = self.squid_conf_path + ".new"
         try:
@@ -2542,11 +2761,15 @@ stdout_logfile_maxbytes=0
             if current:
                 self._atomic_write_file(backup_path, current)
             Path(new_path).replace(self.squid_conf_path)
+            journal.phase("active_config_installed")
 
-            ok_runtime, runtime_details = self._materialize_clamav_runtime_files_locked(
+            runtime_result = self._materialize_clamav_runtime_files_locked(
                 normalized_config,
             )
-            if not ok_runtime:
+            if not isinstance(runtime_result, SquidRuntimeMaterializationResult):
+                runtime_result = SquidRuntimeMaterializationResult(*runtime_result)
+            runtime_details = runtime_result.detail
+            if not runtime_result.ok:
                 if Path(backup_path).exists():
                     Path(backup_path).replace(self.squid_conf_path)
                 self._restore_runtime_file_snapshot(icap_include_path, old_icap_include)
@@ -2556,19 +2779,23 @@ stdout_logfile_maxbytes=0
                 )
                 self._restore_managed_icap_runtime_files(old_icap_runtime_files)
                 self._supervisor_reread_update()
-                _rollback_ok, rollback_detail = (
+                rollback_ok, rollback_detail = (
                     self._restore_last_known_good_config_locked(
                         reason=runtime_details
                         or "Failed to materialize ClamAV runtime files.",
                         fallback_config=current,
                     )
                 )
-                return False, rollback_detail or (
+                failure_result = rollback_detail or (
                     runtime_details or "Failed to materialize ClamAV runtime files."
                 )
-            runtime_restart_applied = (
-                "Squid restarted after ICAP supervisor update." in runtime_details
-            )
+                if rollback_ok:
+                    journal.complete(detail=failure_result, recovered=True)
+                else:
+                    journal.recovery_required(failure_result)
+                return False, failure_result
+            journal.phase("runtime_fragments_materialized")
+            runtime_restart_applied = runtime_result.squid_restarted
 
             if workers_changed:
                 ok_scale, scale_details = self.apply_icap_scaling(
@@ -2596,15 +2823,20 @@ stdout_logfile_maxbytes=0
                             message="Failed to revert generated ICAP runtime files",
                         )
                     self._supervisor_reread_update()
-                    _rollback_ok, rollback_detail = (
+                    rollback_ok, rollback_detail = (
                         self._restore_last_known_good_config_locked(
                             reason=scale_details or "Failed to scale ICAP processes.",
                             fallback_config=current,
                         )
                     )
-                    return False, rollback_detail or (
+                    failure_result = rollback_detail or (
                         scale_details or "Failed to scale ICAP processes."
                     )
+                    if rollback_ok:
+                        journal.complete(detail=failure_result, recovered=True)
+                    else:
+                        journal.recovery_required(failure_result)
+                    return False, failure_result
 
                 ok_restart, restart_details = self._clear_disk_cache_locked()
                 if not ok_restart:
@@ -2630,23 +2862,30 @@ stdout_logfile_maxbytes=0
                                 message="Failed to revert generated ICAP runtime files after restart failure",
                             )
                         self._supervisor_reread_update()
-                        _rollback_ok, rollback_detail = (
+                        rollback_ok, rollback_detail = (
                             self._restore_last_known_good_config_locked(
                                 reason=restart_details
                                 or "Squid restart failed after cache reinitialization.",
                                 fallback_config=current,
                             )
                         )
-                        return False, rollback_detail or (
+                        failure_result = rollback_detail or (
                             restart_details
                             or "Squid restart failed after cache reinitialization."
                         )
+                        if rollback_ok:
+                            journal.complete(detail=failure_result, recovered=True)
+                        else:
+                            journal.recovery_required(failure_result)
+                        return False, failure_result
 
                 self._persist_good_config_or_raise(normalized_config)
+                journal.phase("persisted_lkg_written")
 
                 message = (restart_details or "Squid restarted.").strip()
                 if scale_details:
                     message = (message + "\n" + scale_details).strip()
+                journal.complete(detail=message)
                 return True, message
 
             if cache_dirs_changed:
@@ -2664,28 +2903,39 @@ stdout_logfile_maxbytes=0
                     )
                     self._restore_managed_icap_runtime_files(old_icap_runtime_files)
                     self._supervisor_reread_update()
-                    _rollback_ok, rollback_detail = (
+                    rollback_ok, rollback_detail = (
                         self._restore_last_known_good_config_locked(
                             reason=restart_details
                             or "Squid restart failed after cache reinitialization.",
                             fallback_config=current,
                         )
                     )
-                    return False, rollback_detail or (
+                    failure_result = rollback_detail or (
                         restart_details
                         or "Squid restart failed after cache reinitialization."
                     )
+                    if rollback_ok:
+                        journal.complete(detail=failure_result, recovered=True)
+                    else:
+                        journal.recovery_required(failure_result)
+                    return False, failure_result
 
                 self._persist_good_config_or_raise(normalized_config)
+                journal.phase("persisted_lkg_written")
 
-                return True, (
+                success_result = (
                     restart_details
                     or "Squid restarted after cache store reinitialization."
                 ).strip()
+                journal.complete(detail=success_result)
+                return True, success_result
 
             if runtime_restart_applied:
                 self._persist_good_config_or_raise(normalized_config)
-                return True, runtime_details.strip() or "Squid restarted."
+                journal.phase("persisted_lkg_written")
+                success_result = runtime_details.strip() or "Squid restarted."
+                journal.complete(detail=success_result)
+                return True, success_result
 
             reconfigure_ok, reconfigure_detail = self._reconfigure_squid_locked(
                 timeout=15,
@@ -2701,16 +2951,23 @@ stdout_logfile_maxbytes=0
                 )
                 self._restore_managed_icap_runtime_files(old_icap_runtime_files)
                 self._supervisor_reread_update()
-                _rollback_ok, rollback_detail = (
+                rollback_ok, rollback_detail = (
                     self._restore_last_known_good_config_locked(
                         reason=reconfigure_detail,
                         fallback_config=current,
                     )
                 )
-                return False, rollback_detail or reconfigure_detail
+                failure_result = rollback_detail or reconfigure_detail
+                if rollback_ok:
+                    journal.complete(detail=failure_result, recovered=True)
+                else:
+                    journal.recovery_required(failure_result)
+                return False, failure_result
 
             self._persist_good_config_or_raise(normalized_config)
+            journal.phase("persisted_lkg_written")
 
+            journal.complete(detail=reconfigure_detail)
             return True, reconfigure_detail
         except Exception as exc:
             logger.exception("Squid reconfigure failed")
@@ -2725,11 +2982,16 @@ stdout_logfile_maxbytes=0
                     persisted_config_path,
                     old_persisted_config,
                 )
-            _rollback_ok, rollback_detail = self._restore_last_known_good_config_locked(
+            rollback_ok, rollback_detail = self._restore_last_known_good_config_locked(
                 reason=failure_detail,
                 fallback_config=locals().get("current", ""),
             )
-            return False, rollback_detail or failure_detail
+            failure_result = rollback_detail or failure_detail
+            if rollback_ok:
+                journal.complete(detail=failure_result, recovered=True)
+            else:
+                journal.recovery_required(failure_result)
+            return False, failure_result
         finally:
             try:
                 if Path(new_path).exists():

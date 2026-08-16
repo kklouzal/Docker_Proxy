@@ -9,6 +9,18 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolated_squid_transaction_paths(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv(
+        "SQUID_TRANSACTION_JOURNAL_PATH",
+        str(tmp_path / "squid-transaction.json"),
+    )
+    monkeypatch.setenv(
+        "PERSISTED_SQUID_CONF_PATH",
+        str(tmp_path / "persisted-squid.conf"),
+    )
+
+
 def test_get_status_ignores_stderr_when_squid_check_succeeds() -> None:
     from services import squidctl  # type: ignore
 
@@ -431,7 +443,7 @@ def test_clear_disk_cache_uses_bounded_restart_wait(
     monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (
             ready_timeouts.append(float(ready_timeout)) or (True, "restarted")
         ),
@@ -497,7 +509,7 @@ def test_clear_disk_cache_clears_all_configured_cache_dirs(
     monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (True, "restarted"),
     )
 
@@ -555,7 +567,7 @@ def test_clear_disk_cache_fails_when_nested_directory_removal_fails(
     monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (
             restart_calls.append(float(ready_timeout)) or (True, "restarted")
         ),
@@ -641,7 +653,7 @@ def test_clear_disk_cache_cleans_live_pid_before_prepare(
     )
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (
             ready_timeouts.append(float(ready_timeout)) or (True, "restarted")
         ),
@@ -709,7 +721,7 @@ def test_clear_disk_cache_fails_before_prepare_when_live_pid_persists(
     monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (
             restart_calls.append(float(ready_timeout)) or (True, "unexpected restart")
         ),
@@ -781,7 +793,7 @@ def test_clear_disk_cache_fails_when_prepare_listener_stays_bound(
     monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (
             restart_calls.append(float(ready_timeout)) or (True, "unexpected restart")
         ),
@@ -848,7 +860,7 @@ def test_clear_disk_cache_stops_supervisor_autorestart_before_prepare(
     monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (
             ready_timeouts.append(float(ready_timeout)) or (True, "restarted")
         ),
@@ -927,7 +939,7 @@ def test_clear_disk_cache_retries_supervisor_stop_before_prepare(
     )
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (
             ready_timeouts.append(float(ready_timeout)) or (True, "restarted")
         ),
@@ -1008,7 +1020,7 @@ def test_clear_disk_cache_retries_supervisor_stop_after_prepare(
     )
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (
             ready_timeouts.append(float(ready_timeout)) or (True, "restarted")
         ),
@@ -1127,7 +1139,7 @@ def test_clear_disk_cache_retries_transient_squid_z_failure(
     )
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (True, "restart ok"),
     )
 
@@ -1183,7 +1195,7 @@ def test_clear_disk_cache_fails_when_squid_z_returns_nonzero(
     monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (
             restart_calls.append(float(ready_timeout)) or (True, "unexpected restart")
         ),
@@ -1237,7 +1249,7 @@ def test_clear_disk_cache_fails_when_squid_z_raises(
     monkeypatch.setattr(controller, "_remove_stale_squid_pidfile", lambda **_kwargs: "")
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (
             restart_calls.append(float(ready_timeout)) or (True, "unexpected restart")
         ),
@@ -1287,7 +1299,7 @@ def test_clear_disk_cache_fails_fast_when_listener_never_releases(
     )
     monkeypatch.setattr(
         controller,
-        "restart_squid",
+        "_restart_squid_locked",
         lambda *, ready_timeout=45.0, **_kwargs: (True, "unexpected restart"),
     )
 

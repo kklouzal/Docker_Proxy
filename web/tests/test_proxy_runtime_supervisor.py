@@ -17,6 +17,15 @@ import pytest
 
 from .subprocess_test_utils import run_test_process
 
+
+@pytest.fixture(autouse=True)
+def _isolated_squid_transaction_journal(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv(
+        "SQUID_TRANSACTION_JOURNAL_PATH",
+        str(tmp_path / "squid-transaction.json"),
+    )
+
+
 POLICY_SHA_A = "a" * 64
 POLICY_SHA_B = "b" * 64
 POLICY_SHA_OLD = "c" * 64
@@ -119,6 +128,12 @@ def _runtime_shell():
         "ok": True,
         "detail": "operation ledger reachable; pending=0 applying=0 failed=0",
         "counts": {},
+    }
+    runtime._squid_transaction_health = lambda: {
+        "ok": True,
+        "ready": True,
+        "status": "complete",
+        "detail": "Squid transaction journal is reconciled.",
     }
     return runtime
 
@@ -3414,6 +3429,103 @@ def test_squid_controller_atomic_write_uses_readable_mode_for_new_files(
     assert target.stat().st_mode & 0o777 == 0o644
 
 
+@pytest.mark.parametrize(
+    "method_name",
+    [
+        "materialize_clamav_runtime_files",
+        "reconfigure_squid",
+        "restart_squid",
+        "clear_disk_cache",
+    ],
+)
+@pytest.mark.parametrize("journal_content", ["dirty", "{not-json"])
+def test_public_squid_mutators_refuse_dirty_or_corrupt_journal(
+    tmp_path,
+    monkeypatch,
+    method_name,
+    journal_content,
+) -> None:
+    from services.squid_core import SquidController  # type: ignore
+    from services.squid_transaction import SquidTransactionJournal  # type: ignore
+
+    active = tmp_path / "squid.conf"
+    persisted = tmp_path / "persisted.conf"
+    journal_path = tmp_path / "transaction.json"
+    active.write_text("workers 1\n", encoding="utf-8")
+    persisted.write_text("workers 1\n", encoding="utf-8")
+    monkeypatch.setenv("SQUID_TRANSACTION_JOURNAL_PATH", str(journal_path))
+    controller = SquidController(str(active))
+    controller.persisted_squid_conf_path = str(persisted)
+    if journal_content == "dirty":
+        SquidTransactionJournal(
+            journal_path,
+            active_config=active,
+            persisted_config=persisted,
+        ).begin("prior", intended_phase="ready")
+    else:
+        journal_path.write_text(journal_content, encoding="utf-8")
+    controller._run = lambda *_args, **_kwargs: pytest.fail("mutation executed")
+
+    method = getattr(controller, method_name)
+    result = (
+        method("workers 1\n")
+        if method_name == "materialize_clamav_runtime_files"
+        else method()
+    )
+
+    assert result[0] is False
+    assert "journal" in result[1].lower()
+
+
+def test_apply_uses_structured_restart_evidence_not_detail_prose(tmp_path) -> None:
+    from services.squid_core import (  # type: ignore
+        SquidController,
+        SquidRuntimeMaterializationResult,
+    )
+
+    active = tmp_path / "squid.conf"
+    persisted = tmp_path / "persisted.conf"
+    active.write_text("workers 1\n# old\n", encoding="utf-8")
+    controller = SquidController(str(active))
+    controller.persisted_squid_conf_path = str(persisted)
+    controller.normalize_config_text = lambda text: text
+    controller.validate_config_text = lambda _text: (True, "validated")
+    controller._materialize_clamav_runtime_files_locked = lambda *_a, **_k: (
+        SquidRuntimeMaterializationResult(
+            True,
+            "Runtime topology converged without legacy restart wording.",
+            squid_restarted=True,
+            changed=True,
+        )
+    )
+    controller._reconfigure_squid_locked = lambda **_kwargs: pytest.fail(
+        "structured restart evidence should suppress reconfigure"
+    )
+
+    ok, detail = controller.apply_config_text("workers 1\n# new\n")
+
+    assert ok is True
+    assert "legacy restart wording" in detail
+
+
+def test_transaction_manifest_covers_worker_expansion_and_shrink(tmp_path) -> None:
+    from services.squid_core import SquidController  # type: ignore
+
+    active = tmp_path / "squid.conf"
+    active.write_text("workers 1\n", encoding="utf-8")
+    controller = SquidController(str(active))
+    controller._icap_include_path = lambda: tmp_path / "20-icap.conf"
+    controller._virus_scan_config_path = lambda: tmp_path / "virus.conf"
+    controller._managed_icap_runtime_paths = list
+    controller._render_icap_supervisor_files = lambda *, workers, config_text=None: {
+        tmp_path / f"worker-{workers}.conf": "contents"
+    }
+
+    paths = set(controller._transaction_runtime_paths("workers 4\n"))
+
+    assert {tmp_path / f"worker-{worker}.conf" for worker in range(1, 5)} <= paths
+
+
 def test_runtime_icap_materialization_matches_startup_parity_contract(
     tmp_path,
     monkeypatch,
@@ -3544,6 +3656,8 @@ def test_clamav_runtime_supervisor_update_restarts_squid_with_accept_only_probe(
     controller = SquidController.__new__(SquidController)
     calls: list[object] = []
 
+    controller.squid_conf_path = str(tmp_path / "squid.conf")
+    controller.persisted_squid_conf_path = str(tmp_path / "persisted.conf")
     controller.normalize_config_text = lambda text: text
     controller._runtime_icap_workers = lambda _text: 1
     controller._virus_scan_config_path = lambda: tmp_path / "virus_scan.conf"
@@ -4916,6 +5030,41 @@ def test_operation_ledger_health_reports_counts_and_unavailable(monkeypatch) -> 
     assert unavailable["detail"] == "Proxy operation ledger is unavailable."
 
 
+def test_squid_transaction_health_reports_recovery_required(
+    tmp_path, monkeypatch
+) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+    from proxy.runtime import ProxyRuntime  # type: ignore
+
+    active = tmp_path / "active.conf"
+    persisted = tmp_path / "persisted.conf"
+    active.write_text("candidate\n", encoding="utf-8")
+    persisted.write_text("last known good\n", encoding="utf-8")
+    journal_path = tmp_path / "transaction.json"
+    journal = runtime_module.SquidTransactionJournal(
+        journal_path,
+        active_config=active,
+        persisted_config=persisted,
+    )
+    journal.begin("apply_config_text", intended_phase="ready")
+    monkeypatch.setenv("SQUID_TRANSACTION_JOURNAL_PATH", str(journal_path))
+
+    runtime = ProxyRuntime.__new__(ProxyRuntime)
+    runtime.controller = SimpleNamespace(
+        squid_conf_path=str(active),
+        persisted_squid_conf_path=str(persisted),
+    )
+
+    result = ProxyRuntime._squid_transaction_health(runtime)
+
+    assert result["ok"] is False
+    assert result["ready"] is False
+    assert result["status"] == "in_progress"
+    assert result["operation"] == "apply_config_text"
+    assert result["transaction_id"]
+    assert "reconciliation is required" in result["detail"]
+
+
 def test_collect_navigation_health_degrades_while_operations_are_active() -> None:
     runtime = _runtime_shell()
     runtime.health_cache_ttl_seconds = 0.0
@@ -4942,6 +5091,74 @@ def test_collect_navigation_health_degrades_while_operations_are_active() -> Non
     assert result["ok"] is False
     assert result["status"] == "degraded"
     assert result["services"]["operation_ledger"]["counts"]["pending"] == 1
+    assert result["services"]["squid_transaction"]["ready"] is True
+
+
+def test_collect_navigation_health_degrades_when_squid_transaction_is_dirty() -> None:
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 0.0
+    runtime._health_cache_lock = threading.Lock()
+    runtime.controller = SimpleNamespace(
+        get_status=lambda: (b"squid ok", b""),
+        _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
+        _wait_for_http_listener=lambda *, timeout: True,
+    )
+    runtime._current_config_sha = lambda: "config-sha"
+    runtime._supervisor_programs_health = lambda: {
+        "ok": True,
+        "detail": "supervisor programs running",
+        "programs": {},
+    }
+    runtime._squid_transaction_health = lambda: {
+        "ok": False,
+        "ready": False,
+        "status": "recovery_required",
+        "detail": "Squid transaction reconciliation is required before mutations may proceed.",
+        "transaction_id": "transaction-1",
+    }
+
+    result = runtime.collect_navigation_health(force=True)
+
+    assert result["ok"] is False
+    assert result["status"] == "degraded"
+    assert result["services"]["squid_transaction"]["ready"] is False
+    assert result["services"]["squid_transaction"]["transaction_id"] == (
+        "transaction-1"
+    )
+
+
+def test_navigation_health_cache_invalidates_when_transaction_becomes_dirty() -> None:
+    runtime = _runtime_shell()
+    transaction = {
+        "ok": True,
+        "ready": True,
+        "status": "complete",
+        "detail": "reconciled",
+    }
+    runtime._squid_transaction_health = lambda: dict(transaction)
+    runtime.health_cache_ttl_seconds = 60.0
+    runtime._health_cache_lock = threading.Lock()
+    runtime._navigation_health_cache_value = None
+    runtime._navigation_health_cache_ts = 0.0
+    runtime.controller = SimpleNamespace(
+        get_status=lambda: (b"squid ok", b""),
+        _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
+        _wait_for_http_listener=lambda *, timeout: True,
+    )
+    runtime._current_config_sha = lambda: "unchanged-sha"
+    runtime._supervisor_programs_health = lambda: {"ok": True, "detail": "ok"}
+
+    assert runtime.collect_navigation_health()["ok"] is True
+    transaction.update(
+        ok=False,
+        ready=False,
+        status="unreadable",
+        detail="journal corrupt",
+    )
+    degraded = runtime.collect_navigation_health()
+
+    assert degraded["ok"] is False
+    assert degraded["services"]["squid_transaction"]["status"] == "unreadable"
 
 
 def test_collect_health_degrades_when_operation_ledger_unavailable() -> None:
@@ -5932,10 +6149,12 @@ def test_packaged_proxy_supervisor_stops_squid_process_group() -> None:
     assert "killasgroup=true" in section
 
 
-def test_squid_reload_treats_successful_stderr_warnings_as_detail() -> None:
+def test_squid_reload_treats_successful_stderr_warnings_as_detail(tmp_path) -> None:
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
+    controller.squid_conf_path = str(tmp_path / "squid.conf")
+    controller.persisted_squid_conf_path = str(tmp_path / "persisted.conf")
     controller._run = lambda *_args, **_kwargs: _cp(
         0, stdout="", stderr="WARNING: benign squid warning"
     )
@@ -5947,10 +6166,12 @@ def test_squid_reload_treats_successful_stderr_warnings_as_detail() -> None:
     assert b"WARNING: benign squid warning" in stdout
 
 
-def test_squid_reload_preserves_nonzero_reconfigure_failure() -> None:
+def test_squid_reload_preserves_nonzero_reconfigure_failure(tmp_path) -> None:
     from services.squid_core import SquidController  # type: ignore
 
     controller = SquidController.__new__(SquidController)
+    controller.squid_conf_path = str(tmp_path / "squid.conf")
+    controller.persisted_squid_conf_path = str(tmp_path / "persisted.conf")
     controller._run = lambda *_args, **_kwargs: _cp(
         1, stdout="", stderr="fatal squid error"
     )

@@ -78,6 +78,7 @@ from services.proxy_registry import (
 from services.runtime_helpers import decode_bytes as _decode_bytes
 from services.schema_lifecycle import ensure_startup_schema_if_configured
 from services.squid_core import SquidController, _exclusive_squid_lifecycle_lock
+from services.squid_transaction import SquidTransactionJournal, default_journal_path
 from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
 from services.timeseries_store import get_timeseries_store
@@ -1740,6 +1741,41 @@ class ProxyRuntime:
             else "supervisor programs running",
             "programs": statuses,
         }
+
+    def _squid_transaction_health(self) -> dict[str, Any]:
+        controller = getattr(self, "controller", None)
+        if controller is None:
+            return {
+                "ok": False,
+                "ready": False,
+                "status": "unavailable",
+                "detail": "Squid transaction journal is unavailable.",
+            }
+        try:
+            journal_factory = getattr(controller, "_transaction_journal", None)
+            journal = (
+                journal_factory()
+                if callable(journal_factory)
+                else SquidTransactionJournal(
+                    default_journal_path(controller.persisted_squid_conf_path),
+                    active_config=controller.squid_conf_path,
+                    persisted_config=controller.persisted_squid_conf_path,
+                )
+            )
+            return journal.health().as_dict()
+        except Exception:
+            log_exception_throttled(
+                logger,
+                "proxy_runtime.squid_transaction_health",
+                interval_seconds=30.0,
+                message="Failed to inspect Squid transaction journal health",
+            )
+            return {
+                "ok": False,
+                "ready": False,
+                "status": "unavailable",
+                "detail": "Squid transaction journal is unavailable.",
+            }
 
     def _operation_ledger_health(self) -> dict[str, Any]:
         try:
@@ -3852,6 +3888,17 @@ class ProxyRuntime:
             current_config_sha = self._current_config_sha()
         except Exception:
             current_config_sha = ""
+        transaction_health_reader = getattr(self, "_squid_transaction_health", None)
+        current_transaction_health = (
+            transaction_health_reader()
+            if callable(transaction_health_reader)
+            else {
+                "ok": False,
+                "ready": False,
+                "status": "unavailable",
+                "detail": "Squid transaction journal health is unavailable.",
+            }
+        )
         if not force and self.health_cache_ttl_seconds > 0:
             with self._health_cache_lock:
                 cached = self._navigation_health_cache_value
@@ -3865,7 +3912,11 @@ class ProxyRuntime:
                         == current_config_sha
                     )
                 ):
-                    return cached
+                    cached_transaction = (cached.get("services") or {}).get(
+                        "squid_transaction"
+                    ) or {}
+                    if cached_transaction == current_transaction_health:
+                        return cached
 
         started_mono = time.monotonic()
         stdout, stderr = self.controller.get_status()
@@ -3886,6 +3937,7 @@ class ProxyRuntime:
         services = {
             "supervisor": self._supervisor_programs_health(),
             "operation_ledger": self._operation_ledger_health(),
+            "squid_transaction": current_transaction_health,
             "squid_listeners": {
                 "ok": bool(listener_ok),
                 "detail": _listener_mode_summary(listener_details)
@@ -3924,13 +3976,27 @@ class ProxyRuntime:
             current_config_sha_for_cache = self._current_config_sha()
         except Exception:
             current_config_sha_for_cache = ""
+        transaction_health_reader = getattr(self, "_squid_transaction_health", None)
+        current_transaction_health = (
+            transaction_health_reader()
+            if callable(transaction_health_reader)
+            else {
+                "ok": False,
+                "ready": False,
+                "status": "unavailable",
+                "detail": "Squid transaction journal health is unavailable.",
+            }
+        )
 
         def cache_matches_current_config(cached_value: dict[str, Any]) -> bool:
+            cached_transaction = (cached_value.get("services") or {}).get(
+                "squid_transaction"
+            ) or {}
             return (
                 not current_config_sha_for_cache
                 or str(cached_value.get("current_config_sha") or "")
                 == current_config_sha_for_cache
-            )
+            ) and cached_transaction == current_transaction_health
 
         if not force and self.health_cache_ttl_seconds > 0:
             with self._health_cache_lock:
@@ -4013,6 +4079,7 @@ class ProxyRuntime:
             )
             services["supervisor"] = self._supervisor_programs_health()
             services["operation_ledger"] = self._operation_ledger_health()
+            services["squid_transaction"] = current_transaction_health
             try:
                 listener_details = tuple(self.controller._http_listener_details())
                 listener_ports = tuple(

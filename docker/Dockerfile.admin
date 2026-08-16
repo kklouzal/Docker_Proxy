@@ -116,6 +116,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/short_lived_cache.py \
 	web/services/sql_identifiers.py \
 	web/services/squid_core.py \
+	web/services/squid_transaction.py \
 	web/services/squid_config_forms.py \
 	web/services/squid_listeners.py \
 	web/services/squidctl.py \

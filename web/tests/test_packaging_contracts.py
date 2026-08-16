@@ -1605,11 +1605,28 @@ def test_entrypoint_bootstrap_av_policy_matches_schema_safety_guards() -> None:
     )
 
 
-def test_proxy_entrypoint_mirrors_auth_cache_guard_to_persisted_config() -> None:
+def test_proxy_entrypoint_only_reads_persisted_config_before_startup_complete() -> None:
     entrypoint = _read("docker/entrypoint.sh")
+    pre_complete = entrypoint.split(
+        "python3 /app/services/squid_transaction.py startup-complete", 1
+    )[0]
+    persisted_references = [
+        line.strip()
+        for line in pre_complete.splitlines()
+        if "PERSISTED_SQUID_CONF_PATH" in line
+    ]
 
     assert "ensure_auth_cookie_cache_deny /etc/squid/squid.conf" in entrypoint
-    assert 'ensure_auth_cookie_cache_deny "$PERSISTED_SQUID_CONF_PATH"' in entrypoint
+    assert persisted_references == [
+        'PERSISTED_SQUID_CONF_PATH="${PERSISTED_SQUID_CONF_PATH:-/var/lib/squid-flask-proxy/squid.conf}"',
+        "export PERSISTED_SQUID_CONF_PATH",
+        '--persisted "$PERSISTED_SQUID_CONF_PATH" \\',
+        'if [ -f "$PERSISTED_SQUID_CONF_PATH" ]; then',
+        'cp "$PERSISTED_SQUID_CONF_PATH" /etc/squid/squid.conf',
+        'if [ -n "$TEMPLATE" ] && [ ! -f "$PERSISTED_SQUID_CONF_PATH" ]; then',
+        'PERSISTED_SQUID_WORKERS="$(extract_squid_workers_from_file "$PERSISTED_SQUID_CONF_PATH")"',
+        '--persisted "$PERSISTED_SQUID_CONF_PATH" \\',
+    ]
 
 
 def test_linux_container_payloads_are_lf_only() -> None:

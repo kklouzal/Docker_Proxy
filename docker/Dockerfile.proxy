@@ -179,6 +179,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/sql_identifiers.py \
     web/services/squid_core.py \
     web/services/squid_listeners.py \
+    web/services/squid_transaction.py \
     web/services/ssl_compatibility_presets.py \
     web/services/ssl_errors_store.py \
     web/services/sslfilter_store.py \
