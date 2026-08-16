@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
+from services.domain_normalization import is_ambiguous_ipv4_like_host
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -39,26 +41,6 @@ WINDOWS_RESERVED_SETTINGS_FILE_STEMS = (
     *(f"COM{index}" for index in range(1, 10)),
     *(f"LPT{index}" for index in range(1, 10)),
 )
-
-
-def _is_ambiguous_ipv4_like_host(value: str) -> bool:
-    candidate = (value or "").rstrip(".").lower()
-    if not candidate:
-        return False
-    labels = candidate.split(".")
-    if not 1 <= len(labels) <= 4:
-        return False
-    for label in labels:
-        if not label:
-            return False
-        if label.isdecimal():
-            continue
-        if label.startswith("0x"):
-            digits = label.removeprefix("0x")
-            if digits and all(ch in "0123456789abcdef" for ch in digits):
-                continue
-        return False
-    return True
 
 
 class WinHttpBuilderError(ValueError):
@@ -259,8 +241,7 @@ def _validate_bypass_entry(value: str) -> None:
         return
     if "://" in entry:
         msg = (
-            f"{field_name} must be a host, domain, IP, or wildcard pattern, "
-            "not a URL."
+            f"{field_name} must be a host, domain, IP, or wildcard pattern, not a URL."
         )
         raise WinHttpBuilderError(msg)
     if any(separator in entry for separator in ("/", "\\")):
@@ -327,16 +308,17 @@ def _validate_bypass_wildcard_pattern(value: str, field_name: str) -> None:
     # - IPv4 prefix: 10.* or 192.168.*
     if labels[-1] == "*":
         prefix_labels = labels[:-1]
-        if (
-            1 <= len(prefix_labels) <= 3
-            and all(_is_valid_decimal_ipv4_prefix_label(label) for label in prefix_labels)
+        if 1 <= len(prefix_labels) <= 3 and all(
+            _is_valid_decimal_ipv4_prefix_label(label) for label in prefix_labels
         ):
             return
         _invalid_bypass_wildcard_pattern(field_name)
 
     if labels[0] == "*":
         suffix_labels = labels[1:]
-        if len(suffix_labels) >= 2 and all(_is_valid_dns_label(label) for label in suffix_labels):
+        if len(suffix_labels) >= 2 and all(
+            _is_valid_dns_label(label) for label in suffix_labels
+        ):
             return
         _invalid_bypass_wildcard_pattern(field_name)
 
@@ -367,7 +349,7 @@ def _validate_proxy_host_identity(value: str, field_name: str) -> None:
 
     dns_host = host.removesuffix(".")
     labels = dns_host.split(".")
-    if _is_ambiguous_ipv4_like_host(host):
+    if is_ambiguous_ipv4_like_host(host):
         msg = f"{field_name} must not use ambiguous or invalid IPv4 forms."
         raise WinHttpBuilderError(msg)
     if len(dns_host) > 253 or not all(
@@ -410,7 +392,13 @@ def _normalize_proxy_host(host: str) -> tuple[str, str | None]:
                 raise ValueError
             if inline_port is not None:
                 warning = f"{warning} {inline_port_warning}"
-            if parsed.path or parsed.query or parsed.fragment or parsed.username or parsed.password:
+            if (
+                parsed.path
+                or parsed.query
+                or parsed.fragment
+                or parsed.username
+                or parsed.password
+            ):
                 msg = "Proxy host/IP must be only a host name or IP address, not a full URL."
                 raise WinHttpBuilderError(msg)
             value = parsed.hostname or ""
@@ -672,7 +660,9 @@ def build_proxy_string(
             "Microsoft's advproxy documentation includes a socks example but also states SOCKS5 is not supported; verify target Windows behavior before deploying socks mappings.",
         )
     mapping_host = _format_proxy_mapping_host(host)
-    return ";".join(f"{scheme}={mapping_host}:{port}" for scheme in schemes), tuple(warnings)
+    return ";".join(f"{scheme}={mapping_host}:{port}" for scheme in schemes), tuple(
+        warnings
+    )
 
 
 def generate_basic_winhttp_binary(proxy_string: str, bypass_string: str) -> str:
@@ -799,7 +789,7 @@ def normalize_reg_binary_export(value: str) -> str:
     else:
         if text.strip() and not RAW_HEX_INPUT_RE.fullmatch(text):
             msg = (
-                f'No {VALUE_NAME} {VALUE_TYPE} value was found; paste a registry export '
+                f"No {VALUE_NAME} {VALUE_TYPE} value was found; paste a registry export "
                 f'containing "{VALUE_NAME}"=hex:... or raw hex bytes.'
             )
             raise WinHttpBuilderError(msg)
@@ -811,7 +801,7 @@ def normalize_reg_binary_export(value: str) -> str:
     )
     if not chunks and text.strip() and not clean:
         msg = (
-            f'No {VALUE_NAME} {VALUE_TYPE} value was found; paste a registry export '
+            f"No {VALUE_NAME} {VALUE_TYPE} value was found; paste a registry export "
             f'containing "{VALUE_NAME}"=hex:... or raw hex bytes.'
         )
         raise WinHttpBuilderError(msg)
@@ -924,7 +914,9 @@ def build_tracing_command(
         parts.append(f"output={output_value}")
     if trace_file_prefix:
         _validate_command_value(trace_file_prefix, "Trace file prefix")
-        parts.append(f"trace-file-prefix={_quote_windows_command_argument(trace_file_prefix)}")
+        parts.append(
+            f"trace-file-prefix={_quote_windows_command_argument(trace_file_prefix)}"
+        )
     level_value = (level or "").strip().lower()
     if level_value:
         if level_value not in TRACING_LEVELS:

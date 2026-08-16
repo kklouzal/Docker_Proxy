@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
+from services.domain_normalization import is_ambiguous_ipv4_like_host
 from services.keyed_locks import KeyedLockRegistry
 from services.pac_private_local import (
     LOCAL_DOMAIN_SUFFIXES,
@@ -44,7 +45,6 @@ from services.proxy_registry import (
     normalize_public_pac_path,
 )
 from services.public_endpoint import (
-    _is_ambiguous_ipv4_host,
     _is_reserved_public_dns_host,
     _is_unsafe_request_host_ip,
 )
@@ -340,7 +340,7 @@ def _normalize_proxy_host_only(host: str, *, allow_private: bool = False) -> str
     except ValueError:
         normalized_dns = candidate.rstrip(".").lower()
         if (
-            _is_ambiguous_ipv4_host(normalized_dns)
+            is_ambiguous_ipv4_like_host(normalized_dns)
             or not _valid_proxy_dns_host(normalized_dns)
             or _is_reserved_public_dns_host(normalized_dns)
         ):

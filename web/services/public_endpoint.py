@@ -3,27 +3,8 @@ from __future__ import annotations
 import ipaddress
 from urllib.parse import urlsplit
 
+from services.domain_normalization import is_ambiguous_ipv4_like_host
 from services.runtime_helpers import authority_has_empty_explicit_port
-
-
-def _is_ambiguous_ipv4_host(value: str) -> bool:
-    candidate = value.rstrip(".").lower()
-    if not candidate:
-        return False
-    labels = candidate.split(".")
-    if not 1 <= len(labels) <= 4:
-        return False
-    for label in labels:
-        if not label:
-            return False
-        if label.isdecimal():
-            continue
-        if label.startswith("0x"):
-            digits = label.removeprefix("0x")
-            if digits and all(ch in "0123456789abcdef" for ch in digits):
-                continue
-        return False
-    return True
 
 
 def _canonical_public_dns_host(
@@ -160,7 +141,7 @@ def normalize_public_host(
     )
     if not dns_host:
         return fallback
-    if _is_ambiguous_ipv4_host(dns_host):
+    if is_ambiguous_ipv4_like_host(dns_host):
         return fallback
     if _is_reserved_public_dns_host(dns_host):
         return fallback

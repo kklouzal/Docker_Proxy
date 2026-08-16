@@ -21,6 +21,7 @@ from services.db import (
     run_mysql_operation_with_retry,
     table_exists,
 )
+from services.domain_normalization import is_ambiguous_ipv4_like_host
 from services.proxy_context import get_default_proxy_id, normalize_proxy_id
 from services.proxy_lifecycle import (
     ProxyLifecycleIncompleteError,
@@ -35,10 +36,7 @@ from services.proxy_write_guard import (
     clear_proxy_write_guard_cache,
     proxy_lifecycle_lock_name,
 )
-from services.public_endpoint import (
-    _canonical_public_dns_host,
-    _is_ambiguous_ipv4_host,
-)
+from services.public_endpoint import _canonical_public_dns_host
 from services.public_endpoint import (
     coerce_public_port as _coerce_port,
 )
@@ -158,7 +156,7 @@ def _bounded_repeated_unquote(value: str) -> str | None:
 
 def _canonical_management_dns_host(value: str) -> str:
     candidate = _canonical_public_dns_host(value, allow_single_label=True)
-    if not candidate or _is_ambiguous_ipv4_host(candidate):
+    if not candidate or is_ambiguous_ipv4_like_host(candidate):
         return ""
     return candidate
 

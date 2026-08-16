@@ -24,7 +24,8 @@ def _valid_dns_hostname(raw: str) -> bool:
     return True
 
 
-def _is_ambiguous_ipv4_host(raw: str) -> bool:
+def is_ambiguous_ipv4_like_host(raw: str) -> bool:
+    """Detect legacy numeric/hex IPv4-like host spellings rejected as DNS."""
     candidate = raw.rstrip(".").lower()
     if not candidate:
         return False
@@ -126,7 +127,7 @@ def normalize_domain(value: object) -> str:
     except Exception:
         return ""
     normalized = ".".join(labels).rstrip(".")
-    if _is_ambiguous_ipv4_host(normalized):
+    if is_ambiguous_ipv4_like_host(normalized):
         return ""
     return normalized if _valid_dns_hostname(normalized) else ""
 

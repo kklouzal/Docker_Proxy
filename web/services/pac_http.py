@@ -9,6 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from services.domain_normalization import is_ambiguous_ipv4_like_host
 from services.pac_renderer import (
     PAC_MANIFEST_FILENAME,
     PAC_RENDER_DIR,
@@ -24,7 +25,6 @@ from services.proxy_registry import (
     normalize_public_pac_path,
 )
 from services.public_endpoint import (
-    _is_ambiguous_ipv4_host,
     _is_reserved_public_dns_host,
     _is_unsafe_request_host_ip,
 )
@@ -162,7 +162,7 @@ def _normalize_request_authority_host(value: str) -> str:
         parsed_ip = ipaddress.ip_address(value)
     except ValueError:
         if (
-            _is_ambiguous_ipv4_host(value)
+            is_ambiguous_ipv4_like_host(value)
             or not _valid_dns_host(value)
             or _is_reserved_public_dns_host(value)
         ):

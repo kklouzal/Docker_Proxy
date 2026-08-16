@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from services.domain_normalization import is_ambiguous_ipv4_like_host
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
 
@@ -138,14 +139,7 @@ class ClientIdentityCache:
         return all(label.isdecimal() for label in labels if label)
 
     def _is_ambiguous_ipv4_hostname(self, hostname: str) -> bool:
-        candidate = hostname.strip("[]").lower()
-        labels = candidate.split(".")
-        if not 1 <= len(labels) <= 4:
-            return False
-        return all(
-            label.isdecimal() or bool(re.fullmatch(r"0x[0-9a-f]+", label))
-            for label in labels
-        )
+        return is_ambiguous_ipv4_like_host(hostname.strip("[]"))
 
     def _normalize_rdns_hostname(self, hostname: object) -> str:
         cleaned = (

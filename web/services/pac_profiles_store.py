@@ -6,6 +6,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import urlsplit
 
 from services.db import connect
+from services.domain_normalization import is_ambiguous_ipv4_like_host
 from services.domain_normalization import normalize_domain as _shared_normalize_domain
 from services.proxy_context import get_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
@@ -125,30 +126,6 @@ def _normalize_pac_dst_v4_cidr(cidr: str) -> tuple[str | None, str]:
     return str(net), ""
 
 
-def _is_ambiguous_ipv4_proxy_host(host: str) -> bool:
-    # ip_address() above accepts canonical IPv4 literals.  Keep numeric legacy
-    # forms (for example inet_aton-style shortened, octal, or hex components)
-    # out of the hostname fallback because resolvers/proxies may disagree on
-    # whether they are names or IP addresses.
-    candidate = host.rstrip(".").lower()
-    if not candidate:
-        return False
-    labels = candidate.split(".")
-    if not 1 <= len(labels) <= 4:
-        return False
-    for label in labels:
-        if not label:
-            return False
-        if label.isdecimal():
-            continue
-        if label.startswith("0x"):
-            digits = label.removeprefix("0x")
-            if digits and all(ch in "0123456789abcdef" for ch in digits):
-                continue
-        return False
-    return True
-
-
 def _is_loopback_proxy_dns_host(host: str) -> bool:
     candidate = host.rstrip(".").lower()
     return candidate in {"localhost", "localhost.localdomain"} or candidate.endswith(
@@ -172,7 +149,7 @@ def _is_valid_proxy_host(host: str) -> bool:
 
     if (
         _is_loopback_proxy_dns_host(host)
-        or _is_ambiguous_ipv4_proxy_host(host)
+        or is_ambiguous_ipv4_like_host(host)
         or len(host) > 253
     ):
         return False

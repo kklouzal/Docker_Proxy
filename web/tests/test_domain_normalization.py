@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from services.domain_normalization import (  # type: ignore
+    is_ambiguous_ipv4_like_host,
     looks_like_domain,
     normalize_domain,
 )
@@ -126,3 +127,20 @@ def test_normalize_domain_preserves_valid_ipv6_literals_only() -> None:
     assert normalize_domain("[2001:db8::1]:443") == "2001:db8::1"
     assert normalize_domain("example.com:abc:def") == ""
     assert normalize_domain("[2001:db8::1]:abc") == ""
+
+
+def test_ambiguous_ipv4_like_host_shared_contract() -> None:
+    for value in ("12345", "127.1", "0177.0.0.1", "0x7F.0X0.0x0.0x1", "127.1."):
+        assert is_ambiguous_ipv4_like_host(value) is True
+    for value in (
+        "",
+        ".",
+        "1..2",
+        "0x",
+        "0xgg",
+        "1.2.3.4.5",
+        "example.com",
+        "192.0.2.1:80",
+        "2001:db8::1",
+    ):
+        assert is_ambiguous_ipv4_like_host(value) is False

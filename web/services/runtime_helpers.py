@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from services.domain_normalization import is_ambiguous_ipv4_like_host
+
 _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
     errno.EBADF,
     errno.EINVAL,
@@ -123,26 +125,6 @@ def _is_valid_port(value: str) -> bool:
     return value.isdigit() and 1 <= int(value) <= 65535
 
 
-def _is_ambiguous_ipv4_host(value: str) -> bool:
-    candidate = value.rstrip(".").lower()
-    if not candidate:
-        return False
-    labels = candidate.split(".")
-    if not 1 <= len(labels) <= 4:
-        return False
-    for label in labels:
-        if not label:
-            return False
-        if label.isdecimal():
-            continue
-        if label.startswith("0x"):
-            digits = label.removeprefix("0x")
-            if digits and all(ch in "0123456789abcdef" for ch in digits):
-                continue
-        return False
-    return True
-
-
 def _valid_dns_hostname(value: str) -> bool:
     candidate = value.rstrip(".")
     if not candidate or len(candidate) > 253:
@@ -165,7 +147,7 @@ def _normalize_host_token(host: str) -> str:
     try:
         parsed_ip = ipaddress.ip_address(candidate)
     except ValueError:
-        if ":" in candidate or _is_ambiguous_ipv4_host(candidate):
+        if ":" in candidate or is_ambiguous_ipv4_like_host(candidate):
             return ""
     else:
         return str(parsed_ip)
@@ -176,7 +158,7 @@ def _normalize_host_token(host: str) -> str:
     if candidate.startswith(".") or candidate.endswith(".."):
         return ""
     candidate = candidate.removesuffix(".")
-    if _is_ambiguous_ipv4_host(candidate):
+    if is_ambiguous_ipv4_like_host(candidate):
         return ""
     return candidate if _valid_dns_hostname(candidate) else ""
 

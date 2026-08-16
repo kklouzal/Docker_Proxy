@@ -10,6 +10,7 @@ import urllib.request
 from dataclasses import dataclass
 from urllib.parse import quote, unquote_to_bytes, urljoin, urlparse
 
+from services.domain_normalization import is_ambiguous_ipv4_like_host
 from services.runtime_helpers import authority_has_empty_explicit_port
 
 _ALLOWED_DOWNLOAD_REQUEST_HEADERS = {
@@ -79,26 +80,6 @@ def _is_valid_download_dns_hostname(hostname: str) -> bool:
     )
 
 
-def _is_ambiguous_ipv4_download_host(hostname: str) -> bool:
-    candidate = hostname.rstrip(".").lower()
-    if not candidate:
-        return False
-    labels = candidate.split(".")
-    if not 1 <= len(labels) <= 4:
-        return False
-    for label in labels:
-        if not label:
-            return False
-        if label.isdecimal():
-            continue
-        if label.startswith("0x"):
-            digits = label.removeprefix("0x")
-            if digits and all(ch in "0123456789abcdef" for ch in digits):
-                continue
-        return False
-    return True
-
-
 _DOWNLOAD_PATH_SAFE = "/:%@!$&'()*+,;=%"
 _DOWNLOAD_PARAMS_SAFE = ":%@!$&'()*+,;=%"
 _DOWNLOAD_QUERY_SAFE = "/?:%@!$&'()*+,;=%"
@@ -136,7 +117,7 @@ def is_internal_host(hostname: str) -> bool:
         return _is_forbidden_download_ip(h)
     except ValueError:
         pass
-    if _is_ambiguous_ipv4_download_host(h):
+    if is_ambiguous_ipv4_like_host(h):
         return True
     if h.endswith(_RESERVED_DOWNLOAD_SUFFIXES):
         return True
