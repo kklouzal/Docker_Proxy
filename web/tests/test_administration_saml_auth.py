@@ -121,6 +121,7 @@ class FakeSamlToolkit:
         self.ok = ok
         self.groups = groups or ["AdminGroup"]
         self.processed_request_id = None
+        self.process_response_calls = 0
 
     def login(self, return_to: str = "") -> str:
         return f"https://idp.example.test/sso?RelayState={return_to}"
@@ -129,6 +130,7 @@ class FakeSamlToolkit:
         return "REQ-123"
 
     def process_response(self, request_id: str | None = None) -> None:
+        self.process_response_calls += 1
         self.processed_request_id = request_id
 
     def get_errors(self):
@@ -487,8 +489,35 @@ def test_saml_acs_clears_stale_request_id_when_provider_unavailable(
         assert "saml_request_id" not in sess
 
 
-def test_saml_acs_drops_external_relay_state(monkeypatch, tmp_path):
+def test_saml_acs_drops_external_relay_state_after_correlated_login(
+    monkeypatch, tmp_path
+):
     loaded, store = _load_with_saml(monkeypatch, tmp_path)
+    store.enable_with_metadata(required_group="")
+    toolkit = FakeSamlToolkit()
+    monkeypatch.setattr(
+        loaded.module, "build_saml_auth", lambda _profile, _request: toolkit
+    )
+    client = loaded.module.app.test_client()
+
+    client.get("/auth/saml/login?next=/administration")
+    response = client.post(
+        "/auth/saml/acs",
+        data={"RelayState": "https://evil.example/phish"},
+    )
+
+    assert response.status_code in {302, 303}
+    assert response.headers["Location"] == "/"
+    assert toolkit.processed_request_id == "REQ-123"
+    with client.session_transaction() as sess:
+        assert sess["user"] == "saml-user@example.test"
+
+
+def test_saml_acs_rejects_missing_request_correlation_without_processing(
+    monkeypatch, tmp_path
+):
+    audit = FakeAuditStore()
+    loaded, store = _load_with_saml(monkeypatch, tmp_path, audit_store=audit)
     store.enable_with_metadata(required_group="")
     toolkit = FakeSamlToolkit()
     monkeypatch.setattr(
@@ -498,13 +527,42 @@ def test_saml_acs_drops_external_relay_state(monkeypatch, tmp_path):
 
     response = client.post(
         "/auth/saml/acs",
-        data={"RelayState": "https://evil.example/phish"},
+        data={"RelayState": "https://evil.example/phish", "SAMLResponse": "<raw xml>"},
     )
 
     assert response.status_code in {302, 303}
-    assert response.headers["Location"] == "/"
+    assert response.headers["Location"] == "/login?next="
+    assert toolkit.process_response_calls == 0
     with client.session_transaction() as sess:
-        assert sess["user"] == "saml-user@example.test"
+        assert "user" not in sess
+        assert "saml_request_id" not in sess
+    assert audit.records[-1]["kind"] == "saml_login_failed"
+    assert "request correlation is missing" in audit.records[-1]["detail"]
+    assert "<raw xml>" not in audit.records[-1]["detail"]
+
+
+def test_saml_acs_request_correlation_is_one_time_after_failure(monkeypatch, tmp_path):
+    audit = FakeAuditStore()
+    loaded, store = _load_with_saml(monkeypatch, tmp_path, audit_store=audit)
+    store.enable_with_metadata(required_group="")
+    toolkit = FakeSamlToolkit(ok=False)
+    monkeypatch.setattr(
+        loaded.module, "build_saml_auth", lambda _profile, _request: toolkit
+    )
+    client = loaded.module.app.test_client()
+    client.get("/auth/saml/login?next=/administration")
+
+    first = client.post("/auth/saml/acs", data={"RelayState": "/administration"})
+    second = client.post("/auth/saml/acs", data={"RelayState": "/administration"})
+
+    assert first.status_code in {302, 303}
+    assert second.status_code in {302, 303}
+    assert toolkit.process_response_calls == 1
+    with client.session_transaction() as sess:
+        assert "user" not in sess
+        assert "saml_request_id" not in sess
+    assert audit.records[-1]["kind"] == "saml_login_failed"
+    assert "request correlation is missing" in audit.records[-1]["detail"]
 
 
 def test_saml_acs_rejects_missing_required_group_without_raw_response_audit(
@@ -519,12 +577,14 @@ def test_saml_acs_rejects_missing_required_group_without_raw_response_audit(
     )
     client = loaded.module.app.test_client()
 
+    client.get("/auth/saml/login?next=/administration")
     response = client.post(
         "/auth/saml/acs",
         data={"RelayState": "/administration", "SAMLResponse": "<raw xml>"},
     )
 
     assert response.status_code in {302, 303}
+    assert toolkit.processed_request_id == "REQ-123"
     with client.session_transaction() as sess:
         assert "user" not in sess
     assert audit.records[-1]["kind"] == "saml_login_failed"
@@ -547,9 +607,11 @@ def test_saml_success_audit_redacts_username_like_secret(monkeypatch, tmp_path):
     )
     client = loaded.module.app.test_client()
 
+    client.get("/auth/saml/login?next=/administration")
     response = client.post("/auth/saml/acs", data={"RelayState": "/administration"})
 
     assert response.status_code in {302, 303}
+    assert toolkit.processed_request_id == "REQ-123"
     detail = audit.records[-1]["detail"]
     assert audit.records[-1]["kind"] == "login_success"
     assert "supersecret" not in detail

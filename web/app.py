@@ -3657,11 +3657,14 @@ def auth_saml_acs():
     try:
         auth = build_saml_auth(profile, request)
         request_id = session.pop("saml_request_id", None)
-        if request_id:
-            auth.process_response(request_id=str(request_id))
+        if not request_id:
+            result = type("_Result", (), {})()
+            result.ok = False
+            result.username = ""
+            result.detail = "SAML ACS rejected because request correlation is missing."
         else:
-            auth.process_response()
-        result = resolve_saml_login(auth, profile)
+            auth.process_response(request_id=str(request_id))
+            result = resolve_saml_login(auth, profile)
     except Exception as exc:
         app.logger.exception("SAML ACS processing failed")
         result = type("_Result", (), {})()
