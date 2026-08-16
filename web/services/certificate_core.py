@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from services.certificate_digest import certificate_bundle_sha256
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import fsync_parent_dir as _fsync_parent_dir
 
@@ -939,11 +940,6 @@ def admin_ui_certificate_material_transaction(ca_dir: str):
         yield
 
 
-def _bundle_sha256(cert_pem: str, key_pem: str, chain_pem: str) -> str:
-    payload = "\0".join([cert_pem or "", chain_pem or "", key_pem or ""])
-    return _sha256_text(payload)
-
-
 def _extract_certificate_metadata(cert_pem: str) -> tuple[str, str, str]:
     subject_dn = ""
     not_before = ""
@@ -997,7 +993,7 @@ def build_certificate_bundle(
         key_pem=key_norm,
         chain_pem=chain_norm,
         source_kind=(source_kind or "manual").strip() or "manual",
-        bundle_sha256=_bundle_sha256(cert_norm, key_norm, chain_norm),
+        bundle_sha256=certificate_bundle_sha256(cert_norm, key_norm, chain_norm),
         cert_sha256=_sha256_text(cert_norm),
         subject_dn=subject_dn,
         not_before=not_before,

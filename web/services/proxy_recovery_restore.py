@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import Any, Final, Literal
 
 from services import adblock_artifacts, proxy_recovery
+from services.certificate_digest import certificate_bundle_sha256
 from services.db import connect
 from services.pac_profiles_store import _normalize_proxy_host_port
 from services.proxy_recovery_db import recovery_export_query_plans
@@ -746,7 +747,7 @@ def _validate_certificate_bundle_revision_digests(
         key_pem = str(row[key_pem_index] or "")
         chain_pem = str(row[chain_pem_index] or "")
         expected_cert_sha = _sha256_text(cert_pem)
-        expected_bundle_sha = _certificate_bundle_sha256(cert_pem, key_pem, chain_pem)
+        expected_bundle_sha = certificate_bundle_sha256(cert_pem, key_pem, chain_pem)
         if str(row[cert_sha_index] or "") != expected_cert_sha:
             raise ProxyRecoveryRestoreError(
                 "certificate bundle revision cert digest does not match certificate PEM",
@@ -759,11 +760,6 @@ def _validate_certificate_bundle_revision_digests(
 
 def _sha256_text(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8", errors="replace")).hexdigest()
-
-
-def _certificate_bundle_sha256(cert_pem: str, key_pem: str, chain_pem: str) -> str:
-    payload = "\0".join([cert_pem or "", chain_pem or "", key_pem or ""])
-    return _sha256_text(payload)
 
 
 def _normalize_column_value(

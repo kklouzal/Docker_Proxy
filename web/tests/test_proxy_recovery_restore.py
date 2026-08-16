@@ -18,6 +18,7 @@ if str(WEB_ROOT) not in sys.path:
 
 from services import adblock_artifacts  # type: ignore  # noqa: E402
 from services import proxy_recovery  # type: ignore  # noqa: E402
+from services.certificate_digest import certificate_bundle_sha256  # noqa: E402
 from services import proxy_recovery_restore as restore  # type: ignore  # noqa: E402
 
 
@@ -493,9 +494,7 @@ def _certificate_bundle_hashes(
     chain_pem: str,
 ) -> tuple[str, str]:
     cert_sha = hashlib.sha256(cert_pem.encode("utf-8", errors="replace")).hexdigest()
-    bundle_sha = hashlib.sha256(
-        f"{cert_pem}\0{chain_pem}\0{key_pem}".encode("utf-8", errors="replace"),
-    ).hexdigest()
+    bundle_sha = certificate_bundle_sha256(cert_pem, key_pem, chain_pem)
     return bundle_sha, cert_sha
 
 
@@ -1331,6 +1330,7 @@ def test_certificate_bundle_revision_restore_rejects_mismatched_digests_before_w
     cases = (
         ({"cert_sha256": "0" * 64}, "cert digest"),
         ({"bundle_sha256": "1" * 64}, "bundle digest"),
+        ({"key_pem": "mismatched-private-key"}, "bundle digest"),
     )
 
     for digest_override, expected in cases:
