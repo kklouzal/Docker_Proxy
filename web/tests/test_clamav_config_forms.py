@@ -9,6 +9,14 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture(autouse=True)
+def _isolated_squid_transaction_journal(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv(
+        "SQUID_TRANSACTION_JOURNAL_PATH",
+        str(tmp_path / "squid-transaction.json"),
+    )
+
+
 def _directives(config_text: str) -> dict[str, str]:
     directives: dict[str, str] = {}
     for raw_line in config_text.splitlines():
