@@ -14,6 +14,7 @@ from services.bounded_delete import (
     delete_where_in_chunks,
 )
 from services.db import DATABASE_ERRORS, connect, mysql_error_code, table_exists
+from services.mysql_table_maintenance import run_mysql_table_maintenance
 from services.observability_maintenance import public_detail
 from services.runtime_helpers import env_int as _env_int
 from services.sql_identifiers import quote_mysql_identifier
@@ -811,16 +812,12 @@ def prune_control_plane_tables(*, retention_days: object = None) -> dict[str, An
 
 
 def _run_table_maintenance(table: str, *, analyze: bool, optimize: bool) -> str:
-    quoted = quote_mysql_identifier(table)
-    actions: list[str] = []
-    with connect() as conn:
-        if analyze:
-            conn.execute(f"ANALYZE TABLE {quoted}")
-            actions.append("analyzed")
-        if optimize:
-            conn.execute(f"OPTIMIZE TABLE {quoted}")
-            actions.append("optimized")
-    return ",".join(actions)
+    return run_mysql_table_maintenance(
+        connect,
+        table,
+        analyze=analyze,
+        optimize=optimize,
+    )
 
 
 def maintain_control_plane_tables(

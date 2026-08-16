@@ -14,6 +14,10 @@ from services.bounded_delete import (
 )
 from services.db import DATABASE_ERRORS, connect, connect_unpooled, table_exists
 from services.errors import redact_sensitive_text
+from services.mysql_table_maintenance import (
+    looks_like_stale_connection,
+    run_mysql_table_maintenance,
+)
 from services.sql_identifiers import quote_mysql_identifier
 
 if TYPE_CHECKING:
@@ -76,17 +80,7 @@ class ObservabilityClearOutcomeUncertainError(RuntimeError):
 
 
 def _looks_like_stale_connection(exc: BaseException) -> bool:
-    name = exc.__class__.__name__.lower()
-    text = str(exc).lower()
-    return (
-        "interfaceerror" in name
-        or "server has gone away" in text
-        or "lost connection" in text
-        or "connection already closed" in text
-        or "(0, '')" in text
-        or "2006" in text
-        or "2013" in text
-    )
+    return looks_like_stale_connection(exc)
 
 
 T = TypeVar("T")
@@ -157,20 +151,12 @@ def _delete_table_in_chunks(table: str) -> BoundedDeleteResult:
 
 
 def _run_table_maintenance(table: str, *, analyze: bool, optimize: bool) -> str:
-    quoted = quote_mysql_identifier(table)
-    actions: list[str] = []
-
-    def run() -> None:
-        with connect() as conn:
-            if analyze:
-                conn.execute(f"ANALYZE TABLE {quoted}")
-                actions.append("analyzed")
-            if optimize:
-                conn.execute(f"OPTIMIZE TABLE {quoted}")
-                actions.append("optimized")
-
-    _retry_stale_connection(run)
-    return ",".join(actions)
+    return run_mysql_table_maintenance(
+        connect,
+        table,
+        analyze=analyze,
+        optimize=optimize,
+    )
 
 
 def _best_effort_delete_fallback(table: str) -> tuple[str, int, str]:
