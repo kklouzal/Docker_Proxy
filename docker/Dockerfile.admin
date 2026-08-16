@@ -112,6 +112,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/public_endpoint.py \
 	web/services/report_schedule_recipients.py \
 	web/services/revision_lifecycle.py \
+	web/services/row_access.py \
 	web/services/runtime_helpers.py \
 	web/services/schema_lifecycle.py \
 	web/services/saml_auth.py \
