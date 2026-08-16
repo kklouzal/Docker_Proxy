@@ -1243,6 +1243,12 @@ class _RegistryFaultConn:
                 if target == old_target:
                     self.aliases[alias] = str(params[0])
             return _FaultResult(rowcount=0)
+        if text.startswith("UPDATE proxy_lifecycle_tombstones SET target_proxy_id=%s"):
+            old_target = str(params[3])
+            for proxy_id, (action, target) in list(self.tombstones.items()):
+                if action == "renamed" and target == old_target:
+                    self.tombstones[proxy_id] = (action, str(params[0]))
+            return _FaultResult(rowcount=0)
         if text.startswith("INSERT INTO proxy_id_aliases"):
             self.aliases[str(params[0])] = str(params[1])
             return _FaultResult(rowcount=1)
@@ -1613,6 +1619,39 @@ def test_remove_proxy_incomplete_lifecycle_rolls_back_without_success_metadata(
     assert conn.aliases == {}
     assert conn.tombstones == {}
     assert conn.scoped_rows == ["edge-old", "edge-old"]
+
+
+def test_chained_rename_rekeys_predecessor_tombstones_to_canonical_identity(
+    tmp_path,
+):
+    configure_test_mysql_env(tmp_path / "proxy-rename-chain-tombstones")
+    proxy_registry = _proxy_registry()
+    from services.proxy_write_guard import resolve_proxy_write_id  # type: ignore
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-old", display_name="Edge")
+    registry.rename_proxy("edge-old", "edge-middle")
+    registry.rename_proxy("edge-middle", "edge-new")
+
+    with registry._connect() as conn:
+        tombstones = conn.execute(
+            """
+            SELECT proxy_id, action, target_proxy_id
+            FROM proxy_lifecycle_tombstones
+            WHERE proxy_id IN (%s,%s)
+            ORDER BY proxy_id
+            """,
+            ("edge-old", "edge-middle"),
+        ).fetchall()
+        decision = resolve_proxy_write_id(conn, "edge-old")
+
+    assert [
+        (row["proxy_id"], row["action"], row["target_proxy_id"]) for row in tombstones
+    ] == [
+        ("edge-middle", "renamed", "edge-new"),
+        ("edge-old", "renamed", "edge-new"),
+    ]
+    assert decision.proxy_id == "edge-new"
 
 
 def test_rename_proxy_is_idempotent_and_tombstones_old_identity(tmp_path):

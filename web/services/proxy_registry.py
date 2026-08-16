@@ -916,6 +916,19 @@ class ProxyRegistry:
                             )
                             conn.execute(
                                 """
+                                UPDATE proxy_lifecycle_tombstones
+                                SET target_proxy_id=%s, detail=%s, updated_ts=%s
+                                WHERE action='renamed' AND target_proxy_id=%s
+                                """,
+                                (
+                                    new_key,
+                                    f"Proxy renamed to {new_key}.",
+                                    int(time.time()),
+                                    old_key,
+                                ),
+                            )
+                            conn.execute(
+                                """
                                 INSERT INTO proxy_id_aliases(alias_proxy_id, proxy_id, created_ts, updated_ts)
                                 VALUES(%s,%s,%s,%s)
                                 ON DUPLICATE KEY UPDATE proxy_id=VALUES(proxy_id), updated_ts=VALUES(updated_ts)
@@ -1052,6 +1065,19 @@ class ProxyRegistry:
                         WHERE proxy_id=%s
                         """,
                         (new_key, int(time.time()), old_key),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE proxy_lifecycle_tombstones
+                        SET target_proxy_id=%s, detail=%s, updated_ts=%s
+                        WHERE action='renamed' AND target_proxy_id=%s
+                        """,
+                        (
+                            new_key,
+                            f"Proxy renamed to {new_key}.",
+                            int(time.time()),
+                            old_key,
+                        ),
                     )
                     conn.execute(
                         """
