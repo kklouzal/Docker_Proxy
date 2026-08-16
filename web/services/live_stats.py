@@ -864,8 +864,11 @@ class LiveStatsStore:
 
     def start_background(self) -> None:
         with self._start_lock:
-            if self._started:
+            if self._thread is not None and self._thread.is_alive():
+                self._started = True
                 return
+            self._thread = None
+            self._started = False
             try:
                 self.init_db()
             except DATABASE_ERRORS as exc:
@@ -883,22 +886,34 @@ class LiveStatsStore:
                     message="Live stats tailer startup DB initialization failed",
                 )
 
-            t = threading.Thread(
+            thread = threading.Thread(
                 target=self._tail_loop,
                 name="live-stats-tailer",
                 daemon=True,
             )
             self._stop_event.clear()
-            t.start()
-            self._thread = t
+            try:
+                thread.start()
+            except Exception:
+                self._stop_event.set()
+                raise
+            self._thread = thread
             self._started = True
 
     def stop_background(self, *, timeout: float = 5.0) -> bool:
-        self._stop_event.set()
-        thread = self._thread
-        if thread is not None:
-            thread.join(max(0.0, timeout))
-        return thread is None or not thread.is_alive()
+        # Serialize the complete transition so a restart cannot clear the stop
+        # event while the previous tailer is still joining/flushing.
+        with self._start_lock:
+            self._stop_event.set()
+            thread = self._thread
+            if thread is not None:
+                thread.join(max(0.0, timeout))
+                if thread.is_alive():
+                    self._started = True
+                    return False
+            self._thread = None
+            self._started = False
+            return True
 
     def _tail_loop(self) -> None:
         # Seed so the page is useful immediately.

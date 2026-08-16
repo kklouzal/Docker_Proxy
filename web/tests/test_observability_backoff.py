@@ -24,6 +24,9 @@ class _FakeThread:
     def start(self) -> None:
         self.started = True
 
+    def is_alive(self) -> bool:
+        return self.started
+
 
 def test_database_write_backoff_defers_immediate_retries() -> None:
     backoff = DatabaseWriteBackoff(
@@ -75,7 +78,9 @@ def test_database_write_backoff_invalid_random_value_uses_neutral_jitter(
 
 def test_stagger_delay_uses_env_span_and_random(monkeypatch) -> None:
     monkeypatch.setenv("TIMESERIES_STARTUP_JITTER_SECONDS", "12")
-    monkeypatch.setattr("services.observability_backoff.random.uniform", lambda a, b: (a, b, 7.0)[2])
+    monkeypatch.setattr(
+        "services.observability_backoff.random.uniform", lambda a, b: (a, b, 7.0)[2]
+    )
 
     assert stagger_delay_from_env(
         "TIMESERIES_STARTUP_JITTER_SECONDS", 15.0, maximum=300.0
@@ -98,14 +103,18 @@ def test_stagger_delay_invalid_random_value_uses_zero_fallback(
     ) == pytest.approx(0.0)
 
 
-def test_live_stats_background_starts_even_when_initial_db_is_down(monkeypatch, tmp_path) -> None:
+def test_live_stats_background_starts_even_when_initial_db_is_down(
+    monkeypatch, tmp_path
+) -> None:
     _FakeThread.created.clear()
     log_path = tmp_path / "access.log"
     log_path.write_text("")
     store = live_stats.LiveStatsStore(access_log_path=str(log_path))
 
     def fail_init() -> None:
-        raise pymysql.err.OperationalError(2013, "Lost connection to MySQL server during query")
+        raise pymysql.err.OperationalError(
+            2013, "Lost connection to MySQL server during query"
+        )
 
     monkeypatch.setattr(store, "init_db", fail_init)
     monkeypatch.setattr(live_stats.threading, "Thread", _FakeThread)
@@ -117,7 +126,100 @@ def test_live_stats_background_starts_even_when_initial_db_is_down(monkeypatch, 
     assert _FakeThread.created[0].started is True
 
 
-def test_diagnostic_background_starts_even_when_initial_db_is_down(monkeypatch, tmp_path) -> None:
+def test_live_stats_background_stop_allows_restart_without_duplicate_tailers(
+    monkeypatch,
+) -> None:
+    store = live_stats.LiveStatsStore()
+    entered = threading.Event()
+    release = threading.Event()
+    active = 0
+    max_active = 0
+    calls = 0
+    counter_lock = threading.Lock()
+
+    monkeypatch.setattr(store, "init_db", lambda: None)
+
+    def tail_loop() -> None:
+        nonlocal active, max_active, calls
+        with counter_lock:
+            active += 1
+            max_active = max(max_active, active)
+            calls += 1
+            entered.set()
+        release.wait()
+        with counter_lock:
+            active -= 1
+
+    monkeypatch.setattr(store, "_tail_loop", tail_loop)
+
+    starters = [threading.Thread(target=store.start_background) for _ in range(8)]
+    for starter in starters:
+        starter.start()
+    for starter in starters:
+        starter.join()
+    assert entered.wait(1.0)
+    assert calls == 1
+    assert max_active == 1
+
+    release.set()
+    assert store.stop_background(timeout=1.0) is True
+    assert store._started is False
+    assert store._thread is None
+
+    entered.clear()
+    release.clear()
+    store.start_background()
+    assert entered.wait(1.0)
+    assert calls == 2
+    assert max_active == 1
+    release.set()
+    assert store.stop_background(timeout=1.0) is True
+
+
+def test_live_stats_background_stop_timeout_preserves_live_tailer() -> None:
+    class LiveThread:
+        def join(self, _timeout: float) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return True
+
+    store = live_stats.LiveStatsStore()
+    worker = LiveThread()
+    store._thread = worker  # type: ignore[assignment]
+    store._started = True
+
+    assert store.stop_background(timeout=0.0) is False
+    assert store._thread is worker
+    assert store._started is True
+
+
+def test_live_stats_background_failed_thread_start_keeps_stopped_state(
+    monkeypatch,
+) -> None:
+    class FailedThread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            message = "thread start failed"
+            raise RuntimeError(message)
+
+    store = live_stats.LiveStatsStore()
+    monkeypatch.setattr(store, "init_db", lambda: None)
+    monkeypatch.setattr(live_stats.threading, "Thread", FailedThread)
+
+    with pytest.raises(RuntimeError, match="thread start failed"):
+        store.start_background()
+
+    assert store._started is False
+    assert store._thread is None
+    assert store._stop_event.is_set()
+
+
+def test_diagnostic_background_starts_even_when_initial_db_is_down(
+    monkeypatch, tmp_path
+) -> None:
     _FakeThread.created.clear()
     access_log = tmp_path / "access.log"
     icap_log = tmp_path / "icap.log"
@@ -129,7 +231,9 @@ def test_diagnostic_background_starts_even_when_initial_db_is_down(monkeypatch, 
     )
 
     def fail_init() -> None:
-        raise pymysql.err.OperationalError(2013, "Lost connection to MySQL server during query")
+        raise pymysql.err.OperationalError(
+            2013, "Lost connection to MySQL server during query"
+        )
 
     monkeypatch.setattr(store, "init_db", fail_init)
     monkeypatch.setattr(diagnostic_store.threading, "Thread", _FakeThread)
@@ -196,7 +300,9 @@ def test_timeseries_sampler_timeout_preserves_live_worker_ownership() -> None:
     assert store._started is True
 
 
-def test_timeseries_rollup_cadence_is_configurable_and_not_every_snapshot(monkeypatch) -> None:
+def test_timeseries_rollup_cadence_is_configurable_and_not_every_snapshot(
+    monkeypatch,
+) -> None:
     class StopLoopError(Exception):
         pass
 
@@ -225,7 +331,9 @@ def test_timeseries_rollup_cadence_is_configurable_and_not_every_snapshot(monkey
             raise StopLoopError
 
     monkeypatch.setattr(store._stop_event, "wait", fake_sleep)
-    monkeypatch.setattr(store, "insert_snapshot", lambda _stats: calls.append("snapshot"))
+    monkeypatch.setattr(
+        store, "insert_snapshot", lambda _stats: calls.append("snapshot")
+    )
     monkeypatch.setattr(store, "rollup_and_prune", lambda: calls.append("rollup"))
 
     store.start_background(lambda: {"ok": True})
