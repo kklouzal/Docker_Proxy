@@ -1,4 +1,5 @@
 import importlib
+import io
 import os
 import time
 from pathlib import Path
@@ -352,6 +353,156 @@ def test_webcat_acl_snapshot_metadata_and_domains_share_mysql_snapshot(
     assert db._local_snapshot_built_ts == 100
     assert db._lookup_categories_from_snapshot("old.example") == {"adult"}
     assert db._lookup_categories_from_snapshot("new.example") == set()
+
+
+def test_webcat_acl_close_interrupts_long_refresh_wait_and_supports_restart(
+    monkeypatch,
+) -> None:
+    webcat_acl = _webcat_acl_module()
+    db = webcat_acl._Db()
+    db._snapshot_refresh_seconds = 3600.0
+    monkeypatch.setattr(db, "_load_snapshot_from_disk", lambda **_kwargs: False)
+    monkeypatch.setattr(db, "_ensure_snapshot", lambda **_kwargs: False)
+
+    db.start()
+    first_thread = db._snapshot_thread
+    db.start()
+
+    assert first_thread is not None
+    assert db._snapshot_thread is first_thread
+    assert db.close(timeout=1.0) is True
+    assert first_thread.is_alive() is False
+    assert db.close(timeout=0.0) is True
+
+    db.start()
+    second_thread = db._snapshot_thread
+    assert second_thread is not None
+    assert second_thread is not first_thread
+    assert db.close(timeout=1.0) is True
+
+
+def test_webcat_acl_close_is_bounded_and_worker_owns_connection_cleanup(
+    monkeypatch,
+) -> None:
+    webcat_acl = _webcat_acl_module()
+    entered = webcat_acl.threading.Event()
+    release = webcat_acl.threading.Event()
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        def close(self) -> None:
+            self.closed += 1
+
+    remote_conn = FakeConn()
+    local_conn = FakeConn()
+    db = webcat_acl._Db()
+    db._snapshot_refresh_seconds = 0.0
+    monkeypatch.setattr(db, "_load_snapshot_from_disk", lambda **_kwargs: False)
+    monkeypatch.setattr(db, "_ensure_snapshot", lambda **_kwargs: False)
+
+    def blocked_metadata() -> int:
+        db._conn = remote_conn
+        with db._snapshot_state_lock:
+            db._local_conn = local_conn
+        entered.set()
+        assert release.wait(timeout=5.0)
+        return 0
+
+    monkeypatch.setattr(db, "_load_remote_built_ts", blocked_metadata)
+    db.start()
+    assert entered.wait(timeout=1.0)
+
+    assert db.close(timeout=0.0) is False
+    assert remote_conn.closed == 0
+    assert local_conn.closed == 0
+
+    release.set()
+    assert db.close(timeout=1.0) is True
+    assert remote_conn.closed == 1
+    assert local_conn.closed == 1
+    assert db._conn is None
+    assert db._local_conn is None
+
+
+def test_webcat_acl_start_failure_rolls_back_for_retry(monkeypatch) -> None:
+    webcat_acl = _webcat_acl_module()
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        def close(self) -> None:
+            self.closed += 1
+
+    db = webcat_acl._Db()
+    remote_conn = FakeConn()
+    local_conn = FakeConn()
+    db._conn = remote_conn
+    db._local_conn = local_conn
+    monkeypatch.setattr(db, "_load_snapshot_from_disk", lambda **_kwargs: False)
+    monkeypatch.setattr(db, "_ensure_snapshot", lambda **_kwargs: False)
+    real_thread = webcat_acl.threading.Thread
+
+    class FailingThread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            msg = "thread unavailable"
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr(webcat_acl.threading, "Thread", FailingThread)
+    with pytest.raises(RuntimeError, match="thread unavailable"):
+        db.start()
+    assert db._snapshot_started is False
+    assert db._snapshot_thread is None
+    assert remote_conn.closed == 1
+    assert local_conn.closed == 1
+
+    monkeypatch.setattr(webcat_acl.threading, "Thread", real_thread)
+    db.start()
+    assert db.close(timeout=1.0) is True
+
+
+@pytest.mark.parametrize("stdin", ["", "example.com adult\n"])
+def test_webcat_acl_main_closes_resources_on_normal_and_exceptional_exit(
+    monkeypatch, stdin
+) -> None:
+    webcat_acl = _webcat_acl_module()
+    closed: list[str] = []
+
+    class FakeDb:
+        def lookup_categories(self, _domain):
+            msg = "lookup failed"
+            raise RuntimeError(msg)
+
+        def close(self) -> bool:
+            closed.append("db")
+            return True
+
+    class FakeLogDb:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def close(self) -> bool:
+            closed.append("log")
+            return True
+
+    monkeypatch.setattr(webcat_acl, "_Db", FakeDb)
+    monkeypatch.setattr(webcat_acl, "_BlockedLogDb", FakeLogDb)
+    monkeypatch.setattr(webcat_acl.sys, "stdin", io.StringIO(stdin))
+
+    if stdin:
+        with pytest.raises(RuntimeError, match="lookup failed"):
+            webcat_acl.main([])
+    else:
+        assert webcat_acl.main([]) == 0
+    assert closed == ["db", "log"]
 
 
 def test_webcat_acl_normalizes_explicit_proxy_uri_host() -> None:

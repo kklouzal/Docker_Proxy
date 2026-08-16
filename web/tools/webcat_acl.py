@@ -101,6 +101,8 @@ class _Db:
         )
         self._snapshot_started = False
         self._snapshot_start_lock = threading.Lock()
+        self._snapshot_stop = threading.Event()
+        self._snapshot_thread: threading.Thread | None = None
         self._snapshot_attempt_ts = 0.0
         self._snapshot_state_lock = threading.Lock()
         self._local_conn: sqlite3.Connection | None = None
@@ -158,22 +160,80 @@ class _Db:
             if self._snapshot_started:
                 return
             self._snapshot_started = True
+            self._snapshot_stop.clear()
+            try:
+                self._load_snapshot_from_disk(force=True)
+                # A reconfigured Squid starts fresh helper processes, and those
+                # helpers must not pin an older on-disk category snapshot when the
+                # Admin UI has already published a newer webcat build timestamp.
+                # Always compare the loaded snapshot with MySQL once at helper
+                # startup; the steady-state refresh loop still owns periodic updates.
+                self._ensure_snapshot(force=True)
+            except Exception:
+                pass
+            thread = threading.Thread(
+                target=self._snapshot_loop,
+                name="webcat-snapshot-refresh",
+                daemon=True,
+            )
+            self._snapshot_thread = thread
+            try:
+                thread.start()
+            except Exception:
+                self._snapshot_thread = None
+                self._snapshot_started = False
+                self._snapshot_stop.set()
+                remote_conn = self._conn
+                self._conn = None
+                with self._snapshot_state_lock:
+                    local_conn = self._local_conn
+                    self._local_conn = None
+                    self._local_snapshot_mtime_ns = 0
+                    self._local_snapshot_built_ts = 0
+                seen: set[int] = set()
+                for conn in (remote_conn, local_conn):
+                    if conn is None or id(conn) in seen:
+                        continue
+                    seen.add(id(conn))
+                    with contextlib.suppress(Exception):
+                        conn.close()
+                raise
+
+    def close(self, *, timeout: float = 2.0) -> bool:
+        """Stop snapshot refresh and close owned handles after it is quiescent."""
         try:
-            self._load_snapshot_from_disk(force=True)
-            # A reconfigured Squid starts fresh helper processes, and those
-            # helpers must not pin an older on-disk category snapshot when the
-            # Admin UI has already published a newer webcat build timestamp.
-            # Always compare the loaded snapshot with MySQL once at helper
-            # startup; the steady-state refresh loop still owns periodic updates.
-            self._ensure_snapshot(force=True)
+            join_timeout = max(0.0, float(timeout))
         except Exception:
-            pass
-        thread = threading.Thread(
-            target=self._snapshot_loop,
-            name="webcat-snapshot-refresh",
-            daemon=True,
-        )
-        thread.start()
+            join_timeout = 2.0
+        with self._snapshot_start_lock:
+            thread = self._snapshot_thread
+            self._snapshot_stop.set()
+        if thread is threading.current_thread():
+            return False
+        if thread is not None:
+            thread.join(timeout=join_timeout)
+            if thread.is_alive():
+                return False
+        with self._snapshot_start_lock:
+            if self._snapshot_thread is not thread:
+                return False
+            self._snapshot_thread = None
+            self._snapshot_started = False
+            remote_conn = self._conn
+            self._conn = None
+            with self._snapshot_state_lock:
+                local_conn = self._local_conn
+                self._local_conn = None
+                self._local_snapshot_mtime_ns = 0
+                self._local_snapshot_built_ts = 0
+        seen: set[int] = set()
+        for conn in (remote_conn, local_conn):
+            if conn is None or id(conn) in seen:
+                continue
+            seen.add(id(conn))
+            with contextlib.suppress(Exception):
+                conn.close()
+        return True
 
     def _snapshot_available(self) -> bool:
         with self._snapshot_state_lock:
@@ -515,7 +575,7 @@ class _Db:
         return self._build_snapshot_from_db(expected_built_ts=remote_built_ts)
 
     def _snapshot_loop(self) -> None:
-        while True:
+        while not self._snapshot_stop.wait(self._snapshot_refresh_seconds):
             try:
                 self._load_snapshot_from_disk(force=False)
                 remote_built_ts = self._load_remote_built_ts()
@@ -525,7 +585,6 @@ class _Db:
                     self._build_snapshot_from_db(expected_built_ts=remote_built_ts)
             except Exception:
                 pass
-            time.sleep(self._snapshot_refresh_seconds)
 
     def _lookup_categories_from_snapshot(self, normalized: str) -> set[str] | None:
         with self._snapshot_state_lock:
@@ -696,6 +755,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             stats.emit_if_due()
     finally:
+        with contextlib.suppress(Exception):
+            db.close()
         with contextlib.suppress(Exception):
             log_db.close()
         stats.emit_if_due(force=True)
