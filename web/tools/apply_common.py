@@ -1,15 +1,32 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import sys
 import tempfile
 from pathlib import Path
 
+try:
+    from services.runtime_helpers import fsync_parent_dir as _runtime_fsync_parent_dir
+except ModuleNotFoundError:  # pragma: no cover - standalone tools-only payload
+    _runtime_fsync_parent_dir = None
+
+
+_UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
+    errno.EBADF,
+    errno.EINVAL,
+    errno.ENOSYS,
+    getattr(errno, "ENOTSUP", errno.EINVAL),
+    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+}
+
 
 def _bounded_event_label(value: object, *, fallback: str) -> str:
-    text = " ".join(str(value or fallback).replace("\r", " ").replace("\n", " ").split())
+    text = " ".join(
+        str(value or fallback).replace("\r", " ").replace("\n", " ").split()
+    )
     return (text[:79].rstrip() + "...") if len(text) > 80 else text
 
 
@@ -28,7 +45,9 @@ def emit_helper_failure(helper: str, event: str, exc: Exception) -> None:
         payload = {
             "helper": _bounded_event_label(helper, fallback="helper"),
             "event": _bounded_event_label(event, fallback="failure"),
-            "error_type": _bounded_event_label(type(exc).__name__, fallback="Exception"),
+            "error_type": _bounded_event_label(
+                type(exc).__name__, fallback="Exception"
+            ),
             "reason": "Operation failed. Check server logs for details.",
         }
         sys.stderr.write(
@@ -39,7 +58,14 @@ def emit_helper_failure(helper: str, event: str, exc: Exception) -> None:
 
 
 def _fsync_parent_dir(path: Path) -> None:
-    """Best-effort fsync for directory entries created/replaced near path."""
+    """Fsync a parent directory using the runtime contract when available."""
+    if _runtime_fsync_parent_dir is not None:
+        _runtime_fsync_parent_dir(path)
+        return
+
+    # apply_common is also shipped as a tools-only standalone helper. Keep that
+    # supported path aligned with services.runtime_helpers: only filesystem
+    # errors that mean directory fsync is unsupported are best-effort.
     flags = os.O_RDONLY
     if hasattr(os, "O_DIRECTORY"):
         flags |= os.O_DIRECTORY
@@ -47,8 +73,10 @@ def _fsync_parent_dir(path: Path) -> None:
     try:
         fd = os.open(path.parent, flags)
         os.fsync(fd)
-    except OSError:
-        return
+    except OSError as exc:
+        if exc.errno is None or exc.errno in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
+            return
+        raise
     finally:
         if fd is not None:
             with contextlib.suppress(OSError):

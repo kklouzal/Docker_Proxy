@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import importlib
 import json
 import shutil
@@ -8,6 +9,8 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
+
+import pytest
 
 from .subprocess_test_utils import run_test_process
 
@@ -131,6 +134,48 @@ def test_write_safe_include_uses_staged_replace_not_direct_target_write(
     assert len(replace_calls) == 1
     assert replace_calls[0][1] == out
     assert not replace_calls[0][0].exists()
+
+
+def test_write_safe_include_propagates_actionable_parent_fsync_failure(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_tool_module("apply_common")
+    out = tmp_path / "safe.conf"
+
+    def fail_parent_fsync(_path: Path) -> NoReturn:
+        raise OSError(errno.EIO, "directory fsync failed")
+
+    monkeypatch.setattr(module, "_runtime_fsync_parent_dir", fail_parent_fsync)
+
+    with pytest.raises(OSError, match="directory fsync failed"):
+        module.write_safe_include(str(out), "# safe fallback\n")
+
+    assert out.read_text(encoding="utf-8") == "# safe fallback\n"
+    assert list(tmp_path.glob(".safe.conf.*.tmp")) == []
+
+
+def test_standalone_parent_fsync_suppresses_only_unsupported_errors(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_tool_module("apply_common")
+    monkeypatch.setattr(module, "_runtime_fsync_parent_dir", None)
+    monkeypatch.setattr(module.os, "open", lambda _path, _flags: 51)
+    monkeypatch.setattr(module.os, "close", lambda _fd: None)
+
+    monkeypatch.setattr(
+        module.os,
+        "fsync",
+        lambda _fd: (_ for _ in ()).throw(OSError(errno.EINVAL, "unsupported")),
+    )
+    module._fsync_parent_dir(tmp_path / "safe.conf")
+
+    monkeypatch.setattr(
+        module.os,
+        "fsync",
+        lambda _fd: (_ for _ in ()).throw(OSError(errno.EIO, "fsync failed")),
+    )
+    with pytest.raises(OSError, match="fsync failed"):
+        module._fsync_parent_dir(tmp_path / "safe.conf")
 
 
 def test_sslfilter_apply_squid_include_writes_materialized_files(
