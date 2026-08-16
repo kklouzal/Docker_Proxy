@@ -31,6 +31,10 @@ except ImportError:  # pragma: no cover - production image installs defusedxml.
     _DEFUSEDXML_AVAILABLE = False
 
 from services.db import connect
+from services.external_auth_groups import (
+    candidate_group_match_tokens,
+    required_group_match_tokens,
+)
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import authority_has_empty_explicit_port
 from services.url_validation import has_malformed_percent_encoding
@@ -1140,86 +1144,11 @@ def _saml_group_matches_required(required_group: str, candidate_group: str) -> b
 
 
 def _required_saml_group_match_tokens(value: Any) -> set[str]:
-    text = str(value or "").strip()
-    if not text:
-        return set()
-    return {_normalize_saml_group_token(text)}
+    return required_group_match_tokens(value, preserve_full_dn=False)
 
 
 def _candidate_saml_group_match_tokens(value: Any) -> set[str]:
-    text = str(value or "").strip()
-    if not text:
-        return set()
-
-    tokens = {_normalize_saml_group_token(text)}
-    rdn_value = _first_ldap_rdn_value(text)
-    if rdn_value:
-        tokens.add(_normalize_saml_group_token(rdn_value))
-
-    if "\\" in text:
-        local_name = text.rsplit("\\", 1)[1].strip()
-        if local_name:
-            tokens.add(_normalize_saml_group_token(local_name))
-
-    if "@" in text:
-        local_name, domain = text.rsplit("@", 1)
-        if local_name.strip() and domain.strip():
-            tokens.add(_normalize_saml_group_token(local_name))
-
-    return {token for token in tokens if token}
-
-
-def _normalize_saml_group_token(value: Any) -> str:
-    return str(value or "").strip().casefold()
-
-
-def _first_ldap_rdn_value(value: str) -> str:
-    first_rdn = _split_ldap_escaped(value, ",", maxsplit=1)[0].strip()
-    if "=" not in first_rdn:
-        return ""
-    attribute, raw = _split_ldap_escaped(first_rdn, "=", maxsplit=1)
-    if attribute.strip().casefold() not in {"cn", "name"}:
-        return ""
-    return _unescape_ldap_rdn_value(raw.strip()).strip()
-
-
-def _split_ldap_escaped(value: str, delimiter: str, *, maxsplit: int) -> list[str]:
-    parts: list[str] = []
-    start = 0
-    splits = 0
-    escaped = False
-    for index, char in enumerate(value):
-        if escaped:
-            escaped = False
-            continue
-        if char == "\\":
-            escaped = True
-            continue
-        if char == delimiter and splits < maxsplit:
-            parts.append(value[start:index])
-            start = index + 1
-            splits += 1
-    parts.append(value[start:])
-    return parts
-
-
-def _unescape_ldap_rdn_value(value: str) -> str:
-    result: list[str] = []
-    index = 0
-    while index < len(value):
-        char = value[index]
-        if char != "\\" or index + 1 >= len(value):
-            result.append(char)
-            index += 1
-            continue
-        escaped = value[index + 1 : index + 3]
-        if len(escaped) == 2 and re.fullmatch(r"[0-9A-Fa-f]{2}", escaped):
-            result.append(chr(int(escaped, 16)))
-            index += 3
-        else:
-            result.append(value[index + 1])
-            index += 2
-    return "".join(result)
+    return candidate_group_match_tokens(value, preserve_full_dn=False)
 
 
 def _attribute_values(attributes: dict[str, Any], key: str) -> list[str]:
