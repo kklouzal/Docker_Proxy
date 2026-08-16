@@ -87,6 +87,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/materialized_files.py \
 	web/services/keyed_locks.py \
 	web/services/mysql_state_validation.py \
+	web/services/mysql_table_maintenance.py \
 	web/services/logutil.py \
 	web/services/operation_ledger.py \
 	web/services/observability_backoff.py \
