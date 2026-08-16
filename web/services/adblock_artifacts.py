@@ -298,6 +298,8 @@ class AdblockArtifactStore:
         ).strip() or _DEFAULT_COMPILED_DIR
         self._started = False
         self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
         self._schema_ready = False
         self._schema_lock = threading.Lock()
 
@@ -1078,13 +1080,34 @@ class AdblockArtifactStore:
         with self._lock:
             if self._started:
                 return
+            self._stop_event.clear()
             thread = threading.Thread(
                 target=self._loop,
                 name="adblock-artifact-builder",
                 daemon=True,
             )
-            thread.start()
+            self._thread = thread
             self._started = True
+            try:
+                thread.start()
+            except Exception:
+                self._thread = None
+                self._started = False
+                raise
+
+    def stop_background(self, *, timeout: float = 5.0) -> bool:
+        with self._lock:
+            self._stop_event.set()
+            thread = self._thread
+        if thread is not None:
+            thread.join(max(0.0, timeout))
+        stopped = thread is None or not thread.is_alive()
+        if stopped:
+            with self._lock:
+                if self._thread is thread:
+                    self._thread = None
+                    self._started = False
+        return stopped
 
     def _loop(self) -> None:
         poll_seconds = float(
@@ -1101,7 +1124,7 @@ class AdblockArtifactStore:
         from services.adblock_store import get_adblock_store
 
         store = get_adblock_store()
-        while True:
+        while not self._stop_event.is_set():
             sleep_seconds = poll_seconds
             try:
                 self.init_db()
@@ -1167,7 +1190,7 @@ class AdblockArtifactStore:
                     message="Adblock artifact builder loop failed",
                 )
                 sleep_seconds = error_seconds
-            time.sleep(sleep_seconds)
+            self._stop_event.wait(sleep_seconds)
 
 
 def _compile_current_lists(

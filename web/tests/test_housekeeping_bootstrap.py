@@ -693,7 +693,7 @@ def test_housekeeping_interval_loop_logs_structured_failed_result_once(
         def start(self) -> None:
             self.target()
 
-    def stop_after_iteration(_seconds: float) -> None:
+    def stop_after_iteration(_seconds: float) -> bool:
         raise StopLoopError
 
     monkeypatch.setattr(housekeeping, "_started", False)
@@ -701,7 +701,7 @@ def test_housekeeping_interval_loop_logs_structured_failed_result_once(
     monkeypatch.setattr(housekeeping, "run_housekeeping_once", run_once)
     monkeypatch.setattr(housekeeping, "should_log", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(housekeeping.threading, "Thread", InlineThread)
-    monkeypatch.setattr(housekeeping.time, "sleep", stop_after_iteration)
+    monkeypatch.setattr(housekeeping._stop_event, "wait", stop_after_iteration)
 
     with caplog.at_level("WARNING", logger=housekeeping.logger.name):
         with pytest.raises(StopLoopError):
@@ -712,6 +712,41 @@ def test_housekeeping_interval_loop_logs_structured_failed_result_once(
     assert caplog.records[0].levelname == "WARNING"
     assert "Housekeeping interval returned failed result" in caplog.records[0].message
     assert "control-plane prune failed" in caplog.records[0].message
+
+
+def test_housekeeping_stop_is_bounded_and_successful_stop_allows_restart(
+    monkeypatch, housekeeping
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    runs: list[int] = []
+
+    def run_once(**_kwargs):
+        runs.append(len(runs) + 1)
+        entered.set()
+        release.wait()
+        return {"ok": True}
+
+    monkeypatch.setattr(housekeeping, "run_housekeeping_once", run_once)
+    monkeypatch.setattr(housekeeping, "current_retention_days", lambda default: default)
+    monkeypatch.setattr(housekeeping, "_started", False)
+    monkeypatch.setattr(housekeeping, "_thread", None)
+    housekeeping._stop_event.clear()
+
+    housekeeping.start_housekeeping(interval_seconds=3600)
+    assert entered.wait(1.0)
+    assert housekeeping.stop_housekeeping(timeout=0.0) is False
+    assert housekeeping._started is True
+
+    release.set()
+    assert housekeeping.stop_housekeeping(timeout=1.0) is True
+    assert housekeeping._started is False
+
+    entered.clear()
+    housekeeping.start_housekeeping(interval_seconds=3600)
+    assert entered.wait(1.0)
+    assert housekeeping.stop_housekeeping(timeout=1.0) is True
+    assert runs == [1, 2]
 
 
 def test_housekeeping_thread_start_failure_allows_retry(

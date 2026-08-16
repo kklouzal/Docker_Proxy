@@ -43,6 +43,36 @@ def test_adblock_artifact_background_start_defers_database_init(monkeypatch) -> 
     assert len(targets) == 1
 
 
+def test_adblock_artifact_stop_is_bounded_and_successful_stop_allows_restart(
+    monkeypatch,
+) -> None:
+    store = adblock_artifacts.AdblockArtifactStore()
+    entered = threading.Event()
+    release = threading.Event()
+    runs: list[int] = []
+
+    def loop() -> None:
+        runs.append(len(runs) + 1)
+        entered.set()
+        release.wait()
+
+    monkeypatch.setattr(store, "_loop", loop)
+    store.start_background()
+    assert entered.wait(1.0)
+    assert store.stop_background(timeout=0.0) is False
+    assert store._started is True
+
+    release.set()
+    assert store.stop_background(timeout=1.0) is True
+    assert store._started is False
+
+    entered.clear()
+    store.start_background()
+    assert entered.wait(1.0)
+    assert store.stop_background(timeout=1.0) is True
+    assert runs == [1, 2]
+
+
 def test_webfilter_background_start_defers_database_init(monkeypatch) -> None:
     store = webfilter_store.WebFilterStore()
     started: list[bool] = []

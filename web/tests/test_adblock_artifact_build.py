@@ -1066,11 +1066,10 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
         sleeps.append(seconds)
         raise StopLoopError
 
-    monkeypatch.setattr(artifacts_module.time, "sleep", sleep_once)
-
     artifact_store = artifacts_module.AdblockArtifactStore(
         compiled_dir=str(tmp_path / "compiled"),
     )
+    monkeypatch.setattr(artifact_store._stop_event, "wait", sleep_once)
     monkeypatch.setattr(artifact_store, "init_db", lambda: None)
     monkeypatch.setattr(
         artifact_store,
@@ -1585,11 +1584,10 @@ def _run_background_loop_due_check(
         sleeps.append(seconds)
         raise StopLoopError
 
-    monkeypatch.setattr(artifacts_module.time, "sleep", sleep_once)
-
     artifact_store = artifacts_module.AdblockArtifactStore(
         compiled_dir=str(tmp_path / "compiled"),
     )
+    monkeypatch.setattr(artifact_store._stop_event, "wait", sleep_once)
     monkeypatch.setattr(artifact_store, "init_db", lambda: None)
     monkeypatch.setattr(
         artifact_store,

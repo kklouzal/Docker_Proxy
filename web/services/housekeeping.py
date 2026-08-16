@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 _started = False
 _lock = threading.Lock()
+_stop_event = threading.Event()
+_thread: threading.Thread | None = None
 
 _SUNDAY = 6
 
@@ -287,12 +289,18 @@ def _next_local_run(
     return target
 
 
-def _sleep_until(target: datetime) -> None:
+def _sleep_until(
+    target: datetime, *, stop_event: threading.Event | None = None
+) -> None:
     while True:
         remaining = target.timestamp() - time.time()
         if remaining <= 0:
             return
-        time.sleep(min(300.0, max(1.0, remaining)))
+        delay = min(300.0, max(1.0, remaining))
+        if stop_event is None:
+            time.sleep(delay)
+        elif stop_event.wait(delay):
+            return
 
 
 def _validate_schedule_value(
@@ -394,12 +402,12 @@ def start_housekeeping(
     interval_seconds: int | None = None,
 ) -> None:
     """Start scheduled database housekeeping."""
-    global _started
+    global _started, _thread
     normalized_interval_seconds: float | None = None
 
     def loop() -> None:
         if normalized_interval_seconds is not None:
-            while True:
+            while not _stop_event.is_set():
                 try:
                     result = run_housekeeping_once(
                         retention_days=current_retention_days(retention_days),
@@ -412,13 +420,16 @@ def start_housekeeping(
                         interval_seconds=300,
                         message="Housekeeping run failed",
                     )
-                time.sleep(normalized_interval_seconds)
+                _stop_event.wait(normalized_interval_seconds)
+            return
 
         next_daily = _next_local_run(hour=daily_hour)
         next_weekly = _next_local_run(hour=weekly_hour, weekday=weekly_weekday)
-        while True:
+        while not _stop_event.is_set():
             target = min(next_daily, next_weekly)
-            _sleep_until(target)
+            _sleep_until(target, stop_event=_stop_event)
+            if _stop_event.is_set():
+                return
             now = datetime.now().astimezone()
             next_daily, next_weekly = _run_due_scheduled_housekeeping(
                 now=now,
@@ -433,6 +444,7 @@ def start_housekeeping(
     with _lock:
         if _started:
             return
+        _stop_event.clear()
         _validate_schedule_value(
             daily_hour,
             name="daily_hour",
@@ -465,5 +477,28 @@ def start_housekeeping(
                 raise ValueError(msg)
 
         t = threading.Thread(target=loop, name="db-housekeeping", daemon=True)
-        t.start()
+        _thread = t
         _started = True
+        try:
+            t.start()
+        except Exception:
+            _thread = None
+            _started = False
+            raise
+
+
+def stop_housekeeping(*, timeout: float = 5.0) -> bool:
+    """Request scheduled housekeeping shutdown and wait for a bounded interval."""
+    global _started, _thread
+    with _lock:
+        _stop_event.set()
+        thread = _thread
+    if thread is not None:
+        thread.join(max(0.0, timeout))
+    stopped = thread is None or not thread.is_alive()
+    if stopped:
+        with _lock:
+            if _thread is thread:
+                _thread = None
+                _started = False
+    return stopped

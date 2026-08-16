@@ -27,8 +27,16 @@ class BackgroundServiceCoordinator:
     owner exits.
     """
 
-    def __init__(self, starters: Iterable[Callable[[], None]]) -> None:
+    def __init__(
+        self,
+        starters: Iterable[Callable[[], None]],
+        stoppers: Iterable[Callable[[], object]] = (),
+    ) -> None:
         self._starters = tuple(starters)
+        self._stoppers = tuple(stoppers)
+        if self._stoppers and len(self._stoppers) != len(self._starters):
+            msg = "background service starters and stoppers must have equal length"
+            raise ValueError(msg)
         self._started: set[int] = set()
         self._pid: int | None = None
         self._mutex = threading.Lock()
@@ -58,6 +66,40 @@ class BackgroundServiceCoordinator:
                 else:
                     self._started.add(index)
             return len(self._started) == len(self._starters)
+
+    def stop(self) -> bool:
+        """Stop services started by this coordinator and release its process lock."""
+        with self._mutex:
+            current_pid = os.getpid()
+            if current_pid != self._pid:
+                self._pid = current_pid
+                self._started.clear()
+                return release_background_lock()
+
+            stopped = True
+            for index in sorted(self._started, reverse=True):
+                if not self._stoppers:
+                    stopped = False
+                    continue
+                try:
+                    result = self._stoppers[index]()
+                except Exception:
+                    stopped = False
+                    log_exception_throttled(
+                        logger,
+                        f"background_guard.stop.{index}",
+                        interval_seconds=300.0,
+                        message="Failed to stop background service",
+                    )
+                else:
+                    if result is False:
+                        stopped = False
+                    else:
+                        self._started.discard(index)
+
+            if self._started:
+                return False
+            return release_background_lock() and stopped
 
 
 def _close_lock_fd(fd: int, *, log_key: str, message: str) -> bool:
@@ -126,6 +168,37 @@ def acquire_background_lock() -> bool:
             "Unexpected background lock guard failure",
         )
         return False
+
+
+def release_background_lock() -> bool:
+    """Release this process's background lock, without unlocking an inherited fd."""
+    global _LOCK_FD, _LOCK_PID
+
+    current_pid = os.getpid()
+    if _LOCK_FD is None:
+        _LOCK_PID = None
+        return True
+    if current_pid != _LOCK_PID:
+        # A child must only close its inherited descriptor; explicit flock unlock
+        # would also release the parent's shared open-file-description lock.
+        fd = _LOCK_FD
+        if not _close_lock_fd(
+            fd,
+            log_key="background_guard.close.release_inherited",
+            message="Failed to close inherited background lock fd during release",
+        ):
+            return False
+    else:
+        fd = _LOCK_FD
+        if not _close_lock_fd(
+            fd,
+            log_key="background_guard.close.release",
+            message="Failed to close background lock fd during release",
+        ):
+            return False
+    _LOCK_FD = None
+    _LOCK_PID = None
+    return True
 
 
 def _acquire_background_lock_unforced() -> bool:

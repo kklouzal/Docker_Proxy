@@ -1,3 +1,4 @@
+import atexit
 import contextlib
 import csv
 import fcntl
@@ -88,7 +89,10 @@ from services.errors import clean_text, public_error_message, redact_sensitive_t
 from services.housekeeping import (
     run_housekeeping_once as _default_run_housekeeping_once,
 )
-from services.housekeeping import start_housekeeping
+from services.housekeeping import (
+    start_housekeeping,
+    stop_housekeeping,
+)
 from services.http_optimizations import install_http_optimizations
 from services.logutil import log_exception_throttled
 from services.observability_maintenance import (
@@ -3715,13 +3719,23 @@ def _start_housekeeping_background() -> None:
     start_housekeeping(retention_days=30)
 
 
+def _stop_adblock_background() -> bool:
+    return get_adblock_artifacts().stop_background()
+
+
+def _stop_webfilter_background() -> bool:
+    return get_webfilter_store().stop_background()
+
+
 _background_coordinator = BackgroundServiceCoordinator(
     (
         _start_adblock_background,
         _start_webfilter_background,
         _start_housekeeping_background,
-    )
+    ),
+    (_stop_adblock_background, _stop_webfilter_background, stop_housekeeping),
 )
+atexit.register(_background_coordinator.stop)
 
 
 def _safe_int(value: object, default: int = 0) -> int:
