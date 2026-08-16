@@ -17,6 +17,7 @@ from services.proxy_write_guard import (
     proxy_lifecycle_lock_name,
     resolve_proxy_write_id,
 )
+from services.row_access import row_value as _row_value
 from services.schema_lifecycle import read_control_plane_identity
 
 
@@ -1710,18 +1711,6 @@ def _insert_adoption_marker(conn: Any, plan: RestorePlan, target_identity: str) 
             plan.now_ts,
         ),
     )
-
-
-def _row_value(row: Any, key: str, index: int) -> Any:
-    if row is None:
-        return None
-    try:
-        return row[key]
-    except Exception:
-        try:
-            return row[index]
-        except Exception:
-            return None
 
 
 validate_restore_contract()

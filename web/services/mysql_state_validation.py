@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from services.db import connect
+from services.row_access import row_value as _row_value
 from services.schema_lifecycle import latest_schema_checksum, latest_schema_version
 
 _REQUIRED_TABLES: tuple[str, ...] = (
@@ -157,18 +158,6 @@ class MysqlStateValidationResult:
 
 def _rows(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> list[Any]:
     return list(conn.execute(sql, params).fetchall())
-
-
-def _row_value(row: Any, key: str, index: int = 0) -> Any:
-    if row is None:
-        return None
-    try:
-        return row[key]
-    except Exception:
-        try:
-            return row[index]
-        except Exception:
-            return None
 
 
 def _table_names(conn: Any) -> set[str]:

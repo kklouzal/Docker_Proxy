@@ -23,6 +23,7 @@ from services.db import (
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
 )
+from services.row_access import row_value as _row_value
 from services.sql_identifiers import normalize_mysql_identifier
 
 if False:  # pragma: no cover - type checkers only
@@ -119,18 +120,6 @@ def normalize_control_plane_identity(value: str) -> str:
         msg = "invalid control plane identity"
         raise ValueError(msg)
     return normalized
-
-
-def _row_value(row: Any, key: str, index: int = 0) -> Any:
-    if row is None:
-        return None
-    try:
-        return row[key]
-    except Exception:
-        try:
-            return row[index]
-        except Exception:
-            return None
 
 
 def _raise_privilege_error(exc: BaseException) -> None:
