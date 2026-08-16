@@ -7,6 +7,14 @@ from .mysql_test_utils import configure_test_mysql_env
 from .subprocess_test_utils import run_test_process
 
 
+@pytest.fixture
+def isolated_squid_transaction_journal(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv(
+        "SQUID_TRANSACTION_JOURNAL_PATH",
+        str(tmp_path / "squid-transaction.json"),
+    )
+
+
 def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(
     tmp_path,
 ) -> None:
@@ -315,6 +323,7 @@ def test_render_icap_include_restores_adblock_routing_when_enabled(monkeypatch) 
 def test_materialize_clamav_runtime_files_uses_adblock_setting(
     tmp_path,
     monkeypatch,
+    isolated_squid_transaction_journal,
 ) -> None:
 
     from services.squid_core import (  # type: ignore
@@ -355,6 +364,7 @@ def test_materialize_clamav_runtime_files_uses_adblock_setting(
 def test_materialize_runtime_updates_scaled_supervisor_and_cicap_files(
     tmp_path,
     monkeypatch,
+    isolated_squid_transaction_journal,
 ) -> None:
 
     from services.squid_core import (  # type: ignore
@@ -526,6 +536,7 @@ stdout_logfile_maxbytes=0
 def test_materialize_runtime_removes_remote_respmod_when_clamd_returns_local(
     tmp_path,
     monkeypatch,
+    isolated_squid_transaction_journal,
 ) -> None:
 
     from services.squid_core import (  # type: ignore
