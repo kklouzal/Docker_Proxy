@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover - production image installs defusedxml.
 from services.db import connect
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import authority_has_empty_explicit_port
+from services.url_validation import has_malformed_percent_encoding
 
 logger = logging.getLogger(__name__)
 
@@ -76,19 +77,8 @@ def _decoded_url_component_is_unsafe(value: str) -> bool:
     )
 
 
-def _has_malformed_percent_encoding(value: str) -> bool:
-    start = 0
-    while True:
-        index = value.find("%", start)
-        if index == -1:
-            return False
-        if _PERCENT_ENCODED_OCTET_RE.match(value, index) is None:
-            return True
-        start = index + 3
-
-
 def _decoded_authority_component_is_unsafe(value: str) -> bool:
-    if _has_malformed_percent_encoding(value):
+    if has_malformed_percent_encoding(value):
         return True
     decoded_values, is_excessively_nested = _repeatedly_decode_url_component(value)
     return is_excessively_nested or any(

@@ -18,6 +18,7 @@ from services.proxy_registry import (
     get_proxy_registry,
     normalize_management_url,
 )
+from services.url_validation import has_malformed_percent_encoding
 
 
 class ProxyClientError(RuntimeError):
@@ -77,27 +78,9 @@ def _has_unsafe_management_path_text(value: str) -> bool:
     return any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value)
 
 
-_PERCENT_HEX_DIGITS = frozenset("0123456789ABCDEFabcdef")
-
-
-def _has_malformed_percent_encoding(value: str) -> bool:
-    start = 0
-    while True:
-        index = value.find("%", start)
-        if index == -1:
-            return False
-        if (
-            index + 2 >= len(value)
-            or value[index + 1] not in _PERCENT_HEX_DIGITS
-            or value[index + 2] not in _PERCENT_HEX_DIGITS
-        ):
-            return True
-        start = index + 3
-
-
 def _safe_decoded_management_path(path: str) -> bool:
     raw_segments = path.split("/")
-    if any(_has_malformed_percent_encoding(segment) for segment in raw_segments):
+    if any(has_malformed_percent_encoding(segment) for segment in raw_segments):
         return False
     try:
         decoded_segments = [

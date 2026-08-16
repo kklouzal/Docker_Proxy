@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import re
 import socket
-import string
 import threading
 import time
 from contextlib import ExitStack, contextmanager
@@ -47,6 +46,7 @@ from services.public_endpoint import (
     normalize_public_scheme as _normalize_public_scheme,
 )
 from services.runtime_helpers import authority_has_empty_explicit_port
+from services.url_validation import has_malformed_percent_encoding
 
 
 def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
@@ -105,26 +105,10 @@ def _has_unsafe_query_text(value: str) -> bool:
 
 
 _MAX_PERCENT_DECODE_PASSES = 8
-_PERCENT_HEX_DIGITS = frozenset(string.hexdigits)
-
-
-def _has_malformed_percent_encoding(value: str) -> bool:
-    start = 0
-    while True:
-        index = value.find("%", start)
-        if index == -1:
-            return False
-        if (
-            index + 2 >= len(value)
-            or value[index + 1] not in _PERCENT_HEX_DIGITS
-            or value[index + 2] not in _PERCENT_HEX_DIGITS
-        ):
-            return True
-        start = index + 3
 
 
 def _strict_percent_unquote(value: str) -> str | None:
-    if _has_malformed_percent_encoding(value):
+    if has_malformed_percent_encoding(value):
         return None
     try:
         return unquote(value, errors="strict")
@@ -137,7 +121,7 @@ def _bounded_repeated_unquote(value: str) -> str | None:
     if decoded is None:
         return None
     for _ in range(_MAX_PERCENT_DECODE_PASSES):
-        if _has_malformed_percent_encoding(decoded):
+        if has_malformed_percent_encoding(decoded):
             return None
         try:
             next_decoded = unquote(decoded, errors="strict")
@@ -146,7 +130,7 @@ def _bounded_repeated_unquote(value: str) -> str | None:
         if next_decoded == decoded:
             return decoded
         decoded = next_decoded
-    if _has_malformed_percent_encoding(decoded):
+    if has_malformed_percent_encoding(decoded):
         return None
     try:
         return decoded if unquote(decoded, errors="strict") == decoded else None
