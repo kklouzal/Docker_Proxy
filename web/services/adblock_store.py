@@ -35,6 +35,7 @@ from services.proxy_write_guard import (
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
 from services.runtime_helpers import read_bounded_complete_lines
+from services.schema_lifecycle import ensure_index
 
 logger = logging.getLogger(__name__)
 
@@ -308,25 +309,7 @@ class AdblockStore:
 
     @staticmethod
     def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
-        exists = conn.execute(
-            """
-            SELECT 1
-            FROM information_schema.statistics
-            WHERE table_schema = DATABASE()
-              AND table_name = %s
-              AND index_name = %s
-            LIMIT 1
-            """,
-            (table_name, index_name),
-        ).fetchone()
-        if exists:
-            return
-        try:
-            conn.execute(ddl)
-        except DATABASE_ERRORS as exc:
-            if mysql_error_code(exc) != 1061:
-                raise
-            return
+        ensure_index(conn, table_name=table_name, index_name=index_name, ddl=ddl)
 
     def _get_meta(self, conn, key: str, default: str = "") -> str:
         row = conn.execute("SELECT v FROM adblock_meta WHERE k=%s", (key,)).fetchone()

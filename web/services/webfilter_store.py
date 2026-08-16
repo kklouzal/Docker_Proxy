@@ -9,7 +9,7 @@ from subprocess import run
 from typing import ClassVar
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
-from services.db import DATABASE_ERRORS, mysql_error_code
+from services.db import DATABASE_ERRORS
 from services.errors import clean_text, public_error_message, redact_sensitive_text
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
@@ -18,6 +18,7 @@ from services.safe_browsing_v5 import (
     SafeBrowsingLocalChecker,
     SafeBrowsingStore,
 )
+from services.schema_lifecycle import ensure_column, ensure_index
 from services.webfilter_core import (
     _DEFAULT_SOURCE_URL,
     _GLOBAL_SCOPE,
@@ -156,45 +157,11 @@ class WebFilterStore(WebFilterStoreBase):
 
     @staticmethod
     def _ensure_column(conn, table_name: str, column_name: str, ddl: str) -> None:
-        exists = conn.execute(
-            """
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = DATABASE()
-              AND table_name = %s
-              AND column_name = %s
-            LIMIT 1
-            """,
-            (table_name, column_name),
-        ).fetchone()
-        if exists:
-            return
-        try:
-            conn.execute(ddl)
-        except DATABASE_ERRORS as exc:
-            if mysql_error_code(exc) != 1060:
-                raise
+        ensure_column(conn, table_name=table_name, column_name=column_name, ddl=ddl)
 
     @staticmethod
     def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
-        exists = conn.execute(
-            """
-            SELECT 1
-            FROM information_schema.statistics
-            WHERE table_schema = DATABASE()
-              AND table_name = %s
-              AND index_name = %s
-            LIMIT 1
-            """,
-            (table_name, index_name),
-        ).fetchone()
-        if exists:
-            return
-        try:
-            conn.execute(ddl)
-        except DATABASE_ERRORS as exc:
-            if mysql_error_code(exc) != 1061:
-                raise
+        ensure_index(conn, table_name=table_name, index_name=index_name, ddl=ddl)
 
     def list_blocked_log(self, limit: int = 200) -> list[dict[str, object]]:
         try:

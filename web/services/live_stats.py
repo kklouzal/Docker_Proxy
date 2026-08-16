@@ -17,7 +17,6 @@ from services.db import (
     DATABASE_ERRORS,
     connect,
     mysql_advisory_lock,
-    mysql_error_code,
     mysql_schema_lock_timeout_seconds,
 )
 from services.logutil import log_database_unavailable, log_exception_throttled
@@ -33,6 +32,7 @@ from services.runtime_helpers import not_cached_reason as _not_cached_reason
 from services.runtime_helpers import not_cached_reason_sql as _not_cached_reason_sql
 from services.runtime_helpers import now_ts as _now
 from services.runtime_helpers import present_value_sql as _present_value_sql
+from services.schema_lifecycle import ensure_index
 
 logger = logging.getLogger(__name__)
 
@@ -541,24 +541,7 @@ class LiveStatsStore:
 
     @staticmethod
     def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
-        exists = conn.execute(
-            """
-            SELECT 1
-            FROM information_schema.statistics
-            WHERE table_schema = DATABASE()
-              AND table_name = %s
-              AND index_name = %s
-            LIMIT 1
-            """,
-            (table_name, index_name),
-        ).fetchone()
-        if exists:
-            return
-        try:
-            conn.execute(ddl)
-        except DATABASE_ERRORS as exc:
-            if mysql_error_code(exc) != 1061:
-                raise
+        ensure_index(conn, table_name=table_name, index_name=index_name, ddl=ddl)
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         """Prune stale aggregate rows.
