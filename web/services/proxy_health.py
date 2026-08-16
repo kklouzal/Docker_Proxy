@@ -57,11 +57,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _proxy_http_port() -> int:
-    try:
-        port = int((os.environ.get("SQUID_HTTP_PORT") or "3128").strip())
-    except Exception:
-        port = 3128
-    return port if 1 <= port <= 65535 else 3128
+    return resolve_tcp_port(os.environ.get("SQUID_HTTP_PORT") or 3128, 3128)
 
 
 def _forwarding_canary_target_url() -> str:
@@ -84,11 +80,10 @@ def _forwarding_canary_target_url() -> str:
         else:
             host = normalized_host
     display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
-    try:
-        port = int((os.environ.get("FORWARDING_CANARY_PORT") or "18080").strip())
-    except Exception:
-        port = 18080
-    port = port if 1 <= port <= 65535 else 18080
+    port = resolve_tcp_port(
+        os.environ.get("FORWARDING_CANARY_PORT") or 18080,
+        18080,
+    )
     path = (
         os.environ.get("FORWARDING_CANARY_PATH") or "/__docker_proxy_forwarding_canary"
     )
@@ -164,8 +159,9 @@ def check_forwarding_path_health(
     av_icap_health: dict[str, Any] | None = None,
     error_formatter: ErrorFormatter | None = None,
 ) -> dict[str, Any]:
-    resolved_proxy_port = int(
-        proxy_port if proxy_port is not None else _proxy_http_port()
+    resolved_proxy_port = resolve_tcp_port(
+        proxy_port if proxy_port is not None else _proxy_http_port(),
+        3128,
     )
     resolved_target_url = target_url or _forwarding_canary_target_url()
     result = check_http_proxy_forwarding(

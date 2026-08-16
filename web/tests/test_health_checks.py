@@ -1296,6 +1296,29 @@ def test_local_runtime_services_uses_tcp_timeout_for_clamd(monkeypatch) -> None:
     assert result["clamav"]["ok"] is True
 
 
+@pytest.mark.parametrize("proxy_port", [0, -1, 65536, "not-int", ""])
+def test_forwarding_path_health_normalizes_invalid_explicit_proxy_port(
+    monkeypatch, proxy_port
+) -> None:
+    proxy_health = _proxy_health_module()
+    captured: dict[str, object] = {}
+
+    def fake_probe(**kwargs):
+        captured.update(kwargs)
+        return {"ok": False, "detail": "not listening"}
+
+    monkeypatch.setenv("SQUID_HTTP_PORT", "43128")
+    monkeypatch.setattr(proxy_health, "check_http_proxy_forwarding", fake_probe)
+
+    result = proxy_health.check_forwarding_path_health(proxy_port=proxy_port)
+
+    # An explicit value retains precedence, but an unusable TCP port falls back to
+    # the public API default rather than crashing or reporting a false target.
+    assert captured["proxy_port"] == 3128
+    assert result["port"] == 3128
+    assert result["target"] == "127.0.0.1:3128"
+
+
 def test_forwarding_path_health_is_local_bounded_and_attributed(monkeypatch) -> None:
     proxy_health = _proxy_health_module()
     captured: dict[str, object] = {}
