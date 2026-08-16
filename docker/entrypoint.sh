@@ -753,14 +753,11 @@ fi
 # Normalize the logs we keep, collapse the duplicate live-only access log into the
 # richer structured access log, and disable store.log, which is pure per-object
 # overhead for this stack and is not consumed anywhere in-product.
-for SQUID_CFG in /etc/squid/squid.conf; do
-    if [ ! -f "$SQUID_CFG" ]; then
-        continue
-    fi
-    sed -i -E '/^[[:space:]]*access_log[[:space:]]+(stdio:)?\/var\/log\/squid\/access\.log\b/d' "$SQUID_CFG" || true
-    sed -i -E 's#^([[:space:]]*cache_log[[:space:]]+)(stdio:)?/var/log/squid/cache\.log([[:space:]]*|$)#\1stdio:/var/log/squid/cache.log\3#' "$SQUID_CFG" || true
-    sed -i -E 's#^[[:space:]]*cache_store_log[[:space:]]+.*$#cache_store_log none#I' "$SQUID_CFG" || true
-done
+if [ -f /etc/squid/squid.conf ]; then
+    sed -i -E '/^[[:space:]]*access_log[[:space:]]+(stdio:)?\/var\/log\/squid\/access\.log\b/d' /etc/squid/squid.conf || true
+    sed -i -E 's#^([[:space:]]*cache_log[[:space:]]+)(stdio:)?/var/log/squid/cache\.log([[:space:]]*|$)#\1stdio:/var/log/squid/cache.log\3#' /etc/squid/squid.conf || true
+    sed -i -E 's#^[[:space:]]*cache_store_log[[:space:]]+.*$#cache_store_log none#I' /etc/squid/squid.conf || true
+fi
 
 # Keep log noise down: exclude local cachemgr polling from the structured access log.
 # We apply this even if squid.conf already exists (e.g., user edited via UI),
@@ -825,16 +822,12 @@ normalize_http_port_listeners /etc/squid/squid.conf
 SAFE_LIVEUI_FMT='logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st'
 SAFE_DIAGNOSTIC_FMT='logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note\t%{file_security_policy}note\t%{Content-Type}<h\t%{Server}<h\t%{Cf-Mitigated}<h\t%{Alt-Svc}<h'
 SAFE_ICAP_OBSERVE_FMT='logformat icapobserve %ts\t%master_xaction\t%>a\t%rm\t%ru\t%icap::tt\t%adapt::sum_trs\t%adapt::all_trs\t%{Host}>h\t%{User-Agent}>h\t%ssl::>sni\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note'
-for SQUID_CFG in /etc/squid/squid.conf; do
-    if [ -f "$SQUID_CFG" ] && grep -q "^logformat liveui" "$SQUID_CFG" 2>/dev/null; then
-        sed -i -E "s#^logformat[[:space:]]+liveui[[:space:]].*#${SAFE_LIVEUI_FMT}#" "$SQUID_CFG"
+if [ -f /etc/squid/squid.conf ]; then
+    if grep -q "^logformat liveui" /etc/squid/squid.conf 2>/dev/null; then
+        sed -i -E "s#^logformat[[:space:]]+liveui[[:space:]].*#${SAFE_LIVEUI_FMT}#" /etc/squid/squid.conf
     fi
 
-    if [ ! -f "$SQUID_CFG" ]; then
-        continue
-    fi
-
-    SQUID_CFG_PATH="$SQUID_CFG" \
+    SQUID_CFG_PATH=/etc/squid/squid.conf \
     SAFE_LIVEUI_FMT="$SAFE_LIVEUI_FMT" \
     SAFE_DIAGNOSTIC_FMT="$SAFE_DIAGNOSTIC_FMT" \
     SAFE_ICAP_OBSERVE_FMT="$SAFE_ICAP_OBSERVE_FMT" \
@@ -874,7 +867,7 @@ for note_line, acl_name in (
 
 path.write_text(text_buffer[0] if text_buffer[0].endswith('\n') else text_buffer[0] + '\n', encoding='utf-8')
 PY
-done
+fi
 
 # Stability + privacy: never cache requests that carry Authorization/Cookie.
 # This reduces Vary-related cache loops and prevents caching of authenticated content.
