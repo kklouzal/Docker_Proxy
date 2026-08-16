@@ -1350,9 +1350,11 @@ def test_open_download_url_rejects_malformed_percent_encoded_redirect_location_b
 
     redirect_headers = Message()
     redirect_headers["Location"] = "/feed%.csv"
+    requested_urls: list[str] = []
 
     class _Opener:
         def open(self, req, **_kwargs):
+            requested_urls.append(req.full_url)
             raise download_safety.urllib.error.HTTPError(
                 req.full_url,
                 302,
@@ -1376,6 +1378,7 @@ def test_open_download_url_rejects_malformed_percent_encoded_redirect_location_b
         )
 
     assert lookups == ["public.example", "public.example"]
+    assert requested_urls == ["https://public.example/feed.csv"]
 
 
 def test_open_download_url_uses_get_without_body_after_303_redirect(
@@ -1397,7 +1400,7 @@ def test_open_download_url_uses_get_without_body_after_303_redirect(
 
     seen_requests: list[tuple[str, str, bytes | None, str | None]] = []
     redirect_headers = Message()
-    redirect_headers["Location"] = "/mirror/feed.csv"
+    redirect_headers["Location"] = "/mirror/feed%20copy.csv?literal=%25"
 
     original_request = download_safety.urllib.request.Request
 
@@ -1444,7 +1447,12 @@ def test_open_download_url_uses_get_without_body_after_303_redirect(
 
     assert seen_requests == [
         ("https://public.example/feed.csv", "GET", None, "GET"),
-        ("https://public.example/mirror/feed.csv", "GET", None, "GET"),
+        (
+            "https://public.example/mirror/feed%20copy.csv?literal=%25",
+            "GET",
+            None,
+            "GET",
+        ),
     ]
 
 
