@@ -30,6 +30,12 @@ from services.adblock_decision import (  # noqa: E402
     AdblockDecisionEngine,
 )
 from services.helper_runtime import HelperStats, helper_event  # noqa: E402
+from services.icap_protocol import (  # noqa: E402
+    IcapWireSyntaxError,
+    parse_chunk_header,
+    parse_encapsulated_sections,
+    validate_chunk_trailer,
+)
 from services.runtime_helpers import env_float, env_int  # noqa: E402
 
 _CRLF = b"\r\n"
@@ -99,21 +105,14 @@ def _has_invalid_preview_header(lines: list[str], *, max_preview_bytes: int) -> 
 
 
 def _parse_encapsulated_offsets(value: str) -> dict[str, int] | None:
-    offsets: dict[str, int] = {}
-    last_offset = -1
-    for item in (value or "").split(","):
-        if "=" not in item:
-            return None
-        name, raw_offset = item.split("=", 1)
-        name = name.strip().lower()
-        raw_offset = raw_offset.strip()
-        if not raw_offset.isdigit():
-            return None
-        offset = int(raw_offset)
-        if not name or name in offsets or offset < last_offset:
-            return None
-        offsets[name] = offset
-        last_offset = offset
+    try:
+        offsets = parse_encapsulated_sections(
+            value or "",
+            supported_names={"req-hdr", "req-body", "null-body"},
+            require_nondecreasing_offsets=True,
+        )
+    except IcapWireSyntaxError:
+        return None
     if "req-body" in offsets and "null-body" in offsets:
         return None
     return offsets
@@ -349,20 +348,17 @@ def _block_response(url: str, raw_rule: str, *, close: bool = False) -> bytes:
 
 
 def _parse_chunk_size_line(line: bytes) -> int | None:
-    parts = line.split(b";")
-    size_token = parts[0]
-    if not size_token or not all(ch in b"0123456789abcdefABCDEF" for ch in size_token):
+    try:
+        parsed = parse_chunk_header(line)
+    except IcapWireSyntaxError:
         return None
-    size = int(size_token, 16)
-    ieof_seen = False
-    for extension in parts[1:]:
-        name = extension.split(b"=", 1)[0].strip().lower()
-        if name != b"ieof":
-            continue
-        if ieof_seen or size != 0:
-            return None
-        ieof_seen = True
-    return size
+    ieof_count = sum(
+        extension.split(b"=", 1)[0].strip().lower() == b"ieof"
+        for extension in line.split(b";")[1:]
+    )
+    if ieof_count > 1 or (parsed.has_ieof and parsed.size != 0):
+        return None
+    return parsed.size
 
 
 def _chunk_trailers_parse(
@@ -375,13 +371,10 @@ def _chunk_trailers_parse(
             return None, False
         if line_end == cursor:
             return cursor + len(_CRLF), False
-        trailer_line = data[cursor:line_end]
-        field_name = trailer_line.split(b":", 1)[0]
-        if (
-            b":" not in trailer_line
-            or not field_name
-            or any(ch <= 0x20 or ch >= 0x7F for ch in field_name)
-        ):
+        trailer_line = bytes(data[cursor:line_end])
+        try:
+            validate_chunk_trailer(trailer_line)
+        except IcapWireSyntaxError:
             return None, True
         cursor = line_end + len(_CRLF)
 

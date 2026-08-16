@@ -29,6 +29,12 @@ if str(app_root) not in sys.path:
     sys.path.insert(0, str(app_root))
 
 from services.helper_runtime import HelperStats, helper_event  # noqa: E402
+from services.icap_protocol import (  # noqa: E402
+    IcapWireSyntaxError,
+    parse_chunk_header,
+    parse_encapsulated_sections,
+    validate_chunk_trailer,
+)
 from services.runtime_helpers import env_float, env_int, security_env_bool  # noqa: E402
 
 if TYPE_CHECKING:
@@ -139,8 +145,7 @@ def _split_headers(header_bytes: bytes) -> tuple[str, dict[str, str]]:
             raise IcapProtocolError(message)
         name, value = line.split(":", 1)
         if not _ICAP_HEADER_NAME_RE.fullmatch(name) or not all(
-            char == "\t" or (ord(char) >= 32 and ord(char) != 127)
-            for char in value
+            char == "\t" or (ord(char) >= 32 and ord(char) != 127) for char in value
         ):
             message = "malformed ICAP header line"
             raise IcapProtocolError(message)
@@ -185,34 +190,14 @@ def _parse_start_line(start_line: str) -> str:
 
 
 def _parse_encapsulated(value: str) -> dict[str, int]:
-    supported_names = {"req-hdr", "res-hdr", "res-body", "null-body"}
-    offsets: dict[str, int] = {}
-    for raw_item in value.split(","):
-        item = raw_item.lstrip()
-        if not item:
-            message = "malformed Encapsulated section:"
-            raise IcapProtocolError(message)
-        if "=" not in item:
-            message = f"malformed Encapsulated section: {item}"
-            raise IcapProtocolError(message)
-        name, raw_offset = item.split("=", 1)
-        name = name.strip().lower()
-        if name not in supported_names:
-            message = f"unknown Encapsulated section token: {name}"
-            raise IcapProtocolError(message)
-        if name in offsets:
-            message = f"duplicate Encapsulated section name: {name}"
-            raise IcapProtocolError(message)
-        if not _ENCAPSULATED_OFFSET_RE.fullmatch(raw_offset):
-            message = f"invalid Encapsulated offset: {item}"
-            raise IcapProtocolError(message)
-        significant_offset = raw_offset.lstrip("0") or "0"
-        if len(significant_offset) > 16:
-            message = f"invalid Encapsulated offset: {item}"
-            raise IcapProtocolError(message)
-        offset = int(significant_offset)
-        offsets[name] = offset
-    return offsets
+    try:
+        return parse_encapsulated_sections(
+            value,
+            supported_names={"req-hdr", "res-hdr", "res-body", "null-body"},
+            strip_offset_whitespace=False,
+        )
+    except IcapWireSyntaxError as exc:
+        raise IcapProtocolError(str(exc)) from exc
 
 
 def _validate_respmod_encapsulated_offsets(
@@ -225,9 +210,7 @@ def _validate_respmod_encapsulated_offsets(
     body_offset = offsets.get("res-body")
     null_body_offset = offsets.get("null-body")
     terminal_offsets = [
-        offset
-        for offset in (body_offset, null_body_offset)
-        if offset is not None
+        offset for offset in (body_offset, null_body_offset) if offset is not None
     ]
 
     if response_header_offset is None:
@@ -371,10 +354,14 @@ def _read_chunk_header(stream: BinaryIO, initial: bytes = b"") -> tuple[str, byt
 
 def _parse_icap_chunk_size(line: str) -> int:
     size_token = line.split(";", 1)[0]
-    if not _ICAP_CHUNK_SIZE_RE.fullmatch(size_token):
+    if len(size_token) > 16:
         message = f"invalid ICAP chunk size: {line!r}"
         raise IcapProtocolError(message)
-    return int(size_token, 16)
+    try:
+        return parse_chunk_header(line.encode("ascii")).size
+    except (UnicodeEncodeError, IcapWireSyntaxError) as exc:
+        message = f"invalid ICAP chunk size: {line!r}"
+        raise IcapProtocolError(message) from exc
 
 
 def _drain_chunk_trailers(stream: BinaryIO, initial: bytes = b"") -> bytes:
@@ -383,25 +370,22 @@ def _drain_chunk_trailers(stream: BinaryIO, initial: bytes = b"") -> bytes:
         line, remainder = _read_until(stream, CRLF, remainder)
         if line == CRLF:
             return remainder
-        trailer = line[:-2]
-        if b":" not in trailer:
-            message = "malformed ICAP chunk trailer"
-            raise IcapProtocolError(message)
-        name, value = trailer.split(b":", 1)
-        if not name or not _HTTP_TOKEN_RE.fullmatch(name):
-            message = "malformed ICAP chunk trailer"
-            raise IcapProtocolError(message)
-        if any((char < 32 and char != 9) or char == 127 for char in value):
-            message = "malformed ICAP chunk trailer"
-            raise IcapProtocolError(message)
+        try:
+            validate_chunk_trailer(line[:-2])
+        except IcapWireSyntaxError as exc:
+            raise IcapProtocolError(str(exc)) from exc
 
 
 def _chunk_has_ieof_extension(line: str) -> bool:
-    for extension in line.split(";")[1:]:
-        name = extension.split("=", 1)[0].strip().lower()
-        if name == "ieof":
-            return True
-    return False
+    try:
+        parsed = parse_chunk_header(line.encode("ascii"))
+        if parsed.has_ieof and parsed.size != 0:
+            message = "invalid ICAP ieof chunk extension on nonzero chunk"
+            raise IcapProtocolError(message)
+        return parsed.has_ieof
+    except (UnicodeEncodeError, IcapWireSyntaxError) as exc:
+        message = f"invalid ICAP chunk size: {line!r}"
+        raise IcapProtocolError(message) from exc
 
 
 def read_icap_chunked_body(
@@ -444,11 +428,7 @@ def read_icap_chunked_body(
                 if preview_size is not None and total_size < preview_size:
                     message = "ICAP preview terminated before Preview header size"
                     raise IcapProtocolError(message)
-                if (
-                    empty_preview_is_complete
-                    and preview_size == 0
-                    and total_size == 0
-                ):
+                if empty_preview_is_complete and preview_size == 0 and total_size == 0:
                     return bytes(body), remainder
                 preview_terminator_seen = True
                 if continue_callback is not None:
@@ -847,7 +827,9 @@ def _http_declared_content_length(http_header: bytes) -> bytes | None:
             raise HttpFramingError(message)
         content_lengths.append(raw_length.lstrip(b"0") or b"0")
     if transfer_encoding == "chunked" and content_lengths:
-        message = "ambiguous HTTP response framing: Content-Length with Transfer-Encoding"
+        message = (
+            "ambiguous HTTP response framing: Content-Length with Transfer-Encoding"
+        )
         raise HttpFramingError(message)
     if not content_lengths:
         return None
@@ -908,7 +890,10 @@ def _validate_http_response_body_semantics(
         if transfer_encoding != "absent":
             message = f"HTTP status {status_code} forbids Transfer-Encoding"
             raise HttpFramingError(message)
-        if status_code != 304 and _http_declared_content_length(http_header) is not None:
+        if (
+            status_code != 304
+            and _http_declared_content_length(http_header) is not None
+        ):
             message = f"HTTP status {status_code} forbids Content-Length"
             raise HttpFramingError(message)
         if status_code == 304:
@@ -927,7 +912,9 @@ def _validate_http_response_body_semantics(
     )
     if transfer_encoding != "absent":
         method = request_method.decode("ascii", errors="replace")
-        message = f"HTTP null-body for {method} response conflicts with Transfer-Encoding"
+        message = (
+            f"HTTP null-body for {method} response conflicts with Transfer-Encoding"
+        )
         raise HttpFramingError(message)
     declared_length = _http_declared_content_length(http_header)
     if declared_length is not None and declared_length != b"0":
@@ -1031,7 +1018,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 clean_response(allow_204=False, http_header=http_header, body=body)
             )
             return
-        self._write_response(error_response("scan failed before complete response body"))
+        self._write_response(
+            error_response("scan failed before complete response body")
+        )
 
     def _read_respmod_body_for_scan(
         self,
@@ -1256,7 +1245,12 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 self.server.record("protocol_errors")
             elif isinstance(
                 exc,
-                (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, EOFError),
+                (
+                    BrokenPipeError,
+                    ConnectionResetError,
+                    ConnectionAbortedError,
+                    EOFError,
+                ),
             ):
                 self.server.record("disconnects")
             else:
@@ -1397,7 +1391,9 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             if now >= self._scan_known_available_until:
                 probe_lock_acquired = self._scan_probe_lock.acquire(blocking=False)
                 if not probe_lock_acquired:
-                    message = "clamd INSTREAM scan skipped: availability probe in flight"
+                    message = (
+                        "clamd INSTREAM scan skipped: availability probe in flight"
+                    )
                     raise RuntimeError(message)
 
         session = ClamdInstreamSession(
@@ -1448,9 +1444,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--clamd-host", default=os.environ.get("CLAMD_HOST", "127.0.0.1")
     )
-    parser.add_argument(
-        "--clamd-port", type=int, default=env_int("CLAMD_PORT", 3310)
-    )
+    parser.add_argument("--clamd-port", type=int, default=env_int("CLAMD_PORT", 3310))
     parser.add_argument(
         "--clamd-timeout",
         type=float,
