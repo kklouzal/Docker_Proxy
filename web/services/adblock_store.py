@@ -35,7 +35,7 @@ from services.proxy_write_guard import (
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
 from services.runtime_helpers import read_bounded_complete_lines
-from services.schema_lifecycle import ensure_index
+from services.schema_lifecycle import ensure_column, ensure_index
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +224,10 @@ class AdblockStore:
                 http_resp_line VARCHAR(255) NOT NULL,
                 icap_status INT NOT NULL,
                 raw TEXT NOT NULL,
+                list_key VARCHAR(64) NOT NULL DEFAULT '',
+                rule_id VARCHAR(128) NOT NULL DEFAULT '',
+                decision_action VARCHAR(16) NOT NULL DEFAULT '',
+                decision_reason VARCHAR(64) NOT NULL DEFAULT '',
                 created_ts BIGINT NOT NULL,
                 KEY idx_adblock_events_ts_id (ts, id),
                 KEY idx_adblock_events_proxy_ts (proxy_id, ts, id),
@@ -277,6 +281,27 @@ class AdblockStore:
             ),
         ):
             self._ensure_index(conn, table, index_name, ddl)
+        for column_name, ddl in (
+            (
+                "list_key",
+                "ALTER TABLE adblock_events ADD COLUMN list_key VARCHAR(64) NOT NULL DEFAULT '' AFTER raw",
+            ),
+            (
+                "rule_id",
+                "ALTER TABLE adblock_events ADD COLUMN rule_id VARCHAR(128) NOT NULL DEFAULT '' AFTER list_key",
+            ),
+            (
+                "decision_action",
+                "ALTER TABLE adblock_events ADD COLUMN decision_action VARCHAR(16) NOT NULL DEFAULT '' AFTER rule_id",
+            ),
+            (
+                "decision_reason",
+                "ALTER TABLE adblock_events ADD COLUMN decision_reason VARCHAR(64) NOT NULL DEFAULT '' AFTER decision_action",
+            ),
+        ):
+            ensure_column(
+                conn, table_name="adblock_events", column_name=column_name, ddl=ddl
+            )
         proxy_id = get_proxy_id()
         for k in ("hits", "misses", "evictions"):
             conn.execute(
@@ -535,8 +560,8 @@ class AdblockStore:
                 conn.executemany(
                     """
                     INSERT IGNORE INTO adblock_events(
-                        proxy_id, event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
-                    ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        proxy_id, event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, list_key, rule_id, decision_action, decision_reason, created_ts
+                    ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     event_rows,
                 )
@@ -654,6 +679,14 @@ class AdblockStore:
             "http_resp_line": (http_resp_line or "").strip(),
             "icap_status": icap_status,
             "raw": raw,
+            "list_key": parts[9] if len(parts) > 9 and parts[9] != "-" else "",
+            "rule_id": parts[10] if len(parts) > 10 and parts[10] != "-" else "",
+            "decision_action": parts[11]
+            if len(parts) > 11 and parts[11] != "-"
+            else "",
+            "decision_reason": parts[12]
+            if len(parts) > 12 and parts[12] != "-"
+            else "",
         }
 
     def _event_values(
@@ -686,6 +719,10 @@ class AdblockStore:
             str(row.get("http_resp_line") or ""),
             int(row.get("icap_status") or 0),
             str(row.get("raw") or ""),
+            str(row.get("list_key") or "")[:64],
+            str(row.get("rule_id") or "")[:128],
+            str(row.get("decision_action") or "")[:16],
+            str(row.get("decision_reason") or "")[:64],
             created_ts,
         )
 
@@ -694,8 +731,8 @@ class AdblockStore:
             conn.execute(
                 """
                 INSERT IGNORE INTO adblock_events(
-                    proxy_id, event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, created_ts
-                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    proxy_id, event_key, ts, src_ip, method, url, http_status, http_resp_line, icap_status, raw, list_key, rule_id, decision_action, decision_reason, created_ts
+                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 self._event_values(guard.proxy_id, row, _now()),
             )
@@ -745,7 +782,7 @@ class AdblockStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT ts, src_ip, method, url, http_status
+                SELECT ts, src_ip, method, url, http_status, list_key, rule_id, decision_action, decision_reason
                 FROM adblock_events
                 WHERE proxy_id=%s
                 ORDER BY ts DESC, id DESC
@@ -762,6 +799,10 @@ class AdblockStore:
                 "url": str(r[3] or ""),
                 "result": "BLOCKED",
                 "status": str(int(r[4] or 0)),
+                "list_key": str(r[5] or ""),
+                "rule_id": str(r[6] or ""),
+                "decision_action": str(r[7] or ""),
+                "decision_reason": str(r[8] or ""),
             }
             for r in rows
         ]

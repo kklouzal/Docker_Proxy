@@ -1866,6 +1866,17 @@ def test_adblock_cicap_access_parser_requires_http_403_status(tmp_path) -> None:
     assert blocked["url"] == "http://ads.example/"
     assert blocked["http_status"] == 403
     assert blocked["icap_status"] == 200
+    assert blocked["list_key"] == ""
+    assert blocked["rule_id"] == ""
+
+    attributed = store._parse_cicap_access_line(
+        line.rsplit("\t", 1)[0] + "\tsample\trule-123\tblock\timportant-rule-match"
+    )
+    assert attributed is not None
+    assert attributed["list_key"] == "sample"
+    assert attributed["rule_id"] == "rule-123"
+    assert attributed["decision_action"] == "block"
+    assert attributed["decision_reason"] == "important-rule-match"
 
     for response_line in (
         "HTTP/1.1 200 upstream note 403",
@@ -1947,7 +1958,7 @@ def test_adblock_cicap_future_timestamp_is_bounded_without_changing_event_key(
         403,
     )
     assert values[2] == ingest_ts
-    assert values[10] == ingest_ts
+    assert values[14] == ingest_ts
     replayed_values = store._event_values("proxy-a", blocked, future_ts + 1)
     assert replayed_values[1] == values[1]
 

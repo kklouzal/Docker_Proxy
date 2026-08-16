@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import errno
 import html
+import io
 import os
 import socket
 import socketserver
@@ -687,6 +689,8 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
                     http_resp_line="HTTP/1.1 403 Forbidden",
                     list_key=list_key,
                     rule_id=decision.rule_id,
+                    decision_action=decision.action,
+                    decision_reason=decision.reason,
                 )
                 self.server.record_block(list_key)
                 if not _send_icap_response(
@@ -762,8 +766,11 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         http_resp_line: str,
         list_key: str = "",
         rule_id: str = "",
+        decision_action: str = "",
+        decision_reason: str = "",
     ) -> None:
-        line = "\t".join(
+        output = io.StringIO(newline="")
+        csv.writer(output, delimiter="\t", lineterminator="\n").writerow(
             [
                 str(int(time.time())),
                 client_ip or "-",
@@ -776,14 +783,16 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
                 http_resp_line if http_status else "-",
                 list_key or "-",
                 rule_id or "-",
+                decision_action or "-",
+                decision_reason or "-",
             ],
         )
         try:
             Path(self.access_log_path).parent.mkdir(parents=True, exist_ok=True)
             with Path(self.access_log_path).open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
+                handle.write(output.getvalue())
         except Exception:
-            pass
+            self.increment_stat("access_log_write_failed")
 
     def record_block(self, list_key: str) -> None:
         recorder = self.block_recorder
@@ -792,7 +801,7 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         try:
             recorder(list_key or "unknown")
         except Exception:
-            pass
+            self.increment_stat("block_record_failed")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

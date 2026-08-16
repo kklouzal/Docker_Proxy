@@ -1689,6 +1689,7 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
         log_text = log_path.read_text(encoding="utf-8")
         assert "ads.example/banner.js" in log_text
         assert "\tsample\t" in log_text
+        assert "\tblock\trule-match\n" in log_text
         assert recorded_blocks == ["sample"]
     finally:
         server.shutdown()

@@ -858,7 +858,7 @@ class ObservabilityQueries:
             ).fetchall()
             adblock_recent_rows = conn.execute(
                 f"""
-                SELECT ts, src_ip, method, url, http_status
+                SELECT ts, src_ip, method, url, http_status, list_key, rule_id, decision_action, decision_reason
                 FROM adblock_events
                 {adblock_where_sql}
                 ORDER BY ts DESC, id DESC
@@ -923,6 +923,10 @@ class ObservabilityQueries:
                 "domain": _extract_domain(row[3]),
                 "http_status": int(row[4] or 0),
                 "result": "BLOCKED",
+                "list_key": str(row[5] or ""),
+                "rule_id": str(row[6] or ""),
+                "decision_action": str(row[7] or ""),
+                "decision_reason": str(row[8] or ""),
             }
             for row in adblock_recent_rows
         ]
