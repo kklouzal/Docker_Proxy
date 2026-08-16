@@ -960,6 +960,36 @@ def test_local_pac_cache_selects_profile_from_verified_materialized_snapshot(
     assert fallback.content == fallback_pac.encode("utf-8")
 
 
+def test_local_pac_cache_rejects_verified_state_owned_by_another_proxy(
+    tmp_path,
+    pac_http,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    foreign_pac = 'function FindProxyForURL(){return "PROXY foreign";}\n'
+    _write_verified_pac_state(
+        pac_http,
+        pac_dir,
+        manifest={
+            "proxy_id": "edge-b",
+            "fallback_file": "fallback.pac",
+            "profiles": [],
+            "state_sha256": "",
+        },
+        files={"fallback.pac": foreign_pac},
+    )
+
+    cache = pac_http.LocalPacCache(str(pac_dir), proxy_id="edge-a")
+
+    assert (
+        cache.resolve_with_metadata(
+            client_ip="192.0.2.10",
+            request_host="proxy.example",
+        )
+        is None
+    )
+    assert cache._last_error == "PAC manifest belongs to a different proxy."
+
+
 def test_local_pac_cache_serves_fallback_when_profile_file_is_missing(
     tmp_path,
     pac_http,

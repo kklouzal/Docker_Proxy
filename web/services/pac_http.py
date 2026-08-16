@@ -20,6 +20,7 @@ from services.pac_renderer import (
     select_manifest_file,
     substitute_request_host,
 )
+from services.proxy_context import get_default_proxy_id, normalize_proxy_id
 from services.proxy_registry import (
     _safe_decoded_path_segments,
     normalize_public_pac_path,
@@ -372,8 +373,11 @@ def default_pac_bytes(request_host: str) -> bytes:
 
 
 class LocalPacCache:
-    def __init__(self, pac_dir: str) -> None:
+    def __init__(self, pac_dir: str, *, proxy_id: object | None = None) -> None:
         self.pac_dir = Path(pac_dir)
+        self.proxy_id = normalize_proxy_id(
+            get_default_proxy_id() if proxy_id is None else proxy_id
+        )
         self._lock = threading.Lock()
         self._state_sha = ""
         self._manifest: dict[str, object] = {}
@@ -512,6 +516,12 @@ class LocalPacCache:
                 return self._clear_locked(
                     state_signatures=state_signatures,
                     reason="PAC manifest has an invalid shape.",
+                )
+            manifest_proxy_id = str(manifest.get("proxy_id") or "").strip()
+            if manifest_proxy_id and manifest_proxy_id != self.proxy_id:
+                return self._clear_locked(
+                    state_signatures=state_signatures,
+                    reason="PAC manifest belongs to a different proxy.",
                 )
             manifest_state_sha = str(manifest.get("state_sha256") or "").strip()
             if not state_sha:
