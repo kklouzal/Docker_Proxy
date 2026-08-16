@@ -25,6 +25,15 @@ _ENV_TRUE_VALUES = frozenset(
 _ENV_FALSE_VALUES = frozenset({"0", "false", "no", "off", "disabled", "optional"})
 
 
+def normalize_icap_worker_count(value: object) -> int:
+    """Parse and clamp an ICAP worker count to the supported 1..4 range."""
+    try:
+        workers = int(str(value).strip())
+    except Exception:
+        workers = 1
+    return max(1, min(workers, 4))
+
+
 def security_env_bool(name: str, *, default: bool) -> bool:
     """Parse a security-mode environment flag without weakening on typos."""
     value = (os.environ.get(name) or "").strip().lower()

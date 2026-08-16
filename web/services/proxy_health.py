@@ -16,11 +16,10 @@ from services.health_checks import (
     send_sample_respmod_to,
     test_clamd_eicar,
 )
-from services.runtime_helpers import security_env_bool
+from services.runtime_helpers import normalize_icap_worker_count, security_env_bool
 from services.squid_core import (
     _clamav_respmod_stream_port_base,
     _clamd_host_is_remote,
-    _clamp_icap_workers,
     _icap_port_bases,
 )
 
@@ -421,7 +420,7 @@ def check_av_icap_health(
     resolved_host = (
         host or os.environ.get("CICAP_HOST") or "127.0.0.1"
     ).strip() or "127.0.0.1"
-    workers = _clamp_icap_workers(
+    workers = normalize_icap_worker_count(
         os.environ.get("SQUID_WORKERS") or os.environ.get("WORKERS") or "1"
     )
     _adblock_base, upload_port = _icap_port_bases(workers)
@@ -486,7 +485,7 @@ def send_sample_av_icap(
         resolved_host = (
             host or os.environ.get("CICAP_HOST") or "127.0.0.1"
         ).strip() or "127.0.0.1"
-        workers = _clamp_icap_workers(
+        workers = normalize_icap_worker_count(
             os.environ.get("SQUID_WORKERS") or os.environ.get("WORKERS") or "1"
         )
         resolved_port = _clamav_respmod_stream_port_base(workers)

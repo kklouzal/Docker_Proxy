@@ -12,9 +12,30 @@ from services.runtime_helpers import (
     extract_domain,
     fsync_parent_dir,
     normalize_hostish,
+    normalize_icap_worker_count,
     not_cached_reason,
     read_bounded_complete_lines,
 )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", 1),
+        ("   ", 1),
+        ("malformed", 1),
+        ("-8", 1),
+        ("0", 1),
+        ("1", 1),
+        (" 3 ", 3),
+        ("4", 4),
+        ("5", 4),
+        (999, 4),
+        (None, 1),
+    ],
+)
+def test_normalize_icap_worker_count(value: object, expected: int) -> None:
+    assert normalize_icap_worker_count(value) == expected
 
 
 @pytest.mark.parametrize("max_lines", [0, -1])

@@ -76,6 +76,7 @@ from services.proxy_registry import (
     resolve_local_proxy_public_fields,
 )
 from services.runtime_helpers import decode_bytes as _decode_bytes
+from services.runtime_helpers import normalize_icap_worker_count
 from services.schema_lifecycle import ensure_startup_schema_if_configured
 from services.squid_core import SquidController, _exclusive_squid_lifecycle_lock
 from services.squid_transaction import SquidTransactionJournal, default_journal_path
@@ -125,14 +126,6 @@ def _adblock_icap_self_heal_restart_cooldown_seconds() -> float:
     return max(0.0, min(value, 3600.0))
 
 
-def _clamp_icap_workers(value: object) -> int:
-    try:
-        workers = int(str(value).strip())
-    except Exception:
-        workers = 1
-    return max(1, min(workers, 4))
-
-
 def _bool_setting(value: object, *, default: bool = False) -> bool:
     if value is None:
         return default
@@ -152,7 +145,7 @@ def _icap_supervisor_programs(base_name: str) -> tuple[str, ...]:
         raw_workers = os.environ.get("SQUID_WORKERS") or os.environ.get("WORKERS")
         if raw_workers is None:
             return (name,)
-        workers = _clamp_icap_workers(raw_workers)
+        workers = normalize_icap_worker_count(raw_workers)
         return tuple(f"{name}_{index}" for index in range(1, workers + 1))
     return (name,) if name else ()
 

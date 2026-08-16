@@ -246,6 +246,27 @@ def test_render_icap_include_scales_services_by_squid_workers_without_duplicate_
     assert "acl icap_adblockable method GET HEAD POST OPTIONS PUT PATCH DELETE" in out
 
 
+@pytest.mark.parametrize(
+    ("raw_workers", "expected_workers"),
+    [(" ", 1), ("malformed", 1), ("0", 1), ("2", 2), ("99", 4)],
+)
+def test_render_icap_include_uses_shared_worker_normalization(
+    monkeypatch, raw_workers: str, expected_workers: int
+) -> None:
+    from services.squid_core import SquidController
+
+    monkeypatch.setenv("SQUID_WORKERS", raw_workers)
+    monkeypatch.setenv("CICAP_PORT", "24000")
+    monkeypatch.setenv("CICAP_AV_PORT", "25000")
+
+    out = SquidController()._render_icap_include()
+
+    assert out.count("icap_service adblock_req") == expected_workers
+    assert out.count("icap_service av_resp") == expected_workers
+    assert f"icap://127.0.0.1:{24000 + expected_workers - 1}/adblockreq" in out
+    assert f"icap://127.0.0.1:{25000 + expected_workers - 1}/avrespmod" in out
+
+
 def test_render_icap_include_preserves_non_overlapping_explicit_av_base(
     monkeypatch,
 ) -> None:

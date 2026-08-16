@@ -25,7 +25,7 @@ from services.clamav_config_forms import (
 )
 from services.errors import public_error_message
 from services.logutil import log_exception_throttled
-from services.runtime_helpers import security_env_bool
+from services.runtime_helpers import normalize_icap_worker_count, security_env_bool
 from services.squid_listeners import parse_squid_listeners
 from services.squid_transaction import (
     SquidTransactionJournal,
@@ -61,14 +61,6 @@ def _effective_clamav_options(options: dict[str, Any]) -> dict[str, Any]:
     effective = dict(options)
     effective["clamav_fail_mode"] = "closed"
     return effective
-
-
-def _clamp_icap_workers(value: object) -> int:
-    try:
-        workers = int(str(value).strip())
-    except Exception:
-        workers = 1
-    return max(1, min(workers, 4))
 
 
 def _parse_port(value: object, default: int) -> int:
@@ -108,7 +100,7 @@ def _allocate_icap_base(candidate: int, workers: int, *occupied: int) -> int:
 def _icap_port_bases(
     workers: int, *, adblock_port: object = None, av_port: object = None
 ) -> tuple[int, int]:
-    count = _clamp_icap_workers(workers)
+    count = normalize_icap_worker_count(workers)
     adblock_base = _parse_port(
         os.environ.get("CICAP_PORT") if adblock_port is None else adblock_port,
         14000,
@@ -133,7 +125,7 @@ def _clamav_respmod_stream_port_base(
     av_port: object = None,
     respmod_port: object = None,
 ) -> int:
-    count = _clamp_icap_workers(workers)
+    count = normalize_icap_worker_count(workers)
     adblock_base, av_base = _icap_port_bases(
         count,
         adblock_port=adblock_port,
@@ -886,8 +878,8 @@ class SquidController:
     def _runtime_icap_workers(self, config_text: str | None = None) -> int:
         parsed = self._extract_workers(config_text or "")
         if parsed is not None:
-            return _clamp_icap_workers(parsed)
-        return _clamp_icap_workers(os.environ.get("SQUID_WORKERS") or "1")
+            return normalize_icap_worker_count(parsed)
+        return normalize_icap_worker_count(os.environ.get("SQUID_WORKERS") or "1")
 
     def _managed_icap_runtime_paths(self) -> set[Path]:
         paths: set[Path] = set()
@@ -967,7 +959,7 @@ class SquidController:
         workers: int,
         config_text: str | None = None,
     ) -> dict[Path, str]:
-        count = _clamp_icap_workers(workers)
+        count = normalize_icap_worker_count(workers)
         options = _effective_clamav_options(extract_clamav_options(config_text or ""))
         supervisor_dir = self._supervisor_include_dir()
         cicap_dir = self._cicap_config_dir()
@@ -1085,7 +1077,7 @@ stdout_logfile_maxbytes=0
     ) -> str:
         if workers is None:
             workers = os.environ.get("SQUID_WORKERS") or "1"
-        icap_instances = _clamp_icap_workers(workers)
+        icap_instances = normalize_icap_worker_count(workers)
         adblock_icap_port, cicap_av_port = _icap_port_bases(icap_instances)
         clamav_respmod_port = _clamav_respmod_stream_port_base(icap_instances)
         use_stream_respmod = _clamd_host_is_remote(

@@ -660,6 +660,27 @@ def test_supervisor_program_status_accepts_scaled_icap_helpers(monkeypatch) -> N
     assert "no such process" not in detail
 
 
+@pytest.mark.parametrize(
+    ("raw_workers", "expected"),
+    [
+        ("   ", ("cicap_adblock_1",)),
+        ("malformed", ("cicap_adblock_1",)),
+        ("0", ("cicap_adblock_1",)),
+        ("3", ("cicap_adblock_1", "cicap_adblock_2", "cicap_adblock_3")),
+        ("99", tuple(f"cicap_adblock_{index}" for index in range(1, 5))),
+    ],
+)
+def test_icap_supervisor_program_names_use_shared_worker_normalization(
+    monkeypatch, raw_workers: str, expected: tuple[str, ...]
+) -> None:
+    from proxy.runtime import _icap_supervisor_programs
+
+    monkeypatch.setenv("SQUID_WORKERS", raw_workers)
+    monkeypatch.delenv("WORKERS", raising=False)
+
+    assert _icap_supervisor_programs("cicap_adblock") == expected
+
+
 def test_restart_supervisor_program_restarts_scaled_icap_helpers(monkeypatch) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
