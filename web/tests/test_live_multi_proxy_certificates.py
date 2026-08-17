@@ -16,6 +16,7 @@ from .live_test_helpers import (
     active_certificate_bundle,
     latest_certificate_apply,
     query_params,
+    wait_for_admin_response,
     wait_for_certificate_apply,
     wait_for_proxy_inventory,
 )
@@ -143,8 +144,30 @@ def test_live_generate_certificate_creates_shared_bundle_and_nudges_all_register
         assert primary_apply.bundle_sha256 in {"", bundle.bundle_sha256}
         assert remote_apply.bundle_sha256 in {"", bundle.bundle_sha256}
 
-    certs_page = multi_proxy_admin.admin_request("/certs")
-    assert certs_page.status == 200
+    expected_states = {"applied_unverified", "verified"}
+
+    def _all_proxies_converged(response: object) -> bool:
+        if getattr(response, "status", 0) != 200:
+            return False
+        statuses = _certificate_statuses(str(getattr(response, "text", "")))
+        return all(
+            statuses.get(proxy_id) in expected_states
+            for proxy_id in (
+                LIVE_CONFIG.primary_proxy_id,
+                LIVE_CONFIG.remote_proxy_id,
+            )
+        )
+
+    # Apply evidence is written by the certificate operation before the operation
+    # ledger is finalized. Poll the semantic page contract so that this test does
+    # not sample that legitimate, short-lived applying -> applied transition.
+    certs_page = wait_for_admin_response(
+        multi_proxy_admin,
+        "/certs",
+        accept=_all_proxies_converged,
+        description="certificate page states for all registered proxies to converge",
+        timeout_seconds=120.0,
+    )
     statuses = _certificate_statuses(certs_page.text)
     assert statuses[LIVE_CONFIG.primary_proxy_id] in {
         "applied_unverified",

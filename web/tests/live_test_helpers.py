@@ -619,6 +619,23 @@ def wait_for_certificate_apply(
     )
 
 
+def wait_for_admin_response(
+    client: LiveStackClient,
+    path_or_url: str,
+    *,
+    accept: Callable[[HttpResponse], bool],
+    description: str,
+    timeout_seconds: float | None = None,
+) -> HttpResponse:
+    resolved_url = resolve_url(LIVE_CONFIG.admin_url, path_or_url)
+    return _wait_for_response(
+        lambda: client.admin_request(resolved_url),
+        accept=accept,
+        description=description,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def wait_for_admin_contains(
     client: LiveStackClient,
     path_or_url: str,
@@ -627,8 +644,9 @@ def wait_for_admin_contains(
     timeout_seconds: float | None = None,
 ) -> HttpResponse:
     resolved_url = resolve_url(LIVE_CONFIG.admin_url, path_or_url)
-    return _wait_for_response(
-        lambda: client.admin_request(resolved_url),
+    return wait_for_admin_response(
+        client,
+        resolved_url,
         accept=lambda response: response.status == 200 and needle in response.text,
         description=f"admin page {resolved_url!r} containing {needle!r}",
         timeout_seconds=timeout_seconds,
