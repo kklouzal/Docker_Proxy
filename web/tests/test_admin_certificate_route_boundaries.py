@@ -886,6 +886,35 @@ def test_admin_ui_https_preference_rejects_invalid_configured_san(
     assert bundles.admin_ui_https_settings.enabled is False
 
 
+def test_admin_ui_https_status_reports_minted_sans_and_detects_stale_leaf(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=_bundle())
+    bundles.admin_ui_https_settings = SimpleNamespace(
+        enabled=True,
+        certfile="",
+        keyfile="",
+        san_tokens="old.example.test",
+        updated_by="admin",
+        updated_ts=1,
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    certfile, _keyfile = _set_admin_ui_https_material(monkeypatch, loaded, tmp_path)
+    loaded.module._materialize_admin_ui_https_leaf(
+        bundles.bundle,
+        bundles.admin_ui_https_settings,
+    )
+    bundles.admin_ui_https_settings.san_tokens = "new.example.test"
+
+    with loaded.module.app.test_request_context("/certs"):
+        status = loaded.module._admin_ui_https_status(bundle=bundles.bundle)
+
+    assert "old.example.test" in status["minted_admin_ui_sans"]
+    assert "new.example.test" in status["admin_ui_sans"]
+    assert status["san_state_matches"] is False
+    assert Path(certfile).exists()
+
+
 def test_admin_ui_https_status_reports_corrupt_saved_sans_without_crashing(
     monkeypatch, tmp_path
 ) -> None:

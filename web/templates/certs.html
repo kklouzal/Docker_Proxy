@@ -201,7 +201,11 @@ window.setTimeout(function () {
                         <div><strong>Leaf cert:</strong> <code class="mono">{{ admin_ui_https.default_certfile }}</code></div>
                         <div><strong>Leaf key:</strong> <code class="mono">{{ admin_ui_https.default_keyfile }}</code></div>
                         <div><strong>Configured SANs:</strong> <code class="mono">{{ admin_ui_https.configured_sans|join(', ') if admin_ui_https.configured_sans else 'none' }}</code></div>
-                        <div><strong>Pending/effective SANs:</strong> <code class="mono">{{ admin_ui_https.admin_ui_sans|join(', ') }}</code></div>
+                        <div><strong>Desired SANs:</strong> <code class="mono">{{ admin_ui_https.admin_ui_sans|join(', ') }}</code></div>
+                        <div><strong>Minted SANs:</strong> <code class="mono">{{ admin_ui_https.minted_admin_ui_sans|join(', ') if admin_ui_https.minted_admin_ui_sans else 'unavailable' }}</code></div>
+                        {% if admin_ui_https.desired_enabled and admin_ui_https.desired_material_ready and not admin_ui_https.san_state_matches %}
+                            <div class="text-danger">The saved/desired SAN state does not match the certificate currently minted on disk. Regenerate the Admin UI HTTPS certificate before relying on it.{% if admin_ui_https.minted_sans_error %} {{ admin_ui_https.minted_sans_error }}{% endif %}</div>
+                        {% endif %}
                     </div>
                     <label>
                         Admin UI certificate DNS/IP SANs

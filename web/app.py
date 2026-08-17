@@ -51,6 +51,7 @@ from services.certificate_bundles import (
 )
 from services.certificate_core import (
     admin_ui_certificate_material_transaction,
+    load_certificate_sans,
     materialize_admin_ui_server_certificate,
     normalize_admin_ui_certificate_san_token,
     normalize_admin_ui_certificate_sans,
@@ -5080,8 +5081,23 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
             default="Saved Admin UI HTTPS SAN entries are invalid.",
         )
         desired_error = f"{desired_error} {san_detail}".strip()
-    admin_ui_sans = normalize_admin_ui_certificate_sans(
+    desired_admin_ui_sans = normalize_admin_ui_certificate_sans(
         (*saved_san_tokens, *_admin_ui_https_request_san_tokens())
+    )
+    minted_admin_ui_sans: tuple[str, ...] = ()
+    minted_sans_error = ""
+    if desired_material and desired_material.ready:
+        try:
+            minted_admin_ui_sans = load_certificate_sans(desired_certfile)
+        except (OSError, ValueError) as exc:
+            minted_sans_error = public_error_message(
+                exc,
+                default="Failed to inspect the Admin UI HTTPS certificate SANs.",
+            )
+    san_state_matches = bool(
+        minted_admin_ui_sans
+        and {token.lower() for token in minted_admin_ui_sans}
+        == {token.lower() for token in desired_admin_ui_sans}
     )
     return {
         "runtime_enabled": runtime_enabled,
@@ -5127,7 +5143,10 @@ def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
         "active_material_detail": default_material["detail"],
         "default_certfile": default_certfile,
         "default_keyfile": default_keyfile,
-        "admin_ui_sans": admin_ui_sans,
+        "admin_ui_sans": desired_admin_ui_sans,
+        "minted_admin_ui_sans": minted_admin_ui_sans,
+        "minted_sans_error": minted_sans_error,
+        "san_state_matches": san_state_matches,
     }
 
 

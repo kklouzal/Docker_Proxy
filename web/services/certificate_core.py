@@ -680,6 +680,28 @@ def _general_names_for_sans(sans: Iterable[str]) -> list[x509.GeneralName]:
     return names
 
 
+def load_certificate_sans(path: str | os.PathLike[str]) -> tuple[str, ...]:
+    """Return canonical DNS/IP SANs from the certificate material at *path*."""
+    cert = _load_pem_certificate(pathlib.Path(path).read_bytes())
+    try:
+        extension = cert.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName,
+        ).value
+    except x509.ExtensionNotFound:
+        return ()
+    tokens: list[object] = [*extension.get_values_for_type(x509.DNSName)]
+    tokens.extend(str(ip) for ip in extension.get_values_for_type(x509.IPAddress))
+    sans: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        normalized = normalize_admin_ui_certificate_san_token(token)
+        key = normalized.lower()
+        if normalized and key not in seen:
+            seen.add(key)
+            sans.append(normalized)
+    return tuple(sans)
+
+
 def _load_bundle_ca_material(
     bundle: CertificateBundle | object,
 ) -> tuple[x509.Certificate, object]:
