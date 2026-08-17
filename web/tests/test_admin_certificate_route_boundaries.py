@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -198,20 +199,62 @@ def test_certificate_download_404s_when_no_active_bundle(monkeypatch, tmp_path) 
     assert client.get("/certs/download/ca.crt").status_code == 404
 
 
+class _CertificateStatusParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entries: dict[str, str] = {}
+        self.states: dict[str, str] = {}
+        self._status_depth = 0
+        self._capture: str | None = None
+        self._text: list[str] = []
+        self._name: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        classes = set((attributes.get("class") or "").split())
+        if tag == "div" and "status-item" in classes:
+            self._status_depth = 1
+            self._name = None
+            proxy_id = attributes.get("data-proxy-id")
+            state = attributes.get("data-certificate-state")
+            if proxy_id and state:
+                self.states[proxy_id] = state
+            return
+        if not self._status_depth:
+            return
+        if tag == "div":
+            self._status_depth += 1
+        if tag == "strong" or (tag == "span" and "badge" in classes):
+            self._capture = tag
+            self._text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._capture:
+            self._text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._capture == tag:
+            text = "".join(self._text).strip()
+            if tag == "strong":
+                self._name = text
+            elif self._name:
+                self.entries[self._name] = text
+            self._capture = None
+            self._text = []
+        if tag == "div" and self._status_depth:
+            self._status_depth -= 1
+            if not self._status_depth:
+                self._name = None
+
+
+def _parse_cert_page_statuses(html: str) -> _CertificateStatusParser:
+    parser = _CertificateStatusParser()
+    parser.feed(html)
+    return parser
+
+
 def _cert_page_status_entries(html: str) -> dict[str, str]:
-    entries: dict[str, str] = {}
-    marker = '<h3 class="page-section-title">Proxy apply status</h3>'
-    section = html.split(marker, 1)[1] if marker in html else html
-    for item in section.split('<div class="status-item">')[1:]:
-        name = item.split("<strong>", 1)[1].split("</strong>", 1)[0].strip()
-        badge = (
-            item.split('class="badge', 1)[1]
-            .split(">", 1)[1]
-            .split("</span>", 1)[0]
-            .strip()
-        )
-        entries[name] = badge
-    return entries
+    return _parse_cert_page_statuses(html).entries
 
 
 def test_certs_page_scopes_proxy_apply_status_to_active_revision(
@@ -370,9 +413,11 @@ def test_certs_page_reports_runtime_verified_per_selected_proxy_without_leakage(
 
     assert response.status_code == 200
     html = response.get_data(as_text=True)
-    statuses = _cert_page_status_entries(html)
-    assert statuses["Edge-A"] == "Runtime verified"
-    assert statuses["Edge-B"] == "Apply recorded"
+    parsed_statuses = _parse_cert_page_statuses(html)
+    assert parsed_statuses.entries["Edge-A"] == "Runtime verified"
+    assert parsed_statuses.entries["Edge-B"] == "Apply recorded"
+    assert parsed_statuses.states["edge-a"] == "verified"
+    assert parsed_statuses.states["edge-b"] == "applied_unverified"
     assert "desired=active-sha" in html
     assert "running=other-sha" in html
 

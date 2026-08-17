@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from html.parser import HTMLParser
 
 import pytest
 from cryptography import x509
@@ -24,6 +25,27 @@ pytestmark = pytest.mark.live
 
 def _apply_ts(application: object | None) -> int:
     return int(getattr(application, "applied_ts", 0) or 0)
+
+
+class _CertificateStatusParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.states: dict[str, str] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "div":
+            return
+        attributes = dict(attrs)
+        proxy_id = attributes.get("data-proxy-id")
+        state = attributes.get("data-certificate-state")
+        if proxy_id and state:
+            self.states[proxy_id] = state
+
+
+def _certificate_statuses(html: str) -> dict[str, str]:
+    parser = _CertificateStatusParser()
+    parser.feed(html)
+    return parser.states
 
 
 def _build_test_pfx(password: bytes) -> bytes:
@@ -123,8 +145,15 @@ def test_live_generate_certificate_creates_shared_bundle_and_nudges_all_register
 
     certs_page = multi_proxy_admin.admin_request("/certs")
     assert certs_page.status == 200
-    assert "Edge 2" in certs_page.text
-    assert "Applied" in certs_page.text or "Pending" in certs_page.text
+    statuses = _certificate_statuses(certs_page.text)
+    assert statuses[LIVE_CONFIG.primary_proxy_id] in {
+        "applied_unverified",
+        "verified",
+    }
+    assert statuses[LIVE_CONFIG.remote_proxy_id] in {
+        "applied_unverified",
+        "verified",
+    }
 
     download = multi_proxy_admin.admin_request("/certs/download/ca.crt")
     assert download.status == 200

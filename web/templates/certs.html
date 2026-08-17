@@ -234,7 +234,11 @@ window.setTimeout(function () {
                 {% if proxy_cert_statuses %}
                     <div class="status-list small">
                         {% for row in proxy_cert_statuses %}
-                            <div class="status-item">
+                            <div
+                                class="status-item"
+                                data-proxy-id="{{ row.proxy_id }}"
+                                data-certificate-state="{{ row.state }}"
+                            >
                                 <strong>{{ row.display_name }}</strong>
                                 <div class="status-item-meta">
                                     {% if row.ok is sameas true %}
