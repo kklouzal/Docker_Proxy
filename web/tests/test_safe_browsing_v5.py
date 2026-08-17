@@ -893,7 +893,7 @@ def _stateful_local_list_checker(url: str, *, prefix_present: bool):
                 return Result([("mw-4b",)] if prefix in state["prefixes"] else [])
             if "FROM safe_browsing_full_hash_cache" in normalized:
                 state["full_hash_queries"] += 1
-                return Result([(target, "MALWARE", "mw-4b")])
+                return Result([(target, "MALWARE", "mw-4b", 9999999999)])
             raise AssertionError(normalized)
 
     checker = SafeBrowsingLocalChecker(
@@ -2729,6 +2729,105 @@ def test_safe_browsing_enforces_android_unwanted_software(monkeypatch) -> None:
         False,
         "confirmed by hashes.search",
     )
+
+
+def test_safe_browsing_provider_cache_duration_is_preserved_without_floor_or_cap(
+    monkeypatch,
+) -> None:
+    checker = SafeBrowsingLocalChecker(api_key="test")
+    executed = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, params=()):
+            executed.append((" ".join(str(sql).split()), tuple(params)))
+
+    monkeypatch.setattr(checker, "_connect", Conn)
+    monkeypatch.setattr(safe_browsing_v5, "_now", lambda: 100)
+    full_hash = b"abcd" + (b"x" * 28)
+    response = [
+        {
+            "fullHash": base64.urlsafe_b64encode(full_hash).decode().rstrip("="),
+            "fullHashDetails": [{"threatType": "MALWARE"}],
+        }
+    ]
+
+    checker._cache_search_response(b"abcd", response, 0, ("mw-4b",))
+    checker._cache_search_response(b"abcd", response, 172800, ("mw-4b",))
+
+    inserts = [params for sql, params in executed if sql.startswith("INSERT INTO")]
+    assert [params[-1] for params in inserts] == [100, 172900]
+
+
+def test_safe_browsing_remote_verdict_cache_does_not_outlive_provider_ttl(
+    monkeypatch,
+) -> None:
+    checker = SafeBrowsingLocalChecker(api_key="test", selected_lists=("mw-4b",))
+    target = expression_hashes("http://short-lived.example/")[0]
+    now = [100.0]
+    remote_calls = []
+    monkeypatch.setattr(safe_browsing_v5.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(checker, "_synchronize_local_cache_versions", lambda _lists: 0)
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("mw-4b",) if prefix == target[:4] else (),
+    )
+    monkeypatch.setattr(checker, "_cache_lookup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(checker, "_cache_search_response", _ignore_cache_response)
+
+    def search_hashes(_api_key, prefixes):
+        remote_calls.append(tuple(prefixes))
+        return (
+            [
+                {
+                    "fullHash": base64.urlsafe_b64encode(target).decode().rstrip("="),
+                    "fullHashDetails": [{"threatType": "MALWARE"}],
+                }
+            ],
+            1,
+        )
+
+    monkeypatch.setattr(checker._store, "search_hashes", search_hashes)
+
+    assert checker.check_url("http://short-lived.example/").verdict == "unsafe"
+    now[0] = 100.5
+    assert checker.check_url("http://short-lived.example/").verdict == "unsafe"
+    now[0] = 101.1
+    assert checker.check_url("http://short-lived.example/").verdict == "unsafe"
+    assert len(remote_calls) == 2
+
+
+def test_safe_browsing_cache_lookup_treats_exact_expiry_as_expired(monkeypatch) -> None:
+    checker = SafeBrowsingLocalChecker(api_key="test", selected_lists=("mw-4b",))
+    queries = []
+
+    class Result:
+        def fetchall(self):
+            return []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, params=()):
+            queries.append((" ".join(str(sql).split()), tuple(params)))
+            return Result()
+
+    monkeypatch.setattr(checker, "_connect", Conn)
+    monkeypatch.setattr(safe_browsing_v5, "_now", lambda: 100)
+
+    assert checker._cache_lookup(b"abcd", set(), ("mw-4b",)) is None
+    assert "expires_ts > %s" in queries[0][0]
+    assert queries[0][1][1] == 100
 
 
 def test_safe_browsing_cache_lookup_does_not_delete_expired_rows(monkeypatch) -> None:

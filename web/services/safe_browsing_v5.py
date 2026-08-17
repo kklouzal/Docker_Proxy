@@ -13,7 +13,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from services.db import (
@@ -585,6 +585,7 @@ class SafeBrowsingVerdict:
     list_name: str = ""
     cache_hit: bool = False
     reason: str = ""
+    cache_ttl_seconds: int | None = field(default=None, compare=False, repr=False)
 
 
 class SafeBrowsingStore:
@@ -1432,20 +1433,25 @@ class SafeBrowsingLocalChecker:
                         list_filter = f" AND list_name IN ({placeholders})"
                         params = (prefix, now, *lists)
                 rows = conn.execute(
-                    "SELECT full_hash, threat_type, list_name "
+                    "SELECT full_hash, threat_type, list_name, expires_ts "
                     "FROM safe_browsing_full_hash_cache "
-                    "WHERE prefix=%s AND expires_ts >= %s"
+                    "WHERE prefix=%s AND expires_ts > %s"
                     f"{list_filter}",
                     params,
                 ).fetchall()
                 for row in rows:
                     if bytes(row[0]) in full_hashes:
+                        try:
+                            remaining_ttl = max(0, int(row[3]) - now)
+                        except (IndexError, KeyError, TypeError, ValueError):
+                            remaining_ttl = 0
                         return SafeBrowsingVerdict(
                             "unsafe",
                             str(row[1] or ""),
                             str(row[2] or ""),
                             True,
                             "cached full-hash match",
+                            remaining_ttl,
                         )
                 # Do not use persistent negative prefix cache for verdicts. The
                 # legacy table is keyed only by prefix, while selected Safe
@@ -1464,7 +1470,9 @@ class SafeBrowsingLocalChecker:
         cache_duration: int,
         local_lists: Sequence[str] | None = None,
     ) -> None:
-        expires = _now() + max(60, min(24 * 60 * 60, int(cache_duration or 300)))
+        # v5 cacheDuration is provider authority. Zero means the response must
+        # not remain usable, and long durations must not be shortened locally.
+        expires = _now() + max(0, int(cache_duration))
         try:
             with self._connect() as conn:
                 seen_hashes: set[bytes] = set()
@@ -1500,6 +1508,7 @@ class SafeBrowsingLocalChecker:
         key: tuple[str, tuple[str, ...]],
         verdict: SafeBrowsingVerdict,
         cache_generation: int | None = None,
+        ttl_seconds: int = 300,
     ) -> None:
         with self._local_cache_lock:
             if (
@@ -1507,7 +1516,10 @@ class SafeBrowsingLocalChecker:
                 and cache_generation != self._local_cache_generation
             ):
                 return
-            self._verdict_cache[key] = (time.monotonic() + 300, verdict)
+            ttl = max(0, int(ttl_seconds))
+            if ttl == 0:
+                return
+            self._verdict_cache[key] = (time.monotonic() + ttl, verdict)
             if len(self._verdict_cache) > self._cache_max:
                 self._verdict_cache.clear()
 
@@ -1530,6 +1542,7 @@ class SafeBrowsingLocalChecker:
         full_set = set(hashes)
         saw_local_match = False
         cache_final_verdict = True
+        verdict_ttl = 300
         last_safe_verdict = SafeBrowsingVerdict(
             "safe",
             reason="no local hash-prefix match",
@@ -1543,6 +1556,10 @@ class SafeBrowsingLocalChecker:
             saw_local_match = True
             cached_verdict = self._cache_lookup(prefix, full_set, local_lists)
             if cached_verdict is not None:
+                verdict_ttl = min(
+                    verdict_ttl,
+                    max(0, int(cached_verdict.cache_ttl_seconds or 0)),
+                )
                 if (
                     cached_verdict.verdict == "unsafe"
                     and cached_verdict.threat_type not in local_threat_types
@@ -1573,6 +1590,7 @@ class SafeBrowsingLocalChecker:
                         last_safe_verdict = verdict
                         continue
                     self._cache_search_response(prefix, response, duration, local_lists)
+                    verdict_ttl = min(verdict_ttl, max(0, int(duration)))
                     verdict = SafeBrowsingVerdict(
                         "safe",
                         reason="full hash not returned",
@@ -1600,7 +1618,10 @@ class SafeBrowsingLocalChecker:
                             )
                             break
             if verdict.verdict == "unsafe":
-                self._cache_verdict(cache_key, verdict, cache_generation)
+                if cache_final_verdict:
+                    self._cache_verdict(
+                        cache_key, verdict, cache_generation, verdict_ttl
+                    )
                 return verdict
             last_safe_verdict = verdict
         verdict = (
@@ -1611,5 +1632,5 @@ class SafeBrowsingLocalChecker:
         if not saw_local_match:
             cache_final_verdict = False
         if cache_final_verdict:
-            self._cache_verdict(cache_key, verdict, cache_generation)
+            self._cache_verdict(cache_key, verdict, cache_generation, verdict_ttl)
         return verdict
