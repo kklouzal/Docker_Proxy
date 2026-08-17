@@ -164,7 +164,12 @@ def schema_migration_in_progress() -> bool:
 
 
 def runtime_schema_current_applied(conn: Any) -> bool:
-    row = _existing_migration(conn, _SCHEMA_VERSION)
+    try:
+        row = _existing_migration(conn, _SCHEMA_VERSION)
+    except DATABASE_ERRORS as exc:
+        if mysql_error_code(exc) == 1146:
+            return False
+        raise
     return row is not None and str(_row_value(row, "status", 3) or "") == "applied"
 
 

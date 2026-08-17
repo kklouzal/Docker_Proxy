@@ -134,20 +134,62 @@ def _spec(version: int = 1, *, fn=None) -> schema_lifecycle.SchemaMigrationSpec:
     )
 
 
-def test_runtime_schema_readiness_propagates_probe_failure() -> None:
-    class SchemaReadinessProbeError(RuntimeError):
-        pass
+def test_runtime_schema_readiness_treats_missing_bootstrap_table_as_not_ready() -> None:
+    class MissingBootstrapTableConnection:
+        def execute(self, _sql: str, _params=()):
+            raise pymysql.ProgrammingError(
+                1146, "Table 'fresh_database.schema_migrations' doesn't exist"
+            )
 
-    probe_error = SchemaReadinessProbeError("schema readiness query failed")
+    conn = MissingBootstrapTableConnection()
 
+    assert schema_lifecycle.runtime_schema_current_applied(conn) is False
+    assert schema_lifecycle.runtime_schema_ready_for_lazy_store(conn) is False
+
+
+@pytest.mark.parametrize(
+    "probe_error",
+    [
+        pymysql.OperationalError(2003, "Can't connect to MySQL server"),
+        pymysql.OperationalError(1142, "SELECT denied"),
+        pymysql.ProgrammingError(1054, "Unknown column 'status'"),
+        RuntimeError("schema readiness query failed"),
+    ],
+)
+def test_runtime_schema_readiness_propagates_probe_failure(
+    probe_error: BaseException,
+) -> None:
     class FailingProbeConnection:
         def execute(self, _sql: str, _params=()):
             raise probe_error
 
-    with pytest.raises(SchemaReadinessProbeError) as caught:
+    with pytest.raises(type(probe_error)) as caught:
         schema_lifecycle.runtime_schema_current_applied(FailingProbeConnection())
 
     assert caught.value is probe_error
+
+
+def test_runtime_schema_readiness_preserves_status_and_migration_context() -> None:
+    conn = _Conn()
+    conn.migrations[schema_lifecycle._SCHEMA_VERSION] = {
+        "version": schema_lifecycle._SCHEMA_VERSION,
+        "name": "current",
+        "checksum": "0" * 64,
+        "status": "running",
+        "error": "",
+    }
+
+    assert schema_lifecycle.runtime_schema_current_applied(conn) is False
+
+    conn.migrations[schema_lifecycle._SCHEMA_VERSION]["status"] = "applied"
+    assert schema_lifecycle.runtime_schema_current_applied(conn) is True
+    assert schema_lifecycle.runtime_schema_ready_for_lazy_store(conn) is True
+
+    schema_lifecycle._MIGRATION_CONTEXT.active = True
+    try:
+        assert schema_lifecycle.runtime_schema_ready_for_lazy_store(conn) is False
+    finally:
+        del schema_lifecycle._MIGRATION_CONTEXT.active
 
 
 @pytest.mark.parametrize(
