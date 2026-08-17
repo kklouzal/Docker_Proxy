@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import ipaddress
 import os
 from typing import Any
 
+from services.forwarding_canary_config import forwarding_canary_target_url
 from services.health_checks import (
     ErrorFormatter,
     annotate_service_target,
@@ -60,45 +60,7 @@ def _proxy_http_port() -> int:
 
 
 def _forwarding_canary_target_url() -> str:
-    host = (
-        os.environ.get("FORWARDING_CANARY_HOST") or "127.0.0.1"
-    ).strip() or "127.0.0.1"
-    normalized_host = host.strip("[]")
-    if normalized_host.lower() == "localhost":
-        host = "localhost"
-    else:
-        try:
-            address = ipaddress.ip_address(normalized_host)
-        except ValueError:
-            address = None
-        if not (address is not None and address.version == 4 and address.is_loopback):
-            # Normalize wildcard, IPv6, and DNS-name inputs to the local IPv4
-            # canary target. The canary listener intentionally only accepts
-            # IPv4 loopback bind addresses.
-            host = "127.0.0.1"
-        else:
-            host = normalized_host
-    display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
-    port = resolve_tcp_port(
-        os.environ.get("FORWARDING_CANARY_PORT") or 18080,
-        18080,
-    )
-    path = (
-        os.environ.get("FORWARDING_CANARY_PATH") or "/__docker_proxy_forwarding_canary"
-    )
-    if (
-        not path.startswith("/")
-        or "?" in path
-        or "#" in path
-        or "\\" in path
-        or "//" in path
-        or any(
-            char.isspace() or ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
-            for char in path
-        )
-    ):
-        path = "/__docker_proxy_forwarding_canary"
-    return f"http://{display_host}:{port}{path}"
+    return forwarding_canary_target_url()
 
 
 def unavailable_service(

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import ipaddress
 import json
-import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+
+from services.forwarding_canary_config import (
+    forwarding_canary_listener_host,
+    forwarding_canary_path,
+    forwarding_canary_port,
+)
 
 DEFAULT_CANARY_HOST = "127.0.0.1"
 DEFAULT_CANARY_PORT = 18080
@@ -24,51 +28,15 @@ def _probe_header_value(probe: str) -> str:
 
 
 def _canary_host() -> str:
-    candidate = (
-        os.environ.get("FORWARDING_CANARY_HOST") or DEFAULT_CANARY_HOST
-    ).strip()
-    candidate = candidate.strip("[]")
-    if candidate == "":
-        return DEFAULT_CANARY_HOST
-    if candidate.lower() == "localhost":
-        return candidate
-    try:
-        address = ipaddress.ip_address(candidate)
-    except ValueError:
-        return DEFAULT_CANARY_HOST
-    if address.version == 4 and address.is_loopback:
-        return candidate
-    return DEFAULT_CANARY_HOST
+    return forwarding_canary_listener_host()
 
 
 def _canary_port() -> int:
-    try:
-        port = int(
-            (
-                os.environ.get("FORWARDING_CANARY_PORT") or str(DEFAULT_CANARY_PORT)
-            ).strip()
-        )
-    except Exception:
-        port = DEFAULT_CANARY_PORT
-    return port if 1 <= port <= 65535 else DEFAULT_CANARY_PORT
+    return forwarding_canary_port()
 
 
 def _canary_path() -> str:
-    candidate = os.environ.get("FORWARDING_CANARY_PATH") or DEFAULT_CANARY_PATH
-    if not candidate.startswith("/"):
-        return DEFAULT_CANARY_PATH
-    if (
-        "?" in candidate
-        or "#" in candidate
-        or "\\" in candidate
-        or "//" in candidate
-        or any(
-            char.isspace() or ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
-            for char in candidate
-        )
-    ):
-        return DEFAULT_CANARY_PATH
-    return candidate
+    return forwarding_canary_path()
 
 
 class ForwardingCanaryHandler(BaseHTTPRequestHandler):

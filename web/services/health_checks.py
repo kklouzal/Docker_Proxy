@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote_to_bytes, urlsplit, urlunsplit
 
 from services.errors import public_error_message
+from services.forwarding_canary_config import forwarding_canary_path
 from services.runtime_helpers import authority_has_empty_explicit_port
 
 ErrorFormatter = Callable[[Exception], str]
@@ -395,22 +396,7 @@ def _decode_chunked_body(data: bytes) -> tuple[bytes, bool]:
 
 
 def _forwarding_canary_path() -> str:
-    path = (
-        os.environ.get("FORWARDING_CANARY_PATH") or "/__docker_proxy_forwarding_canary"
-    )
-    if (
-        not path.startswith("/")
-        or "?" in path
-        or "#" in path
-        or "\\" in path
-        or "//" in path
-        or any(
-            char.isspace() or ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
-            for char in path
-        )
-    ):
-        return "/__docker_proxy_forwarding_canary"
-    return path
+    return forwarding_canary_path()
 
 
 def _normalized_url_path(path: str) -> str:
@@ -430,11 +416,9 @@ def _target_is_local_json_health(target_url: str) -> bool:
 
 def _target_is_forwarding_canary(target_url: str) -> bool:
     parsed = urlsplit(str(target_url or ""))
-    return (
-        parsed.scheme.lower() == "http"
-        and _normalized_url_path(parsed.path)
-        == _normalized_url_path(_forwarding_canary_path())
-    )
+    return parsed.scheme.lower() == "http" and _normalized_url_path(
+        parsed.path
+    ) == _normalized_url_path(_forwarding_canary_path())
 
 
 def _target_points_at_proxy_listener(
@@ -928,7 +912,9 @@ def send_sample_respmod_to(
         backend_unavailable = fail_open_placeholder or fail_closed_placeholder
         transport_ok = first_line.startswith("ICAP/1.0 ") and status_code is not None
         icap_transaction_ok = status_code is not None and 200 <= status_code < 300
-        protection_ready = transport_ok and icap_transaction_ok and not backend_unavailable
+        protection_ready = (
+            transport_ok and icap_transaction_ok and not backend_unavailable
+        )
         detail = first_line
         if fail_open_placeholder:
             detail = (

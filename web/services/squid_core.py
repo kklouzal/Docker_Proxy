@@ -24,6 +24,10 @@ from services.clamav_config_forms import (
     render_virus_scan_config,
 )
 from services.errors import public_error_message
+from services.forwarding_canary_config import (
+    forwarding_canary_path,
+    forwarding_canary_port,
+)
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import normalize_icap_worker_count, security_env_bool
 from services.squid_listeners import parse_squid_listeners
@@ -647,26 +651,10 @@ class SquidController:
         return text.rstrip() + "\n" + wanted + "\n"
 
     def _forwarding_canary_path(self) -> str:
-        path = (
-            os.environ.get("FORWARDING_CANARY_PATH")
-            or "/__docker_proxy_forwarding_canary"
-        )
-        if (
-            not path.startswith("/")
-            or "?" in path
-            or "#" in path
-            or "\\" in path
-            or "//" in path
-            or any(
-                char.isspace() or ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
-                for char in path
-            )
-        ):
-            return "/__docker_proxy_forwarding_canary"
-        return path
+        return forwarding_canary_path()
 
     def _forwarding_canary_port(self) -> int:
-        return _parse_port(os.environ.get("FORWARDING_CANARY_PORT"), 18080)
+        return forwarding_canary_port()
 
     def _forwarding_canary_access_block(self) -> str:
         path_regex = re.escape(self._forwarding_canary_path())

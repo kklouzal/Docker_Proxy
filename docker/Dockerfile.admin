@@ -78,6 +78,7 @@ COPY web/services/adblock_artifacts.py \
 	web/services/download_safety.py \
 	web/services/domain_normalization.py \
 	web/services/errors.py \
+	web/services/forwarding_canary_config.py \
 	web/services/error_pages.py \
 	web/services/external_auth_groups.py \
 	web/services/health_checks.py \
