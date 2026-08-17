@@ -65,7 +65,9 @@ class _FilteringQueryConn:
 
 
 class _FilteringQueryResult:
-    def __init__(self, rows: list[tuple[int, int, float, float, float, float, float]]) -> None:
+    def __init__(
+        self, rows: list[tuple[int, int, float, float, float, float, float]]
+    ) -> None:
         self.rows = rows
 
     def fetchall(self):
@@ -185,6 +187,9 @@ class _RollupSqlConn:
             return _RollupSqlResult((1_777_000_120,))
         return _RollupSqlResult()
 
+    def commit(self) -> None:
+        return None
+
 
 class _Guard:
     def __init__(self, proxy_id: str) -> None:
@@ -303,17 +308,21 @@ def test_query_canonicalizes_resolution_and_returns_persisted_metrics(
     assert "ts >= %s AND ts <= %s" in calls[0][0]
     assert "disk_used" in calls[0][0]
     assert "cache_dir_size" in calls[0][0]
-    assert valid_points == unknown_points == [
-        {
-            "ts": 123,
-            "count": 1,
-            "cpu": 2.0,
-            "mem": 3.0,
-            "disk_used": 5.0,
-            "cache_dir_size": 6.0,
-            "hit_rate": 4.0,
-        }
-    ]
+    assert (
+        valid_points
+        == unknown_points
+        == [
+            {
+                "ts": 123,
+                "count": 1,
+                "cpu": 2.0,
+                "mem": 3.0,
+                "disk_used": 5.0,
+                "cache_dir_size": 6.0,
+                "hit_rate": 4.0,
+            }
+        ]
+    )
 
 
 def test_query_returns_latest_bounded_proxy_points_in_chronological_order(
@@ -502,12 +511,51 @@ def test_rollup_sql_combines_late_buckets_with_metric_sample_counts(
 
     query = "\n".join(calls)
     assert "cpu_count" in query
-    assert "COALESCE(cpu_count, CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END)" in query
+    assert (
+        "COALESCE(cpu_count, CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END)" in query
+    )
     assert "+ incoming.cpu_count" in query
     assert "ts_1m.cpu * ts_1m.count + incoming.cpu * incoming.count" not in query
 
 
-def test_daily_rollup_processes_bounded_oldest_buckets_and_is_idempotent(tmp_path) -> None:
+def test_rollup_commits_before_releasing_cross_process_guard(monkeypatch) -> None:
+    store = TimeSeriesStore.__new__(TimeSeriesStore)
+    events: list[str] = []
+
+    class Conn(_RollupSqlConn):
+        def __init__(self) -> None:
+            super().__init__([])
+
+        def commit(self) -> None:
+            events.append("commit")
+
+        def __exit__(self, *_exc):
+            events.append("close")
+            return False
+
+    class Guard(_Guard):
+        def __enter__(self):
+            events.append("acquire")
+            return self
+
+        def __exit__(self, *_exc):
+            events.append("release")
+            return False
+
+    monkeypatch.setattr(store, "_connect", Conn)
+    monkeypatch.setattr(
+        "services.timeseries_store.guarded_proxy_write",
+        lambda _conn, proxy_id: Guard(proxy_id),
+    )
+
+    store._rollup("ts_1s", "ts_1m", 60, 1_777_000_240, "default")
+
+    assert events == ["acquire", "commit", "release", "close"]
+
+
+def test_daily_rollup_processes_bounded_oldest_buckets_and_is_idempotent(
+    tmp_path,
+) -> None:
     configure_test_mysql_env(tmp_path)
     store = TimeSeriesStore()
     store.init_db()
@@ -533,7 +581,9 @@ def test_daily_rollup_processes_bounded_oldest_buckets_and_is_idempotent(tmp_pat
     with store._connect() as conn:
         before = [
             (int(row[0]), int(row[1]))
-            for row in conn.execute("SELECT ts, count FROM ts_1d ORDER BY ts").fetchall()
+            for row in conn.execute(
+                "SELECT ts, count FROM ts_1d ORDER BY ts"
+            ).fetchall()
         ]
         assert int(conn.execute("SELECT COUNT(*) FROM ts_1h").fetchone()[0]) == 0
 
@@ -541,7 +591,9 @@ def test_daily_rollup_processes_bounded_oldest_buckets_and_is_idempotent(tmp_pat
     with store._connect() as conn:
         after = [
             (int(row[0]), int(row[1]))
-            for row in conn.execute("SELECT ts, count FROM ts_1d ORDER BY ts").fetchall()
+            for row in conn.execute(
+                "SELECT ts, count FROM ts_1d ORDER BY ts"
+            ).fetchall()
         ]
     assert after == before
 
@@ -610,7 +662,9 @@ def test_daily_rollup_late_hour_updates_existing_day_weighted_average(tmp_path) 
     store._rollup("ts_1h", "ts_1d", 86400, cutoff, "default", max_dst_buckets=1)
 
     with store._connect() as conn:
-        count, cpu = conn.execute("SELECT count, cpu FROM ts_1d WHERE ts=%s", (day0,)).fetchone()
+        count, cpu = conn.execute(
+            "SELECT count, cpu FROM ts_1d WHERE ts=%s", (day0,)
+        ).fetchone()
     assert int(count) == 4
     assert float(cpu) == pytest.approx(20.0)
 
@@ -680,7 +734,9 @@ def test_late_rollup_updates_existing_bucket_with_metric_sample_counts(
             ("default", minute_start + 2, 1, 20.0, 0.0, 0.0, 0.0, 0.0),
         )
 
-    store._rollup("ts_1s", "ts_1m", 60, minute_start + 120, "default", max_dst_buckets=1)
+    store._rollup(
+        "ts_1s", "ts_1m", 60, minute_start + 120, "default", max_dst_buckets=1
+    )
 
     with store._connect() as conn:
         conn.execute(
@@ -691,7 +747,9 @@ def test_late_rollup_updates_existing_bucket_with_metric_sample_counts(
             ("default", minute_start + 3, 1, 100.0, 0.0, 0.0, 0.0, 0.0),
         )
 
-    store._rollup("ts_1s", "ts_1m", 60, minute_start + 120, "default", max_dst_buckets=1)
+    store._rollup(
+        "ts_1s", "ts_1m", 60, minute_start + 120, "default", max_dst_buckets=1
+    )
 
     with store._connect() as conn:
         count, cpu = conn.execute(
@@ -718,13 +776,22 @@ def test_summary_averages_use_metric_non_null_denominators(monkeypatch) -> None:
     assert summary["cpu_avg"] == pytest.approx(90.0)
     assert summary["mem_avg"] == pytest.approx(40.0)
     assert summary["hit_rate_avg"] == pytest.approx(60.0)
-    assert "COALESCE(cpu_count, CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END)" in query
-    assert "COALESCE(mem_count, CASE WHEN mem IS NOT NULL THEN count ELSE 0 END)" in query
-    assert "COALESCE(hit_rate_count, CASE WHEN hit_rate IS NOT NULL THEN count ELSE 0 END)" in query
+    assert (
+        "COALESCE(cpu_count, CASE WHEN cpu IS NOT NULL THEN count ELSE 0 END)" in query
+    )
+    assert (
+        "COALESCE(mem_count, CASE WHEN mem IS NOT NULL THEN count ELSE 0 END)" in query
+    )
+    assert (
+        "COALESCE(hit_rate_count, CASE WHEN hit_rate IS NOT NULL THEN count ELSE 0 END)"
+        in query
+    )
     assert "SUM(cpu * count)/SUM(count)" not in query
 
 
-def test_summary_averages_ignore_null_metric_samples_mysql(monkeypatch, tmp_path) -> None:
+def test_summary_averages_ignore_null_metric_samples_mysql(
+    monkeypatch, tmp_path
+) -> None:
     configure_test_mysql_env(tmp_path)
     store = TimeSeriesStore()
     store.init_db()

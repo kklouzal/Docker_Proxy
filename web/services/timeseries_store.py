@@ -265,11 +265,17 @@ class TimeSeriesStore:
                         f"SELECT MIN(ts) FROM {src_table} WHERE proxy_id = %s AND ts < %s",
                         (canonical_proxy_id, aligned_end),
                     ).fetchone()
-                    first_ts = int(first_row[0]) if first_row and first_row[0] is not None else None
+                    first_ts = (
+                        int(first_row[0])
+                        if first_row and first_row[0] is not None
+                        else None
+                    )
                     if first_ts is None:
                         return
                     range_start = (first_ts // dst_seconds) * dst_seconds
-                    range_end = min(aligned_end, range_start + (dst_seconds * bucket_limit))
+                    range_end = min(
+                        aligned_end, range_start + (dst_seconds * bucket_limit)
+                    )
                     if range_end <= range_start:
                         return
                     src_cpu_count = _metric_count_expr("cpu")
@@ -279,7 +285,9 @@ class TimeSeriesStore:
                     src_hit_rate_count = _metric_count_expr("hit_rate")
                     dst_cpu_count = _metric_count_expr("cpu", table_alias=dst_table)
                     dst_mem_count = _metric_count_expr("mem", table_alias=dst_table)
-                    dst_disk_used_count = _metric_count_expr("disk_used", table_alias=dst_table)
+                    dst_disk_used_count = _metric_count_expr(
+                        "disk_used", table_alias=dst_table
+                    )
                     dst_cache_dir_size_count = _metric_count_expr(
                         "cache_dir_size",
                         table_alias=dst_table,
@@ -343,6 +351,10 @@ class TimeSeriesStore:
                         f"DELETE FROM {src_table} WHERE proxy_id = %s AND ts >= %s AND ts < %s",
                         (canonical_proxy_id, range_start, range_end),
                     )
+                    # The lifecycle guard is also the cross-process rollup lock.
+                    # Publish the upsert and delete before releasing it so another
+                    # worker cannot aggregate the same still-visible source rows.
+                    conn.commit()
 
         self._with_missing_table_retry(rollup_bucket)
 
@@ -363,15 +375,40 @@ class TimeSeriesStore:
         # 1s -> 1m
         self._rollup("ts_1s", "ts_1m", 60, now - keep_1s, proxy_id, max_dst_buckets=120)
         # 1m -> 1h
-        self._rollup("ts_1m", "ts_1h", 60 * 60, now - keep_1m, proxy_id, max_dst_buckets=48)
+        self._rollup(
+            "ts_1m", "ts_1h", 60 * 60, now - keep_1m, proxy_id, max_dst_buckets=48
+        )
         # 1h -> 1d
-        self._rollup("ts_1h", "ts_1d", 60 * 60 * 24, now - keep_1h, proxy_id, max_dst_buckets=3)
+        self._rollup(
+            "ts_1h", "ts_1d", 60 * 60 * 24, now - keep_1h, proxy_id, max_dst_buckets=3
+        )
         # 1d -> 1w
-        self._rollup("ts_1d", "ts_1w", 60 * 60 * 24 * 7, now - keep_1d, proxy_id, max_dst_buckets=2)
+        self._rollup(
+            "ts_1d",
+            "ts_1w",
+            60 * 60 * 24 * 7,
+            now - keep_1d,
+            proxy_id,
+            max_dst_buckets=2,
+        )
         # 1w -> 1mo
-        self._rollup("ts_1w", "ts_1mo", 60 * 60 * 24 * 30, now - keep_1w, proxy_id, max_dst_buckets=2)
+        self._rollup(
+            "ts_1w",
+            "ts_1mo",
+            60 * 60 * 24 * 30,
+            now - keep_1w,
+            proxy_id,
+            max_dst_buckets=2,
+        )
         # 1mo -> 1y
-        self._rollup("ts_1mo", "ts_1y", 60 * 60 * 24 * 365, now - keep_1mo, proxy_id, max_dst_buckets=1)
+        self._rollup(
+            "ts_1mo",
+            "ts_1y",
+            60 * 60 * 24 * 365,
+            now - keep_1mo,
+            proxy_id,
+            max_dst_buckets=1,
+        )
 
         # Prune oldest year-level data beyond keep_1y.
         cutoff_y = now - keep_1y
