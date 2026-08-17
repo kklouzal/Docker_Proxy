@@ -138,6 +138,42 @@ def _runtime_shell():
     return runtime
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", True),
+        (" TRUE ", True),
+        ("enabled", True),
+        ("0", False),
+        (" FALSE ", False),
+        ("disabled", False),
+        (True, True),
+        (False, False),
+        (1, True),
+        (0, False),
+        (2, True),
+        (0.0, True),
+        (None, True),
+        ("", True),
+        ("malformed", True),
+    ],
+)
+def test_current_adblock_enabled_uses_fail_safe_shared_boolean_contract(
+    value: object, expected: bool
+) -> None:
+    runtime = _runtime_shell()
+    runtime.adblock_store = SimpleNamespace(get_settings=lambda: {"enabled": value})
+
+    assert runtime._current_adblock_enabled() is expected
+
+
+def test_current_adblock_enabled_defaults_enabled_when_setting_is_missing() -> None:
+    runtime = _runtime_shell()
+    runtime.adblock_store = SimpleNamespace(get_settings=dict)
+
+    assert runtime._current_adblock_enabled() is True
+
+
 def test_runtime_lock_open_failure_prevents_supervisor_and_sync_mutations(
     monkeypatch,
 ) -> None:

@@ -76,7 +76,7 @@ from services.proxy_registry import (
     resolve_local_proxy_public_fields,
 )
 from services.runtime_helpers import decode_bytes as _decode_bytes
-from services.runtime_helpers import normalize_icap_worker_count
+from services.runtime_helpers import normalize_config_bool, normalize_icap_worker_count
 from services.schema_lifecycle import ensure_startup_schema_if_configured
 from services.squid_core import SquidController, _exclusive_squid_lifecycle_lock
 from services.squid_transaction import SquidTransactionJournal, default_journal_path
@@ -124,19 +124,6 @@ def _adblock_icap_self_heal_restart_cooldown_seconds() -> float:
     except Exception:
         value = _ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS
     return max(0.0, min(value, 3600.0))
-
-
-def _bool_setting(value: object, *, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    text = str(value).strip().lower()
-    if not text:
-        return default
-    return text in {"1", "true", "yes", "on", "enabled"}
 
 
 def _icap_supervisor_programs(base_name: str) -> tuple[str, ...]:
@@ -1321,7 +1308,7 @@ class ProxyRuntime:
             value = settings.get("enabled", True)
         else:
             value = getattr(settings, "enabled", True)
-        return _bool_setting(value, default=True)
+        return normalize_config_bool(value, default=True)
 
     def _current_certificate_bundle_sha(self) -> str:
         if self.services.current_certificate_sha_reader is not None:
