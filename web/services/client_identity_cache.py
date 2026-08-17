@@ -39,6 +39,10 @@ class _ReverseDNSLookupCapacityError(RuntimeError):
     """Indicate that no bounded reverse-DNS worker slot was available."""
 
 
+class _ReverseDNSLookupTimeoutError(RuntimeError):
+    """Indicate that a local reverse-DNS worker exceeded the caller deadline."""
+
+
 @dataclass
 class _CacheEntry:
     hostname: str
@@ -187,7 +191,7 @@ class ClientIdentityCache:
         except (socket.herror, socket.gaierror, TimeoutError, OSError):
             return "", "", "unresolved"
         if lookup_result is None:
-            return "", "", "unresolved"
+            raise _ReverseDNSLookupTimeoutError
 
         hostname, _aliases, _addresses = lookup_result
         cleaned = self._normalize_rdns_hostname(hostname)
@@ -277,7 +281,14 @@ class ClientIdentityCache:
         try:
             try:
                 hostname, source, status = self._lookup_hostname(normalized)
-            except _ReverseDNSLookupCapacityError:
+            except (
+                _ReverseDNSLookupCapacityError,
+                _ReverseDNSLookupTimeoutError,
+            ):
+                # Local worker saturation and an NSS call exceeding our deadline
+                # are not authoritative negative DNS answers. Return fail-safe
+                # unresolved data without poisoning the failure cache so a later
+                # request can retry after worker capacity recovers.
                 entry = None
             else:
                 ttl = self.success_ttl_seconds if hostname else self.failure_ttl_seconds

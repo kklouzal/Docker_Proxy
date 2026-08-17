@@ -558,25 +558,30 @@ def test_client_identity_cache_treats_dns_lookup_errors_as_unresolved(
     }
 
 
-def test_client_identity_cache_reverse_dns_timeout_returns_unresolved(
+def test_client_identity_cache_reverse_dns_timeout_is_not_cached(
     monkeypatch,
 ) -> None:
     cache = ClientIdentityCache(failure_ttl_seconds=10.0, lookup_timeout_seconds=0.05)
     started = threading.Event()
     release = threading.Event()
     finished = threading.Event()
+    calls = 0
 
-    def slow_lookup(_ip: str) -> tuple[str, list[str], list[str]]:
-        try:
-            started.set()
-            release.wait(timeout=1.0)
-            return "late.example", [], []
-        finally:
-            finished.set()
+    def slow_then_recover(_ip: str) -> tuple[str, list[str], list[str]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            try:
+                started.set()
+                release.wait(timeout=1.0)
+                return "late.example", [], []
+            finally:
+                finished.set()
+        return "recovered.example", [], []
 
     monkeypatch.setattr(
         "services.client_identity_cache.socket.gethostbyaddr",
-        slow_lookup,
+        slow_then_recover,
     )
 
     try:
@@ -586,9 +591,17 @@ def test_client_identity_cache_reverse_dns_timeout_returns_unresolved(
             "hostname_status": "unresolved",
         }
         assert started.wait(timeout=0.5)
+        assert "192.0.2.10" not in cache._cache
     finally:
         release.set()
         assert finished.wait(timeout=0.5)
+
+    assert cache.resolve("192.0.2.10") == {
+        "hostname": "recovered.example",
+        "hostname_source": "rdns",
+        "hostname_status": "resolved",
+    }
+    assert calls == 2
 
 
 def test_client_identity_cache_resolve_does_not_mutate_global_socket_timeout(
