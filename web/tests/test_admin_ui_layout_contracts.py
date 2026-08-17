@@ -222,6 +222,19 @@ def test_spa_submit_interceptor_preserves_submitter_overrides() -> None:
     assert "buildSubmitFormData(form, event.submitter)" in js
 
 
+def test_spa_mutations_are_isolated_from_duplicate_submits_and_navigation() -> None:
+    js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
+
+    assert "let activeMutationController = null;" in js
+    assert "if (method === 'POST' && activeMutationController)" in js
+    assert "if (isGet && activeMutationController)" in js
+    assert "const onPopState = () => {\n    if (activeMutationController)" in js
+    assert "else activeMutationController = controller;" in js
+    assert "activeNavigationId += 1;" in js
+    assert "if (!isGet && activeMutationController === controller)" in js
+    assert "activeMutationController.abort()" not in js
+
+
 def test_administration_directory_provider_external_submitters_share_main_form() -> (
     None
 ):

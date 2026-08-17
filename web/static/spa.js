@@ -14,6 +14,8 @@
   let unsavedConfigChanges = false;
   let activeNavigationController = null;
   let activeNavigationId = 0;
+  let activeMutationController = null;
+  let activeMutationId = 0;
   const spaPageCache = new Map();
   const spaPagePrefetches = new Map();
   let linkIntentListenersBound = false;
@@ -1190,6 +1192,13 @@
     if (!container) return false;
     const isGet = !method || String(method).toUpperCase() === 'GET';
 
+    // A mutation response is authoritative operator feedback: do not let a read
+    // navigation supersede it after the server may already have committed it.
+    if (isGet && activeMutationController) {
+      showToast('A change is still being submitted. Wait for it to finish before leaving this page.', 'pending');
+      return false;
+    }
+
     if (isGet) {
       const cached = getCachedSpaPage(url);
       if (cached && applySpaPageEntry(cached, url, { push })) return true;
@@ -1221,13 +1230,20 @@
       clearSpaPageCache();
     }
 
-    if (activeNavigationController) {
-      activeNavigationController.abort();
+    if (activeNavigationController) activeNavigationController.abort();
+    const requestId = isGet ? activeNavigationId + 1 : activeMutationId + 1;
+    if (isGet) activeNavigationId = requestId;
+    else {
+      activeMutationId = requestId;
+      // Also invalidate a navigation that may be awaiting an unabortable shared prefetch.
+      activeNavigationId += 1;
     }
-    const navigationId = activeNavigationId + 1;
-    activeNavigationId = navigationId;
     const controller = new AbortController();
-    activeNavigationController = controller;
+    if (isGet) activeNavigationController = controller;
+    else activeMutationController = controller;
+    const isCurrentRequest = () => isGet
+      ? requestId === activeNavigationId
+      : requestId === activeMutationId;
 
     container.setAttribute('aria-busy', 'true');
 
@@ -1248,7 +1264,7 @@
         signal: controller.signal,
       });
 
-      if (navigationId !== activeNavigationId) return false;
+      if (!isCurrentRequest()) return false;
 
       if (!response.ok) {
         window.location.assign(url);
@@ -1256,7 +1272,7 @@
       }
 
       const html = await response.text();
-      if (navigationId !== activeNavigationId) return false;
+      if (!isCurrentRequest()) return false;
       const parsed = new DOMParser().parseFromString(html, 'text/html');
       const nextContainer = getSpaContainer(parsed);
       const nextAssetVersion = getAssetVersion(parsed);
@@ -1303,8 +1319,9 @@
       window.location.assign(url);
       return false;
     } finally {
-      if (navigationId === activeNavigationId) {
-        if (activeNavigationController === controller) activeNavigationController = null;
+      if (isCurrentRequest()) {
+        if (isGet && activeNavigationController === controller) activeNavigationController = null;
+        if (!isGet && activeMutationController === controller) activeMutationController = null;
         container.removeAttribute('aria-busy');
       }
     }
@@ -1395,6 +1412,11 @@
 
     event.preventDefault();
 
+    if (method === 'POST' && activeMutationController) {
+      showToast('A change is already being submitted. Wait for it to finish before submitting again.', 'pending');
+      return;
+    }
+
     if (!confirmRequestedAction(event.submitter, form)) {
       return;
     }
@@ -1426,6 +1448,11 @@
   };
 
   const onPopState = () => {
+    if (activeMutationController) {
+      window.history.pushState({ url: currentSpaUrl }, '', currentSpaUrl);
+      showToast('A change is still being submitted. Wait for it to finish before leaving this page.', 'pending');
+      return;
+    }
     if (!confirmDiscardUnsavedConfigChanges()) {
       window.history.pushState({ url: currentSpaUrl }, '', currentSpaUrl);
       return;
