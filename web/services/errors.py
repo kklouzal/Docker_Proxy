@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 _SENSITIVE_KEY_RE = re.compile(
     r"""
@@ -10,7 +11,7 @@ _SENSITIVE_KEY_RE = re.compile(
             password|passwd|pwd|
             secret|client[_-]?secret|
             token|access[_-]?token|refresh[_-]?token|
-            api[_-]?key|apikey
+            api[_-]?key|apikey|samlresponse|relaystate|signature
         )\b
         \s*[:=]\s*
     )
@@ -25,9 +26,7 @@ _SENSITIVE_KEY_RE = re.compile(
     re.DOTALL | re.IGNORECASE | re.VERBOSE,
 )
 
-_AUTH_VALUE_RE = re.compile(
-    r"(?i)\b(?P<scheme>bearer|basic)\s+(?P<value>[^\s,;&]+)"
-)
+_AUTH_VALUE_RE = re.compile(r"(?i)\b(?P<scheme>bearer|basic)\s+(?P<value>[^\s,;&]+)")
 
 _URL_RE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s\"'<>]+")
 
@@ -38,7 +37,7 @@ _URL_QUERY_CREDENTIAL_RE = re.compile(
             password|passwd|pwd|
             secret|client[_-]?secret|
             token|access[_-]?token|refresh[_-]?token|
-            api[_-]?key|apikey|key
+            api[_-]?key|apikey|key|samlresponse|relaystate|signature
         )=
     )
     (?P<value>[^&#\s,;\"'<>]*)
@@ -48,6 +47,11 @@ _URL_QUERY_CREDENTIAL_RE = re.compile(
 
 _URL_USERINFO_RE = re.compile(
     r"(?i)\b(?P<scheme>[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/\s@]+)@"
+)
+
+_SENSITIVE_QUERY_KEYS_RE = re.compile(
+    r"^(?:password|passwd|pwd|secret|client[_-]?secret|token|access[_-]?token|refresh[_-]?token|api[_-]?key|apikey|key|samlresponse|relaystate|signature)$",
+    re.IGNORECASE,
 )
 
 
@@ -97,6 +101,46 @@ def redact_sensitive_text(text: object) -> str:
     return _redact_sensitive_text("" if text is None else str(text))
 
 
+def redact_url_for_display(value: object, *, max_len: int = 2000) -> str:
+    """Redact a URL for persistence/UI while retaining non-secret diagnostics."""
+    raw = clean_text(str(value or ""), max_len=max_len)
+    text = redact_sensitive_text(raw)
+    if not text:
+        return ""
+    fallback = _URL_USERINFO_RE.sub(r"\g<scheme>", text).split("#", 1)[0]
+    try:
+        parsed = urlsplit(raw)
+        host = parsed.hostname or ""
+    except (TypeError, ValueError):
+        return clean_text(fallback, max_len=max_len)
+    if not (parsed.scheme and parsed.netloc and host):
+        return clean_text(fallback, max_len=max_len)
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = host
+    try:
+        if parsed.port is not None:
+            netloc = f"{netloc}:{parsed.port}"
+    except ValueError:
+        pass
+
+    parts = re.split(r"([&;])", parsed.query)
+    query_parts: list[str] = []
+    for part in parts:
+        if part in {"&", ";"}:
+            query_parts.append(part)
+            continue
+        key, separator, _value = part.partition("=")
+        if _SENSITIVE_QUERY_KEYS_RE.fullmatch(unquote_plus(key).strip()):
+            query_parts.append(f"{key}=[redacted]")
+        else:
+            query_parts.append(redact_sensitive_text(part) if separator else part)
+    return clean_text(
+        urlunsplit((parsed.scheme, netloc, parsed.path, "".join(query_parts), "")),
+        max_len=max_len,
+    )
+
+
 def public_error_message(
     e: Exception,
     *,
@@ -111,7 +155,7 @@ def public_error_message(
     """
     if expose_internal_errors():
         detail = clean_text(
-        redact_sensitive_text(f"{type(e).__name__}: {e}"), max_len=max_len
+            redact_sensitive_text(f"{type(e).__name__}: {e}"), max_len=max_len
         )
         return detail or default
 

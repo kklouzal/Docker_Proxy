@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover - production image installs defusedxml.
     _DEFUSEDXML_AVAILABLE = False
 
 from services.db import connect
+from services.errors import clean_text, redact_sensitive_text
 from services.external_auth_groups import (
     candidate_group_match_tokens,
     required_group_match_tokens,
@@ -728,14 +729,7 @@ class SamlAuthStore:
         text = str(exc).strip()
         if not text:
             text = exc.__class__.__name__
-        text = re.sub(r"(?i)SAMLResponse=[^&\s]+", "SAMLResponse=[redacted]", text)
-        text = re.sub(r"(?i)RelayState=[^&\s]+", "RelayState=[redacted]", text)
-        text = re.sub(
-            r"(?i)(password|secret|token|signature)=([^,;&\s]+)",
-            r"\1=[redacted]",
-            text,
-        )
-        return re.sub(r"\s+", " ", text)[:2000]
+        return clean_text(redact_sensitive_text(text), max_len=2000)
 
 
 def parse_saml_metadata(raw_xml: str) -> dict[str, Any]:
@@ -1167,9 +1161,7 @@ def _first_attribute_value(attributes: dict[str, Any], key: str) -> str:
 
 
 def _sanitize_saml_detail(value: Any) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
-    text = re.sub(r"(?i)SAMLResponse=[^&\s]+", "SAMLResponse=[redacted]", text)
-    return text[:1000]
+    return clean_text(redact_sensitive_text(value), max_len=1000)
 
 
 _saml_auth_store: SamlAuthStore | None = None

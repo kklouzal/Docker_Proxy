@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import atexit
 import logging
-import re
 import threading
 import time
 from subprocess import run
 from typing import ClassVar
-from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from services.db import DATABASE_ERRORS
-from services.errors import clean_text, public_error_message, redact_sensitive_text
+from services.errors import clean_text, public_error_message, redact_url_for_display
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.safe_browsing_v5 import (
@@ -36,66 +34,9 @@ from services.webfilter_core import (
 
 logger = logging.getLogger(__name__)
 
-_BLOCKED_LOG_URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@")
-_BLOCKED_LOG_SENSITIVE_QUERY_KEY_RE = re.compile(
-    r"^(?:password|passwd|pwd|secret|client[_-]?secret|token|access[_-]?token|refresh[_-]?token|api[_-]?key|apikey)$",
-    re.IGNORECASE,
-)
-
-
-def _redact_blocked_log_query(query: str) -> str:
-    if not query:
-        return ""
-    parts = re.split(r"([&;])", query)
-    redacted: list[str] = []
-    for part in parts:
-        if part in {"&", ";"}:
-            redacted.append(part)
-            continue
-        key, _sep, _value = part.partition("=")
-        decoded_key = unquote_plus(key).strip()
-        if decoded_key and _BLOCKED_LOG_SENSITIVE_QUERY_KEY_RE.fullmatch(decoded_key):
-            redacted.append(f"{key}=[redacted]")
-            continue
-        redacted.append(redact_sensitive_text(part))
-    return "".join(redacted)
-
-
-def _strip_blocked_log_url_userinfo(text: str) -> str:
-    return _BLOCKED_LOG_URL_USERINFO_RE.sub(r"\1", text)
-
 
 def _sanitize_blocked_log_url(value: object) -> str:
-    raw = clean_text(str(value or ""), max_len=2000)
-    text = redact_sensitive_text(raw)
-    if not text:
-        return ""
-    try:
-        parsed = urlsplit(raw)
-    except Exception:
-        return clean_text(
-            _strip_blocked_log_url_userinfo(text).split("#", 1)[0], max_len=2000
-        )
-    if parsed.scheme and parsed.netloc:
-        host = parsed.hostname or ""
-        if host:
-            if ":" in host and not host.startswith("["):
-                host = f"[{host}]"
-            netloc = host
-            try:
-                if parsed.port is not None:
-                    netloc = f"{netloc}:{parsed.port}"
-            except ValueError:
-                pass
-            query = _redact_blocked_log_query(parsed.query)
-            return clean_text(
-                urlunsplit((parsed.scheme, netloc, parsed.path, query, "")),
-                max_len=2000,
-            )
-        return clean_text(
-            _strip_blocked_log_url_userinfo(text).split("#", 1)[0], max_len=2000
-        )
-    return clean_text(text.split("#", 1)[0], max_len=2000)
+    return redact_url_for_display(value, max_len=2000)
 
 
 class WebFilterStore(WebFilterStoreBase):

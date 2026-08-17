@@ -7,10 +7,9 @@ import queue
 import re
 import threading
 import time
-from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from services.db import connect
-from services.errors import redact_sensitive_text
+from services.errors import redact_url_for_display
 from services.proxy_context import get_default_proxy_id, normalize_proxy_id
 from services.proxy_write_guard import (
     guarded_proxy_rows,
@@ -22,11 +21,6 @@ from services.runtime_helpers import now_ts as _now
 from services.schema_lifecycle import ensure_column, ensure_index
 
 _CATEGORY_UNSAFE_RE = re.compile(r"[^a-z0-9_\-]+")
-_LOG_URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@")
-_SENSITIVE_QUERY_KEY_RE = re.compile(
-    r"^(?:password|passwd|pwd|secret|client[_-]?secret|token|access[_-]?token|refresh[_-]?token|api[_-]?key|apikey)$",
-    re.IGNORECASE,
-)
 
 
 def _clean_log_text(value: object, *, max_len: int) -> str:
@@ -54,55 +48,8 @@ def _normalize_log_category(value: object) -> str:
     return category[:128]
 
 
-def _redact_log_query(query: str) -> str:
-    if not query:
-        return ""
-    parts = re.split(r"([&;])", query)
-    redacted: list[str] = []
-    for part in parts:
-        if part in {"&", ";"}:
-            redacted.append(part)
-            continue
-        key, _sep, _value = part.partition("=")
-        decoded_key = unquote_plus(key).strip()
-        if decoded_key and _SENSITIVE_QUERY_KEY_RE.fullmatch(decoded_key):
-            redacted.append(f"{key}=[redacted]")
-            continue
-        redacted.append(redact_sensitive_text(part))
-    return "".join(redacted)
-
-
-def _strip_log_url_userinfo(text: str) -> str:
-    return _LOG_URL_USERINFO_RE.sub(r"\1", text)
-
-
 def _normalize_log_url(value: object) -> str:
-    raw = _clean_log_text(value, max_len=2000)
-    text = redact_sensitive_text(raw)
-    if not text:
-        return ""
-    try:
-        parsed = urlsplit(raw)
-    except Exception:
-        return _strip_log_url_userinfo(text).split("#", 1)[0][:2000]
-    if parsed.scheme and parsed.netloc:
-        host = parsed.hostname or ""
-        if host:
-            if ":" in host and not host.startswith("["):
-                host = f"[{host}]"
-            netloc = host
-            try:
-                if parsed.port is not None:
-                    netloc = f"{netloc}:{parsed.port}"
-            except ValueError:
-                pass
-            query = _redact_log_query(parsed.query)
-            text = urlunsplit((parsed.scheme, netloc, parsed.path, query, ""))
-        else:
-            text = _strip_log_url_userinfo(text).split("#", 1)[0]
-    else:
-        text = text.split("#", 1)[0]
-    return text[:2000]
+    return redact_url_for_display(_clean_log_text(value, max_len=2000), max_len=2000)
 
 
 def _normalize_log_ts(value: object) -> int:

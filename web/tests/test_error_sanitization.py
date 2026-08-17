@@ -1,4 +1,11 @@
-from services.errors import clean_text, public_error_message, redact_sensitive_text
+from services.blocked_log_runtime import _normalize_log_url
+from services.errors import (
+    clean_text,
+    public_error_message,
+    redact_sensitive_text,
+    redact_url_for_display,
+)
+from services.webfilter_store import _sanitize_blocked_log_url
 
 
 def test_clean_text_strips_newlines_and_bounds_length() -> None:
@@ -9,7 +16,9 @@ def test_clean_text_strips_newlines_and_bounds_length() -> None:
     assert len(out) <= 20
 
 
-def test_redact_sensitive_text_redacts_url_query_credentials_without_losing_context() -> None:
+def test_redact_sensitive_text_redacts_url_query_credentials_without_losing_context() -> (
+    None
+):
     msg = redact_sensitive_text(
         "failed: "
         "https://safebrowsing.googleapis.com/v5/hashes:search?key=AIzaSECRET"
@@ -26,6 +35,33 @@ def test_redact_sensitive_text_redacts_url_query_credentials_without_losing_cont
     assert "&prettyPrint=false" in msg
     assert "https://example.test/path?api_key=[redacted]&name=keynote" in msg
     assert "cache key=ordinary" in msg
+
+
+def test_shared_url_redactor_preserves_ordinary_query_and_redacts_auth_material() -> (
+    None
+):
+    url = (
+        "https://user:pass@example.test/search?q=ordinary&%74oken=secret"
+        "&SAMLResponse=assertion&RelayState=%2Fadmin&signature=signed#fragment"
+    )
+
+    result = redact_url_for_display(url)
+
+    assert result == (
+        "https://example.test/search?q=ordinary&%74oken=[redacted]"
+        "&SAMLResponse=[redacted]&RelayState=[redacted]&signature=[redacted]"
+    )
+    for secret in ("user", "pass", "secret", "assertion", "%2Fadmin", "signed"):
+        assert secret not in result
+
+
+def test_url_redactors_remove_userinfo_from_malformed_authority() -> None:
+    url = "https://user:pass@[vbad]/path?token=secret&ok=visible#fragment"
+    expected = "https://[vbad]/path?token=[redacted]&ok=visible"
+
+    assert redact_url_for_display(url) == expected
+    assert _normalize_log_url(url) == expected
+    assert _sanitize_blocked_log_url(url) == expected
 
 
 def test_public_error_message_hides_details_by_default(monkeypatch) -> None:
@@ -82,7 +118,7 @@ def test_public_error_message_redacts_valueerror_credentials(monkeypatch) -> Non
 def test_redact_sensitive_text_redacts_multiline_and_escaped_quoted_values() -> None:
     msg = redact_sensitive_text(
         'request failed: password="alpha\r\nbeta" '
-        'client_secret="gamma\\\"delta\nepsilon"; retry is allowed'
+        'client_secret="gamma\\"delta\nepsilon"; retry is allowed'
     )
 
     for secret_fragment in ("alpha", "beta", "gamma", "delta", "epsilon"):

@@ -21,6 +21,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import serialization
 
 from services.db import connect
+from services.errors import clean_text, redact_sensitive_text
 from services.external_auth_groups import (
     candidate_group_match_tokens,
     required_group_match_tokens,
@@ -1170,10 +1171,8 @@ class DirectoryAuthStore:
         return candidate_group_match_tokens(value, preserve_full_dn=True)
 
     def _public_error(self, exc: Exception) -> str:
-        detail = re.sub(
-            r"password=[^,\\s]+", "password=<redacted>", str(exc), flags=re.IGNORECASE
-        )
-        return detail[:500] or exc.__class__.__name__
+        detail = clean_text(redact_sensitive_text(str(exc)), max_len=500)
+        return detail or exc.__class__.__name__
 
     @staticmethod
     def normalize_ca_bundle(raw_bytes: bytes) -> str:
