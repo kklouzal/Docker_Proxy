@@ -272,6 +272,38 @@ def test_runtime_python_dependencies_use_abi_independent_import_path() -> None:
         assert not re.search(r"/usr/lib/python\d+\.\d+/site-packages", text)
 
 
+def test_packaged_cicap_runner_imports_shared_service_from_app(tmp_path) -> None:
+    app = tmp_path / "app"
+    services = app / "services"
+    bin_dir = tmp_path / "usr" / "local" / "bin"
+    services.mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+    (services / "__init__.py").write_text("", encoding="utf-8")
+    (services / "clamd_protocol.py").write_bytes(
+        (REPO_ROOT / "web" / "services" / "clamd_protocol.py").read_bytes()
+    )
+    runner_source = _read("docker/cicap_av_runner.py").replace(
+        '_PACKAGED_APP_ROOT = Path("/app")',
+        f"_PACKAGED_APP_ROOT = Path({str(app)!r})",
+    )
+    runner = bin_dir / "cicap_av_runner.py"
+    runner.write_text(runner_source, encoding="utf-8")
+    env = {**os.environ}
+    env.pop("PYTHONPATH", None)
+
+    result = run_test_process(
+        [sys.executable, str(runner)],
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 64
+    assert result.stderr == "usage: cicap_av_runner.py <c-icap-av.conf>\n"
+
+
 def test_application_owned_dependency_path_is_visible_to_python(tmp_path) -> None:
     dependency_path = tmp_path / "python-deps"
     package = dependency_path / "packaging_contract_probe"

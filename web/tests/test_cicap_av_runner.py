@@ -17,6 +17,12 @@ def _load_runner():
     return module
 
 
+def test_runner_bootstraps_packaged_app_import_path() -> None:
+    runner = _load_runner()
+
+    assert Path("/app") == runner._PACKAGED_APP_ROOT
+
+
 def test_conf_listen_address_falls_back_to_default_for_malformed_env(
     tmp_path, monkeypatch
 ) -> None:

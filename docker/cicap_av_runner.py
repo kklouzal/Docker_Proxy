@@ -11,7 +11,12 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from services.clamd_protocol import (
+# Installed under /usr/local/bin; shared application modules live under /app.
+_PACKAGED_APP_ROOT = Path("/app")
+if _PACKAGED_APP_ROOT.is_dir() and str(_PACKAGED_APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PACKAGED_APP_ROOT))
+
+from services.clamd_protocol import (  # noqa: E402
     CLAMD_PING_MAX_REPLY_BYTES,
     CLAMD_PING_REQUEST,
     ping_reply_is_pong,
