@@ -261,6 +261,38 @@ def test_alpine_package_installs_use_retry_helper_for_runtime_images() -> None:
         assert "RUN apk add --no-cache" not in text
 
 
+def test_runtime_python_dependencies_use_abi_independent_import_path() -> None:
+    dependency_path = "/opt/docker-proxy/python-deps"
+
+    for dockerfile in ("docker/Dockerfile.admin", "docker/Dockerfile.proxy"):
+        text = _read(dockerfile)
+        assert f"PYTHONPATH={dependency_path}" in text
+        assert f"COPY --from=python_deps /python-deps/ {dependency_path}/" in text
+        assert "PYTHON_SITE_PACKAGES" not in text
+        assert not re.search(r"/usr/lib/python\d+\.\d+/site-packages", text)
+
+
+def test_application_owned_dependency_path_is_visible_to_python(tmp_path) -> None:
+    dependency_path = tmp_path / "python-deps"
+    package = dependency_path / "packaging_contract_probe"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("PROBE = 'visible'\n", encoding="utf-8")
+
+    result = run_test_process(
+        [
+            sys.executable,
+            "-c",
+            "import packaging_contract_probe; assert packaging_contract_probe.PROBE == 'visible'",
+        ],
+        env={**os.environ, "PYTHONPATH": str(dependency_path)},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_proxy_and_admin_dockerfiles_keep_runtime_payloads_separated() -> None:
     proxy = _read("docker/Dockerfile.proxy")
     admin = _read("docker/Dockerfile.admin")

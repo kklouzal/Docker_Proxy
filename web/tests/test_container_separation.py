@@ -17,8 +17,10 @@ def test_proxy_dockerfile_copies_only_proxy_runtime_payload() -> None:
     assert "COPY web /app" not in text
     assert "FROM alpine:${ALPINE_VERSION} AS python_deps" in text
     assert "COPY web/requirements.txt /tmp/deps/requirements.txt" in text
-    assert "ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages" in text
-    assert "COPY --from=python_deps /python-deps/ ${PYTHON_SITE_PACKAGES}/" in text
+    assert "PYTHONPATH=/opt/docker-proxy/python-deps" in text
+    assert (
+        "COPY --from=python_deps /python-deps/ /opt/docker-proxy/python-deps/" in text
+    )
     assert "COPY proxy /app/proxy" in text
     assert "COPY web/requirements.txt /app/requirements.txt" not in text
     assert "COPY docker/clamd_mod.conf /etc/clamd_mod.conf" not in text
@@ -71,8 +73,10 @@ def test_admin_dockerfile_copies_only_admin_control_plane_payload() -> None:
     assert "COPY web /app" not in text
     assert "FROM alpine:${ALPINE_VERSION} AS python_deps" in text
     assert "COPY web/requirements.txt /tmp/deps/requirements.txt" in text
-    assert "ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages" in text
-    assert "COPY --from=python_deps /python-deps/ ${PYTHON_SITE_PACKAGES}/" in text
+    assert "PYTHONPATH=/opt/docker-proxy/python-deps" in text
+    assert (
+        "COPY --from=python_deps /python-deps/ /opt/docker-proxy/python-deps/" in text
+    )
     for required in (
         "COPY web/app.py /app/app.py",
         "COPY web/wsgi.py /app/wsgi.py",
@@ -140,5 +144,7 @@ def test_proxy_entrypoint_removes_stale_cicap_pidfiles_before_start() -> None:
     assert "python3 /app/tools/clamav_respmod_icap_server.py" in text
     assert "/var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite" in text
     assert 'av_pid="/var/run/c-icap/c-icap-av-${instance}.pid"' in text
-    assert 'rm -f "${av_pid}"; exec /usr/local/bin/cicap_av_runner.py "${av_conf}"' in text
+    assert (
+        'rm -f "${av_pid}"; exec /usr/local/bin/cicap_av_runner.py "${av_conf}"' in text
+    )
     assert 'exec /usr/bin/c-icap -N -f "${av_conf}"' not in text

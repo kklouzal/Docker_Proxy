@@ -1,5 +1,4 @@
 ARG ALPINE_VERSION=edge
-ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages
 
 FROM alpine:${ALPINE_VERSION} AS python_deps
 
@@ -91,7 +90,6 @@ RUN set -eu; \
     find /out -type f -exec sh -c 'file -b "$1" | grep -Eq "ELF.*(executable|shared object)" && strip --strip-unneeded "$1" || true' sh {} \;
 
 FROM alpine:${ALPINE_VERSION}
-ARG PYTHON_SITE_PACKAGES=/usr/lib/python3.14/site-packages
 ARG APP_VERSION=unknown
 ARG GIT_COMMIT=
 ARG GIT_REF_NAME=
@@ -102,7 +100,8 @@ ENV APP_VERSION=${APP_VERSION} \
     GIT_COMMIT=${GIT_COMMIT} \
     GIT_REF_NAME=${GIT_REF_NAME} \
     BUILD_DATE=${BUILD_DATE} \
-    IMAGE_NAME=${IMAGE_NAME}
+    IMAGE_NAME=${IMAGE_NAME} \
+    PYTHONPATH=/opt/docker-proxy/python-deps
 
 # Proxy container responsibilities only:
 # - Squid, SQLite adblock ICAP helper, and AV c-icap runtime
@@ -123,7 +122,7 @@ RUN apk-install squid python3 supervisor openssl ca-certificates libatomic \
 
 WORKDIR /app
 
-COPY --from=python_deps /python-deps/ ${PYTHON_SITE_PACKAGES}/
+COPY --from=python_deps /python-deps/ /opt/docker-proxy/python-deps/
 COPY proxy /app/proxy
 COPY web/services/__init__.py /app/services/__init__.py
 COPY web/services/adblock_artifacts.py \
