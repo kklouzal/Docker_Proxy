@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 
 class _FakeResult:
     def __init__(self, rows: list[dict[str, object]]) -> None:
@@ -124,6 +126,35 @@ def _patched_store(monkeypatch, conn: _FakeConn | None = None):
     monkeypatch.setattr(mod.PacProfilesStore, "init_db", lambda self: None)
 
     return mod, conn, store
+
+
+def test_init_db_propagates_schema_readiness_fault_without_attempting_ddl(
+    monkeypatch,
+) -> None:
+    import services.pac_profiles_store as mod
+    from services import schema_lifecycle
+
+    conn = _FakeConn()
+    store = mod.PacProfilesStore()
+    readiness_error = RuntimeError("migration ledger unavailable")
+
+    monkeypatch.setattr(mod, "connect", lambda: _FakeStore(conn))
+
+    def fail_readiness(_conn):
+        raise readiness_error
+
+    monkeypatch.setattr(
+        schema_lifecycle,
+        "runtime_schema_ready_for_lazy_store",
+        fail_readiness,
+    )
+
+    with pytest.raises(RuntimeError, match="migration ledger unavailable") as caught:
+        store.init_db()
+
+    assert caught.value is readiness_error
+    assert conn.calls == []
+    assert store._schema_ready is False
 
 
 def test_init_db_lazy_bootstrap_uses_valid_pac_dst_net_ddl(monkeypatch) -> None:

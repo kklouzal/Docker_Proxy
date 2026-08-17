@@ -528,15 +528,12 @@ class DiagnosticStore:
 
             def _ensure_schema() -> None:
                 with self._connect() as conn:
-                    try:
-                        from services.schema_lifecycle import (
-                            runtime_schema_ready_for_lazy_store,
-                        )
+                    from services.schema_lifecycle import (
+                        runtime_schema_ready_for_lazy_store,
+                    )
 
-                        if runtime_schema_ready_for_lazy_store(conn):
-                            return
-                    except Exception:
-                        pass
+                    if runtime_schema_ready_for_lazy_store(conn):
+                        return
                     with mysql_advisory_lock(
                         conn,
                         "docker_proxy:diagnostic_store:schema",
