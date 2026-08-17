@@ -94,6 +94,11 @@ def test_load_env_accepts_quoted_values_with_whitespace_or_comment_tails(
     [
         (b"GOOD=ok\nnot an assignment\n", 2, "expected environment assignment"),
         (b"BAD-NAME=secret-value\n", 1, "invalid environment variable name"),
+        (
+            b"GOOD=first-secret\nGOOD=second-secret\n",
+            2,
+            "duplicate environment variable assignment",
+        ),
         (b'GOOD="unterminated secret\n', 1, "unterminated quoted value"),
         (b"GOOD='unterminated secret\n", 1, "unterminated quoted value"),
         (
@@ -164,6 +169,34 @@ unset EARLIER_VALUE
     assert result.returncode == 2
     assert "line 2: unexpected trailing characters after quoted value" in result.stderr
     assert "hidden" not in result.stderr
+    assert result.stdout == "EARLIER_VALUE=unset\n"
+
+
+def test_load_env_rejects_duplicate_assignments_atomically(tmp_path: Path) -> None:
+    app_env = tmp_path / "app.env"
+    app_env.write_text(
+        "EARLIER_VALUE=must-not-be-exported\n"
+        "DUPLICATE=first-secret\n"
+        "DUPLICATE=second-secret\n",
+        encoding="utf-8",
+    )
+    script = (REPO_ROOT / "docker" / "load-env.sh").read_text(encoding="utf-8")
+    script = script.replace("/config/app.env", str(app_env))
+    probe = """
+trap 'printf "EARLIER_VALUE=%s\\n" "${EARLIER_VALUE-unset}"' EXIT
+unset EARLIER_VALUE
+"""
+
+    result = run_test_process(
+        ["/bin/sh", "-c", probe + script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "line 3: duplicate environment variable assignment" in result.stderr
+    assert "secret" not in result.stderr
     assert result.stdout == "EARLIER_VALUE=unset\n"
 
 

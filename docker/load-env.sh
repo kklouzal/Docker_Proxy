@@ -70,6 +70,10 @@ if [ -f /config/app.env ]; then
             if (key !~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
                 fail("invalid environment variable name")
             }
+            if (key in seen) {
+                fail("duplicate environment variable assignment")
+            }
+            seen[key] = 1
             value = parse_value(substr(line, eq + 1))
             quote = sprintf("%c", 39)
             escaped_quote = quote "\\" quote quote
