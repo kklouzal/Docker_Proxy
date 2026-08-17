@@ -87,8 +87,11 @@ def _remote_addr_trusts_forwarded_headers(remote_addr: str | None) -> bool:
     )
 
 
-def _first_header_value(value: object | None) -> str:
-    return (str(value or "").split(",")[0] or "").strip()
+def _single_header_value(value: object | None) -> str:
+    candidate = str(value or "").strip()
+    if not candidate or "," in candidate:
+        return ""
+    return candidate
 
 
 def _forwarded_ip_chain(value: object | None) -> tuple[str, ...]:
@@ -262,7 +265,7 @@ def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
 def request_host_from_headers(headers: Any, remote_addr: str | None = None) -> str:
     if headers is not None and _remote_addr_trusts_forwarded_headers(remote_addr):
         forwarded_host = _normalize_request_authority(
-            _first_header_value(headers.get("X-Forwarded-Host"))
+            _single_header_value(headers.get("X-Forwarded-Host"))
         )
         if forwarded_host:
             return forwarded_host

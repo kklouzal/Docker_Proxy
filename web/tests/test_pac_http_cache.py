@@ -238,11 +238,28 @@ def test_request_host_uses_trusted_forwarded_host(monkeypatch, pac_http) -> None
         pac_http.request_host_from_headers(
             {
                 "Host": "internal-proxy.example:5000",
-                "X-Forwarded-Host": "public-proxy.example:80, internal-proxy.example:5000",
+                "X-Forwarded-Host": "public-proxy.example:80",
             },
             "198.51.100.10",
         )
         == "public-proxy.example:80"
+    )
+
+
+def test_request_host_rejects_ambiguous_forwarded_host_chain(
+    monkeypatch, pac_http
+) -> None:
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "198.51.100.0/24")
+
+    assert (
+        pac_http.request_host_from_headers(
+            {
+                "Host": "internal-proxy.example:5000",
+                "X-Forwarded-Host": ("attacker.example:4444, public-proxy.example:80"),
+            },
+            "198.51.100.10",
+        )
+        == "internal-proxy.example:5000"
     )
 
 
@@ -311,7 +328,7 @@ def test_request_host_lowercases_trusted_forwarded_dns_authority(
         pac_http.request_host_from_headers(
             {
                 "Host": "internal-proxy.example:5000",
-                "X-Forwarded-Host": "Public-Proxy.Example:8080, internal-proxy.example:5000",
+                "X-Forwarded-Host": "Public-Proxy.Example:8080",
             },
             "198.51.100.10",
         )

@@ -202,6 +202,27 @@ def test_public_listener_rejects_unconfigured_pac_path(
     assert response.status_code == 404
 
 
+def test_public_listener_rejects_ambiguous_forwarded_host_chain(
+    tmp_path,
+    public_pac_client,
+    monkeypatch,
+) -> None:
+    pac_dir = tmp_path / "pac"
+    _write_pac_artifacts(pac_dir)
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "127.0.0.0/8")
+    client = public_pac_client(pac_dir)
+
+    response = client.get(
+        "/proxy.pac",
+        base_url="http://internal-proxy.example",
+        headers={"X-Forwarded-Host": "attacker.example:4444, public-proxy.example:80"},
+    )
+
+    assert response.status_code == 200
+    assert response.data == b"PAC internal-proxy.example"
+    assert b"attacker.example" not in response.data
+
+
 def test_public_listener_rejects_manifest_backslash_traversal(
     tmp_path,
     public_pac_client,
