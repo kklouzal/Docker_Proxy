@@ -28,7 +28,6 @@ from services.application_ledgers import (
 from services.db import (
     DATABASE_ERRORS,
     connect,
-    mysql_error_code,
 )
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
@@ -39,6 +38,7 @@ from services.revision_lifecycle import (
     ensure_index,
     mysql_advisory_lock,
     repair_duplicate_active_rows,
+    run_revision_store_transaction,
 )
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
@@ -64,7 +64,6 @@ _COMPILED_ARTIFACT_ALIAS_CANDIDATES = {
 }
 
 
-_BUILDER_RETRYABLE_MYSQL_CODES = {1205, 1213}
 _BUILDER_MYSQL_RETRY_ATTEMPTS = 4
 _BUILDER_MYSQL_RETRY_BASE_DELAY_SECONDS = 0.2
 _ARTIFACT_PRUNE_BATCH_SIZE = 5
@@ -143,32 +142,15 @@ class _AdblockArchiveBudget:
             raise AdblockArtifactArchiveError(msg)
 
 
-def _is_builder_retryable_mysql_error(exc: BaseException) -> bool:
-    return mysql_error_code(exc) in _BUILDER_RETRYABLE_MYSQL_CODES
-
-
-def _run_builder_mysql_operation(operation: Callable[[], Any]) -> Any:
-    last_exc: BaseException | None = None
-    for attempt in range(_BUILDER_MYSQL_RETRY_ATTEMPTS):
-        try:
-            return operation()
-        except DATABASE_ERRORS as exc:
-            last_exc = exc
-            if (
-                not _is_builder_retryable_mysql_error(exc)
-                or attempt >= _BUILDER_MYSQL_RETRY_ATTEMPTS - 1
-            ):
-                raise
-            time.sleep(
-                min(
-                    5.0,
-                    _BUILDER_MYSQL_RETRY_BASE_DELAY_SECONDS * (2**attempt),
-                ),
-            )
-    if last_exc is not None:
-        raise last_exc
-    msg = "MySQL builder operation failed"
-    raise RuntimeError(msg)
+def _run_builder_mysql_operation(operation):
+    return run_revision_store_transaction(
+        operation,
+        attempts=_BUILDER_MYSQL_RETRY_ATTEMPTS,
+        base_delay_seconds=_BUILDER_MYSQL_RETRY_BASE_DELAY_SECONDS,
+        max_delay_seconds=5.0,
+        operation_name="adblock artifact transaction",
+        sleep_fn=time.sleep,
+    )
 
 
 def _adblock_artifact_prune_batch_size() -> int:

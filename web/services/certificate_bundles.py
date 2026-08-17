@@ -10,7 +10,7 @@ from services.application_ledgers import (
     normalize_sha256_evidence,
 )
 from services.certificate_core import CertificateBundle
-from services.db import connect, run_mysql_lock_contention_with_retry
+from services.db import connect
 from services.proxy_context import normalize_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
 from services.revision_lifecycle import (
@@ -18,6 +18,7 @@ from services.revision_lifecycle import (
     ensure_index,
     mysql_advisory_lock,
     repair_duplicate_active_rows,
+    run_revision_store_transaction,
 )
 
 
@@ -160,7 +161,7 @@ class CertificateBundleStore:
         return connect()
 
     def _with_db_lock_retry(self, fn, *, attempts: int = 4):
-        return run_mysql_lock_contention_with_retry(
+        return run_revision_store_transaction(
             fn,
             attempts=attempts,
             base_delay_seconds=0.1,

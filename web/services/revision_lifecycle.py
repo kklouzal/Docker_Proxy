@@ -6,6 +6,7 @@ from contextlib import contextmanager, suppress
 from typing import Any
 
 from services import schema_lifecycle as _schema_lifecycle
+from services.db import run_mysql_lock_contention_with_retry
 
 _ADVISORY_LOCK_TIMEOUT_SECONDS = 10
 _SCOPED_LOCK_PREFIX = "docker_proxy"
@@ -19,6 +20,32 @@ _SCOPED_LOCK_MAX_READABLE_PREFIX = (
 )
 _LOCK_PREFIX_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _LOCK_PREFIX_SEPARATORS_RE = re.compile(r"_+")
+
+
+def run_revision_store_transaction(
+    operation,
+    *,
+    operation_name: str,
+    attempts: int = 4,
+    base_delay_seconds: float = 0.1,
+    max_delay_seconds: float = 1.0,
+    sleep_fn=None,
+):
+    """Replay a revision-store transaction only for bounded lock contention.
+
+    Revision stores must retry the whole connection/transaction boundary, not
+    statements within it.  Keeping that contract here prevents stores from
+    drifting toward broader disconnect retries or unbounded backoff while still
+    allowing an established store-specific backoff policy to remain explicit.
+    """
+    return run_mysql_lock_contention_with_retry(
+        operation,
+        attempts=attempts,
+        base_delay_seconds=base_delay_seconds,
+        max_delay_seconds=max_delay_seconds,
+        operation_name=operation_name,
+        sleep_fn=sleep_fn,
+    )
 
 
 def column_exists(conn: Any, table_name: str, column_name: str) -> bool:

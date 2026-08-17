@@ -121,6 +121,47 @@ def test_mysql_advisory_lock_discards_connection_when_release_fails() -> None:
     assert conn._discard_on_close is True
 
 
+def test_revision_store_transaction_delegates_explicit_bounded_policy(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    def operation():
+        return "ok"
+
+    def sleeper(_delay):
+        return None
+
+    def fake_retry(fn, **kwargs):
+        captured["fn"] = fn
+        captured.update(kwargs)
+        return fn()
+
+    monkeypatch.setattr(
+        revision_lifecycle, "run_mysql_lock_contention_with_retry", fake_retry
+    )
+
+    assert (
+        revision_lifecycle.run_revision_store_transaction(
+            operation,
+            operation_name="artifact transaction",
+            attempts=6,
+            base_delay_seconds=0.25,
+            max_delay_seconds=3.0,
+            sleep_fn=sleeper,
+        )
+        == "ok"
+    )
+    assert captured == {
+        "fn": operation,
+        "attempts": 6,
+        "base_delay_seconds": 0.25,
+        "max_delay_seconds": 3.0,
+        "operation_name": "artifact transaction",
+        "sleep_fn": sleeper,
+    }
+
+
 def test_duplicate_active_repair_uses_deterministic_partition_update() -> None:
     calls: list[str] = []
 
