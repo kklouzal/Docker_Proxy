@@ -1441,6 +1441,18 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
     )
 
 
+def concrete_route_path(rule: Any) -> str:
+    """Build a representative URL path for an app URL rule."""
+    values: dict[str, object] = {}
+    for argument in rule.arguments:
+        converter = rule._converters[argument]
+        converter_name = converter.__class__.__name__
+        values[argument] = 1 if converter_name == "IntegerConverter" else "test-value"
+    subdomain, path = rule.build(values, append_unknown=False)
+    assert not subdomain
+    return path
+
+
 def csrf_token(client: Any, path: str = "/") -> str:
     response = client.get(path)
     text = response.get_data(as_text=True)

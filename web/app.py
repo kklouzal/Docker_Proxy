@@ -3194,7 +3194,7 @@ def _clear_recoverable_session_state() -> None:
     session.pop("active_proxy_id", None)
 
 
-@app.route("/recover", methods=["GET"])
+@app.route("/recover", methods=["POST"])
 def recover_admin_session():
     _clear_recoverable_session_state()
     return _redirect_to("index", recovered="1")
@@ -3216,6 +3216,7 @@ def _recover_from_unhandled_admin_error(exc: Exception):
     recover_url = "/recover"
     with contextlib.suppress(Exception):
         recover_url = url_for("recover_admin_session")
+    csrf_token = _ensure_csrf_token()
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -3229,11 +3230,28 @@ def _recover_from_unhandled_admin_error(exc: Exception):
     <h1>Admin UI recovered from a request error</h1>
     <p>The selected proxy/session context was reset so the next page load can start from the current registered proxy inventory.</p>
     <p class="small">{message}</p>
-    <a class="btn" href="{escape(recover_url)}">Return to dashboard</a>
+    <form method="post" action="{escape(recover_url)}">
+      <input type="hidden" name="csrf_token" value="{escape(csrf_token)}">
+      <button class="btn" type="submit">Return to dashboard</button>
+    </form>
   </main>
 </body>
 </html>"""
     return Response(html, status=500, mimetype="text/html")
+
+
+_MUTATING_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_CSRF_EXEMPT_ENDPOINTS = frozenset({"auth_saml_acs"})
+_LOGIN_EXEMPT_ENDPOINTS = frozenset(
+    {
+        "login",
+        "logout",
+        "recover_admin_session",
+        "auth_saml_metadata",
+        "auth_saml_login",
+        "auth_saml_acs",
+    }
+)
 
 
 def _csrf_disabled() -> bool:
@@ -3257,9 +3275,9 @@ def _ensure_csrf_token() -> str:
 def _csrf_guard() -> None:
     if _csrf_disabled():
         return
-    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+    if request.method not in _MUTATING_HTTP_METHODS:
         return
-    if request.endpoint == "auth_saml_acs":
+    if request.endpoint in _CSRF_EXEMPT_ENDPOINTS:
         return
 
     sent = (request.headers.get("X-CSRF-Token") or "").strip()
@@ -3325,15 +3343,8 @@ def _require_login_guard():
     if request.endpoint in {None, "static", "health", "performance_metrics"}:
         return None
 
-    # Allow auth routes.
-    if request.endpoint in {
-        "login",
-        "logout",
-        "recover_admin_session",
-        "auth_saml_metadata",
-        "auth_saml_login",
-        "auth_saml_acs",
-    }:
+    # Allow auth and pre-auth recovery routes.
+    if request.endpoint in _LOGIN_EXEMPT_ENDPOINTS:
         return None
 
     if _is_logged_in():

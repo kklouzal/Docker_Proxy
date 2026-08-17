@@ -4371,7 +4371,13 @@ def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(
     with client.session_transaction() as sess:
         assert "active_proxy_id" not in sess
 
-    recovered = client.get("/recover", follow_redirects=False)
+    with client.session_transaction() as sess:
+        recovery_csrf = sess["_csrf_token"]
+    recovered = client.post(
+        "/recover",
+        data={"csrf_token": recovery_csrf},
+        follow_redirects=False,
+    )
     assert recovered.status_code in {302, 303}
     assert recovered.headers["Location"].startswith("/?recovered=1")
 
@@ -4506,7 +4512,13 @@ def test_recover_route_skips_proxy_registry_when_selection_is_stale(
     with client.session_transaction() as sess:
         sess["active_proxy_id"] = "missing-proxy"
 
-    response = client.get("/recover", follow_redirects=False)
+    with client.session_transaction() as sess:
+        recovery_csrf = sess["_csrf_token"]
+    response = client.post(
+        "/recover",
+        data={"csrf_token": recovery_csrf},
+        follow_redirects=False,
+    )
 
     assert response.status_code in {302, 303}
     assert response.headers["Location"].startswith("/?recovered=1")

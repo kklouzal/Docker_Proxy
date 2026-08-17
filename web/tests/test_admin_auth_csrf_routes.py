@@ -6,6 +6,7 @@ import pytest
 
 from .admin_route_test_utils import (
     FakeAuditStore,
+    concrete_route_path,
     csrf_token,
     load_admin_app,
     login_client,
@@ -268,7 +269,7 @@ def test_audit_store_failure_does_not_break_login(monkeypatch, tmp_path) -> None
     assert response.status_code in {302, 303}
 
 
-def test_recover_route_is_available_before_login_and_clears_proxy_selection(
+def test_recover_route_is_available_before_login_and_requires_csrf(
     monkeypatch, tmp_path
 ) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
@@ -276,13 +277,66 @@ def test_recover_route_is_available_before_login_and_clears_proxy_selection(
     with client.session_transaction() as sess:
         sess["active_proxy_id"] = "stale-proxy"
 
-    response = client.get("/recover", follow_redirects=False)
+    assert client.get("/recover", follow_redirects=False).status_code == 405
+    assert client.post("/recover", follow_redirects=False).status_code == 403
+    token = csrf_token(client, "/login")
+    response = client.post(
+        "/recover", data={"csrf_token": token}, follow_redirects=False
+    )
 
     assert response.status_code in {302, 303}
     assert response.headers["Location"].startswith("/?recovered=1")
     with client.session_transaction() as sess:
         assert "active_proxy_id" not in sess
         assert "user" not in sess
+
+
+def test_mutating_route_policy_is_complete_and_fail_closed(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    app = loaded.module.app
+    mutating_methods = loaded.module._MUTATING_HTTP_METHODS
+    csrf_exempt = loaded.module._CSRF_EXEMPT_ENDPOINTS
+    login_exempt = loaded.module._LOGIN_EXEMPT_ENDPOINTS
+    routes = [
+        (rule, method)
+        for rule in app.url_map.iter_rules()
+        for method in sorted(rule.methods & mutating_methods)
+    ]
+
+    assert routes
+    assert csrf_exempt == {"auth_saml_acs"}
+    assert csrf_exempt <= login_exempt
+    assert {
+        rule.endpoint for rule, _method in routes if rule.endpoint in csrf_exempt
+    } == (csrf_exempt)
+
+    for rule, method in routes:
+        path = concrete_route_path(rule)
+        client = app.test_client()
+        response = client.open(path, method=method, follow_redirects=False)
+        if rule.endpoint in csrf_exempt:
+            assert response.status_code != 403, (rule.rule, method)
+        else:
+            assert response.status_code == 403, (rule.rule, method)
+
+        if rule.endpoint not in login_exempt:
+            token = csrf_token(client, "/login")
+            response = client.open(
+                path,
+                method=method,
+                headers={"X-CSRF-Token": token},
+                follow_redirects=False,
+            )
+            assert response.status_code in {301, 302, 303, 307, 308}, (
+                rule.rule,
+                method,
+            )
+            assert response.headers["Location"].startswith("/login"), (
+                rule.rule,
+                method,
+            )
 
 
 def test_logout_requires_csrf_and_clears_session(monkeypatch, tmp_path) -> None:
