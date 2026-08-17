@@ -160,6 +160,18 @@ class HelperStats:
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False
     )
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    def started(self, **fields: Any) -> None:
+        helper_event(self.helper, "started", **fields)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        self.emit_if_due(force=True)
+        helper_event(self.helper, "stopped")
 
     def increment(self, key: str, amount: int = 1) -> None:
         if not key:

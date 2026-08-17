@@ -16,7 +16,6 @@ import contextlib  # noqa: E402
 
 from services.helper_runtime import (  # noqa: E402
     HelperStats,
-    helper_event,
     split_acl_channel,
     write_acl_response,
 )
@@ -76,9 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     fail_open = args.fail == "open"
     checker = SafeBrowsingLocalChecker(selected_lists=args.selected_lists or None)
     stats = HelperStats("safe_browsing_acl")
-    helper_event(
-        "safe_browsing_acl",
-        "startup",
+    stats.started(
         fail_mode=args.fail,
         selected_lists=",".join(args.selected_lists or []),
     )
@@ -120,7 +117,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if log_db is not None:
             with contextlib.suppress(Exception):
                 log_db.close()
-        stats.emit_if_due(force=True)
+        stats.close()
     return 0
 
 

@@ -24,7 +24,6 @@ from services.domain_normalization import normalize_domain as _norm_domain  # no
 from services.helper_runtime import (  # noqa: E402
     HelperStats,
     TtlLruCache,
-    helper_event,
     split_acl_channel,
     write_acl_response,
 )
@@ -705,9 +704,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     log_db.start()
     fail_open = args.fail == "open"
     stats = HelperStats("webcat_acl")
-    helper_event(
-        "webcat_acl",
-        "startup",
+    stats.started(
         fail_mode=args.fail,
         log_max_rows=int(args.log_max_rows),
     )
@@ -759,7 +756,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             db.close()
         with contextlib.suppress(Exception):
             log_db.close()
-        stats.emit_if_due(force=True)
+        stats.close()
     return 0
 
 

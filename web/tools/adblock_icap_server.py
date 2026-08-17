@@ -31,7 +31,7 @@ from services.adblock_decision import (  # noqa: E402
     AdblockDecision,
     AdblockDecisionEngine,
 )
-from services.helper_runtime import HelperStats, helper_event  # noqa: E402
+from services.helper_runtime import HelperStats  # noqa: E402
 from services.icap_protocol import (  # noqa: E402
     IcapWireSyntaxError,
     parse_chunk_header,
@@ -880,9 +880,7 @@ def main(argv: list[str] | None = None) -> int:
         block_recorder = None
 
     stats = HelperStats("adblock_icap")
-    helper_event(
-        "adblock_icap",
-        "startup",
+    stats.started(
         host=args.host,
         port=int(args.port),
         db=args.db,
@@ -891,25 +889,25 @@ def main(argv: list[str] | None = None) -> int:
         request_timeout_seconds=max(0.1, float(args.request_timeout)),
         max_keepalive_requests=max(1, int(args.max_keepalive_requests)),
     )
-    with _AdblockIcapServer(
-        (args.host, int(args.port)),
-        engine=engine,
-        access_log_path=args.access_log,
-        max_request_bytes=max(8192, int(args.max_request_bytes)),
-        max_body_drain_bytes=max(8192, int(args.max_body_drain_bytes)),
-        request_timeout_seconds=max(0.1, float(args.request_timeout)),
-        max_keepalive_requests=max(1, int(args.max_keepalive_requests)),
-        block_recorder=block_recorder,
-        stats=stats,
-    ) as server:
-        sys.stdout.write(
-            f"adblock sqlite ICAP listening on {args.host}:{args.port} using {args.db}\n",
-        )
-        sys.stdout.flush()
-        try:
+    try:
+        with _AdblockIcapServer(
+            (args.host, int(args.port)),
+            engine=engine,
+            access_log_path=args.access_log,
+            max_request_bytes=max(8192, int(args.max_request_bytes)),
+            max_body_drain_bytes=max(8192, int(args.max_body_drain_bytes)),
+            request_timeout_seconds=max(0.1, float(args.request_timeout)),
+            max_keepalive_requests=max(1, int(args.max_keepalive_requests)),
+            block_recorder=block_recorder,
+            stats=stats,
+        ) as server:
+            sys.stdout.write(
+                f"adblock sqlite ICAP listening on {args.host}:{args.port} using {args.db}\n",
+            )
+            sys.stdout.flush()
             server.serve_forever()
-        finally:
-            stats.emit_if_due(force=True)
+    finally:
+        stats.close()
     return 0
 
 

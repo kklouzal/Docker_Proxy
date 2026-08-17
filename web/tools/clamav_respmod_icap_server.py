@@ -28,7 +28,7 @@ app_root = Path(__file__).resolve().parent.parent
 if str(app_root) not in sys.path:
     sys.path.insert(0, str(app_root))
 
-from services.helper_runtime import HelperStats, helper_event  # noqa: E402
+from services.helper_runtime import HelperStats  # noqa: E402
 from services.icap_protocol import (  # noqa: E402
     IcapWireSyntaxError,
     parse_chunk_header,
@@ -1324,10 +1324,7 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self._scan_unavailable_until = 0.0
         self._scan_known_available_until = 0.0
         self.stats = HelperStats("clamav_respmod", emit_interval_seconds=60.0)
-        self._telemetry_closed = False
-        helper_event(
-            "clamav_respmod",
-            "started",
+        self.stats.started(
             fail_open=self.fail_open,
             max_connections=self.max_connections,
             max_scans=self.max_scans,
@@ -1339,11 +1336,10 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.stats.emit_if_due()
 
     def server_close(self) -> None:
-        if not self._telemetry_closed:
-            self._telemetry_closed = True
-            self.stats.emit_if_due(force=True)
-            helper_event("clamav_respmod", "stopped")
-        super().server_close()
+        try:
+            super().server_close()
+        finally:
+            self.stats.close()
 
     def process_request(
         self,

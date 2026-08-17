@@ -98,6 +98,19 @@ def test_helper_stats_emits_snapshot_without_blocking_increments(
     assert payload["requests"] == 3
 
 
+def test_helper_stats_lifecycle_close_is_idempotent(capsys) -> None:
+    stats = helper_runtime.HelperStats("sample")
+    stats.started(mode="test")
+    stats.increment("requests")
+    stats.close()
+    stats.close()
+
+    payloads = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert [payload["event"] for payload in payloads] == ["started", "stats", "stopped"]
+    assert payloads[0]["mode"] == "test"
+    assert payloads[1]["requests"] == 1
+
+
 def test_ttl_lru_cache_expires_and_evicts(monkeypatch) -> None:
     clock = {"now": 10.0}
     monkeypatch.setattr(helper_runtime.time, "monotonic", lambda: clock["now"])
