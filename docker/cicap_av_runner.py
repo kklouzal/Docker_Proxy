@@ -11,6 +11,13 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from services.clamd_protocol import (
+    CLAMD_PING_MAX_REPLY_BYTES,
+    CLAMD_PING_REQUEST,
+    ping_reply_is_pong,
+    recv_terminated_reply,
+)
+
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled", "required", "strict"}
 FALSE_VALUES = {"0", "false", "no", "off", "disabled", "optional"}
 DEFAULT_CLAMD_PORT = 3310
@@ -18,7 +25,6 @@ DEFAULT_CICAP_AV_PORT = 14001
 CRLF = b"\r\n"
 HEADER_END = CRLF + CRLF
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
-CLAMD_READY_MAX_REPLY_BYTES = 64
 MAX_ENCAPSULATED_OFFSET_DIGITS = 20
 MAX_HTTP_CONTENT_LENGTH_DIGITS = 20
 MAX_ICAP_PREVIEW_DIGITS = 20
@@ -101,33 +107,15 @@ def env_enabled(value: str | None, *, invalid_default: bool = False) -> bool:
 
 
 def _recv_clamd_ping_reply(sock: socket.socket) -> bytes:
-    data = bytearray()
-    while len(data) < CLAMD_READY_MAX_REPLY_BYTES:
-        chunk = sock.recv(CLAMD_READY_MAX_REPLY_BYTES - len(data))
-        if not chunk:
-            break
-        data.extend(chunk)
-        if b"\n" in chunk or b"\0" in chunk:
-            break
-    return bytes(data)
-
-
-def _clamd_ping_reply_is_pong(data: bytes) -> bool:
-    if data.endswith(b"\r\n"):
-        payload = data[:-2]
-    elif data.endswith((b"\n", b"\0")):
-        payload = data[:-1]
-    else:
-        return False
-    return payload == b"PONG"
+    return recv_terminated_reply(sock, max_bytes=CLAMD_PING_MAX_REPLY_BYTES)
 
 
 def clamd_ready(host: str, port: int, timeout: float = 1.0) -> bool:
     try:
         with socket.create_connection((host, port), timeout) as sock:
             sock.settimeout(timeout)
-            sock.sendall(b"PING\n")
-            return _clamd_ping_reply_is_pong(_recv_clamd_ping_reply(sock))
+            sock.sendall(CLAMD_PING_REQUEST)
+            return ping_reply_is_pong(_recv_clamd_ping_reply(sock))
     except (OSError, OverflowError, ValueError):
         return False
 

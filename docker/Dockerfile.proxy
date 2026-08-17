@@ -137,6 +137,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/certificate_bundles.py \
     web/services/certificate_core.py \
     web/services/certificate_digest.py \
+    web/services/clamd_protocol.py \
     web/services/clamav_config_forms.py \
     web/services/config_revisions.py \
     web/services/diagnostic_store.py \

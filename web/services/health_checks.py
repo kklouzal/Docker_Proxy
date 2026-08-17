@@ -10,6 +10,12 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qs, unquote_to_bytes, urlsplit, urlunsplit
 
+from services.clamd_protocol import (
+    CLAMD_PING_MAX_REPLY_BYTES,
+    CLAMD_PING_REQUEST,
+    ping_reply_is_pong,
+    recv_terminated_reply,
+)
 from services.errors import public_error_message
 from services.forwarding_canary_config import forwarding_canary_path
 from services.runtime_helpers import authority_has_empty_explicit_port
@@ -778,25 +784,7 @@ def _resolve_clamd_target(
 
 
 def _recv_clamd_reply(sock: socket.socket, *, max_bytes: int = 64) -> bytes:
-    buf = b""
-    while len(buf) < max_bytes:
-        chunk = sock.recv(min(512, max_bytes - len(buf)))
-        if not chunk:
-            break
-        buf += chunk
-        if b"\0" in buf or b"\n" in buf:
-            break
-    return buf
-
-
-def _clamd_ping_reply_is_pong(data: bytes) -> bool:
-    if data.endswith(b"\r\n"):
-        payload = data[:-2]
-    elif data.endswith((b"\n", b"\0")):
-        payload = data[:-1]
-    else:
-        return False
-    return payload == b"PONG"
+    return recv_terminated_reply(sock, max_bytes=max_bytes)
 
 
 def check_clamd(
@@ -813,14 +801,14 @@ def check_clamd(
             timeout=timeout,
         ) as sock:
             sock.settimeout(timeout)
-            sock.sendall(b"PING\n")
-            data = _recv_clamd_reply(sock, max_bytes=64)
+            sock.sendall(CLAMD_PING_REQUEST)
+            data = _recv_clamd_reply(sock, max_bytes=CLAMD_PING_MAX_REPLY_BYTES)
         detail = (
             data.replace(b"\0", b"\n").decode("utf-8", errors="replace").strip()
             or "no data"
         )
         return {
-            "ok": _clamd_ping_reply_is_pong(data),
+            "ok": ping_reply_is_pong(data),
             "detail": f"{detail} ({resolved_host}:{resolved_port})",
         }
     except Exception as exc:

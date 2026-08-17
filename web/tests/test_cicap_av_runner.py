@@ -238,6 +238,7 @@ def test_clamd_ready_accepts_only_protocol_pong_reply_matrix() -> None:
         ("crlf terminator", (b"PONG\r\n",), True),
         ("nul terminator", (b"PONG\0",), True),
         ("partial reply", (b"PO", b"NG\n"), True),
+        ("fragmented terminator", (b"PONG\r", b"\n"), True),
         ("extra bytes after line", (b"PONG\nVERSION\n",), False),
         ("extra bytes before terminator", (b"PONG READY\n",), False),
         ("pong prefix wrong command", (b"PONG-OLD\n",), False),
@@ -246,6 +247,7 @@ def test_clamd_ready_accepts_only_protocol_pong_reply_matrix() -> None:
         ("leading whitespace", (b" PONG\n",), False),
         ("trailing whitespace", (b"PONG \n",), False),
         ("unterminated", (b"PONG",), False),
+        ("legacy stale prefix", (b"PONG\0OLD",), False),
         ("oversized unterminated", (b"PONG" + (b"X" * 256),), False),
         ("empty eof", (), False),
     )

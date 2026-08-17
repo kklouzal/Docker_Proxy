@@ -673,6 +673,10 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
         "COPY --chmod=755 docker/cicap_av_runner.py /usr/local/bin/cicap_av_runner.py"
         in dockerfile
     )
+    assert "web/services/clamd_protocol.py" in dockerfile
+
+    admin_dockerfile = _read("docker/Dockerfile.admin")
+    assert "web/services/clamd_protocol.py" in admin_dockerfile
 
     env_example = _read("config/app.env.example")
     assert "# CICAP_AV_RESP_PORT=" in env_example
