@@ -168,6 +168,7 @@ from services.proxy_registry import get_proxy_registry as _default_get_proxy_reg
 from services.proxy_sync import canonical_registered_proxy_id, request_proxy_reconcile
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import extract_domain as _extract_domain
+from services.runtime_helpers import normalize_config_bool
 from services.safe_browsing_v5 import SafeBrowsingStore
 from services.saml_auth import (
     SamlProviderProfile,
@@ -4830,14 +4831,10 @@ def _webfilter_setting_list(settings: Any, name: str) -> list[str]:
 
 
 def _webfilter_setting_bool(settings: Any, name: str, default: bool = False) -> bool:
-    value = _webfilter_setting(settings, name, default)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
+    return normalize_config_bool(
+        _webfilter_setting(settings, name, default),
+        default=default,
+    )
 
 
 def _truthy_env(value: object | None) -> bool:

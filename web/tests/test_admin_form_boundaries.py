@@ -172,6 +172,30 @@ def test_webfilter_save_validates_source_url_and_whitelist(
     assert "wl_err" in _params(bad_whitelist.location)
 
 
+@pytest.mark.parametrize(
+    ("value", "default", "expected"),
+    [
+        ("enabled", False, True),
+        ("disabled", True, False),
+        ("off", True, False),
+        (None, True, True),
+        ("", True, True),
+        ("unknown", True, True),
+    ],
+)
+def test_webfilter_persisted_boolean_uses_shared_operator_token_contract(
+    monkeypatch, tmp_path, value, default, expected
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    assert (
+        loaded.module._webfilter_setting_bool(
+            {"enabled": value}, "enabled", default=default
+        )
+        is expected
+    )
+
+
 def test_webfilter_set_settings_preserves_optional_fields_for_kwargs_store(
     monkeypatch, tmp_path
 ) -> None:
