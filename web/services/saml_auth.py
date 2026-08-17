@@ -36,7 +36,10 @@ from services.external_auth_groups import (
     required_group_match_tokens,
 )
 from services.logutil import log_exception_throttled
-from services.runtime_helpers import authority_has_empty_explicit_port
+from services.runtime_helpers import (
+    authority_has_empty_explicit_port,
+    normalize_config_bool,
+)
 from services.url_validation import has_malformed_percent_encoding
 
 logger = logging.getLogger(__name__)
@@ -383,8 +386,10 @@ class SamlAuthStore:
     def save_profile(self, payload: dict[str, Any]) -> SamlProviderProfile:
         current = self.get_profile()
         metadata_url = self._normalize_metadata_url(payload.get("metadata_url"))
-        require_https = self._truthy(payload.get("require_https"), default=True)
-        verify_tls = self._truthy(payload.get("verify_tls"), default=True)
+        require_https = normalize_config_bool(
+            payload.get("require_https"), default=True
+        )
+        verify_tls = normalize_config_bool(payload.get("verify_tls"), default=True)
         ca_bundle = str(payload.get("ca_bundle") or "").strip()
         public_base_url = self._normalize_public_base_url(
             payload.get("public_base_url")
@@ -405,7 +410,7 @@ class SamlAuthStore:
             10 * 1024 * 1024,
             DEFAULT_METADATA_MAX_BYTES,
         )
-        enabled = self._truthy(payload.get("enabled"))
+        enabled = normalize_config_bool(payload.get("enabled"))
 
         if require_https and not metadata_url.lower().startswith("https://"):
             msg = "SAML metadata URL must use https:// unless HTTPS enforcement is disabled."
@@ -718,11 +723,6 @@ class SamlAuthStore:
         except Exception:
             return default
         return max(minimum, min(maximum, parsed))
-
-    def _truthy(self, value: Any, *, default: bool = False) -> bool:
-        if value is None:
-            return default
-        return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
     def _public_error(self, exc: Exception) -> str:
         text = str(exc).strip()

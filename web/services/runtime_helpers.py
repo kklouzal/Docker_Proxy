@@ -24,6 +24,26 @@ _ENV_TRUE_VALUES = frozenset(
 )
 _ENV_FALSE_VALUES = frozenset({"0", "false", "no", "off", "disabled", "optional"})
 
+_CONFIG_TRUE_VALUES = frozenset({"1", "true", "yes", "on", "enabled"})
+_CONFIG_FALSE_VALUES = frozenset({"0", "false", "no", "off", "disabled"})
+
+
+def normalize_config_bool(value: object | None, *, default: bool = False) -> bool:
+    """Normalize an operator-supplied configuration boolean.
+
+    Recognized true and false tokens are matched case-insensitively after trimming.
+    Missing, empty, and unknown values return ``default``. Callers for protective
+    settings should therefore pass their current or fail-closed value explicitly.
+    """
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in _CONFIG_TRUE_VALUES:
+        return True
+    if normalized in _CONFIG_FALSE_VALUES:
+        return False
+    return default
+
 
 def normalize_icap_worker_count(value: object) -> int:
     """Parse and clamp an ICAP worker count to the supported 1..4 range."""

@@ -26,7 +26,10 @@ from services.external_auth_groups import (
     required_group_match_tokens,
 )
 from services.logutil import log_exception_throttled
-from services.runtime_helpers import authority_has_empty_explicit_port
+from services.runtime_helpers import (
+    authority_has_empty_explicit_port,
+    normalize_config_bool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -381,7 +384,7 @@ class DirectoryAuthStore:
     def save_profile(self, provider: str, payload: dict[str, Any]) -> DirectoryProfile:
         provider = self._validate_provider(provider)
         current = self.get_profile(provider)
-        enabled = self._truthy(payload.get("enabled"))
+        enabled = normalize_config_bool(payload.get("enabled"))
         bind_password = str(payload.get("bind_password") or "")
         current_bind_password = self._decrypt(current.bind_password)
         if bind_password:
@@ -398,8 +401,10 @@ class DirectoryAuthStore:
             stored_password = ""
         timeout_seconds = self._bounded_int(payload.get("timeout_seconds"), 1, 30, 5)
         server_urls = self._normalize_server_urls(payload.get("server_urls"))
-        use_starttls = self._truthy(payload.get("use_starttls"))
-        verify_tls = self._truthy(payload.get("verify_tls"), default=current.verify_tls)
+        use_starttls = normalize_config_bool(payload.get("use_starttls"))
+        verify_tls = normalize_config_bool(
+            payload.get("verify_tls"), default=current.verify_tls
+        )
         ca_bundle = self._ca_bundle_from_payload(payload, current.ca_bundle)
         bind_dn = self._clean_required(payload.get("bind_dn"), "Bind DN/user")
         base_dn = self._clean_required(payload.get("base_dn"), "Base DN")
@@ -1125,9 +1130,8 @@ class DirectoryAuthStore:
         return max(low, min(high, parsed))
 
     def _truthy(self, value: Any, *, default: bool = False) -> bool:
-        if value is None:
-            return default
-        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+        """Compatibility shim for ancillary payload fields; use shared semantics."""
+        return normalize_config_bool(value, default=default)
 
     def _server_urls(self, value: str) -> list[str]:
         urls = [line.strip() for line in (value or "").splitlines() if line.strip()]

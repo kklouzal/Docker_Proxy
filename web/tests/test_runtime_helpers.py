@@ -11,11 +11,41 @@ from services.runtime_helpers import (
     env_int,
     extract_domain,
     fsync_parent_dir,
+    normalize_config_bool,
     normalize_hostish,
     normalize_icap_worker_count,
     not_cached_reason,
     read_bounded_complete_lines,
 )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", True),
+        (" TRUE ", True),
+        ("yes", True),
+        ("on", True),
+        ("enabled", True),
+        ("0", False),
+        (" FALSE ", False),
+        ("no", False),
+        ("off", False),
+        ("disabled", False),
+    ],
+)
+def test_normalize_config_bool_has_one_operator_token_contract(
+    value: object, expected: bool
+) -> None:
+    assert normalize_config_bool(value) is expected
+
+
+@pytest.mark.parametrize("value", [None, "", "maybe", object()])
+def test_normalize_config_bool_unknown_values_use_explicit_default(
+    value: object,
+) -> None:
+    assert normalize_config_bool(value) is False
+    assert normalize_config_bool(value, default=True) is True
 
 
 @pytest.mark.parametrize(
