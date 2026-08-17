@@ -3896,6 +3896,90 @@ def test_observability_remediation_no_bump_domain_adds_sslfilter_rule(
     )
 
 
+@pytest.mark.parametrize("configured", [["challenge.example"], ["*.example"]])
+def test_observability_remediation_hides_effectively_covered_no_bump_action(
+    monkeypatch, tmp_path, configured
+) -> None:
+    sslfilter_store = FakeSslfilterStore()
+    sslfilter_store.no_bump_domains = configured
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=RemediationRowsObservability(),
+        sslfilter_store=sslfilter_store,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    text = client.get("/observability?pane=remediation").get_data(as_text=True)
+
+    assert 'name="domain" value="challenge.example"' not in text
+    assert 'name="domain" value="media.example"' in text
+
+
+def test_observability_remediation_suppresses_actions_when_sslfilter_rules_fail(
+    monkeypatch, tmp_path
+) -> None:
+    class RaisingSslfilterStore(FakeSslfilterStore):
+        def list_all(self):
+            msg = 'sslfilter database credential=sslfilter-sentinel-7f3a9c'
+            raise RuntimeError(msg)
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=RemediationRowsObservability(),
+        sslfilter_store=RaisingSslfilterStore(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/observability?pane=remediation")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "/observability/remediation/no-bump-domain" not in text
+    assert "/observability/remediation/no-cache-domain" not in text
+    assert "sslfilter-sentinel-7f3a9c" not in text
+    assert "sslfilter database password" not in text.lower()
+    assert "Runtime health degraded" in text
+
+
+def test_observability_remediation_duplicate_post_skips_reconciliation(
+    monkeypatch, tmp_path
+) -> None:
+    sslfilter_store = FakeSslfilterStore()
+    sslfilter_store.no_bump_domains = ["*.example"]
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        observability_queries=RemediationRowsObservability(),
+        sslfilter_store=sslfilter_store,
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/observability?pane=remediation")
+
+    response = client.post(
+        "/observability/remediation/no-bump-domain",
+        data={"csrf_token": token, "domain": "challenge.example"},
+        follow_redirects=False,
+    )
+
+    params = parse_qs(urlparse(response.headers["Location"]).query)
+    assert response.status_code == 302
+    assert params["remediation_ok"] == ["1"]
+    assert "already effectively covered" in params["remediation_msg"][0]
+    assert sslfilter_store.no_bump_domains == ["*.example"]
+    assert loaded.operation_ledger.operations == []
+    assert any(
+        record["kind"] == "observability_remediation_no_bump_domain"
+        and record["ok"]
+        and "already effectively covered" in record["detail"]
+        for record in loaded.audit_store.records
+    )
+
+
 def test_observability_remediation_no_bump_domain_rejects_tampered_action_subject(
     monkeypatch, tmp_path
 ) -> None:

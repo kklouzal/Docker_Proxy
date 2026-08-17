@@ -211,12 +211,21 @@ def _squid_domain_is_effectively_configured(
     normalized = _normalize_domain_for_squid(domain)
     if not normalized:
         return False
-    for value in configured:
+    for configured_value in configured:
+        value = _normalize_domain_for_squid(configured_value)
         if value == normalized:
             return True
         if _squid_domain_is_covered_by_wildcard(normalized, value):
             return True
     return False
+
+
+def domain_rule_is_effectively_configured(
+    domain: str,
+    configured: list[str],
+) -> bool:
+    """Return whether an exact or parent-wildcard rule covers ``domain``."""
+    return _squid_domain_is_effectively_configured(domain, configured)
 
 
 class SslFilterStore:
@@ -341,6 +350,37 @@ class SslFilterStore:
                     (guard.proxy_id, policy_key, canonical, int(_now())),
                 )
         return True, "", canonical
+
+    def add_domain_if_uncovered(
+        self,
+        policy: str,
+        domain: str,
+    ) -> tuple[bool, str, str, bool]:
+        """Add a rule only when it changes effective policy coverage."""
+        policy_key = _canonical_policy(policy)
+        if policy_key not in _DOMAIN_POLICIES:
+            return False, "Invalid domain policy.", "", False
+        ok, err, canonical = _normalize_domain_rule(domain or "")
+        if not ok:
+            return False, err, canonical, False
+        self.init_db()
+        with self._connect() as conn:
+            with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                configured = self._list_domains_conn(conn, policy_key)
+                if domain_rule_is_effectively_configured(canonical, configured):
+                    return (
+                        True,
+                        "Domain is already effectively covered.",
+                        canonical,
+                        False,
+                    )
+                cursor = conn.execute(
+                    "INSERT IGNORE INTO sslfilter_domains(proxy_id, policy, domain, added_ts) VALUES(%s,%s,%s,%s)",
+                    (guard.proxy_id, policy_key, canonical, int(_now())),
+                )
+                changed = bool(getattr(cursor, "rowcount", 0))
+        detail = "" if changed else "Domain is already configured."
+        return True, detail, canonical, changed
 
     def remove_domain(self, policy: str, domain: str | None = None) -> None:
         if domain is None:

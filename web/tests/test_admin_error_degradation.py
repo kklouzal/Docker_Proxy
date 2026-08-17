@@ -7,6 +7,7 @@ from .admin_route_test_utils import (
     FakeAdblockArtifacts,
     FakeAdblockStore,
     FakeProxyClient,
+    FakeSslfilterStore,
     csrf_token,
     load_admin_app,
     login_client,
@@ -38,6 +39,12 @@ class RaisingWebfilterStore:
 
     def test_domain(self, _domain: str) -> NoReturn:
         msg = "internal db password=secret"
+        raise RuntimeError(msg)
+
+
+class RaisingSslfilterStore(FakeSslfilterStore):
+    def list_all(self):
+        msg = "sslfilter database password=sslfilter-secret"
         raise RuntimeError(msg)
 
 
@@ -94,7 +101,10 @@ def test_observability_route_and_export_degrade_to_empty_payloads(
     monkeypatch, tmp_path
 ) -> None:
     loaded = load_admin_app(
-        monkeypatch, tmp_path, observability_queries=RaisingObservabilityQueries()
+        monkeypatch,
+        tmp_path,
+        observability_queries=RaisingObservabilityQueries(),
+        sslfilter_store=RaisingSslfilterStore(),
     )
     client = loaded.module.app.test_client()
     login_client(client)
@@ -108,6 +118,10 @@ def test_observability_route_and_export_degrade_to_empty_payloads(
     remediation_body = remediation.get_data(as_text=True).lower()
     assert "observability database query failed" in remediation_body
     assert "db password" not in remediation_body
+    assert "sslfilter database password" not in remediation_body
+    assert "sslfilter-sentinel-7f3a9c" not in remediation_body
+    assert "/observability/remediation/no-bump-domain" not in remediation_body
+    assert "/observability/remediation/no-cache-domain" not in remediation_body
 
     export = client.get("/observability/export?pane=ssl&limit=10")
     assert export.status_code == 200

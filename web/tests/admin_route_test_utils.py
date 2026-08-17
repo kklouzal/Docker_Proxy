@@ -981,6 +981,26 @@ class FakeSslfilterStore:
             target.append(value)
         return True, "", value
 
+    def add_domain_if_uncovered(
+        self, policy: str, value: str
+    ) -> tuple[bool, str, str, bool]:
+        value = (value or "").strip().lower()
+        target = (
+            self.no_bump_domains
+            if policy == "nobump"
+            else self.no_cache_domains
+            if policy == "nocache"
+            else None
+        )
+        if target is None:
+            return False, "Invalid domain policy.", "", False
+        from services.sslfilter_store import domain_rule_is_effectively_configured
+
+        if domain_rule_is_effectively_configured(value, target):
+            return True, "Domain is already effectively covered.", value, False
+        ok, detail, canonical = self.add_domain(policy, value)
+        return ok, detail, canonical, ok
+
     def remove_domain(self, policy: str, value: str | None = None) -> None:
         if value is None:
             value = policy

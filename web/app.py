@@ -194,8 +194,12 @@ from services.squidctl import SquidController
 from services.ssl_errors_store import (
     get_ssl_errors_store as _default_get_ssl_errors_store,
 )
+from services.sslfilter_store import (
+    domain_rule_is_effectively_configured,
+    normalize_src_net_rule,
+    validate_domain_rule,
+)
 from services.sslfilter_store import get_sslfilter_store as _default_get_sslfilter_store
-from services.sslfilter_store import normalize_src_net_rule, validate_domain_rule
 from services.timeseries_store import (
     canonicalize_resolution_name as _canonicalize_timeseries_resolution_name,
 )
@@ -8108,6 +8112,24 @@ def _annotate_observability_remediation_actions(payload: dict[str, Any]) -> None
     if not isinstance(rows, list):
         return
     for row in rows:
+        if isinstance(row, dict):
+            row["no_bump_domain_action"] = False
+            row["no_cache_domain_action"] = False
+    try:
+        rules = get_sslfilter_store().list_all()
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            "web.app.observability.remediation.sslfilter_rules",
+            interval_seconds=30.0,
+            message="Failed to load SSL-filter rules; suppressing remediation actions",
+        )
+        return
+    configured = {
+        "nobump": list(getattr(rules, "no_bump_domains", []) or []),
+        "nocache": list(getattr(rules, "no_cache_domains", []) or []),
+    }
+    for row in rows:
         if not isinstance(row, dict):
             continue
         domain = _extract_domain(row.get("subject"))
@@ -8118,6 +8140,9 @@ def _annotate_observability_remediation_actions(payload: dict[str, Any]) -> None
             and (row.get("subject_type") or "domain") == "domain"
             and "nobump" in _OBSERVABILITY_REMEDIATION_ACTIONS.get(row.get("kind"), ())
             and ok
+            and not domain_rule_is_effectively_configured(
+                canonical, configured["nobump"]
+            )
         )
         row["no_cache_domain"] = canonical if ok else ""
         row["no_cache_domain_action"] = (
@@ -8125,6 +8150,9 @@ def _annotate_observability_remediation_actions(payload: dict[str, Any]) -> None
             and (row.get("subject_type") or "domain") == "domain"
             and "nocache" in _OBSERVABILITY_REMEDIATION_ACTIONS.get(row.get("kind"), ())
             and ok
+            and not domain_rule_is_effectively_configured(
+                canonical, configured["nocache"]
+            )
         )
 
 
@@ -8464,7 +8492,7 @@ def _observability_remediation_add_domain(
 
     store = get_sslfilter_store()
     try:
-        ok, detail, canonical = store.add_domain(policy, domain)
+        ok, detail, canonical, changed = store.add_domain_if_uncovered(policy, domain)
     except Exception as exc:
         detail = public_error_message(exc, default=f"{label} domain was not saved.")
         _record_audit_event(
@@ -8486,6 +8514,21 @@ def _observability_remediation_add_domain(
         )
 
     saved_domain = canonical or domain
+    if ok and not changed:
+        _record_audit_event(
+            audit_kind,
+            ok=True,
+            detail=_audit_safe_detail(
+                f"domain={saved_domain} detail={detail or 'already effectively covered'}",
+            ),
+        )
+        return _redirect_to(
+            "observability",
+            **redirect_params,
+            remediation_ok="1",
+            remediation_domain=saved_domain,
+            remediation_msg=f"{label} domain {saved_domain} is already effectively covered; no policy reconciliation was needed.",
+        )
     if ok:
         refresh_ok, refresh_detail = _trigger_policy_sync(force=True)
         if not refresh_ok:
