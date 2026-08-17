@@ -674,6 +674,7 @@ def test_supervisor_program_status_trusts_matching_running_line_with_nonzero_ret
 def test_supervisor_program_status_accepts_scaled_icap_helpers(monkeypatch) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
+    monkeypatch.setenv("SQUID_WORKERS", "2")
     monkeypatch.setattr(
         runtime_module.subprocess,
         "run",
@@ -694,6 +695,91 @@ def test_supervisor_program_status_accepts_scaled_icap_helpers(monkeypatch) -> N
     assert "cicap_adblock_1 RUNNING" in detail
     assert "cicap_adblock_2 RUNNING" in detail
     assert "no such process" not in detail
+
+
+def test_supervisor_program_status_rejects_partial_scaled_icap_helpers(
+    monkeypatch,
+) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.setenv("SQUID_WORKERS", "2")
+    monkeypatch.setattr(
+        runtime_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _cp(
+            0, stdout="cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
+        ),
+    )
+
+    ok, detail = _runtime_shell()._supervisor_program_status("cicap_adblock")
+
+    assert ok is False
+    assert "missing configured programs: cicap_adblock_2" in detail
+
+
+def test_resolve_supervisor_program_names_rejects_partial_scaled_set(
+    monkeypatch,
+) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.setenv("SQUID_WORKERS", "2")
+    monkeypatch.setattr(
+        runtime_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _cp(
+            0, stdout="cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
+        ),
+    )
+
+    programs, detail = _runtime_shell()._resolve_supervisor_program_names(
+        "cicap_adblock"
+    )
+
+    assert programs == []
+    assert "missing configured programs: cicap_adblock_2" in detail
+
+
+def test_supervisor_program_status_rejects_duplicate_scaled_member(monkeypatch) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.setenv("SQUID_WORKERS", "2")
+    monkeypatch.setattr(
+        runtime_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _cp(
+            0,
+            stdout=(
+                "cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
+                "cicap_adblock_1 RUNNING pid 99, uptime 0:00:01\n"
+                "cicap_adblock_2 RUNNING pid 11, uptime 0:00:10\n"
+            ),
+        ),
+    )
+
+    ok, detail = _runtime_shell()._supervisor_program_status("cicap_adblock")
+
+    assert ok is False
+    assert "cicap_adblock_1 RUNNING pid 10" in detail
+    assert "cicap_adblock_1 RUNNING pid 99" in detail
+
+
+def test_supervisor_program_status_preserves_legacy_single_name(monkeypatch) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.delenv("SQUID_WORKERS", raising=False)
+    monkeypatch.delenv("WORKERS", raising=False)
+    monkeypatch.setattr(
+        runtime_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _cp(
+            0, stdout="cicap_adblock RUNNING pid 10, uptime 0:00:11\n"
+        ),
+    )
+
+    ok, detail = _runtime_shell()._supervisor_program_status("cicap_adblock")
+
+    assert ok is True
+    assert "cicap_adblock RUNNING" in detail
 
 
 @pytest.mark.parametrize(
@@ -720,6 +806,7 @@ def test_icap_supervisor_program_names_use_shared_worker_normalization(
 def test_restart_supervisor_program_restarts_scaled_icap_helpers(monkeypatch) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
+    monkeypatch.setenv("SQUID_WORKERS", "2")
     calls: list[tuple[str, str | None]] = []
     started: set[str] = set()
 
@@ -759,6 +846,102 @@ def test_restart_supervisor_program_restarts_scaled_icap_helpers(monkeypatch) ->
     assert ("start", "cicap_adblock_2") in calls
     assert "cicap_adblock_1" in detail
     assert "cicap_adblock_2" in detail
+
+
+@pytest.mark.parametrize(
+    "status_output",
+    [
+        "cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n",
+        "cicap_av_1 RUNNING pid 10, uptime 0:00:11\n",
+        (
+            "cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n"
+            "cicap_adblock_1 RUNNING pid 99, uptime 0:00:01\n"
+            "cicap_adblock_2 RUNNING pid 11, uptime 0:00:10\n"
+        ),
+    ],
+)
+def test_control_supervisor_program_rejects_unresolvable_scaled_set(
+    monkeypatch, status_output: str
+) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.setenv("SQUID_WORKERS", "2")
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        assert args[3] == "status"
+        return _cp(0, stdout=status_output)
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+    runtime = _runtime_shell()
+    runtime._invalidate_health_cache = lambda: None
+
+    result = runtime.test_control_supervisor_program("cicap_adblock", action="stop")
+
+    assert result["ok"] is False
+    assert result["detail"]
+    assert calls == [["supervisorctl", "-c", "/etc/supervisord.conf", "status"]]
+
+
+def test_control_supervisor_program_controls_complete_scaled_set(monkeypatch) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.setenv("SQUID_WORKERS", "2")
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[3] == "status":
+            return _cp(
+                3,
+                stdout=(
+                    "cicap_adblock_1 STOPPED Jul 03 09:42 PM\n"
+                    "cicap_adblock_2 RUNNING pid 11, uptime 0:00:10\n"
+                ),
+            )
+        return _cp(0, stdout=f"{args[4]}: stopped\n")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+    runtime = _runtime_shell()
+    runtime._invalidate_health_cache = lambda: None
+
+    result = runtime.test_control_supervisor_program("cicap_adblock", action="stop")
+
+    assert result["ok"] is True
+    assert [call[4] for call in calls[1:]] == [
+        "cicap_adblock_1",
+        "cicap_adblock_2",
+    ]
+
+
+def test_control_supervisor_program_preserves_legacy_unsuffixed_name(
+    monkeypatch,
+) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.delenv("SQUID_WORKERS", raising=False)
+    monkeypatch.delenv("WORKERS", raising=False)
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[3] == "status":
+            return _cp(3, stdout="cicap_av STOPPED Jul 03 09:42 PM\n")
+        return _cp(0, stdout="cicap_av: started\n")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+    runtime = _runtime_shell()
+    runtime._invalidate_health_cache = lambda: None
+    runtime._supervisor_program_status = lambda *_args, **_kwargs: (
+        True,
+        "cicap_av RUNNING",
+    )
+
+    result = runtime.test_control_supervisor_program("cicap_av", action="start")
+
+    assert result["ok"] is True
+    assert calls[-1][3:] == ["start", "cicap_av"]
 
 
 def test_test_control_supervisor_program_uses_squid_controller_restart() -> None:
@@ -5627,6 +5810,8 @@ def test_local_runtime_service_health_bounds_non_cooperative_probe_workers(
 def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
+    monkeypatch.delenv("SQUID_WORKERS", raising=False)
+    monkeypatch.delenv("WORKERS", raising=False)
     runtime = _runtime_shell()
     calls: list[list[str]] = []
 

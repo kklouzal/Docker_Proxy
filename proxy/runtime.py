@@ -1587,11 +1587,27 @@ class ProxyRuntime:
             return False, detail, {}
         detail = _decode_completed(status).strip()
         lines: dict[str, str] = {}
+        duplicate_names: list[str] = []
         for line in detail.splitlines():
             parts = line.split(None, 2)
             if parts:
-                lines[parts[0]] = line.strip()
-        return status.returncode == 0, detail, lines
+                name = parts[0]
+                if name in lines:
+                    duplicate_names.append(name)
+                    lines[name] = f"{lines[name]}\n{line.strip()}"
+                else:
+                    lines[name] = line.strip()
+        if duplicate_names:
+            duplicates = ", ".join(sorted(set(duplicate_names)))
+            detail = "\n".join(
+                part
+                for part in (
+                    detail,
+                    f"Duplicate supervisor status entries: {duplicates}.",
+                )
+                if part
+            )
+        return status.returncode == 0 and not duplicate_names, detail, lines
 
     def _resolve_supervisor_program_names(
         self,
@@ -1609,11 +1625,23 @@ class ProxyRuntime:
         matches = sorted(
             name for name in lines if name == program_name or name.startswith(prefix)
         )
-        if matches:
-            return matches, detail
+        duplicate_status = "Duplicate supervisor status entries:" in detail
         if configured != [program_name]:
+            missing = sorted(set(configured) - set(matches))
+            unexpected = sorted(set(matches) - set(configured))
+            if duplicate_status or missing or unexpected:
+                problems = []
+                if missing:
+                    problems.append(
+                        f"missing configured programs: {', '.join(missing)}"
+                    )
+                if unexpected:
+                    problems.append(f"unexpected programs: {', '.join(unexpected)}")
+                return [], "; ".join(problems + ([detail] if detail else []))
             return configured, detail
-        return [program_name], detail
+        if matches == [program_name] and not duplicate_status:
+            return [program_name], detail
+        return [], detail or f"{program_name} status unavailable."
 
     def _supervisor_program_status_exact(
         self,
@@ -1643,20 +1671,38 @@ class ProxyRuntime:
         prefix = self._logical_supervisor_program_prefix(program_name)
         configured = list(_icap_supervisor_programs(program_name))
         if prefix:
-            _ok, detail, lines = self._supervisor_status_lines(
+            status_ok, detail, lines = self._supervisor_status_lines(
                 timeout_seconds=timeout_seconds
             )
-            matching = [
-                line
-                for name, line in sorted(lines.items())
-                if name in configured or name == program_name or name.startswith(prefix)
-            ]
-            if matching:
-                ok = all(
-                    len(parts := line.split(None, 2)) > 1
-                    and parts[1] in accepted_states
-                    for line in matching
+            matching_names = sorted(
+                name
+                for name in lines
+                if name == program_name or name.startswith(prefix)
+            )
+            expected_names = sorted(configured)
+            matching = [lines[name] for name in matching_names]
+            if matching_names:
+                complete = matching_names == expected_names
+                ok = (
+                    status_ok
+                    and complete
+                    and all(
+                        len(parts := line.split(None, 2)) > 1
+                        and parts[1] in accepted_states
+                        for line in matching
+                    )
                 )
+                if not complete:
+                    missing = sorted(set(expected_names) - set(matching_names))
+                    unexpected = sorted(set(matching_names) - set(expected_names))
+                    problems = []
+                    if missing:
+                        problems.append(
+                            f"missing configured programs: {', '.join(missing)}"
+                        )
+                    if unexpected:
+                        problems.append(f"unexpected programs: {', '.join(unexpected)}")
+                    return False, "; ".join(problems + matching)
                 return ok, "\n".join(matching)
             if configured != [program_name] and detail:
                 return False, detail
@@ -1693,19 +1739,33 @@ class ProxyRuntime:
 
         for program in programs:
             prefix = self._logical_supervisor_program_prefix(program)
-            matched = [
-                line
-                for name, line in sorted(lines.items())
+            matched_names = sorted(
+                name
+                for name in lines
                 if name == program or (prefix and name.startswith(prefix))
-            ]
-            if not matched:
+            )
+            if not matched_names:
                 continue
+            expected_names = (
+                sorted(_icap_supervisor_programs(program)) if prefix else [program]
+            )
+            matched = [lines[name] for name in matched_names]
+            complete = matched_names == expected_names
+            missing = sorted(set(expected_names) - set(matched_names))
+            unexpected = sorted(set(matched_names) - set(expected_names))
+            problems = []
+            if missing:
+                problems.append(f"missing configured programs: {', '.join(missing)}")
+            if unexpected:
+                problems.append(f"unexpected programs: {', '.join(unexpected)}")
             statuses[program] = {
-                "ok": all(
+                "ok": ok_status
+                and complete
+                and all(
                     len(parts := line.split(None, 2)) > 1 and parts[1] == "RUNNING"
                     for line in matched
                 ),
-                "detail": "\n".join(matched),
+                "detail": "; ".join([*problems, "\n".join(matched)]),
             }
 
         detail_parts = [
@@ -1858,8 +1918,10 @@ class ProxyRuntime:
             program,
             timeout_seconds=max(0.001, remaining_timeout()),
         )
-        details = [str(resolve_detail or "").strip()] if len(programs) > 1 else []
-        ok = True
+        details = [str(resolve_detail or "").strip()] if resolve_detail else []
+        ok = bool(programs)
+        if not programs and not details:
+            details.append(f"Failed to resolve supervisor programs for {program}.")
         for supervisor_program in programs:
             command_timeout = remaining_timeout()
             if command_timeout <= 0:
