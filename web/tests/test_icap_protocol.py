@@ -33,7 +33,10 @@ def test_encapsulated_parser_rejects_shared_malformed_syntax(value: str) -> None
         )
 
 
-@pytest.mark.parametrize("line", [b"", b"+0", b"0x10", b"G"])
+@pytest.mark.parametrize(
+    "line",
+    [b"", b"+0", b"0x10", b"G", b"0;ieof;IEOF"],
+)
 def test_chunk_header_rejects_shapes_rejected_by_helpers(line: bytes) -> None:
     with pytest.raises(IcapWireSyntaxError):
         parse_chunk_header(line)

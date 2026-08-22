@@ -83,6 +83,9 @@ def parse_chunk_header(line: bytes) -> ChunkHeader:
         name = extension.split(b"=", 1)[0].strip().lower()
         if name == b"ieof":
             ieof_count += 1
+    if ieof_count > 1:
+        message = "duplicate ICAP ieof chunk extension"
+        raise IcapWireSyntaxError(message)
     return ChunkHeader(size=size, has_ieof=bool(ieof_count))
 
 

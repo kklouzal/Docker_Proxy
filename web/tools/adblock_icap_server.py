@@ -354,11 +354,7 @@ def _parse_chunk_size_line(line: bytes) -> int | None:
         parsed = parse_chunk_header(line)
     except IcapWireSyntaxError:
         return None
-    ieof_count = sum(
-        extension.split(b"=", 1)[0].strip().lower() == b"ieof"
-        for extension in line.split(b";")[1:]
-    )
-    if ieof_count > 1 or (parsed.has_ieof and parsed.size != 0):
+    if parsed.has_ieof and parsed.size != 0:
         return None
     return parsed.size
 

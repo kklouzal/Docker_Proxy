@@ -360,7 +360,10 @@ def _parse_icap_chunk_size(line: str) -> int:
     try:
         return parse_chunk_header(line.encode("ascii")).size
     except (UnicodeEncodeError, IcapWireSyntaxError) as exc:
-        message = f"invalid ICAP chunk size: {line!r}"
+        if isinstance(exc, IcapWireSyntaxError) and str(exc).startswith("duplicate"):
+            message = str(exc)
+        else:
+            message = f"invalid ICAP chunk size: {line!r}"
         raise IcapProtocolError(message) from exc
 
 
@@ -384,7 +387,11 @@ def _chunk_has_ieof_extension(line: str) -> bool:
             raise IcapProtocolError(message)
         return parsed.has_ieof
     except (UnicodeEncodeError, IcapWireSyntaxError) as exc:
-        message = f"invalid ICAP chunk size: {line!r}"
+        message = (
+            str(exc)
+            if isinstance(exc, IcapWireSyntaxError)
+            else (f"invalid ICAP chunk size: {line!r}")
+        )
         raise IcapProtocolError(message) from exc
 
 
@@ -419,9 +426,6 @@ def read_icap_chunked_body(
         line, remainder = _read_chunk_header(stream, remainder)
         size = _parse_icap_chunk_size(line)
         has_ieof = _chunk_has_ieof_extension(line)
-        if has_ieof and size != 0:
-            message = "invalid ICAP ieof chunk extension on nonzero chunk"
-            raise IcapProtocolError(message)
         if size == 0:
             remainder = _drain_chunk_trailers(stream, remainder)
             if preview and not preview_terminator_seen and not has_ieof:
