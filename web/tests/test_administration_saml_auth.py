@@ -409,10 +409,14 @@ def test_saml_login_and_acs_create_standard_session(monkeypatch, tmp_path):
 
     login_response = client.get("/auth/saml/login?next=/administration")
     assert login_response.status_code in {302, 303}
+    relay_state = login_response.headers["Location"].split("RelayState=", 1)[1]
     with client.session_transaction() as sess:
-        assert sess["saml_request_id"] == "REQ-123"
+        assert (
+            sess[loaded.module._SAML_PENDING_SESSION_KEY][relay_state]["request_id"]
+            == "REQ-123"
+        )
 
-    acs_response = client.post("/auth/saml/acs", data={"RelayState": "/administration"})
+    acs_response = client.post("/auth/saml/acs", data={"RelayState": relay_state})
 
     assert acs_response.status_code in {302, 303}
     assert toolkit.processed_request_id == "REQ-123"
@@ -422,6 +426,39 @@ def test_saml_login_and_acs_create_standard_session(monkeypatch, tmp_path):
         assert "saml_request_id" not in sess
     assert audit.records[-1]["kind"] == "login_success"
     assert audit.records[-1]["detail"] == "user=saml-user@example.test provider=saml"
+
+
+def test_saml_concurrent_logins_complete_out_of_order_with_bound_destinations(
+    monkeypatch, tmp_path
+):
+    loaded, store = _load_with_saml(monkeypatch, tmp_path)
+    store.enable_with_metadata(required_group="")
+    toolkits: list[FakeSamlToolkit] = []
+
+    def build_auth(_profile, _request):
+        toolkit = FakeSamlToolkit()
+        request_id = f"REQ-{len(toolkits) + 1}"
+        toolkit.get_last_request_id = lambda: request_id
+        toolkits.append(toolkit)
+        return toolkit
+
+    monkeypatch.setattr(loaded.module, "build_saml_auth", build_auth)
+    client = loaded.module.app.test_client()
+
+    first = client.get("/auth/saml/login?next=/administration")
+    second = client.get("/auth/saml/login?next=/logs")
+    first_relay = first.headers["Location"].split("RelayState=", 1)[1]
+    second_relay = second.headers["Location"].split("RelayState=", 1)[1]
+
+    second_acs = client.post("/auth/saml/acs", data={"RelayState": second_relay})
+    first_acs = client.post("/auth/saml/acs", data={"RelayState": first_relay})
+
+    assert second_acs.headers["Location"] == "/logs"
+    assert first_acs.headers["Location"] == "/administration"
+    assert toolkits[2].processed_request_id == "REQ-2"
+    assert toolkits[3].processed_request_id == "REQ-1"
+    with client.session_transaction() as sess:
+        assert loaded.module._SAML_PENDING_SESSION_KEY not in sess
 
 
 def test_saml_login_clears_stale_request_id_when_provider_unavailable(
@@ -471,7 +508,7 @@ def test_saml_login_replaces_stale_request_id_after_initiation_failure(
 
     assert started.status_code in {302, 303}
     with client.session_transaction() as sess:
-        assert sess["saml_request_id"] == "REQ-123"
+        assert len(sess[loaded.module._SAML_PENDING_SESSION_KEY]) == 1
 
 
 def test_saml_acs_clears_stale_request_id_when_provider_unavailable(
@@ -507,10 +544,10 @@ def test_saml_acs_drops_external_relay_state_after_correlated_login(
     )
 
     assert response.status_code in {302, 303}
-    assert response.headers["Location"] == "/"
-    assert toolkit.processed_request_id == "REQ-123"
+    assert response.headers["Location"] == "/login?next="
+    assert toolkit.process_response_calls == 0
     with client.session_transaction() as sess:
-        assert sess["user"] == "saml-user@example.test"
+        assert "user" not in sess
 
 
 def test_saml_acs_rejects_missing_request_correlation_without_processing(
@@ -550,10 +587,11 @@ def test_saml_acs_request_correlation_is_one_time_after_failure(monkeypatch, tmp
         loaded.module, "build_saml_auth", lambda _profile, _request: toolkit
     )
     client = loaded.module.app.test_client()
-    client.get("/auth/saml/login?next=/administration")
+    login_response = client.get("/auth/saml/login?next=/administration")
+    relay_state = login_response.headers["Location"].split("RelayState=", 1)[1]
 
-    first = client.post("/auth/saml/acs", data={"RelayState": "/administration"})
-    second = client.post("/auth/saml/acs", data={"RelayState": "/administration"})
+    first = client.post("/auth/saml/acs", data={"RelayState": relay_state})
+    second = client.post("/auth/saml/acs", data={"RelayState": relay_state})
 
     assert first.status_code in {302, 303}
     assert second.status_code in {302, 303}
@@ -577,10 +615,11 @@ def test_saml_acs_rejects_missing_required_group_without_raw_response_audit(
     )
     client = loaded.module.app.test_client()
 
-    client.get("/auth/saml/login?next=/administration")
+    login_response = client.get("/auth/saml/login?next=/administration")
+    relay_state = login_response.headers["Location"].split("RelayState=", 1)[1]
     response = client.post(
         "/auth/saml/acs",
-        data={"RelayState": "/administration", "SAMLResponse": "<raw xml>"},
+        data={"RelayState": relay_state, "SAMLResponse": "<raw xml>"},
     )
 
     assert response.status_code in {302, 303}
@@ -607,8 +646,9 @@ def test_saml_success_audit_redacts_username_like_secret(monkeypatch, tmp_path):
     )
     client = loaded.module.app.test_client()
 
-    client.get("/auth/saml/login?next=/administration")
-    response = client.post("/auth/saml/acs", data={"RelayState": "/administration"})
+    login_response = client.get("/auth/saml/login?next=/administration")
+    relay_state = login_response.headers["Location"].split("RelayState=", 1)[1]
+    response = client.post("/auth/saml/acs", data={"RelayState": relay_state})
 
     assert response.status_code in {302, 303}
     assert toolkit.processed_request_id == "REQ-123"

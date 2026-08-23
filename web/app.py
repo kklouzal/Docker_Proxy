@@ -3630,10 +3630,72 @@ def auth_saml_metadata():
     return Response(metadata, mimetype="application/samlmetadata+xml")
 
 
+_SAML_PENDING_SESSION_KEY = "saml_" + "transactions"
+_SAML_PENDING_MAX = 8
+_SAML_PENDING_TTL_SECONDS = 10 * 60
+
+
+def _saml_pending_requests(*, now: int | None = None) -> dict[str, dict[str, Any]]:
+    """Return valid pending SAML transactions from the signed session cookie."""
+    current = int(time.time()) if now is None else now
+    raw = session.get(_SAML_PENDING_SESSION_KEY)
+    pending: dict[str, dict[str, Any]] = {}
+    if isinstance(raw, dict):
+        for relay_state, value in raw.items():
+            if not isinstance(relay_state, str) or not isinstance(value, dict):
+                continue
+            request_id = value.get("request_id")
+            created = value.get("created")
+            next_url = value.get("next")
+            if (
+                isinstance(request_id, str)
+                and request_id
+                and isinstance(created, int)
+                and current - _SAML_PENDING_TTL_SECONDS <= created <= current + 60
+                and isinstance(next_url, str)
+            ):
+                pending[relay_state] = value
+    return pending
+
+
+def _store_saml_pending_request(
+    relay_state: str, request_id: str, next_url: str
+) -> None:
+    now = int(time.time())
+    pending = _saml_pending_requests(now=now)
+    pending[relay_state] = {
+        "request_id": request_id,
+        "next": next_url,
+        "created": now,
+    }
+    if len(pending) > _SAML_PENDING_MAX:
+        oldest = sorted(pending, key=lambda key: pending[key]["created"])
+        for key in oldest[: len(pending) - _SAML_PENDING_MAX]:
+            pending.pop(key, None)
+    session[_SAML_PENDING_SESSION_KEY] = pending
+    session.pop("saml_request_id", None)
+
+
+def _consume_saml_pending_request(relay_state: str) -> dict[str, Any] | None:
+    pending = _saml_pending_requests()
+    transaction = pending.pop(relay_state, None)
+    if pending:
+        session[_SAML_PENDING_SESSION_KEY] = pending
+    else:
+        session.pop(_SAML_PENDING_SESSION_KEY, None)
+    session.pop("saml_request_id", None)
+    return transaction
+
+
 @app.route("/auth/saml/login", methods=["GET"])
 def auth_saml_login():
     profile = _current_saml_profile()
     next_url = _safe_next_url(request.args.get("next") or "")
+    pending = _saml_pending_requests()
+    if pending:
+        session[_SAML_PENDING_SESSION_KEY] = pending
+    else:
+        session.pop(_SAML_PENDING_SESSION_KEY, None)
     session.pop("saml_request_id", None)
     if not profile_metadata_ready(profile):
         _record_audit_event(
@@ -3648,10 +3710,11 @@ def auth_saml_login():
         )
     try:
         auth = build_saml_auth(profile, request)
-        redirect_url = auth.login(return_to=next_url or url_for("index"))
+        relay_state = secrets.token_urlsafe(24)
+        redirect_url = auth.login(return_to=relay_state)
         request_id = getattr(auth, "get_last_request_id", lambda: "")()
         if request_id:
-            session["saml_request_id"] = str(request_id)
+            _store_saml_pending_request(relay_state, str(request_id), next_url)
         return redirect(redirect_url)
     except Exception as exc:
         app.logger.exception("SAML login initiation failed")
@@ -3666,9 +3729,10 @@ def auth_saml_login():
 @app.route("/auth/saml/acs", methods=["POST"])
 def auth_saml_acs():
     profile = _current_saml_profile()
-    next_url = _safe_next_url(request.form.get("RelayState") or "")
+    relay_state = request.form.get("RelayState") or ""
+    transaction = _consume_saml_pending_request(relay_state)
+    next_url = str(transaction.get("next") or "") if transaction else ""
     if not profile_metadata_ready(profile):
-        session.pop("saml_request_id", None)
         _record_audit_event(
             "saml_login_failed",
             ok=False,
@@ -3677,7 +3741,7 @@ def auth_saml_acs():
         return _redirect_to("login", next=next_url)
     try:
         auth = build_saml_auth(profile, request)
-        request_id = session.pop("saml_request_id", None)
+        request_id = transaction.get("request_id") if transaction else None
         if not request_id:
             result = type("_Result", (), {})()
             result.ok = False
@@ -3702,7 +3766,10 @@ def auth_saml_acs():
             ),
         )
         return _redirect_to("login", next=next_url)
+    remaining_saml_transactions = _saml_pending_requests()
     _establish_admin_session(result.username, "saml")
+    if remaining_saml_transactions:
+        session[_SAML_PENDING_SESSION_KEY] = remaining_saml_transactions
     _record_audit_event(
         "login_success",
         ok=True,
