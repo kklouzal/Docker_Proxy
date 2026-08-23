@@ -20,6 +20,12 @@ def test_row_value_returns_none_for_absent_key_or_index_and_none_row() -> None:
     assert row_value(None, "missing", 0) is None
 
 
+def test_row_value_preserves_explicit_default_without_replacing_present_none() -> None:
+    assert row_value({}, "missing", 0, "fallback") == "fallback"
+    assert row_value(None, "missing", 0, "fallback") == "fallback"
+    assert row_value({"name": None}, "name", 0, "fallback") is None
+
+
 class _MalformedRow:
     def __getitem__(self, key: object) -> object:
         message = f"malformed access: {key}"

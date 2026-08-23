@@ -15,18 +15,13 @@ from services.logutil import log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
 from services.revision_lifecycle import ensure_index
+from services.row_access import row_value
 
 logger = logging.getLogger(__name__)
 
 
 def _row_value(row: object, column: str, index: int, default: object = None) -> object:
-    try:
-        return row[column]  # type: ignore[index]
-    except Exception:
-        try:
-            return row[index]  # type: ignore[index]
-        except Exception:
-            return default
+    return row_value(row, column, index, default)
 
 
 class AuditStore:

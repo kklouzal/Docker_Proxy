@@ -18,6 +18,18 @@ normalize_application_actor = application_ledgers.normalize_application_actor
 normalize_application_detail = application_ledgers.normalize_application_detail
 
 
+class _MalformedRow:
+    def __getitem__(self, key):
+        message = f"malformed access: {key}"
+        raise RuntimeError(message)
+
+
+def test_application_row_value_preserves_default_and_unexpected_errors() -> None:
+    assert application_ledgers.row_value({}, "missing", "fallback") == "fallback"
+    with pytest.raises(RuntimeError, match="malformed access: config_sha256"):
+        application_ledgers.row_value(_MalformedRow(), "config_sha256")
+
+
 class _Result:
     def __init__(self, rows=None, *, lastrowid: int = 0, rowcount: int = 0) -> None:
         self._rows = list(rows or [])

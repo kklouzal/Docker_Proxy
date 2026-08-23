@@ -13,6 +13,7 @@ from typing import Any
 from services.db import DATABASE_ERRORS, mysql_error_code, table_exists
 from services.proxy_context import normalize_proxy_id
 from services.proxy_lifecycle import ensure_lifecycle_schema
+from services.row_access import row_value
 
 _BLOCKING_ACTIONS = {"removing", "removed", "renaming"}
 _RENAMED_ACTIONS = {"renamed"}
@@ -125,17 +126,16 @@ def _cache_put(key: tuple[str, bool, bool], decision: ProxyWriteDecision) -> Non
         _decision_cache[key] = _CacheEntry(time.monotonic() + ttl, decision)
 
 
-def _metadata_error(message: str, exc: BaseException | None = None) -> ProxyLifecycleWriteError:
+def _metadata_error(
+    message: str, exc: BaseException | None = None
+) -> ProxyLifecycleWriteError:
     if exc is None:
         return ProxyLifecycleWriteError(message)
     return ProxyLifecycleWriteError(f"{message}: {exc}")
 
 
 def _row_value(row: object, key: str, default: object = "") -> object:
-    try:
-        return row[key]  # type: ignore[index]
-    except Exception:
-        return default
+    return row_value(row, key, default=default)
 
 
 def _ensure_metadata_tables(conn: Any) -> None:
@@ -163,9 +163,13 @@ def _check_tombstone(conn: Any, proxy_key: str, *, allow_alias: bool) -> str | N
             (proxy_key,),
         ).fetchone()
     except DATABASE_ERRORS as exc:
-        raise _metadata_error("Proxy lifecycle tombstones are unavailable", exc) from exc
+        raise _metadata_error(
+            "Proxy lifecycle tombstones are unavailable", exc
+        ) from exc
     except Exception as exc:
-        raise _metadata_error("Proxy lifecycle tombstones are unavailable", exc) from exc
+        raise _metadata_error(
+            "Proxy lifecycle tombstones are unavailable", exc
+        ) from exc
     if row is None:
         return None
     action = str(_row_value(row, "action") or "removed")
@@ -231,7 +235,13 @@ def _ensure_registered(conn: Any, proxy_key: str) -> None:
             f"Proxy {proxy_key!r} is not registered; proxy-scoped writes are blocked.",
         )
     status = str(_row_value(row, "status") or "unknown")
-    if status in {"renaming", "rename_pending", "removing", "remove_pending", "removed"}:
+    if status in {
+        "renaming",
+        "rename_pending",
+        "removing",
+        "remove_pending",
+        "removed",
+    }:
         raise ProxyLifecycleWriteError(
             f"Proxy {proxy_key!r} is in lifecycle status {status!r}; proxy-scoped writes are blocked.",
         )
@@ -439,7 +449,9 @@ def guarded_proxy_rows(
         require_registered=require_registered,
         timeout_seconds=timeout_seconds,
     ) as decision:
-        materialized = tuple(tuple(row_factory(decision.proxy_id, row)) for row in original_rows)
+        materialized = tuple(
+            tuple(row_factory(decision.proxy_id, row)) for row in original_rows
+        )
     return GuardedProxyBatch(decision=decision, rows=materialized)
 
 

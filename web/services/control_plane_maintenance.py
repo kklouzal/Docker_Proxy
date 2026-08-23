@@ -16,6 +16,7 @@ from services.bounded_delete import (
 from services.db import DATABASE_ERRORS, connect, mysql_error_code, table_exists
 from services.mysql_table_maintenance import run_mysql_table_maintenance
 from services.observability_maintenance import public_detail
+from services.row_access import row_value
 from services.runtime_helpers import env_int as _env_int
 from services.sql_identifiers import quote_mysql_identifier
 from services.webcat_hygiene import cleanup_stale_webcat_build_tables
@@ -404,13 +405,7 @@ def _delete_expired_cache(table: str, *, now_ts: int) -> BoundedDeleteResult:
 
 
 def _row_value(row: Any, key: str, index: int, default: object = None) -> object:
-    try:
-        return row[key]
-    except Exception:
-        try:
-            return row[index]
-        except Exception:
-            return default
+    return row_value(row, key, index, default)
 
 
 def _queue_policy_exception_expiry_policy_sync(proxy_id: str) -> bool:

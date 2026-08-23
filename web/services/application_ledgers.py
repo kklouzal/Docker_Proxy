@@ -5,6 +5,7 @@ import unicodedata
 from typing import Any
 
 from services.errors import redact_sensitive_text
+from services.row_access import row_value as _shared_row_value
 
 APPLICATION_DETAIL_MAX = 4000
 APPLICATION_ACTOR_MAX = 255
@@ -13,10 +14,7 @@ _INVISIBLE_ACTOR_CATEGORIES = {"Cc", "Cf"}
 
 
 def row_value(row: Any, key: str, default: object = "") -> object:
-    try:
-        return row[key]  # type: ignore[index]
-    except Exception:
-        return default
+    return _shared_row_value(row, key, default=default)
 
 
 def normalize_application_detail(
