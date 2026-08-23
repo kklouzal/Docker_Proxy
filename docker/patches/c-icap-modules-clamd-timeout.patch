@@ -1,0 +1,54 @@
+--- a/services/virus_scan/clamd_mod.c
++++ b/services/virus_scan/clamd_mod.c
+@@ -12,0 +13,3 @@
++#include <fcntl.h>
++#include <poll.h>
++#include <sys/time.h>
+@@ -20,0 +24 @@
++int CLAMD_TIMEOUT = 5;
+@@ -31,0 +36 @@
++    {"ClamdTimeout", &CLAMD_TIMEOUT, ci_cfg_set_int, NULL},
+@@ -75,0 +81,4 @@
++    int connect_result, error = 0, flags, timeout_seconds;
++    socklen_t error_len = sizeof(error);
++    struct pollfd waiter;
++    struct timeval timeout;
+@@ -112 +121,11 @@
+-    if(connect(sockd, addr, addr_len) < 0) {
++    timeout_seconds = CLAMD_TIMEOUT > 0 ? CLAMD_TIMEOUT : 5;
++    if (timeout_seconds > 86400)
++        timeout_seconds = 86400;
++    flags = fcntl(sockd, F_GETFL, 0);
++    if (flags < 0 || fcntl(sockd, F_SETFL, flags | O_NONBLOCK) < 0) {
++        close(sockd);
++        return -1;
++    }
++
++    connect_result = connect(sockd, addr, addr_len);
++    if (connect_result < 0 && errno != EINPROGRESS) {
+@@ -113,0 +133,25 @@
++        close(sockd);
++        return -1;
++    }
++    if (connect_result < 0) {
++        waiter.fd = sockd;
++        waiter.events = POLLOUT;
++        waiter.revents = 0;
++        if (poll(&waiter, 1, timeout_seconds * 1000) <= 0 ||
++            !(waiter.revents & POLLOUT) ||
++            (waiter.revents & (POLLERR | POLLHUP | POLLNVAL)) ||
++            getsockopt(sockd, SOL_SOCKET, SO_ERROR, &error, &error_len) < 0 || error) {
++            ci_debug_printf(1, "clamd_connect: Can not connect to clamd server on %s!\n", CLAMD_ADDR);
++            close(sockd);
++            return -1;
++        }
++    }
++    if (fcntl(sockd, F_SETFL, flags) < 0) {
++        close(sockd);
++        return -1;
++    }
++
++    timeout.tv_sec = timeout_seconds;
++    timeout.tv_usec = 0;
++    if (setsockopt(sockd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0 ||
++        setsockopt(sockd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {

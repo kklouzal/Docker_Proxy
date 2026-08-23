@@ -706,6 +706,19 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
         in dockerfile
     )
     assert "web/services/clamd_protocol.py" in dockerfile
+    assert "c-icap-modules-clamd-timeout.patch" in dockerfile
+    assert "patch --batch --forward -p1" in dockerfile
+    clamd_timeout_patch = _read("docker/patches/c-icap-modules-clamd-timeout.patch")
+    assert (
+        '{"ClamdTimeout", &CLAMD_TIMEOUT, ci_cfg_set_int, NULL}' in clamd_timeout_patch
+    )
+    assert "SO_RCVTIMEO" in clamd_timeout_patch
+    assert "SO_SNDTIMEO" in clamd_timeout_patch
+    assert "poll(&waiter, 1, timeout_seconds * 1000)" in clamd_timeout_patch
+    assert "connect_result < 0" in clamd_timeout_patch
+    assert "waiter.revents & (POLLERR | POLLHUP | POLLNVAL)" in clamd_timeout_patch
+    assert "fcntl(sockd, F_SETFL, flags)" in clamd_timeout_patch
+    assert "clamd_mod.ClamdTimeout ${CLAMD_TIMEOUT:-5}" in entrypoint
 
     admin_dockerfile = _read("docker/Dockerfile.admin")
     assert "web/services/clamd_protocol.py" in admin_dockerfile

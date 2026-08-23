@@ -1179,6 +1179,7 @@ cat > /etc/clamd_mod.conf <<EOF
 Module common clamd_mod.so
 clamd_mod.ClamdHost ${CLAMD_HOST}
 clamd_mod.ClamdPort ${CLAMD_PORT}
+clamd_mod.ClamdTimeout ${CLAMD_TIMEOUT:-5}
 EOF
 
 mkdir -p /var/run/c-icap

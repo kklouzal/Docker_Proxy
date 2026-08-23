@@ -58,6 +58,11 @@ RUN set -eu; \
     make -j"$(getconf _NPROCESSORS_ONLN || echo 2)"; \
     make install
 
+# Bound clamd TCP connect/read/write waits. The pinned upstream module otherwise
+# uses blocking sockets without timeouts, so an optional backend outage can pin
+# c-icap workers and make fail-open proxy traffic stall behind them.
+COPY docker/patches/c-icap-modules-clamd-timeout.patch /tmp/build/
+
 # Same bounded builder-stage checkout pattern as c-icap above.
 # hadolint ignore=DL3003
 RUN set -eu; \
@@ -70,6 +75,7 @@ RUN set -eu; \
         exit 1; \
     fi; \
     echo "[c-icap-modules] verified commit ${actual_commit}"; \
+    patch --batch --forward -p1 < ../c-icap-modules-clamd-timeout.patch; \
     if [ ! -x ./configure ]; then autoreconf -fi; fi; \
     ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --disable-static; \
     make -j"$(getconf _NPROCESSORS_ONLN || echo 2)"; \
