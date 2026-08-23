@@ -14,7 +14,7 @@ WEB_DIR = Path(__file__).resolve().parents[1]
 if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
 
-from services import audit_store  # type: ignore  # noqa: E402
+from services import audit_store, schema_lifecycle  # type: ignore  # noqa: E402
 from services.audit_store import AuditStore  # type: ignore  # noqa: E402
 
 
@@ -105,9 +105,11 @@ class _SchemaInitConnection:
         self,
         *,
         migration_status: str | None = None,
+        migration_checksum: str | None = None,
         probe_error: Exception | None = None,
     ) -> None:
         self.migration_status = migration_status
+        self.migration_checksum = migration_checksum
         self.probe_error = probe_error
         self.ops: list[str] = []
 
@@ -126,7 +128,10 @@ class _SchemaInitConnection:
             if self.probe_error is not None:
                 raise self.probe_error
             row = (
-                {"status": self.migration_status}
+                {
+                    "checksum": self.migration_checksum,
+                    "status": self.migration_status,
+                }
                 if self.migration_status is not None
                 else None
             )
@@ -150,7 +155,10 @@ def _patch_schema_fallback_index(monkeypatch) -> list[tuple[object, str, str, st
 def test_init_db_skips_runtime_ddl_when_lifecycle_schema_is_current(
     monkeypatch,
 ) -> None:
-    conn = _SchemaInitConnection(migration_status="applied")
+    conn = _SchemaInitConnection(
+        migration_status="applied",
+        migration_checksum=schema_lifecycle.latest_schema_checksum(),
+    )
     store = AuditStore()
     monkeypatch.setattr(store, "_connect", lambda: conn)
     index_calls = _patch_schema_fallback_index(monkeypatch)
@@ -161,6 +169,27 @@ def test_init_db_skips_runtime_ddl_when_lifecycle_schema_is_current(
     assert len(conn.ops) == 1
     assert "schema_migrations" in conn.ops[0]
     assert index_calls == []
+
+
+def test_init_db_uses_runtime_ddl_when_lifecycle_schema_checksum_has_drifted(
+    monkeypatch,
+) -> None:
+    conn = _SchemaInitConnection(
+        migration_status="applied",
+        migration_checksum="0" * 64,
+    )
+    store = AuditStore()
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    index_calls = _patch_schema_fallback_index(monkeypatch)
+
+    store.init_db()
+
+    assert store._schema_ready is True
+    assert "schema_migrations" in conn.ops[0]
+    assert any(
+        op.startswith("CREATE TABLE IF NOT EXISTS audit_events") for op in conn.ops
+    )
+    assert len(index_calls) == 1
 
 
 def test_init_db_uses_runtime_ddl_when_lifecycle_schema_is_not_current(
