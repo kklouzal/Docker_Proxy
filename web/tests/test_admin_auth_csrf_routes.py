@@ -203,13 +203,18 @@ def test_saml_routes_degrade_when_profile_store_is_unavailable(
         "/login?next=/administration&error=saml_unavailable"
     )
 
+    # An ACS POST without a matching login transaction must not recover a
+    # destination from caller-controlled RelayState, even when it is local.
     acs = client.post(
         "/auth/saml/acs",
         data={"RelayState": "/administration"},
         follow_redirects=False,
     )
     assert acs.status_code in {302, 303}
-    assert acs.headers["Location"].startswith("/login?next=/administration")
+    assert acs.headers["Location"] == "/login?next="
+    with client.session_transaction() as sess:
+        assert loaded.module._SAML_PENDING_SESSION_KEY not in sess
+        assert "user" not in sess
 
 
 def test_login_records_success_and_failure_audit_events(monkeypatch, tmp_path) -> None:
