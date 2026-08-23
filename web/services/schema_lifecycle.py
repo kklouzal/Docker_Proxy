@@ -170,7 +170,11 @@ def runtime_schema_current_applied(conn: Any) -> bool:
         if mysql_error_code(exc) == 1146:
             return False
         raise
-    return row is not None and str(_row_value(row, "status", 3) or "") == "applied"
+    return (
+        row is not None
+        and str(_row_value(row, "status", 3) or "") == "applied"
+        and str(_row_value(row, "checksum", 2) or "") == latest_schema_checksum()
+    )
 
 
 def runtime_schema_ready_for_lazy_store(conn: Any) -> bool:
@@ -382,6 +386,7 @@ def _start_migration(conn: Any, spec: SchemaMigrationSpec) -> None:
         VALUES(%s,%s,%s,'running',%s,0,'','app') AS incoming
         ON DUPLICATE KEY UPDATE
             name = incoming.name,
+            checksum = incoming.checksum,
             status = 'running',
             started_ts = incoming.started_ts,
             finished_ts = 0,
@@ -1784,6 +1789,14 @@ def assert_schema_current(conn: Any | None = None) -> None:
             msg = (
                 f"MySQL schema migration {_SCHEMA_VERSION} is not applied. "
                 "Run startup schema migrations with a DDL-capable account before normal runtime."
+            )
+            raise RuntimeError(msg)
+        checksum = str(_row_value(row, "checksum", 2) or "")
+        expected_checksum = latest_schema_checksum()
+        if checksum != expected_checksum:
+            msg = (
+                f"MySQL schema migration {_SCHEMA_VERSION} checksum drift: "
+                f"database has {checksum or 'missing'}, code expects {expected_checksum}."
             )
             raise RuntimeError(msg)
     finally:

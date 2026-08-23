@@ -91,10 +91,15 @@ class _Conn:
             return _Result([row] if row else [])
         if text.startswith("INSERT INTO schema_migrations"):
             version, name, checksum, started = params[:4]
+            existing = self.migrations.get(int(version), {})
             self.migrations[int(version)] = {
                 "version": int(version),
                 "name": name,
-                "checksum": checksum,
+                "checksum": (
+                    checksum
+                    if not existing or "checksum = incoming.checksum" in text
+                    else existing["checksum"]
+                ),
                 "status": "running",
                 "started_ts": int(started),
                 "finished_ts": 0,
@@ -182,6 +187,10 @@ def test_runtime_schema_readiness_preserves_status_and_migration_context() -> No
     assert schema_lifecycle.runtime_schema_current_applied(conn) is False
 
     conn.migrations[schema_lifecycle._SCHEMA_VERSION]["status"] = "applied"
+    assert schema_lifecycle.runtime_schema_current_applied(conn) is False
+    conn.migrations[schema_lifecycle._SCHEMA_VERSION]["checksum"] = (
+        schema_lifecycle.latest_schema_checksum()
+    )
     assert schema_lifecycle.runtime_schema_current_applied(conn) is True
     assert schema_lifecycle.runtime_schema_ready_for_lazy_store(conn) is True
 
@@ -293,6 +302,31 @@ def test_schema_migration_checksum_drift_blocks_startup() -> None:
             connect_factory=lambda: conn,
             require_privileges=False,
         )
+
+
+def test_schema_migration_retry_refreshes_checksum_after_interrupted_code_change() -> (
+    None
+):
+    conn = _Conn()
+    old_spec = _spec()
+    conn.migrations[old_spec.version] = {
+        "version": old_spec.version,
+        "name": "interrupted_old_definition",
+        "checksum": "0" * 64,
+        "status": "running",
+        "started_ts": 1,
+        "finished_ts": 0,
+        "error": "",
+    }
+
+    result = schema_lifecycle.apply_schema_migration(
+        old_spec,
+        connect_factory=lambda: conn,
+        require_privileges=False,
+    )
+
+    assert result[0].status == "applied"
+    assert conn.migrations[old_spec.version]["checksum"] == old_spec.checksum
 
 
 def test_schema_migration_failure_is_observable_and_retryable() -> None:
@@ -747,7 +781,7 @@ class _CurrentSchemaConn:
                     {
                         "version": schema_lifecycle.latest_schema_version(),
                         "name": "schema_lifecycle_complete_runtime_assertions",
-                        "checksum": "ignored",
+                        "checksum": schema_lifecycle.latest_schema_checksum(),
                         "status": "applied",
                         "error": "",
                     },
