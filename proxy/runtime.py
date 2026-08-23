@@ -1325,60 +1325,6 @@ class ProxyRuntime:
         except Exception:
             return ""
 
-    def _atomic_write_text(self, path: str, content: str) -> None:
-        directory = pathlib.Path(path).parent or "."
-        pathlib.Path(directory).mkdir(exist_ok=True, parents=True)
-        handle = None
-        tmp_path = ""
-        try:
-            handle = tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                delete=False,
-                dir=directory,
-                prefix=".tmp-",
-            )
-            tmp_path = handle.name
-            handle.write(content)
-            handle.flush()
-            handle.close()
-            handle = None
-            pathlib.Path(tmp_path).replace(path)
-        finally:
-            if handle is not None:
-                with suppress(Exception):
-                    handle.close()
-            if tmp_path and pathlib.Path(tmp_path).exists():
-                with suppress(Exception):
-                    pathlib.Path(tmp_path).unlink()
-
-    def _atomic_write_bytes(self, path: str, content: bytes) -> None:
-        directory = pathlib.Path(path).parent or "."
-        pathlib.Path(directory).mkdir(exist_ok=True, parents=True)
-        handle = None
-        tmp_path = ""
-        try:
-            handle = tempfile.NamedTemporaryFile(
-                mode="wb",
-                delete=False,
-                dir=directory,
-                prefix=".tmp-",
-            )
-            tmp_path = handle.name
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-            handle.close()
-            handle = None
-            pathlib.Path(tmp_path).replace(path)
-        finally:
-            if handle is not None:
-                with suppress(Exception):
-                    handle.close()
-            if tmp_path and pathlib.Path(tmp_path).exists():
-                with suppress(Exception):
-                    pathlib.Path(tmp_path).unlink()
-
     def _certificate_material_paths(self) -> tuple[str, ...]:
         return certificate_material_paths(self.cert_manager.ca_dir)
 
