@@ -927,11 +927,11 @@ def test_runtime_stop_background_tasks_uses_one_bounded_shared_deadline(monkeypa
 
     assert runtime.stop_background_tasks(timeout=10.0) is True
     assert calls == [
-        ("live", 9.0),
-        ("diagnostic", 8.0),
+        ("adblock", 9.0),
+        ("ssl", 8.0),
         ("timeseries", 7.0),
-        ("ssl", 6.0),
-        ("adblock", 5.0),
+        ("diagnostic", 6.0),
+        ("live", 5.0),
     ]
 
 
@@ -964,4 +964,4 @@ def test_runtime_stop_background_tasks_continues_after_failure():
     runtime.adblock_store = Adblock()
 
     assert runtime.stop_background_tasks(timeout=1.0) is False
-    assert calls == ["live", "diagnostic", "timeseries", "ssl", "adblock"]
+    assert calls == ["adblock", "ssl", "timeseries", "diagnostic", "live"]

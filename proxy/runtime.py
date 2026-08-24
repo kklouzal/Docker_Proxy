@@ -3776,11 +3776,11 @@ class ProxyRuntime:
         deadline = time.monotonic() + max(0.0, timeout)
         ok = True
         stoppers = (
-            getattr(self.live_stats_store, "stop_background", None),
-            getattr(self.diagnostic_store, "stop_background", None),
-            getattr(self.timeseries_store, "stop_background", None),
-            getattr(self.ssl_errors_store, "stop_background", None),
             getattr(self.adblock_store, "stop_blocklog_background", None),
+            getattr(self.ssl_errors_store, "stop_background", None),
+            getattr(self.timeseries_store, "stop_background", None),
+            getattr(self.diagnostic_store, "stop_background", None),
+            getattr(self.live_stats_store, "stop_background", None),
         )
         for stopper in stoppers:
             if not callable(stopper):
