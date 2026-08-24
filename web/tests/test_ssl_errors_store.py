@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -12,6 +13,65 @@ from services.ssl_errors_store import (  # noqa: E402
     SslErrorsStore,  # type: ignore
     _extract_domain,  # type: ignore
 )
+
+
+class _RecordingConnection:
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, tuple[object, ...]]] = []
+
+    def execute(self, sql: str, params: tuple[object, ...]):
+        self.queries.append((sql, params))
+
+
+def test_upsert_qualifies_existing_row_columns_against_incoming_alias(
+    monkeypatch,
+) -> None:
+    from services import ssl_errors_store
+
+    conn = _RecordingConnection()
+    store = SslErrorsStore()
+    monkeypatch.setenv("DEFAULT_PROXY_ID", "edge-1")
+    monkeypatch.setattr(
+        ssl_errors_store,
+        "guarded_proxy_write",
+        lambda _conn, proxy_id: nullcontext(SimpleNamespace(proxy_id=proxy_id)),
+    )
+    monkeypatch.setattr(
+        store,
+        "_enrich_domain_from_context",
+        lambda _conn, domain, _ts, _sample: domain,
+    )
+
+    store._upsert(
+        conn,
+        "example.test",
+        "tls",
+        "handshake failed",
+        123,
+        "latest sample",
+    )
+
+    sql, params = conn.queries[-1]
+    duplicate_update = sql.split("ON DUPLICATE KEY UPDATE", 1)[1]
+    assert "count = ssl_errors.count + 1" in duplicate_update
+    assert (
+        "first_seen = LEAST(ssl_errors.first_seen, incoming.first_seen)"
+        in duplicate_update
+    )
+    assert (
+        "last_seen = GREATEST(ssl_errors.last_seen, incoming.last_seen)"
+        in duplicate_update
+    )
+    assert "sample = incoming.sample" in duplicate_update
+    assert params[1:] == (
+        "edge-1",
+        "example.test",
+        "tls",
+        "handshake failed",
+        123,
+        123,
+        "latest sample",
+    )
 
 
 def test_ssl_error_domain_extraction_accepts_peer_token() -> None:

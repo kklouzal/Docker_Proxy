@@ -639,9 +639,9 @@ class SslErrorsStore:
                 INSERT INTO ssl_errors(row_key, proxy_id, domain, category, reason, count, first_seen, last_seen, sample)
                 VALUES(%s,%s,%s,%s,%s,1,%s,%s,%s) AS incoming
                 ON DUPLICATE KEY UPDATE
-                    count = count + 1,
-                    first_seen = LEAST(first_seen, incoming.first_seen),
-                    last_seen = GREATEST(last_seen, incoming.last_seen),
+                    count = ssl_errors.count + 1,
+                    first_seen = LEAST(ssl_errors.first_seen, incoming.first_seen),
+                    last_seen = GREATEST(ssl_errors.last_seen, incoming.last_seen),
                     sample = incoming.sample;
                 """,
                 (row_key, proxy_id, domain, category, reason, ts, ts, sample[:400]),
