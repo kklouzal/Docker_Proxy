@@ -305,26 +305,27 @@ def _resolve_sslcrtd_children(tunables: TunableMap, max_workers: int) -> int:
 
 
 def _resolve_sslcrtd_children_startup(tunables: TunableMap, max_workers: int) -> int:
+    children = _resolve_sslcrtd_children(tunables, max_workers)
     value = tunables.get("sslcrtd_children_startup")
     if value is not None:
         try:
-            return max(0, int(value))
+            return min(children, max(0, int(value)))
         except Exception:
             pass
     workers = _current_workers(tunables, max_workers)
-    children = _resolve_sslcrtd_children(tunables, max_workers)
     return min(children, max(2, workers))
 
 
 def _resolve_sslcrtd_children_idle(tunables: TunableMap, max_workers: int) -> int:
+    children = _resolve_sslcrtd_children(tunables, max_workers)
     value = tunables.get("sslcrtd_children_idle")
     if value is not None:
         try:
-            return max(1, int(value))
+            return min(children, max(1, int(value)))
         except Exception:
             pass
     workers = _current_workers(tunables, max_workers)
-    return max(1, min(4, workers))
+    return min(children, max(1, min(4, workers)))
 
 
 def _resolve_sslcrtd_children_queue_size(tunables: TunableMap, max_workers: int) -> int:

@@ -1769,8 +1769,26 @@ def test_proxy_entrypoint_perf_tuning_preserves_sslcrtd_child_options(tmp_path) 
     _run_entrypoint_perf_tuning(config, children=2)
 
     rendered = config.read_text(encoding="utf-8")
-    assert "sslcrtd_children 2 startup=3 idle=2 queue-size=96" in rendered
+    assert "sslcrtd_children 2 startup=2 idle=2 queue-size=96" in rendered
     assert "sslcrtd_children 2\n" not in rendered
+
+
+def test_proxy_entrypoint_perf_tuning_caps_sslcrtd_subordinate_counts(
+    tmp_path,
+) -> None:
+    config = tmp_path / "squid.conf"
+    config.write_text(
+        "workers 1\n"
+        "cache_mem 256 MB\n"
+        "sslcrtd_children 4 startup=3 idle=2 queue-size=96\n"
+        "max_filedescriptors 65536\n",
+        encoding="utf-8",
+    )
+
+    _run_entrypoint_perf_tuning(config, children=1)
+
+    rendered = config.read_text(encoding="utf-8")
+    assert "sslcrtd_children 1 startup=1 idle=1 queue-size=96" in rendered
 
 
 def test_proxy_entrypoint_perf_tuning_synthesizes_sslcrtd_child_options(

@@ -320,6 +320,16 @@ build_sslcrtd_children_value() {
         queue_size=32
     fi
 
+    # Squid caps these subordinate helper counts at the configured maximum and
+    # warns on every config parse. Preserve valid explicit values, but normalize
+    # stale values when an environment override lowers the child maximum.
+    if [ "$startup" -gt "$children" ]; then
+        startup="$children"
+    fi
+    if [ "$idle" -gt "$children" ]; then
+        idle="$children"
+    fi
+
     printf '%s startup=%s idle=%s queue-size=%s\n' "$children" "$startup" "$idle" "$queue_size"
 }
 

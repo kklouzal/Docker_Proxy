@@ -632,8 +632,14 @@ class SquidController(_CoreSquidController):
             "sslcrtd_children_startup",
             min(sslcrtd_children, 2),
             minimum=0,
+            maximum=sslcrtd_children,
         )
-        sslcrtd_children_idle = int_value("sslcrtd_children_idle", 1, minimum=1)
+        sslcrtd_children_idle = int_value(
+            "sslcrtd_children_idle",
+            1,
+            minimum=1,
+            maximum=sslcrtd_children,
+        )
         sslcrtd_children_queue_size = int_value(
             "sslcrtd_children_queue_size",
             max(32, sslcrtd_children * 8),

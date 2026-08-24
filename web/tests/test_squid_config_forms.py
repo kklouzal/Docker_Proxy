@@ -135,6 +135,21 @@ def test_build_template_options_defaults_match_perf_baseline() -> None:
     assert options["refresh_patterns_text"] == DEFAULT_REFRESH_PATTERNS
 
 
+def test_sslcrtd_subordinate_counts_are_capped_at_child_maximum() -> None:
+    options = build_template_options(
+        {
+            "sslcrtd_children": 1,
+            "sslcrtd_children_startup": 2,
+            "sslcrtd_children_idle": 3,
+        },
+        max_workers=4,
+    )
+
+    assert options["sslcrtd_children"] == 1
+    assert options["sslcrtd_children_startup"] == 1
+    assert options["sslcrtd_children_idle"] == 1
+
+
 def test_generated_template_defaults_to_rock_cache_store() -> None:
     from services.squidctl import SquidController  # type: ignore
 
