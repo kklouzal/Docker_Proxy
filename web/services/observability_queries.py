@@ -1428,7 +1428,8 @@ class ObservabilityQueries:
                     ).fetchone()
                 if row is not None:
                     return self._present_report_schedule_row(row)
-        return self.report_schedules(limit=1)[0]
+                message = "Saved observability export preset could not be identified"
+                raise RuntimeError(message)
 
     def audit_activity(self, *, since: int, limit: int = 20) -> dict[str, Any]:
         proxy_id = get_proxy_id()

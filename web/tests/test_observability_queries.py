@@ -1824,6 +1824,44 @@ def test_save_report_schedule_returns_inserted_row_instead_of_sorted_first(
     )
 
 
+def test_save_report_schedule_fails_closed_when_insert_identity_is_unavailable(
+    monkeypatch,
+) -> None:
+    from services import observability_queries  # type: ignore
+
+    class InsertResult:
+        lastrowid = 0
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def execute(self, sql: str, params=()):
+            text = " ".join(str(sql).split())
+            if "INSERT INTO observability_report_schedules" in text:
+                return InsertResult()
+            message = f"unexpected SQL: {text}"
+            raise AssertionError(message)
+
+    queries = observability_queries.ObservabilityQueries()
+    connection = FakeConnection()
+    monkeypatch.setattr(queries, "_ensure_report_schedule_db", lambda: None)
+    monkeypatch.setattr(queries, "_connect", lambda: connection)
+    monkeypatch.setattr(
+        queries,
+        "report_schedules",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("save_report_schedule attributed a sorted row"),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="could not be identified"):
+        queries.save_report_schedule(name="Concurrent preset")
+
+
 def test_save_report_schedule_persists_manual_export_only_contract(monkeypatch) -> None:
     from services import observability_queries  # type: ignore
 

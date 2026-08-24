@@ -37,6 +37,10 @@ class _Conn:
         self.calls.append((text, params_t))
         if "INSERT INTO policy_requests" in text:
             return _Result()
+        if "FROM observability_report_schedules" in text:
+            return _Result(
+                (17, 1, "Daily", "manual", "", "reports", "csv", 1, 86400, 100)
+            )
         if "FROM policy_requests WHERE id=%s" in text:
             return _Result(
                 {
@@ -118,10 +122,6 @@ def test_observability_schedule_uses_guard_canonical_proxy(monkeypatch) -> None:
 
     queries = module.ObservabilityQueries()
     monkeypatch.setattr(queries, "_connect", lambda: conn)
-    monkeypatch.setattr(
-        queries, "report_schedules", lambda limit=1: [SimpleNamespace(id=1)]
-    )
-
     monkeypatch.setattr(queries, "_ensure_report_schedule_db", lambda: None)
     queries.save_report_schedule(
         name="Daily", cadence="daily", recipients="ops@example.com"
