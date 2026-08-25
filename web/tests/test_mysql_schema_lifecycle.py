@@ -124,6 +124,31 @@ def test_mysql_schema_lifecycle_legacy_revision_repair_before_unique(tmp_path: P
 
 @pytest.mark.integration
 @pytest.mark.mysql
+def test_mysql_schema_lifecycle_upgrades_stale_adblock_attribution_before_query(tmp_path: Path) -> None:
+    schema_lifecycle, connect = _schema_module(tmp_path)
+    schema_lifecycle.migrate_schema(require_privileges=False)
+
+    attribution_columns = ("list_key", "rule_id", "decision_action", "decision_reason")
+    with connect() as conn:
+        for column in reversed(attribution_columns):
+            conn.execute(f"ALTER TABLE adblock_events DROP COLUMN {column}")
+        conn.execute("DELETE FROM schema_migrations WHERE version=31")
+
+    schema_lifecycle.migrate_schema(require_privileges=False)
+
+    with connect() as conn:
+        for column in attribution_columns:
+            assert schema_lifecycle.column_exists(conn, "adblock_events", column)
+        # This is the attribution projection used by security_overview. It must
+        # be valid immediately after startup migration, before lazy-store DDL.
+        conn.execute(
+            "SELECT list_key, rule_id, decision_action, decision_reason "
+            "FROM adblock_events LIMIT 1"
+        ).fetchall()
+
+
+@pytest.mark.integration
+@pytest.mark.mysql
 def test_mysql_schema_lifecycle_checksum_drift_reports_expected_and_actual(tmp_path: Path) -> None:
     schema_lifecycle, _connect = _schema_module(tmp_path)
     spec = _spec(schema_lifecycle, 803, "original", lambda _conn: None)

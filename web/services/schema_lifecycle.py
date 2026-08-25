@@ -29,7 +29,7 @@ from services.sql_identifiers import normalize_mysql_identifier
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 30
+_SCHEMA_VERSION = 31
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -1637,6 +1637,32 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                 SchemaDataStep(
                     "seed_proxy_adblock_runtime_enabled",
                     _seed_proxy_adblock_runtime_enabled,
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=31,
+            name="adblock_event_policy_attribution",
+            columns=(
+                SchemaColumnSpec(
+                    "adblock_events",
+                    "list_key",
+                    "ALTER TABLE adblock_events ADD COLUMN list_key VARCHAR(64) NOT NULL DEFAULT '' AFTER raw",
+                ),
+                SchemaColumnSpec(
+                    "adblock_events",
+                    "rule_id",
+                    "ALTER TABLE adblock_events ADD COLUMN rule_id VARCHAR(128) NOT NULL DEFAULT '' AFTER list_key",
+                ),
+                SchemaColumnSpec(
+                    "adblock_events",
+                    "decision_action",
+                    "ALTER TABLE adblock_events ADD COLUMN decision_action VARCHAR(16) NOT NULL DEFAULT '' AFTER rule_id",
+                ),
+                SchemaColumnSpec(
+                    "adblock_events",
+                    "decision_reason",
+                    "ALTER TABLE adblock_events ADD COLUMN decision_reason VARCHAR(64) NOT NULL DEFAULT '' AFTER decision_action",
                 ),
             ),
         ),
