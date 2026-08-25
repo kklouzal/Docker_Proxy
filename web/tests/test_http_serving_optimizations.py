@@ -503,6 +503,36 @@ def test_gzip_negotiation_rejects_invalid_and_duplicate_refusal_quality() -> Non
     assert duplicate_refusal.headers.get("Content-Encoding") is None
 
 
+def test_head_reports_selected_gzip_representation_metadata_without_body() -> None:
+    app = Flask(__name__)
+
+    from web.services.http_optimizations import install_http_optimizations
+
+    install_http_optimizations(app, compress_min_size=1)
+
+    @app.get("/head.txt")
+    def head_text():
+        response = Response(b"a" * 1000, mimetype="text/plain")
+        response.set_etag("identity")
+        return response
+
+    client = app.test_client()
+
+    get_response = client.get("/head.txt", headers={"Accept-Encoding": "gzip"})
+    head_response = client.head("/head.txt", headers={"Accept-Encoding": "gzip"})
+
+    assert get_response.headers.get("Content-Encoding") == "gzip"
+    assert head_response.status_code == 200
+    assert head_response.get_data() == b""
+    assert head_response.headers.get("Content-Encoding") == "gzip"
+    assert head_response.headers.get("Content-Length") == get_response.headers.get(
+        "Content-Length"
+    )
+    assert head_response.headers.get("Vary") == "Accept-Encoding"
+    assert head_response.headers.get("ETag") is None
+    assert head_response.headers.get("Cache-Control") == "no-cache"
+
+
 def test_conditional_identity_response_keeps_encoding_vary_metadata() -> None:
     app = Flask(__name__)
 

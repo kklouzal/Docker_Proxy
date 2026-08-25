@@ -57,7 +57,9 @@ def _client_accepts_gzip() -> bool:
             if not parameter.startswith("q="):
                 continue
             raw_quality = parameter.split("=", 1)[1]
-            quality = float(raw_quality) if _QVALUE_PATTERN.fullmatch(raw_quality) else 0.0
+            quality = (
+                float(raw_quality) if _QVALUE_PATTERN.fullmatch(raw_quality) else 0.0
+            )
             break
         if bits[0] == "gzip":
             gzip_seen = True
@@ -102,7 +104,7 @@ def _compressed_body_candidate(response: Any, *, min_size: int) -> bytes | None:
     if len(data or b"") < max(1, int(min_size)):
         return None
     _ensure_accept_encoding_vary(response)
-    if request.method == "HEAD" or response.status_code == 304:
+    if response.status_code == 304:
         return None
     if not _client_accepts_gzip():
         return None
@@ -154,14 +156,14 @@ def install_http_optimizations(
             )
         elif default_dynamic_max_age_seconds <= 0:
             if (
-                request.method == "GET"
+                request.method in {"GET", "HEAD"}
                 and (request.headers.get("X-Requested-With") or "").lower() == "spa"
             ):
                 response.headers.setdefault("Cache-Control", "no-store, private")
             else:
                 response.headers.setdefault(
                     "Cache-Control",
-                    "no-store" if request.method != "GET" else "no-cache",
+                    "no-store" if request.method not in {"GET", "HEAD"} else "no-cache",
                 )
         else:
             response.headers.setdefault(
