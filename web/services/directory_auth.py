@@ -569,22 +569,65 @@ class DirectoryAuthStore:
                 (int(ok), int(time.time()), str(detail or "")[:2000], provider),
             )
 
+    def _record_test_if_current(
+        self, profile: DirectoryProfile, *, ok: bool, detail: str
+    ) -> bool:
+        """Record evidence only if the security-relevant profile is unchanged."""
+        self.ensure_default_profiles()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE directory_auth_profiles
+                   SET last_test_ok = %s, last_test_ts = %s, last_test_detail = %s
+                 WHERE provider = %s AND server_urls = %s AND use_starttls = %s
+                   AND verify_tls = %s AND ca_bundle = %s AND bind_dn = %s
+                   AND bind_password = %s AND base_dn = %s
+                   AND user_search_base = %s AND user_filter = %s
+                   AND user_attribute = %s AND group_search_base = %s
+                   AND group_filter = %s AND required_admin_group = %s
+                   AND timeout_seconds = %s
+                """,
+                (
+                    int(ok),
+                    int(time.time()),
+                    str(detail or "")[:2000],
+                    profile.provider,
+                    profile.server_urls,
+                    int(profile.use_starttls),
+                    int(profile.verify_tls),
+                    profile.ca_bundle,
+                    profile.bind_dn,
+                    profile.bind_password,
+                    profile.base_dn,
+                    profile.user_search_base,
+                    profile.user_filter,
+                    profile.user_attribute,
+                    profile.group_search_base,
+                    profile.group_filter,
+                    profile.required_admin_group,
+                    profile.timeout_seconds,
+                ),
+            )
+        return bool(cursor.rowcount)
+
     def test_connection(self, provider: str) -> DirectoryAuthResult:
         profile = self.get_profile(provider)
         if detail := self._bind_password_required_detail(profile):
-            self.record_test(provider, ok=False, detail=detail)
+            self._record_test_if_current(profile, ok=False, detail=detail)
             return DirectoryAuthResult(False, profile.provider, "", detail=detail)
         conn = None
         try:
             conn, _ldap3 = self._service_connection(profile)
         except Exception as exc:
             detail = self._public_error(exc)
-            self.record_test(provider, ok=False, detail=detail)
+            self._record_test_if_current(profile, ok=False, detail=detail)
             return DirectoryAuthResult(False, profile.provider, "", detail=detail)
         finally:
             self._safe_unbind(conn)
         detail = "Directory bind and base search succeeded."
-        self.record_test(provider, ok=True, detail=detail)
+        if not self._record_test_if_current(profile, ok=True, detail=detail):
+            detail = "Configuration changed while the connection test was running; retest required."
+            return DirectoryAuthResult(False, profile.provider, "", detail=detail)
         return DirectoryAuthResult(True, profile.provider, "", detail=detail)
 
     def scan_directory(self, provider: str) -> DirectoryScanResult:

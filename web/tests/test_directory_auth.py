@@ -476,7 +476,9 @@ def test_profile_save_preserves_bracketed_ipv6_server_urls(tmp_path) -> None:
     assert profile.server_urls == "ldap://[2001:db8::1]:389\nldaps://[2001:db8::2]"
 
 
-@pytest.mark.parametrize("server_url", ["ldap://ldap.example.org:0", "ldaps://ldap.example.org:0"])
+@pytest.mark.parametrize(
+    "server_url", ["ldap://ldap.example.org:0", "ldaps://ldap.example.org:0"]
+)
 def test_normalize_server_urls_rejects_explicit_zero_port(server_url: str) -> None:
     store = DirectoryAuthStore(lambda: "stable-secret")
 
@@ -682,8 +684,10 @@ def test_connection_without_decryptable_bind_password_records_clear_failure(
     monkeypatch.setattr(store, "get_profile", lambda _provider: profile)
     monkeypatch.setattr(
         store,
-        "record_test",
-        lambda provider, *, ok, detail: recorded.append((provider, ok, detail)),
+        "_record_test_if_current",
+        lambda profile, *, ok, detail: (
+            recorded.append((profile.provider, ok, detail)) or True
+        ),
     )
 
     result = store.test_connection("ldap")
@@ -694,6 +698,33 @@ def test_connection_without_decryptable_bind_password_records_clear_failure(
     assert "configuration is incomplete" in result.detail
     assert recorded == [("ldap", False, result.detail)]
     assert calls == []
+
+
+def test_successful_connection_test_rejects_evidence_if_profile_changed(
+    monkeypatch,
+) -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("ldap"),
+        bind_password=store._encrypt("bind-secret"),
+    )
+    monkeypatch.setattr(store, "get_profile", lambda _provider: profile)
+    monkeypatch.setattr(
+        store,
+        "_service_connection",
+        lambda _profile: (SimpleNamespace(unbind=lambda: None), object()),
+    )
+    monkeypatch.setattr(
+        store,
+        "_record_test_if_current",
+        lambda _profile, *, ok, detail: False,
+    )
+
+    result = store.test_connection("ldap")
+
+    assert result.ok is False
+    assert "changed while the connection test was running" in result.detail
+    assert "retest required" in result.detail
 
 
 def test_directory_auth_result_keeps_provider_and_groups() -> None:
