@@ -1,6 +1,6 @@
 # MySQL schema lifecycle hardening
 
-Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 30.
+Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 31.
 
 ## Version ownership
 
@@ -36,6 +36,7 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 | 28 | `policy_request_public_admission_index` | Adds the `(proxy_id, status, client_ip, id)` policy-request index used by bounded public admission to count pending requests per client within a proxy without a table scan. |
 | 29 | `diagnostic_file_security_policy_attribution` | Adds the bounded `diagnostic_requests.file_security_policy` Squid note used to attribute strict file-policy denials. |
 | 30 | `proxy_scoped_adblock_runtime_enablement` | Seeds each registered proxy's adblock routing state from the legacy global switch; subscriptions and compiled artifacts remain shared. |
+| 31 | `adblock_event_policy_attribution` | Adds `adblock_events.list_key`, `rule_id`, `decision_action`, and `decision_reason` so durable adblock events retain the matched policy list/rule and decision outcome/reason; all four columns are non-null with empty-string defaults for existing rows. |
 
 ## Lifecycle model
 
