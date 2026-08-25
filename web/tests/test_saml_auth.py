@@ -655,7 +655,6 @@ def test_saml_url_normalizers_reject_malformed_authority_percent_encoding(
         "http://idp.example.test:8080/saml",
         "https://93.184.216.34:8443/saml",
         "https://[2001:4860:4860::8888]:8443/saml",
-        "https://[fe80::1%25eth0]:8443/saml",
     ],
 )
 def test_saml_url_normalizers_preserve_valid_dns_ipv4_and_ipv6_authorities(
@@ -680,6 +679,45 @@ def test_saml_profile_rejects_invalid_metadata_url_ports(metadata_url: str) -> N
 
     with pytest.raises(ValueError, match="metadata URL includes an invalid port"):
         store.save_profile({"metadata_url": metadata_url})
+
+
+@pytest.mark.parametrize(
+    "public_base_url",
+    [
+        "https://localhost/auth",
+        "https://admin.internal/auth",
+        "https://10.0.0.1/auth",
+        "https://127.0.0.1/auth",
+        "https://[fe80::1%25eth0]/auth",
+        "https://0177.0.0.1/auth",
+        "https://admin/auth",
+    ],
+)
+def test_saml_profile_rejects_non_public_base_url_authorities(
+    public_base_url: str,
+) -> None:
+    store = MemorySamlAuthStore()
+
+    with pytest.raises(ValueError, match="public DNS name or global IP address"):
+        store.save_profile(
+            {
+                "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+                "public_base_url": public_base_url,
+            }
+        )
+
+
+def test_saml_profile_canonicalizes_public_base_url_authority() -> None:
+    store = MemorySamlAuthStore()
+
+    profile = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            "public_base_url": "HTTPS://BÜCHER.example.:8443/saml/",
+        }
+    )
+
+    assert profile.public_base_url == "https://xn--bcher-kva.example:8443/saml"
 
 
 def test_saml_profile_accepts_valid_public_base_url_port() -> None:

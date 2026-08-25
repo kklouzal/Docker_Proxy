@@ -37,6 +37,7 @@ from services.external_auth_groups import (
     required_group_match_tokens,
 )
 from services.logutil import log_exception_throttled
+from services.public_endpoint import normalize_public_host
 from services.runtime_helpers import (
     authority_has_empty_explicit_port,
     normalize_config_bool,
@@ -709,7 +710,23 @@ class SamlAuthStore:
         ):
             msg = "SAML public base URL must not include encoded whitespace, control characters, or backslashes, encoded authority delimiters, or malformed percent-encoding."
             raise ValueError(msg)
-        return parsed.geturl().rstrip("/")
+        public_host = normalize_public_host(parsed.hostname)
+        if not public_host:
+            msg = (
+                "SAML public base URL must use a public DNS name or global IP address."
+            )
+            raise ValueError(msg)
+        authority = f"[{public_host}]" if ":" in public_host else public_host
+        if port is not None:
+            authority = f"{authority}:{port}"
+        return (
+            parsed._replace(
+                scheme=parsed.scheme.lower(),
+                netloc=authority,
+            )
+            .geturl()
+            .rstrip("/")
+        )
 
     def _normalize_attribute_name(self, value: Any, *, default: str) -> str:
         text = str(value or "").strip() or default
