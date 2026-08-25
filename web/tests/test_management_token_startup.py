@@ -23,6 +23,9 @@ VALIDATOR = REPO_ROOT / "docker" / "validate-management-token.sh"
         " replace-with-a-long-random-token ",
         "replace_with_a_long_random_shared_token",
         " replace_with_a_long_random_shared_token ",
+        "\u00a0change-me\u00a0",
+        "\u2003replace-with-a-long-random-token\u2003",
+        "\u3000replace_with_a_long_random_shared_token\u3000",
     ],
 )
 def test_management_token_validator_rejects_missing_and_public_placeholder(
