@@ -26,6 +26,10 @@ class CompatibilityPreset:
     title: str
     description: str
     domains: tuple[str, ...]
+    # Shared CDN/cloud namespaces can contain unrelated tenants.  Keep them in
+    # the reviewed catalog for operators who need the vendor's broad guidance,
+    # but require a separate acknowledgement before installing them.
+    shared_infrastructure_domains: tuple[str, ...] = ()
 
 
 COMPATIBILITY_PRESETS: tuple[CompatibilityPreset, ...] = (
@@ -362,6 +366,12 @@ COMPATIBILITY_PRESETS: tuple[CompatibilityPreset, ...] = (
             "arkoselabs.com",
             "*.arkoselabs.com",
         ),
+        shared_infrastructure_domains=(
+            "*.cloudfront.net",
+            "*.s3.amazonaws.com",
+            "*.s3-accelerate.amazonaws.com",
+            "*.googleapis.com",
+        ),
     ),
     CompatibilityPreset(
         id="webex",
@@ -390,6 +400,14 @@ COMPATIBILITY_PRESETS: tuple[CompatibilityPreset, ...] = (
             "fastly.net",
             "*.fastly.net",
             "s3.amazonaws.com",
+            "*.s3.amazonaws.com",
+        ),
+        shared_infrastructure_domains=(
+            "*.cloudfront.net",
+            "*.akamaiedge.net",
+            "*.akamai.net",
+            "*.akamaitechnologies.com",
+            "*.fastly.net",
             "*.s3.amazonaws.com",
         ),
     ),
@@ -495,6 +513,16 @@ COMPATIBILITY_PRESETS: tuple[CompatibilityPreset, ...] = (
             "gcm-http.googleapis.com",
             "gcm-xmpp.googleapis.com",
             "pki.google.com",
+        ),
+        shared_infrastructure_domains=(
+            "*.googleapis.com",
+            "*.googleusercontent.com",
+            "*.gstatic.com",
+            "*.ggpht.com",
+            "*.gvt1.com",
+            "*.gvt2.com",
+            "*.gvt3.com",
+            "*.1e100.net",
         ),
     ),
     CompatibilityPreset(

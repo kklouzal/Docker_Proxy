@@ -1805,7 +1805,9 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
     assert "*.okta.com" in presets["identity-mfa"].domains
 
     store = get_sslfilter_store()
-    added, attempted, error = store.install_compatibility_preset("all")
+    added, attempted, error = store.install_compatibility_preset(
+        "all", allow_shared_infrastructure=True
+    )
     status_by_id = {
         preset["id"]: preset for preset in store.list_compatibility_presets()
     }
@@ -1821,6 +1823,42 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
     assert added > 100
     assert error == ""
     assert all(preset["complete"] for preset in status_by_id.values())
+
+
+def test_shared_infrastructure_preset_requires_explicit_acknowledgement(
+    tmp_path, monkeypatch
+) -> None:
+    configure_test_mysql_env(tmp_path / "shared-infrastructure-preset")
+
+    import services.sslfilter_store as module  # type: ignore
+
+    store = module.SslFilterStore()
+    monkeypatch.setattr(
+        module,
+        "COMPATIBILITY_PRESETS",
+        (
+            module.CompatibilityPreset(
+                id="vendor",
+                title="Vendor",
+                description="Vendor plus shared CDN",
+                domains=("vendor.example", "*.cloudfront.net"),
+                shared_infrastructure_domains=("*.cloudfront.net",),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        store,
+        "list_all",
+        lambda: SimpleNamespace(no_bump_domains=[]),
+    )
+
+    status = store.list_compatibility_presets()[0]
+    added, attempted, error = store.install_compatibility_preset("vendor")
+
+    assert status["shared_infrastructure_domains"] == ["*.cloudfront.net"]
+    assert status["shared_infrastructure_total"] == 1
+    assert added == attempted == 0
+    assert "unrelated tenants" in error
 
 
 def test_github_compatibility_presets_cover_githubassets_domain() -> None:

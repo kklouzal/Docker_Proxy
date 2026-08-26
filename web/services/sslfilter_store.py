@@ -184,6 +184,31 @@ def _effective_preset_domains(preset: CompatibilityPreset) -> _EffectivePresetDo
     return _EffectivePresetDomains(domains=effective_domains, invalid=invalid)
 
 
+def _effective_shared_infrastructure_domains(
+    preset: CompatibilityPreset,
+) -> _EffectivePresetDomains:
+    shared = CompatibilityPreset(
+        id=preset.id,
+        title=preset.title,
+        description=preset.description,
+        domains=preset.shared_infrastructure_domains,
+    )
+    effective = _effective_preset_domains(shared)
+    if not preset.shared_infrastructure_domains:
+        return _EffectivePresetDomains(domains=[], invalid=[])
+    catalog_domains = set(_effective_preset_domains(preset).domains)
+    invalid = list(effective.invalid)
+    invalid.extend(
+        (domain, "Shared-infrastructure rule is not an effective preset domain.")
+        for domain in effective.domains
+        if domain not in catalog_domains
+    )
+    return _EffectivePresetDomains(
+        domains=[domain for domain in effective.domains if domain in catalog_domains],
+        invalid=invalid,
+    )
+
+
 def _squid_domain_is_covered_by_wildcard(value: str, wildcard: str) -> bool:
     if not value or not wildcard.startswith("."):
         return False
@@ -544,6 +569,7 @@ class SslFilterStore:
         presets: list[dict[str, Any]] = []
         for preset in COMPATIBILITY_PRESETS:
             effective = _effective_preset_domains(preset)
+            shared = _effective_shared_infrastructure_domains(preset)
             installed = [
                 domain
                 for domain in effective.domains
@@ -565,6 +591,8 @@ class SslFilterStore:
                         {"domain": domain, "error": err}
                         for domain, err in effective.invalid
                     ],
+                    "shared_infrastructure_domains": list(shared.domains),
+                    "shared_infrastructure_total": len(shared.domains),
                     "installed": len(installed),
                     "missing": len(missing),
                     "total": len(effective.domains),
@@ -573,7 +601,11 @@ class SslFilterStore:
             )
         return presets
 
-    def install_compatibility_preset(self, preset_id: str) -> tuple[int, int, str]:
+    def install_compatibility_preset(
+        self,
+        preset_id: str,
+        allow_shared_infrastructure: bool = False,
+    ) -> tuple[int, int, str]:
         wanted = (preset_id or "").strip().lower()
         presets: list[CompatibilityPreset] = (
             list(COMPATIBILITY_PRESETS)
@@ -583,6 +615,10 @@ class SslFilterStore:
         if not presets:
             return 0, 0, "Unknown compatibility preset."
         evaluated = [(preset, _effective_preset_domains(preset)) for preset in presets]
+        shared_evaluated = [
+            (preset, _effective_shared_infrastructure_domains(preset))
+            for preset in presets
+        ]
         catalog_errors = [
             f"{preset.id}: {domain or 'catalog'}: {err}"
             for preset, effective in evaluated
@@ -590,6 +626,28 @@ class SslFilterStore:
         ]
         if catalog_errors:
             return 0, 0, "; ".join(catalog_errors[:3])
+        shared_errors = [
+            f"{preset.id}: {domain or 'catalog'}: {err}"
+            for preset, effective in shared_evaluated
+            for domain, err in effective.invalid
+        ]
+        if shared_errors:
+            return 0, 0, "; ".join(shared_errors[:3])
+        guarded = [
+            domain
+            for _preset, effective in shared_evaluated
+            for domain in effective.domains
+        ]
+        if guarded and not allow_shared_infrastructure:
+            return (
+                0,
+                0,
+                (
+                    "This preset includes shared CDN/cloud namespaces that may exempt "
+                    "unrelated tenants; explicitly acknowledge shared infrastructure "
+                    "before installing."
+                ),
+            )
 
         self.init_db()
         with self._connect() as conn:

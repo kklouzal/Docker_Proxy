@@ -5590,7 +5590,12 @@ def _handle_sslfilter_post(store: Any):
 
     if action == "install_compatibility_preset":
         preset_id = (request.form.get("preset_id") or "").strip()
-        added, attempted, err = store.install_compatibility_preset(preset_id)
+        added, attempted, err = store.install_compatibility_preset(
+            preset_id,
+            allow_shared_infrastructure=(
+                request.form.get("allow_shared_infrastructure") == "on"
+            ),
+        )
         if err:
             return _redirect_to("sslfilter", err=err)
         return _sslfilter_redirect(

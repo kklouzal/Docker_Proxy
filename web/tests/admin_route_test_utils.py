@@ -1052,7 +1052,11 @@ class FakeSslfilterStore:
             }
         ]
 
-    def install_compatibility_preset(self, _preset_id: str) -> tuple[int, int, str]:
+    def install_compatibility_preset(
+        self,
+        _preset_id: str,
+        allow_shared_infrastructure: bool = False,
+    ) -> tuple[int, int, str]:
         before = set(self.no_bump_domains)
         self.add_domain("nobump", "discord.com")
         return len(set(self.no_bump_domains) - before), 1, ""
