@@ -48,6 +48,8 @@ from services.public_endpoint import (
 from services.runtime_helpers import authority_has_empty_explicit_port
 from services.url_validation import has_malformed_percent_encoding
 
+_PROXY_REGISTRY_REMOVAL_LOCK_NAME = "docker_proxy:proxy_registry:remove"
+
 
 def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
     return mysql_error_code(exc) in codes
@@ -93,6 +95,13 @@ def _lifecycle_incomplete_retry_detail(result: ProxyLifecycleRunResult) -> str:
         for step in result.table_results
     ):
         return "paused to prepare a newly discovered lifecycle index; retry to resume."
+    if any(
+        step.truncated and step.detail == "max_rows=0" for step in result.table_results
+    ):
+        return (
+            "paused because MYSQL_PROXY_LIFECYCLE_MAX_ROWS_PER_TABLE is zero; "
+            "configure a positive bound and retry to resume."
+        )
     return "paused after bounded chunk limit; retry to resume."
 
 
@@ -428,6 +437,7 @@ class ProxyRemovalResult:
     iterations: int = 0
     truncated_tables: tuple[str, ...] = ()
     discovered_tables: tuple[str, ...] = ()
+    retry_detail: str = ""
 
 
 class ProxyRegistry:
@@ -987,7 +997,6 @@ class ProxyRegistry:
                         old_key,
                         allowed_actions={"renaming"},
                     )
-                    self._ensure_not_tombstoned(conn, new_key)
                     if new_row is not None:
                         msg = f"Proxy {new_key!r} is already registered."
                         raise ValueError(msg)
@@ -1005,6 +1014,11 @@ class ProxyRegistry:
                             "choose a different rename target."
                         )
                         raise ValueError(msg)
+                    # An alias and its completed-rename tombstone normally
+                    # coexist. Report the actionable alias collision before
+                    # the more general retired-identity write block; the
+                    # tombstone check still protects every non-alias case.
+                    self._ensure_not_tombstoned(conn, new_key)
 
                     conn.execute(
                         """
@@ -1131,23 +1145,35 @@ class ProxyRegistry:
         proxy_key = normalize_proxy_id(proxy_id)
         table_counts: dict[str, int] = {}
         lifecycle_result: ProxyLifecycleRunResult | None = None
+        retry_detail = ""
 
         def _remove() -> None:
-            nonlocal lifecycle_result, table_counts
+            nonlocal lifecycle_result, retry_detail, table_counts
             with (
                 _preserve_committed_lifecycle_success() as attempt,
                 self._connect() as conn,
             ):
-                with mysql_advisory_lock(
-                    conn,
-                    self._lifecycle_lock_name(proxy_key),
-                    mysql_schema_lock_timeout_seconds(),
-                ):
+                with ExitStack() as stack:
+                    # The fleet-wide removal lock keeps the last-proxy guard
+                    # valid across the durable commit between marking and each
+                    # bounded cleanup pass. The per-proxy lock still serializes
+                    # lifecycle transitions with all guarded scoped writers.
+                    for lock_name in (
+                        _PROXY_REGISTRY_REMOVAL_LOCK_NAME,
+                        self._lifecycle_lock_name(proxy_key),
+                    ):
+                        stack.enter_context(
+                            mysql_advisory_lock(
+                                conn,
+                                lock_name,
+                                mysql_schema_lock_timeout_seconds(),
+                            ),
+                        )
                     prepare_proxy_lifecycle(conn, action="remove")
                     conn.commit()
 
                     rows = conn.execute(
-                        "SELECT proxy_id FROM proxy_instances ORDER BY proxy_id FOR UPDATE",
+                        "SELECT proxy_id, status FROM proxy_instances ORDER BY proxy_id FOR UPDATE",
                     ).fetchall()
                     row = next(
                         (
@@ -1175,6 +1201,23 @@ class ProxyRegistry:
                     if len(rows) <= 1:
                         msg = "Cannot remove the last registered proxy."
                         raise ValueError(msg)
+                    other_pending = next(
+                        (
+                            candidate
+                            for candidate in rows
+                            if str(candidate["proxy_id"] or "") != proxy_key
+                            and str(candidate["status"] or "")
+                            in {"removing", "remove_pending"}
+                        ),
+                        None,
+                    )
+                    if other_pending is not None:
+                        pending_proxy_id = str(other_pending["proxy_id"] or "")
+                        msg = (
+                            f"Cannot remove {proxy_key!r} while removal for "
+                            f"{pending_proxy_id!r} is pending; resume that removal first."
+                        )
+                        raise ValueError(msg)
 
                     now_ts = int(time.time())
                     conn.execute(
@@ -1197,6 +1240,11 @@ class ProxyRegistry:
                         """,
                         (proxy_key, "Proxy removal in progress.", now_ts, now_ts),
                     )
+                    # Publish the tombstone/write block before deleting any
+                    # scoped data. Later bounded transactions can now commit
+                    # progress independently, and an interruption cannot reopen
+                    # the proxy to concurrent writers.
+                    conn.commit()
                     self._clear_lifecycle_write_cache(proxy_key)
 
                     lifecycle_result = remove_proxy_scoped_rows(
@@ -1221,8 +1269,13 @@ class ProxyRegistry:
                                 proxy_key,
                             ),
                         )
-                        msg = f"Proxy removal for {proxy_key!r} {retry_detail}"
-                        raise ProxyLifecycleIncompleteError(msg, lifecycle_result)
+                        # Commit this bounded pass instead of raising and
+                        # rolling it back. A retry re-enters under the same
+                        # locks/tombstone and converges idempotently.
+                        conn.commit()
+                        self._clear_lifecycle_write_cache(proxy_key)
+                        attempt.committed = True
+                        return
 
                     result = conn.execute(
                         "DELETE FROM proxy_id_aliases WHERE proxy_id=%s",
@@ -1293,6 +1346,7 @@ class ProxyRegistry:
             iterations=iterations,
             truncated_tables=truncated_tables,
             discovered_tables=discovered_tables,
+            retry_detail=retry_detail,
         )
 
     def find_reconcile_candidate(

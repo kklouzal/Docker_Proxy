@@ -333,6 +333,41 @@ def _order_sql(conn: Any, table: ProxyLifecycleTable) -> str:
     return " ORDER BY " + ", ".join(quote_mysql_identifier(column) for column in usable)
 
 
+def _proxy_rows_remain(
+    conn: Any,
+    table: ProxyLifecycleTable,
+    *,
+    proxy_id: str,
+) -> bool:
+    safe_table = quote_mysql_identifier(table.table)
+    if table.is_indirect_child:
+        child_fk = quote_mysql_identifier(table.child_fk)
+        safe_owner = quote_mysql_identifier(table.owner_table)
+        owner_pk = quote_mysql_identifier(table.owner_pk)
+        owner_proxy_col = quote_mysql_identifier(table.proxy_column)
+        row = conn.execute(
+            f"""
+            SELECT 1
+            FROM {safe_table}
+            WHERE {child_fk} IN (
+                SELECT {owner_pk}
+                FROM {safe_owner}
+                WHERE {owner_proxy_col}=%s
+            )
+            LIMIT 1
+            """,
+            (proxy_id,),
+        ).fetchone()
+        return row is not None
+
+    proxy_col = quote_mysql_identifier(table.proxy_column)
+    row = conn.execute(
+        f"SELECT 1 FROM {safe_table} WHERE {proxy_col}=%s LIMIT 1",
+        (proxy_id,),
+    ).fetchone()
+    return row is not None
+
+
 def _bounded_update_proxy_id(
     conn: Any,
     table: ProxyLifecycleTable,
@@ -380,7 +415,10 @@ def _bounded_update_proxy_id(
         "rename",
         affected_rows=total,
         iterations=iterations,
-        truncated=total >= per_table,
+        truncated=(
+            total >= per_table
+            and _proxy_rows_remain(conn, table, proxy_id=old_proxy_id)
+        ),
         discovered=table.note.startswith("discovered"),
     )
 
@@ -460,7 +498,10 @@ def _bounded_delete_proxy_id(
             "remove",
             affected_rows=total,
             iterations=iterations,
-            truncated=total >= per_table,
+            truncated=(
+                total >= per_table
+                and _proxy_rows_remain(conn, table, proxy_id=proxy_id)
+            ),
         )
 
     if ensure_indexes:
@@ -492,7 +533,10 @@ def _bounded_delete_proxy_id(
         "remove",
         affected_rows=total,
         iterations=iterations,
-        truncated=total >= per_table,
+        truncated=(
+            total >= per_table
+            and _proxy_rows_remain(conn, table, proxy_id=proxy_id)
+        ),
         discovered=table.note.startswith("discovered"),
     )
 

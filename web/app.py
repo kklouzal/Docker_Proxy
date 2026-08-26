@@ -6376,7 +6376,8 @@ def remove_proxy():
         )
     registry = get_proxy_registry()
     try:
-        if normalized_proxy_id not in _registered_proxy_ids(registry):
+        registered_proxy_ids = _registered_proxy_ids(registry)
+        if normalized_proxy_id not in registered_proxy_ids:
             return _redirect_to(
                 "proxies",
                 error="1",
@@ -6396,15 +6397,64 @@ def remove_proxy():
         registry,
         active_before_key,
     )
+    audit_proxy_id = next(
+        (
+            proxy_id
+            for proxy_id in sorted(registered_proxy_ids)
+            if proxy_id != normalized_proxy_id
+        ),
+        "",
+    )
     try:
         result = registry.remove_proxy(normalized_proxy_id)
     except Exception as exc:
-        _record_audit_event(
-            "proxy_remove",
-            ok=False,
-            detail=f"proxy_id={normalized_proxy_id} error={public_error_message(exc)}",
+        audit_detail = (
+            f"proxy_id={normalized_proxy_id} error={public_error_message(exc)}"
         )
+        if audit_proxy_id:
+            _record_audit_event_for_proxy(
+                audit_proxy_id,
+                "proxy_remove",
+                ok=False,
+                detail=audit_detail,
+            )
+        else:
+            _record_audit_event("proxy_remove", ok=False, detail=audit_detail)
         return _redirect_to("proxies", error="1", msg=public_error_message(exc))
+
+    if not bool(getattr(result, "complete", True)):
+        _clear_admin_runtime_caches()
+        pending_tables = tuple(getattr(result, "truncated_tables", ()) or ())
+        pending_table_detail = (
+            f" Pending table: {pending_tables[0]}." if pending_tables else ""
+        )
+        retry_detail = str(
+            getattr(result, "retry_detail", "")
+            or "paused after a bounded cleanup pass; retry to resume."
+        )
+        if audit_proxy_id:
+            _record_audit_event_for_proxy(
+                audit_proxy_id,
+                "proxy_remove",
+                ok=True,
+                detail=(
+                    f"proxy_id={result.proxy_id} status=pending "
+                    f"deleted_rows={result.deleted_rows} "
+                    f"count_scope=bounded_pass "
+                    f"tables={','.join(result.table_counts)}"
+                ),
+            )
+        return _redirect_to(
+            "proxies",
+            pending="1",
+            proxy_id=normalized_proxy_id,
+            msg=(
+                f"Removal of {result.proxy_id} is still in progress. Deleted "
+                f"{result.deleted_rows} scoped MySQL rows in this pass; "
+                f"{retry_detail} New proxy-scoped writes remain blocked."
+                f"{pending_table_detail}"
+            ),
+        )
 
     try:
         remaining = registry.list_proxies()
@@ -6428,14 +6478,18 @@ def remove_proxy():
         "proxy_remove",
         ok=True,
         detail=(
-            f"proxy_id={result.proxy_id} deleted_rows={result.deleted_rows} "
+            f"proxy_id={result.proxy_id} status=complete "
+            f"deleted_rows={result.deleted_rows} count_scope=final_pass "
             f"tables={','.join(result.table_counts)}"
         ),
     )
     return _redirect_to(
         "proxies",
         removed="1",
-        msg=f"Removed {result.proxy_id} and deleted {result.deleted_rows} scoped MySQL rows.",
+        msg=(
+            f"Removed {result.proxy_id}; the final bounded pass deleted "
+            f"{result.deleted_rows} scoped MySQL rows."
+        ),
     )
 
 

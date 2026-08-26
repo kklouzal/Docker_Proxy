@@ -326,3 +326,71 @@ def test_remove_proxy_scoped_rows_fails_closed_when_prepared_index_missing(
     assert truncated.detail == "missing_prepared_lifecycle_index"
     assert not any(statement.startswith("DELETE FROM ") for statement in conn.statements)
     assert not any(statement.startswith("ALTER TABLE ") for statement in conn.statements)
+
+
+def test_bounded_lifecycle_probes_for_rows_before_reporting_truncation(
+    monkeypatch,
+) -> None:
+    lifecycle = _proxy_lifecycle()
+
+    class BoundedConn:
+        def __init__(self, row_count: int) -> None:
+            self.row_count = row_count
+
+        def execute(self, sql, params=()):
+            text = " ".join(str(sql).split())
+            if text.startswith(("UPDATE `proxy_rows`", "DELETE FROM `proxy_rows`")):
+                changed = min(self.row_count, int(params[-1]))
+                self.row_count -= changed
+                return _Result(rowcount=changed)
+            if text.startswith("SELECT 1 FROM `proxy_rows`"):
+                return _Result([{"present": 1}] if self.row_count else [])
+            msg = f"Unexpected SQL: {text}"
+            raise AssertionError(msg)
+
+    monkeypatch.setattr(lifecycle, "_table_exists", lambda *_args: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "_index_with_leftmost_column_exists",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(lifecycle, "_columns", lambda *_args: {"proxy_id"})
+    monkeypatch.setattr(lifecycle, "lifecycle_chunk_size", lambda: 2)
+    monkeypatch.setattr(lifecycle, "lifecycle_max_rows_per_table", lambda: 2)
+    table = lifecycle.ProxyLifecycleTable("proxy_rows", order_columns=("proxy_id",))
+
+    exact_rename = lifecycle._bounded_update_proxy_id(
+        BoundedConn(2),
+        table,
+        old_proxy_id="edge-old",
+        new_proxy_id="edge-new",
+        ensure_indexes=False,
+    )
+    over_limit_rename = lifecycle._bounded_update_proxy_id(
+        BoundedConn(3),
+        table,
+        old_proxy_id="edge-old",
+        new_proxy_id="edge-new",
+        ensure_indexes=False,
+    )
+    exact_remove = lifecycle._bounded_delete_proxy_id(
+        BoundedConn(2),
+        table,
+        proxy_id="edge-old",
+        ensure_indexes=False,
+    )
+    over_limit_remove = lifecycle._bounded_delete_proxy_id(
+        BoundedConn(3),
+        table,
+        proxy_id="edge-old",
+        ensure_indexes=False,
+    )
+
+    assert exact_rename.affected_rows == 2
+    assert exact_rename.truncated is False
+    assert over_limit_rename.affected_rows == 2
+    assert over_limit_rename.truncated is True
+    assert exact_remove.affected_rows == 2
+    assert exact_remove.truncated is False
+    assert over_limit_remove.affected_rows == 2
+    assert over_limit_remove.truncated is True

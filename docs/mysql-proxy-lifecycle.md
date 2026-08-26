@@ -27,6 +27,17 @@ Writers that can insert/update/upsert rows under `proxy_id` and must not bypass 
 6. Acquire the same per-proxy lifecycle advisory lock used by rename/remove, then re-check lifecycle state immediately before yielding to the writer.
 7. Positive cache is opt-in and bounded by `MYSQL_PROXY_WRITE_GUARD_CACHE_SECONDS`; lifecycle transitions invalidate process-local cache entries.
 
+Removal publishes and commits the `removing` tombstone plus registry status before
+the first scoped-row delete. Each request then commits at most
+`MYSQL_PROXY_LIFECYCLE_MAX_ROWS_PER_TABLE` rows per visited table in bounded
+chunks. If a table reaches that bound with scoped rows still remaining, the
+registry remains `remove_pending`, the Admin UI reports the retained progress,
+and repeating the removal resumes
+idempotently. A fleet-wide removal lock prevents a second proxy removal from
+invalidating the last-proxy guard while one of these durable passes is pending.
+Aliases and the registry row are deleted only after a pass proves that all
+scoped tables are empty; the final tombstone remains `removed`.
+
 ## FK feasibility
 
 No broad proxy-id foreign keys were added in this lane.  The table-by-table decision is intentionally conservative:

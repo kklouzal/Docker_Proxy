@@ -20,7 +20,9 @@
 <div>Selecting a proxy updates the pinned context for the next page you open, while existing tabs keep their current target.</div>
 {% endcall %}
 
-{% if request.args.get('removed') %}
+{% if request.args.get('pending') %}
+<div class="banner"><span class="badge warn">Removal pending</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'A bounded removal pass completed. Retry the removal to continue.' }}</span></div></div>
+{% elif request.args.get('removed') %}
 <div class="banner success"><span class="badge ok">Removed</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'Proxy removed.' }}</span></div></div>
 {% elif request.args.get('error') %}
 <div class="banner error"><span class="badge danger">Failed</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'Request failed.' }}</span></div></div>
@@ -158,14 +160,15 @@
                                     </form>
                                 </details>
                                 <details class="inline-details">
-                                    <summary class="btn danger">Remove</summary>
+                                    {% set removal_pending = proxy.status in ['removing', 'remove_pending'] %}
+                                    <summary class="btn danger">{{ 'Continue removal' if removal_pending else 'Remove' }}</summary>
                                     <form action="{{ url_for('remove_proxy') }}" method="post" class="stack-sm">
                                         {{ csrf_field() }}
                                         <input type="hidden" name="proxy_id" value="{{ proxy.proxy_id }}">
-                                        <div class="surface-note small">Deletes this proxy registration and MySQL rows scoped to <span class="mono">{{ proxy.proxy_id }}</span> in bounded chunks. The removed ID is tombstoned so stale containers cannot recreate it on heartbeat.</div>
+                                        <div class="surface-note small">Deletes this proxy registration and MySQL rows scoped to <span class="mono">{{ proxy.proxy_id }}</span> in bounded, durable passes. Large data sets may require repeating this action; progress is retained and scoped writes remain blocked between attempts. The removed ID is tombstoned so stale containers cannot recreate it on heartbeat.</div>
                                         <label class="small" for="confirm-proxy-id-{{ loop.index }}">Type proxy ID to confirm</label>
                                         <input id="confirm-proxy-id-{{ loop.index }}" type="text" name="confirm_proxy_id" autocomplete="off" required>
-                                        <button class="btn danger" type="submit" data-confirm-message="Remove {{ proxy.display_name }} and delete all MySQL data scoped to {{ proxy.proxy_id }}?" data-pending-label="Removing...">Remove proxy</button>
+                                        <button class="btn danger" type="submit" data-confirm-message="Remove {{ proxy.display_name }} and delete all MySQL data scoped to {{ proxy.proxy_id }}?" data-pending-label="Removing...">{{ 'Continue removal' if removal_pending else 'Remove proxy' }}</button>
                                     </form>
                                 </details>
                             </div>

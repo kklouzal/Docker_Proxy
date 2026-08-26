@@ -1166,6 +1166,7 @@ class _RegistryFaultConn:
 
     def commit(self) -> None:
         self.commits += 1
+        self.snapshot_initial()
 
     def rollback(self) -> None:
         self.rollbacks += 1
@@ -1189,8 +1190,16 @@ class _RegistryFaultConn:
         if "FROM proxy_instances WHERE proxy_id=%s" in text and "FOR UPDATE" in text:
             row = self.proxy_rows.get(str(params[0]))
             return _FaultResult(row)
-        if text == "SELECT proxy_id FROM proxy_instances ORDER BY proxy_id FOR UPDATE":
-            rows = [{"proxy_id": key} for key in sorted(self.proxy_rows)]
+        if text == (
+            "SELECT proxy_id, status FROM proxy_instances ORDER BY proxy_id FOR UPDATE"
+        ):
+            rows = [
+                {
+                    "proxy_id": key,
+                    "status": str(self.proxy_rows[key].get("status") or "unknown"),
+                }
+                for key in sorted(self.proxy_rows)
+            ]
             return _FaultResult(rows=rows)
         if "FROM proxy_id_aliases WHERE alias_proxy_id=%s LIMIT 1" in text:
             target = self.aliases.get(str(params[0]))
@@ -1395,6 +1404,29 @@ def test_remove_proxy_retries_deadlock_as_whole_transaction_without_partial_meta
     assert conn.scoped_rows == []
 
 
+def test_rename_proxy_reports_target_alias_collision_before_tombstone(monkeypatch):
+    proxy_registry = _proxy_registry()
+    conn = _RegistryFaultConn(proxy_registry, fail_lifecycle_once=False)
+    conn.aliases["edge-live"] = "edge-new"
+    conn.tombstones["edge-live"] = ("renamed", "edge-new")
+    conn.snapshot_initial()
+    registry = proxy_registry.ProxyRegistry()
+    registry.init_db = lambda: None  # type: ignore[method-assign]
+    registry._connect = conn.context  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        proxy_registry,
+        "prepare_proxy_lifecycle",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(ValueError, match="already registered as an alias"):
+        registry.rename_proxy("edge-old", "edge-live")
+
+    assert conn.proxy_rows.keys() == {"edge-old"}
+    assert conn.aliases == {"edge-live": "edge-new"}
+    assert conn.tombstones == {"edge-live": ("renamed", "edge-new")}
+
+
 @pytest.mark.parametrize("action", ["rename", "remove"])
 def test_proxy_lifecycle_does_not_report_failure_after_committed_cleanup_error(
     monkeypatch, action
@@ -1578,14 +1610,15 @@ def test_rename_proxy_incomplete_lifecycle_rolls_back_without_success_metadata(
     assert conn.scoped_rows == ["edge-old", "edge-old"]
 
 
-def test_remove_proxy_incomplete_lifecycle_rolls_back_without_success_metadata(
+def test_remove_proxy_large_bounded_lifecycle_commits_and_resumes_after_interruption(
     monkeypatch,
 ):
     proxy_registry = _proxy_registry()
-    from services.proxy_lifecycle import ProxyLifecycleIncompleteError  # type: ignore
 
     conn = _RegistryFaultConn(proxy_registry, fail_lifecycle_once=False)
     conn.proxy_rows["edge-keep"] = {**conn.select_row, "proxy_id": "edge-keep"}
+    conn.aliases = {"edge-old-alias": "edge-old", "edge-old": "edge-keep"}
+    conn.scoped_rows = ["edge-old"] * 5
     conn.snapshot_initial()
     registry = proxy_registry.ProxyRegistry()
     registry.init_db = lambda: None  # type: ignore[method-assign]
@@ -1593,15 +1626,27 @@ def test_remove_proxy_incomplete_lifecycle_rolls_back_without_success_metadata(
     monkeypatch.setattr(
         proxy_registry, "prepare_proxy_lifecycle", lambda *_a, **_k: None
     )
+    interrupt = False
 
     def incomplete(_conn, *, proxy_id: str, **_kwargs):
-        conn.scoped_rows = [row for row in conn.scoped_rows if row != proxy_id]
+        if interrupt:
+            msg = "simulated bounded-pass interruption"
+            raise RuntimeError(msg)
+        removed = 0
+        retained: list[str] = []
+        for row in conn.scoped_rows:
+            if row == proxy_id and removed < 2:
+                removed += 1
+            else:
+                retained.append(row)
+        conn.scoped_rows = retained
+        remaining = any(row == proxy_id for row in retained)
         return proxy_registry.ProxyLifecycleRunResult(
             action="remove",
             proxy_id=proxy_id,
-            complete=False,
-            table_counts={"proxy_fault_rows": 1},
-            truncated_tables=("proxy_fault_rows",),
+            complete=not remaining,
+            table_counts={"proxy_fault_rows": removed},
+            truncated_tables=("proxy_fault_rows",) if remaining else (),
         )
 
     monkeypatch.setattr(proxy_registry, "remove_proxy_scoped_rows", incomplete)
@@ -1609,16 +1654,48 @@ def test_remove_proxy_incomplete_lifecycle_rolls_back_without_success_metadata(
         proxy_registry, "time", type("Clock", (), {"time": staticmethod(lambda: 10)})
     )
 
-    with pytest.raises(ProxyLifecycleIncompleteError, match="paused"):
-        registry.remove_proxy("edge-old")
+    pending = registry.remove_proxy("edge-old")
 
+    assert pending.complete is False
+    assert pending.table_counts == {"proxy_fault_rows": 2}
+    assert pending.truncated_tables == ("proxy_fault_rows",)
+    assert "retry to resume" in pending.retry_detail
     assert conn.attempts == 1
-    assert conn.rollbacks == 1
+    assert conn.rollbacks == 0
     assert conn.proxy_rows.keys() == {"edge-keep", "edge-old"}
-    assert conn.proxy_rows["edge-old"]["status"] == "unknown"
+    assert conn.proxy_rows["edge-old"]["status"] == "remove_pending"
+    assert conn.aliases == {
+        "edge-old-alias": "edge-old",
+        "edge-old": "edge-keep",
+    }
+    assert conn.tombstones == {"edge-old": ("removing", "")}
+    assert conn.scoped_rows == ["edge-old"] * 3
+
+    interrupt = True
+    with pytest.raises(RuntimeError, match="bounded-pass interruption"):
+        registry.remove_proxy("edge-old")
+    assert conn.proxy_rows["edge-old"]["status"] == "removing"
+    assert conn.tombstones == {"edge-old": ("removing", "")}
+    assert conn.scoped_rows == ["edge-old"] * 3
+
+    interrupt = False
+    second_pass = registry.remove_proxy("edge-old")
+    assert second_pass.complete is False
+    assert second_pass.table_counts == {"proxy_fault_rows": 2}
+    assert conn.scoped_rows == ["edge-old"]
+
+    removed = registry.remove_proxy("edge-old")
+    assert removed.complete is True
+    assert removed.table_counts == {
+        "proxy_fault_rows": 1,
+        "proxy_id_aliases": 1,
+        "proxy_id_aliases.alias_proxy_id": 1,
+        "proxy_instances": 1,
+    }
+    assert conn.proxy_rows.keys() == {"edge-keep"}
     assert conn.aliases == {}
-    assert conn.tombstones == {}
-    assert conn.scoped_rows == ["edge-old", "edge-old"]
+    assert conn.tombstones == {"edge-old": ("removed", "")}
+    assert conn.scoped_rows == []
 
 
 def test_chained_rename_rekeys_predecessor_tombstones_to_canonical_identity(
@@ -1992,13 +2069,16 @@ def test_remove_proxy_rejects_last_proxy(tmp_path):
     assert registry.get_proxy("edge-only") is not None
 
 
-def test_remove_proxy_incomplete_bounded_result_rolls_back_before_retry(
+def test_remove_proxy_bounded_passes_commit_progress_and_resume_after_interruption(
     monkeypatch,
     tmp_path,
 ):
     configure_test_mysql_env(tmp_path / "proxy-remove-resume")
     proxy_registry = _proxy_registry()
-    from services.proxy_lifecycle import ProxyLifecycleIncompleteError  # type: ignore
+    from services.proxy_write_guard import (  # type: ignore
+        ProxyLifecycleWriteError,
+        resolve_proxy_write_id,
+    )
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy("edge-big", display_name="Edge")
@@ -2012,17 +2092,21 @@ def test_remove_proxy_incomplete_bounded_result_rolls_back_before_retry(
                 "INSERT INTO proxy_large_backlog(proxy_id, value) VALUES(%s,%s)",
                 ("edge-big", f"row-{i}"),
             )
+        conn.execute(
+            "INSERT INTO proxy_id_aliases(alias_proxy_id, proxy_id, created_ts, updated_ts) VALUES('edge-big-old','edge-big',1,1)",
+        )
+        conn.execute(
+            "INSERT INTO proxy_id_aliases(alias_proxy_id, proxy_id, created_ts, updated_ts) VALUES('edge-big','edge-keep',1,1)",
+        )
 
     monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_CHUNK_SIZE", "2")
     monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_MAX_ROWS_PER_TABLE", "2")
-    try:
-        registry.remove_proxy("edge-big")
-    except ProxyLifecycleIncompleteError as exc:
-        assert exc.result.truncated_tables == ("proxy_large_backlog",)
-        assert exc.result.table_counts["proxy_large_backlog"] == 2
-    else:
-        msg = "removal should pause at bounded table limit"
-        raise AssertionError(msg)
+    first_pass = registry.remove_proxy("edge-big")
+
+    assert first_pass.complete is False
+    assert first_pass.truncated_tables == ("proxy_large_backlog",)
+    assert first_pass.table_counts["proxy_large_backlog"] == 2
+    assert "retry to resume" in first_pass.retry_detail
 
     with registry._connect() as conn:
         remaining = conn.execute(
@@ -2034,19 +2118,80 @@ def test_remove_proxy_incomplete_bounded_result_rolls_back_before_retry(
             ("edge-big",),
         ).fetchone()
         tombstone = conn.execute(
-            "SELECT 1 FROM proxy_lifecycle_tombstones WHERE proxy_id=%s",
+            "SELECT action FROM proxy_lifecycle_tombstones WHERE proxy_id=%s",
             ("edge-big",),
         ).fetchone()
-    assert int(remaining["c"] or 0) == 5
-    assert status["status"] != "remove_pending"
-    assert tombstone is None
+    assert int(remaining["c"] or 0) == 3
+    assert status["status"] == "remove_pending"
+    assert tombstone["action"] == "removing"
 
-    monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_MAX_ROWS_PER_TABLE", "100")
+    with pytest.raises(ValueError, match="removal for 'edge-big' is pending"):
+        registry.remove_proxy("edge-keep")
+
+    original_remove_scoped_rows = proxy_registry.remove_proxy_scoped_rows
+
+    def interrupt_after_durable_marker(*_args, **_kwargs):
+        with registry._connect() as observer:
+            with pytest.raises(ProxyLifecycleWriteError, match="being removed"):
+                resolve_proxy_write_id(observer, "edge-big")
+        msg = "simulated interruption after durable removal marker"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(
+        proxy_registry,
+        "remove_proxy_scoped_rows",
+        interrupt_after_durable_marker,
+    )
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        registry.remove_proxy("edge-big")
+
+    with registry._connect() as conn:
+        remaining_after_interruption = conn.execute(
+            "SELECT COUNT(*) AS c FROM proxy_large_backlog WHERE proxy_id=%s",
+            ("edge-big",),
+        ).fetchone()
+        interrupted_status = conn.execute(
+            "SELECT status FROM proxy_instances WHERE proxy_id=%s",
+            ("edge-big",),
+        ).fetchone()
+    assert int(remaining_after_interruption["c"] or 0) == 3
+    assert interrupted_status["status"] == "removing"
+
+    monkeypatch.setattr(
+        proxy_registry,
+        "remove_proxy_scoped_rows",
+        original_remove_scoped_rows,
+    )
+    second_pass = registry.remove_proxy("edge-big")
+    assert second_pass.complete is False
+    assert second_pass.table_counts["proxy_large_backlog"] == 2
+
     removed = registry.remove_proxy("edge-big")
 
     assert removed.complete is True
-    assert removed.table_counts["proxy_large_backlog"] == 5
+    assert removed.table_counts["proxy_large_backlog"] == 1
+    assert removed.table_counts["proxy_id_aliases"] == 1
+    assert removed.table_counts["proxy_id_aliases.alias_proxy_id"] == 1
+    assert removed.table_counts["proxy_instances"] == 1
     assert "proxy_large_backlog" in removed.discovered_tables
+    with registry._connect() as conn:
+        remaining_rows = conn.execute(
+            "SELECT COUNT(*) AS c FROM proxy_large_backlog WHERE proxy_id=%s",
+            ("edge-big",),
+        ).fetchone()
+        remaining_aliases = conn.execute(
+            "SELECT COUNT(*) AS c FROM proxy_id_aliases WHERE proxy_id=%s OR alias_proxy_id=%s",
+            ("edge-big", "edge-big"),
+        ).fetchone()
+        removed_tombstone = conn.execute(
+            "SELECT action FROM proxy_lifecycle_tombstones WHERE proxy_id=%s",
+            ("edge-big",),
+        ).fetchone()
+    assert int(remaining_rows["c"] or 0) == 0
+    assert int(remaining_aliases["c"] or 0) == 0
+    assert removed_tombstone["action"] == "removed"
+    assert registry.get_proxy("edge-big") is None
+    assert registry.get_proxy("edge-keep") is not None
     assert registry.remove_proxy("edge-big").deleted_rows == 0
 
 
@@ -2128,13 +2273,12 @@ def test_rename_proxy_missing_prepared_index_rolls_back_without_ddl_leak(
     ]
 
 
-def test_remove_proxy_missing_prepared_index_rolls_back_without_ddl_leak(
+def test_remove_proxy_missing_prepared_index_commits_pending_marker_for_retry(
     monkeypatch,
     tmp_path,
 ):
     configure_test_mysql_env(tmp_path / "proxy-remove-missing-prepared-index")
     proxy_registry = _proxy_registry()
-    from services.proxy_lifecycle import ProxyLifecycleIncompleteError  # type: ignore
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy("edge-remove", display_name="Edge")
@@ -2155,10 +2299,11 @@ def test_remove_proxy_missing_prepared_index_rolls_back_without_ddl_leak(
         "prepare_proxy_lifecycle",
         lambda *_args, **_kwargs: (),
     )
-    with pytest.raises(ProxyLifecycleIncompleteError) as exc_info:
-        registry.remove_proxy("edge-remove")
+    pending = registry.remove_proxy("edge-remove")
 
-    assert exc_info.value.result.truncated_tables == ("proxy_missing_remove_index",)
+    assert pending.complete is False
+    assert pending.truncated_tables == ("proxy_missing_remove_index",)
+    assert "newly discovered lifecycle index" in pending.retry_detail
     with registry._connect() as conn:
         remaining = conn.execute(
             "SELECT COUNT(*) AS c FROM proxy_missing_remove_index WHERE proxy_id=%s",
@@ -2184,8 +2329,8 @@ def test_remove_proxy_missing_prepared_index_rolls_back_without_ddl_leak(
             """,
         ).fetchone()
     assert int(remaining["c"] or 0) == 3
-    assert status["status"] == "unknown"
-    assert tombstone is None
+    assert status["status"] == "remove_pending"
+    assert tombstone is not None
     assert index_row is None
 
     monkeypatch.setattr(proxy_registry, "prepare_proxy_lifecycle", original_prepare)
