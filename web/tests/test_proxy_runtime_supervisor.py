@@ -362,6 +362,63 @@ def test_sync_policy_state_rolls_back_partial_policy_materialization(
     assert second.read_text(encoding="utf-8") == "old web policy\n"
 
 
+def test_sync_policy_state_reports_partial_state_after_rollback_failure(
+    tmp_path, monkeypatch
+) -> None:
+    from services import materialized_files  # type: ignore
+
+    first = tmp_path / "10-sslfilter.conf"
+    second = tmp_path / "30-webfilter.conf"
+    first.write_text("old ssl policy\n", encoding="utf-8")
+    second.write_text("old web policy\n", encoding="utf-8")
+    real_replace = materialized_files.os.replace
+
+    def policy_sha() -> str:
+        return "|".join(
+            (first.read_text(encoding="utf-8"), second.read_text(encoding="utf-8"))
+        )
+
+    def fail_publish_and_rollback(source, destination) -> None:
+        content = Path(source).read_text(encoding="utf-8")
+        if Path(destination) == second and content == "new web policy\n":
+            msg = "injected publication failure"
+            raise OSError(msg)
+        if Path(destination) == first and content == "old ssl policy\n":
+            msg = "injected rollback failure"
+            raise OSError(msg)
+        real_replace(source, destination)
+
+    monkeypatch.setattr(materialized_files.os, "replace", fail_publish_and_rollback)
+    runtime = _runtime_shell()
+    runtime.policy_state_builder = lambda _proxy_id: SimpleNamespace(
+        policy_sha256="desired-policy-sha",
+        files=(
+            SimpleNamespace(path=str(first), content="new ssl policy\n"),
+            SimpleNamespace(path=str(second), content="new web policy\n"),
+        ),
+    )
+    runtime._current_policy_sha = policy_sha
+    old_sha = policy_sha()
+
+    result = runtime.sync_policy_state()
+
+    assert result["ok"] is False
+    assert result["changed"] is True
+    assert result["reload_required"] is True
+    assert result["current_policy_sha"] == policy_sha()
+    assert result["current_policy_sha"] != old_sha
+    assert "rollback was incomplete" in result["detail"]
+    assert "injected" not in result["detail"]
+
+    monkeypatch.setattr(materialized_files.os, "replace", real_replace)
+    retry = runtime.sync_policy_state()
+    assert retry["ok"] is True
+    assert retry["changed"] is True
+    assert retry["reload_required"] is True
+    assert first.read_text(encoding="utf-8") == "new ssl policy\n"
+    assert second.read_text(encoding="utf-8") == "new web policy\n"
+
+
 def test_sync_policy_state_reapplies_missing_empty_materialized_file(tmp_path) -> None:
     missing_empty = tmp_path / "sslfilter_nobump.txt"
     policy_conf = tmp_path / "policy.conf"

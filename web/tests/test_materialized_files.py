@@ -136,6 +136,40 @@ def test_write_managed_text_files_rolls_back_publish_on_directory_fsync_io_failu
     assert list(tmp_path.glob(".managed-*")) == []
 
 
+def test_write_managed_text_files_reports_incomplete_rollback(
+    tmp_path, monkeypatch
+) -> None:
+    materialized_files = _materialized_files_module()
+    first = tmp_path / "first.conf"
+    second = tmp_path / "second.conf"
+    first.write_text("old first\n", encoding="utf-8")
+    second.write_text("old second\n", encoding="utf-8")
+    real_replace = materialized_files.os.replace
+
+    def fail_publish_and_rollback(source, destination) -> None:
+        content = Path(source).read_text(encoding="utf-8")
+        if Path(destination) == second and content == "new second\n":
+            raise OSError(errno.ENOSPC, "injected publication failure")
+        if Path(destination) == first and content == "old first\n":
+            raise OSError(errno.EIO, "injected rollback failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(materialized_files.os, "replace", fail_publish_and_rollback)
+
+    with pytest.raises(materialized_files.ManagedFileRollbackError) as raised:
+        materialized_files.write_managed_text_files(
+            (str(first), "new first\n"), (str(second), "new second\n")
+        )
+
+    assert raised.value.rollback_failure_count == 1
+    assert isinstance(raised.value.__cause__, OSError)
+    assert "injected publication failure" in str(raised.value.__cause__)
+    assert "injected rollback failure" in raised.value.__notes__[0]
+    assert first.read_text(encoding="utf-8") == "new first\n"
+    assert second.read_text(encoding="utf-8") == "old second\n"
+    assert list(tmp_path.glob(".managed-*")) == []
+
+
 @pytest.mark.parametrize("target_kind", ["symlink", "fifo", "directory"])
 def test_write_managed_text_files_rejects_nonregular_existing_target(
     tmp_path, target_kind

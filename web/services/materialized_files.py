@@ -91,6 +91,14 @@ class _FileBackup:
     owner: tuple[int, int] | None = None
 
 
+class ManagedFileRollbackError(RuntimeError):
+    """A managed-file publication failed and could not be fully rolled back."""
+
+    def __init__(self, rollback_failure_count: int) -> None:
+        super().__init__("Managed file publication failed and rollback was incomplete")
+        self.rollback_failure_count = rollback_failure_count
+
+
 def _read_regular_file_backup(path: str) -> _FileBackup:
     flags = os.O_RDONLY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
@@ -215,6 +223,7 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
                     replaced_paths.append((target_key, path))
                     _fsync_parent_dir(path)
             except Exception as publish_error:
+                rollback_errors: list[tuple[str, Exception]] = []
                 for target_key, path in reversed(replaced_paths):
                     backup = backups.get(target_key, _FileBackup(existed=False))
                     try:
@@ -236,10 +245,19 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
                             if unlinked:
                                 _fsync_parent_dir(path)
                     except Exception as rollback_error:
+                        rollback_errors.append((path, rollback_error))
                         publish_error.add_note(
                             f"Rollback failed for managed file {path!r}: "
                             f"{rollback_error!r}"
                         )
+                if rollback_errors:
+                    error = ManagedFileRollbackError(len(rollback_errors))
+                    for path, rollback_error in rollback_errors:
+                        error.add_note(
+                            f"Rollback failed for managed file {path!r}: "
+                            f"{rollback_error!r}"
+                        )
+                    raise error from publish_error
                 raise
     finally:
         for temp_path in temp_paths:

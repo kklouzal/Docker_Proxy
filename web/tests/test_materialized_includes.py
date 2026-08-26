@@ -1330,8 +1330,10 @@ def test_write_managed_text_files_continues_rollback_after_restore_failure(
         materialized_files.write_managed_text_files(
             *((str(target), f"new {target.stem}\n") for target in targets)
         )
-    except OSError as exc:
-        assert str(exc) == "publish failed for fourth.conf"
+    except materialized_files.ManagedFileRollbackError as exc:
+        assert str(exc) == "Managed file publication failed and rollback was incomplete"
+        assert isinstance(exc.__cause__, OSError)
+        assert str(exc.__cause__) == "publish failed for fourth.conf"
         notes = getattr(exc, "__notes__", [])
         assert len(notes) == 1
         assert str(second) in notes[0]

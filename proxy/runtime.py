@@ -40,7 +40,10 @@ from services.errors import public_error_message, redact_sensitive_text
 from services.health_checks import build_clamav_health
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled, should_log
-from services.materialized_files import write_managed_text_files
+from services.materialized_files import (
+    ManagedFileRollbackError,
+    write_managed_text_files,
+)
 from services.operation_ledger import (
     get_operation_ledger,
     normalize_operation_request_hash,
@@ -2949,21 +2952,32 @@ class ProxyRuntime:
             if changed_files:
                 write_managed_text_files(*changed_files)
         except Exception as exc:
+            rollback_incomplete = isinstance(exc, ManagedFileRollbackError)
+            observed_sha = (
+                self._current_policy_sha() if rollback_incomplete else current_sha
+            )
+            failure_detail = public_error_message(
+                exc,
+                default="Failed to materialize policy state.",
+            )
+            if rollback_incomplete:
+                failure_detail = (
+                    "Failed to materialize policy state; rollback was incomplete. "
+                    "Active policy files may be partially updated; retry materialization "
+                    "before reloading the proxy."
+                )
             return {
                 "ok": False,
                 "proxy_id": self.proxy_id,
-                "changed": False,
-                "reload_required": False,
+                "changed": rollback_incomplete,
+                "reload_required": rollback_incomplete,
                 "policy_sha256": desired.policy_sha256,
-                "current_policy_sha": current_sha,
+                "current_policy_sha": observed_sha,
                 "detail": _state_sync_failure_detail(
                     "policy",
-                    public_error_message(
-                        exc,
-                        default="Failed to materialize policy state.",
-                    ),
+                    failure_detail,
                     desired_sha=desired.policy_sha256,
-                    current_sha=current_sha,
+                    current_sha=observed_sha,
                 ),
             }
 
