@@ -2483,6 +2483,48 @@ class ProxyRuntime:
             self._capture_recovery_bundle_after_sync(result)
         return result
 
+    def _squid_listener_health(self, *, timeout: float) -> dict[str, Any]:
+        try:
+            listener_details = tuple(self.controller._http_listener_details())
+            listener_ports = tuple(
+                int(item.get("port") or 0)
+                for item in listener_details
+                if int(item.get("port") or 0)
+            )
+        except Exception:
+            return {
+                "ok": False,
+                "detail": "Squid listener discovery failed; listener health is unavailable.",
+                "listeners": [],
+                "ports": [],
+            }
+
+        try:
+            listener_ok = bool(
+                self.controller._wait_for_http_listener(timeout=timeout),
+            )
+        except Exception:
+            return {
+                "ok": False,
+                "detail": "Squid listener probe failed; listener health is unavailable.",
+                "listeners": [dict(item) for item in listener_details],
+                "ports": list(listener_ports),
+            }
+
+        summary = _listener_mode_summary(listener_details)
+        if listener_ok:
+            detail = summary or "Squid listeners are accepting connections."
+        else:
+            detail = "Squid listener(s) not accepting connections."
+            if summary:
+                detail = f"{summary}; {detail}"
+        return {
+            "ok": listener_ok,
+            "detail": detail,
+            "listeners": [dict(item) for item in listener_details],
+            "ports": list(listener_ports),
+        }
+
     def self_heal_config_if_needed(
         self,
         *,
@@ -2498,11 +2540,14 @@ class ProxyRuntime:
             status_detail = str(exc)
             proxy_ok = False
 
-        listener_ok = True
         try:
             listener_ok = bool(self.controller._wait_for_http_listener(timeout=1.0))
         except Exception:
-            listener_ok = proxy_ok
+            listener_ok = False
+            if status_detail:
+                status_detail = f"{status_detail}; Squid listener probe failed."
+            else:
+                status_detail = "Squid listener probe failed."
 
         if proxy_ok and listener_ok:
             return {
@@ -3924,29 +3969,14 @@ class ProxyRuntime:
         stdout, stderr = self.controller.get_status()
         proxy_status = (_decode_bytes(stdout) + "\n" + _decode_bytes(stderr)).strip()
         proxy_ok = not bool(stderr)
-        try:
-            listener_details = tuple(self.controller._http_listener_details())
-            listener_ports = tuple(
-                int(item.get("port") or 0)
-                for item in listener_details
-                if int(item.get("port") or 0)
-            )
-            listener_ok = bool(self.controller._wait_for_http_listener(timeout=0.5))
-        except Exception:
-            listener_details = ()
-            listener_ports = ()
-            listener_ok = proxy_ok
+        listener_health = self._squid_listener_health(timeout=0.5)
+        listener_details = listener_health["listeners"]
+        listener_ports = listener_health["ports"]
         services = {
             "supervisor": self._supervisor_programs_health(),
             "operation_ledger": self._operation_ledger_health(),
             "squid_transaction": current_transaction_health,
-            "squid_listeners": {
-                "ok": bool(listener_ok),
-                "detail": _listener_mode_summary(listener_details)
-                or "No Squid http_port listeners detected.",
-                "listeners": [dict(item) for item in listener_details],
-                "ports": list(listener_ports),
-            },
+            "squid_listeners": listener_health,
         }
         ok = proxy_ok and all(bool(item.get("ok")) for item in services.values())
         result = {
@@ -4082,25 +4112,10 @@ class ProxyRuntime:
             services["supervisor"] = self._supervisor_programs_health()
             services["operation_ledger"] = self._operation_ledger_health()
             services["squid_transaction"] = current_transaction_health
-            try:
-                listener_details = tuple(self.controller._http_listener_details())
-                listener_ports = tuple(
-                    int(item.get("port") or 0)
-                    for item in listener_details
-                    if int(item.get("port") or 0)
-                )
-                listener_ok = bool(self.controller._wait_for_http_listener(timeout=1.0))
-            except Exception:
-                listener_details = ()
-                listener_ports = ()
-                listener_ok = proxy_ok
-            services["squid_listeners"] = {
-                "ok": bool(listener_ok),
-                "detail": _listener_mode_summary(listener_details)
-                or "No Squid http_port listeners detected.",
-                "listeners": [dict(item) for item in listener_details],
-                "ports": list(listener_ports),
-            }
+            listener_health = self._squid_listener_health(timeout=1.0)
+            listener_details = listener_health["listeners"]
+            listener_ports = listener_health["ports"]
+            services["squid_listeners"] = listener_health
             active_revision = self.revisions.get_active_revision_metadata(self.proxy_id)
             active_certificate = self.certificate_bundles.get_active_bundle_metadata()
             active_adblock_artifact = (

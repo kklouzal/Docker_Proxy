@@ -2170,6 +2170,29 @@ def test_runtime_self_heal_rolls_back_when_squid_status_fails() -> None:
     assert marked == [(True, "rolled back", "good-sha")]
 
 
+def test_runtime_self_heal_rolls_back_when_listener_probe_raises() -> None:
+    runtime = _runtime_shell()
+    rollback_reasons = []
+    runtime.controller = SimpleNamespace(
+        get_status=lambda: (b"squid ok", b""),
+        _wait_for_http_listener=lambda *, timeout: (_ for _ in ()).throw(
+            RuntimeError("private probe failure")
+        ),
+    )
+    runtime.rollback_last_known_good_config = lambda *, reason: (
+        rollback_reasons.append(reason)
+        or {"ok": True, "rolled_back": True, "detail": "rolled back"}
+    )
+
+    result = runtime.self_heal_config_if_needed(reason="test")
+
+    assert result["rolled_back"] is True
+    assert rollback_reasons == [
+        "Self-heal triggered by test: squid ok; Squid listener probe failed."
+    ]
+    assert "private probe failure" not in str(result)
+
+
 def test_runtime_service_self_heal_restarts_unhealthy_adblock(monkeypatch) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
@@ -5360,6 +5383,67 @@ def test_squid_transaction_health_reports_recovery_required(
     assert result["operation"] == "apply_config_text"
     assert result["transaction_id"]
     assert "reconciliation is required" in result["detail"]
+
+
+@pytest.mark.parametrize(
+    ("listener_result", "expected_ok", "expected_detail"),
+    [
+        (True, True, "explicit:3128"),
+        (False, False, "Squid listener(s) not accepting connections."),
+    ],
+)
+def test_squid_listener_health_reports_probe_result_truthfully(
+    listener_result, expected_ok, expected_detail
+) -> None:
+    runtime = _runtime_shell()
+    runtime.controller = SimpleNamespace(
+        _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
+        _wait_for_http_listener=lambda *, timeout: listener_result,
+    )
+
+    result = runtime._squid_listener_health(timeout=0.5)
+
+    assert result["ok"] is expected_ok
+    assert expected_detail in result["detail"]
+    assert result["listeners"] == [{"port": 3128, "mode": "explicit"}]
+    assert result["ports"] == [3128]
+
+
+@pytest.mark.parametrize("failure_stage", ["discovery", "probe"])
+def test_navigation_health_degrades_when_listener_inspection_raises(
+    failure_stage,
+) -> None:
+    secret = "postgresql://operator:do-not-leak@example.invalid/runtime"
+
+    def listener_details():
+        if failure_stage == "discovery":
+            raise RuntimeError(secret)
+        return ({"port": 3128, "mode": "explicit"},)
+
+    def listener_probe(*, timeout):
+        if failure_stage == "probe":
+            raise RuntimeError(secret)
+        return True
+
+    runtime = _runtime_shell()
+    runtime.health_cache_ttl_seconds = 0.0
+    runtime._health_cache_lock = threading.Lock()
+    runtime.controller = SimpleNamespace(
+        get_status=lambda: (b"squid ok", b""),
+        _http_listener_details=listener_details,
+        _wait_for_http_listener=listener_probe,
+    )
+    runtime._current_config_sha = lambda: "config-sha"
+    runtime._supervisor_programs_health = lambda: {"ok": True, "detail": "ok"}
+
+    result = runtime.collect_navigation_health(force=True)
+
+    listeners = result["services"]["squid_listeners"]
+    assert result["ok"] is False
+    assert result["status"] == "degraded"
+    assert listeners["ok"] is False
+    assert "failed; listener health is unavailable" in listeners["detail"]
+    assert secret not in str(result)
 
 
 def test_collect_navigation_health_degrades_while_operations_are_active() -> None:
