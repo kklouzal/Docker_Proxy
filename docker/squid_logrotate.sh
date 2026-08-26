@@ -42,20 +42,32 @@ copytruncate_logfile() {
   fi
 
   if [ "$rotate_count" -gt 0 ]; then
-    rm -f "${logfile}.${rotate_count}" 2>/dev/null || true
+    if ! rm -f "${logfile}.${rotate_count}"; then
+      echo "[squid-logrotate] failed to remove expired archive ${logfile}.${rotate_count}; active log preserved" >&2
+      return 1
+    fi
 
     i=$((rotate_count - 1))
     while [ "$i" -ge 1 ]; do
       if [ -e "${logfile}.${i}" ]; then
-        mv "${logfile}.${i}" "${logfile}.$((i + 1))" 2>/dev/null || true
+        if ! mv "${logfile}.${i}" "${logfile}.$((i + 1))"; then
+          echo "[squid-logrotate] failed to advance archive ${logfile}.${i}; active log preserved" >&2
+          return 1
+        fi
       fi
       i=$((i - 1))
     done
 
-    cp "$logfile" "${logfile}.1" 2>/dev/null || true
+    if ! cp "$logfile" "${logfile}.1"; then
+      echo "[squid-logrotate] failed to archive ${logfile}; active log preserved" >&2
+      return 1
+    fi
   fi
 
-  : > "$logfile" 2>/dev/null || true
+  if ! truncate -s 0 "$logfile"; then
+    echo "[squid-logrotate] failed to truncate ${logfile}" >&2
+    return 1
+  fi
 }
 
 rotate_logs() {
@@ -73,7 +85,10 @@ rotate_logs() {
   # fallback for testability and older configs.
   for logfile in $LOGFILES; do
     if [ -f "$logfile" ]; then
-      copytruncate_logfile "$logfile" "$rotate_count"
+      if ! copytruncate_logfile "$logfile" "$rotate_count"; then
+        echo "[squid-logrotate] ${ts} rotation failed for ${logfile}" >&2
+        return 1
+      fi
       echo "[squid-logrotate] ${ts} truncated ${logfile}"
     fi
   done
@@ -87,7 +102,11 @@ fi
 # Supervisor-managed loop: rotate Squid logs every INTERVAL_SECONDS.
 # Rotation uses `logfile_rotate N` in squid.conf to cap retained files.
 while :; do
-  rotate_logs
+  # A failed pass exits nonzero. Supervisor's existing autorestart policy then
+  # retries in a fresh process instead of leaving a silently degraded loop.
+  if ! rotate_logs; then
+    exit 1
+  fi
 
   if [ "${SQUID_LOG_ROTATE_RUN_ONCE:-0}" = "1" ]; then
     exit 0

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import subprocess
 
 from .subprocess_test_utils import run_test_process
 
@@ -13,7 +17,9 @@ def run_logrotate_once(
     conf_text: str = "logfile_rotate 3\n",
     *,
     log_name: str = "access-observe.log",
-) -> Path:
+    command_shim: tuple[str, str] | None = None,
+    check: bool = True,
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
     log_path = tmp_path / log_name
     conf_path = tmp_path / "squid.conf"
     conf_path.write_text(conf_text, encoding="utf-8")
@@ -27,11 +33,28 @@ def run_logrotate_once(
             "SQUID_LOG_ROTATE_LOGFILES": str(log_path),
         }
     )
-    run_test_process(["/bin/sh", str(SCRIPT_PATH)], check=True, env=env)
-    return log_path
+    if command_shim is not None:
+        command, script = command_shim
+        shim_dir = tmp_path / "bin"
+        shim_dir.mkdir(exist_ok=True)
+        shim_path = shim_dir / command
+        shim_path.write_text(f"#!/bin/sh\n{script}\n", encoding="utf-8")
+        shim_path.chmod(0o755)
+        env["PATH"] = f"{shim_dir}:{env['PATH']}"
+
+    result = run_test_process(
+        ["/bin/sh", str(SCRIPT_PATH)],
+        check=check,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    return log_path, result
 
 
-def test_squid_logrotate_copytruncates_observability_logs_without_runtime_rotate() -> None:
+def test_squid_logrotate_copytruncates_observability_logs_without_runtime_rotate() -> (
+    None
+):
     script = SCRIPT_PATH.read_text(encoding="utf-8")
 
     assert "if ! squid -k rotate" not in script
@@ -40,7 +63,7 @@ def test_squid_logrotate_copytruncates_observability_logs_without_runtime_rotate
     assert "/var/log/squid/icap.log" in script
     assert "/var/log/cicap-access.log" in script
     assert 'cp "$logfile" "${logfile}.1"' in script
-    assert ': > "$logfile"' in script
+    assert 'truncate -s 0 "$logfile"' in script
 
 
 def test_squid_logrotate_advances_numbered_history_instead_of_overwriting_dot_1(
@@ -93,7 +116,9 @@ def test_squid_logrotate_uses_env_rotation_count_override(tmp_path: Path) -> Non
     assert not (tmp_path / "icap.log.3").exists()
 
 
-def test_squid_logrotate_zero_retention_still_truncates_active_log(tmp_path: Path) -> None:
+def test_squid_logrotate_zero_retention_still_truncates_active_log(
+    tmp_path: Path,
+) -> None:
     log_path = tmp_path / "cicap-access.log"
     log_path.write_text("active\n", encoding="utf-8")
 
@@ -101,3 +126,64 @@ def test_squid_logrotate_zero_retention_still_truncates_active_log(tmp_path: Pat
 
     assert log_path.read_text(encoding="utf-8") == ""
     assert not (tmp_path / "cicap-access.log.1").exists()
+
+
+def test_squid_logrotate_archive_copy_failure_preserves_active_log_and_fails(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "access-observe.log"
+    log_path.write_text("irreplaceable evidence\n", encoding="utf-8")
+
+    _, result = run_logrotate_once(
+        tmp_path,
+        command_shim=("cp", "exit 73"),
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert log_path.read_text(encoding="utf-8") == "irreplaceable evidence\n"
+    assert "failed to archive" in result.stderr
+    assert f"truncated {log_path}" not in result.stdout
+
+
+def test_squid_logrotate_history_failure_preserves_active_log_and_fails(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "access-observe.log"
+    log_path.write_text("current evidence\n", encoding="utf-8")
+    (tmp_path / "access-observe.log.1").write_text("prior evidence\n", encoding="utf-8")
+
+    _, result = run_logrotate_once(
+        tmp_path,
+        command_shim=("mv", "exit 74"),
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert log_path.read_text(encoding="utf-8") == "current evidence\n"
+    assert (tmp_path / "access-observe.log.1").read_text(
+        encoding="utf-8"
+    ) == "prior evidence\n"
+    assert "failed to advance archive" in result.stderr
+    assert f"truncated {log_path}" not in result.stdout
+
+
+def test_squid_logrotate_truncation_failure_is_reported_without_success(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "access-observe.log"
+    log_path.write_text("active evidence\n", encoding="utf-8")
+
+    _, result = run_logrotate_once(
+        tmp_path,
+        command_shim=("truncate", "exit 75"),
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert log_path.read_text(encoding="utf-8") == "active evidence\n"
+    assert (tmp_path / "access-observe.log.1").read_text(
+        encoding="utf-8"
+    ) == "active evidence\n"
+    assert "failed to truncate" in result.stderr
+    assert f"truncated {log_path}" not in result.stdout
