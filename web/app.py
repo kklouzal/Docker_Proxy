@@ -189,6 +189,7 @@ from services.squid_config_forms import (
     coerce_config_bool,
     get_config_ui_field_map,
     get_config_ui_sections,
+    newly_enabled_cache_overrides,
     normalize_safe_form_kind,
     parse_cache_override_form,
 )
@@ -9550,6 +9551,18 @@ def apply_cache_overrides():
 
         options = _options_from_tunables(tunables)
         overrides = parse_cache_override_form(request.form)
+        current_overrides = squid_controller.get_cache_override_options(current)
+        newly_enabled = newly_enabled_cache_overrides(current_overrides, overrides)
+        if (
+            newly_enabled
+            and request.form.get("acknowledge_cache_override_risk") != "on"
+        ):
+            names = ", ".join(name.replace("_", "-") for name in newly_enabled)
+            message = (
+                "Explicitly acknowledge the stale/private/no-store cache risk before "
+                f"enabling: {names}."
+            )
+            raise ValueError(message)
         ok, detail = _publish_template_config(
             options,
             source_kind="overrides",

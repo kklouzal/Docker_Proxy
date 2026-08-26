@@ -359,7 +359,14 @@ def test_ssl_error_exclusion_quick_action_reports_invalid_domain_without_sync(
     ("path", "data", "expected_source_kind"),
     [
         ("/squid/config/apply-safe", {"form_kind": "caching"}, "template"),
-        ("/squid/config/apply-overrides", {"ignore_reload": "on"}, "overrides"),
+        (
+            "/squid/config/apply-overrides",
+            {
+                "ignore_reload": "on",
+                "acknowledge_cache_override_risk": "on",
+            },
+            "overrides",
+        ),
         ("/clamav/toggle", {"action": "enable"}, "clamav"),
         (
             "/clamav/settings",

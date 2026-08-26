@@ -356,6 +356,7 @@ def test_live_squid_config_apply_overrides_publishes_override_metadata(
             {
                 "ignore_reload": "on",
                 "ignore_private": "on",
+                "acknowledge_cache_override_risk": "on",
             },
             csrf_path="/squid/config?tab=caching&subtab=overrides",
             timeout_seconds=120.0,

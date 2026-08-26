@@ -11,9 +11,25 @@ from services.squid_config_forms import (  # type: ignore
     build_template_options_from_form,
     coerce_config_bool,
     get_config_ui_field_map,
+    newly_enabled_cache_overrides,
     normalize_safe_form_kind,
     parse_cache_override_form,
 )
+
+
+def test_newly_enabled_cache_overrides_distinguishes_broadening_from_reduction() -> (
+    None
+):
+    current = {
+        field: field in {"ignore_private", "ignore_reload"}
+        for field in CACHE_OVERRIDE_FIELDS
+    }
+    requested = {
+        field: field in {"ignore_reload", "ignore_no_store"}
+        for field in CACHE_OVERRIDE_FIELDS
+    }
+
+    assert newly_enabled_cache_overrides(current, requested) == ("ignore_no_store",)
 
 
 def test_build_template_options_clamps_workers_and_preserves_zero_values() -> None:

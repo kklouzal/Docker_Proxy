@@ -294,6 +294,11 @@
                             <span>Ignore origin private responses (ignore-private)</span>
                         </label>
 
+                        <label class="check-row">
+                            <input class="check" type="checkbox" name="acknowledge_cache_override_risk" />
+                            <span>I explicitly acknowledge that newly enabling any override can serve stale, private, or no-store content. This acknowledgement is enforced by the server and is not required to disable overrides.</span>
+                        </label>
+
                         <div class="config-form-footer">
                             <div class="actions">
                                 <button class="btn danger" type="submit" data-confirm-message="Apply cache override semantics to {{ active_proxy.display_name }}? These options can serve stale, private, or no-store content." data-pending-label="Applying...">Save &amp; Apply overrides</button>

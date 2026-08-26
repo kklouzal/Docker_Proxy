@@ -3363,3 +3363,19 @@ def parse_cache_override_form(form: FormMap) -> dict[str, bool]:
         )
         overrides[field] = modern_on or legacy_on
     return overrides
+
+
+def newly_enabled_cache_overrides(
+    current: Mapping[str, Any], requested: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Return dangerous cache semantics that a request newly enables.
+
+    A missing/false current value is deliberately treated as disabled. This keeps
+    risk-reducing requests available while making every broadening transition
+    eligible for a server-side acknowledgement check.
+    """
+    return tuple(
+        field
+        for field in CACHE_OVERRIDE_FIELDS
+        if bool(requested.get(field)) and not bool(current.get(field))
+    )
