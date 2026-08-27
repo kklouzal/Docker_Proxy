@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import time
@@ -546,6 +547,7 @@ def test_live_administration_add_change_and_delete_user(
     username = unique_token("operator")
     initial_password = "InitialPass123!"
     rotated_password = "RotatedPass123!"
+    user_removed = False
 
     add_user_response = admin_client.admin_post_form(
         "/administration",
@@ -556,60 +558,95 @@ def test_live_administration_add_change_and_delete_user(
         },
         csrf_path="/administration",
     )
-    assert add_user_response.status == 200
-    assert "User added." in add_user_response.text
-    assert username in add_user_response.text
+    try:
+        assert add_user_response.status == 200
+        assert "User added." in add_user_response.text
+        assert username in add_user_response.text
 
-    delete_current_user_response = admin_client.admin_post_form(
-        "/administration",
-        {
-            "action": "delete_user",
-            "username": "admin",
-        },
-        csrf_path="/administration",
-    )
-    assert delete_current_user_response.status == 200
-    assert (
-        "Cannot remove the currently signed-in user."
-        in delete_current_user_response.text
-    )
+        delete_current_user_response = admin_client.admin_post_form(
+            "/administration",
+            {
+                "action": "delete_user",
+                "username": "admin",
+            },
+            csrf_path="/administration",
+        )
+        assert delete_current_user_response.status == 200
+        assert (
+            "Cannot remove the currently signed-in user."
+            in delete_current_user_response.text
+        )
 
-    user_client = LiveStackClient()
-    user_client.login(username=username, password=initial_password)
-    change_password_response = user_client.admin_post_form(
-        "/administration",
-        {
-            "action": "set_password",
-            "username": username,
-            "new_password": rotated_password,
-        },
-        csrf_path="/administration",
-    )
-    assert change_password_response.status == 200
-    assert "Password updated." in change_password_response.text
+        user_client = LiveStackClient()
+        user_client.login(username=username, password=initial_password)
+        change_password_response = user_client.admin_post_form(
+            "/administration",
+            {
+                "action": "set_password",
+                "username": username,
+                "new_password": rotated_password,
+            },
+            csrf_path="/administration",
+            follow_redirects=False,
+        )
+        assert change_password_response.status in {302, 303}
+        success_location = change_password_response.headers.get("Location", "")
+        success_query = query_params(success_location)
+        assert success_query.get("ok") == ["1"]
+        assert success_query.get("msg") == ["Password updated."]
 
-    user_client.logout()
-    relogin_client = LiveStackClient()
-    relogin_client.login(username=username, password=rotated_password)
+        # The mutation response truthfully reports success in its redirect, but
+        # following that redirect must validate the now-stale session and send it
+        # to login rather than rendering another authenticated page.
+        revoked_session_response = user_client.admin_request(success_location)
+        assert revoked_session_response.status == 200
+        assert urllib.parse.urlsplit(revoked_session_response.url).path == "/login"
+        assert "Sign in" in revoked_session_response.text
+        assert "Password updated." not in revoked_session_response.text
 
-    cleanup_admin = LiveStackClient()
-    cleanup_admin.login()
-    delete_user_response = cleanup_admin.admin_post_form(
-        "/administration",
-        {
-            "action": "delete_user",
-            "username": username,
-        },
-        csrf_path="/administration",
-    )
-    assert delete_user_response.status == 200
-    assert "User removed." in delete_user_response.text
+        old_credential_client = LiveStackClient()
+        failed_old_login = old_credential_client.login(
+            username=username, password=initial_password, expect_success=False
+        )
+        assert "Invalid username or password." in failed_old_login.text
 
-    deleted_user_client = LiveStackClient()
-    failed_login = deleted_user_client.login(
-        username=username, password=rotated_password, expect_success=False
-    )
-    assert "Invalid username or password." in failed_login.text
+        relogin_client = LiveStackClient()
+        relogin_client.login(username=username, password=rotated_password)
+
+        cleanup_admin = LiveStackClient()
+        cleanup_admin.login()
+        delete_user_response = cleanup_admin.admin_post_form(
+            "/administration",
+            {
+                "action": "delete_user",
+                "username": username,
+            },
+            csrf_path="/administration",
+        )
+        assert delete_user_response.status == 200
+        assert "User removed." in delete_user_response.text
+        user_removed = True
+
+        deleted_user_client = LiveStackClient()
+        failed_login = deleted_user_client.login(
+            username=username, password=rotated_password, expect_success=False
+        )
+        assert "Invalid username or password." in failed_login.text
+    finally:
+        if not user_removed:
+            # Preserve the original assertion/transport failure while making a
+            # best effort not to leak the unique local user into later live tests.
+            with contextlib.suppress(Exception):
+                cleanup_admin = LiveStackClient()
+                cleanup_admin.login()
+                cleanup_admin.admin_post_form(
+                    "/administration",
+                    {
+                        "action": "delete_user",
+                        "username": username,
+                    },
+                    csrf_path="/administration",
+                )
 
 
 def test_live_sslfilter_and_webfilter_whitelist_workflows(
