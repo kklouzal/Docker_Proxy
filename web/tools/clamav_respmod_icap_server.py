@@ -17,6 +17,7 @@ import socket
 import socketserver
 import struct
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ DEFAULT_CHUNK_SIZE = 1024 * 1024
 DEFAULT_CLIENT_TIMEOUT = 2.0
 DEFAULT_MAX_CONNECTIONS = 64
 DEFAULT_MAX_SCANS = 16
+DEFAULT_REPLAY_MEMORY_BYTES = 1024 * 1024
 DEFAULT_CLAMD_UNAVAILABLE_RETRY_SECONDS = 2.0
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 DEFAULT_SQUID_204_BACKUP_LIMIT = 64 * 1024
@@ -89,9 +91,41 @@ class BodyTooLargeError(Exception):
 
 
 class ScanFailedAfterBodyError(RuntimeError):
-    def __init__(self, message: str, *, body: bytes) -> None:
-        super().__init__(message)
-        self.body = body
+    pass
+
+
+class SpooledReplayBody:
+    """Bounded-memory decoded response body retained for post-scan replay."""
+
+    def __init__(self, *, memory_limit: int) -> None:
+        self._file = tempfile.SpooledTemporaryFile(max_size=memory_limit, mode="w+b")
+        self._memory_limit = memory_limit
+        self.length = 0
+        self._rolled_to_disk = False
+
+    @property
+    def rolled_to_disk(self) -> bool:
+        return self._rolled_to_disk
+
+    @property
+    def closed(self) -> bool:
+        return self._file.closed
+
+    def write(self, data: bytes) -> None:
+        next_length = self.length + len(data)
+        if not self._rolled_to_disk and next_length > self._memory_limit:
+            self._file.rollover()
+            self._rolled_to_disk = True
+        self._file.write(data)
+        self.length = next_length
+
+    def write_to(self, destination: BinaryIO) -> None:
+        self._file.seek(0)
+        while chunk := self._file.read(DEFAULT_CHUNK_SIZE):
+            destination.write(chunk)
+
+    def close(self) -> None:
+        self._file.close()
 
 
 logger = logging.getLogger("clamav-respmod")
@@ -406,6 +440,7 @@ def read_icap_chunked_body(
     continue_callback=None,
     chunk_callback: Callable[[bytes], None] | None = None,
     buffer_body: bool = True,
+    read_size: int = DEFAULT_CHUNK_SIZE,
 ) -> tuple[bytes, bytes]:
     """Read an ICAP chunked body, including Squid preview continuation.
 
@@ -414,9 +449,13 @@ def read_icap_chunked_body(
     ``empty_preview_is_complete`` allows Squid's body-forbidden 0-preview shape.
     If ``chunk_callback`` is provided, each decoded body chunk is passed through
     as it is read so clamd INSTREAM scanning can proceed without waiting for the
-    full response body. Set ``buffer_body`` to false when the caller can return
-    ICAP 204 for clean objects and does not need to replay the original body.
+    full response body. Set ``buffer_body`` to false when the caller retains the
+    body elsewhere (for example, in a bounded-memory spool). Large ICAP chunks
+    are decoded in bounded pieces rather than materialized as one allocation.
     """
+    if read_size < 1:
+        message = "ICAP body read size must be positive"
+        raise ValueError(message)
     body = bytearray()
     total_size = 0
     remainder = initial
@@ -445,25 +484,34 @@ def read_icap_chunked_body(
         if size > max_bytes - total_size:
             message = f"ICAP body exceeds {max_bytes} bytes"
             raise BodyTooLargeError(message)
-        chunk, remainder = _read_exact(stream, size + 2, remainder)
-        if chunk[-2:] != CRLF:
+        if (
+            preview_size is not None
+            and not preview_terminator_seen
+            and size > preview_size - total_size
+        ):
+            message = "ICAP preview body exceeds Preview header"
+            raise IcapProtocolError(message)
+        remaining = size
+        while remaining:
+            decoded, remainder = _read_exact(
+                stream, min(remaining, read_size), remainder
+            )
+            remaining -= len(decoded)
+            total_size += len(decoded)
+            if preview_size is not None and not preview_terminator_seen:
+                if total_size > preview_size:
+                    message = "ICAP preview body exceeds Preview header"
+                    raise IcapProtocolError(message)
+            if chunk_callback is not None:
+                chunk_callback(decoded)
+            if buffer_body:
+                body.extend(decoded)
+            if preview_terminator_seen:
+                post_preview_chunk_seen = True
+        terminator, remainder = _read_exact(stream, len(CRLF), remainder)
+        if terminator != CRLF:
             message = "ICAP chunk missing CRLF terminator"
             raise IcapProtocolError(message)
-        decoded = chunk[:-2]
-        total_size += len(decoded)
-        if total_size > max_bytes:
-            message = f"ICAP body exceeds {max_bytes} bytes"
-            raise BodyTooLargeError(message)
-        if preview_size is not None and not preview_terminator_seen:
-            if total_size > preview_size:
-                message = "ICAP preview body exceeds Preview header"
-                raise IcapProtocolError(message)
-        if chunk_callback is not None:
-            chunk_callback(decoded)
-        if buffer_body:
-            body.extend(decoded)
-        if preview_terminator_seen:
-            post_preview_chunk_seen = True
 
 
 def _parse_clamd_response(response: str) -> ClamdResult:
@@ -630,6 +678,11 @@ def clean_response(
     http_header: bytes,
     body: bytes,
 ) -> bytes:
+    """Build a small in-memory clean response for compatibility/tests.
+
+    The request handler uses ``_write_replay_response`` for scanned bodies so
+    configured maximum-size objects are never assembled into response bytes.
+    """
     # Be conservative for RESPMOD clean verdicts: replaying the already-drained
     # response body avoids Squid's late-204 backup edge cases across Preview,
     # unknown/chunked framing, and persistent ICAP connection churn.  Fail-open
@@ -1000,12 +1053,29 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
         self.wfile.write(response)
         self.wfile.flush()
 
+    def _write_replay_response(
+        self, *, http_header: bytes, body: SpooledReplayBody
+    ) -> None:
+        http_header = _http_header_for_body_replay(http_header, body.length)
+        response_header = _icap_response(
+            "200 OK",
+            {
+                "ISTag": ISTAG,
+                "Encapsulated": f"res-hdr=0, res-body={len(http_header)}",
+            },
+            http_header + f"{body.length:X}\r\n".encode("ascii"),
+        )
+        self.wfile.write(response_header)
+        body.write_to(self.wfile)
+        self.wfile.write(CRLF + b"0\r\n\r\n")
+        self.wfile.flush()
+
     def _send_fail_open_response(
         self,
         *,
         allow_204: bool,
         http_header: bytes,
-        body: bytes,
+        body: SpooledReplayBody | None,
         body_complete: bool,
         null_body: bool = False,
     ) -> None:
@@ -1018,9 +1088,12 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
             )
             return
         if body_complete:
-            self._write_response(
-                clean_response(allow_204=False, http_header=http_header, body=body)
-            )
+            if body is None:
+                self._write_response(
+                    error_response("scan failed before complete response body")
+                )
+                return
+            self._write_replay_response(http_header=http_header, body=body)
             return
         self._write_response(
             error_response("scan failed before complete response body")
@@ -1031,9 +1104,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
         *,
         initial: bytes,
         http_header: bytes,
-        allow_204: bool,
         preview_size: int | None,
-    ) -> tuple[bytes, ClamdResult]:
+        body: SpooledReplayBody,
+    ) -> ClamdResult:
         """Read the full ICAP body while best-effort streaming to clamd.
 
         Squid may still be writing the encapsulated response body when a remote
@@ -1055,6 +1128,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
 
             def send_chunk_or_degrade(chunk: bytes) -> None:
                 nonlocal scan_error
+                body.write(chunk)
                 if scanner is None or scan_error is not None:
                     return
                 try:
@@ -1062,7 +1136,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 except Exception as exc:
                     scan_error = exc
 
-            body, remainder = read_icap_chunked_body(
+            _unused_body, remainder = read_icap_chunked_body(
                 self.rfile,
                 initial,
                 max_bytes=self.server.max_scan_bytes,
@@ -1070,7 +1144,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 preview_size=preview_size,
                 continue_callback=self._send_100_continue,
                 chunk_callback=send_chunk_or_degrade,
-                buffer_body=not allow_204,
+                buffer_body=False,
             )
             if remainder:
                 # Terminal chunk trailers have already been drained.  This
@@ -1079,7 +1153,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 # reusable pipelined exchange for this handler.
                 message = "unexpected data after terminal ICAP body"
                 raise IcapProtocolError(message)
-            _validate_http_content_length_matches_body(http_header, len(body))
+            _validate_http_content_length_matches_body(http_header, body.length)
             if scanner is not None and scan_error is None:
                 try:
                     result = scanner.finish()
@@ -1087,16 +1161,16 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     scan_error = exc
 
         if scan_error is not None:
-            raise ScanFailedAfterBodyError(str(scan_error), body=body) from scan_error
+            raise ScanFailedAfterBodyError(str(scan_error)) from scan_error
         if result is None:
             message = "clamd INSTREAM scan failed without a verdict"
-            raise ScanFailedAfterBodyError(message, body=body)
-        return body, result
+            raise ScanFailedAfterBodyError(message)
+        return result
 
     def handle(self) -> None:
         allow_204 = False
         http_header = b""
-        body = b""
+        replay_body: SpooledReplayBody | None = None
         body_complete = False
         null_body = False
         try:
@@ -1153,11 +1227,10 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     http_header
                 )
                 allow_204 = can_use_204
-                # ICAP 204 lets Squid keep the original clean response, so the
-                # proxy does not need to retain the full body in memory when
-                # Squid can safely back it up. If Squid advertised Allow: 204
-                # for an unknown/chunked/large response, still buffer and replay
-                # the body to avoid ICAP_RESPMOD_EARLY failures.
+                # Clean verdicts replay the drained response conservatively to
+                # avoid Squid's late-204 backup edge cases. Retain that replay
+                # in a bounded-memory spool while streaming the same decoded
+                # bytes incrementally to clamd.
                 if body_forbidden:
                     # Squid can encode body-forbidden HTTP responses (notably
                     # 204) as an ICAP res-body with only the terminal zero
@@ -1193,16 +1266,16 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     null_body = True
                     result = self.server.scan_body(body)
                 else:
+                    replay_body = self.server.create_replay_body()
                     try:
-                        body, result = self._read_respmod_body_for_scan(
+                        result = self._read_respmod_body_for_scan(
                             initial=remainder,
                             http_header=http_header,
-                            allow_204=False,
                             preview_size=preview_size,
+                            body=replay_body,
                         )
                         body_complete = True
-                    except ScanFailedAfterBodyError as exc:
-                        body = exc.body
+                    except ScanFailedAfterBodyError:
                         body_complete = True
                         raise
             else:
@@ -1227,7 +1300,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     request_method=request_method,
                 )
                 body_complete = True
-                result = self.server.scan_body(body)
+                result = self.server.scan_body(b"")
                 can_use_204 = allow_204
             if result.infected:
                 self.server.record("infected")
@@ -1239,9 +1312,11 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 )
             else:
                 self.server.record("clean")
-                response = clean_response(
-                    allow_204=can_use_204, http_header=http_header, body=body
-                )
+                if replay_body is None:  # pragma: no cover - lifecycle invariant
+                    message = "complete response body is unavailable for replay"
+                    raise RuntimeError(message)
+                self._write_replay_response(http_header=http_header, body=replay_body)
+                return
             self._write_response(response)
         except Exception as exc:
             self.server.record("errors")
@@ -1272,7 +1347,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                         self._send_fail_open_response(
                             allow_204=allow_204,
                             http_header=http_header,
-                            body=body,
+                            body=replay_body,
                             body_complete=body_complete,
                             null_body=null_body,
                         )
@@ -1292,6 +1367,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     scan_error_warning.warning(
                         "failed writing fail-closed ICAP response: %s", write_exc
                     )
+        finally:
+            if replay_body is not None:
+                replay_body.close()
 
 
 class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -1312,6 +1390,7 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         client_timeout: float = DEFAULT_CLIENT_TIMEOUT,
         max_connections: int = DEFAULT_MAX_CONNECTIONS,
         max_scans: int = DEFAULT_MAX_SCANS,
+        replay_memory_bytes: int = DEFAULT_REPLAY_MEMORY_BYTES,
     ) -> None:
         super().__init__(server_address, handler_class)
         self.clamd_host = clamd_host
@@ -1322,6 +1401,7 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.client_timeout = client_timeout
         self.max_connections = max_connections
         self.max_scans = max_scans
+        self.replay_memory_bytes = max(1, replay_memory_bytes)
         self._request_slots = threading.BoundedSemaphore(max_connections)
         self._scan_slots = threading.BoundedSemaphore(max_scans)
         self._scan_probe_lock = threading.Lock()
@@ -1333,11 +1413,15 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             max_connections=self.max_connections,
             max_scans=self.max_scans,
             max_scan_bytes=self.max_scan_bytes,
+            replay_memory_bytes=self.replay_memory_bytes,
         )
 
     def record(self, counter: str) -> None:
         self.stats.increment(counter)
         self.stats.emit_if_due()
+
+    def create_replay_body(self) -> SpooledReplayBody:
+        return SpooledReplayBody(memory_limit=self.replay_memory_bytes)
 
     def server_close(self) -> None:
         try:
@@ -1470,6 +1554,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=env_int("CLAMAV_RESPMOD_MAX_SCANS", DEFAULT_MAX_SCANS),
     )
+    parser.add_argument(
+        "--replay-memory-bytes",
+        type=int,
+        default=env_int(
+            "CLAMAV_RESPMOD_REPLAY_MEMORY_BYTES", DEFAULT_REPLAY_MEMORY_BYTES
+        ),
+    )
     parser.add_argument("--fail-open", dest="fail_open", action="store_true")
     parser.add_argument("--fail-closed", dest="fail_open", action="store_false")
     parser.set_defaults(
@@ -1480,6 +1571,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args.client_timeout = max(0.1, args.client_timeout)
     args.max_connections = max(1, args.max_connections)
     args.max_scans = max(1, min(args.max_scans, args.max_connections))
+    args.replay_memory_bytes = max(1, args.replay_memory_bytes)
     return args
 
 
@@ -1495,9 +1587,10 @@ def main(argv: list[str] | None = None) -> int:
         client_timeout=args.client_timeout,
         max_connections=args.max_connections,
         max_scans=args.max_scans,
+        replay_memory_bytes=args.replay_memory_bytes,
     ) as server:
         logger.warning(
-            "listening on %s:%s, clamd=%s:%s, fail_open=%s, client_timeout=%s, max_connections=%s, max_scans=%s",
+            "listening on %s:%s, clamd=%s:%s, fail_open=%s, client_timeout=%s, max_connections=%s, max_scans=%s, replay_memory_bytes=%s",
             args.host,
             args.port,
             args.clamd_host,
@@ -1506,6 +1599,7 @@ def main(argv: list[str] | None = None) -> int:
             args.client_timeout,
             args.max_connections,
             args.max_scans,
+            args.replay_memory_bytes,
         )
         server.serve_forever()
     return 0

@@ -170,6 +170,53 @@ def test_icap_chunks_stream_to_clamd_incrementally(monkeypatch) -> None:
     )
 
 
+def test_chunk_reader_spools_one_large_wire_chunk_in_bounded_pieces() -> None:
+    server = _load_server()
+    payload = b"0123456789abcdef"
+    replay = server.SpooledReplayBody(memory_limit=8)
+    callback_sizes: list[int] = []
+
+    def retain(chunk: bytes) -> None:
+        callback_sizes.append(len(chunk))
+        replay.write(chunk)
+
+    try:
+        body, remainder = server.read_icap_chunked_body(
+            io.BytesIO(b"10\r\n" + payload + b"\r\n0\r\n\r\n"),
+            chunk_callback=retain,
+            buffer_body=False,
+            read_size=4,
+        )
+        replayed = io.BytesIO()
+        replay.write_to(replayed)
+
+        assert body == b""
+        assert remainder == b""
+        assert callback_sizes == [4, 4, 4, 4]
+        assert replay.length == len(payload)
+        assert replay.rolled_to_disk is True
+        assert replayed.getvalue() == payload
+    finally:
+        replay.close()
+
+    assert replay.closed is True
+
+
+def test_spooled_replay_body_stays_in_memory_through_exact_threshold() -> None:
+    server = _load_server()
+    replay = server.SpooledReplayBody(memory_limit=8)
+
+    replay.write(b"12345678")
+    assert replay.length == 8
+    assert replay.rolled_to_disk is False
+
+    replay.write(b"9")
+    assert replay.length == 9
+    assert replay.rolled_to_disk is True
+    replay.close()
+    assert replay.closed is True
+
+
 def test_clamd_instream_scan_reports_found(monkeypatch) -> None:
     server = _load_server()
     fake = FakeSocket(b"stream: Eicar-Test-Signature FOUND\n")
@@ -773,7 +820,7 @@ def test_unknown_length_clean_respmod_replays_body_instead_of_late_204() -> None
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
-        response = _recv_icap_response(
+        response = _recv_icap_exchange(
             port, _sample_unknown_length_respmod_request(port), timeout=0.5
         )
         icap_server.shutdown()
@@ -804,7 +851,7 @@ def test_chunked_clean_respmod_replays_with_normalized_framing() -> None:
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
-        response = _recv_icap_response(
+        response = _recv_icap_exchange(
             port, _sample_chunked_respmod_request(port), timeout=0.5
         )
         icap_server.shutdown()
@@ -836,7 +883,9 @@ def test_small_clean_respmod_with_allow_204_still_replays_complete_body() -> Non
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
-        response = _recv_icap_response(port, _sample_respmod_request(port), timeout=0.5)
+        response = _recv_icap_exchange(
+            port, _sample_respmod_request(port), timeout=0.5
+        )
         icap_server.shutdown()
         thread.join(timeout=1)
 
@@ -1497,7 +1546,7 @@ def test_respmod_with_req_hdr_offset_replays_only_response_header() -> None:
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
-        response = _recv_icap_response(
+        response = _recv_icap_exchange(
             port, _sample_respmod_request_with_req_hdr(port), timeout=0.5
         )
         icap_server.shutdown()
@@ -3070,6 +3119,219 @@ class BlockingFakeSocket(FakeSocket):
         return self.response
 
 
+def test_clean_respmod_spools_exact_replay_and_closes_storage() -> None:
+    server = _load_server()
+    payload = b"clean-body"
+    scanner = RecordingScanner()
+    replay_bodies = []
+
+    class CapturingServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return scanner
+
+        def create_replay_body(self):
+            replay = super().create_replay_body()
+            replay_bodies.append(replay)
+            return replay
+
+    http_header = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: application/octet-stream\r\n"
+        + f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+    )
+    wire_body = f"{len(payload):X}\r\n".encode("ascii") + payload + b"\r\n0\r\n\r\n"
+    with CapturingServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+        replay_memory_bytes=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_exchange(
+            port,
+            _respmod_request_with_http_header(port, http_header, wire_body),
+            timeout=1,
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scanner.chunks == [payload]
+    assert scanner.finished is True
+    assert response.endswith(wire_body)
+    assert replay_bodies
+    assert replay_bodies[0].rolled_to_disk is True
+    assert replay_bodies[0].closed is True
+
+
+def test_preview_respmod_spools_exact_replay_across_continuation() -> None:
+    server = _load_server()
+    replay_bodies = []
+
+    class CapturingServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return CleanScanner()
+
+        def create_replay_body(self):
+            replay = super().create_replay_body()
+            replay_bodies.append(replay)
+            return replay
+
+    with CapturingServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+        replay_memory_bytes=2,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_exchange(
+            port, _sample_preview_respmod_request(port), timeout=1
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
+    assert response.endswith(b"5\r\nhello\r\n0\r\n\r\n")
+    assert replay_bodies
+    assert replay_bodies[0].rolled_to_disk is True
+    assert replay_bodies[0].closed is True
+
+
+def test_infected_respmod_closes_spool_without_replaying_original() -> None:
+    server = _load_server()
+    replay_bodies = []
+
+    class InfectedScanner(CleanScanner):
+        def finish(self):
+            return server.ClamdResult(
+                clean=False, infected=True, signature="Test.Signature"
+            )
+
+    class CapturingServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return InfectedScanner()
+
+        def create_replay_body(self):
+            replay = super().create_replay_body()
+            replay_bodies.append(replay)
+            return replay
+
+    with CapturingServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+        replay_memory_bytes=2,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_exchange(port, _sample_respmod_request(port), timeout=1)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert b"HTTP/1.1 403 Forbidden" in response
+    assert b"5\r\nhello\r\n0\r\n\r\n" not in response
+    assert replay_bodies
+    assert replay_bodies[0].rolled_to_disk is True
+    assert replay_bodies[0].closed is True
+
+
+def test_body_too_large_closes_partial_spool_without_fail_open_replay() -> None:
+    server = _load_server()
+    replay_bodies = []
+
+    class CapturingServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return CleanScanner()
+
+        def create_replay_body(self):
+            replay = super().create_replay_body()
+            replay_bodies.append(replay)
+            return replay
+
+    request_body = b"3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n"
+    with CapturingServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=True,
+        max_scan_bytes=5,
+        client_timeout=0.5,
+        max_connections=4,
+        replay_memory_bytes=2,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_exchange(
+            port,
+            _respmod_request_with_http_header(port, http_header, request_body),
+            timeout=1,
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert b"HTTP/1.1 502 Bad Gateway" in response
+    assert b"scan failed before complete response body" in response
+    assert b"3\r\nabc\r\n0\r\n\r\n" not in response
+    assert replay_bodies
+    assert replay_bodies[0].rolled_to_disk is True
+    assert replay_bodies[0].closed is True
+
+
+def test_null_body_respmod_does_not_allocate_replay_spool() -> None:
+    server = _load_server()
+    replay_allocations = 0
+
+    class CapturingServer(server.ClamAvRespmodServer):
+        def scan_body(self, body: bytes):
+            assert body == b""
+            return server.ClamdResult(clean=True)
+
+        def create_replay_body(self):
+            nonlocal replay_allocations
+            replay_allocations += 1
+            return super().create_replay_body()
+
+    with CapturingServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+        replay_memory_bytes=2,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_exchange(
+            port, _sample_null_body_respmod_request(port), timeout=1
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
+    assert replay_allocations == 0
+
+
 def test_options_response_is_immediate_while_client_keeps_connection_open() -> None:
     server = _load_server()
 
@@ -3201,7 +3463,7 @@ def test_scan_finish_failure_without_allow_204_replays_clean_response() -> None:
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
-        response = _recv_icap_response(
+        response = _recv_icap_exchange(
             port, _sample_respmod_request_without_allow_204(port), timeout=0.5
         )
         icap_server.shutdown()
@@ -4224,12 +4486,19 @@ def test_unavailable_clamd_fail_open_stress_handles_mixed_respmod_shapes(
 def test_fail_open_without_allow_204_replays_after_clamd_reset(monkeypatch) -> None:
     server = _load_server()
     fake = ResetBeforeVerdictSocket()
+    replay_bodies = []
+
+    class CapturingServer(server.ClamAvRespmodServer):
+        def create_replay_body(self):
+            replay = super().create_replay_body()
+            replay_bodies.append(replay)
+            return replay
 
     monkeypatch.setattr(
         server.socket, "create_connection", lambda address, timeout: fake
     )
 
-    with server.ClamAvRespmodServer(
+    with CapturingServer(
         ("127.0.0.1", 0),
         clamd_host="127.0.0.1",
         clamd_port=3310,
@@ -4241,7 +4510,7 @@ def test_fail_open_without_allow_204_replays_after_clamd_reset(monkeypatch) -> N
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
-        response = _recv_icap_response(
+        response = _recv_icap_exchange(
             port, _sample_respmod_request_without_allow_204(port), timeout=1
         )
         icap_server.shutdown()
@@ -4250,6 +4519,8 @@ def test_fail_open_without_allow_204_replays_after_clamd_reset(monkeypatch) -> N
     assert response.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"HTTP/1.1 200 OK" in response
     assert b"5\r\nhello\r\n0\r\n\r\n" in response
+    assert replay_bodies
+    assert replay_bodies[0].closed is True
 
 
 def test_infected_verdict_blocks_after_complete_body(monkeypatch) -> None:
@@ -4336,10 +4607,16 @@ def test_scan_capacity_exhaustion_fails_open_without_wedging_options(
 
 def test_slow_clamd_scan_fails_closed_with_error_payload() -> None:
     server = _load_server()
+    replay_bodies = []
 
     class FailClosedServer(server.ClamAvRespmodServer):
         def open_scan(self):
             return SlowScanner()
+
+        def create_replay_body(self):
+            replay = super().create_replay_body()
+            replay_bodies.append(replay)
+            return replay
 
     with FailClosedServer(
         ("127.0.0.1", 0),
@@ -4360,6 +4637,8 @@ def test_slow_clamd_scan_fails_closed_with_error_payload() -> None:
     assert response.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"HTTP/1.1 502 Bad Gateway" in response
     assert b"clamd INSTREAM scan timed out" in response
+    assert replay_bodies
+    assert replay_bodies[0].closed is True
 
 
 @pytest.mark.parametrize("name", ["CLAMAV_REQUIRED", "FILE_SECURITY_AV_REQUIRED"])
@@ -4405,12 +4684,14 @@ def test_respmod_runtime_args_bound_clients_and_concurrency(monkeypatch) -> None
     monkeypatch.setenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", "0.05")
     monkeypatch.setenv("CLAMAV_RESPMOD_MAX_CONNECTIONS", "0")
     monkeypatch.setenv("CLAMAV_RESPMOD_MAX_SCANS", "10")
+    monkeypatch.setenv("CLAMAV_RESPMOD_REPLAY_MEMORY_BYTES", "0")
 
     args = server._parse_args([])
 
     assert math.isclose(args.client_timeout, 0.1)
     assert args.max_connections == 1
     assert args.max_scans == 1
+    assert args.replay_memory_bytes == 1
 
 
 def test_respmod_runtime_args_cli_overrides_malformed_numeric_env(monkeypatch) -> None:
@@ -4422,6 +4703,7 @@ def test_respmod_runtime_args_cli_overrides_malformed_numeric_env(monkeypatch) -
     monkeypatch.setenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", "bad")
     monkeypatch.setenv("CLAMAV_RESPMOD_MAX_CONNECTIONS", "nope")
     monkeypatch.setenv("CLAMAV_RESPMOD_MAX_SCANS", "also-nope")
+    monkeypatch.setenv("CLAMAV_RESPMOD_REPLAY_MEMORY_BYTES", "invalid")
 
     args = server._parse_args(
         [
@@ -4439,6 +4721,8 @@ def test_respmod_runtime_args_cli_overrides_malformed_numeric_env(monkeypatch) -
             "8",
             "--max-scans",
             "4",
+            "--replay-memory-bytes",
+            "8192",
         ]
     )
 
@@ -4449,6 +4733,7 @@ def test_respmod_runtime_args_cli_overrides_malformed_numeric_env(monkeypatch) -
     assert math.isclose(args.client_timeout, 1.5)
     assert args.max_connections == 8
     assert args.max_scans == 4
+    assert args.replay_memory_bytes == 8192
 
 
 def test_respmod_runtime_args_malformed_numeric_env_uses_defaults(monkeypatch) -> None:
@@ -4460,6 +4745,7 @@ def test_respmod_runtime_args_malformed_numeric_env_uses_defaults(monkeypatch) -
     monkeypatch.setenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", "bad")
     monkeypatch.setenv("CLAMAV_RESPMOD_MAX_CONNECTIONS", "nope")
     monkeypatch.setenv("CLAMAV_RESPMOD_MAX_SCANS", "also-nope")
+    monkeypatch.setenv("CLAMAV_RESPMOD_REPLAY_MEMORY_BYTES", "invalid")
 
     args = server._parse_args([])
 
@@ -4470,6 +4756,7 @@ def test_respmod_runtime_args_malformed_numeric_env_uses_defaults(monkeypatch) -
     assert math.isclose(args.client_timeout, server.DEFAULT_CLIENT_TIMEOUT)
     assert args.max_connections == server.DEFAULT_MAX_CONNECTIONS
     assert args.max_scans == server.DEFAULT_MAX_SCANS
+    assert args.replay_memory_bytes == server.DEFAULT_REPLAY_MEMORY_BYTES
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
