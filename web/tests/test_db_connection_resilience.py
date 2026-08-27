@@ -222,6 +222,47 @@ def test_failed_cursor_connection_error_discards_pooled_connection(
     db.reset_mysql_ready_for_tests()
 
 
+@pytest.mark.parametrize("method_name", ["execute", "executemany"])
+def test_cursor_acquisition_connection_error_discards_pooled_connection(
+    monkeypatch,
+    method_name: str,
+) -> None:
+    import pymysql  # type: ignore
+    from services import db  # type: ignore
+
+    db.reset_mysql_ready_for_tests()
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    calls: list[str] = []
+
+    class NativeConnection:
+        def cursor(self) -> NoReturn:
+            calls.append("cursor")
+            raise pymysql.err.InterfaceError(0, "")
+
+        def rollback(self) -> None:
+            calls.append("rollback")
+
+        def close(self) -> None:
+            calls.append("native.close")
+
+    cfg = db.DatabaseConfig(host="db", user="u", password="p", database="d")
+    key = db._pool_key(cfg)
+    with db._pool_condition:
+        db._pooled_connections[key] = db._PoolState(idle=[], active=1)
+
+    conn = db.CompatConnection(NativeConnection(), cfg=cfg)
+    with pytest.raises(pymysql.err.InterfaceError):
+        if method_name == "execute":
+            conn.execute("SELECT 1")
+        else:
+            conn.executemany("INSERT INTO t VALUES (%s)", [(1,)])
+    conn.close()
+
+    assert calls == ["cursor", "native.close"]
+    assert key not in db._pooled_connections
+    db.reset_mysql_ready_for_tests()
+
+
 def test_compat_result_closes_cursor_after_fetchall_and_preserves_rows() -> None:
     from services.db import CompatConnection  # type: ignore
 

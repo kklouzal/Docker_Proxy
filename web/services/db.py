@@ -193,7 +193,11 @@ class CompatConnection:
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> CompatResult:
         if not (sql or "").strip():
             return CompatResult(_EmptyCursor())
-        cur = self.native.cursor()
+        try:
+            cur = self.native.cursor()
+        except Exception as exc:
+            self._mark_discard_for_error(exc)
+            raise
         try:
             cur.execute(sql, tuple(params or ()))
         except Exception as exc:
@@ -211,7 +215,11 @@ class CompatConnection:
     ) -> CompatResult:
         if not (sql or "").strip():
             return CompatResult(_EmptyCursor())
-        cur = self.native.cursor()
+        try:
+            cur = self.native.cursor()
+        except Exception as exc:
+            self._mark_discard_for_error(exc)
+            raise
         try:
             cur.executemany(sql, [tuple(p) for p in seq_of_params])
         except Exception as exc:
