@@ -121,6 +121,47 @@ def test_login_clears_session_fixation_data_but_preserves_csrf(
         assert sess.permanent is True
 
 
+@pytest.mark.parametrize("revocation", ["password_change", "deletion"])
+def test_local_admin_session_is_revoked_by_credential_record_change(
+    monkeypatch, tmp_path, revocation: str
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    if revocation == "password_change":
+        loaded.auth_store.set_password("admin", "replacement-password")
+    else:
+        loaded.auth_store.delete_user("admin")
+
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code in {302, 303}
+    assert response.headers["Location"].startswith("/login?")
+    with client.session_transaction() as sess:
+        assert "user" not in sess
+
+
+def test_local_admin_session_fails_closed_when_auth_store_is_unavailable(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    def unavailable(_username: str) -> str | None:
+        msg = "database unavailable"
+        raise RuntimeError(msg)
+
+    loaded.auth_store.get_user_session_version = unavailable
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code in {302, 303}
+    assert response.headers["Location"].startswith("/login?")
+    with client.session_transaction() as sess:
+        assert "user" not in sess
+
+
 def test_login_degrades_to_local_auth_when_saml_profile_store_is_unavailable(
     monkeypatch, tmp_path
 ) -> None:

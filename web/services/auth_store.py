@@ -1,4 +1,5 @@
 import fcntl
+import hashlib
 import logging
 import os
 import pathlib
@@ -271,19 +272,46 @@ class AuthStore:
             for r in rows
         ]
 
-    def verify_user(self, username: str, password: str) -> bool:
+    @staticmethod
+    def _session_version(password_hash: str, updated_ts: int) -> str:
+        """Return a cookie-safe version that changes with the credential record."""
+        version_material = f"{password_hash}\0{updated_ts}".encode()
+        return hashlib.sha256(version_material).hexdigest()
+
+    def authenticate_user(self, username: str, password: str) -> str | None:
         self.ensure_schema()
         u = (username or "").strip()
         if not u:
-            return False
+            return None
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT password_hash FROM users WHERE username = %s",
+                "SELECT password_hash, updated_ts FROM users WHERE username = %s",
                 (u,),
             ).fetchone()
         if not row:
-            return False
-        return bool(check_password_hash(row[0], password or ""))
+            return None
+        password_hash = str(row[0])
+        if not check_password_hash(password_hash, password or ""):
+            return None
+        return self._session_version(password_hash, int(row[1]))
+
+    def verify_user(self, username: str, password: str) -> bool:
+        return self.authenticate_user(username, password) is not None
+
+    def get_user_session_version(self, username: str) -> str | None:
+        """Return the current local credential version, or None if revoked."""
+        self.ensure_schema()
+        u = (username or "").strip()
+        if not u:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT password_hash, updated_ts FROM users WHERE username = %s",
+                (u,),
+            ).fetchone()
+        if not row:
+            return None
+        return self._session_version(str(row[0]), int(row[1]))
 
     def add_user(self, username: str, password: str) -> None:
         self.ensure_schema()

@@ -19,6 +19,7 @@ class FakeAuthStore:
         self.added: list[tuple[str, str]] = []
         self.password_changes: list[tuple[str, str]] = []
         self.deleted: list[str] = []
+        self.revisions: dict[str, int] = {"admin": 1}
 
     def any_users(self) -> bool:
         return bool(self.passwords)
@@ -28,6 +29,18 @@ class FakeAuthStore:
 
     def verify_user(self, username: str, password: str) -> bool:
         return self.passwords.get((username or "").strip()) == password
+
+    def authenticate_user(self, username: str, password: str) -> str | None:
+        username = (username or "").strip()
+        if not self.verify_user(username, password):
+            return None
+        return str(self.revisions[username])
+
+    def get_user_session_version(self, username: str) -> str | None:
+        username = (username or "").strip()
+        if username not in self.passwords:
+            return None
+        return str(self.revisions[username])
 
     def list_users(self) -> list[Any]:
         return [
@@ -50,6 +63,7 @@ class FakeAuthStore:
             msg = "User already exists."
             raise ValueError(msg)
         self.passwords[username] = password
+        self.revisions[username] = 1
         self.added.append((username, password))
 
     def set_password(self, username: str, new_password: str) -> None:
@@ -64,6 +78,7 @@ class FakeAuthStore:
             msg = "Password must be between 12 and 1024 characters."
             raise ValueError(msg)
         self.passwords[username] = new_password
+        self.revisions[username] += 1
         self.password_changes.append((username, new_password))
 
     def delete_user(self, username: str) -> None:
@@ -72,6 +87,7 @@ class FakeAuthStore:
             msg = "User not found."
             raise ValueError(msg)
         del self.passwords[username]
+        del self.revisions[username]
         self.deleted.append(username)
 
 

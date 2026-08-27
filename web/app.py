@@ -2356,7 +2356,27 @@ if _auth_provider_bootstrap_errors and _database_runtime_configured:
 
 def _is_logged_in() -> bool:
     u = session.get("user")
-    return bool(u and isinstance(u, str))
+    if not u or not isinstance(u, str):
+        return False
+    provider = session.get("auth_provider")
+    if provider != "local":
+        return bool(provider and isinstance(provider, str))
+    session_version = session.get("local_auth_version")
+    if not isinstance(session_version, str):
+        session.clear()
+        return False
+    try:
+        current_version = _auth_store.get_user_session_version(u)
+    except Exception:
+        app.logger.exception("Failed to validate local administrator session")
+        session.clear()
+        return False
+    if not current_version or not secrets.compare_digest(
+        session_version, current_version
+    ):
+        session.clear()
+        return False
+    return True
 
 
 def _query_flag(value: bool) -> str | None:
@@ -3548,9 +3568,10 @@ def login():
             else "local"
         )
         directory_attempted = directory_provider != "local"
-        local_ok = (
-            False if directory_ok else _auth_store.verify_user(username, password)
+        local_auth_version = (
+            None if directory_ok else _auth_store.authenticate_user(username, password)
         )
+        local_ok = local_auth_version is not None
         if directory_ok or local_ok:
             login_provider = directory_provider if directory_ok else "local"
             login_username = (
@@ -3558,7 +3579,11 @@ def login():
                 if directory_ok
                 else username
             )
-            _establish_admin_session(login_username, login_provider)
+            _establish_admin_session(
+                login_username,
+                login_provider,
+                local_auth_version=local_auth_version,
+            )
             _record_audit_event(
                 "login_success",
                 ok=True,
@@ -3600,7 +3625,12 @@ def login():
     )
 
 
-def _establish_admin_session(username: str, provider: str) -> None:
+def _establish_admin_session(
+    username: str,
+    provider: str,
+    *,
+    local_auth_version: str | None = None,
+) -> None:
     # Prevent session fixation by clearing any existing session data.
     prev_csrf = session.get("_csrf_token")
     session.clear()
@@ -3613,6 +3643,11 @@ def _establish_admin_session(username: str, provider: str) -> None:
         session["_csrf_token"] = secrets.token_urlsafe(32)
     session["user"] = username
     session["auth_provider"] = provider
+    if provider == "local":
+        if not local_auth_version:
+            msg = "Local administrator sessions require a credential version."
+            raise RuntimeError(msg)
+        session["local_auth_version"] = local_auth_version
     session.permanent = True  # Apply PERMANENT_SESSION_LIFETIME
 
 

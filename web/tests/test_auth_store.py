@@ -303,6 +303,8 @@ def test_auth_store_username_and_password_validation(tmp_path) -> None:
 
     store.add_user("user_1", "123456789012")
     assert store.verify_user("user_1", "123456789012") is True
+    original_version = store.authenticate_user("user_1", "123456789012")
+    assert original_version == store.get_user_session_version("user_1")
     assert store.verify_user("user_1", "nope") is False
 
     with pytest.raises(ValueError, match="already exists"):
@@ -320,8 +322,10 @@ def test_auth_store_username_and_password_validation(tmp_path) -> None:
 
     store.set_password("user_1", "updated-password")
     assert store.verify_user("user_1", "updated-password") is True
+    assert store.get_user_session_version("user_1") != original_version
     store.delete_user("user_1")
     assert store.verify_user("user_1", "updated-password") is False
+    assert store.get_user_session_version("user_1") is None
 
 
 def test_explicit_bootstrap_creates_only_first_user(tmp_path) -> None:
