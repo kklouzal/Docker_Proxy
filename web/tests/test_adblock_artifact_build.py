@@ -390,6 +390,110 @@ def test_materialize_archive_to_directory_replaces_target_and_writes_marker(
     assert artifacts_module.read_materialized_artifact_sha(target) == "abc123"
 
 
+def test_materialize_archive_restores_previous_target_when_publish_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    target = tmp_path / "compiled"
+    target.mkdir()
+    (target / "settings.json").write_text("old", encoding="utf-8")
+    original_replace = Path.replace
+
+    publish_error = OSError("injected publish failure")
+
+    def fail_publish(source: Path, destination: Path) -> Path:
+        if source.name == "payload":
+            raise publish_error
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_publish)
+
+    with pytest.raises(OSError, match="injected publish failure"):
+        artifacts_module.materialize_archive_to_directory(
+            target,
+            archive_blob=_zip_blob({"settings.json": "new"}),
+            artifact_sha256="new-sha",
+        )
+
+    assert (target / "settings.json").read_text(encoding="utf-8") == "old"
+    assert list(tmp_path.glob(".adblock-backup-*")) == []
+    assert list(tmp_path.glob(".adblock-stage-*")) == []
+
+
+def test_materialize_archive_restores_previous_target_when_publish_fsync_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    target = tmp_path / "compiled"
+    target.mkdir()
+    (target / "settings.json").write_text("old", encoding="utf-8")
+    original_fsync_directory = artifacts_module._fsync_directory
+    fsync_error = OSError("injected directory fsync failure")
+    failed = False
+
+    def fail_once_after_publish(path: Path) -> None:
+        nonlocal failed
+        if path == tmp_path and target.exists() and not failed:
+            failed = True
+            raise fsync_error
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(artifacts_module, "_fsync_directory", fail_once_after_publish)
+
+    with pytest.raises(OSError, match="injected directory fsync failure"):
+        artifacts_module.materialize_archive_to_directory(
+            target,
+            archive_blob=_zip_blob({"settings.json": "new"}),
+            artifact_sha256="new-sha",
+        )
+
+    assert failed is True
+    assert (target / "settings.json").read_text(encoding="utf-8") == "old"
+    assert list(tmp_path.glob(".adblock-backup-*")) == []
+    assert list(tmp_path.glob(".adblock-stage-*")) == []
+
+
+def test_materialize_archive_reports_failed_restore_and_preserves_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    target = tmp_path / "compiled"
+    target.mkdir()
+    (target / "settings.json").write_text("old", encoding="utf-8")
+    original_replace = Path.replace
+
+    publish_error = OSError("injected publish failure")
+    restore_error = OSError("injected restore failure")
+
+    def fail_publish_and_restore(source: Path, destination: Path) -> Path:
+        if source.name == "payload":
+            raise publish_error
+        if source.name.startswith(".adblock-backup-"):
+            raise restore_error
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_publish_and_restore)
+
+    with pytest.raises(
+        artifacts_module.AdblockArtifactRollbackError,
+        match=r"failed to restore.*recovery backup remains",
+    ):
+        artifacts_module.materialize_archive_to_directory(
+            target,
+            archive_blob=_zip_blob({"settings.json": "new"}),
+            artifact_sha256="new-sha",
+        )
+
+    assert not target.exists()
+    backups = list(tmp_path.glob(".adblock-backup-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "settings.json").read_text(encoding="utf-8") == "old"
+    assert list(tmp_path.glob(".adblock-stage-*")) == []
+
+
 def test_deterministic_archive_deduplicates_known_aliases_and_materializes_views(
     tmp_path: Path,
 ) -> None:

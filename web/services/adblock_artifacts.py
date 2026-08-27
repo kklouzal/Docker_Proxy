@@ -84,6 +84,10 @@ class AdblockArtifactArchiveError(ValueError):
     """Raised when an adblock artifact archive is unsafe or invalid."""
 
 
+class AdblockArtifactRollbackError(RuntimeError):
+    """Raised when publication fails and the previous artifact cannot be restored."""
+
+
 _ADBLOCK_ARCHIVE_READ_ERRORS = (
     OSError,
     RuntimeError,
@@ -1830,6 +1834,25 @@ def adblock_archive_artifact_sha256(archive_blob: bytes) -> str:
     return digest.hexdigest()
 
 
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_tree(root: Path) -> None:
+    for current_root, directories, filenames in os.walk(root, topdown=False):
+        current = Path(current_root)
+        for filename in filenames:
+            with (current / filename).open("rb") as handle:
+                os.fsync(handle.fileno())
+        for directory in directories:
+            _fsync_directory(current / directory)
+        _fsync_directory(current)
+
+
 def materialize_archive_to_directory(
     target_dir: str | os.PathLike[str],
     *,
@@ -1863,22 +1886,44 @@ def materialize_archive_to_directory(
                 encoding="utf-8",
             )
 
-        if target.exists():
-            backup_dir = (
-                parent / f".adblock-backup-{os.getpid()}-{int(time.time() * 1000)}"
-            )
-            if backup_dir.exists():
-                shutil.rmtree(backup_dir, ignore_errors=True)
-            Path(str(target)).replace(str(backup_dir))
+        _fsync_tree(payload_dir)
 
-        Path(str(payload_dir)).replace(str(target))
+        try:
+            if target.exists():
+                backup_dir = Path(
+                    tempfile.mkdtemp(prefix=".adblock-backup-", dir=str(parent))
+                )
+                backup_dir.rmdir()
+                target.replace(backup_dir)
+                _fsync_directory(parent)
+
+            payload_dir.replace(target)
+            _fsync_directory(parent)
+        except Exception:
+            if backup_dir is not None and backup_dir.exists():
+                try:
+                    if target.exists():
+                        target.replace(payload_dir)
+                    backup_dir.replace(target)
+                    _fsync_directory(parent)
+                except Exception as restore_exc:
+                    msg = (
+                        "Failed to publish adblock artifact and failed to restore "
+                        f"the previous artifact; recovery backup remains at {backup_dir}."
+                    )
+                    raise AdblockArtifactRollbackError(msg) from restore_exc
+            raise
+
         if backup_dir is not None:
-            shutil.rmtree(backup_dir, ignore_errors=True)
-    except Exception:
-        if backup_dir is not None and backup_dir.exists() and not target.exists():
-            with contextlib.suppress(Exception):
-                Path(str(backup_dir)).replace(str(target))
-        raise
+            try:
+                shutil.rmtree(backup_dir)
+                _fsync_directory(parent)
+            except OSError:
+                logger.warning(
+                    "Published adblock artifact but could not remove recovery backup %s",
+                    backup_dir,
+                    exc_info=True,
+                )
     finally:
         shutil.rmtree(stage_root, ignore_errors=True)
 
