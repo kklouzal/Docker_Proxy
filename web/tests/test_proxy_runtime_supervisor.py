@@ -1775,7 +1775,7 @@ def test_ssl_db_reinitialize_preserves_database_when_squid_stop_is_unverified(
     assert ["sh", "/scripts/init_ssl_db.sh"] not in calls
 
 
-def test_ssl_db_reinitialize_stops_when_recursive_deletion_fails(
+def test_ssl_db_reinitialize_restores_squid_when_recursive_deletion_fails(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -1801,14 +1801,16 @@ def test_ssl_db_reinitialize_stops_when_recursive_deletion_fails(
     runtime.services = SimpleNamespace(ssl_db_reinitializer=None)
     runtime.ssl_db_dir = str(ssl_db)
     runtime.controller = SimpleNamespace(
-        restart_squid=lambda: (_ for _ in ()).throw(
-            AssertionError("restart must not run after ssl_db deletion failure")
-        ),
+        restart_squid=lambda: (True, "squid restarted for recovery"),
+        _wait_for_http_listener=lambda *, timeout: True,
     )
-    runtime._supervisor_program_status = lambda *_args, **_kwargs: (
-        True,
-        "squid STOPPED Jul 18 02:18 AM",
+    statuses = iter(
+        [
+            (True, "squid STOPPED Jul 18 02:18 AM"),
+            (True, "squid RUNNING pid 42, uptime 0:00:01"),
+        ],
     )
+    runtime._supervisor_program_status = lambda *_args, **_kwargs: next(statuses)
 
     monkeypatch.setattr(runtime_module, "subprocess", SimpleNamespace(run=fake_run))
     monkeypatch.setattr(runtime_module.shutil, "rmtree", failing_rmtree)
@@ -1823,6 +1825,8 @@ def test_ssl_db_reinitialize_stops_when_recursive_deletion_fails(
     assert ok is False
     assert "Failed to clear ssl_db directory" in detail
     assert "permission denied while removing stale ssl_db" in detail
+    assert "squid restarted for recovery" in detail
+    assert "Squid service recovery succeeded" in detail
     assert calls == [
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
     ]
@@ -1910,7 +1914,7 @@ def test_ssl_db_reinitialize_tolerates_already_absent_database(
     assert (ssl_db / "certs").stat().st_mode & 0o777 == 0o750
 
 
-def test_ssl_db_reinitialize_stops_when_permission_repair_fails(
+def test_ssl_db_reinitialize_restores_squid_when_permission_repair_fails(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -1933,14 +1937,17 @@ def test_ssl_db_reinitialize_stops_when_permission_repair_fails(
     runtime.services = SimpleNamespace(ssl_db_reinitializer=None)
     runtime.ssl_db_dir = str(ssl_db)
     runtime.controller = SimpleNamespace(
-        restart_squid=lambda: (_ for _ in ()).throw(
-            AssertionError("restart must not run after permission repair failure")
-        ),
+        restart_squid=lambda: (False, "primary recovery restart failed"),
+        _wait_for_http_listener=lambda *, timeout: False,
     )
-    runtime._supervisor_program_status = lambda *_args, **_kwargs: (
-        True,
-        "squid STOPPED Jul 18 02:18 AM",
+    statuses = iter(
+        [
+            (True, "squid STOPPED Jul 18 02:18 AM"),
+            (False, "squid BACKOFF Exited too quickly"),
+            (False, "squid BACKOFF Exited too quickly"),
+        ],
     )
+    runtime._supervisor_program_status = lambda *_args, **_kwargs: next(statuses)
 
     original_chmod = runtime_module.pathlib.Path.chmod
 
@@ -1963,9 +1970,12 @@ def test_ssl_db_reinitialize_stops_when_permission_repair_fails(
     assert ok is False
     assert "Failed to repair ssl_db permissions" in detail
     assert "permission denied while securing ssl_db" in detail
+    assert "primary recovery restart failed" in detail
+    assert "Squid service recovery failed" in detail
     assert calls == [
         ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
         ["sh", "/scripts/init_ssl_db.sh"],
+        ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"],
     ]
 
 

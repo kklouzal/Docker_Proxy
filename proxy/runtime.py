@@ -2765,20 +2765,79 @@ class ProxyRuntime:
             )
             return False, "\n".join([part for part in details if part]).strip()
 
+        def fail_after_stop(failure_detail: str) -> tuple[bool, str]:
+            details.append(failure_detail)
+            try:
+                restart_ok, restart_detail = self.controller.restart_squid()
+                if restart_detail:
+                    details.append(restart_detail)
+            except Exception as exc:
+                restart_ok = False
+                details.append(f"Squid service recovery restart failed: {exc}")
+
+            def running_with_listener() -> bool:
+                status_ok, status_detail = self._supervisor_program_status(
+                    "squid",
+                    timeout_seconds=5,
+                    accepted_states=("RUNNING",),
+                )
+                if status_detail:
+                    details.append(status_detail)
+                if not status_ok:
+                    return False
+                try:
+                    return bool(self.controller._wait_for_http_listener(timeout=20.0))
+                except Exception as exc:
+                    details.append(f"Squid listener recovery check failed: {exc}")
+                    return False
+
+            recovered = bool(restart_ok) and running_with_listener()
+            if not recovered:
+                try:
+                    start = subprocess.run(
+                        [
+                            "supervisorctl",
+                            "-c",
+                            "/etc/supervisord.conf",
+                            "start",
+                            "squid",
+                        ],
+                        capture_output=True,
+                        timeout=25,
+                    )
+                    start_detail = _decode_completed(start)
+                    if start_detail:
+                        details.append(start_detail)
+                except Exception as exc:
+                    details.append(
+                        f"supervisorctl start squid recovery failed: {exc}",
+                    )
+                recovered = running_with_listener()
+
+            if recovered:
+                details.append(
+                    "Squid service recovery succeeded and its HTTP listener is responding; ssl_db reinitialization still failed.",
+                )
+            else:
+                details.append(
+                    "Squid service recovery failed after ssl_db reinitialization failure.",
+                )
+            return False, "\n".join(part for part in details if part).strip()
+
         parent_dir = pathlib.Path(ssl_db_dir).parent or "/var/lib/ssl_db"
         try:
             shutil.rmtree(ssl_db_dir)
         except FileNotFoundError:
             pass
         except Exception as exc:
-            details.append(f"Failed to clear ssl_db directory: {exc}")
-            return False, "\n".join([part for part in details if part]).strip()
+            return fail_after_stop(f"Failed to clear ssl_db directory: {exc}")
 
         try:
             pathlib.Path(parent_dir).mkdir(exist_ok=True, parents=True)
         except Exception as exc:
-            details.append(f"Failed to prepare ssl_db parent directory: {exc}")
-            return False, "\n".join([part for part in details if part]).strip()
+            return fail_after_stop(
+                f"Failed to prepare ssl_db parent directory: {exc}",
+            )
 
         init_script = "/scripts/init_ssl_db.sh"
         if pathlib.Path(init_script).exists():
@@ -2792,21 +2851,20 @@ class ProxyRuntime:
                     env=env,
                 )
             except Exception as exc:
-                details.append(f"Failed to run {init_script}: {exc}")
-                return False, "\n".join([part for part in details if part]).strip()
+                return fail_after_stop(f"Failed to run {init_script}: {exc}")
 
             init_detail = _decode_completed(initialized)
             if initialized.returncode != 0:
-                details.append(init_detail or f"{init_script} failed")
-                return False, "\n".join([part for part in details if part]).strip()
+                return fail_after_stop(init_detail or f"{init_script} failed")
 
             if init_detail:
                 details.append(init_detail)
         else:
             helper = self._find_sslcrtd_binary()
             if not helper:
-                details.append("Could not find ssl_crtd/security_file_certgen helper.")
-                return False, "\n".join([part for part in details if part]).strip()
+                return fail_after_stop(
+                    "Could not find ssl_crtd/security_file_certgen helper.",
+                )
 
             try:
                 initialized = subprocess.run(
@@ -2815,14 +2873,12 @@ class ProxyRuntime:
                     timeout=90,
                 )
             except Exception as exc:
-                details.append(f"Failed to initialize ssl_db: {exc}")
-                return False, "\n".join([part for part in details if part]).strip()
+                return fail_after_stop(f"Failed to initialize ssl_db: {exc}")
 
             if initialized.returncode != 0:
-                details.append(
+                return fail_after_stop(
                     _decode_completed(initialized) or "ssl_crtd initialization failed",
                 )
-                return False, "\n".join([part for part in details if part]).strip()
 
             details.append(
                 _decode_completed(initialized)
@@ -2841,16 +2897,14 @@ class ProxyRuntime:
                     timeout=20,
                 )
                 if repair.returncode != 0:
-                    details.append(
+                    return fail_after_stop(
                         _decode_completed(repair)
                         or "Failed to repair ssl_db ownership and permissions.",
                     )
-                    return False, "\n".join([part for part in details if part]).strip()
             except Exception as exc:
-                details.append(
+                return fail_after_stop(
                     f"Failed to repair ssl_db ownership and permissions: {exc}",
                 )
-                return False, "\n".join([part for part in details if part]).strip()
 
         try:
             pathlib.Path(ssl_db_dir).chmod(0o700)
@@ -2858,8 +2912,7 @@ class ProxyRuntime:
             if pathlib.Path(certs_dir).is_dir():
                 pathlib.Path(certs_dir).chmod(0o750)
         except Exception as exc:
-            details.append(f"Failed to repair ssl_db permissions: {exc}")
-            return False, "\n".join([part for part in details if part]).strip()
+            return fail_after_stop(f"Failed to repair ssl_db permissions: {exc}")
 
         ok_restart, restart_detail = self.controller.restart_squid()
         if restart_detail:
