@@ -94,26 +94,41 @@ extract_squid_workers_from_file() {
     awk 'tolower($1)=="workers" && $2 ~ /^[0-9]+$/ {print $2; exit}' "$file_path" 2>/dev/null || true
 }
 
-sanitize_positive_int() {
+sanitize_bounded_int() {
     raw="$1"
+    min="$2"
+    max="$3"
     case "$raw" in
         ''|*[!0-9]*) printf '' ;;
         *)
-            if [ "$raw" -lt 1 ]; then
+            # Canonicalize before shell comparisons. This both keeps exported
+            # argv stable and prevents oversized digit strings from reaching
+            # test(1)/shell arithmetic, whose overflow behavior varies by shell.
+            val="$(printf '%s' "$raw" | sed 's/^0*//')"
+            val="${val:-0}"
+            if [ "${#val}" -gt "${#max}" ]; then
+                printf ''
+            elif [ "${#val}" -eq "${#max}" ] && [ "$val" -gt "$max" ]; then
+                printf ''
+            elif [ "$val" -lt "$min" ]; then
                 printf ''
             else
-                printf '%s' "$raw"
+                printf '%s' "$val"
             fi
             ;;
     esac
 }
 
+sanitize_positive_int() {
+    sanitize_bounded_int "$1" 1 2147483647
+}
+
 sanitize_nonnegative_int() {
-    raw="$1"
-    case "$raw" in
-        ''|*[!0-9]*) printf '' ;;
-        *) printf '%s' "$raw" ;;
-    esac
+    sanitize_bounded_int "$1" 0 2147483647
+}
+
+sanitize_port() {
+    sanitize_bounded_int "$1" 1 65535
 }
 
 sanitize_bind_host() {
@@ -233,11 +248,11 @@ fi
 if [ -z "${TIMESERIES_ROLLUP_DB_BACKOFF_JITTER_RATIO:-}" ]; then
     export TIMESERIES_ROLLUP_DB_BACKOFF_JITTER_RATIO=0.2
 fi
-PAC_HTTP_PORT="$(sanitize_positive_int "${PAC_HTTP_PORT:-80}")"
+PAC_HTTP_PORT="$(sanitize_port "${PAC_HTTP_PORT:-80}")"
 export PAC_HTTP_PORT="${PAC_HTTP_PORT:-80}"
 PAC_HTTP_HOST="$(sanitize_bind_host "${PAC_HTTP_HOST:-0.0.0.0}")"
 export PAC_HTTP_HOST="${PAC_HTTP_HOST:-0.0.0.0}"
-FORWARDING_CANARY_PORT="$(sanitize_positive_int "${FORWARDING_CANARY_PORT:-18080}")"
+FORWARDING_CANARY_PORT="$(sanitize_port "${FORWARDING_CANARY_PORT:-18080}")"
 export FORWARDING_CANARY_PORT="${FORWARDING_CANARY_PORT:-18080}"
 FORWARDING_CANARY_HOST="$(sanitize_bind_host "${FORWARDING_CANARY_HOST:-127.0.0.1}")"
 case "${FORWARDING_CANARY_HOST}" in

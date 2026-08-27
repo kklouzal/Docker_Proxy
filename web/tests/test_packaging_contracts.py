@@ -89,6 +89,25 @@ def _entrypoint_perf_tuning_script() -> str:
     )
 
 
+def _entrypoint_numeric_env_script() -> str:
+    return "\n".join(
+        [
+            "set -eu",
+            _entrypoint_shell_block(
+                "sanitize_bounded_int() {",
+                "\nsanitize_bind_host() {",
+            ),
+            "sanitize_bind_host() { printf '%s' \"$1\"; }",
+            "sanitize_forwarding_canary_path() { printf '%s' \"$1\"; }",
+            _entrypoint_shell_block(
+                'PAC_HTTP_PORT="$(sanitize_port',
+                '\nif [ "$TEST_MODE_ENABLED" = "1" ]; then',
+            ),
+            "printf '%s\\n' \"$PAC_HTTP_PORT|$FORWARDING_CANARY_PORT|$WEB_WORKERS|$WEB_THREADS|$WEB_TIMEOUT|$WEB_GRACEFUL_TIMEOUT|$WEB_KEEPALIVE\"",
+        ]
+    )
+
+
 def _run_entrypoint_perf_tuning(config_path, *, children: int) -> None:
     script = (
         "set -eu\n"
@@ -1047,6 +1066,149 @@ def test_proxy_launcher_env_knobs_are_sanitized_and_documented() -> None:
     assert "python3 -m proxy.forwarding_canary" in supervisord
     assert "command=/usr/local/bin/squid_ready_start.sh" in supervisord
     assert '"${WEB_TIMEOUT:-120}"' in supervisord
+
+
+@pytest.mark.parametrize(
+    ("name", "default"),
+    [("PAC_HTTP_PORT", "80"), ("FORWARDING_CANARY_PORT", "18080")],
+)
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", "1"),
+        ("65535", "65535"),
+        ("00080", "80"),
+        ("", None),
+        ("malformed", None),
+        ("0", None),
+        ("-1", None),
+        ("65536", None),
+        ("9" * 5000, None),
+    ],
+)
+def test_proxy_listener_ports_use_one_bounded_startup_contract(
+    name: str, default: str, value: str, expected: str | None
+) -> None:
+    env = {**os.environ, name: value}
+    result = run_test_process(
+        ["/bin/sh", "-c", _entrypoint_numeric_env_script()],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    fields = dict(
+        zip(
+            (
+                "PAC_HTTP_PORT",
+                "FORWARDING_CANARY_PORT",
+                "WEB_WORKERS",
+                "WEB_THREADS",
+                "WEB_TIMEOUT",
+                "WEB_GRACEFUL_TIMEOUT",
+                "WEB_KEEPALIVE",
+            ),
+            result.stdout.strip().split("|"),
+            strict=True,
+        )
+    )
+    assert fields[name] == (default if expected is None else expected)
+
+
+@pytest.mark.parametrize(
+    ("name", "default"),
+    [
+        ("WEB_WORKERS", "1"),
+        ("WEB_THREADS", "2"),
+        ("WEB_TIMEOUT", "120"),
+        ("WEB_GRACEFUL_TIMEOUT", "30"),
+        ("WEB_KEEPALIVE", "5"),
+    ],
+)
+@pytest.mark.parametrize("value", ["malformed", "-1", "2147483648", "9" * 5000])
+def test_proxy_gunicorn_numeric_controls_reject_unsafe_values(
+    name: str, default: str, value: str
+) -> None:
+    env = {**os.environ, name: value}
+    result = run_test_process(
+        ["/bin/sh", "-c", _entrypoint_numeric_env_script()],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    fields = result.stdout.strip().split("|")
+    index = [
+        "PAC_HTTP_PORT",
+        "FORWARDING_CANARY_PORT",
+        "WEB_WORKERS",
+        "WEB_THREADS",
+        "WEB_TIMEOUT",
+        "WEB_GRACEFUL_TIMEOUT",
+        "WEB_KEEPALIVE",
+    ].index(name)
+    assert fields[index] == default
+
+
+@pytest.mark.parametrize(
+    ("name", "default"),
+    [
+        ("WEB_WORKERS", "1"),
+        ("WEB_THREADS", "2"),
+        ("WEB_TIMEOUT", "120"),
+        ("WEB_GRACEFUL_TIMEOUT", "30"),
+    ],
+)
+def test_proxy_gunicorn_positive_controls_reject_zero(name: str, default: str) -> None:
+    env = {**os.environ, name: "0"}
+    result = run_test_process(
+        ["/bin/sh", "-c", _entrypoint_numeric_env_script()],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    fields = result.stdout.strip().split("|")
+    index = [
+        "PAC_HTTP_PORT",
+        "FORWARDING_CANARY_PORT",
+        "WEB_WORKERS",
+        "WEB_THREADS",
+        "WEB_TIMEOUT",
+        "WEB_GRACEFUL_TIMEOUT",
+    ].index(name)
+    assert fields[index] == default
+
+
+def test_proxy_gunicorn_numeric_controls_preserve_boundaries() -> None:
+    env = {
+        **os.environ,
+        "WEB_WORKERS": "0001",
+        "WEB_THREADS": "2147483647",
+        "WEB_TIMEOUT": "1",
+        "WEB_GRACEFUL_TIMEOUT": "30",
+        "WEB_KEEPALIVE": "0",
+    }
+    result = run_test_process(
+        ["/bin/sh", "-c", _entrypoint_numeric_env_script()],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().endswith("|1|2147483647|1|30|0")
 
 
 def test_admin_ui_https_packaging_contract() -> None:
