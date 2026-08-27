@@ -1614,3 +1614,62 @@ def test_open_download_url_preserves_extra_headers_when_same_origin_redirect_add
     redirected = {k.lower(): v for k, v in seen_headers[1].items()}
     assert redirected["user-agent"] == "unit-test-agent"
     assert redirected["if-none-match"] == "etag-1"
+
+
+def test_open_download_url_enforces_one_deadline_across_body_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    download_safety = _import_download_safety()
+
+    class _Socket:
+        def __init__(self) -> None:
+            self.timeouts: list[float] = []
+
+        def settimeout(self, timeout: float) -> None:
+            self.timeouts.append(timeout)
+
+    sock = _Socket()
+
+    class _Response:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+            raw = type("Raw", (), {"_sock": sock})()
+            self.fp = type("Buffered", (), {"raw": raw})()
+
+        def read(self, _size: int) -> bytes:
+            return b"data"
+
+        def close(self) -> None:
+            pass
+
+    response = _Response()
+
+    class _Opener:
+        def open(self, _request, *, timeout: float):
+            assert timeout == pytest.approx(10.0)
+            return response
+
+    monkeypatch.setattr(
+        download_safety.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 443))
+        ],
+    )
+    monkeypatch.setattr(
+        download_safety.urllib.request,
+        "build_opener",
+        lambda *_handlers: _Opener(),
+    )
+    times = iter((100.0, 100.0, 100.0, 103.0, 103.0, 111.0))
+    monkeypatch.setattr(download_safety.time, "monotonic", lambda: next(times))
+
+    opened = download_safety.open_download_url(
+        "https://public.example/feed.txt",
+        timeout=10,
+        user_agent="test",
+    )
+    assert opened.read(4) == b"data"
+    assert sock.timeouts == [pytest.approx(7.0)]
+    with pytest.raises(TimeoutError, match="timed out after 10 seconds"):
+        opened.read(4)

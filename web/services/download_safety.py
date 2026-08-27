@@ -4,6 +4,7 @@ import http.client
 import ipaddress
 import socket
 import time
+import types
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -393,6 +394,35 @@ def _remaining_download_timeout(deadline: float, timeout_seconds: float) -> floa
     return remaining
 
 
+def _bind_download_response_deadline(
+    response, *, deadline: float, timeout_seconds: float
+):
+    """Keep the download deadline in force after response headers arrive."""
+    original_read = getattr(response, "read", None)
+    if original_read is None:
+        return response
+
+    def deadline_bound_read(self, *args, **kwargs):
+        remaining = _remaining_download_timeout(
+            deadline,
+            timeout_seconds,
+        )
+        # urllib's response wraps HTTPResponse.fp, normally a BufferedReader.
+        # Tighten the socket's per-operation timeout so a slow trickle cannot
+        # restart the original timeout for every body read.
+        fp = getattr(self, "fp", None)
+        raw = getattr(fp, "raw", None)
+        sock = getattr(raw, "_sock", None)
+        if sock is not None:
+            sock.settimeout(remaining)
+        result = original_read(*args, **kwargs)
+        _remaining_download_timeout(deadline, timeout_seconds)
+        return result
+
+    response.read = types.MethodType(deadline_bound_read, response)
+    return response
+
+
 def open_download_url(
     url: str,
     *,
@@ -432,9 +462,14 @@ def open_download_url(
         )
         req = _build_download_request(current, headers=request_headers)
         try:
-            return opener.open(
+            response = opener.open(
                 req,
                 timeout=_remaining_download_timeout(deadline, timeout_seconds),
+            )
+            return _bind_download_response_deadline(
+                response,
+                deadline=deadline,
+                timeout_seconds=timeout_seconds,
             )
         except urllib.error.HTTPError as exc:
             if exc.code not in {301, 302, 303, 307, 308}:
