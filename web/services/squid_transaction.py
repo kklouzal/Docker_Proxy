@@ -367,9 +367,94 @@ def lifecycle_lock_path() -> Path:
     lock_dir = (
         os.environ.get("SQUID_LIFECYCLE_LOCK_DIR")
         or os.environ.get("PROXY_RUNTIME_LOCK_DIR")
-        or tempfile.gettempdir()
-    ).strip() or tempfile.gettempdir()
-    return Path(lock_dir) / "docker-proxy-squid-lifecycle.lock"
+        or "/tmp/docker-proxy-runtime"  # noqa: S108 - private validated directory
+    ).strip() or "/tmp/docker-proxy-runtime"  # noqa: S108
+    path = Path(lock_dir)
+    if not path.is_absolute():
+        msg = "Squid lifecycle lock directory must be an absolute path."
+        raise ValueError(msg)
+    return path / "docker-proxy-squid-lifecycle.lock"
+
+
+def open_lifecycle_lock() -> int:
+    """Open the shared lifecycle lock by descriptor-relative, no-follow traversal."""
+    lock_path = lifecycle_lock_path()
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    if (
+        not nofollow
+        or not directory
+        or os.open not in os.supports_dir_fd
+        or os.mkdir not in os.supports_dir_fd
+    ):
+        msg = "Secure descriptor-relative lifecycle lock opens are unavailable."
+        raise ValueError(msg)
+
+    directory_flags = os.O_RDONLY | directory | nofollow | cloexec
+    current_fd = -1
+    try:
+        current_fd = os.open(lock_path.anchor, directory_flags)
+        components = lock_path.parent.parts[1:]
+        for index, component in enumerate(components):
+            try:
+                next_fd = os.open(component, directory_flags, dir_fd=current_fd)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    # A racing creator must still pass the no-follow open below.
+                    pass
+                next_fd = os.open(component, directory_flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+
+            directory_stat = os.fstat(current_fd)
+            if not stat.S_ISDIR(directory_stat.st_mode):
+                msg = "Squid lifecycle lock path component is not a directory."
+                raise ValueError(msg)
+            is_final = index == len(components) - 1
+            if is_final and (
+                directory_stat.st_uid != os.geteuid() or directory_stat.st_mode & 0o077
+            ):
+                msg = "Squid lifecycle lock directory must be owned by this user and private."
+                raise ValueError(msg)
+            if not is_final:
+                trusted_owner = directory_stat.st_uid in {0, os.geteuid()}
+                trusted_sticky_root = (
+                    directory_stat.st_uid == 0 and directory_stat.st_mode & stat.S_ISVTX
+                )
+                unsafe_writes = directory_stat.st_mode & 0o022
+                if not trusted_owner or (unsafe_writes and not trusted_sticky_root):
+                    msg = "Squid lifecycle lock parent directory is unsafe."
+                    raise ValueError(msg)
+
+        fd = os.open(
+            lock_path.name,
+            os.O_RDWR | os.O_CREAT | nofollow | cloexec,
+            0o600,
+            dir_fd=current_fd,
+        )
+        try:
+            file_stat = os.fstat(fd)
+            if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
+                msg = "Squid lifecycle lock path must be one regular file."
+                raise ValueError(msg)
+            if file_stat.st_uid != os.geteuid() or file_stat.st_mode & 0o077:
+                msg = (
+                    "Squid lifecycle lock file must be owned by this user and private."
+                )
+                raise ValueError(msg)
+            return fd
+        except Exception:
+            os.close(fd)
+            raise
+    except OSError as exc:
+        msg = "Unable to safely open the Squid lifecycle lock path."
+        raise ValueError(msg) from exc
+    finally:
+        if current_fd >= 0:
+            os.close(current_fd)
 
 
 def _runtime_paths_from_environment() -> list[Path]:
@@ -525,12 +610,9 @@ def _lock_exec(command: list[str]) -> int:
         raise SystemExit(msg)
     import fcntl
 
-    lock_path = lifecycle_lock_path()
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = lock_path.open("a+", encoding="utf-8")
-    Path(lock_path).chmod(0o600)
-    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-    os.dup2(handle.fileno(), 9, inheritable=True)
+    fd = open_lifecycle_lock()
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    os.dup2(fd, 9, inheritable=True)
     os.set_inheritable(9, True)
     env = dict(os.environ)
     env["SQUID_ENTRYPOINT_LOCK_HELD"] = "1"

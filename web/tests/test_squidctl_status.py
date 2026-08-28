@@ -1491,10 +1491,10 @@ def test_restart_squid_fails_closed_when_lifecycle_locking_is_unavailable(
 
     monkeypatch.setenv("SQUID_LIFECYCLE_LOCK_DIR", str(tmp_path))
     opened_handles = []
-    real_open = squid_core.Path.open
+    real_fdopen = squid_core.os.fdopen
 
-    def tracking_open(path, *args, **kwargs):
-        handle = real_open(path, *args, **kwargs)
+    def tracking_fdopen(fd, *args, **kwargs):
+        handle = real_fdopen(fd, *args, **kwargs)
         opened_handles.append(handle)
         return handle
 
@@ -1510,7 +1510,7 @@ def test_restart_squid_fails_closed_when_lifecycle_locking_is_unavailable(
     controller = squidctl.SquidController(
         cmd_run=lambda args, **_kwargs: calls.append(list(args)),
     )
-    monkeypatch.setattr(squid_core.Path, "open", tracking_open)
+    monkeypatch.setattr(squid_core.os, "fdopen", tracking_fdopen)
     monkeypatch.setattr(builtins, "__import__", fail_fcntl_import)
 
     with pytest.raises(squid_core.SquidLifecycleLockError) as exc_info:
@@ -1535,10 +1535,10 @@ def test_start_squid_fails_closed_when_lifecycle_flock_fails(
 
     monkeypatch.setenv("SQUID_LIFECYCLE_LOCK_DIR", str(tmp_path))
     opened_handles = []
-    real_open = squid_core.Path.open
+    real_fdopen = squid_core.os.fdopen
 
-    def tracking_open(path, *args, **kwargs):
-        handle = real_open(path, *args, **kwargs)
+    def tracking_fdopen(fd, *args, **kwargs):
+        handle = real_fdopen(fd, *args, **kwargs)
         opened_handles.append(handle)
         return handle
 
@@ -1553,7 +1553,7 @@ def test_start_squid_fails_closed_when_lifecycle_flock_fails(
     controller = squidctl.SquidController(
         cmd_run=lambda args, **_kwargs: calls.append(list(args)),
     )
-    monkeypatch.setattr(squid_core.Path, "open", tracking_open)
+    monkeypatch.setattr(squid_core.os, "fdopen", tracking_fdopen)
     monkeypatch.setattr(fcntl, "flock", fail_flock)
 
     with pytest.raises(squid_core.SquidLifecycleLockError) as exc_info:

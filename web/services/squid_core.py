@@ -35,6 +35,7 @@ from services.squid_transaction import (
     SquidTransactionJournal,
     SquidTransactionRecoveryRequiredError,
     default_journal_path,
+    open_lifecycle_lock,
 )
 
 logger = logging.getLogger(__name__)
@@ -244,16 +245,7 @@ def _exclusive_squid_lifecycle_lock():
         file_lock_acquired = False
         try:
             try:
-                lock_dir = (
-                    os.environ.get("SQUID_LIFECYCLE_LOCK_DIR")
-                    or os.environ.get("PROXY_RUNTIME_LOCK_DIR")
-                    or tempfile.gettempdir()
-                ).strip() or tempfile.gettempdir()
-                Path(lock_dir).mkdir(exist_ok=True, parents=True)
-                handle = (Path(lock_dir) / "docker-proxy-squid-lifecycle.lock").open(
-                    "a+",
-                    encoding="utf-8",
-                )
+                handle = os.fdopen(open_lifecycle_lock(), "a+", encoding="utf-8")
                 import fcntl as fcntl_mod  # type: ignore
 
                 fcntl_mod.flock(handle.fileno(), fcntl_mod.LOCK_EX)

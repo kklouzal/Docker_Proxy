@@ -20,6 +20,8 @@ from services.squid_transaction import (  # type: ignore  # noqa: E402
     _startup_begin,
     _startup_complete,
     _startup_fail,
+    lifecycle_lock_path,
+    open_lifecycle_lock,
 )
 
 
@@ -259,6 +261,82 @@ def test_startup_complete_atomically_replaces_persisted_lkg(
     payload = json.loads(journal_path.read_text(encoding="utf-8"))
     assert payload["status"] == "complete"
     assert payload["phase"] == "complete"
+
+
+def test_lifecycle_lock_defaults_to_private_runtime_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SQUID_LIFECYCLE_LOCK_DIR", raising=False)
+    monkeypatch.delenv("PROXY_RUNTIME_LOCK_DIR", raising=False)
+    assert lifecycle_lock_path() == Path(
+        "/tmp/docker-proxy-runtime/docker-proxy-squid-lifecycle.lock"
+    )
+
+
+def test_lifecycle_lock_rejects_symlink_without_mutating_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir(mode=0o700)
+    target = tmp_path / "target"
+    target.write_text("unchanged", encoding="utf-8")
+    (lock_dir / "docker-proxy-squid-lifecycle.lock").symlink_to(target)
+    monkeypatch.setenv("SQUID_LIFECYCLE_LOCK_DIR", str(lock_dir))
+
+    with pytest.raises(ValueError, match="safely open"):
+        open_lifecycle_lock()
+
+    assert target.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_lifecycle_lock_rejects_symlinked_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_dir = tmp_path / "real"
+    real_dir.mkdir(mode=0o700)
+    linked_dir = tmp_path / "linked"
+    linked_dir.symlink_to(real_dir, target_is_directory=True)
+    monkeypatch.setenv("SQUID_LIFECYCLE_LOCK_DIR", str(linked_dir))
+
+    with pytest.raises(ValueError, match="safely open"):
+        open_lifecycle_lock()
+
+    assert not (real_dir / "docker-proxy-squid-lifecycle.lock").exists()
+
+
+def test_lifecycle_lock_does_not_create_through_symlinked_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_dir = tmp_path / "real"
+    real_dir.mkdir(mode=0o700)
+    linked_dir = tmp_path / "linked"
+    linked_dir.symlink_to(real_dir, target_is_directory=True)
+    target_dir = real_dir / "created-through-symlink"
+    monkeypatch.setenv(
+        "SQUID_LIFECYCLE_LOCK_DIR",
+        str(linked_dir / target_dir.name),
+    )
+
+    with pytest.raises(ValueError, match="safely open"):
+        open_lifecycle_lock()
+
+    assert not target_dir.exists()
+
+
+def test_lifecycle_lock_rejects_publicly_writable_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir(mode=0o777)
+    lock_dir.chmod(0o777)
+    monkeypatch.setenv("SQUID_LIFECYCLE_LOCK_DIR", str(lock_dir))
+
+    with pytest.raises(ValueError, match="owned by this user and private"):
+        open_lifecycle_lock()
 
 
 def test_real_lock_exec_blocks_python_lifecycle_lock_until_handoff_release(
