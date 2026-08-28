@@ -242,18 +242,26 @@ class AuthStore:
             ):
                 msg = f"Flask secret key path changed while opening: {secret_path}"
                 raise RuntimeError(msg)
-            val = f.read().strip()
-            if val:
+            opened_mode = stat.S_IMODE(opened_stat.st_mode)
+            if opened_mode != 0o600:
                 try:
                     os.fchmod(f.fileno(), 0o600)
-                except Exception:
-                    log_exception_throttled(
-                        logger,
-                        "auth_store.secret_chmod",
-                        interval_seconds=300.0,
-                        message="Failed to chmod Flask secret key file",
+                except OSError as exc:
+                    msg = (
+                        "Unable to establish owner-only permissions on Flask "
+                        f"secret key file: {secret_path}"
                     )
-            return val
+                    raise RuntimeError(msg) from exc
+
+                final_mode = stat.S_IMODE(os.fstat(f.fileno()).st_mode)
+                if final_mode != 0o600:
+                    msg = (
+                        "Unable to verify owner-only permissions on Flask "
+                        f"secret key file: {secret_path}"
+                    )
+                    raise RuntimeError(msg)
+
+            return f.read().strip()
 
     def any_users(self) -> bool:
         self.ensure_schema()

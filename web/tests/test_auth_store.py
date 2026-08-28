@@ -49,6 +49,51 @@ def test_auth_store_repairs_existing_secret_permissions(tmp_path) -> None:
     assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
 
 
+def test_auth_store_refuses_secret_when_permission_repair_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    auth_store = _auth_store_module()
+    secret_path = tmp_path / "secret.key"
+    secret_path.write_text("must-not-be-used\n", encoding="utf-8")
+    secret_path.chmod(0o644)
+
+    def fail_fchmod(_fd, _mode) -> None:
+        msg = "permission repair denied"
+        raise PermissionError(msg)
+
+    monkeypatch.setattr(auth_store.os, "fchmod", fail_fchmod)
+
+    with pytest.raises(
+        RuntimeError, match="establish owner-only permissions"
+    ) as raised:
+        auth_store.AuthStore(secret_path=str(secret_path)).get_or_create_secret_key()
+
+    assert "must-not-be-used" not in str(raised.value)
+    assert stat.S_IMODE(secret_path.stat().st_mode) == 0o644
+
+
+def test_auth_store_uses_existing_owner_only_secret_without_chmod(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    auth_store = _auth_store_module()
+    secret_path = tmp_path / "secret.key"
+    secret_path.write_text("existing-secret\n", encoding="utf-8")
+    secret_path.chmod(0o600)
+
+    def unexpected_fchmod(_fd, _mode) -> None:
+        pytest.fail("owner-only secret must not require permission repair")
+
+    monkeypatch.setattr(auth_store.os, "fchmod", unexpected_fchmod)
+
+    assert (
+        auth_store.AuthStore(secret_path=str(secret_path)).get_or_create_secret_key()
+        == "existing-secret"
+    )
+    assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
+
+
 def test_auth_store_refuses_existing_secret_symlink_without_following(
     tmp_path,
     monkeypatch,
