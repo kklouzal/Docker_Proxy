@@ -4461,10 +4461,7 @@ def test_unavailable_clamd_fail_open_stress_handles_mixed_respmod_shapes(
             return builders[index % len(builders)](port)
 
         def fetch(index: int) -> bytes:
-            request = request_for(index)
-            if b"Preview:" in request:
-                return _recv_icap_exchange(port, request, timeout=1)
-            return _recv_icap_response(port, request, timeout=1)
+            return _recv_icap_exchange(port, request_for(index), timeout=1)
 
         responses: list[bytes] = []
         workers = [threading.Thread(target=lambda i=i: responses.append(fetch(i))) for i in range(36)]
