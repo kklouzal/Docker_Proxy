@@ -39,16 +39,11 @@ class AuditStore:
             if self._schema_ready:
                 return
             with self._connect() as conn:
-                try:
-                    from services.schema_lifecycle import (
-                        runtime_schema_ready_for_lazy_store,
-                    )
-                except ImportError:
-                    runtime_schema_ready_for_lazy_store = None
-                if (
-                    runtime_schema_ready_for_lazy_store is not None
-                    and runtime_schema_ready_for_lazy_store(conn)
-                ):
+                from services.schema_lifecycle import (
+                    runtime_schema_ready_for_lazy_store,
+                )
+
+                if runtime_schema_ready_for_lazy_store(conn):
                     self._schema_ready = True
                     return
                 conn.execute(

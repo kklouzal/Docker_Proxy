@@ -222,16 +222,13 @@ def _ensure_observability_settings_table() -> None:
             if _SETTINGS_SCHEMA_READY:
                 return
             with connect() as conn:
-                try:
-                    from services.schema_lifecycle import (
-                        runtime_schema_ready_for_lazy_store,
-                    )
+                from services.schema_lifecycle import (
+                    runtime_schema_ready_for_lazy_store,
+                )
 
-                    if runtime_schema_ready_for_lazy_store(conn):
-                        _SETTINGS_SCHEMA_READY = True
-                        return
-                except Exception:
-                    pass
+                if runtime_schema_ready_for_lazy_store(conn):
+                    _SETTINGS_SCHEMA_READY = True
+                    return
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS observability_settings (
@@ -311,16 +308,13 @@ def _ensure_observability_maintenance_runs_table() -> None:
             if _MAINTENANCE_RUNS_SCHEMA_READY:
                 return
             with connect() as conn:
-                try:
-                    from services.schema_lifecycle import (
-                        runtime_schema_ready_for_lazy_store,
-                    )
+                from services.schema_lifecycle import (
+                    runtime_schema_ready_for_lazy_store,
+                )
 
-                    if runtime_schema_ready_for_lazy_store(conn):
-                        _MAINTENANCE_RUNS_SCHEMA_READY = True
-                        return
-                except Exception:
-                    pass
+                if runtime_schema_ready_for_lazy_store(conn):
+                    _MAINTENANCE_RUNS_SCHEMA_READY = True
+                    return
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS observability_maintenance_runs (

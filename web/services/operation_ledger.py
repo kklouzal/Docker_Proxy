@@ -424,12 +424,9 @@ class OperationLedger:
     def _schema_current_on_connection(self, conn) -> bool:
         if not hasattr(conn, "native"):
             return False
-        try:
-            from services.schema_lifecycle import runtime_schema_ready_for_lazy_store
+        from services.schema_lifecycle import runtime_schema_ready_for_lazy_store
 
-            return runtime_schema_ready_for_lazy_store(conn)
-        except Exception:
-            return False
+        return runtime_schema_ready_for_lazy_store(conn)
 
     def init_db(self) -> None:
         if self._schema_ready:

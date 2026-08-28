@@ -1574,6 +1574,11 @@ def test_safe_browsing_helper_logs_threat_category(monkeypatch) -> None:
 
 
 def test_safe_browsing_status_counts_prefixes_and_cache(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "services.schema_lifecycle.runtime_schema_ready_for_lazy_store",
+        lambda _conn: False,
+    )
+
     class Result:
         def __init__(self, value) -> None:
             self.value = value
@@ -1643,6 +1648,11 @@ def test_safe_browsing_status_counts_prefixes_and_cache(monkeypatch) -> None:
 def test_safe_browsing_status_filters_positive_cache_to_selected_lists(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(
+        "services.schema_lifecycle.runtime_schema_ready_for_lazy_store",
+        lambda _conn: False,
+    )
+
     rows = [
         {"list_name": "mw-4b", "expires_ts": 1000},
         {"list_name": "se-4b", "expires_ts": 1000},

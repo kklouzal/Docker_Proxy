@@ -1289,16 +1289,13 @@ class ObservabilityQueries:
             if self._schedule_schema_ready:
                 return
             with self._connect() as conn:
-                try:
-                    from services.schema_lifecycle import (
-                        runtime_schema_ready_for_lazy_store,
-                    )
+                from services.schema_lifecycle import (
+                    runtime_schema_ready_for_lazy_store,
+                )
 
-                    if runtime_schema_ready_for_lazy_store(conn):
-                        self._schedule_schema_ready = True
-                        return
-                except Exception:
-                    pass
+                if runtime_schema_ready_for_lazy_store(conn):
+                    self._schedule_schema_ready = True
+                    return
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS observability_report_schedules (

@@ -297,16 +297,13 @@ class PolicyRequestStore:
             if self._schema_ready:
                 return
             with self._connect() as c:
-                try:
-                    from services.schema_lifecycle import (
-                        runtime_schema_ready_for_lazy_store,
-                    )
+                from services.schema_lifecycle import (
+                    runtime_schema_ready_for_lazy_store,
+                )
 
-                    if runtime_schema_ready_for_lazy_store(c):
-                        self._schema_ready = True
-                        return
-                except Exception:
-                    pass
+                if runtime_schema_ready_for_lazy_store(c):
+                    self._schema_ready = True
+                    return
                 c.execute(
                     f"CREATE TABLE IF NOT EXISTS {self.REQUEST_TABLE}(id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL DEFAULT 'default', status VARCHAR(24) NOT NULL DEFAULT 'pending', block_type VARCHAR(32) NOT NULL DEFAULT 'webfilter', client_ip VARCHAR(64) NOT NULL, request_url TEXT NOT NULL, domain VARCHAR(255) NOT NULL, category VARCHAR(128) NOT NULL DEFAULT '', method VARCHAR(16) NOT NULL DEFAULT '', squid_error VARCHAR(64) NOT NULL DEFAULT '', user_note TEXT NOT NULL, admin_note TEXT NOT NULL, created_ts BIGINT NOT NULL, updated_ts BIGINT NOT NULL, reviewed_ts BIGINT NOT NULL DEFAULT 0, reviewer VARCHAR(128) NOT NULL DEFAULT '', exception_id BIGINT NULL, KEY idx_policy_requests_status_ts (status, created_ts, id), KEY idx_policy_requests_proxy_status_ts (proxy_id,status,created_ts,id), KEY idx_policy_requests_proxy_status_client_id (proxy_id,status,client_ip,id), KEY idx_policy_requests_domain (domain), KEY idx_policy_requests_client (client_ip))",
                 )

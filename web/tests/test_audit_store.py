@@ -217,23 +217,18 @@ def test_init_db_uses_runtime_ddl_when_lifecycle_schema_is_not_current(
     ]
 
 
-def test_init_db_uses_runtime_ddl_when_lifecycle_helper_is_unavailable(
+def test_init_db_fails_closed_when_lifecycle_helper_is_unavailable(
     monkeypatch,
 ) -> None:
     conn = _SchemaInitConnection()
     store = AuditStore()
     monkeypatch.setattr(store, "_connect", lambda: conn)
     monkeypatch.setitem(sys.modules, "services.schema_lifecycle", None)
-    index_calls = _patch_schema_fallback_index(monkeypatch)
+    with pytest.raises(ModuleNotFoundError):
+        store.init_db()
 
-    store.init_db()
-
-    assert store._schema_ready is True
-    assert not any("schema_migrations" in op for op in conn.ops)
-    assert any(
-        op.startswith("CREATE TABLE IF NOT EXISTS audit_events") for op in conn.ops
-    )
-    assert len(index_calls) == 1
+    assert store._schema_ready is False
+    assert conn.ops == []
 
 
 def test_init_db_propagates_lifecycle_probe_failure_without_runtime_ddl(

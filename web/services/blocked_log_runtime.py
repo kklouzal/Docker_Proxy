@@ -126,16 +126,23 @@ class BlockedLogDb:
         conn = None
         try:
             conn = connect()
-            try:
-                from services.schema_lifecycle import (
-                    runtime_schema_ready_for_lazy_store,
-                )
+        except Exception:
+            return None
 
-                if runtime_schema_ready_for_lazy_store(conn):
-                    self._conn = conn
-                    return conn
-            except Exception:
-                pass
+        try:
+            from services.schema_lifecycle import (
+                runtime_schema_ready_for_lazy_store,
+            )
+
+            if runtime_schema_ready_for_lazy_store(conn):
+                self._conn = conn
+                return conn
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.close()
+            raise
+
+        try:
             blocked_log_table = self._table(conn)
             conn.execute(
                 f"CREATE TABLE IF NOT EXISTS {blocked_log_table}("

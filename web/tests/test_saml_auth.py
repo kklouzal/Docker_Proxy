@@ -253,7 +253,7 @@ def test_ensure_schema_preserves_fallback_when_lifecycle_is_not_current(
     assert not any(op.startswith("ALTER TABLE") for op in conn.ops)
 
 
-def test_ensure_schema_preserves_fallback_when_lifecycle_module_is_unavailable(
+def test_ensure_schema_fails_closed_when_lifecycle_module_is_unavailable(
     monkeypatch,
 ) -> None:
     conn = _FallbackSchemaConnection()
@@ -261,14 +261,11 @@ def test_ensure_schema_preserves_fallback_when_lifecycle_module_is_unavailable(
     monkeypatch.setattr(store, "_connect", lambda: conn)
     monkeypatch.setitem(sys.modules, "services.schema_lifecycle", None)
 
-    store.ensure_schema()
+    with pytest.raises(ModuleNotFoundError):
+        store.ensure_schema()
 
-    assert store._schema_ready is True
-    assert any(
-        op.startswith("CREATE TABLE IF NOT EXISTS saml_auth_profiles")
-        for op in conn.ops
-    )
-    assert not any("schema_migrations" in op for op in conn.ops)
+    assert store._schema_ready is False
+    assert conn.ops == []
 
 
 class FakeSamlToolkit:
