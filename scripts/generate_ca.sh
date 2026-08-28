@@ -35,13 +35,25 @@ ca_pair_is_valid() {
 }
 
 install_ca_permissions() {
-    chmod 600 "$CA_KEY" || true
-    chmod 644 "$CA_CERT" || true
+    if ! chmod 600 "$CA_KEY"; then
+        echo "ERROR: Failed to set CA private key mode 0600 on $CA_KEY" >&2
+        return 1
+    fi
+    if ! chmod 644 "$CA_CERT"; then
+        echo "ERROR: Failed to set CA certificate mode 0644 on $CA_CERT" >&2
+        return 1
+    fi
 
     # Allow Squid (typically runs as user 'squid') to read the CA key.
     if getent passwd squid >/dev/null 2>&1; then
-        chown squid:squid "$CA_KEY" "$CA_CERT" || true
-        chmod 640 "$CA_KEY" || true
+        if ! chown squid:squid "$CA_KEY" "$CA_CERT"; then
+            echo "ERROR: Failed to set squid:squid ownership on CA files in $CA_DIR" >&2
+            return 1
+        fi
+        if ! chmod 640 "$CA_KEY"; then
+            echo "ERROR: Failed to set Squid-readable CA private key mode 0640 on $CA_KEY" >&2
+            return 1
+        fi
     fi
 }
 
