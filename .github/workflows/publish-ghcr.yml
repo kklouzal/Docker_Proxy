@@ -295,12 +295,40 @@ jobs:
 
       - name: Run live tests
         run: >-
+          timeout --foreground --signal=TERM --kill-after=30s 25m
           docker compose -f docker-compose.yml -f docker-compose.live-tests.yml
           up --abort-on-container-exit --exit-code-from live-tests live-tests
 
-      - name: Dump live-test logs on failure
+      - name: Capture bounded live-test diagnostics
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.live-tests.yml logs --no-color
+        shell: bash
+        run: |
+          set +e
+          mkdir -p live-test-diagnostics
+          compose=(docker compose -f docker-compose.yml -f docker-compose.live-tests.yml)
+          services=(proxy proxy-edge-2 admin-ui live-tests)
+
+          timeout --foreground --kill-after=5s 30s \
+            "${compose[@]}" ps --all "${services[@]}" \
+            >live-test-diagnostics/compose-ps.txt 2>&1
+          timeout --foreground --kill-after=5s 30s \
+            "${compose[@]}" ps --all --format json "${services[@]}" \
+            >live-test-diagnostics/compose-ps.json 2>&1
+
+          for service in "${services[@]}"; do
+            timeout --foreground --kill-after=5s 30s \
+              "${compose[@]}" logs --no-color --timestamps --tail 200 "$service" \
+              >"live-test-diagnostics/${service}.log" 2>&1
+          done
+
+      - name: Retain live-test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: live-test-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: live-test-diagnostics/
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Tear down live-test stack
         if: always()

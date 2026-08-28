@@ -594,6 +594,54 @@ def test_publish_workflow_enforces_static_and_local_image_security_gates() -> No
     assert 'exit-code: "1"' in build_job
 
 
+def test_live_test_workflow_preserves_result_and_collects_pre_timeout_diagnostics() -> (
+    None
+):
+    workflow = _read(".github/workflows/publish-ghcr.yml")
+    job = _workflow_job_body(workflow, "live-tests")
+
+    assert "timeout-minutes: 35" in job
+    assert (
+        "timeout --foreground --signal=TERM --kill-after=30s 25m\n"
+        "          docker compose"
+    ) in job
+    run_step = job.split("      - name: Run live tests\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert "--exit-code-from live-tests live-tests" in run_step
+    assert "continue-on-error" not in run_step
+    assert "|| true" not in run_step
+
+    diagnostics_step = job.split(
+        "      - name: Capture bounded live-test diagnostics\n", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert "if: failure()" in diagnostics_step
+    assert "services=(proxy proxy-edge-2 admin-ui live-tests)" in diagnostics_step
+    assert 'ps --all "${services[@]}"' in diagnostics_step
+    assert 'ps --all --format json "${services[@]}"' in diagnostics_step
+    assert '--tail 200 "$service"' in diagnostics_step
+    assert diagnostics_step.count("timeout --foreground --kill-after=5s 30s") == 3
+    assert "logs --no-color --timestamps" in diagnostics_step
+    assert "docker compose logs --no-color\n" not in job
+
+    artifact_step = job.split("      - name: Retain live-test diagnostics\n", 1)[
+        1
+    ].split("\n      - name:", 1)[0]
+    assert "if: failure()" in artifact_step
+    assert re.search(r"uses: actions/upload-artifact@[0-9a-f]{40}", artifact_step)
+    assert "path: live-test-diagnostics/" in artifact_step
+    assert "if-no-files-found: error" in artifact_step
+
+    teardown_step = job.split("      - name: Tear down live-test stack\n", 1)[1]
+    assert "if: always()" in teardown_step
+    assert "down -v --remove-orphans" in teardown_step
+    assert (
+        job.index("Capture bounded live-test diagnostics")
+        < job.index("Retain live-test diagnostics")
+        < job.index("Tear down live-test stack")
+    )
+
+
 def test_ghcr_publish_passes_runtime_version_build_args() -> None:
     workflow = _read(".github/workflows/publish-ghcr.yml")
     proxy = _read("docker/Dockerfile.proxy")
