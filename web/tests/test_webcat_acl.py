@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import NoReturn
 
 import pytest
-from services import blocked_log_runtime
+from services import blocked_log_runtime, schema_lifecycle
 
 from .mysql_test_utils import configure_test_mysql_env
 
@@ -719,6 +719,11 @@ def test_blocked_log_db_closes_connection_when_schema_init_fails(monkeypatch) ->
             closed.append(True)
 
     monkeypatch.setattr(blocked_log_runtime, "connect", FakeConn)
+    monkeypatch.setattr(
+        schema_lifecycle,
+        "runtime_schema_ready_for_lazy_store",
+        lambda _conn: False,
+    )
 
     db = blocked_log_runtime.BlockedLogDb(max_rows=10)
 

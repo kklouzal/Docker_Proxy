@@ -1071,7 +1071,7 @@ def test_ssl_errors_init_db_survives_cleanup_lock_timeout(
     monkeypatch, tmp_path
 ) -> None:
     import pymysql  # type: ignore
-    from services import ssl_errors_store  # type: ignore
+    from services import schema_lifecycle, ssl_errors_store  # type: ignore
 
     store = ssl_errors_store.SslErrorsStore(cache_log_path=str(tmp_path / "cache.log"))
     created_tables: list[str] = []
@@ -1087,6 +1087,11 @@ def test_ssl_errors_init_db_survives_cleanup_lock_timeout(
             created_tables.append(str(sql))
 
     monkeypatch.setattr(store, "_connect", Conn)
+    monkeypatch.setattr(
+        schema_lifecycle,
+        "runtime_schema_ready_for_lazy_store",
+        lambda _conn: False,
+    )
     monkeypatch.setattr(
         store,
         "_cleanup_known_false_positives",
