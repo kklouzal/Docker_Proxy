@@ -219,7 +219,14 @@ class VersionStatusClient:
             threading.Lock() for _ in range(_CACHE_LOCK_STRIPES)
         )
 
-    def _api_get(self, path: str) -> dict[str, Any]:
+    def _remaining_timeout(self, deadline: float) -> float:
+        remaining = deadline - float(self.monotonic())
+        if remaining <= 0:
+            msg = "GitHub version check exceeded its time budget."
+            raise TimeoutError(msg)
+        return remaining
+
+    def _api_get(self, path: str, *, deadline: float) -> dict[str, Any]:
         url = f"https://api.github.com/repos/{self.repository}/{path.lstrip('/')}"
         headers = {
             "Accept": "application/vnd.github+json",
@@ -229,7 +236,8 @@ class VersionStatusClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         request = urllib.request.Request(url, headers=headers)
-        with self.urlopen(request, timeout=self.timeout_seconds) as response:
+        timeout = self._remaining_timeout(deadline)
+        with self.urlopen(request, timeout=timeout) as response:
             raw = response.read(_MAX_GITHUB_API_RESPONSE_BYTES + 1)
         if len(raw) > _MAX_GITHUB_API_RESPONSE_BYTES:
             msg = (
@@ -238,15 +246,17 @@ class VersionStatusClient:
             raise RuntimeError(msg)
         text = raw.decode("utf-8", errors="replace")
         data = json.loads(text) if text else {}
+        self._remaining_timeout(deadline)
         if not isinstance(data, dict):
             msg = "GitHub API returned a non-object response."
             raise RuntimeError(msg)
         return data
 
-    def _resolve_branch_tip(self) -> str:
+    def _resolve_branch_tip(self, *, deadline: float) -> str:
         branch_ref = f"refs/heads/{self.branch}"
         payload = self._api_get(
-            "git/ref/heads/" + urllib.parse.quote(self.branch, safe="")
+            "git/ref/heads/" + urllib.parse.quote(self.branch, safe=""),
+            deadline=deadline,
         )
         if payload.get("ref") != branch_ref:
             msg = "GitHub branch ref response has an unexpected identity."
@@ -317,17 +327,19 @@ class VersionStatusClient:
         if cached is not None and now - cached[0] <= max(0.0, ttl):
             return cached[1]
 
+        deadline = now + self.timeout_seconds
         try:
             # Resolve the mutable branch to an authoritative commit first.  The
             # compare is then frozen to that identity, while a later one-item page
             # avoids the potentially large changed-files list on page one.
-            latest_revision = self._resolve_branch_tip()
+            latest_revision = self._resolve_branch_tip(deadline=deadline)
             compare = self._api_get(
                 "compare/"
                 + urllib.parse.quote(current, safe="")
                 + "..."
                 + urllib.parse.quote(latest_revision, safe="")
-                + "?per_page=1&page=2"
+                + "?per_page=1&page=2",
+                deadline=deadline,
             )
             status, main_commits_ahead, running_commits_ahead = (
                 _validated_compare_summary(compare)

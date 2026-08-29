@@ -147,6 +147,96 @@ def test_current_component_status_counts_commits_behind_from_compare_api() -> No
     assert status["latest_revision_short"] == "ffffffffffff"
 
 
+def test_compare_revision_reduces_initial_and_second_open_timeouts() -> None:
+    clock_values = iter([100.0, 100.2, 100.4, 100.5, 100.6])
+    timeouts: list[float] = []
+
+    def urlopen(request, *, timeout):
+        timeouts.append(timeout)
+        if "/git/ref/heads/" in request.full_url:
+            return _branch_ref_response(request)
+        return _json_response(
+            {
+                "status": "identical",
+                "ahead_by": 0,
+                "behind_by": 0,
+                "total_commits": 0,
+            }
+        )
+
+    status = VersionStatusClient(
+        repository="owner/repo",
+        timeout_seconds=1.0,
+        urlopen=urlopen,
+        monotonic=lambda: next(clock_values),
+    ).compare_revision("abc123")
+
+    assert status.state == "ok"
+    assert timeouts == pytest.approx([0.8, 0.5])
+    assert all(timeout > 0 for timeout in timeouts)
+
+
+def test_compare_revision_exhausted_deadline_prevents_compare_request() -> None:
+    now = {"value": 100.0}
+    seen_urls: list[str] = []
+
+    def urlopen(request, *, timeout):
+        seen_urls.append(request.full_url)
+        assert timeout == pytest.approx(1.0)
+        now["value"] = 101.0
+        return _branch_ref_response(request)
+
+    status = VersionStatusClient(
+        repository="owner/repo",
+        timeout_seconds=1.0,
+        urlopen=urlopen,
+        monotonic=lambda: now["value"],
+    ).compare_revision("abc123")
+
+    assert status.state == "unknown"
+    assert "exceeded its time budget" in status.detail
+    assert seen_urls == ["https://api.github.com/repos/owner/repo/git/ref/heads/main"]
+
+
+def test_compare_revision_deadline_failure_uses_stale_success() -> None:
+    now = {"value": 1.0}
+    exhaust = {"value": False}
+    compare_calls = {"count": 0}
+
+    def urlopen(request, *, timeout):
+        if "/git/ref/heads/" in request.full_url:
+            if exhaust["value"]:
+                now["value"] += 1.0
+            return _branch_ref_response(request)
+        compare_calls["count"] += 1
+        return _json_response(
+            {
+                "status": "identical",
+                "ahead_by": 0,
+                "behind_by": 0,
+                "total_commits": 0,
+            }
+        )
+
+    client = VersionStatusClient(
+        repository="owner/repo",
+        timeout_seconds=1.0,
+        urlopen=urlopen,
+        monotonic=lambda: now["value"],
+    )
+    current = client.compare_revision("abc123", ttl_seconds=1)
+    now["value"] = 3.0
+    exhaust["value"] = True
+    stale = client.compare_revision("abc123", ttl_seconds=1)
+
+    assert current.state == "ok"
+    assert stale.state == "warn"
+    assert stale.latest_revision == "f" * 40
+    assert "showing stale cached result" in stale.detail
+    assert "exceeded its time budget" in stale.detail
+    assert compare_calls["count"] == 1
+
+
 def test_compare_revision_identical_main_is_ok() -> None:
     def urlopen(_request, *, timeout):
         if "/git/ref/heads/" in _request.full_url:
