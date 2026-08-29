@@ -930,15 +930,17 @@ class SafeBrowsingStore:
         version = _decode_b64(item.get("version"), field="version")
         self.init_schema(conn)
         partial = bool(item.get("partialUpdate"))
-        current = [
-            bytes(row[0])
-            for row in conn.execute(
-                "SELECT prefix FROM safe_browsing_hash_prefixes WHERE list_name=%s ORDER BY prefix ASC",
-                (name,),
-            ).fetchall()
-        ]
-        if not partial:
-            current = []
+        current = (
+            [
+                bytes(row[0])
+                for row in conn.execute(
+                    "SELECT prefix FROM safe_browsing_hash_prefixes WHERE list_name=%s ORDER BY prefix ASC",
+                    (name,),
+                ).fetchall()
+            ]
+            if partial
+            else []
+        )
         batch_size = _env_int(
             "SAFE_BROWSING_PREFIX_WRITE_BATCH_SIZE",
             5000,

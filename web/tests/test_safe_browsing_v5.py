@@ -2876,7 +2876,7 @@ def test_safe_browsing_cache_lookup_does_not_delete_expired_rows(monkeypatch) ->
     assert all(not query.upper().startswith("DELETE ") for query in queries)
 
 
-def test_safe_browsing_hash_list_replacement_marks_generation_before_prune(
+def test_safe_browsing_hash_list_replacement_skips_existing_prefix_read_and_marks_generation_before_prune(
     monkeypatch,
 ) -> None:
     from services import safe_browsing_v5
@@ -2904,7 +2904,8 @@ def test_safe_browsing_hash_list_replacement_marks_generation_before_prune(
                 "FROM safe_browsing_hash_prefixes WHERE list_name=%s ORDER BY prefix"
                 in normalized
             ):
-                return Result(rows=[(b"zzzz",)])
+                msg = "full replacement must not read existing prefixes"
+                raise AssertionError(msg)
             if normalized.startswith("DELETE FROM safe_browsing_hash_prefixes"):
                 return Result(rowcount=1)
             return Result()
