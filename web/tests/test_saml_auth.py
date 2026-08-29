@@ -829,6 +829,75 @@ def _use_fake_metadata_opener(monkeypatch, response: _FakeMetadataResponse):
     return opened_requests
 
 
+def test_saml_fetch_enforces_one_deadline_across_open_and_body_reads(
+    monkeypatch,
+) -> None:
+    store = MemorySamlAuthStore()
+    profile = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/metadata.xml",
+            "timeout_seconds": "10",
+        }
+    )
+    monotonic_values = iter((100.0, 103.0, 104.0, 110.0))
+    socket_timeouts = []
+
+    class FakeSocket:
+        def settimeout(self, timeout):
+            socket_timeouts.append(timeout)
+
+    class SlowTrickleResponse(_FakeMetadataResponse):
+        fp = SimpleNamespace(raw=SimpleNamespace(_sock=FakeSocket()))
+
+        def __init__(self) -> None:
+            super().__init__(b"", profile.metadata_url)
+            self.read_count = 0
+
+        def read(self, _size: int = -1) -> bytes:
+            self.read_count += 1
+            return b"<EntityDescriptor>"
+
+    response = SlowTrickleResponse()
+    opened_requests = _use_fake_metadata_opener(monkeypatch, response)
+    monkeypatch.setattr(saml_auth.time, "monotonic", lambda: next(monotonic_values))
+
+    with pytest.raises(
+        TimeoutError,
+        match=r"SAML metadata fetch timed out after 10 seconds\.",
+    ):
+        store.fetch_metadata(profile)
+
+    assert opened_requests[0][1] == pytest.approx(7.0)
+    assert socket_timeouts == pytest.approx([6.0])
+    assert response.read_count == 1
+
+
+def test_saml_fetch_does_not_open_when_setup_exhausts_total_deadline(
+    monkeypatch,
+) -> None:
+    store = MemorySamlAuthStore()
+    profile = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/metadata.xml",
+            "timeout_seconds": "10",
+        }
+    )
+    opened_requests = _use_fake_metadata_opener(
+        monkeypatch,
+        _FakeMetadataResponse(SAMPLE_METADATA.encode(), profile.metadata_url),
+    )
+    monotonic_values = iter((100.0, 110.0))
+    monkeypatch.setattr(saml_auth.time, "monotonic", lambda: next(monotonic_values))
+
+    with pytest.raises(
+        TimeoutError,
+        match=r"SAML metadata fetch timed out after 10 seconds\.",
+    ):
+        store.fetch_metadata(profile)
+
+    assert opened_requests == []
+
+
 def test_saml_fetch_disables_ambient_proxy_and_preserves_tls_redirect_handlers(
     monkeypatch,
 ) -> None:
@@ -853,7 +922,7 @@ def test_saml_fetch_disables_ambient_proxy_and_preserves_tls_redirect_handlers(
     class FakeOpener:
         def open(self, request, *, timeout):
             assert request.full_url == profile.metadata_url
-            assert timeout == profile.timeout_seconds
+            assert 0 < timeout <= profile.timeout_seconds
             return _FakeMetadataResponse(SAMPLE_METADATA.encode(), profile.metadata_url)
 
     def fake_build_opener(*handlers):
@@ -912,7 +981,7 @@ def test_saml_fetch_rejects_https_metadata_redirect_before_unsafe_fetch(
                 assert request.get_header("Accept") == (
                     "application/samlmetadata+xml, application/xml, text/xml"
                 )
-                assert timeout == profile.timeout_seconds
+                assert 0 < timeout <= profile.timeout_seconds
                 redirect_handler.redirect_request(
                     request,
                     None,
@@ -934,6 +1003,37 @@ def test_saml_fetch_rejects_https_metadata_redirect_before_unsafe_fetch(
         store.fetch_metadata(profile)
 
     assert opened_urls == [profile.metadata_url]
+
+
+def test_saml_fetch_redirect_uses_remaining_total_deadline(monkeypatch) -> None:
+    request = saml_auth.Request("https://adfs.example.local/metadata.xml")
+    request.timeout = 10.0
+    socket_timeouts = []
+    redirect_response = SimpleNamespace(
+        fp=SimpleNamespace(
+            raw=SimpleNamespace(
+                _sock=SimpleNamespace(settimeout=socket_timeouts.append),
+            )
+        )
+    )
+    monkeypatch.setattr(saml_auth.time, "monotonic", lambda: 104.0)
+
+    redirected = saml_auth._SamlMetadataRedirectHandler(
+        require_https=True,
+        deadline=110.0,
+        timeout_seconds=10.0,
+    ).redirect_request(
+        request,
+        redirect_response,
+        302,
+        "Found",
+        {},
+        "https://login.example.local/metadata.xml",
+    )
+
+    assert redirected is not None
+    assert request.timeout == pytest.approx(6.0)
+    assert socket_timeouts == pytest.approx([6.0])
 
 
 def test_saml_fetch_preserves_accept_header_on_https_redirect() -> None:

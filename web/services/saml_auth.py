@@ -138,10 +138,40 @@ def _validate_saml_fetch_url(value: Any, *, label: str, require_https: bool) -> 
     return url
 
 
+def _remaining_saml_metadata_timeout(deadline: float, timeout_seconds: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        msg = f"SAML metadata fetch timed out after {timeout_seconds:g} seconds."
+        raise TimeoutError(msg)
+    return remaining
+
+
+def _tighten_saml_response_timeout(response, timeout: float) -> None:
+    sock = getattr(
+        getattr(getattr(response, "fp", None), "raw", None),
+        "_sock",
+        None,
+    )
+    set_timeout = getattr(sock, "settimeout", None)
+    if callable(set_timeout):
+        try:
+            set_timeout(timeout)
+        except (OSError, ValueError):
+            pass
+
+
 class _SamlMetadataRedirectHandler(HTTPRedirectHandler):
-    def __init__(self, *, require_https: bool) -> None:
+    def __init__(
+        self,
+        *,
+        require_https: bool,
+        deadline: float | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
         super().__init__()
         self._require_https = require_https
+        self._deadline = deadline
+        self._timeout_seconds = timeout_seconds
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         _validate_saml_fetch_url(
@@ -149,6 +179,14 @@ class _SamlMetadataRedirectHandler(HTTPRedirectHandler):
             label="metadata redirect",
             require_https=self._require_https,
         )
+        if self._deadline is not None and self._timeout_seconds is not None:
+            # HTTPRedirectHandler reopens the returned request using req.timeout.
+            req.timeout = _remaining_saml_metadata_timeout(
+                self._deadline,
+                self._timeout_seconds,
+            )
+            # The base handler drains the redirect response before reopening.
+            _tighten_saml_response_timeout(fp, req.timeout)
         redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
         if redirected is not None:
             for header, value in _SAML_METADATA_REQUEST_HEADERS.items():
@@ -506,6 +544,8 @@ class SamlAuthStore:
             return SamlMetadataRefreshResult(False, profile.provider, detail)
 
     def fetch_metadata(self, profile: SamlProviderProfile) -> str:
+        timeout_seconds = float(profile.timeout_seconds)
+        deadline = time.monotonic() + timeout_seconds
         metadata_url = _validate_saml_fetch_url(
             profile.metadata_url,
             label="metadata",
@@ -522,9 +562,14 @@ class SamlAuthStore:
         opener = build_opener(
             ProxyHandler({}),
             HTTPSHandler(context=context),
-            _SamlMetadataRedirectHandler(require_https=profile.require_https),
+            _SamlMetadataRedirectHandler(
+                require_https=profile.require_https,
+                deadline=deadline,
+                timeout_seconds=timeout_seconds,
+            ),
         )
-        with opener.open(request, timeout=profile.timeout_seconds) as resp:
+        open_timeout = _remaining_saml_metadata_timeout(deadline, timeout_seconds)
+        with opener.open(request, timeout=open_timeout) as resp:
             final_url = resp.geturl()
             _validate_saml_fetch_url(
                 final_url,
@@ -534,7 +579,15 @@ class SamlAuthStore:
             chunks: list[bytes] = []
             total = 0
             while True:
+                remaining = _remaining_saml_metadata_timeout(
+                    deadline,
+                    timeout_seconds,
+                )
+                # Tighten the per-operation socket timeout so repeated body
+                # reads cannot each consume the full configured timeout.
+                _tighten_saml_response_timeout(resp, remaining)
                 chunk = resp.read(min(65536, profile.max_metadata_bytes + 1 - total))
+                _remaining_saml_metadata_timeout(deadline, timeout_seconds)
                 if not chunk:
                     break
                 chunks.append(chunk)
