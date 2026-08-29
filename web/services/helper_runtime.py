@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
+from services.errors import redact_sensitive_text
+
 _MAX_HELPER_EVENT_COLLECTION_ITEMS = 25
 _MAX_HELPER_EVENT_DEPTH = 4
 
@@ -139,7 +141,7 @@ def _safe_event_text(value: object, *, max_len: int = 160) -> str:
 
 def helper_failure_event(helper: str, event: str, exc: Exception) -> None:
     reason = (
-        _safe_event_text(exc)
+        _safe_event_text(redact_sensitive_text(exc))
         if isinstance(exc, ValueError)
         else "Operation failed. Check server logs for details."
     )

@@ -75,6 +75,43 @@ def test_helper_failure_event_sanitizes_non_validation_errors(capsys) -> None:
     assert "secret" not in payload["reason"]
 
 
+def test_helper_failure_event_redacts_credentials_in_validation_detail(capsys) -> None:
+    helper_failure_event(
+        "sample",
+        "apply_failed",
+        ValueError(
+            "snapshot rejected: https://example.test/apply?token=query-secret "
+            "Authorization: Bearer header-secret password='quoted-secret'"
+        ),
+    )
+
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["reason"] == (
+        "snapshot rejected: https://example.test/apply?token=[redacted] "
+        "Authorization: Bearer [redacted] password='[redacted]'"
+    )
+    assert "query-secret" not in payload["reason"]
+    assert "header-secret" not in payload["reason"]
+    assert "quoted-secret" not in payload["reason"]
+
+
+def test_helper_failure_event_preserves_benign_bounded_validation_detail(
+    capsys,
+) -> None:
+    detail = "Invalid snapshot generation 42 for web filter profile.\nRetry the apply."
+    helper_failure_event("sample", "apply_failed", ValueError(detail))
+
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["reason"] == (
+        "Invalid snapshot generation 42 for web filter profile. Retry the apply."
+    )
+
+    helper_failure_event("sample", "apply_failed", ValueError("x" * 200))
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["reason"] == ("x" * 159) + "..."
+    assert len(payload["reason"]) == 162
+
+
 def test_helper_stats_emits_snapshot_without_blocking_increments(
     monkeypatch, capsys
 ) -> None:
