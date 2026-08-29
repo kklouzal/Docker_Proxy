@@ -1473,12 +1473,24 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 message = "clamd INSTREAM scan skipped: backend is unavailable"
                 raise RuntimeError(message)
             if now >= self._scan_known_available_until:
-                probe_lock_acquired = self._scan_probe_lock.acquire(blocking=False)
+                probe_lock_acquired = self._scan_probe_lock.acquire(
+                    timeout=self.clamd_timeout
+                )
                 if not probe_lock_acquired:
-                    message = (
-                        "clamd INSTREAM scan skipped: availability probe in flight"
-                    )
+                    message = "clamd availability probe coordination timed out"
+                    raise TimeoutError(message)
+
+                # A probe may have completed while this request waited. Reuse its
+                # result instead of opening another connection or failing open.
+                now = time.monotonic()
+                if now < self._scan_unavailable_until:
+                    self._scan_probe_lock.release()
+                    probe_lock_acquired = False
+                    message = "clamd INSTREAM scan skipped: backend is unavailable"
                     raise RuntimeError(message)
+                if now < self._scan_known_available_until:
+                    self._scan_probe_lock.release()
+                    probe_lock_acquired = False
 
         session = ClamdInstreamSession(
             host=self.clamd_host,
@@ -1495,6 +1507,9 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                         available_until,
                     )
                     self._scan_unavailable_until = 0.0
+                    if probe_lock_acquired:
+                        self._scan_probe_lock.release()
+                        probe_lock_acquired = False
                 yield scanner
         except Exception:
             if self.fail_open:
