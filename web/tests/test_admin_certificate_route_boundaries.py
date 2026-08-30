@@ -648,7 +648,8 @@ def test_certificates_page_empty_admin_ui_sans_are_examples_not_defaults(
     assert "admin-public.example.test" in html
     assert "localhost" in html
     assert "127.0.0.1" in html
-    assert "Saving also records valid request-host" in html
+    assert "ordinary request" in html
+    assert "never trusted for certificate or redirect authority" in html
     assert "PAC_TRUSTED_PROXY_CIDRS" in html
 
 
@@ -709,14 +710,12 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
     html = response.get_data(as_text=True)
     assert response.status_code == 200
     assert "Opening the HTTPS Admin UI shortly" in html
-    assert "https://localhost/certs" in html
+    assert "https://admin-public.example.test/certs" in html
     assert "window.location.assign" in html
     assert bundles.admin_ui_https_settings.enabled is True
     assert bundles.admin_ui_https_settings.certfile == certfile
     assert bundles.admin_ui_https_settings.keyfile == keyfile
-    assert bundles.admin_ui_https_settings.san_tokens == (
-        "admin-request.example.test\nadmin-public.example.test"
-    )
+    assert bundles.admin_ui_https_settings.san_tokens == "admin-public.example.test"
     assert bundles.admin_ui_https_settings.updated_by == "admin"
     assert restart_calls == [True]
     assert (
@@ -738,7 +737,7 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
     assert "localhost" in sans.get_values_for_type(x509.DNSName)
     assert "admin-ui" in sans.get_values_for_type(x509.DNSName)
     assert "admin-public.example.test" in sans.get_values_for_type(x509.DNSName)
-    assert "admin-request.example.test" in sans.get_values_for_type(x509.DNSName)
+    assert "admin-request.example.test" not in sans.get_values_for_type(x509.DNSName)
     assert "127.0.0.1" in [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)]
 
 
@@ -888,7 +887,7 @@ def test_admin_ui_https_request_sans_drop_scoped_ipv6_before_persisting(
     ]
 
 
-def test_admin_ui_https_request_sans_parse_bracketed_ipv6_request_host(
+def test_admin_ui_https_request_sans_ignore_bracketed_ipv6_request_host(
     monkeypatch, tmp_path
 ) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
@@ -899,10 +898,10 @@ def test_admin_ui_https_request_sans_parse_bracketed_ipv6_request_host(
     ):
         tokens = loaded.module._admin_ui_https_request_san_tokens()
 
-    assert tokens[:2] == ("[2001:db8::10]:8443", "2001:db8::10")
+    assert tokens == ("localhost", "localhost")
     normalized = loaded.module.normalize_admin_ui_certificate_sans(tokens)
-    assert "2001:db8::10" in normalized
-    assert "[2001" not in normalized
+    assert "2001:db8::10" not in normalized
+    assert "localhost" in normalized
 
 
 def test_admin_ui_https_preference_rejects_invalid_configured_san(
@@ -1157,7 +1156,7 @@ def test_admin_ui_https_preference_accepts_hidden_fallback_before_checkbox(
     assert restart_calls == [True]
 
 
-def test_admin_ui_https_preference_uses_current_host_for_continue_link(
+def test_admin_ui_https_preference_rejects_current_host_for_continue_link(
     monkeypatch, tmp_path
 ) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
@@ -1166,9 +1165,73 @@ def test_admin_ui_https_preference_uses_current_host_for_continue_link(
         "/certs",
         base_url="http://admin.example.test:8443",
     ):
-        assert (
-            loaded.module._admin_ui_https_next_url()
-            == "https://admin.example.test:8443/certs?proxy_id=default"
+        assert loaded.module._admin_ui_https_persistent_san_tokens() == ()
+        assert loaded.module._admin_ui_https_next_url() == (
+            "https://localhost/certs?proxy_id=default"
+        )
+
+
+def test_admin_ui_https_preference_configured_host_is_canonical_authority(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("ADMIN_UI_PUBLIC_HOST", "ADMIN.EXAMPLE.TEST.:8443")
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    with loaded.module.app.test_request_context(
+        "/certs",
+        base_url="http://attacker.example.test",
+    ):
+        assert loaded.module._admin_ui_https_request_san_tokens() == (
+            "admin.example.test:8443",
+            "admin.example.test",
+        )
+        assert loaded.module._admin_ui_https_next_url() == (
+            "https://admin.example.test:8443/certs?proxy_id=default"
+        )
+
+
+def test_admin_ui_https_preference_configured_ipv6_port_is_canonical_authority(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv(
+        "ADMIN_UI_PUBLIC_HOST",
+        "[2001:0db8:0:0:0:0:0:10]:8443",
+    )
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    with loaded.module.app.test_request_context(
+        "/certs",
+        base_url="http://attacker.example.test",
+    ):
+        assert loaded.module._admin_ui_https_request_san_tokens() == (
+            "[2001:db8::10]:8443",
+            "2001:db8::10",
+        )
+        assert loaded.module._admin_ui_https_next_url() == (
+            "https://[2001:db8::10]:8443/certs?proxy_id=default"
+        )
+
+
+def test_admin_ui_https_preference_trusted_forwarded_host_is_shared_authority(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "127.0.0.0/8")
+    loaded = load_admin_app(monkeypatch, tmp_path)
+
+    with loaded.module.app.test_request_context(
+        "/certs",
+        headers={
+            "Host": "attacker.example.test",
+            "X-Forwarded-Host": "UI.EXAMPLE.TEST:9443",
+        },
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+    ):
+        assert loaded.module._admin_ui_https_request_san_tokens() == (
+            "ui.example.test:9443",
+            "ui.example.test",
+        )
+        assert loaded.module._admin_ui_https_next_url() == (
+            "https://ui.example.test:9443/certs?proxy_id=default"
         )
 
 
@@ -1184,7 +1247,7 @@ def test_admin_ui_https_preference_continue_link_sanitizes_host(
         assert loaded.module._admin_ui_https_next_url().startswith("https://localhost/")
 
 
-def test_admin_ui_https_preference_continue_link_keeps_ipv6_port(
+def test_admin_ui_https_preference_continue_link_rejects_request_ipv6_port(
     monkeypatch, tmp_path
 ) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
@@ -1193,9 +1256,8 @@ def test_admin_ui_https_preference_continue_link_keeps_ipv6_port(
         "/certs",
         base_url="http://[2001:db8::10]:8443",
     ):
-        assert (
-            loaded.module._admin_ui_https_next_url()
-            == "https://[2001:db8::10]:8443/certs?proxy_id=default"
+        assert loaded.module._admin_ui_https_next_url() == (
+            "https://localhost/certs?proxy_id=default"
         )
 
 

@@ -4998,23 +4998,40 @@ def _admin_ui_https_default_material_status(
     }
 
 
-def _admin_ui_https_request_san_tokens() -> tuple[str, ...]:
-    tokens: list[str] = []
-    if has_request_context():
-        tokens.extend(
-            [
-                request.host,
-                sanitize_admin_ui_certificate_san_token(request.host),
-            ],
-        )
-        if forwarded_headers_trusted(request.remote_addr):
-            tokens.append(request.headers.get("X-Forwarded-Host", ""))
+def _admin_ui_https_authority() -> str:
+    candidates: list[str] = []
     public_host = os.environ.get("ADMIN_UI_PUBLIC_HOST") or os.environ.get(
         "PROXY_PUBLIC_HOST",
     )
     if public_host:
-        tokens.append(public_host)
-    return tuple(tokens)
+        candidates.append(public_host)
+    if has_request_context() and forwarded_headers_trusted(request.remote_addr):
+        candidates.append(request.headers.get("X-Forwarded-Host", ""))
+    candidates.append("localhost")
+    for candidate in candidates:
+        value = str(candidate or "").split(",", 1)[0].strip()
+        if not value or any(char in value for char in ("/", "\\", "@")):
+            continue
+        try:
+            parsed = urlsplit(f"//{value}")
+            hostname = (parsed.hostname or "").strip().strip("[]").rstrip(".")
+            port = parsed.port
+        except ValueError:
+            continue
+        canonical_hostname = normalize_admin_ui_certificate_san_token(hostname)
+        if not canonical_hostname:
+            continue
+        if port is None:
+            return canonical_hostname
+        if ":" in canonical_hostname:
+            return f"[{canonical_hostname}]:{port}"
+        return f"{canonical_hostname}:{port}"
+    return "localhost"
+
+
+def _admin_ui_https_request_san_tokens() -> tuple[str, ...]:
+    authority = _admin_ui_https_authority()
+    return (authority, sanitize_admin_ui_certificate_san_token(authority))
 
 
 def _admin_ui_https_configured_san_tokens(value: object) -> tuple[str, ...]:
@@ -5271,38 +5288,7 @@ def _admin_ui_https_env_lines(
 
 
 def _admin_ui_https_redirect_host() -> str:
-    candidates = [request.host if has_request_context() else ""]
-    public_host = os.environ.get("ADMIN_UI_PUBLIC_HOST") or os.environ.get(
-        "PROXY_PUBLIC_HOST",
-    )
-    if public_host:
-        candidates.append(public_host)
-    candidates.append("localhost")
-    for candidate in candidates:
-        value = str(candidate or "").split(",", 1)[0].strip()
-        if not value or any(char in value for char in ("/", "\\", "@")):
-            continue
-        try:
-            parsed = urlsplit(f"//{value}")
-        except ValueError:
-            continue
-        hostname = (parsed.hostname or "").strip().strip("[]").rstrip(".")
-        if not hostname:
-            continue
-        normalized = normalize_admin_ui_certificate_sans([hostname])
-        hostname_key = hostname.lower()
-        if hostname_key not in normalized:
-            continue
-        try:
-            port = parsed.port
-        except ValueError:
-            port = None
-        if port is None:
-            return hostname_key
-        if ":" in hostname_key:
-            return f"[{hostname_key}]:{port}"
-        return f"{hostname_key}:{port}"
-    return "localhost"
+    return _admin_ui_https_authority()
 
 
 def _admin_ui_https_next_url() -> str:
