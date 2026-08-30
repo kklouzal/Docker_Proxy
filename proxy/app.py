@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 from flask import Flask, Response, abort, jsonify, make_response, request
 from markupsafe import escape
+from services.db import DATABASE_ERRORS, mysql_error_classification
 from services.errors import public_error_message
 from services.http_optimizations import install_http_optimizations
 from services.pac_http import (
@@ -412,6 +413,26 @@ def public_policy_request_get() -> Any:
     abort(405)
 
 
+def _policy_request_store_unavailable(exc: BaseException) -> bool:
+    """Classify retryable persistence/control-plane availability failures."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, DATABASE_ERRORS) and mysql_error_classification(
+            current
+        ) in {
+            "connectivity",
+            "connection_lost",
+            "pool_or_server_exhausted",
+            "lock_wait_timeout",
+            "deadlock",
+        }:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 @app.route("/policy-request", methods=["POST"])
 def public_policy_request() -> Any:
     if not _is_public_listener_request():
@@ -442,12 +463,15 @@ def public_policy_request() -> Any:
             mimetype="text/html; charset=utf-8",
         )
     except Exception as exc:
-        detail = escape(
-            public_error_message(exc, default="The request could not be recorded."),
+        unavailable = _policy_request_store_unavailable(exc)
+        detail = (
+            "The request service is temporarily unavailable. Please try again later."
+            if unavailable
+            else "The request could not be recorded due to an internal error."
         )
         return Response(
             f"<!doctype html><title>Request failed</title><h1>Request failed</h1><p>{detail}</p>",
-            status=400,
+            status=503 if unavailable else 500,
             mimetype="text/html; charset=utf-8",
         )
 

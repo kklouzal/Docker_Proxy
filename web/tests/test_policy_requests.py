@@ -1019,6 +1019,106 @@ def test_proxy_public_policy_request_capacity_response_is_429(monkeypatch) -> No
     assert "capacity is currently full" in res.get_data(as_text=True)
 
 
+def test_proxy_public_policy_request_database_unavailable_is_sanitized_503(
+    monkeypatch,
+) -> None:
+    ensure_proxy_runtime_import_path()
+    monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    monkeypatch.setenv("EXPOSE_INTERNAL_ERRORS", "1")
+    import pymysql
+
+    import proxy.app as proxy_app
+
+    proxy_app = importlib.reload(proxy_app)
+
+    class Store:
+        def create_request(self, **_kwargs):
+            raise pymysql.OperationalError(
+                2003, "password=database-secret host=internal-db"
+            )
+
+    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    res = proxy_app.app.test_client().post(
+        "/policy-request",
+        base_url="http://localhost:80",
+        data={"domain": "bad.example"},
+    )
+
+    body = res.get_data(as_text=True)
+    assert res.status_code == 503
+    assert "temporarily unavailable" in body
+    assert "database-secret" not in body
+    assert "internal-db" not in body
+    assert "OperationalError" not in body
+
+
+def test_proxy_public_policy_request_control_plane_database_failure_is_503(
+    monkeypatch,
+) -> None:
+    ensure_proxy_runtime_import_path()
+    monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    import pymysql
+    from services.proxy_write_guard import ProxyLifecycleWriteError
+
+    import proxy.app as proxy_app
+
+    proxy_app = importlib.reload(proxy_app)
+
+    class Store:
+        def create_request(self, **_kwargs):
+            try:
+                raise pymysql.OperationalError(2013, "token=control-plane-secret")
+            except pymysql.OperationalError as exc:
+                message = "metadata unavailable"
+                raise ProxyLifecycleWriteError(message) from exc
+
+    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    res = proxy_app.app.test_client().post(
+        "/policy-request",
+        base_url="http://localhost:80",
+        data={"domain": "bad.example"},
+    )
+
+    body = res.get_data(as_text=True)
+    assert res.status_code == 503
+    assert "temporarily unavailable" in body
+    assert "control-plane-secret" not in body
+    assert "metadata unavailable" not in body
+
+
+def test_proxy_public_policy_request_unexpected_store_failure_is_sanitized_500(
+    monkeypatch,
+) -> None:
+    ensure_proxy_runtime_import_path()
+    monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
+    monkeypatch.setenv("PAC_HTTP_PORT", "80")
+    monkeypatch.setenv("EXPOSE_INTERNAL_ERRORS", "1")
+    import proxy.app as proxy_app
+
+    proxy_app = importlib.reload(proxy_app)
+
+    class Store:
+        def create_request(self, **_kwargs):
+            message = "sql detail password=unexpected-secret"
+            raise RuntimeError(message)
+
+    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    res = proxy_app.app.test_client().post(
+        "/policy-request",
+        base_url="http://localhost:80",
+        data={"domain": "bad.example"},
+    )
+
+    body = res.get_data(as_text=True)
+    assert res.status_code == 500
+    assert "internal error" in body
+    assert "unexpected-secret" not in body
+    assert "RuntimeError" not in body
+    assert "sql detail" not in body
+
+
 def test_proxy_public_policy_request_rejects_parser_enforced_oversize(
     monkeypatch,
 ) -> None:
