@@ -109,6 +109,57 @@ def test_clear_during_refresh_prevents_stale_repopulation() -> None:
     assert cache == {}
 
 
+def test_completed_distinct_keys_do_not_accumulate_coordination_state() -> None:
+    coordinator = KeyedSingleFlight()
+
+    for key in range(100):
+        assert coordinator.run(key, lambda key=key: key) == key
+
+    assert coordinator._key_locks == {}
+
+
+def test_waiter_keeps_same_key_coordination_state_until_it_finishes() -> None:
+    coordinator = KeyedSingleFlight()
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    def first_operation() -> str:
+        first_entered.set()
+        assert release_first.wait(2)
+        return "first"
+
+    def second_operation() -> str:
+        second_entered.set()
+        return "second"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(coordinator.run, "same", first_operation)
+        assert first_entered.wait(2)
+        second = pool.submit(coordinator.run, "same", second_operation)
+        assert not second_entered.wait(0.1)
+        assert coordinator._key_locks["same"].users == 2
+
+        release_first.set()
+        assert first.result(timeout=2) == "first"
+        assert second.result(timeout=2) == "second"
+
+    assert coordinator._key_locks == {}
+
+
+def test_reentrant_run_reuses_key_lock_and_reclaims_it() -> None:
+    coordinator = KeyedSingleFlight()
+
+    assert (
+        coordinator.run(
+            "same",
+            lambda: coordinator.run("same", lambda: "nested"),
+        )
+        == "nested"
+    )
+    assert coordinator._key_locks == {}
+
+
 def test_builder_failure_keeps_existing_stale_value() -> None:
     coordinator = KeyedSingleFlight()
     cache = {"key": (1.0, {"old": True})}
@@ -128,3 +179,4 @@ def test_builder_failure_keeps_existing_stale_value() -> None:
         )
 
     assert cache == {"key": (1.0, {"old": True})}
+    assert coordinator._key_locks == {}

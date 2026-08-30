@@ -8,13 +8,21 @@ a clear cannot repopulate the cache afterward.
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, MutableMapping
+    from collections.abc import Callable, Iterator, MutableMapping
 
 K = TypeVar("K")
 V = TypeVar("V")
+
+
+@dataclass(slots=True)
+class _KeyLock:
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    users: int = 0
 
 
 class KeyedSingleFlight:
@@ -22,12 +30,28 @@ class KeyedSingleFlight:
 
     def __init__(self) -> None:
         self._state_lock = threading.RLock()
-        self._key_locks: dict[Any, threading.RLock] = {}
+        self._key_locks: dict[Any, _KeyLock] = {}
         self._generation = 0
 
-    def _lock_for(self, key: Any) -> threading.RLock:
+    @contextmanager
+    def _lock_for(self, key: Any) -> Iterator[None]:
         with self._state_lock:
-            return self._key_locks.setdefault(key, threading.RLock())
+            key_lock = self._key_locks.get(key)
+            if key_lock is None:
+                key_lock = _KeyLock()
+                self._key_locks[key] = key_lock
+            # Count both holders and waiters before attempting acquisition. This
+            # keeps the registry entry stable until no thread can still acquire
+            # its lock, preventing two live locks for the same key (an ABA race).
+            key_lock.users += 1
+        try:
+            with key_lock.lock:
+                yield
+        finally:
+            with self._state_lock:
+                key_lock.users -= 1
+                if key_lock.users == 0 and self._key_locks.get(key) is key_lock:
+                    del self._key_locks[key]
 
     def get_or_build(
         self,
@@ -40,8 +64,7 @@ class KeyedSingleFlight:
         copy_value: Callable[[V], V],
         prune: Callable[[], None] | None = None,
     ) -> V:
-        key_lock = self._lock_for(key)
-        with key_lock:
+        with self._lock_for(key):
             checked_at = now()
             with self._state_lock:
                 cached = cache.get(key)
