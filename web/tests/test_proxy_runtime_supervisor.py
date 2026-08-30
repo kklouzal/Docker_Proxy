@@ -19,11 +19,16 @@ from .subprocess_test_utils import run_test_process
 
 
 @pytest.fixture(autouse=True)
-def _isolated_squid_transaction_journal(tmp_path, monkeypatch) -> None:
+def _isolated_runtime_environment(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv(
         "SQUID_TRANSACTION_JOURNAL_PATH",
         str(tmp_path / "squid-transaction.json"),
     )
+    # Most tests in this module exercise the historical unsuffixed Supervisor
+    # contract. Scaled/configured tests opt in explicitly so inherited runner
+    # variables cannot silently change which program names their fakes model.
+    monkeypatch.delenv("SQUID_WORKERS", raising=False)
+    monkeypatch.delenv("WORKERS", raising=False)
 
 
 POLICY_SHA_A = "a" * 64
@@ -860,6 +865,18 @@ def test_icap_supervisor_program_names_use_shared_worker_normalization(
     assert _icap_supervisor_programs("cicap_adblock") == expected
 
 
+def test_icap_supervisor_program_names_accept_workers_fallback(monkeypatch) -> None:
+    from proxy.runtime import _icap_supervisor_programs
+
+    monkeypatch.delenv("SQUID_WORKERS", raising=False)
+    monkeypatch.setenv("WORKERS", "2")
+
+    assert _icap_supervisor_programs("cicap_adblock") == (
+        "cicap_adblock_1",
+        "cicap_adblock_2",
+    )
+
+
 def test_restart_supervisor_program_restarts_scaled_icap_helpers(monkeypatch) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
@@ -936,7 +953,9 @@ def test_restart_supervisor_program_scaled_fail_safe_avoids_logical_no_such_proc
             started = True
             return _cp(1, stderr=f"{program}: ERROR (abnormal termination)\n")
         if action == "status":
-            state = "BACKOFF exited too quickly" if started else "STOPPED Aug 10 01:00 AM"
+            state = (
+                "BACKOFF exited too quickly" if started else "STOPPED Aug 10 01:00 AM"
+            )
             return _cp(3, stdout=f"{program} {state}\n")
         pytest.fail(f"unexpected supervisor call: {args}")
 
