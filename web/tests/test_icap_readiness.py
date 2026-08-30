@@ -157,6 +157,82 @@ def test_icap_readiness_required_failure_blocks_with_optional_degradation(
     assert [service["ok"] for service in payload["services"]] == [False, False]
 
 
+def test_icap_readiness_slow_probes_share_aggregate_budget_and_keep_order(
+    tmp_path, monkeypatch
+) -> None:
+    import icap_readiness  # type: ignore
+
+    config = tmp_path / "20-icap.conf"
+    config.write_text(
+        "".join(
+            f"icap_service service_{index} reqmod_precache "
+            f"icap://127.0.0.1:{14000 + index}/probe bypass="
+            f"{'off' if index == 1 else 'on'}\n"
+            for index in range(12)
+        ),
+        encoding="utf-8",
+    )
+
+    def slow_probe(service, *, timeout):
+        time.sleep(timeout)
+        return icap_readiness.ProbeResult(
+            service=service,
+            ok=service.name == "service_0",
+            detail="ready" if service.name == "service_0" else "timed out",
+        )
+
+    monkeypatch.setattr(icap_readiness, "probe_service", slow_probe)
+    started = time.monotonic()
+    ok, detail, payload = icap_readiness.check_once([str(config)], probe_timeout=0.1)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.35
+    assert ok is False
+    assert payload["blocking_failure_count"] == 1
+    assert payload["optional_failure_count"] == 10
+    assert [item["name"] for item in payload["services"]] == [
+        f"service_{index}" for index in range(12)
+    ]
+    assert payload["services"][0]["ok"] is True
+    assert "Required ICAP services are not OPTIONS-ready" in detail
+    assert "optional ICAP services also degraded" in detail
+
+
+def test_icap_readiness_probe_has_absolute_receive_deadline(monkeypatch) -> None:
+    import icap_readiness  # type: ignore
+
+    class TrickleSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            return None
+
+        def sendall(self, _request):
+            return None
+
+        def recv(self, _size):
+            return b"x"
+
+    monotonic_values = iter([0.0, 0.05, 0.11])
+    monkeypatch.setattr(
+        icap_readiness.time, "monotonic", lambda: next(monotonic_values)
+    )
+    monkeypatch.setattr(
+        icap_readiness.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: TrickleSocket(),
+    )
+
+    result = icap_readiness.probe_service(_service(1344), timeout=0.1)
+
+    assert result.ok is False
+    assert "probe deadline exceeded" in result.detail
+
+
 def test_icap_readiness_skips_malformed_icap_service_ports(tmp_path) -> None:
     import icap_readiness  # type: ignore
 
@@ -405,7 +481,8 @@ def test_icap_readiness_wait_json_reports_timeout_payload_without_recheck(
         ]
     )
     monkeypatch.setattr(icap_readiness.time, "sleep", lambda _seconds: None)
-    monotonic_values = iter([0.0, 0.1])
+    # wait deadline, probe deadline, post-connect/read budgets, wait timeout check
+    monotonic_values = iter([0.0, 0.01, 0.02, 0.03, 0.1])
     monkeypatch.setattr(
         icap_readiness.time, "monotonic", lambda: next(monotonic_values)
     )

@@ -11,6 +11,7 @@ ICAP_FAILURE.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import math
 import os
@@ -33,6 +34,11 @@ ICAP_STATUS_LINE_RE = re.compile(
     r"^ICAP/1\.0 (?P<code>[0-9]{3}) (?P<reason>[!-~](?:[ -~]*[!-~])?)$"
 )
 ICAP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+
+
+class ProbeDeadlineExceededError(TimeoutError):
+    def __init__(self) -> None:
+        super().__init__("ICAP OPTIONS probe deadline exceeded")
 
 
 @dataclass(frozen=True)
@@ -167,10 +173,17 @@ def parse_services(paths: list[str]) -> list[IcapService]:
 
 
 def _read_icap_headers(
-    sock: socket.socket, *, max_bytes: int = MAX_ICAP_HEADER_BYTES
+    sock: socket.socket,
+    *,
+    deadline: float,
+    max_bytes: int = MAX_ICAP_HEADER_BYTES,
 ) -> bytes:
     data = b""
     while len(data) < max_bytes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ProbeDeadlineExceededError
+        sock.settimeout(remaining)
         chunk = sock.recv(min(512, max_bytes - len(data)))
         if not chunk:
             break
@@ -233,6 +246,7 @@ def _parse_icap_response_head(
 
 
 def probe_service(service: IcapService, *, timeout: float) -> ProbeResult:
+    deadline = time.monotonic() + timeout
     host_header = service.host
     if ":" in host_header and not host_header.startswith("["):
         host_header = f"[{host_header}]"
@@ -248,9 +262,12 @@ def probe_service(service: IcapService, *, timeout: float) -> ProbeResult:
         with socket.create_connection(
             (service.host, service.port), timeout=timeout
         ) as sock:
-            sock.settimeout(timeout)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProbeDeadlineExceededError
+            sock.settimeout(remaining)
             sock.sendall(request)
-            head = _read_icap_headers(sock)
+            head = _read_icap_headers(sock, deadline=deadline)
     except OSError as exc:
         return ProbeResult(
             service=service, ok=False, detail=f"connect/options failed: {exc}"
@@ -356,7 +373,17 @@ def check_once(
             "detail": "No ICAP services are configured.",
         }
         return True, payload["detail"], payload
-    results = [probe_service(service, timeout=probe_timeout) for service in services]
+    # Squid renders three services per worker (up to twelve at four workers).
+    # Probe them concurrently so the configured per-probe bound is also the
+    # aggregate check bound. executor.map preserves config/result ordering and
+    # the context manager joins every socket-bounded worker before returning.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(services)) as executor:
+        results = list(
+            executor.map(
+                lambda service: probe_service(service, timeout=probe_timeout),
+                services,
+            )
+        )
     failures = [result for result in results if not result.ok]
     blocking_failures = [result for result in failures if result.service.required]
     degraded_failures = [result for result in failures if not result.service.required]
