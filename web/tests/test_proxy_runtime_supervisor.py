@@ -903,6 +903,56 @@ def test_restart_supervisor_program_restarts_scaled_icap_helpers(monkeypatch) ->
     assert ("start", "cicap_adblock_2") in calls
     assert "cicap_adblock_1" in detail
     assert "cicap_adblock_2" in detail
+    assert not any(program == "cicap_adblock" for _action, program in calls)
+    assert "no such process" not in detail
+
+
+def test_restart_supervisor_program_scaled_fail_safe_avoids_logical_no_such_process(
+    monkeypatch,
+) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.setenv("SQUID_WORKERS", "1")
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    calls: list[tuple[str, str | None]] = []
+    started = False
+
+    def fake_run(args, **_kwargs):
+        nonlocal started
+        action = args[3]
+        program = args[4] if len(args) > 4 else None
+        calls.append((action, program))
+        if program == "cicap_adblock":
+            return _cp(2, stdout="cicap_adblock: ERROR (no such process)\n")
+        if action == "status" and program is None:
+            return _cp(
+                0,
+                stdout="cicap_adblock_1 RUNNING pid 10, uptime 0:00:11\n",
+            )
+        if action == "stop":
+            started = False
+            return _cp(0, stdout=f"{program}: stopped\n")
+        if action == "start":
+            started = True
+            return _cp(1, stderr=f"{program}: ERROR (abnormal termination)\n")
+        if action == "status":
+            state = "BACKOFF exited too quickly" if started else "STOPPED Aug 10 01:00 AM"
+            return _cp(3, stdout=f"{program} {state}\n")
+        pytest.fail(f"unexpected supervisor call: {args}")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+
+    ok, detail = _runtime_shell()._restart_supervisor_program(
+        "cicap_adblock",
+        stop_on_failure=True,
+    )
+
+    assert ok is False
+    assert calls.count(("stop", "cicap_adblock_1")) == 2
+    assert not any(program == "cicap_adblock" for _action, program in calls)
+    assert "Fail-safe stop confirmed for cicap_adblock_1." in detail
+    assert "Unable to verify fail-safe stop" not in detail
+    assert "no such process" not in detail
 
 
 @pytest.mark.parametrize(
@@ -1657,6 +1707,11 @@ def test_restart_adblock_service_reports_scaled_worker_failure_without_squid(
     assert any(call[3:] == ["start", "cicap_adblock_1"] for call in calls)
     assert any(call[3:] == ["stop", "cicap_adblock_2"] for call in calls)
     assert any(call[3:] == ["start", "cicap_adblock_2"] for call in calls)
+    assert sum(call[3:] == ["stop", "cicap_adblock_1"] for call in calls) == 2
+    assert sum(call[3:] == ["stop", "cicap_adblock_2"] for call in calls) == 2
+    assert not any(call[3:] == ["stop", "cicap_adblock"] for call in calls)
+    assert "Fail-safe stop confirmed for cicap_adblock_1." in detail
+    assert "Fail-safe stop confirmed for cicap_adblock_2." in detail
 
 
 def test_heartbeat_uses_derived_management_url_when_override_unset(monkeypatch) -> None:

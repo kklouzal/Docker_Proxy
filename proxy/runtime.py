@@ -1963,6 +1963,26 @@ class ProxyRuntime:
             return max(0.001, deadline - time.monotonic())
 
         prefix = self._logical_supervisor_program_prefix(program_name)
+        configured_programs = list(_icap_supervisor_programs(program_name))
+        if prefix and configured_programs != [program_name]:
+            programs, resolve_detail = self._resolve_supervisor_program_names(
+                program_name,
+                timeout_seconds=remaining_timeout(),
+            )
+            scaled_programs = [
+                program for program in programs if program != program_name
+            ]
+            if not scaled_programs:
+                return False, resolve_detail or (
+                    f"Unable to resolve scaled supervisor programs for {program_name}."
+                )
+            return self._restart_resolved_supervisor_programs_unlocked(
+                scaled_programs,
+                resolve_detail=resolve_detail,
+                stop_on_failure=stop_on_failure,
+                deadline=deadline,
+            )
+
         ok, detail = self._restart_supervisor_program_unlocked(
             program_name,
             timeout_seconds=remaining_timeout(),
@@ -1981,20 +2001,49 @@ class ProxyRuntime:
         scaled_programs = [program for program in programs if program != program_name]
         if not scaled_programs:
             return ok, detail
+        return self._restart_resolved_supervisor_programs_unlocked(
+            scaled_programs,
+            resolve_detail="\n".join(
+                part for part in (detail, resolve_detail) if str(part or "").strip()
+            ),
+            stop_on_failure=stop_on_failure,
+            deadline=deadline,
+        )
+
+    def _restart_resolved_supervisor_programs_unlocked(
+        self,
+        program_names: list[str],
+        *,
+        resolve_detail: str,
+        stop_on_failure: bool,
+        deadline: float,
+    ) -> tuple[bool, str]:
+        def remaining_timeout() -> float:
+            return max(0.001, deadline - time.monotonic())
+
         results = [
             self._restart_supervisor_program_unlocked(
                 program,
                 timeout_seconds=remaining_timeout(),
-                stop_on_failure=stop_on_failure,
+                stop_on_failure=False,
                 deadline=deadline,
             )
-            for program in scaled_programs
+            for program in program_names
         ]
-        detail_parts = [str(part or "").strip() for part in (detail, resolve_detail)]
+        all_restarted = all(result_ok for result_ok, _detail in results)
+        detail_parts = [str(resolve_detail or "").strip()]
         detail_parts.extend(
             str(result_detail or "").strip() for _ok, result_detail in results
         )
-        return all(result_ok for result_ok, _detail in results), "\n".join(
+        if not all_restarted and stop_on_failure:
+            _stopped_ok, stop_detail = (
+                self._fail_safe_stop_supervisor_programs_unlocked(
+                    tuple(program_names),
+                    deadline=deadline,
+                )
+            )
+            detail_parts.append(stop_detail)
+        return all_restarted, "\n".join(
             part for part in detail_parts if part
         )
 
@@ -2165,12 +2214,39 @@ class ProxyRuntime:
                 ).strip() or f"{program_name} restarted."
 
         if stop_on_failure:
+            _stopped_ok, stop_detail = (
+                self._fail_safe_stop_supervisor_programs_unlocked(
+                    (program_name,),
+                    deadline=deadline,
+                )
+            )
+            if stop_detail:
+                details.append(stop_detail)
+        return False, "\n".join(
+            part for part in details if part
+        ).strip() or f"Failed to restart {program_name}."
+
+    def _fail_safe_stop_supervisor_programs_unlocked(
+        self,
+        program_names: tuple[str, ...],
+        *,
+        deadline: float,
+    ) -> tuple[bool, str]:
+        details: list[str] = []
+        all_stopped = True
+
+        def remaining_timeout() -> float | None:
+            remaining = deadline - time.monotonic()
+            return max(0.001, remaining) if remaining > 0 else None
+
+        for program_name in program_names:
             command_timeout = remaining_timeout()
             if command_timeout is None:
                 details.append(
                     f"Unable to run fail-safe stop for {program_name}: restart timeout exhausted."
                 )
-                return False, "\n".join(part for part in details if part).strip()
+                all_stopped = False
+                continue
             try:
                 stop = subprocess.run(
                     [
@@ -2234,9 +2310,9 @@ class ProxyRuntime:
                 details.append(f"Fail-safe stop confirmed for {program_name}.")
             else:
                 details.append(f"Unable to verify fail-safe stop for {program_name}.")
-        return False, "\n".join(
-            part for part in details if part
-        ).strip() or f"Failed to restart {program_name}."
+                all_stopped = False
+
+        return all_stopped, "\n".join(part for part in details if part).strip()
 
     def _restart_adblock_service(self) -> tuple[bool, str]:
         def wait_for_health(detail: str) -> tuple[bool, str]:
