@@ -94,6 +94,10 @@ class ScanFailedAfterBodyError(RuntimeError):
     pass
 
 
+class ScanLimitExceededAfterBodyError(ScanFailedAfterBodyError):
+    """The complete response was retained, but AV could not scan all bytes."""
+
+
 class SpooledReplayBody:
     """Bounded-memory decoded response body retained for post-scan replay."""
 
@@ -433,7 +437,7 @@ def read_icap_chunked_body(
     stream: BinaryIO,
     initial: bytes = b"",
     *,
-    max_bytes: int = DEFAULT_MAX_SCAN_BYTES,
+    max_bytes: int | None = DEFAULT_MAX_SCAN_BYTES,
     preview: bool = False,
     preview_size: int | None = None,
     empty_preview_is_complete: bool = False,
@@ -481,7 +485,7 @@ def read_icap_chunked_body(
                 message = "duplicate ICAP preview terminator without continuation"
                 raise IcapProtocolError(message)
             return bytes(body), remainder
-        if size > max_bytes - total_size:
+        if max_bytes is not None and size > max_bytes - total_size:
             message = f"ICAP body exceeds {max_bytes} bytes"
             raise BodyTooLargeError(message)
         if (
@@ -1034,6 +1038,39 @@ def error_response(message: str) -> bytes:
     )
 
 
+def scan_limit_blocked_response() -> bytes:
+    """Build a safe fail-closed response without claiming an AV detection."""
+    payload = (
+        b"Blocked by Docker_Proxy antivirus policy.\n"
+        b"The response exceeded an antivirus scan limit and could not be verified.\n"
+    )
+    http_header = (
+        b"HTTP/1.1 403 Forbidden\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        + f"Content-Length: {len(payload)}\r\n".encode("ascii")
+        + b"Connection: close\r\n\r\n"
+    )
+    return _icap_response(
+        "200 OK",
+        {"ISTag": ISTAG, "Encapsulated": f"res-hdr=0, res-body={len(http_header)}"},
+        http_header + _encode_icap_body_chunk(payload),
+    )
+
+
+def _is_clamd_size_limit_error(exc: Exception) -> bool:
+    detail = str(exc).casefold()
+    return any(
+        marker in detail
+        for marker in (
+            "size limit",
+            "streammaxlength",
+            "stream max length",
+            "maxfilesize",
+            "max file size",
+        )
+    )
+
+
 def _encode_icap_body_chunk(body: bytes) -> bytes:
     return f"{len(body):X}\r\n".encode("ascii") + body + CRLF + b"0\r\n\r\n"
 
@@ -1116,6 +1153,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
         turn an otherwise-good web response into HTTP 500/missing subresources.
         """
         scan_error: Exception | None = None
+        scan_limit_exceeded = False
         result: ClamdResult | None = None
 
         with contextlib.ExitStack() as stack:
@@ -1127,19 +1165,30 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 scan_error = exc
 
             def send_chunk_or_degrade(chunk: bytes) -> None:
-                nonlocal scan_error
+                nonlocal scan_error, scan_limit_exceeded
+                previous_length = body.length
                 body.write(chunk)
+                remaining_scan_bytes = max(
+                    0, self.server.max_scan_bytes - previous_length
+                )
+                scan_chunk = chunk[:remaining_scan_bytes]
+                if len(scan_chunk) != len(chunk):
+                    scan_limit_exceeded = True
                 if scanner is None or scan_error is not None:
                     return
                 try:
-                    scanner.send_chunk(chunk)
+                    scanner.send_chunk(scan_chunk)
                 except Exception as exc:
                     scan_error = exc
 
             _unused_body, remainder = read_icap_chunked_body(
                 self.rfile,
                 initial,
-                max_bytes=self.server.max_scan_bytes,
+                # max_scan_bytes limits bytes submitted to clamd, not bytes
+                # accepted from Squid. Oversize responses must still be fully
+                # consumed and disk-spooled so optional AV can replay them and
+                # required AV can fail closed without truncating the ICAP body.
+                max_bytes=None,
                 preview=preview_size is not None,
                 preview_size=preview_size,
                 continue_callback=self._send_100_continue,
@@ -1154,13 +1203,22 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 message = "unexpected data after terminal ICAP body"
                 raise IcapProtocolError(message)
             _validate_http_content_length_matches_body(http_header, body.length)
-            if scanner is not None and scan_error is None:
+            if scanner is not None and scan_error is None and not scan_limit_exceeded:
                 try:
                     result = scanner.finish()
                 except Exception as exc:
                     scan_error = exc
 
+        if scan_limit_exceeded:
+            message = (
+                "response exceeded configured antivirus scan limit "
+                f"of {self.server.max_scan_bytes} bytes"
+            )
+            raise ScanLimitExceededAfterBodyError(message)
         if scan_error is not None:
+            if _is_clamd_size_limit_error(scan_error):
+                message = "clamd rejected the response at its antivirus scan limit"
+                raise ScanLimitExceededAfterBodyError(message) from scan_error
             raise ScanFailedAfterBodyError(str(scan_error)) from scan_error
         if result is None:
             message = "clamd INSTREAM scan failed without a verdict"
@@ -1320,6 +1378,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
             self._write_response(response)
         except Exception as exc:
             self.server.record("errors")
+            scan_limit_exceeded = isinstance(exc, ScanLimitExceededAfterBodyError)
+            if scan_limit_exceeded:
+                self.server.record("scan_limit_exceeded")
             if isinstance(exc, (IcapProtocolError, BodyTooLargeError)):
                 self.server.record("protocol_errors")
             elif isinstance(
@@ -1337,32 +1398,55 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
             if isinstance(exc, (TimeoutError, socket.timeout)):
                 self.server.record("timeouts")
             if self.server.fail_open:
-                scan_error_warning.warning(
-                    "fail-open after scan/protocol error: %s", exc
-                )
+                if scan_limit_exceeded:
+                    scan_error_warning.warning(
+                        "fail-open antivirus bypass: reason=scan_limit_exceeded "
+                        "limit_bytes=%d action=replay_unscanned",
+                        self.server.max_scan_bytes,
+                    )
+                else:
+                    scan_error_warning.warning(
+                        "fail-open after scan/protocol error: %s", exc
+                    )
                 try:
                     if isinstance(exc, HttpFramingError):
                         self._write_response(error_response(str(exc)))
                     else:
                         self._send_fail_open_response(
-                            allow_204=allow_204,
+                            # A scan-limit bypass is explicitly unscanned. Force
+                            # the retained full response through ICAP 200 replay
+                            # rather than relying on Squid's late-204 backup.
+                            allow_204=allow_204 and not scan_limit_exceeded,
                             http_header=http_header,
                             body=replay_body,
                             body_complete=body_complete,
                             null_body=null_body,
                         )
                         self.server.record("fail_open_bypasses")
+                        if scan_limit_exceeded:
+                            self.server.record("oversize_bypasses")
                 except OSError as write_exc:
                     scan_error_warning.warning(
                         "failed writing fail-open ICAP response: %s", write_exc
                     )
             else:
                 self.server.record("fail_closed_errors")
-                scan_error_warning.warning(
-                    "fail-closed after scan/protocol error: %s", exc
-                )
+                if scan_limit_exceeded:
+                    self.server.record("oversize_blocks")
+                    scan_error_warning.warning(
+                        "fail-closed antivirus block: reason=scan_limit_exceeded "
+                        "limit_bytes=%d action=block_unverified",
+                        self.server.max_scan_bytes,
+                    )
+                else:
+                    scan_error_warning.warning(
+                        "fail-closed after scan/protocol error: %s", exc
+                    )
                 try:
-                    self._write_response(error_response(str(exc)))
+                    if scan_limit_exceeded:
+                        self._write_response(scan_limit_blocked_response())
+                    else:
+                        self._write_response(error_response(str(exc)))
                 except OSError as write_exc:
                     scan_error_warning.warning(
                         "failed writing fail-closed ICAP response: %s", write_exc
@@ -1397,7 +1481,7 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.clamd_port = clamd_port
         self.clamd_timeout = clamd_timeout
         self.fail_open = fail_open
-        self.max_scan_bytes = max_scan_bytes
+        self.max_scan_bytes = max(1, max_scan_bytes)
         self.client_timeout = client_timeout
         self.max_connections = max_connections
         self.max_scans = max_scans
@@ -1583,6 +1667,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         and not security_env_bool("FILE_SECURITY_AV_REQUIRED", default=False)
     )
     args = parser.parse_args(argv)
+    args.max_scan_bytes = max(1, args.max_scan_bytes)
     args.client_timeout = max(0.1, args.client_timeout)
     args.max_connections = max(1, args.max_connections)
     args.max_scans = max(1, min(args.max_scans, args.max_connections))

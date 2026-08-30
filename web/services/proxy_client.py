@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -66,8 +68,44 @@ _UNSAFE_ENCODED_MANAGEMENT_PATH = (
 _UNSAFE_QUERY_MANAGEMENT_PATH = "Unsafe proxy management path: ambiguous query string."
 
 
-def _read_management_response_text(stream: Any) -> tuple[str, bool]:
-    raw = stream.read(_MAX_MANAGEMENT_RESPONSE_BYTES + 1)
+_monotonic = time.monotonic
+
+
+class _ManagementDeadlineExpiredError(TimeoutError):
+    pass
+
+
+def _read_management_response_text(stream: Any, *, deadline: float) -> tuple[str, bool]:
+    remaining = deadline - _monotonic()
+    if remaining <= 0:
+        raise _ManagementDeadlineExpiredError
+
+    # A socket timeout is an inactivity timeout, so a peer trickling bytes can
+    # otherwise keep read() alive indefinitely. Closing the response at the
+    # absolute deadline gives body consumption a total wall-clock bound.
+    deadline_reached = threading.Event()
+
+    def close_at_deadline() -> None:
+        deadline_reached.set()
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+    timer = threading.Timer(remaining, close_at_deadline)
+    timer.daemon = True
+    timer.start()
+    try:
+        raw = stream.read(_MAX_MANAGEMENT_RESPONSE_BYTES + 1)
+    except Exception as exc:
+        if deadline_reached.is_set() or _monotonic() >= deadline:
+            raise _ManagementDeadlineExpiredError from exc
+        raise
+    finally:
+        timer.cancel()
+        timer.join()
+    if deadline_reached.is_set() or _monotonic() >= deadline:
+        raise _ManagementDeadlineExpiredError
     if len(raw) > _MAX_MANAGEMENT_RESPONSE_BYTES:
         raw = raw[:_MAX_MANAGEMENT_RESPONSE_BYTES]
         return raw.decode("utf-8", errors="replace"), True
@@ -254,11 +292,19 @@ class ProxyClient:
             method=method.upper(),
             headers=self._auth_headers(),
         )
-        timeout = float(timeout_seconds or self.timeout_seconds)
+        timeout = float(
+            self.timeout_seconds if timeout_seconds is None else timeout_seconds
+        )
+        if not math.isfinite(timeout) or timeout <= 0:
+            msg = "Proxy management request timeout must be a positive finite number."
+            raise ProxyClientError(msg)
+        deadline = _monotonic() + timeout
         error_url = self._safe_url_context(url)
         try:
             with _open_management_request(request, timeout=timeout) as response:
-                raw, response_too_large = _read_management_response_text(response)
+                raw, response_too_large = _read_management_response_text(
+                    response, deadline=deadline
+                )
                 if response_too_large:
                     msg = (
                         "Proxy management endpoint response exceeded "
@@ -289,7 +335,17 @@ class ProxyClient:
             response_too_large = False
             try:
                 if hasattr(exc, "read"):
-                    raw, response_too_large = _read_management_response_text(exc)
+                    raw, response_too_large = _read_management_response_text(
+                        exc, deadline=deadline
+                    )
+            except TimeoutError as timeout_exc:
+                raise ProxyClientError(
+                    self._timeout_error_detail(
+                        proxy_id=proxy_id,
+                        url=error_url,
+                        timeout=timeout,
+                    ),
+                ) from timeout_exc
             finally:
                 exc.close()
             try:

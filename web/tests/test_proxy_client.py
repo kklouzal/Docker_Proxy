@@ -685,6 +685,88 @@ def test_proxy_client_timeout_error_is_actionable(
     assert "reachable from the Admin UI container" in message
 
 
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), -float("inf")])
+def test_proxy_client_rejects_invalid_timeouts_before_transport(
+    monkeypatch, proxy_client_module, timeout: float
+) -> None:
+    proxy_client = proxy_client_module
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+    monkeypatch.setattr(
+        proxy_client,
+        "_open_management_request",
+        lambda *_args, **_kwargs: pytest.fail("transport must not be opened"),
+    )
+
+    with pytest.raises(proxy_client.ProxyClientError, match="positive finite"):
+        proxy_client.ProxyClient().get_health("live", timeout_seconds=timeout)
+
+
+def test_proxy_client_open_phase_consumes_success_body_deadline(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
+    now = [100.0]
+    monkeypatch.setattr(proxy_client, "_monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+
+    class SlowResponse(_Response):
+        def read(self, _size: int = -1) -> bytes:
+            now[0] += 0.6
+            return b'{"ok": true}'
+
+    def fake_open(_request, timeout):
+        assert timeout == pytest.approx(1.0)
+        now[0] += 0.5
+        return SlowResponse({})
+
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_open)
+
+    with pytest.raises(proxy_client.ProxyClientError, match=r"timed out after 1\.0s"):
+        proxy_client.ProxyClient().get_health("live", timeout_seconds=1.0)
+
+
+def test_proxy_client_open_phase_consumes_http_error_body_deadline(
+    monkeypatch, proxy_client_module
+) -> None:
+    proxy_client = proxy_client_module
+    now = [100.0]
+    monkeypatch.setattr(proxy_client, "_monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        proxy_client, "get_proxy_registry", lambda: _Registry("http://proxy-mgmt:5000")
+    )
+
+    class SlowErrorBody(io.BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            now[0] += 0.6
+            return super().read(size)
+
+    def fake_open(_request, timeout) -> NoReturn:
+        assert timeout == pytest.approx(1.0)
+        now[0] += 0.5
+        error_url = "http://secret-base.invalid/api/manage/sync"
+        raise urllib.error.HTTPError(
+            error_url,
+            502,
+            "Bad Gateway",
+            {},
+            SlowErrorBody(b'{"detail":"secret-token-value"}'),
+        )
+
+    monkeypatch.setattr(proxy_client, "_open_management_request", fake_open)
+
+    with pytest.raises(proxy_client.ProxyClientError) as exc_info:
+        proxy_client.ProxyClient().sync_proxy("live", timeout_seconds=1.0)
+
+    message = str(exc_info.value)
+    assert "timed out after 1.0s" in message
+    assert "secret-token-value" not in message
+    assert "secret-base" not in message
+
+
 def test_proxy_client_url_error_surfaces_redacted_reason(
     monkeypatch, proxy_client_module
 ) -> None:

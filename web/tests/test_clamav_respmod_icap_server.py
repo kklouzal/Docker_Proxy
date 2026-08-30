@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import logging
 import math
 import os
 import socket
@@ -556,7 +557,9 @@ def test_icap_chunked_body_accepts_strict_hex_size_tokens() -> None:
     seen_chunks: list[bytes] = []
 
     body, remainder = server.read_icap_chunked_body(
-        io.BytesIO(b"000a; foo=bar\r\n0123456789\r\nF\r\nabcdefghijklmno\r\n0;ieof\r\n\r\n"),
+        io.BytesIO(
+            b"000a; foo=bar\r\n0123456789\r\nF\r\nabcdefghijklmno\r\n0;ieof\r\n\r\n"
+        ),
         max_bytes=25,
         chunk_callback=seen_chunks.append,
     )
@@ -634,9 +637,7 @@ def test_outer_icap_header_parser_rejects_malformed_field_lines() -> None:
     )
     for line in malformed_lines:
         try:
-            server._split_headers(
-                b"RESPMOD icap://example.test/av ICAP/1.0\r\n" + line
-            )
+            server._split_headers(b"RESPMOD icap://example.test/av ICAP/1.0\r\n" + line)
         except server.IcapProtocolError as exc:
             assert str(exc) == "malformed ICAP header line"
         else:  # pragma: no cover - regression guard should always reject
@@ -700,9 +701,11 @@ def test_malformed_outer_icap_control_header_lookalikes_do_not_fail_open_204(
 def test_encapsulated_offsets_accept_ascii_decimals_and_comma_sections() -> None:
     server = _load_server()
 
-    assert server._parse_encapsulated(
-        "req-hdr=000, res-hdr=046, res-body=00122"
-    ) == {"req-hdr": 0, "res-hdr": 46, "res-body": 122}
+    assert server._parse_encapsulated("req-hdr=000, res-hdr=046, res-body=00122") == {
+        "req-hdr": 0,
+        "res-hdr": 46,
+        "res-body": 122,
+    }
     assert server._parse_encapsulated("res-hdr=0,null-body=64") == {
         "res-hdr": 0,
         "null-body": 64,
@@ -883,9 +886,7 @@ def test_small_clean_respmod_with_allow_204_still_replays_complete_body() -> Non
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
-        response = _recv_icap_exchange(
-            port, _sample_respmod_request(port), timeout=0.5
-        )
+        response = _recv_icap_exchange(port, _sample_respmod_request(port), timeout=0.5)
         icap_server.shutdown()
         thread.join(timeout=1)
 
@@ -963,7 +964,9 @@ def test_http_response_204_backup_content_length_and_te_matrix() -> None:
     }
 
     for name, (http_header, expected) in cases.items():
-        assert server._http_response_allows_squid_204_backup(http_header) is expected, name
+        assert server._http_response_allows_squid_204_backup(http_header) is expected, (
+            name
+        )
 
 
 def test_respmod_rejects_malformed_http_status_lines_before_scan_or_replay() -> None:
@@ -991,8 +994,7 @@ def test_respmod_rejects_malformed_http_status_lines_before_scan_or_replay() -> 
                 return scanner
 
         http_header = (
-            status_line
-            + b"\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\n"
+            status_line + b"\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\n"
         )
         with TestServer(
             ("127.0.0.1", 0),
@@ -1082,11 +1084,15 @@ def test_body_forbidden_status_res_body_rejected_before_scan_or_replay() -> None
         assert scanner.finished is False, name
         assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
         assert b"HTTP/1.1 502 Bad Gateway" in response, name
-        assert b"HTTP status " + status_code + b" forbids ICAP res-body" in response, name
+        assert b"HTTP status " + status_code + b" forbids ICAP res-body" in response, (
+            name
+        )
         assert b"5\r\nhello\r\n0\r\n\r\n" not in response, name
 
 
-def test_http_response_body_semantics_preserves_protocol_valid_null_body_cases() -> None:
+def test_http_response_body_semantics_preserves_protocol_valid_null_body_cases() -> (
+    None
+):
     server = _load_server()
 
     valid_cases = (
@@ -1736,15 +1742,12 @@ def _null_body_respmod_request_with_headers(
     allow = "Allow: 204\r\n" if allow_204 else ""
     if request_header is None:
         return (
-            (
-                f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
-                "Host: 127.0.0.1\r\n"
-                f"{allow}"
-                f"Encapsulated: res-hdr=0, null-body={len(response_header)}"
-                "\r\n\r\n"
-            ).encode("ascii")
-            + response_header
-        )
+            f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            f"{allow}"
+            f"Encapsulated: res-hdr=0, null-body={len(response_header)}"
+            "\r\n\r\n"
+        ).encode("ascii") + response_header
 
     response_offset = len(request_header)
     null_offset = response_offset + len(response_header)
@@ -1926,7 +1929,10 @@ def test_malformed_present_req_hdr_rejected_before_null_body_scan() -> None:
         assert scanned_bodies == [], name
         assert response.startswith(b"ICAP/1.0 200 OK\r\n"), name
         assert b"HTTP/1.1 502 Bad Gateway" in response, name
-        assert b"malformed HTTP request" in response or b"unsupported HTTP request" in response, name
+        assert (
+            b"malformed HTTP request" in response
+            or b"unsupported HTTP request" in response
+        ), name
         assert b"Content-Length: 5\r\n" not in response, name
 
 
@@ -2305,13 +2311,10 @@ def test_respmod_truncated_res_hdr_before_declared_terminal_offset_is_bounded() 
         port = icap_server.server_address[1]
         huge_offset = server.DEFAULT_MAX_HEADER_BYTES + 1
         request = (
-            (
-                f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
-                "Host: 127.0.0.1\r\n"
-                f"Encapsulated: res-hdr=0, res-body={huge_offset}\r\n\r\n"
-            ).encode("ascii")
-            + b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"
-        )
+            f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            f"Encapsulated: res-hdr=0, res-body={huge_offset}\r\n\r\n"
+        ).encode("ascii") + b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"
         response = _recv_icap_response(port, request, timeout=0.5)
         icap_server.shutdown()
         thread.join(timeout=1)
@@ -2622,28 +2625,39 @@ def test_respmod_negative_offset_is_rejected_before_scanning() -> None:
     assert b"invalid Encapsulated offset" in response
 
 
-def test_preview_header_parser_accepts_decimal_whitespace_and_rejects_bad_values() -> None:
+def test_preview_header_parser_accepts_decimal_whitespace_and_rejects_bad_values() -> (
+    None
+):
     server = _load_server()
 
     _start, headers = server._split_headers(
-        b"RESPMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\n"
-        b"Preview:   2   \r\n"
+        b"RESPMOD icap://127.0.0.1/avrespmod ICAP/1.0\r\nPreview:   2   \r\n"
     )
     assert server._parse_preview_size(headers, has_body=True, max_bytes=2) == 2
     assert server._parse_preview_size({"preview": "0"}, has_body=True) == 0
-    assert server._parse_preview_size(
-        {"preview": "0" * 5000}, has_body=True, max_bytes=2
-    ) == 0
-    assert server._parse_preview_size(
-        {"preview": "0" * 5000 + "2"}, has_body=True, max_bytes=2
-    ) == 2
-    assert server._parse_preview_size(
-        {"preview": "0" * 5000 + str(server.DEFAULT_MAX_SCAN_BYTES)},
-        has_body=True,
-    ) == server.DEFAULT_MAX_SCAN_BYTES
-    assert server._parse_preview_size(
-        {"preview": str(server.DEFAULT_MAX_SCAN_BYTES)}, has_body=True
-    ) == server.DEFAULT_MAX_SCAN_BYTES
+    assert (
+        server._parse_preview_size({"preview": "0" * 5000}, has_body=True, max_bytes=2)
+        == 0
+    )
+    assert (
+        server._parse_preview_size(
+            {"preview": "0" * 5000 + "2"}, has_body=True, max_bytes=2
+        )
+        == 2
+    )
+    assert (
+        server._parse_preview_size(
+            {"preview": "0" * 5000 + str(server.DEFAULT_MAX_SCAN_BYTES)},
+            has_body=True,
+        )
+        == server.DEFAULT_MAX_SCAN_BYTES
+    )
+    assert (
+        server._parse_preview_size(
+            {"preview": str(server.DEFAULT_MAX_SCAN_BYTES)}, has_body=True
+        )
+        == server.DEFAULT_MAX_SCAN_BYTES
+    )
 
     for value in ("two", "-1", "2, 3", "١٢", "+1", " 1"):
         try:
@@ -2731,9 +2745,7 @@ def test_malformed_respmod_start_line_rejects_before_scanning() -> None:
             port,
             _replace_request_start_line(
                 _sample_respmod_request(port),
-                f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/2.0".encode(
-                    "ascii"
-                ),
+                f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/2.0".encode("ascii"),
             ),
             timeout=0.5,
         )
@@ -2805,9 +2817,7 @@ def test_burst_respmod_requests_close_each_exchange_and_succeed() -> None:
         thread.join(timeout=1)
 
     assert len(responses) == 24
-    assert all(
-        response.startswith(b"ICAP/1.0 200 OK\r\n") for response in responses
-    )
+    assert all(response.startswith(b"ICAP/1.0 200 OK\r\n") for response in responses)
     assert all(b"Connection: close\r\n" in response for response in responses)
 
 
@@ -2992,9 +3002,7 @@ def _sample_respmod_request_with_req_hdr(port: int) -> bytes:
 
 def _sample_preview_respmod_request(port: int) -> bytes:
     http_header = (
-        b"HTTP/1.1 200 OK\r\n"
-        b"Content-Type: text/plain\r\n"
-        b"Content-Length: 5\r\n\r\n"
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\n"
     )
     preview_body = b"2\r\nhe\r\n0\r\n\r\n3\r\nllo\r\n0\r\n\r\n"
     return (
@@ -3012,8 +3020,7 @@ def _sample_preview_respmod_request(port: int) -> bytes:
 
 def _sample_null_body_respmod_request(port: int, *, allow_204: bool = True) -> bytes:
     request_header = (
-        b"GET /generate_204 HTTP/1.1\r\n"
-        b"Host: connectivitycheck.gstatic.com\r\n\r\n"
+        b"GET /generate_204 HTTP/1.1\r\nHost: connectivitycheck.gstatic.com\r\n\r\n"
     )
     response_header = (
         b"HTTP/1.1 204 No Content\r\n"
@@ -3068,6 +3075,20 @@ class RecordingScanner(CleanScanner):
     def finish(self):
         self.finished = True
         return super().finish()
+
+
+class SizeLimitScanner(RecordingScanner):
+    def __init__(self, *, scanner_limit: int) -> None:
+        super().__init__()
+        self.scanner_limit = scanner_limit
+        self.bytes_received = 0
+
+    def send_chunk(self, data: bytes) -> None:
+        super().send_chunk(data)
+        self.bytes_received += len(data)
+        if self.bytes_received > self.scanner_limit:
+            message = "INSTREAM: Size limit reached"
+            raise BrokenPipeError(message)
 
 
 class SlowScanner(CleanScanner):
@@ -3251,21 +3272,26 @@ def test_infected_respmod_closes_spool_without_replaying_original() -> None:
     assert replay_bodies[0].closed is True
 
 
-def test_body_too_large_closes_partial_spool_without_fail_open_replay() -> None:
+def test_oversize_fail_open_drains_spools_and_replays_after_clamd_limit(
+    caplog,
+) -> None:
     server = _load_server()
+    scanner = SizeLimitScanner(scanner_limit=3)
     replay_bodies = []
 
     class CapturingServer(server.ClamAvRespmodServer):
         def open_scan(self):
-            return CleanScanner()
+            return scanner
 
         def create_replay_body(self):
             replay = super().create_replay_body()
             replay_bodies.append(replay)
             return replay
 
-    request_body = b"3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n"
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n"
+    payload = b"abcdefghi"
+    request_body = b"3\r\nabc\r\n3\r\ndef\r\n3\r\nghi\r\n0\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n"
+    caplog.set_level(logging.WARNING, logger="clamav-respmod")
     with CapturingServer(
         ("127.0.0.1", 0),
         clamd_host="127.0.0.1",
@@ -3287,12 +3313,90 @@ def test_body_too_large_closes_partial_spool_without_fail_open_replay() -> None:
         icap_server.shutdown()
         thread.join(timeout=1)
 
-    assert b"HTTP/1.1 502 Bad Gateway" in response
-    assert b"scan failed before complete response body" in response
-    assert b"3\r\nabc\r\n0\r\n\r\n" not in response
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 200 OK" in response
+    assert response.endswith(b"9\r\n" + payload + b"\r\n0\r\n\r\n")
+    assert b"ClamAV response scan failed" not in response
+    assert b"scan failed before complete response body" not in response
+    assert scanner.chunks == [b"abc", b"de"]
+    assert scanner.finished is False
+    assert scanner.closed is True
     assert replay_bodies
+    assert replay_bodies[0].length == len(payload)
     assert replay_bodies[0].rolled_to_disk is True
     assert replay_bodies[0].closed is True
+    assert icap_server.stats.counters == {
+        "errors": 1,
+        "scan_limit_exceeded": 1,
+        "scan_errors": 1,
+        "fail_open_bypasses": 1,
+        "oversize_bypasses": 1,
+    }
+    assert "reason=scan_limit_exceeded" in caplog.text
+    assert "action=replay_unscanned" in caplog.text
+
+
+def test_oversize_fail_closed_drains_then_returns_safe_policy_block(caplog) -> None:
+    server = _load_server()
+    scanner = SizeLimitScanner(scanner_limit=3)
+    replay_bodies = []
+
+    class CapturingServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return scanner
+
+        def create_replay_body(self):
+            replay = super().create_replay_body()
+            replay_bodies.append(replay)
+            return replay
+
+    payload = b"abcdefghi"
+    request_body = b"3\r\nabc\r\n3\r\ndef\r\n3\r\nghi\r\n0\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n"
+    caplog.set_level(logging.WARNING, logger="clamav-respmod")
+    with CapturingServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=5,
+        client_timeout=0.5,
+        max_connections=4,
+        replay_memory_bytes=2,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        response = _recv_icap_exchange(
+            port,
+            _respmod_request_with_http_header(port, http_header, request_body),
+            timeout=1,
+        )
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
+    assert b"HTTP/1.1 403 Forbidden" in response
+    assert b"exceeded an antivirus scan limit and could not be verified" in response
+    assert payload not in response
+    assert b"ClamAV response scan failed" not in response
+    assert b"Size limit reached" not in response
+    assert scanner.chunks == [b"abc", b"de"]
+    assert scanner.finished is False
+    assert scanner.closed is True
+    assert replay_bodies
+    assert replay_bodies[0].length == len(payload)
+    assert replay_bodies[0].rolled_to_disk is True
+    assert replay_bodies[0].closed is True
+    assert icap_server.stats.counters == {
+        "errors": 1,
+        "scan_limit_exceeded": 1,
+        "scan_errors": 1,
+        "fail_closed_errors": 1,
+        "oversize_blocks": 1,
+    }
+    assert "reason=scan_limit_exceeded" in caplog.text
+    assert "action=block_unverified" in caplog.text
 
 
 def test_null_body_respmod_does_not_allocate_replay_spool() -> None:
@@ -3330,6 +3434,53 @@ def test_null_body_respmod_does_not_allocate_replay_spool() -> None:
 
     assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
     assert replay_allocations == 0
+
+
+def test_client_timeout_is_per_inactivity_gap_not_total_stream_duration() -> None:
+    server = _load_server()
+    scanner = RecordingScanner()
+
+    class CapturingServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            return scanner
+
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n"
+    with CapturingServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.1,
+        fail_open=False,
+        max_scan_bytes=10,
+        client_timeout=0.1,
+        max_connections=4,
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        request_head = (
+            f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+            "Host: 127.0.0.1\r\n"
+            f"Encapsulated: res-hdr=0, res-body={len(http_header)}\r\n\r\n"
+        ).encode("ascii") + http_header
+        started = time.monotonic()
+        with CLIENT_CREATE_CONNECTION(("127.0.0.1", port), timeout=1) as sock:
+            sock.settimeout(1)
+            sock.sendall(request_head)
+            for wire_chunk in (b"1\r\na\r\n", b"1\r\nb\r\n", b"1\r\nc\r\n"):
+                sock.sendall(wire_chunk)
+                time.sleep(0.06)
+            sock.sendall(b"0\r\n\r\n")
+            response = bytearray()
+            while chunk := sock.recv(4096):
+                response.extend(chunk)
+        elapsed = time.monotonic() - started
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert elapsed > icap_server.client_timeout
+    assert bytes(response).endswith(b"3\r\nabc\r\n0\r\n\r\n")
+    assert scanner.chunks == [b"a", b"b", b"c"]
+    assert icap_server.stats.counters == {"clean": 1}
 
 
 def test_options_response_is_immediate_while_client_keeps_connection_open() -> None:
@@ -3550,10 +3701,7 @@ def test_duplicate_allow_header_rejected_before_scanning_or_fail_open_204(
         try:
             server._split_headers(
                 b"RESPMOD icap://example.test/av ICAP/1.0\r\n"
-                b"Allow: "
-                + first
-                + b"\r\nAllow: "
-                + second
+                b"Allow: " + first + b"\r\nAllow: " + second
             )
         except server.IcapProtocolError as exc:
             assert str(exc) == "duplicate ICAP Allow header"
@@ -3867,7 +4015,9 @@ def test_zero_preview_header_on_null_body_allows_clean_allow_204_verdict(
     assert b"ICAP Preview header requires res-body" not in response
 
 
-def test_nonzero_preview_header_on_null_body_rejected_before_allow_204_verdict() -> None:
+def test_nonzero_preview_header_on_null_body_rejected_before_allow_204_verdict() -> (
+    None
+):
     server = _load_server()
     scan_attempts = 0
 
@@ -3905,7 +4055,9 @@ def test_nonzero_preview_header_on_null_body_rejected_before_allow_204_verdict()
     assert b"ICAP Preview header requires res-body" in response
 
 
-def test_preview_terminator_without_ieof_eof_after_continue_is_not_clean_fail_open() -> None:
+def test_preview_terminator_without_ieof_eof_after_continue_is_not_clean_fail_open() -> (
+    None
+):
     server = _load_server()
     scanner = RecordingScanner()
 
@@ -3942,7 +4094,9 @@ def test_preview_terminator_without_ieof_eof_after_continue_is_not_clean_fail_op
     assert b"he\r\n0\r\n\r\n" not in response
 
 
-def test_duplicate_preview_zero_terminator_does_not_cleanly_replay_partial_body() -> None:
+def test_duplicate_preview_zero_terminator_does_not_cleanly_replay_partial_body() -> (
+    None
+):
     server = _load_server()
     scanner = RecordingScanner()
 
@@ -4166,7 +4320,9 @@ def test_respmod_preview_nonzero_ieof_fails_closed_without_clean_replay() -> Non
     assert b"he\r\n0\r\n\r\n" not in response
 
 
-def test_truncated_later_chunk_after_valid_chunk_fails_closed_without_partial_replay() -> None:
+def test_truncated_later_chunk_after_valid_chunk_fails_closed_without_partial_replay() -> (
+    None
+):
     server = _load_server()
     scanner = RecordingScanner()
 
@@ -4357,9 +4513,7 @@ def test_fail_open_healthy_clamd_probe_coordinates_followers(monkeypatch) -> Non
 
     assert len(responses) == 11
     assert attempts == 11
-    assert all(
-        response.startswith(b"ICAP/1.0 200 OK\r\n") for response in responses
-    )
+    assert all(response.startswith(b"ICAP/1.0 200 OK\r\n") for response in responses)
 
 
 def test_fail_open_unavailable_clamd_probe_does_not_stampede_burst(
@@ -4432,8 +4586,7 @@ def test_fail_open_unavailable_clamd_probe_does_not_stampede_burst(
     assert attempts == 1
     assert len(responses) == 10
     assert all(
-        response.startswith(b"ICAP/1.0 204 No Content\r\n")
-        for response in responses
+        response.startswith(b"ICAP/1.0 204 No Content\r\n") for response in responses
     )
     assert first_response
     assert first_response[0].startswith(b"ICAP/1.0 204 No Content\r\n")
@@ -4483,8 +4636,7 @@ def test_request_capacity_waits_for_fail_open_respmod_bursts() -> None:
 
     assert len(responses) == 12
     assert all(
-        response.startswith(b"ICAP/1.0 204 No Content\r\n")
-        for response in responses
+        response.startswith(b"ICAP/1.0 204 No Content\r\n") for response in responses
     )
 
 
@@ -4531,7 +4683,10 @@ def test_unavailable_clamd_fail_open_stress_handles_mixed_respmod_shapes(
             return _recv_icap_exchange(port, request_for(index), timeout=1)
 
         responses: list[bytes] = []
-        workers = [threading.Thread(target=lambda i=i: responses.append(fetch(i))) for i in range(36)]
+        workers = [
+            threading.Thread(target=lambda i=i: responses.append(fetch(i)))
+            for i in range(36)
+        ]
         for worker in workers:
             worker.start()
         for worker in workers:
@@ -4542,8 +4697,12 @@ def test_unavailable_clamd_fail_open_stress_handles_mixed_respmod_shapes(
     assert len(responses) == 36
     assert all(b"ICAP/1.0 5" not in response for response in responses)
     assert all(b"HTTP/1.1 502 Bad Gateway" not in response for response in responses)
-    assert any(response.startswith(b"ICAP/1.0 204 No Content\r\n") for response in responses)
-    assert any(b"Encapsulated: res-hdr=0, null-body=" in response for response in responses)
+    assert any(
+        response.startswith(b"ICAP/1.0 204 No Content\r\n") for response in responses
+    )
+    assert any(
+        b"Encapsulated: res-hdr=0, null-body=" in response for response in responses
+    )
     assert any(b"5\r\nhello\r\n0\r\n\r\n" in response for response in responses)
 
 

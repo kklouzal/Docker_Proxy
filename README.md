@@ -330,6 +330,13 @@ can lower, but never raise, that scheduled-housekeeping bound.
   This avoids proxy-local temp-file path handoff.
 - Fail-open/fail-closed policy controls, c-icap `virus_scan` tuning for uploads,
   and stream-based RESPMOD scanning for downloads.
+- `CLAMAV_STREAM_MAX_BYTES` is the proxy helper's explicit per-response scan
+  ceiling (256 MiB by default). Remote clamd `StreamMaxLength`/`MaxFileSize`
+  settings are not discoverable through the INSTREAM protocol and should be at
+  least this large for full scanning. If either side's limit is reached, the
+  helper never labels the response clean: optional/fail-open AV drains and
+  disk-spools the complete response before transparent unscanned replay, while
+  required/fail-closed AV drains it and returns a safe policy block.
 - Per-proxy health view that separates Squid policy, AV c-icap listener health, and remote `clamd` reachability.
 - EICAR and sample ICAP verification actions executed through the selected proxy runtime.
 
