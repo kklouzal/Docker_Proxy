@@ -65,7 +65,10 @@ def test_scheme_qualified_bare_proxy_host_is_supported_with_warning() -> None:
     )
 
     assert result.proxy_string == "http=proxy.example:3128;https=proxy.example:3128"
-    assert any("should not include http:// or https://" in warning for warning in result.warnings)
+    assert any(
+        "should not include http:// or https://" in warning
+        for warning in result.warnings
+    )
 
 
 def test_url_shaped_proxy_host_strips_inline_port_before_mapping_generation() -> None:
@@ -121,7 +124,9 @@ def test_bare_proxy_host_strips_inline_port_before_mapping_generation() -> None:
     assert any("inline port" in warning for warning in result.warnings)
 
 
-def test_bracketed_ipv6_proxy_host_strips_inline_port_before_mapping_generation() -> None:
+def test_bracketed_ipv6_proxy_host_strips_inline_port_before_mapping_generation() -> (
+    None
+):
     result = build_contract_output(
         {
             "proxy_host": "[2001:db8::10]:8080",
@@ -368,14 +373,20 @@ def test_reg_export_normalizer_stops_before_following_values() -> None:
         "---",
     ],
 )
-def test_reg_export_normalizer_rejects_non_hex_without_winhttpsettings(payload: str) -> None:
-    with pytest.raises(WinHttpBuilderError, match="No WinHttpSettings REG_BINARY value was found"):
+def test_reg_export_normalizer_rejects_non_hex_without_winhttpsettings(
+    payload: str,
+) -> None:
+    with pytest.raises(
+        WinHttpBuilderError, match="No WinHttpSettings REG_BINARY value was found"
+    ):
         normalize_reg_binary_export(payload)
 
 
 def test_reg_export_normalizer_preserves_raw_hex_input() -> None:
     original = generate_basic_winhttp_binary("http=proxy.example:3128", "<local>")
-    grouped = " ".join(original[index : index + 2] for index in range(0, len(original), 2))
+    grouped = " ".join(
+        original[index : index + 2] for index in range(0, len(original), 2)
+    )
 
     assert normalize_reg_binary_export(grouped) == original
 
@@ -391,9 +402,13 @@ def test_reg_export_normalizer_rejects_continuation_garbage() -> None:
 
 def test_reg_export_normalizer_rejects_raw_hex_garbage() -> None:
     original = generate_basic_winhttp_binary("http=proxy.example:3128", "<local>")
-    grouped = " ".join(original[index : index + 2] for index in range(0, len(original), 2))
+    grouped = " ".join(
+        original[index : index + 2] for index in range(0, len(original), 2)
+    )
 
-    with pytest.raises(WinHttpBuilderError, match="No WinHttpSettings REG_BINARY value was found"):
+    with pytest.raises(
+        WinHttpBuilderError, match="No WinHttpSettings REG_BINARY value was found"
+    ):
         normalize_reg_binary_export(f"{grouped} not-hex-garbage")
 
 
@@ -477,7 +492,7 @@ def test_advproxy_command_wraps_escaped_json_as_single_settings_argument() -> No
     command = build_advproxy_command(scope="machine", settings_json=settings)
 
     assert command == (
-        'netsh winhttp set advproxy setting-scope=machine '
+        "netsh winhttp set advproxy setting-scope=machine "
         'settings="{\\"Proxy\\":\\"http=proxy.example:3128;https=proxy.example:3128\\",'
         '\\"ProxyBypass\\":\\"<local>\\",\\"AutoconfigUrl\\":\\"\\",'
         '\\"AutoDetect\\":false}"'
@@ -513,12 +528,14 @@ def test_advproxy_command_preserves_json_quotes_as_one_settings_argument() -> No
     command = build_advproxy_command(scope="machine", settings_json=settings)
 
     assert command.startswith(
-        "netsh winhttp set advproxy setting-scope=machine settings=\"",
+        'netsh winhttp set advproxy setting-scope=machine settings="',
     )
     assert command.endswith('"')
-    assert command.count(' settings=') == 1
-    assert '\\"Proxy\\":\\"http=proxy.example:3128;https=proxy.example:3128\\"' in command
-    assert r'\"ProxyBypass\":\"C:\\ProxyBypass\\;<local>\"' in command
+    assert command.count(" settings=") == 1
+    assert (
+        '\\"Proxy\\":\\"http=proxy.example:3128;https=proxy.example:3128\\"' in command
+    )
+    assert r"\"ProxyBypass\":\"C:\\ProxyBypass\\;<local>\"" in command
 
 
 def test_advproxy_settings_file_write_command_materializes_referenced_file() -> None:
@@ -570,7 +587,9 @@ def test_advproxy_settings_file_write_command_rejects_unsafe_filename(
         build_advproxy_settings_file_write_command("{}", filename=filename)
 
 
-def test_contract_output_rejects_values_that_would_break_powershell_here_string() -> None:
+def test_contract_output_rejects_values_that_would_break_powershell_here_string() -> (
+    None
+):
     with pytest.raises(WinHttpBuilderError, match="Bypass list"):
         build_contract_output(
             {
@@ -604,7 +623,9 @@ def test_pac_or_autodetect_disables_basic_registry_binary() -> None:
 
 
 @pytest.mark.parametrize("false_value", ["0", "false"])
-def test_contract_output_treats_explicit_false_strings_as_false(false_value: str) -> None:
+def test_contract_output_treats_explicit_false_strings_as_false(
+    false_value: str,
+) -> None:
     result = build_contract_output(
         {
             "proxy_host": "proxy.example",
@@ -677,10 +698,16 @@ def test_advproxy_contract_accepts_https_pac_url_with_path_query_and_port() -> N
     )
 
     parsed = json.loads(result.advproxy_json)
-    assert parsed["AutoconfigUrl"] == "https://pac.example.local:8443/winhttp/proxy.pac?site=main"
+    assert (
+        parsed["AutoconfigUrl"]
+        == "https://pac.example.local:8443/winhttp/proxy.pac?site=main"
+    )
     assert result.static_registry_available is False
     assert "setting-scope=user" in result.advproxy_command
-    assert "https://pac.example.local:8443/winhttp/proxy.pac?site=main" in result.advproxy_command
+    assert (
+        "https://pac.example.local:8443/winhttp/proxy.pac?site=main"
+        in result.advproxy_command
+    )
 
 
 @pytest.mark.parametrize(
@@ -767,12 +794,14 @@ def test_tracing_command_quotes_trailing_backslash_prefix_safely() -> None:
     )
 
     assert command == (
-        'netsh winhttp set tracing output=file '
+        "netsh winhttp set tracing output=file "
         'trace-file-prefix="C:\\Temp\\winhttp\\\\" state=enabled'
     )
 
 
-def test_legacy_proxy_command_quotes_backslashes_without_malformed_closing_quotes() -> None:
+def test_legacy_proxy_command_quotes_backslashes_without_malformed_closing_quotes() -> (
+    None
+):
     command = build_legacy_set_proxy_command(
         "http=proxy.example:3128\\",
         r"C:\ProxyBypass\;<local>",
@@ -839,6 +868,14 @@ def test_contract_output_rejects_unsafe_command_characters(
         ({"bypass_list": "safe.example>out"}, "Bypass list"),
         (
             {"autoconfig_url": "http://proxy.example/%USERNAME%/proxy.pac"},
+            "Autoconfig URL",
+        ),
+        (
+            {"autoconfig_url": "http://proxy.example/$env:USERNAME/proxy.pac"},
+            "Autoconfig URL",
+        ),
+        (
+            {"autoconfig_url": "http://proxy.example/proxy`n.pac"},
             "Autoconfig URL",
         ),
     ],
@@ -1037,7 +1074,12 @@ def test_custom_proxy_map_rejects_structurally_invalid_entries(
 
 @pytest.mark.parametrize(
     "trace_file_prefix",
-    ['C:\\Temp\\win"http', "C:\\Temp\\winhttp&whoami"],
+    [
+        'C:\\Temp\\win"http',
+        "C:\\Temp\\winhttp&whoami",
+        r"C:\Temp\$env:USERNAME\winhttp",
+        r"C:\Temp\winhttp`n",
+    ],
 )
 def test_tracing_command_rejects_unsafe_trace_file_prefix(
     trace_file_prefix: str,
