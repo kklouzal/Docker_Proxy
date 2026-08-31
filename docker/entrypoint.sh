@@ -1381,11 +1381,17 @@ if getent passwd squid >/dev/null 2>&1; then
 fi
 # Build cache dirs using the real SMP-aware startup path.
 # Do not use -N here: it turns the master into a single worker and bypasses SMP kids.
+# Foreground mode keeps the SMP coordinator synchronous and prevents its daemon-mode
+# shutdown cleanup from trying to unlink a PID file that cache preparation never wrote.
+run_squid_cache_prepare() {
+    squid --foreground -z -f /etc/squid/squid.conf
+}
+
 printf '[proxy-entrypoint] preparing squid cache dirs workers=%s existing_pidfile=%s squid_pids=%s\n' \
     "$WORKERS" \
     "$(cat /var/run/squid.pid 2>/dev/null || true)" \
     "$(pgrep -x squid 2>/dev/null | paste -sd, - || true)"
-if ! squid -z -f /etc/squid/squid.conf; then
+if ! run_squid_cache_prepare; then
     printf '[proxy-entrypoint] squid cache-dir prepare failed; startup remains recovery-required\n' >&2
     python3 /app/services/squid_transaction.py startup-fail \
         --active /etc/squid/squid.conf \
