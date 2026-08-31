@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 from urllib.request import (
     HTTPRedirectHandler,
     HTTPSHandler,
@@ -42,7 +42,11 @@ from services.runtime_helpers import (
     authority_has_empty_explicit_port,
     normalize_config_bool,
 )
-from services.url_validation import has_malformed_percent_encoding
+from services.url_validation import (
+    has_malformed_percent_encoding,
+    has_url_whitespace_or_control_chars,
+    repeatedly_percent_decode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,26 +61,19 @@ _SAML_METADATA_REQUEST_HEADERS = {
 }
 _SAML_HTTP_REDIRECT_BINDING = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
 _MAX_URL_PERCENT_DECODE_PASSES = 8
-_PERCENT_ENCODED_OCTET_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 
 
 def _has_unsafe_url_text(value: str) -> bool:
-    return any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value)
+    return has_url_whitespace_or_control_chars(value)
 
 
 def _repeatedly_decode_url_component(value: str) -> tuple[list[str], bool]:
-    decoded_values = [str(value or "")]
-    current = decoded_values[0]
-    for _ in range(_MAX_URL_PERCENT_DECODE_PASSES):
-        try:
-            decoded = unquote(current)
-        except Exception:
-            return decoded_values, False
-        if decoded == current:
-            return decoded_values, False
-        decoded_values.append(decoded)
-        current = decoded
-    return decoded_values, bool(_PERCENT_ENCODED_OCTET_RE.search(current))
+    result = repeatedly_percent_decode(
+        str(value or ""),
+        max_passes=_MAX_URL_PERCENT_DECODE_PASSES,
+        reject_malformed=False,
+    )
+    return list(result.values), result.excessive_nesting
 
 
 def _decoded_url_component_is_unsafe(value: str) -> bool:

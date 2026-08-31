@@ -9,7 +9,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from ipaddress import IPv6Address, ip_address
 from typing import Any
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from services.db import (
     DATABASE_ERRORS,
@@ -46,7 +46,11 @@ from services.public_endpoint import (
     normalize_public_scheme as _normalize_public_scheme,
 )
 from services.runtime_helpers import authority_has_empty_explicit_port
-from services.url_validation import has_malformed_percent_encoding
+from services.url_validation import (
+    has_ascii_control_chars,
+    has_url_whitespace_or_control_chars,
+    repeatedly_percent_decode,
+)
 
 _PROXY_REGISTRY_REMOVAL_LOCK_NAME = "docker_proxy:proxy_registry:remove"
 
@@ -106,45 +110,33 @@ def _lifecycle_incomplete_retry_detail(result: ProxyLifecycleRunResult) -> str:
 
 
 def _has_unsafe_url_text(value: str) -> bool:
-    return any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value)
+    return has_url_whitespace_or_control_chars(value)
 
 
 def _has_unsafe_query_text(value: str) -> bool:
-    return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+    return has_ascii_control_chars(value)
 
 
 _MAX_PERCENT_DECODE_PASSES = 8
 
 
 def _strict_percent_unquote(value: str) -> str | None:
-    if has_malformed_percent_encoding(value):
+    result = repeatedly_percent_decode(value, max_passes=1, errors="strict")
+    if result.malformed or result.invalid_utf8:
         return None
-    try:
-        return unquote(value, errors="strict")
-    except UnicodeDecodeError:
-        return None
+    return result.values[-1]
 
 
 def _bounded_repeated_unquote(value: str) -> str | None:
-    decoded = _strict_percent_unquote(value)
-    if decoded is None:
+    # Preserve the historical initial decode plus eight additional bounded passes.
+    result = repeatedly_percent_decode(
+        value,
+        max_passes=_MAX_PERCENT_DECODE_PASSES + 1,
+        errors="strict",
+    )
+    if result.malformed or result.invalid_utf8 or result.excessive_nesting:
         return None
-    for _ in range(_MAX_PERCENT_DECODE_PASSES):
-        if has_malformed_percent_encoding(decoded):
-            return None
-        try:
-            next_decoded = unquote(decoded, errors="strict")
-        except UnicodeDecodeError:
-            return None
-        if next_decoded == decoded:
-            return decoded
-        decoded = next_decoded
-    if has_malformed_percent_encoding(decoded):
-        return None
-    try:
-        return decoded if unquote(decoded, errors="strict") == decoded else None
-    except UnicodeDecodeError:
-        return None
+    return result.values[-1]
 
 
 def _canonical_management_dns_host(value: str) -> str:

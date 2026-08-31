@@ -19,6 +19,7 @@ from services.clamd_protocol import (
 from services.errors import public_error_message
 from services.forwarding_canary_config import forwarding_canary_path
 from services.runtime_helpers import authority_has_empty_explicit_port
+from services.url_validation import has_url_whitespace_or_control_chars
 
 ErrorFormatter = Callable[[Exception], str]
 
@@ -506,7 +507,7 @@ def _safe_forwarding_probe_url(target_url: str) -> tuple[str, str]:
     raw = str(target_url or "").strip()
     if not raw:
         return "", "unsafe forwarding probe target URL: empty"
-    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+    if has_url_whitespace_or_control_chars(raw):
         return "", "unsafe forwarding probe target URL: whitespace/control character"
     if "\\" in raw:
         return "", "unsafe forwarding probe target URL: backslash"

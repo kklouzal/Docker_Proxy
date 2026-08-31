@@ -12,7 +12,11 @@ from urllib.parse import quote, unquote_to_bytes, urljoin, urlparse
 
 from services.domain_normalization import is_ambiguous_ipv4_like_host
 from services.runtime_helpers import authority_has_empty_explicit_port
-from services.url_validation import has_malformed_percent_encoding
+from services.url_validation import (
+    has_ascii_control_chars,
+    has_malformed_percent_encoding,
+    has_url_whitespace_or_control_chars,
+)
 
 _ALLOWED_DOWNLOAD_REQUEST_HEADERS = {
     "if-modified-since": "If-Modified-Since",
@@ -277,7 +281,7 @@ def _url_origin(parsed) -> tuple[str, str, int | None]:
 
 
 def _has_http_header_control_chars(value: str) -> bool:
-    return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+    return has_ascii_control_chars(value)
 
 
 _DOWNLOAD_PERCENT_DECODE_LIMIT = 4
@@ -329,7 +333,7 @@ def _validate_download_redirect_location(location: str) -> None:
     if (
         not location
         or "\\" in location
-        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in location)
+        or has_url_whitespace_or_control_chars(location)
         or has_malformed_percent_encoding(location)
         or _has_percent_decoded_download_unsafe_chars(location)
     ):
@@ -344,11 +348,7 @@ def validate_download_url(
 ):
     invalid_url_msg = "Download URLs must be valid absolute HTTP/HTTPS URLs."
     source = str(url or "")
-    if (
-        not source
-        or "\\" in source
-        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in source)
-    ):
+    if not source or "\\" in source or has_url_whitespace_or_control_chars(source):
         raise ValueError(invalid_url_msg)
     try:
         parsed = urlparse(source)
