@@ -12,6 +12,7 @@ import re
 import socket
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -29,6 +30,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
 logger = logging.getLogger(__name__)
+
+_CERTIFICATE_MATERIAL_LOCK_TIMEOUT_SECONDS = 5.0
+_CERTIFICATE_MATERIAL_LOCK_POLL_SECONDS = 0.05
+
+
+class CertificateMaterialLockTimeoutError(TimeoutError):
+    """Raised when certificate material remains locked past its wait boundary."""
 
 
 def _unlink_with_parent_fsync(path: str | os.PathLike[str]) -> None:
@@ -163,13 +171,32 @@ def _sha256_bytes(data: bytes) -> str:
 
 
 @contextlib.contextmanager
-def _certificate_material_lock(ca_dir: str, *, exclusive: bool):
+def _certificate_material_lock(
+    ca_dir: str,
+    *,
+    exclusive: bool,
+    timeout_seconds: float = _CERTIFICATE_MATERIAL_LOCK_TIMEOUT_SECONDS,
+):
     lock_path = pathlib.Path(ca_dir) / ".certificate-materialize.lock"
     with lock_path.open("a+b") as lock_file:
         with contextlib.suppress(OSError):
             lock_path.chmod(0o600)
         lock_mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
-        fcntl.flock(lock_file.fileno(), lock_mode)
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), lock_mode | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    access = "write" if exclusive else "read"
+                    message = (
+                        "Certificate material is busy; timed out waiting for "
+                        f"{access} lock after {timeout_seconds:g} seconds."
+                    )
+                    raise CertificateMaterialLockTimeoutError(message) from exc
+                time.sleep(min(_CERTIFICATE_MATERIAL_LOCK_POLL_SECONDS, remaining))
         try:
             yield
         finally:

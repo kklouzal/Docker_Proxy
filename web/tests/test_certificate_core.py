@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import errno
+import fcntl
+import multiprocessing
 import stat
 import threading
 import time
@@ -18,6 +20,19 @@ CERT_A = "-----BEGIN CERTIFICATE-----\nCERTA\n-----END CERTIFICATE-----\n"
 CERT_B = "-----BEGIN CERTIFICATE-----\nCERTB\n-----END CERTIFICATE-----\n"
 KEY_A = "-----BEGIN PRIVATE KEY-----\nKEYA\n-----END PRIVATE KEY-----\n"
 KEY_B = "-----BEGIN PRIVATE KEY-----\nKEYB\n-----END PRIVATE KEY-----\n"
+
+
+def _hold_certificate_material_lock(
+    lock_path: str,
+    lock_mode: int,
+    acquired: multiprocessing.synchronize.Event,
+    release: multiprocessing.synchronize.Event,
+) -> None:
+    with Path(lock_path).open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), lock_mode)
+        acquired.set()
+        release.wait()
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _valid_ca_bundle() -> certificate_core.CertificateBundle:
@@ -55,6 +70,47 @@ def test_pem_helpers_normalize_extract_and_split_certificate_chains() -> None:
     assert certificate_core._all_pem_blocks(messy, "CERTIFICATE") == [CERT_A, CERT_B]
     assert certificate_core._split_cert_chain(messy) == (CERT_A, CERT_B)
     assert certificate_core._split_cert_chain("not pem") == ("", "")
+
+
+@pytest.mark.parametrize(
+    ("exclusive", "holder_mode", "access"),
+    [
+        (False, fcntl.LOCK_EX, "read"),
+        (True, fcntl.LOCK_SH, "write"),
+    ],
+)
+def test_certificate_material_lock_fails_closed_at_contention_deadline(
+    tmp_path, exclusive, holder_mode, access
+) -> None:
+    lock_path = tmp_path / ".certificate-materialize.lock"
+    acquired = multiprocessing.Event()
+    release = multiprocessing.Event()
+    holder = multiprocessing.Process(
+        target=_hold_certificate_material_lock,
+        args=(str(lock_path), holder_mode, acquired, release),
+    )
+    holder.start()
+    try:
+        assert acquired.wait(timeout=2)
+
+        with pytest.raises(
+            certificate_core.CertificateMaterialLockTimeoutError,
+            match=rf"timed out waiting for {access} lock after 0 seconds",
+        ):
+            with certificate_core._certificate_material_lock(
+                tmp_path,
+                exclusive=exclusive,
+                timeout_seconds=0,
+            ):
+                pytest.fail("contended certificate lock was unexpectedly acquired")
+    finally:
+        release.set()
+        holder.join(timeout=2)
+        if holder.is_alive():
+            holder.terminate()
+            holder.join(timeout=2)
+
+    assert holder.exitcode == 0
 
 
 def test_build_certificate_bundle_hashes_content_and_metadata(monkeypatch) -> None:
