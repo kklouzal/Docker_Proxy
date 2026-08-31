@@ -6616,6 +6616,29 @@ def test_packaged_proxy_supervisor_stops_squid_process_group() -> None:
     assert "killasgroup=true" in section
 
 
+def test_packaged_supervisor_allows_default_squid_graceful_shutdown() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    supervisord = (repo_root / "docker" / "supervisord.proxy.conf").read_text(
+        encoding="utf-8",
+    )
+    squid_section = supervisord.split("[program:squid]", 1)[1].split("[program:", 1)[0]
+    squid_template = (repo_root / "squid" / "squid.conf.template").read_text(
+        encoding="utf-8",
+    )
+
+    stopwait_match = re.search(r"^stopwaitsecs=(\d+)$", squid_section, re.MULTILINE)
+    shutdown_match = re.search(
+        r"^shutdown_lifetime (\d+) seconds$", squid_template, re.MULTILINE
+    )
+    assert stopwait_match is not None
+    assert shutdown_match is not None
+
+    stopwait_seconds = int(stopwait_match.group(1))
+    shutdown_lifetime_seconds = int(shutdown_match.group(1))
+    assert stopwait_seconds >= shutdown_lifetime_seconds + 10
+    assert stopwait_seconds <= 60
+
+
 def test_squid_reload_treats_successful_stderr_warnings_as_detail(tmp_path) -> None:
     from services.squid_core import SquidController  # type: ignore
 
