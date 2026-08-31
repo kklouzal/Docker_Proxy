@@ -419,7 +419,7 @@ def test_safe_browsing_request_json_reports_response_size_limit(monkeypatch) -> 
             return b"x" * 1025
 
     def fake_urlopen(request, timeout):
-        assert timeout == 30
+        assert 0 < timeout <= 30
         assert "hashLists:batchGet" in request.full_url
         return FakeResponse()
 
@@ -433,6 +433,84 @@ def test_safe_browsing_request_json_reports_response_size_limit(monkeypatch) -> 
     else:
         msg = "oversized Safe Browsing responses should fail with a clear error"
         raise AssertionError(msg)
+
+
+def test_safe_browsing_request_json_enforces_total_body_deadline(monkeypatch) -> None:
+    clock = [100.0]
+    reads = []
+
+    class FakeSocket:
+        def settimeout(self, value):
+            reads.append(value)
+
+    class FakeResponse:
+        fp = type("Fp", (), {"raw": type("Raw", (), {"_sock": FakeSocket()})()})()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read1(self, _size):
+            clock[0] += 3.0
+            return b" "
+
+        def read(self, _size):
+            msg = "bounded HTTPS responses must use partial reads"
+            raise AssertionError(msg)
+
+    def monotonic():
+        return clock[0]
+
+    def open_response(_request, timeout):
+        return FakeResponse()
+
+    monkeypatch.setattr(safe_browsing_v5.time, "monotonic", monotonic)
+    monkeypatch.setattr(safe_browsing_v5, "_open_safe_browsing_request", open_response)
+
+    with pytest.raises(TimeoutError, match="timed out after 5 seconds"):
+        SafeBrowsingStore()._request_json("/hashLists:batchGet", "key", [], timeout=5)
+
+    assert len(reads) == 2
+    assert reads[0] == pytest.approx(5.0)
+    assert reads[1] == pytest.approx(2.0)
+
+
+def test_safe_browsing_request_json_accepts_bounded_partial_body(monkeypatch) -> None:
+    clock = [200.0]
+    chunks = iter((b'{"ok":', b"true}", b""))
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read1(self, _size):
+            clock[0] += 1.0
+            return next(chunks)
+
+        def read(self, _size):
+            msg = "bounded HTTPS responses must use partial reads"
+            raise AssertionError(msg)
+
+    def monotonic():
+        return clock[0]
+
+    def open_response(_request, timeout):
+        return FakeResponse()
+
+    monkeypatch.setattr(safe_browsing_v5.time, "monotonic", monotonic)
+    monkeypatch.setattr(safe_browsing_v5, "_open_safe_browsing_request", open_response)
+
+    result = SafeBrowsingStore()._request_json(
+        "/hashLists:batchGet", "key", [], timeout=5
+    )
+
+    assert result == {"ok": True}
+    assert clock[0] == pytest.approx(203.0)
 
 
 def _search_hash_item(

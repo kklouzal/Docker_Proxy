@@ -71,6 +71,51 @@ def _open_safe_browsing_request(request: urllib.request.Request, *, timeout: int
     return _SAFE_BROWSING_OPENER.open(request, timeout=timeout)
 
 
+def _remaining_response_timeout(deadline: float, timeout_seconds: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        msg = (
+            f"Google Safe Browsing response timed out after {timeout_seconds:g} seconds"
+        )
+        raise TimeoutError(msg)
+    return remaining
+
+
+def _read_response_body(
+    response,
+    *,
+    deadline: float,
+    timeout_seconds: float,
+    max_bytes: int,
+) -> bytes:
+    """Read a bounded body without letting partial reads renew the deadline."""
+    chunks: list[bytes] = []
+    total = 0
+    read = getattr(response, "read1", response.read)
+    while True:
+        remaining = _remaining_response_timeout(deadline, timeout_seconds)
+        # urllib's HTTPS response wraps HTTPResponse.fp (a BufferedReader).
+        # Applying the remaining total budget to each underlying receive, then
+        # using read1, prevents a steady trickle from renewing a socket timeout.
+        fp = getattr(response, "fp", None)
+        raw = getattr(fp, "raw", None)
+        sock = getattr(raw, "_sock", None)
+        if sock is not None:
+            sock.settimeout(remaining)
+        chunk = read(min(64 * 1024, max_bytes + 1 - total))
+        _remaining_response_timeout(deadline, timeout_seconds)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > max_bytes:
+            msg = (
+                "Google Safe Browsing response exceeded "
+                f"SAFE_BROWSING_MAX_RESPONSE_BYTES ({max_bytes} bytes)"
+            )
+            raise ValueError(msg)
+
+
 def parse_duration_seconds(value: object, default: int = 0) -> int:
     text = str(value or "").strip()
     if not text:
@@ -735,14 +780,18 @@ class SafeBrowsingStore:
             minimum=1024,
             maximum=256 * 1024 * 1024,
         )
-        with _open_safe_browsing_request(req, timeout=timeout) as resp:
-            data = resp.read(max_response_bytes + 1)
-        if len(data) > max_response_bytes:
-            msg = (
-                "Google Safe Browsing response exceeded "
-                f"SAFE_BROWSING_MAX_RESPONSE_BYTES ({max_response_bytes} bytes)"
+        timeout_seconds = float(timeout)
+        deadline = time.monotonic() + timeout_seconds
+        with _open_safe_browsing_request(
+            req,
+            timeout=_remaining_response_timeout(deadline, timeout_seconds),
+        ) as resp:
+            data = _read_response_body(
+                resp,
+                deadline=deadline,
+                timeout_seconds=timeout_seconds,
+                max_bytes=max_response_bytes,
             )
-            raise ValueError(msg)
         return json.loads(data.decode("utf-8")) if data else {}
 
     def update_lists(self, settings: SafeBrowsingSettings) -> tuple[bool, str, int]:
