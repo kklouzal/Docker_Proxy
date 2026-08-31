@@ -18,6 +18,7 @@ _started = False
 _started_loop_names: set[str] = set()
 _loop_threads: list[threading.Thread] = []
 _start_lock = threading.Lock()
+_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 
 
 def _loop(interval: float, func, stop_event: threading.Event) -> None:
@@ -269,6 +270,31 @@ def start_agent(*, stop_event: threading.Event | None = None) -> None:
         _started_loop_names.clear()
 
 
+def _shutdown(runtime, *, timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> bool:
+    """Stop agent work within one deadline, without racing active loop callbacks."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    threads = tuple(_loop_threads)
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+    live_threads = [thread.name for thread in threads if thread.is_alive()]
+    if live_threads:
+        logger.warning(
+            "Proxy agent shutdown deadline exceeded with active loops: %s; "
+            "background services were not stopped to avoid racing loop mutations",
+            ", ".join(live_threads),
+        )
+        return False
+
+    remaining = max(0.0, deadline - time.monotonic())
+    if not runtime.stop_background_tasks(timeout=remaining):
+        logger.warning(
+            "Proxy background telemetry shutdown exceeded the agent shutdown deadline"
+        )
+        return False
+    return True
+
+
 def main() -> None:
     stop_event = threading.Event()
 
@@ -279,14 +305,8 @@ def main() -> None:
     signal.signal(signal.SIGINT, request_shutdown)
     start_agent(stop_event=stop_event)
     stop_event.wait()
-    deadline = time.monotonic() + 10.0
-    for thread in tuple(_loop_threads):
-        thread.join(timeout=max(0.0, deadline - time.monotonic()))
     runtime = get_runtime()
-    if not runtime.stop_background_tasks(timeout=10.0):
-        logger.warning(
-            "Proxy background telemetry shutdown exceeded its flush deadline"
-        )
+    _shutdown(runtime)
 
 
 if __name__ == "__main__":
