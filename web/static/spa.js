@@ -21,8 +21,14 @@
   let linkIntentListenersBound = false;
   const UNSAVED_CONFIG_MESSAGE = 'You have unsaved Squid configuration changes. Leave this page anyway?';
   const OPERATION_STATUSES = ['pending', 'applying', 'applied', 'superseded', 'failed'];
+  const OPERATION_POLL_INTERVAL_MS = 3000;
   const seenOperationStatuses = new Map();
   let operationPollTimer = null;
+  let operationPollController = null;
+  let operationPollRequestId = 0;
+  let operationRefreshPending = false;
+  let operationNotifyInitialPending = false;
+  let operationPollingStarted = false;
 
   const getCsrfToken = () => {
     const meta = document.querySelector('meta[name="csrf-token"]');
@@ -490,17 +496,35 @@
   };
 
   const refreshOperationLedger = async ({ notifyInitial = false } = {}) => {
+    operationRefreshPending = true;
+    operationNotifyInitialPending = operationNotifyInitialPending || notifyInitial;
+    if (document.hidden || operationPollController) return;
+
     const activeProxyId = document.body.dataset.activeProxyId || '';
     if (!activeProxyId) return;
+    operationRefreshPending = false;
+    const requestNotifyInitial = operationNotifyInitialPending;
+    operationNotifyInitialPending = false;
+    const controller = new AbortController();
+    const requestId = ++operationPollRequestId;
+    operationPollController = controller;
+    let applied = false;
     try {
       const url = new URL('/api/operations', window.location.origin);
       url.searchParams.set('proxy_id', activeProxyId);
-      const response = await fetch(url.pathname + url.search, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'spa' } });
+      const response = await fetch(url.pathname + url.search, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'X-Requested-With': 'spa' },
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted || requestId !== operationPollRequestId || document.hidden) return;
       if (!response.ok) return;
       const data = await response.json();
+      if (controller.signal.aborted || requestId !== operationPollRequestId || document.hidden) return;
       if (String(data.proxy_id || '') !== String(activeProxyId)) return;
       if (String(document.body.dataset.activeProxyId || '') !== String(activeProxyId)) return;
-      (data.operations || []).forEach((operation) => noteOperationStatus(operation, { notifyInitial }));
+      (data.operations || []).forEach((operation) => noteOperationStatus(operation, { notifyInitial: requestNotifyInitial }));
       OPERATION_STATUSES.forEach((status) => {
         document.querySelectorAll(`[data-operation-count="${status}"]`).forEach((node) => { node.textContent = String((data.counts || {})[status] || 0); });
       });
@@ -515,15 +539,40 @@
           ledger.appendChild(empty);
         }
       }
+      applied = true;
     } catch {
       // Polling is best effort.
+    } finally {
+      if (operationPollController === controller) operationPollController = null;
+      if (!applied && requestNotifyInitial) operationNotifyInitialPending = true;
+      if (!operationPollingStarted || document.hidden) return;
+      if (operationPollTimer) window.clearTimeout(operationPollTimer);
+      const delay = operationRefreshPending ? 0 : OPERATION_POLL_INTERVAL_MS;
+      operationPollTimer = window.setTimeout(() => {
+        operationPollTimer = null;
+        void refreshOperationLedger();
+      }, delay);
     }
   };
 
   const startOperationPolling = () => {
-    if (operationPollTimer) window.clearInterval(operationPollTimer);
+    operationPollingStarted = true;
+    if (operationPollTimer) window.clearTimeout(operationPollTimer);
     void refreshOperationLedger();
-    operationPollTimer = window.setInterval(() => refreshOperationLedger(), 3000);
+  };
+
+  const onOperationPollingVisibilityChange = () => {
+    if (document.hidden) {
+      if (operationPollTimer) {
+        window.clearTimeout(operationPollTimer);
+        operationPollTimer = null;
+      }
+      operationRefreshPending = true;
+      operationPollRequestId += 1;
+      if (operationPollController) operationPollController.abort();
+      return;
+    }
+    void refreshOperationLedger();
   };
 
   const copyTextToClipboard = async (text) => {
@@ -1512,6 +1561,7 @@
 
     enhanceContainer(getSpaContainer());
     void refreshVersionStatus();
+    document.addEventListener('visibilitychange', onOperationPollingVisibilityChange);
     startOperationPolling();
     document.addEventListener('click', (event) => {
       const refresh = event.target instanceof Element ? event.target.closest('[data-operation-refresh]') : null;

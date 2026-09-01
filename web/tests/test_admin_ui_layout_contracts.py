@@ -259,6 +259,61 @@ def test_spa_operation_polling_preserves_rendered_proxy_scope() -> None:
     assert "proxyInput.name = 'proxy_id'" in js
 
 
+def test_spa_operation_polling_is_single_flight_and_completion_scheduled() -> None:
+    js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
+
+    assert "let operationPollController = null;" in js
+    assert "if (document.hidden || operationPollController) return;" in js
+    assert "operationPollController = controller;" in js
+    assert "signal: controller.signal" in js
+    assert (
+        "if (operationPollController === controller) operationPollController = null;"
+        in js
+    )
+    assert "window.setInterval" not in js
+    assert "window.setTimeout(() => {\n        operationPollTimer = null;" in js
+    assert (
+        "const delay = operationRefreshPending ? 0 : OPERATION_POLL_INTERVAL_MS;" in js
+    )
+
+
+def test_spa_operation_polling_pauses_hidden_tabs_and_resumes_visible_tabs() -> None:
+    js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
+
+    assert (
+        "document.addEventListener('visibilitychange', onOperationPollingVisibilityChange)"
+        in js
+    )
+    assert "const onOperationPollingVisibilityChange = () => {" in js
+    assert "if (document.hidden) {" in js
+    assert "operationPollRequestId += 1;" in js
+    assert "if (operationPollController) operationPollController.abort();" in js
+    assert "operationRefreshPending = true;" in js
+    assert "void refreshOperationLedger();" in js
+
+
+def test_spa_operation_refresh_coalesces_notification_intent_and_rejects_stale_data() -> (
+    None
+):
+    js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
+
+    assert (
+        "operationNotifyInitialPending = operationNotifyInitialPending || notifyInitial;"
+        in js
+    )
+    assert "const requestNotifyInitial = operationNotifyInitialPending;" in js
+    assert (
+        "if (!applied && requestNotifyInitial) operationNotifyInitialPending = true;"
+        in js
+    )
+    assert "requestId !== operationPollRequestId || document.hidden" in js
+    assert (
+        "String(document.body.dataset.activeProxyId || '') !== String(activeProxyId)"
+        in js
+    )
+    assert "notifyInitial: requestNotifyInitial" in js
+
+
 def test_webfilter_domain_test_surfaces_allowed_reason() -> None:
     js = (REPO_ROOT / "web" / "static" / "spa.js").read_text(encoding="utf-8")
 
