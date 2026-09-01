@@ -198,6 +198,58 @@ def test_icap_readiness_slow_probes_share_aggregate_budget_and_keep_order(
     assert "optional ICAP services also degraded" in detail
 
 
+def test_icap_readiness_high_cardinality_bounds_workers_without_skipping(
+    tmp_path, monkeypatch
+) -> None:
+    import icap_readiness  # type: ignore
+
+    service_count = 37
+    config = tmp_path / "operator-supplied.conf"
+    config.write_text(
+        "".join(
+            f"icap_service service_{index} reqmod_precache "
+            f"icap://127.0.0.1:{15000 + index}/probe bypass="
+            f"{'off' if index in {3, 31} else 'on'}\n"
+            for index in range(service_count)
+        ),
+        encoding="utf-8",
+    )
+    real_executor = icap_readiness.concurrent.futures.ThreadPoolExecutor
+    worker_counts: list[int] = []
+
+    def recording_executor(*, max_workers):
+        worker_counts.append(max_workers)
+        return real_executor(max_workers=max_workers)
+
+    def deterministic_probe(service, *, timeout):
+        assert timeout == pytest.approx(0.1)
+        return icap_readiness.ProbeResult(
+            service=service,
+            ok=service.name not in {"service_3", "service_30", "service_31"},
+            detail="ready" if service.name != "service_30" else "optional failure",
+        )
+
+    monkeypatch.setattr(
+        icap_readiness.concurrent.futures,
+        "ThreadPoolExecutor",
+        recording_executor,
+    )
+    monkeypatch.setattr(icap_readiness, "probe_service", deterministic_probe)
+
+    ok, detail, payload = icap_readiness.check_once([str(config)], probe_timeout=0.1)
+
+    assert worker_counts == [icap_readiness.MAX_CONCURRENT_PROBES]
+    assert ok is False
+    assert payload["blocking_failure_count"] == 2
+    assert payload["optional_failure_count"] == 1
+    assert len(payload["services"]) == service_count
+    assert [item["name"] for item in payload["services"]] == [
+        f"service_{index}" for index in range(service_count)
+    ]
+    assert "Required ICAP services are not OPTIONS-ready" in detail
+    assert "optional ICAP services also degraded" in detail
+
+
 def test_icap_readiness_probe_has_absolute_receive_deadline(monkeypatch) -> None:
     import icap_readiness  # type: ignore
 

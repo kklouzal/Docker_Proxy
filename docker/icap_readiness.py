@@ -29,6 +29,7 @@ DEFAULT_STATUS_FILE = "/var/lib/squid-flask-proxy/icap-readiness.json"
 DEFAULT_TIMEOUT_SECONDS = 75.0
 DEFAULT_PROBE_TIMEOUT_SECONDS = 1.0
 DEFAULT_INTERVAL_SECONDS = 0.25
+MAX_CONCURRENT_PROBES = 12
 MAX_ICAP_HEADER_BYTES = 8192
 ICAP_STATUS_LINE_RE = re.compile(
     r"^ICAP/1\.0 (?P<code>[0-9]{3}) (?P<reason>[!-~](?:[ -~]*[!-~])?)$"
@@ -373,11 +374,13 @@ def check_once(
             "detail": "No ICAP services are configured.",
         }
         return True, payload["detail"], payload
-    # Squid renders three services per worker (up to twelve at four workers).
-    # Probe them concurrently so the configured per-probe bound is also the
-    # aggregate check bound. executor.map preserves config/result ordering and
-    # the context manager joins every socket-bounded worker before returning.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(services)) as executor:
+    # Supported generated configurations currently render at most twelve
+    # services. Bound operator-supplied/future expanded configurations to that
+    # same concurrency instead of creating one thread per parsed service.
+    # executor.map still probes every service and preserves config/result order;
+    # each probe retains its own absolute timeout once its worker starts.
+    max_workers = min(len(services), MAX_CONCURRENT_PROBES)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         results = list(
             executor.map(
                 lambda service: probe_service(service, timeout=probe_timeout),
