@@ -8,6 +8,34 @@ set -eu
 
 SSL_DB_DIR="${SSL_DB_DIR:-/var/lib/ssl_db/store}"
 
+# Keep this lexical path contract aligned with ProxyRuntime's reinitializer.  The
+# database may live on a deployment-specific absolute mount, but paths whose
+# normalized value is a broad system directory must never reach mkdir/rm/chown.
+normalize_ssl_db_dir() {
+    python3 - "$1" <<'PY'
+import os
+import sys
+
+path = os.path.normpath(sys.argv[1])
+unsafe_ownership_roots = {"/", "/etc", "/usr", "/var", "/var/lib"}
+ownership_parent = os.path.dirname(path)
+if (
+    not path.startswith("/")
+    or path in unsafe_ownership_roots
+    or ownership_parent in unsafe_ownership_roots
+):
+    raise SystemExit(1)
+print(path)
+PY
+}
+
+if ! NORMALIZED_SSL_DB_DIR="$(normalize_ssl_db_dir "$SSL_DB_DIR")"; then
+    echo "ERROR: Refusing to initialize ssl_db at unsafe path: $SSL_DB_DIR" >&2
+    exit 1
+fi
+SSL_DB_DIR="$NORMALIZED_SSL_DB_DIR"
+unset NORMALIZED_SSL_DB_DIR
+
 mkdir -p "$(dirname "$SSL_DB_DIR")"
 
 repair_ssl_db_permissions() {

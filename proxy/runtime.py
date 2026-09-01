@@ -2043,9 +2043,7 @@ class ProxyRuntime:
                 )
             )
             detail_parts.append(stop_detail)
-        return all_restarted, "\n".join(
-            part for part in detail_parts if part
-        )
+        return all_restarted, "\n".join(part for part in detail_parts if part)
 
     def _wait_for_supervisor_program_stopped(
         self,
@@ -2788,20 +2786,21 @@ class ProxyRuntime:
         return ""
 
     def _reinitialize_ssl_db_and_restart(self) -> tuple[bool, str]:
-        if self.services.ssl_db_reinitializer is not None:
-            return self.services.ssl_db_reinitializer()
-        ssl_db_dir = self.ssl_db_dir
-        if not ssl_db_dir.startswith("/") or ssl_db_dir in {
-            "/",
-            "/etc",
-            "/usr",
-            "/var",
-            "/var/lib",
-        }:
+        configured_ssl_db_dir = self.ssl_db_dir
+        ssl_db_dir = os.path.normpath(configured_ssl_db_dir)
+        unsafe_ownership_roots = {"/", "/etc", "/usr", "/var", "/var/lib"}
+        ownership_parent = str(pathlib.Path(ssl_db_dir).parent)
+        if (
+            not ssl_db_dir.startswith("/")
+            or ssl_db_dir in unsafe_ownership_roots
+            or ownership_parent in unsafe_ownership_roots
+        ):
             return (
                 False,
-                f"Refusing to reinitialize ssl_db at unsafe path: {ssl_db_dir}",
+                f"Refusing to reinitialize ssl_db at unsafe path: {configured_ssl_db_dir}",
             )
+        if self.services.ssl_db_reinitializer is not None:
+            return self.services.ssl_db_reinitializer()
 
         details: list[str] = []
         try:
