@@ -5,6 +5,7 @@ import json
 import re
 import sqlite3
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -20,11 +21,20 @@ _DEFAULT_SQLITE_CACHE_KIB = 32768
 _DEFAULT_SQLITE_MMAP_BYTES = 256 * 1024 * 1024
 _DEFAULT_RULE_CACHE_MAX = 50000
 _SQLITE_IN_CHUNK_SIZE = 500
+_DEFAULT_CLOSE_TIMEOUT_SECONDS = 5.0
 
 
 class AdblockLookupClosedError(RuntimeError):
     def __init__(self) -> None:
         super().__init__("adblock lookup index is closed")
+
+
+class AdblockLookupCloseTimeoutError(TimeoutError):
+    def __init__(self, active_connections: int) -> None:
+        super().__init__(
+            "timed out closing adblock lookup index "
+            f"with {active_connections} active connection(s)"
+        )
 
 
 class _RegexCandidate:
@@ -131,9 +141,11 @@ class AdblockLookupIndex:
         db_path: str | Path,
         *,
         rule_cache_max: int = _DEFAULT_RULE_CACHE_MAX,
+        close_timeout_seconds: float = _DEFAULT_CLOSE_TIMEOUT_SECONDS,
     ) -> None:
         self.db_path = Path(db_path)
         self.rule_cache_max = max(0, int(rule_cache_max or 0))
+        self.close_timeout_seconds = max(0.0, float(close_timeout_seconds))
         self._local = threading.local()
         self._connections_condition = threading.Condition()
         self._connections: set[sqlite3.Connection] = set()
@@ -175,34 +187,58 @@ class AdblockLookupIndex:
             return conn
 
     def _release_thread_connection(self, conn: sqlite3.Connection) -> None:
+        close_connection = False
         with self._connections_condition:
             users = self._connection_users.get(conn, 0)
             if users <= 1:
                 self._connection_users.pop(conn, None)
+                if self._closed and conn in self._connections:
+                    self._connections.remove(conn)
+                    close_connection = True
                 self._connections_condition.notify_all()
             else:
                 self._connection_users[conn] = users - 1
+        if close_connection:
+            conn.close()
+
+    def _wait_until_idle(self, conn: sqlite3.Connection) -> bool:
+        deadline = time.monotonic() + self.close_timeout_seconds
+        while self._connection_users.get(conn, 0):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            self._connections_condition.wait(timeout=remaining)
+        return True
 
     def close_thread_connection(self) -> None:
-        """Close the calling thread's idle lookup connection, if any."""
+        """Close this thread's connection, interrupting and bounding active use."""
         conn = getattr(self._local, "conn", None)
         if conn is None:
             return
         del self._local.conn
         with self._connections_condition:
-            while self._connection_users.get(conn, 0):
-                self._connections_condition.wait()
+            if self._connection_users.get(conn, 0):
+                conn.interrupt()
+            if not self._wait_until_idle(conn):
+                self._local.conn = conn
+                raise AdblockLookupCloseTimeoutError(1)
             should_close = conn in self._connections
             self._connections.discard(conn)
         if should_close:
             conn.close()
 
     def close(self) -> None:
-        """Stop new lookups, then close every connection after active use ends."""
+        """Stop acquisitions, interrupt active SQL, and close within a deadline."""
         with self._connections_condition:
             self._closed = True
+            for conn in self._connection_users:
+                conn.interrupt()
+            deadline = time.monotonic() + self.close_timeout_seconds
             while self._connection_users:
-                self._connections_condition.wait()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AdblockLookupCloseTimeoutError(len(self._connection_users))
+                self._connections_condition.wait(timeout=remaining)
             connections = list(self._connections)
             self._connections.clear()
             local_conn = getattr(self._local, "conn", None)
@@ -257,9 +293,13 @@ class AdblockLookupIndex:
             rule_id = str(row["rule_id"] or "")
             try:
                 parsed_payload = json.loads(_row_payload_json(row))
-                if isinstance(parsed_payload, dict) and str(
-                    parsed_payload.get("id") or parsed_payload.get("rule_id") or "",
-                ) == rule_id:
+                if (
+                    isinstance(parsed_payload, dict)
+                    and str(
+                        parsed_payload.get("id") or parsed_payload.get("rule_id") or "",
+                    )
+                    == rule_id
+                ):
                     payload = parsed_payload
             except Exception:
                 pass

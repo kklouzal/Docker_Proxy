@@ -170,6 +170,96 @@ def test_adblock_lookup_close_waits_for_in_flight_candidate_query(
         index.candidate_rules("https://ads.example/banner.js")
 
 
+def test_adblock_lookup_close_is_bounded_and_rejects_new_acquisitions(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+
+    from services.adblock_lookup import (
+        AdblockLookupClosedError,
+        AdblockLookupCloseTimeoutError,
+        AdblockLookupIndex,
+    )
+
+    index = AdblockLookupIndex(db_path, close_timeout_seconds=0.05)
+    query_entered = threading.Event()
+    release_query = threading.Event()
+    query_done = threading.Event()
+    original_candidate_rule_ids = index._candidate_rule_ids
+    query_errors: list[BaseException] = []
+
+    def blocked_candidate_rule_ids(
+        conn: sqlite3.Connection,
+        url: str,
+        *,
+        resource_type: str = "",
+    ) -> set[str]:
+        query_entered.set()
+        assert release_query.wait(timeout=2.0)
+        return original_candidate_rule_ids(conn, url, resource_type=resource_type)
+
+    def query() -> None:
+        try:
+            index.candidate_rules("https://ads.example/banner.js")
+        except BaseException as exc:  # pragma: no cover - asserted below
+            query_errors.append(exc)
+        finally:
+            query_done.set()
+
+    index._candidate_rule_ids = blocked_candidate_rule_ids  # type: ignore[method-assign]
+    query_thread = threading.Thread(target=query)
+    query_thread.start()
+    assert query_entered.wait(timeout=2.0)
+
+    with pytest.raises(
+        AdblockLookupCloseTimeoutError,
+        match=r"with 1 active connection\(s\)",
+    ):
+        index.close()
+    with pytest.raises(AdblockLookupClosedError):
+        index.candidate_rules("https://ads.example/after-close.js")
+
+    release_query.set()
+    assert query_done.wait(timeout=2.0)
+    query_thread.join(timeout=2.0)
+    assert query_errors == []
+    assert index._connections == set()
+    assert index._connection_users == {}
+    index.close()
+
+
+def test_adblock_lookup_close_thread_connection_is_bounded_during_reentrant_use(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+
+    from services.adblock_lookup import (
+        AdblockLookupCloseTimeoutError,
+        AdblockLookupIndex,
+    )
+
+    index = AdblockLookupIndex(db_path, close_timeout_seconds=0)
+    original_candidate_rule_ids = index._candidate_rule_ids
+
+    def close_during_candidate_lookup(
+        conn: sqlite3.Connection,
+        url: str,
+        *,
+        resource_type: str = "",
+    ) -> set[str]:
+        with pytest.raises(AdblockLookupCloseTimeoutError):
+            index.close_thread_connection()
+        return original_candidate_rule_ids(conn, url, resource_type=resource_type)
+
+    index._candidate_rule_ids = close_during_candidate_lookup  # type: ignore[method-assign]
+    assert _raws(index.candidate_rules("https://ads.example/banner.js")) == {
+        "||ads.example^"
+    }
+    assert index._local.conn in index._connections
+    index.close_thread_connection()
+    assert index._connections == set()
+
+
 def test_adblock_lookup_index_returns_indexed_url_candidates(tmp_path: Path) -> None:
     db_path = _build_lookup_db(
         tmp_path,
