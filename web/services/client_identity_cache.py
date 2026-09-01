@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import ipaddress
+import json
+import os
 import re
 import socket
+import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -34,6 +38,19 @@ _RESERVED_RDNS_HOSTNAMES = {
     "ip6-loopback",
 }
 
+_REVERSE_DNS_CHILD_CODE = """
+import json
+import socket
+import sys
+
+try:
+    hostname, aliases, addresses = socket.gethostbyaddr(sys.argv[1])
+except OSError as exc:
+    print(json.dumps({"status": "dns_error", "errno": exc.errno}))
+else:
+    print(json.dumps({"status": "ok", "result": [hostname, aliases, addresses]}))
+"""
+
 
 class _ReverseDNSLookupCapacityError(RuntimeError):
     """Indicate that no bounded reverse-DNS worker slot was available."""
@@ -56,48 +73,55 @@ def _gethostbyaddr_with_timeout(
     *,
     timeout_seconds: float,
 ) -> tuple[str, list[str], list[str]] | None:
-    """Run reverse DNS with bounded caller latency and bounded stuck workers.
+    """Run reverse DNS in a killable, resource-bounded child process.
 
     socket.gethostbyaddr does not accept a per-call timeout. Avoid using
     socket.setdefaulttimeout here: that mutates process-global socket defaults and
     can leak the temporary DNS timeout into unrelated socket creation in other
-    Admin UI threads. If libc/NSS blocks past the deadline, return ``None`` and
-    let the daemon lookup thread release its slot if it eventually finishes.
+    Admin UI threads. A thread cannot cancel a stuck libc/NSS call, so run each
+    lookup in a child which ``subprocess.run`` kills and reaps at the deadline.
     Raise ``_ReverseDNSLookupCapacityError`` when no worker slot is available so
     transient local saturation is not cached as a DNS failure.
     """
     if not _REVERSE_DNS_LOOKUP_SLOTS.acquire(blocking=False):
         raise _ReverseDNSLookupCapacityError
 
-    completed = threading.Event()
-    result: list[tuple[str, list[str], list[str]]] = []
-    errors: list[Exception] = []
-
-    def lookup() -> None:
-        try:
-            result.append(socket.gethostbyaddr(ip))
-        except Exception as exc:  # propagate synchronous failures below
-            errors.append(exc)
-        finally:
-            _REVERSE_DNS_LOOKUP_SLOTS.release()
-            completed.set()
-
-    worker = threading.Thread(
-        target=lookup,
-        name=f"client-rdns-lookup-{ip}",
-        daemon=True,
-    )
     try:
-        worker.start()
-    except Exception:
+        return _run_reverse_dns_subprocess(ip, timeout_seconds=timeout_seconds)
+    finally:
         _REVERSE_DNS_LOOKUP_SLOTS.release()
-        raise
 
-    if not completed.wait(timeout=max(0.001, timeout_seconds)):
+
+def _run_reverse_dns_subprocess(
+    ip: str,
+    timeout_seconds: float,
+) -> tuple[str, list[str], list[str]] | None:
+    """Execute one lookup without inheriting the service's environment."""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", _REVERSE_DNS_CHILD_CODE, ip],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(0.001, timeout_seconds),
+            env={
+                "PATH": os.defpath,
+                "LANG": os.environ.get("LANG", "C.UTF-8"),
+            },
+        )
+    except subprocess.TimeoutExpired:
         return None
-    if errors:
-        raise errors[0]
-    return result[0]
+
+    try:
+        payload = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError):
+        raise _ReverseDNSLookupTimeoutError from None
+    if completed.returncode != 0 or payload.get("status") not in {"ok", "dns_error"}:
+        raise _ReverseDNSLookupTimeoutError
+    if payload["status"] == "dns_error":
+        raise socket.herror(payload.get("errno"))
+    hostname, aliases, addresses = payload["result"]
+    return str(hostname), list(aliases), list(addresses)
 
 
 class ClientIdentityCache:

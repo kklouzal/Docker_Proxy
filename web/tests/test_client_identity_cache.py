@@ -17,7 +17,7 @@ def test_client_identity_cache_invalid_ip_returns_invalid_without_lookup(
     monkeypatch.setattr(
         cache,
         "_lookup_hostname",
-        lambda _ip: (_ for _ in ()).throw(AssertionError("lookup called")),
+        lambda _ip, **_kwargs: (_ for _ in ()).throw(AssertionError("lookup called")),
     )
 
     assert cache.resolve("not an ip") == {
@@ -328,7 +328,7 @@ def test_client_identity_cache_distinct_misses_respect_global_lookup_limit(
     calls: list[str] = []
     results: dict[str, dict[str, str]] = {}
 
-    def blocked_lookup(ip: str) -> tuple[str, list[str], list[str]]:
+    def blocked_lookup(ip: str, **_kwargs) -> tuple[str, list[str], list[str]]:
         with calls_lock:
             calls.append(ip)
             if len(calls) == _REVERSE_DNS_LOOKUP_THREAD_LIMIT:
@@ -337,7 +337,7 @@ def test_client_identity_cache_distinct_misses_respect_global_lookup_limit(
         return f"host-{ip}.example", [], []
 
     monkeypatch.setattr(
-        "services.client_identity_cache.socket.gethostbyaddr",
+        "services.client_identity_cache._run_reverse_dns_subprocess",
         blocked_lookup,
     )
     active_ips = [
@@ -394,8 +394,8 @@ def test_client_identity_cache_normalizes_valid_rdns_hostname(monkeypatch) -> No
     cache = ClientIdentityCache(success_ttl_seconds=30.0)
 
     monkeypatch.setattr(
-        "services.client_identity_cache.socket.gethostbyaddr",
-        lambda _ip: ("WorkStation.Example.", [], []),
+        "services.client_identity_cache._run_reverse_dns_subprocess",
+        lambda _ip, **_kwargs: ("WorkStation.Example.", [], []),
     )
 
     assert cache.resolve("192.0.2.10") == {
@@ -409,8 +409,8 @@ def test_client_identity_cache_canonicalizes_idn_rdns_hostname(monkeypatch) -> N
     cache = ClientIdentityCache(success_ttl_seconds=30.0)
 
     monkeypatch.setattr(
-        "services.client_identity_cache.socket.gethostbyaddr",
-        lambda _ip: ("M\u00fcnchen.Example.", [], []),
+        "services.client_identity_cache._run_reverse_dns_subprocess",
+        lambda _ip, **_kwargs: ("M\u00fcnchen.Example.", [], []),
     )
 
     assert cache.resolve("192.0.2.10") == {
@@ -426,8 +426,8 @@ def test_client_identity_cache_canonicalizes_idna_dot_rdns_hostname(
     cache = ClientIdentityCache(success_ttl_seconds=30.0)
 
     monkeypatch.setattr(
-        "services.client_identity_cache.socket.gethostbyaddr",
-        lambda _ip: ("B\u00fccher\uff0eExample\uff61", [], []),
+        "services.client_identity_cache._run_reverse_dns_subprocess",
+        lambda _ip, **_kwargs: ("B\u00fccher\uff0eExample\uff61", [], []),
     )
 
     assert cache.resolve("192.0.2.10") == {
@@ -454,8 +454,8 @@ def test_client_identity_cache_rejects_malformed_rdns_hostnames(monkeypatch) -> 
     )
 
     monkeypatch.setattr(
-        "services.client_identity_cache.socket.gethostbyaddr",
-        lambda _ip: next(responses),
+        "services.client_identity_cache._run_reverse_dns_subprocess",
+        lambda _ip, **_kwargs: next(responses),
     )
 
     for ip in [
@@ -491,8 +491,8 @@ def test_client_identity_cache_rejects_ambiguous_numeric_rdns_hostnames(
     )
 
     monkeypatch.setattr(
-        "services.client_identity_cache.socket.gethostbyaddr",
-        lambda _ip: next(responses),
+        "services.client_identity_cache._run_reverse_dns_subprocess",
+        lambda _ip, **_kwargs: next(responses),
     )
 
     for ip in [
@@ -521,8 +521,8 @@ def test_client_identity_cache_accepts_valid_dns_rdns_hostnames_with_digits(
     )
 
     monkeypatch.setattr(
-        "services.client_identity_cache.socket.gethostbyaddr",
-        lambda _ip: next(responses),
+        "services.client_identity_cache._run_reverse_dns_subprocess",
+        lambda _ip, **_kwargs: next(responses),
     )
 
     assert cache.resolve("192.0.2.30") == {
@@ -542,12 +542,12 @@ def test_client_identity_cache_treats_dns_lookup_errors_as_unresolved(
 ) -> None:
     cache = ClientIdentityCache(failure_ttl_seconds=10.0)
 
-    def fail_lookup(_ip: str) -> tuple[str, list[str], list[str]]:
+    def fail_lookup(_ip: str, **_kwargs) -> tuple[str, list[str], list[str]]:
         msg = "no PTR"
         raise socket.herror(msg)
 
     monkeypatch.setattr(
-        "services.client_identity_cache.socket.gethostbyaddr",
+        "services.client_identity_cache._run_reverse_dns_subprocess",
         fail_lookup,
     )
 
@@ -562,39 +562,28 @@ def test_client_identity_cache_reverse_dns_timeout_is_not_cached(
     monkeypatch,
 ) -> None:
     cache = ClientIdentityCache(failure_ttl_seconds=10.0, lookup_timeout_seconds=0.05)
-    started = threading.Event()
-    release = threading.Event()
-    finished = threading.Event()
     calls = 0
 
-    def slow_then_recover(_ip: str) -> tuple[str, list[str], list[str]]:
+    def timeout_then_recover(
+        _ip: str, **_kwargs
+    ) -> tuple[str, list[str], list[str]] | None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            try:
-                started.set()
-                release.wait(timeout=1.0)
-                return "late.example", [], []
-            finally:
-                finished.set()
+            return None
         return "recovered.example", [], []
 
     monkeypatch.setattr(
-        "services.client_identity_cache.socket.gethostbyaddr",
-        slow_then_recover,
+        "services.client_identity_cache._run_reverse_dns_subprocess",
+        timeout_then_recover,
     )
 
-    try:
-        assert cache.resolve("192.0.2.10") == {
-            "hostname": "",
-            "hostname_source": "",
-            "hostname_status": "unresolved",
-        }
-        assert started.wait(timeout=0.5)
-        assert "192.0.2.10" not in cache._cache
-    finally:
-        release.set()
-        assert finished.wait(timeout=0.5)
+    assert cache.resolve("192.0.2.10") == {
+        "hostname": "",
+        "hostname_source": "",
+        "hostname_status": "unresolved",
+    }
+    assert "192.0.2.10" not in cache._cache
 
     assert cache.resolve("192.0.2.10") == {
         "hostname": "recovered.example",
@@ -602,6 +591,38 @@ def test_client_identity_cache_reverse_dns_timeout_is_not_cached(
         "hostname_status": "resolved",
     }
     assert calls == 2
+
+
+def test_client_identity_cache_recovers_capacity_after_all_lookup_timeouts(
+    monkeypatch,
+) -> None:
+    cache = ClientIdentityCache(failure_ttl_seconds=10.0)
+    calls = 0
+
+    def timed_out_then_resolvable(
+        ip: str, **_kwargs
+    ) -> tuple[str, list[str], list[str]] | None:
+        nonlocal calls
+        calls += 1
+        if calls <= _REVERSE_DNS_LOOKUP_THREAD_LIMIT:
+            return None
+        return f"host-{ip}.example", [], []
+
+    monkeypatch.setattr(
+        "services.client_identity_cache._run_reverse_dns_subprocess",
+        timed_out_then_resolvable,
+    )
+
+    for index in range(_REVERSE_DNS_LOOKUP_THREAD_LIMIT):
+        ip = f"192.0.2.{index + 1}"
+        assert cache.resolve(ip)["hostname_status"] == "unresolved"
+        assert ip not in cache._cache
+
+    assert cache.resolve("192.0.2.100") == {
+        "hostname": "host-192.0.2.100.example",
+        "hostname_source": "rdns",
+        "hostname_status": "resolved",
+    }
 
 
 def test_client_identity_cache_resolve_does_not_mutate_global_socket_timeout(
@@ -618,8 +639,8 @@ def test_client_identity_cache_resolve_does_not_mutate_global_socket_timeout(
         fail_setdefaulttimeout,
     )
     monkeypatch.setattr(
-        "services.client_identity_cache.socket.gethostbyaddr",
-        lambda _ip: ("WorkStation.Example.", [], []),
+        "services.client_identity_cache._run_reverse_dns_subprocess",
+        lambda _ip, **_kwargs: ("WorkStation.Example.", [], []),
     )
 
     assert cache.resolve("192.0.2.10") == {
@@ -647,8 +668,8 @@ def test_client_identity_cache_resolve_many_does_not_mutate_global_socket_timeou
         "2001:db8::1": "host-b.example",
     }
     monkeypatch.setattr(
-        "services.client_identity_cache.socket.gethostbyaddr",
-        lambda ip: (responses[ip], [], []),
+        "services.client_identity_cache._run_reverse_dns_subprocess",
+        lambda ip, **_kwargs: (responses[ip], [], []),
     )
 
     resolved = cache.resolve_many(["192.0.2.10", "2001:db8::1"])
@@ -703,7 +724,7 @@ def test_client_identity_cache_resolve_many_uses_bounded_parallelism(
     resolved: dict[str, dict[str, str]] = {}
     errors: list[Exception] = []
 
-    def blocked_lookup(ip: str) -> tuple[str, list[str], list[str]]:
+    def blocked_lookup(ip: str, **_kwargs) -> tuple[str, list[str], list[str]]:
         nonlocal active_lookups, maximum_active_lookups
         with calls_lock:
             calls.append(ip)
@@ -725,7 +746,7 @@ def test_client_identity_cache_resolve_many_uses_bounded_parallelism(
             errors.append(exc)
 
     monkeypatch.setattr(
-        "services.client_identity_cache.socket.gethostbyaddr",
+        "services.client_identity_cache._run_reverse_dns_subprocess",
         blocked_lookup,
     )
     batch_thread = threading.Thread(target=resolve_batch)
@@ -761,7 +782,9 @@ def test_client_identity_cache_evicts_oldest_entry_when_full(monkeypatch) -> Non
         "services.client_identity_cache.time.monotonic", lambda: now["value"]
     )
     monkeypatch.setattr(
-        cache, "_lookup_hostname", lambda ip: (f"host-{ip}", "rdns", "resolved")
+        cache,
+        "_lookup_hostname",
+        lambda ip, **_kwargs: (f"host-{ip}", "rdns", "resolved"),
     )
 
     assert cache.resolve("192.0.2.1")["hostname"] == "host-192.0.2.1"
@@ -817,7 +840,9 @@ def test_client_identity_cache_wall_clock_rollback_does_not_extend_ttl(
         "services.client_identity_cache.time.monotonic",
         lambda: clocks["monotonic"],
     )
-    monkeypatch.setattr(cache, "_lookup_hostname", lambda _ip: next(responses))
+    monkeypatch.setattr(
+        cache, "_lookup_hostname", lambda _ip, **_kwargs: next(responses)
+    )
 
     assert cache.resolve("192.0.2.10")["hostname"] == "first.example"
     clocks["wall"] -= 600.0
