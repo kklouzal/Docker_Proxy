@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import errno
+import os
 import re
 import stat
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
 from html import escape
@@ -534,15 +538,27 @@ def error_page_directory() -> Path:
     return Path(__file__).resolve().parents[2] / "squid" / "error_pages" / "en"
 
 
-@lru_cache(maxsize=128)
-def _read_template_file(
-    path: Path, _fingerprint: tuple[int, int, int, int, int]
-) -> str:
-    return path.read_text(encoding="utf-8")
+_TEMPLATE_CACHE_MAX_SIZE = 128
+_template_file_cache: OrderedDict[tuple[Path, tuple[int, int, int, int, int]], str] = (
+    OrderedDict()
+)
+_template_file_cache_lock = threading.Lock()
 
 
-def _template_fingerprint(path: Path) -> tuple[int, int, int, int, int]:
-    metadata = path.lstat()
+def _open_template_file(path: Path) -> int:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        return os.open(path, flags)
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            message = f"Error page template is not a regular file: {path}"
+            raise OSError(message) from error
+        raise
+
+
+def _template_fingerprint(
+    path: Path, metadata: os.stat_result
+) -> tuple[int, int, int, int, int]:
     if not stat.S_ISREG(metadata.st_mode):
         message = f"Error page template is not a regular file: {path}"
         raise OSError(message)
@@ -555,12 +571,39 @@ def _template_fingerprint(path: Path) -> tuple[int, int, int, int, int]:
     )
 
 
+def _read_template_file(path: Path) -> str:
+    descriptor = _open_template_file(path)
+    try:
+        metadata = os.fstat(descriptor)
+        fingerprint = _template_fingerprint(path, metadata)
+        cache_key = (path, fingerprint)
+        with _template_file_cache_lock:
+            cached = _template_file_cache.get(cache_key)
+            if cached is not None:
+                _template_file_cache.move_to_end(cache_key)
+                return cached
+
+        with os.fdopen(descriptor, encoding="utf-8") as template_file:
+            descriptor = -1
+            text = template_file.read()
+
+        with _template_file_cache_lock:
+            _template_file_cache[cache_key] = text
+            _template_file_cache.move_to_end(cache_key)
+            while len(_template_file_cache) > _TEMPLATE_CACHE_MAX_SIZE:
+                _template_file_cache.popitem(last=False)
+        return text
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def read_template(name: str) -> str:
     info = get_error_page(name)
     if info is None:
         raise KeyError(name)
     path = error_page_directory() / info.name
-    return _read_template_file(path, _template_fingerprint(path))
+    return _read_template_file(path)
 
 
 @lru_cache(maxsize=128)
@@ -576,7 +619,11 @@ def missing_template_names(*, include_custom: bool = True) -> list[str]:
     missing = []
     for name in names:
         try:
-            _template_fingerprint(base / name)
+            descriptor = _open_template_file(base / name)
+            try:
+                _template_fingerprint(base / name, os.fstat(descriptor))
+            finally:
+                os.close(descriptor)
         except OSError:
             missing.append(name)
     return missing

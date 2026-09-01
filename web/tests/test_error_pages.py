@@ -318,14 +318,14 @@ def test_template_file_cache_refreshes_after_replacement(monkeypatch, tmp_path) 
     template_path.write_text("original %U", encoding="utf-8")
     monkeypatch.setattr(error_pages, "error_page_directory", lambda: tmp_path)
 
-    calls: list[str] = []
-    original = Path.read_text
+    calls: list[int] = []
+    original = error_pages.os.fdopen
 
-    def fake_read_text(self, *args, **kwargs):
-        calls.append(self.name)
-        return original(self, *args, **kwargs)
+    def fake_fdopen(descriptor, *args, **kwargs):
+        calls.append(descriptor)
+        return original(descriptor, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    monkeypatch.setattr(error_pages.os, "fdopen", fake_fdopen)
 
     first = error_pages.read_template("ERR_DNS_FAIL")
     second = error_pages.read_template("ERR_DNS_FAIL")
@@ -334,7 +334,30 @@ def test_template_file_cache_refreshes_after_replacement(monkeypatch, tmp_path) 
 
     assert first == second
     assert third == "replacement content %T"
-    assert calls == ["ERR_DNS_FAIL", "ERR_DNS_FAIL"]
+    assert len(calls) == 2
+
+
+def test_template_read_is_not_redirected_by_post_inspection_symlink_race(
+    monkeypatch, tmp_path
+) -> None:
+    template_path = tmp_path / "ERR_DNS_FAIL"
+    outside_path = tmp_path / "outside-template"
+    template_path.write_text("admitted content", encoding="utf-8")
+    outside_path.write_text("foreign content", encoding="utf-8")
+    monkeypatch.setattr(error_pages, "error_page_directory", lambda: tmp_path)
+
+    original_lstat = Path.lstat
+
+    def replace_after_lstat(path):
+        metadata = original_lstat(path)
+        if path == template_path:
+            path.unlink()
+            path.symlink_to(outside_path)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", replace_after_lstat)
+
+    assert error_pages.read_template("ERR_DNS_FAIL") == "admitted content"
 
 
 def test_missing_template_and_preview_follow_filesystem_changes(
