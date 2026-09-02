@@ -8,6 +8,7 @@ import re
 import socket
 import socketserver
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -37,6 +38,8 @@ MAX_ICAP_CHUNK_SIZE_DIGITS = 16
 MAX_ICAP_HEADER_LINE_BYTES = 8192
 MAX_ICAP_TRAILER_LINE_BYTES = 8192
 MAX_ICAP_TRAILERS_BYTES = DEFAULT_MAX_HEADER_BYTES
+FALLBACK_TRANSACTION_TIMEOUT_SECONDS = 30.0
+FALLBACK_OPERATION_TIMEOUT_SECONDS = 2.0
 FALLBACK_OPEN_ISTAG = '"clamav-fail-open-unavailable"'
 FALLBACK_CLOSED_ISTAG = '"clamav-fail-closed-unavailable"'
 _CHUNK_OWS = b" \t"
@@ -380,6 +383,33 @@ def _validate_reqmod_encapsulated_boundaries(
 def _is_single_encapsulated_header_block(header: bytes) -> bool:
     header_end = header.find(HEADER_END)
     return header_end >= 0 and header_end == len(header) - len(HEADER_END)
+
+
+class _TransactionReadSocket:
+    def __init__(
+        self,
+        sock: socket.socket,
+        *,
+        deadline: float,
+        operation_timeout: float,
+        monotonic=time.monotonic,
+    ) -> None:
+        self._sock = sock
+        self._deadline = deadline
+        self._operation_timeout = operation_timeout
+        self._monotonic = monotonic
+
+    def recv(self, size: int) -> bytes:
+        remaining = self._deadline - self._monotonic()
+        if remaining <= 0:
+            message = "ICAP transaction deadline exceeded"
+            raise TimeoutError(message)
+        self._sock.settimeout(min(self._operation_timeout, remaining))
+        return self._sock.recv(size)
+
+    def sendall(self, data: bytes) -> None:
+        self._sock.settimeout(self._operation_timeout)
+        self._sock.sendall(data)
 
 
 def _recv_more(sock: socket.socket, data: bytes, size: int) -> bytes:
@@ -1202,11 +1232,16 @@ def _error_response(message: str, istag: str) -> bytes:
 
 class _FailOpenAvHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
-        self.request.settimeout(2.0)
+        started = time.monotonic()
+        request_reader = _TransactionReadSocket(
+            self.request,
+            deadline=started + FALLBACK_TRANSACTION_TIMEOUT_SECONDS,
+            operation_timeout=FALLBACK_OPERATION_TIMEOUT_SECONDS,
+        )
         fail_open = bool(getattr(self.server, "fail_open", True))
         istag = FALLBACK_OPEN_ISTAG if fail_open else FALLBACK_CLOSED_ISTAG
         try:
-            header, remainder = _read_icap_outer_header(self.request)
+            header, remainder = _read_icap_outer_header(request_reader)
             method, _service_uri, _version = _parse_icap_start_line(header)
             if method == "OPTIONS":
                 headers = {
@@ -1232,7 +1267,7 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
                                 headers.get("allow")
                             )
                             http_header, body, null_body, request_method = (
-                                _read_respmod_payload(self.request, header, remainder)
+                                _read_respmod_payload(request_reader, header, remainder)
                             )
                             if null_body:
                                 response = _clean_respmod_no_body_response(
@@ -1246,7 +1281,7 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
                                     http_header, body, istag
                                 )
                         else:
-                            _drain_encapsulated_body(self.request, header, remainder)
+                            _drain_encapsulated_body(request_reader, header, remainder)
                             response = _icap_response(
                                 "204 No Content",
                                 {"ISTag": istag, "Encapsulated": "null-body=0"},
@@ -1271,6 +1306,7 @@ class _FailOpenAvHandler(socketserver.BaseRequestHandler):
         except OSError:
             return
         try:
+            self.request.settimeout(FALLBACK_OPERATION_TIMEOUT_SECONDS)
             self.request.sendall(response)
         except OSError:
             return

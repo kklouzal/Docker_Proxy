@@ -590,6 +590,46 @@ class _ReadFailureSocket(_MemorySocket):
         raise self.exc
 
 
+def test_transaction_read_deadline_does_not_reset_after_progress() -> None:
+    runner = _load_runner()
+    now = [100.0]
+
+    class ProgressSocket:
+        def __init__(self) -> None:
+            self.timeouts: list[float] = []
+            self.reads = 0
+
+        def settimeout(self, timeout: float) -> None:
+            self.timeouts.append(timeout)
+
+        def recv(self, size: int) -> bytes:
+            self.reads += 1
+            now[0] += 1.25
+            return b"x"
+
+    raw_socket = ProgressSocket()
+    sock = runner._TransactionReadSocket(
+        raw_socket,
+        deadline=now[0] + 3.0,
+        operation_timeout=2.0,
+        monotonic=lambda: now[0],
+    )
+
+    assert sock.recv(1) == b"x"
+    assert sock.recv(1) == b"x"
+    now[0] += 0.5
+    try:
+        sock.recv(1)
+    except TimeoutError as exc:
+        assert "transaction deadline" in str(exc)
+    else:  # pragma: no cover - regression guard should always raise
+        message = "partial read progress reset the transaction deadline"
+        raise AssertionError(message)
+
+    assert raw_socket.reads == 2
+    assert raw_socket.timeouts == [2.0, 1.75]
+
+
 def test_read_failures_after_partial_encapsulated_headers_are_protocol_errors() -> None:
     runner = _load_runner()
     socket_timeout = vars(socket)["timeout"]
