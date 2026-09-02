@@ -4151,6 +4151,49 @@ def test_squid_controller_rollback_fails_closed_when_validation_times_out(
     assert persisted_conf.read_text(encoding="utf-8") == "workers 1\n# prior\n"
 
 
+def test_squid_controller_designated_rollback_recovers_dirty_journal(
+    tmp_path, monkeypatch
+) -> None:
+    from services.squid_core import (  # type: ignore
+        SquidController,
+        SquidRuntimeMaterializationResult,
+    )
+    from services.squid_transaction import SquidTransactionJournal  # type: ignore
+
+    squid_conf = tmp_path / "squid.conf"
+    persisted_conf = tmp_path / "persisted.conf"
+    journal_path = tmp_path / "squid-transaction.json"
+    squid_conf.write_text("workers 1\n# failed candidate\n", encoding="utf-8")
+    persisted_conf.write_text("workers 1\n# last known good\n", encoding="utf-8")
+    monkeypatch.setenv("SQUID_TRANSACTION_JOURNAL_PATH", str(journal_path))
+    journal = SquidTransactionJournal(
+        journal_path,
+        active_config=squid_conf,
+        persisted_config=persisted_conf,
+    )
+    failed = journal.begin("apply_config_text", intended_phase="runtime_ready")
+    journal.recovery_required("listeners did not reopen")
+
+    controller = SquidController(str(squid_conf))
+    controller.persisted_squid_conf_path = str(persisted_conf)
+    controller.validate_config_text = lambda _text: (True, "valid")
+    controller._materialize_clamav_runtime_files_locked = lambda _text: (
+        SquidRuntimeMaterializationResult(True, "materialized", False)
+    )
+    controller._restart_squid_locked = lambda: (True, "listener ready")
+
+    ok, detail = controller.restore_last_known_good_config(reason="heartbeat")
+
+    payload = journal.read()
+    assert payload is not None
+    assert ok is True
+    assert "Rolled back to last-known-good" in detail
+    assert "# last known good" in squid_conf.read_text(encoding="utf-8")
+    assert "# failed candidate" not in squid_conf.read_text(encoding="utf-8")
+    assert payload["status"] == "recovered"
+    assert payload["previous_transaction_id"] == failed["transaction_id"]
+
+
 def test_squid_controller_extracts_all_http_listener_ports(tmp_path) -> None:
     from services.squid_core import SquidController  # type: ignore
 

@@ -179,6 +179,49 @@ class SquidTransactionJournal:
         self._write(payload)
         return payload
 
+    def begin_recovery(
+        self,
+        operation: str,
+        *,
+        intended_phase: str,
+        target_config: str = "",
+    ) -> dict[str, Any]:
+        """Replace a valid dirty record with an attributable recovery record.
+
+        This is deliberately separate from ``begin``: ordinary mutations must
+        never overwrite unresolved work, while the designated last-known-good
+        recovery path needs to be able to reconcile exactly that state.
+        """
+        previous = self.read()
+        if not previous or str(previous.get("status") or "") not in _DIRTY_STATUSES:
+            msg = "Designated recovery requires a valid dirty Squid transaction."
+            raise SquidTransactionRecoveryRequiredError(msg)
+        now = _utc_timestamp()
+        payload: dict[str, Any] = {
+            "schema_version": _SCHEMA_VERSION,
+            "transaction_id": str(uuid.uuid4()),
+            "operation": _bounded_token(operation, "recovery"),
+            "status": "recovering",
+            "phase": "recovery_prepared",
+            "intended_phase": _bounded_token(intended_phase, "complete"),
+            "recovery_status": "in_progress",
+            "started_at": now,
+            "updated_at": now,
+            "target_config_sha256": _sha256_text(target_config),
+            "previous_transaction_id": str(previous.get("transaction_id") or "")[:64],
+            "state_before": self.state_manifest(),
+            "evidence": {
+                "recovery_authority": "designated_last_known_good",
+                "previous_operation": _bounded_token(
+                    previous.get("operation"), "unknown"
+                ),
+                "previous_status": _bounded_token(previous.get("status"), "unknown"),
+                "previous_phase": _bounded_token(previous.get("phase"), "unknown"),
+            },
+        }
+        self.replace_active(payload)
+        return payload
+
     def replace_active(self, payload: dict[str, Any]) -> None:
         """Install a bounded startup/recovery record after source restoration."""
         self._validate_payload(payload)

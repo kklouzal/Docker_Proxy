@@ -77,6 +77,53 @@ def test_journal_refuses_to_overwrite_unreconciled_transaction(tmp_path: Path) -
         journal.begin("apply", intended_phase="ready")
 
 
+def test_designated_recovery_adopts_valid_recovery_required_transaction(
+    tmp_path: Path,
+) -> None:
+    journal = SquidTransactionJournal(
+        tmp_path / "transaction.json",
+        active_config=tmp_path / "active.conf",
+        persisted_config=tmp_path / "lkg.conf",
+    )
+    original = journal.begin("apply", intended_phase="ready")
+    journal.recovery_required("Squid failed before its listeners reopened.")
+
+    recovery = journal.begin_recovery(
+        "rollback_last_known_good",
+        intended_phase="rollback_runtime_ready",
+    )
+
+    assert recovery["status"] == "recovering"
+    assert recovery["phase"] == "recovery_prepared"
+    assert recovery["previous_transaction_id"] == original["transaction_id"]
+    assert recovery["evidence"] == {
+        "recovery_authority": "designated_last_known_good",
+        "previous_operation": "apply",
+        "previous_status": "recovery_required",
+        "previous_phase": "recovery_required",
+    }
+
+
+def test_designated_recovery_refuses_corrupt_journal(tmp_path: Path) -> None:
+    journal_path = tmp_path / "transaction.json"
+    journal_path.write_text(
+        '{"schema_version":2,"status":"recovery_required"}', encoding="utf-8"
+    )
+    journal = SquidTransactionJournal(
+        journal_path,
+        active_config=tmp_path / "active.conf",
+        persisted_config=tmp_path / "lkg.conf",
+    )
+
+    with pytest.raises(
+        SquidTransactionRecoveryRequiredError, match="schema validation failed"
+    ):
+        journal.begin_recovery(
+            "rollback_last_known_good",
+            intended_phase="rollback_runtime_ready",
+        )
+
+
 def test_startup_recovers_dirty_startup_transaction_from_immutable_template(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -467,13 +467,22 @@ class SquidController:
         journal_owned = not bool(
             int(getattr(_SQUID_TRANSACTION_STATE, "depth", 0) or 0)
         )
-        journal.read()
+        existing_transaction = journal.read()
         if journal_owned:
-            journal.begin(
-                "rollback_last_known_good",
-                intended_phase="rollback_runtime_ready",
-                target_config=fallback_config,
-            )
+            if existing_transaction and str(
+                existing_transaction.get("status") or ""
+            ) in {"in_progress", "recovering", "recovery_required"}:
+                journal.begin_recovery(
+                    "rollback_last_known_good",
+                    intended_phase="rollback_runtime_ready",
+                    target_config=fallback_config,
+                )
+            else:
+                journal.begin(
+                    "rollback_last_known_good",
+                    intended_phase="rollback_runtime_ready",
+                    target_config=fallback_config,
+                )
             journal_owned = True
         journal.phase("rollback_selecting_last_known_good")
         if reason:
@@ -511,6 +520,7 @@ class SquidController:
                 detail_parts.append(validation_detail)
             journal.recovery_required("\n".join(detail_parts))
             return False, "\n".join(part for part in detail_parts if part).strip()
+        journal.phase("rollback_source_validated", recovery_source=source)
 
         current = self.get_current_config()
         persisted_config_path = Path(self.persisted_squid_conf_path)
