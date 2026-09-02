@@ -87,6 +87,14 @@ class _Conn:
         if text.startswith(
             "SELECT version, name, checksum, status, error FROM schema_migrations"
         ):
+            if "WHERE version BETWEEN" in text:
+                return _Result(
+                    [
+                        self.migrations[version]
+                        for version in sorted(self.migrations)
+                        if 1 <= version <= int(params[0])
+                    ]
+                )
             row = self.migrations.get(int(params[0]))
             return _Result([row] if row else [])
         if text.startswith("INSERT INTO schema_migrations"):
@@ -176,17 +184,20 @@ def test_runtime_schema_readiness_propagates_probe_failure(
 
 def test_runtime_schema_readiness_preserves_status_and_migration_context() -> None:
     conn = _Conn()
-    conn.migrations[schema_lifecycle._SCHEMA_VERSION] = {
-        "version": schema_lifecycle._SCHEMA_VERSION,
-        "name": "current",
-        "checksum": "0" * 64,
-        "status": "running",
-        "error": "",
-    }
+    for spec in schema_lifecycle._migration_specs():
+        conn.migrations[spec.version] = {
+            "version": spec.version,
+            "name": spec.name,
+            "checksum": spec.checksum,
+            "status": "applied",
+            "error": "",
+        }
+    conn.migrations[schema_lifecycle._SCHEMA_VERSION]["status"] = "running"
 
     assert schema_lifecycle.runtime_schema_current_applied(conn) is False
 
     conn.migrations[schema_lifecycle._SCHEMA_VERSION]["status"] = "applied"
+    conn.migrations[schema_lifecycle._SCHEMA_VERSION]["checksum"] = "0" * 64
     assert schema_lifecycle.runtime_schema_current_applied(conn) is False
     conn.migrations[schema_lifecycle._SCHEMA_VERSION]["checksum"] = (
         schema_lifecycle.latest_schema_checksum()
@@ -199,6 +210,24 @@ def test_runtime_schema_readiness_preserves_status_and_migration_context() -> No
         assert schema_lifecycle.runtime_schema_ready_for_lazy_store(conn) is False
     finally:
         del schema_lifecycle._MIGRATION_CONTEXT.active
+
+
+def test_runtime_schema_readiness_rejects_corrupt_earlier_history() -> None:
+    conn = _Conn()
+    for spec in schema_lifecycle._migration_specs():
+        conn.migrations[spec.version] = {
+            "version": spec.version,
+            "name": spec.name,
+            "checksum": spec.checksum,
+            "status": "applied",
+            "error": "",
+        }
+
+    conn.migrations[1]["status"] = "failed"
+
+    assert schema_lifecycle.runtime_schema_current_applied(conn) is False
+    with pytest.raises(RuntimeError, match="migration 1 is not applied"):
+        schema_lifecycle.assert_schema_current(conn)
 
 
 @pytest.mark.parametrize(
@@ -789,12 +818,13 @@ class _CurrentSchemaConn:
             return _Result(
                 [
                     {
-                        "version": schema_lifecycle.latest_schema_version(),
-                        "name": "schema_lifecycle_complete_runtime_assertions",
-                        "checksum": schema_lifecycle.latest_schema_checksum(),
+                        "version": spec.version,
+                        "name": spec.name,
+                        "checksum": spec.checksum,
                         "status": "applied",
                         "error": "",
-                    },
+                    }
+                    for spec in schema_lifecycle._migration_specs()
                 ],
             )
         return _Result()

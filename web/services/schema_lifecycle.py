@@ -163,18 +163,37 @@ def schema_migration_in_progress() -> bool:
     return bool(getattr(_MIGRATION_CONTEXT, "active", False))
 
 
+def _schema_history_error(conn: Any) -> str | None:
+    rows = conn.execute(
+        """
+        SELECT version, name, checksum, status, error
+        FROM schema_migrations
+        WHERE version BETWEEN 1 AND %s
+        ORDER BY version
+        """,
+        (_SCHEMA_VERSION,),
+    ).fetchall()
+    actual = {int(_row_value(row, "version", 0) or 0): row for row in rows}
+    for spec in _migration_specs():
+        row = actual.get(spec.version)
+        if row is None or str(_row_value(row, "status", 3) or "") != "applied":
+            return f"MySQL schema migration {spec.version} is not applied"
+        checksum = str(_row_value(row, "checksum", 2) or "")
+        if checksum != spec.checksum:
+            return (
+                f"MySQL schema migration {spec.version} checksum drift: "
+                f"database has {checksum or 'missing'}, code expects {spec.checksum}."
+            )
+    return None
+
+
 def runtime_schema_current_applied(conn: Any) -> bool:
     try:
-        row = _existing_migration(conn, _SCHEMA_VERSION)
+        return _schema_history_error(conn) is None
     except DATABASE_ERRORS as exc:
         if mysql_error_code(exc) == 1146:
             return False
         raise
-    return (
-        row is not None
-        and str(_row_value(row, "status", 3) or "") == "applied"
-        and str(_row_value(row, "checksum", 2) or "") == latest_schema_checksum()
-    )
 
 
 def runtime_schema_ready_for_lazy_store(conn: Any) -> bool:
@@ -1810,19 +1829,11 @@ def assert_schema_current(conn: Any | None = None) -> None:
     owns_connection = conn is None
     active_conn = connect() if owns_connection else conn
     try:
-        row = _existing_migration(active_conn, _SCHEMA_VERSION)
-        if row is None or str(_row_value(row, "status", 3) or "") != "applied":
+        history_error = _schema_history_error(active_conn)
+        if history_error is not None:
             msg = (
-                f"MySQL schema migration {_SCHEMA_VERSION} is not applied. "
-                "Run startup schema migrations with a DDL-capable account before normal runtime."
-            )
-            raise RuntimeError(msg)
-        checksum = str(_row_value(row, "checksum", 2) or "")
-        expected_checksum = latest_schema_checksum()
-        if checksum != expected_checksum:
-            msg = (
-                f"MySQL schema migration {_SCHEMA_VERSION} checksum drift: "
-                f"database has {checksum or 'missing'}, code expects {expected_checksum}."
+                f"{history_error}. Run startup schema migrations with a DDL-capable "
+                "account before normal runtime."
             )
             raise RuntimeError(msg)
     finally:
