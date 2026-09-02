@@ -6041,11 +6041,16 @@ def _handle_auth_provider_post():
             )
         if action == "test_auth_provider":
             payload = _submitted_directory_payload()
-            was_enabled = _directory_auth_store.get_profile(provider).enabled
+            previous_profile = _directory_auth_store.get_profile(provider)
             payload["enabled"] = "0"
             _directory_auth_store.save_profile(provider, payload)
-            result = _directory_auth_store.test_connection(provider)
-            if was_enabled and result.ok:
+            try:
+                result = _directory_auth_store.test_connection(provider)
+            except Exception:
+                if previous_profile.enabled:
+                    _directory_auth_store.restore_profile(previous_profile)
+                raise
+            if previous_profile.enabled and result.ok:
                 reenable_payload = dict(payload)
                 reenable_payload["enabled"] = "1"
                 reenable_payload["bind_password"] = ""
@@ -6055,6 +6060,8 @@ def _handle_auth_provider_post():
                 )
                 if reenabled_profile.enabled:
                     _saml_auth_store.disable_provider()
+            elif previous_profile.enabled:
+                _directory_auth_store.restore_profile(previous_profile)
             _record_administration_audit(
                 audit_kind,
                 ok=result.ok,
@@ -6070,20 +6077,14 @@ def _handle_auth_provider_post():
             )
         if action == "scan_auth_provider":
             payload = _submitted_directory_payload()
-            was_enabled = _directory_auth_store.get_profile(provider).enabled
+            previous_profile = _directory_auth_store.get_profile(provider)
             payload["enabled"] = "0"
-            saved_profile = _directory_auth_store.save_profile(provider, payload)
-            result = _directory_auth_store.scan_directory(provider)
-            if was_enabled and saved_profile.last_test_ok:
-                reenable_payload = dict(payload)
-                reenable_payload["enabled"] = "1"
-                reenable_payload["bind_password"] = ""
-                reenabled_profile = _directory_auth_store.save_profile(
-                    provider,
-                    reenable_payload,
-                )
-                if reenabled_profile.enabled:
-                    _saml_auth_store.disable_provider()
+            _directory_auth_store.save_profile(provider, payload)
+            try:
+                result = _directory_auth_store.scan_directory(provider)
+            finally:
+                if previous_profile.enabled:
+                    _directory_auth_store.restore_profile(previous_profile)
             session[f"directory_scan_{provider}"] = {
                 "base_dns": list(result.base_dns),
                 "user_search_bases": list(result.user_search_bases),

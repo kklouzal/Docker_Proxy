@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from types import SimpleNamespace
 
+import pytest
 from werkzeug.datastructures import MultiDict
 
 from .admin_route_test_utils import (
@@ -139,6 +140,10 @@ class FakeDirectoryAuthStore:
 
     def disable_provider(self, provider):
         self.disabled.append(provider)
+
+    def restore_profile(self, profile):
+        self.profile_enabled[profile.provider] = profile.enabled
+        self.profile_last_test_ok[profile.provider] = profile.last_test_ok
 
     def scan_directory(self, provider):
         return SimpleNamespace(
@@ -602,6 +607,7 @@ def test_auth_provider_test_saves_submitted_bind_password_first(
     assert directory_store.saved[0][1]["bind_password"] == "replacement-secret"
     assert directory_store.saved[0][1]["enabled"] == "0"
     assert directory_store.tested == ["active_directory"]
+    assert directory_store.profile_enabled["active_directory"] is False
 
 
 def test_ldap_auth_provider_test_passes_server_url_to_store(
@@ -678,6 +684,98 @@ def test_active_auth_provider_test_restores_enabled_state_after_success(
     assert directory_store.profile_enabled["ldap"] is True
 
 
+def test_active_auth_provider_test_restores_previous_profile_after_failure(
+    monkeypatch, tmp_path
+) -> None:
+    class FailingTestStore(FakeDirectoryAuthStore):
+        def test_connection(self, provider):
+            self.tested.append(provider)
+            self.profile_last_test_ok[provider] = False
+            return SimpleNamespace(
+                ok=False,
+                provider=provider,
+                detail="Directory connection failed.",
+            )
+
+    directory_store = FailingTestStore()
+    directory_store.profile_enabled["ldap"] = True
+    directory_store.profile_last_test_ok["ldap"] = True
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=ldap")
+
+    response = client.post(
+        "/administration?tab=ldap",
+        data={
+            "csrf_token": token,
+            "action": "test_auth_provider",
+            "provider": "ldap",
+            "server_urls": "ldaps://bad.example.org:636",
+            "bind_dn": "cn=bind,dc=example,dc=org",
+            "bind_password": "not-for-output",
+            "base_dn": "dc=example,dc=org",
+            "user_filter": "(uid={username})",
+            "user_attribute": "uid",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "cn=admins,dc=example,dc=org",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    assert directory_store.profile_enabled["ldap"] is True
+    assert directory_store.profile_last_test_ok["ldap"] is True
+    assert "not-for-output" not in response.headers["Location"]
+
+
+@pytest.mark.parametrize("action", ["test_auth_provider", "scan_auth_provider"])
+def test_active_auth_provider_probe_restores_previous_profile_after_exception(
+    monkeypatch, tmp_path, action
+) -> None:
+    class RaisingProbeStore(FakeDirectoryAuthStore):
+        def test_connection(self, provider):
+            msg = "probe exploded"
+            raise RuntimeError(msg)
+
+        def scan_directory(self, provider):
+            msg = "probe exploded"
+            raise RuntimeError(msg)
+
+    directory_store = RaisingProbeStore()
+    directory_store.profile_enabled["ldap"] = True
+    directory_store.profile_last_test_ok["ldap"] = True
+    loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/administration?tab=ldap")
+
+    response = client.post(
+        "/administration?tab=ldap",
+        data={
+            "csrf_token": token,
+            "action": action,
+            "provider": "ldap",
+            "server_urls": "ldaps://bad.example.org:636",
+            "bind_dn": "cn=bind,dc=example,dc=org",
+            "bind_password": "not-for-output",
+            "base_dn": "dc=example,dc=org",
+            "user_filter": "(uid={username})",
+            "user_attribute": "uid",
+            "group_filter": "(member={user_dn})",
+            "required_admin_group": "cn=admins,dc=example,dc=org",
+            "timeout_seconds": "5",
+            "verify_tls": "1",
+        },
+    )
+
+    assert response.status_code in {302, 303}
+    assert directory_store.profile_enabled["ldap"] is True
+    assert directory_store.profile_last_test_ok["ldap"] is True
+    assert "not-for-output" not in response.headers["Location"]
+
+
 def test_auth_provider_scan_populates_directory_choices(monkeypatch, tmp_path) -> None:
     directory_store = FakeDirectoryAuthStore()
     loaded = load_admin_app(monkeypatch, tmp_path, directory_auth_store=directory_store)
@@ -713,6 +811,7 @@ def test_auth_provider_scan_populates_directory_choices(monkeypatch, tmp_path) -
     )
     assert directory_store.saved[0][1]["bind_password"] == "scan-secret"
     assert directory_store.saved[0][1]["enabled"] == "0"
+    assert directory_store.profile_enabled["ldap"] is False
     body = client.get("/administration?tab=ldap").get_data(as_text=True)
     assert "ou=people" in body
     assert "cn=admins,ou=groups,dc=example,dc=org" in body
@@ -751,8 +850,7 @@ def test_active_auth_provider_scan_restores_enabled_state_for_tested_config(
     )
 
     assert response.status_code in {302, 303}
-    assert [saved[1]["enabled"] for saved in directory_store.saved] == ["0", "1"]
-    assert directory_store.saved[-1][1]["bind_password"] == ""
+    assert [saved[1]["enabled"] for saved in directory_store.saved] == ["0"]
     assert directory_store.profile_enabled["ldap"] is True
 
 

@@ -553,6 +553,53 @@ class DirectoryAuthStore:
                 (int(time.time()), provider),
             )
 
+    def restore_profile(self, profile: DirectoryProfile) -> None:
+        """Restore an exact trusted snapshot after a temporary probe mutation."""
+        provider = self._validate_provider(profile.provider)
+        self.ensure_default_profiles()
+        with self._connect() as conn:
+            if profile.enabled:
+                conn.execute(
+                    "UPDATE directory_auth_profiles SET enabled = 0 WHERE provider <> %s",
+                    (provider,),
+                )
+            conn.execute(
+                """
+                UPDATE directory_auth_profiles
+                   SET enabled = %s, server_urls = %s, use_starttls = %s,
+                       verify_tls = %s, ca_bundle = %s, bind_dn = %s,
+                       bind_password = %s, base_dn = %s, user_search_base = %s,
+                       user_filter = %s, user_attribute = %s,
+                       group_search_base = %s, group_filter = %s,
+                       required_admin_group = %s, timeout_seconds = %s,
+                       last_test_ok = %s, last_test_ts = %s,
+                       last_test_detail = %s, updated_ts = %s
+                 WHERE provider = %s
+                """,
+                (
+                    int(profile.enabled),
+                    profile.server_urls,
+                    int(profile.use_starttls),
+                    int(profile.verify_tls),
+                    profile.ca_bundle,
+                    profile.bind_dn,
+                    profile.bind_password,
+                    profile.base_dn,
+                    profile.user_search_base,
+                    profile.user_filter,
+                    profile.user_attribute,
+                    profile.group_search_base,
+                    profile.group_filter,
+                    profile.required_admin_group,
+                    profile.timeout_seconds,
+                    int(profile.last_test_ok),
+                    profile.last_test_ts,
+                    profile.last_test_detail,
+                    profile.updated_ts,
+                    provider,
+                ),
+            )
+
     def record_test(self, provider: str, *, ok: bool, detail: str) -> None:
         provider = self._validate_provider(provider)
         self.ensure_default_profiles()
