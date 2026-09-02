@@ -1593,6 +1593,91 @@ def test_observability_queries_surface_ssl_security_and_performance(
     assert overview["security"]["summary"]["combined_blocks"] == 5
 
 
+def test_security_overview_correlates_only_visible_policy_rows(monkeypatch) -> None:
+    from services import observability_queries  # type: ignore
+
+    class Store:
+        def init_db(self) -> None:
+            return None
+
+        def list_recent_icap(self, **_kwargs):
+            return []
+
+    class Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+        def fetchall(self):
+            return self._rows
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql, _params):
+            normalized = " ".join(sql.split())
+            if "SELECT ts, src_ip, method, url" in normalized:
+                return Result(
+                    [
+                        (
+                            1000 - index,
+                            "192.0.2.1",
+                            "GET",
+                            f"https://ad{index}.example/",
+                            403,
+                            "",
+                            "",
+                            "",
+                            "",
+                        )
+                        for index in range(20)
+                    ]
+                )
+            if "SELECT ts, src_ip, url, category" in normalized:
+                return Result(
+                    [
+                        (
+                            1000 - index,
+                            "192.0.2.2",
+                            f"https://blocked{index}.example/",
+                            "blocked",
+                        )
+                        for index in range(20)
+                    ]
+                )
+            if "COUNT(" in normalized:
+                return Result([(0, 0, 0, 0)])
+            return Result([])
+
+    correlated_lengths: list[int] = []
+
+    def correlate(_store, rows, **_kwargs):
+        correlated_lengths.append(len(rows))
+        return rows
+
+    store = Store()
+    monkeypatch.setattr(observability_queries, "get_diagnostic_store", lambda: store)
+    monkeypatch.setattr(observability_queries, "get_adblock_store", lambda: store)
+    monkeypatch.setattr(observability_queries, "get_webfilter_store", lambda: store)
+    monkeypatch.setattr(
+        observability_queries, "_correlate_policy_events_with_requests", correlate
+    )
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", Connection)
+
+    payload = queries.security_overview(since=900, limit=5)
+
+    assert correlated_lengths == [5, 5]
+    assert len(payload["adblock_rows"]) == 5
+    assert len(payload["webfilter_rows"]) == 5
+
+
 def test_observability_overview_bundle_reuses_precomputed_summary(
     tmp_path, monkeypatch
 ) -> None:

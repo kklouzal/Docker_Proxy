@@ -941,6 +941,11 @@ class ObservabilityQueries:
             }
             for row in webfilter_recent_rows
         ]
+        # Recent-event queries intentionally fetch extra rows for presentation work, but
+        # only the visible page needs request/ICAP correlation.  Correlating discarded
+        # rows causes several diagnostic-store queries (and connections) per event.
+        adblock_rows = adblock_rows[:lim]
+        webfilter_rows = webfilter_rows[:lim]
         correlation_window = int(time.time()) - int(since)
         adblock_rows = _correlate_policy_events_with_requests(
             diagnostic_store,
