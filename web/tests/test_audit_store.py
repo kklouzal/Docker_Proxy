@@ -93,11 +93,14 @@ def _store_with_rows(rows: list[dict[str, object]]) -> AuditStore:
 
 
 class _SchemaInitResult:
-    def __init__(self, row: object | None = None) -> None:
-        self._row = row
+    def __init__(self, rows: Iterable[object] = ()) -> None:
+        self._rows = list(rows)
 
     def fetchone(self) -> object | None:
-        return self._row
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self) -> list[object]:
+        return list(self._rows)
 
 
 class _SchemaInitConnection:
@@ -127,15 +130,25 @@ class _SchemaInitConnection:
         ):
             if self.probe_error is not None:
                 raise self.probe_error
-            row = (
-                {
-                    "checksum": self.migration_checksum,
-                    "status": self.migration_status,
-                }
-                if self.migration_status is not None
-                else None
-            )
-            return _SchemaInitResult(row)
+            rows = []
+            if self.migration_status is not None:
+                rows = [
+                    {
+                        "version": spec.version,
+                        "checksum": (
+                            self.migration_checksum
+                            if spec.version == schema_lifecycle._SCHEMA_VERSION
+                            else spec.checksum
+                        ),
+                        "status": (
+                            self.migration_status
+                            if spec.version == schema_lifecycle._SCHEMA_VERSION
+                            else "applied"
+                        ),
+                    }
+                    for spec in schema_lifecycle._migration_specs()
+                ]
+            return _SchemaInitResult(rows)
         if text.startswith("CREATE TABLE IF NOT EXISTS audit_events"):
             return _SchemaInitResult()
         msg = f"Unexpected schema-init SQL: {text!r} params={tuple(params or ())!r}"

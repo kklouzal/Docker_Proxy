@@ -153,6 +153,9 @@ def test_observability_retention_settings_round_trip(monkeypatch) -> None:
         def fetchone(self):
             return self._row
 
+        def fetchall(self):
+            return [] if self._row is None else [self._row]
+
     class SettingsConnection:
         def __init__(self) -> None:
             self.retention_days = maintenance.DEFAULT_OBSERVABILITY_RETENTION_DAYS

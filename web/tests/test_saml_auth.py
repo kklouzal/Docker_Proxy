@@ -227,7 +227,7 @@ class _FallbackSchemaConnection:
         if text.startswith(
             "SELECT version, name, checksum, status, error FROM schema_migrations"
         ):
-            return SimpleNamespace(fetchone=lambda: None)
+            return SimpleNamespace(fetchall=list)
         if text.startswith("CREATE TABLE IF NOT EXISTS saml_auth_profiles"):
             return SimpleNamespace(fetchone=lambda: None)
         if "FROM information_schema.columns" in text:
