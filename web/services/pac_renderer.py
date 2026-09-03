@@ -8,6 +8,7 @@ import hashlib
 import inspect
 import ipaddress
 import json
+import logging
 import os
 import shutil
 import stat
@@ -75,6 +76,7 @@ _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
     getattr(errno, "EOPNOTSUPP", errno.EINVAL),
 }
 _PAC_MATERIALIZATION_TARGET_LOCKS = KeyedLockRegistry[str]()
+_LOGGER = logging.getLogger(__name__)
 
 
 def _pac_materialization_target_key(path: str | os.PathLike[str]) -> str:
@@ -474,8 +476,17 @@ def resolve_proxy_pac_target(
         )
         direct_enabled = bool(getattr(chain_settings, "direct_enabled", True))
     except Exception:
+        # The chain policy is unavailable, so retain only the known primary
+        # endpoint. Appending DIRECT here would turn a transient store failure
+        # into a client-routing bypass for proxy-only configurations. Do not
+        # reuse another proxy's policy or an indefinitely stale process cache.
         backup_proxies = ()
-        direct_enabled = True
+        direct_enabled = False
+        _LOGGER.warning(
+            "PAC chain settings unavailable for proxy %s; using primary proxy only",
+            normalized_proxy_id,
+            exc_info=True,
+        )
     finally:
         reset_proxy_id(token)
     return ProxyPacTarget(

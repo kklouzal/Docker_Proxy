@@ -696,6 +696,122 @@ def test_resolve_proxy_pac_target_scopes_chain_settings_to_requested_proxy(
     assert "DIRECT" not in target.proxy_chain
 
 
+def test_resolve_proxy_pac_target_fails_closed_when_chain_settings_read_fails() -> None:
+    from services import pac_renderer  # type: ignore
+
+    class _ConfiguredStore:
+        available = True
+
+        def list_proxy_chain_settings(self):
+            if not self.available:
+                raise ConnectionError
+            return SimpleNamespace(backup_proxies=[], direct_enabled=False)
+
+    store = _ConfiguredStore()
+    registry = SimpleNamespace(
+        get_proxy=lambda _proxy_id: _proxy_record("edge-a.example")
+    )
+    configured = pac_renderer.resolve_proxy_pac_target(
+        "edge-a", pac_profiles_store=store, proxy_registry=registry
+    )
+    store.available = False
+    failed = pac_renderer.resolve_proxy_pac_target(
+        "edge-a", pac_profiles_store=store, proxy_registry=registry
+    )
+
+    assert configured.direct_enabled is False
+    assert failed.backup_proxies == ()
+    assert failed.direct_enabled is False
+    assert failed.proxy_chain == "PROXY edge-a.example:3128"
+
+
+def test_resolve_proxy_pac_target_failure_does_not_reuse_another_proxy_policy() -> None:
+    from services import pac_renderer  # type: ignore
+    from services.proxy_context import get_proxy_id  # type: ignore
+
+    class _PerProxyStore:
+        def list_proxy_chain_settings(self):
+            if get_proxy_id() == "edge-b":
+                raise ConnectionError
+            return SimpleNamespace(
+                backup_proxies=[
+                    SimpleNamespace(proxy_host="backup-a.example", proxy_port=8080)
+                ],
+                direct_enabled=True,
+            )
+
+    registry = SimpleNamespace(
+        get_proxy=lambda proxy_id: _proxy_record(f"{proxy_id}.example")
+    )
+    store = _PerProxyStore()
+
+    edge_a = pac_renderer.resolve_proxy_pac_target(
+        "edge-a", pac_profiles_store=store, proxy_registry=registry
+    )
+    edge_b = pac_renderer.resolve_proxy_pac_target(
+        "edge-b", pac_profiles_store=store, proxy_registry=registry
+    )
+
+    assert edge_a.proxy_chain == (
+        "PROXY edge-a.example:3128; PROXY backup-a.example:8080; DIRECT"
+    )
+    assert edge_b.proxy_chain == "PROXY edge-b.example:3128"
+
+
+def test_resolve_proxy_pac_target_recovers_after_settings_store_returns() -> None:
+    from services import pac_renderer  # type: ignore
+
+    class _RecoveringStore:
+        available = False
+
+        def list_proxy_chain_settings(self):
+            if not self.available:
+                raise ConnectionError
+            return SimpleNamespace(
+                backup_proxies=[
+                    SimpleNamespace(proxy_host="backup.example", proxy_port=8080)
+                ],
+                direct_enabled=True,
+            )
+
+    store = _RecoveringStore()
+    registry = SimpleNamespace(
+        get_proxy=lambda _proxy_id: _proxy_record("proxy.example")
+    )
+
+    failed = pac_renderer.resolve_proxy_pac_target(
+        "default", pac_profiles_store=store, proxy_registry=registry
+    )
+    store.available = True
+    recovered = pac_renderer.resolve_proxy_pac_target(
+        "default", pac_profiles_store=store, proxy_registry=registry
+    )
+
+    assert failed.proxy_chain == "PROXY proxy.example:3128"
+    assert recovered.proxy_chain == (
+        "PROXY proxy.example:3128; PROXY backup.example:8080; DIRECT"
+    )
+
+
+def test_resolve_proxy_pac_target_first_unavailable_read_uses_primary_only() -> None:
+    from services import pac_renderer  # type: ignore
+
+    class _AlwaysUnavailableStore:
+        def list_proxy_chain_settings(self):
+            raise RuntimeError
+
+    target = pac_renderer.resolve_proxy_pac_target(
+        "new-proxy",
+        pac_profiles_store=_AlwaysUnavailableStore(),
+        proxy_registry=SimpleNamespace(
+            get_proxy=lambda _proxy_id: _proxy_record("new-proxy.example")
+        ),
+    )
+
+    assert target.proxy_chain == "PROXY new-proxy.example:3128"
+    assert target.direct_enabled is False
+
+
 def test_resolve_proxy_pac_target_filters_stale_invalid_backup_proxy_ports(
     monkeypatch,
 ) -> None:
@@ -1787,7 +1903,7 @@ def test_render_proxy_pac_for_request_replaces_invalid_request_host() -> None:
     )
 
     assert 'var proxyHost = "127.0.0.1";' in rendered
-    assert 'return "PROXY 127.0.0.1:3128; DIRECT";' in rendered
+    assert 'return "PROXY 127.0.0.1:3128";' in rendered
 
 
 class _FakeSslfilterStore:
