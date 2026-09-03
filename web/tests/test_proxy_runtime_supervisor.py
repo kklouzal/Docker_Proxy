@@ -3881,6 +3881,258 @@ def test_public_squid_mutators_refuse_dirty_or_corrupt_journal(
     assert "journal" in result[1].lower()
 
 
+@pytest.mark.parametrize(
+    (
+        "reread_ok",
+        "restore_files",
+        "squid_was_running",
+        "restart_ok",
+        "expected_status",
+    ),
+    [
+        (True, True, False, True, "complete"),
+        (True, True, True, True, "complete"),
+        (False, True, False, True, "recovery_required"),
+        (True, False, False, True, "recovery_required"),
+        (True, True, True, False, "recovery_required"),
+    ],
+)
+def test_public_materialization_failure_only_reconciles_verified_rollback(
+    tmp_path,
+    monkeypatch,
+    reread_ok,
+    restore_files,
+    squid_was_running,
+    restart_ok,
+    expected_status,
+) -> None:
+    from services.squid_core import (  # type: ignore
+        SquidController,
+        SquidRuntimeMaterializationResult,
+    )
+
+    active = tmp_path / "squid.conf"
+    persisted = tmp_path / "persisted.conf"
+    virus = tmp_path / "virus.conf"
+    icap = tmp_path / "20-icap.conf"
+    active.write_text("workers 1\n", encoding="utf-8")
+    persisted.write_text("workers 1\n", encoding="utf-8")
+    virus.write_text("old virus\n", encoding="utf-8")
+    icap.write_text("old icap\n", encoding="utf-8")
+    controller = SquidController(str(active))
+    controller.persisted_squid_conf_path = str(persisted)
+    controller.normalize_config_text = lambda text: text
+    controller._virus_scan_config_path = lambda: virus
+    controller._icap_include_path = lambda: icap
+    controller._managed_icap_runtime_paths = set
+    controller._tcp_listener_accepts = lambda _port: squid_was_running
+    controller._restart_squid_locked = lambda **_kwargs: (
+        restart_ok,
+        "listener restored" if restart_ok else "listener restart failed",
+    )
+
+    def fail_after_mutation(*_args, **_kwargs):
+        virus.write_text("candidate virus\n", encoding="utf-8")
+        icap.write_text("candidate icap\n", encoding="utf-8")
+        return SquidRuntimeMaterializationResult(
+            False,
+            "injected materialization failure",
+            changed=True,
+        )
+
+    controller._materialize_clamav_runtime_files_transaction_locked = (
+        fail_after_mutation
+    )
+    controller._supervisor_reread_update = lambda: (
+        reread_ok,
+        "runtime restored" if reread_ok else "supervisor update failed",
+    )
+    if not restore_files:
+        controller._restore_runtime_file_snapshot = lambda *_args: None
+
+    ok, detail = controller.materialize_clamav_runtime_files("workers 1\n")
+
+    assert ok is False
+    assert "injected materialization failure" in detail
+    expected_prefix = "old" if restore_files else "candidate"
+    assert virus.read_text(encoding="utf-8").startswith(expected_prefix)
+    assert icap.read_text(encoding="utf-8").startswith(expected_prefix)
+    health = controller._transaction_journal().health()
+    assert health.status == expected_status
+    assert health.ready is (
+        reread_ok and restore_files and (not squid_was_running or restart_ok)
+    )
+
+
+def test_materialization_failure_reconciles_proven_absent_direct_files(
+    tmp_path,
+) -> None:
+    from services.squid_core import (  # type: ignore
+        SquidController,
+        SquidRuntimeMaterializationResult,
+    )
+
+    active = tmp_path / "squid.conf"
+    persisted = tmp_path / "persisted.conf"
+    virus = tmp_path / "virus.conf"
+    icap = tmp_path / "20-icap.conf"
+    active.write_text("workers 1\n", encoding="utf-8")
+    persisted.write_text("workers 1\n", encoding="utf-8")
+    controller = SquidController(str(active))
+    controller.persisted_squid_conf_path = str(persisted)
+    controller.normalize_config_text = lambda text: text
+    controller._virus_scan_config_path = lambda: virus
+    controller._icap_include_path = lambda: icap
+    controller._managed_icap_runtime_paths = set
+    controller._tcp_listener_accepts = lambda _port: False
+    controller._supervisor_reread_update = lambda: (True, "runtime restored")
+
+    def fail_after_creation(*_args, **_kwargs):
+        virus.write_text("candidate virus\n", encoding="utf-8")
+        icap.write_text("candidate icap\n", encoding="utf-8")
+        return SquidRuntimeMaterializationResult(
+            False, "injected failure", changed=True
+        )
+
+    controller._materialize_clamav_runtime_files_transaction_locked = (
+        fail_after_creation
+    )
+
+    ok, _detail = controller.materialize_clamav_runtime_files("workers 1\n")
+
+    assert ok is False
+    assert not virus.exists()
+    assert not icap.exists()
+    assert controller._transaction_journal().health().status == "complete"
+
+
+def test_materialization_failure_does_not_reconcile_ambiguous_postrollback_absence(
+    tmp_path,
+) -> None:
+    from services.squid_core import (  # type: ignore
+        SquidController,
+        SquidRuntimeMaterializationResult,
+    )
+
+    active = tmp_path / "squid.conf"
+    persisted = tmp_path / "persisted.conf"
+    virus = tmp_path / "virus.conf"
+    icap = tmp_path / "20-icap.conf"
+    active.write_text("workers 1\n", encoding="utf-8")
+    persisted.write_text("workers 1\n", encoding="utf-8")
+    controller = SquidController(str(active))
+    controller.persisted_squid_conf_path = str(persisted)
+    controller.normalize_config_text = lambda text: text
+    controller._virus_scan_config_path = lambda: virus
+    controller._icap_include_path = lambda: icap
+    controller._managed_icap_runtime_paths = set
+    controller._tcp_listener_accepts = lambda _port: False
+    controller._supervisor_reread_update = lambda: (True, "runtime restored")
+    real_observe = controller._snapshot_runtime_file_for_reconciliation
+    observations = {virus: 0, icap: 0}
+
+    def observe(path):
+        if path in observations:
+            observations[path] += 1
+            if observations[path] > 1:
+                return False, None
+        return real_observe(path)
+
+    controller._snapshot_runtime_file_for_reconciliation = observe
+    controller._restore_runtime_file_snapshot = lambda *_args: None
+
+    def fail_after_creation(*_args, **_kwargs):
+        virus.write_text("candidate virus\n", encoding="utf-8")
+        icap.write_text("candidate icap\n", encoding="utf-8")
+        return SquidRuntimeMaterializationResult(
+            False, "injected failure", changed=True
+        )
+
+    controller._materialize_clamav_runtime_files_transaction_locked = (
+        fail_after_creation
+    )
+
+    ok, detail = controller.materialize_clamav_runtime_files("workers 1\n")
+
+    assert ok is False
+    assert "could not be verified" in detail
+    assert virus.read_text(encoding="utf-8") == "candidate virus\n"
+    assert icap.read_text(encoding="utf-8") == "candidate icap\n"
+    assert controller._transaction_journal().health().status == "recovery_required"
+
+
+def test_materialization_failure_does_not_reconcile_ambiguous_direct_snapshot(
+    tmp_path,
+) -> None:
+    from services.squid_core import (  # type: ignore
+        SquidController,
+        SquidRuntimeMaterializationResult,
+    )
+
+    active = tmp_path / "squid.conf"
+    persisted = tmp_path / "persisted.conf"
+    virus = tmp_path / "virus.conf"
+    icap = tmp_path / "20-icap.conf"
+    active.write_text("workers 1\n", encoding="utf-8")
+    persisted.write_text("workers 1\n", encoding="utf-8")
+    virus.write_text("unreadable pre-state\n", encoding="utf-8")
+    icap.write_text("old icap\n", encoding="utf-8")
+    controller = SquidController(str(active))
+    controller.persisted_squid_conf_path = str(persisted)
+    controller.normalize_config_text = lambda text: text
+    controller._virus_scan_config_path = lambda: virus
+    controller._icap_include_path = lambda: icap
+    controller._managed_icap_runtime_paths = set
+    controller._tcp_listener_accepts = lambda _port: False
+    controller._supervisor_reread_update = lambda: (True, "runtime restored")
+    real_snapshot = controller._snapshot_runtime_file_for_reconciliation
+    controller._snapshot_runtime_file_for_reconciliation = lambda path: (
+        (False, None) if path == virus else real_snapshot(path)
+    )
+
+    def fail_after_mutation(*_args, **_kwargs):
+        virus.write_text("candidate virus\n", encoding="utf-8")
+        icap.write_text("candidate icap\n", encoding="utf-8")
+        return SquidRuntimeMaterializationResult(
+            False, "injected failure", changed=True
+        )
+
+    controller._materialize_clamav_runtime_files_transaction_locked = (
+        fail_after_mutation
+    )
+
+    ok, detail = controller.materialize_clamav_runtime_files("workers 1\n")
+
+    assert ok is False
+    assert "could not be verified" in detail
+    assert virus.read_text(encoding="utf-8") == "candidate virus\n"
+    assert icap.read_text(encoding="utf-8") == "old icap\n"
+    assert controller._transaction_journal().health().status == "recovery_required"
+
+
+def test_reconciliation_snapshot_distinguishes_absence_from_read_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from services.squid_core import SquidController  # type: ignore
+
+    path = tmp_path / "virus.conf"
+    controller = SquidController(str(tmp_path / "squid.conf"))
+    assert controller._snapshot_runtime_file_for_reconciliation(path) == (True, None)
+    path.write_text("existing\n", encoding="utf-8")
+
+    original_read_text = type(path).read_text
+
+    def fail_target_read(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(path), "read_text", fail_target_read)
+
+    assert controller._snapshot_runtime_file_for_reconciliation(path) == (False, None)
+
+
 def test_apply_uses_structured_restart_evidence_not_detail_prose(tmp_path) -> None:
     from services.squid_core import (  # type: ignore
         SquidController,

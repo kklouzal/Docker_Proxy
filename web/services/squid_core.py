@@ -210,6 +210,7 @@ class SquidRuntimeMaterializationResult:
     detail: str
     squid_restarted: bool = False
     changed: bool = False
+    rollback_reconciled: bool = False
 
     def as_tuple(self) -> tuple[bool, str]:
         return self.ok, self.detail
@@ -359,10 +360,11 @@ class SquidController:
         owned: bool,
         ok: bool,
         detail: str,
+        failure_reconciled: bool = False,
     ) -> None:
         if not owned:
             return
-        if ok:
+        if ok or failure_reconciled:
             journal.complete(detail=detail)
         else:
             journal.recovery_required(detail or "Squid lifecycle mutation failed.")
@@ -841,6 +843,18 @@ class SquidController:
         except Exception:
             return None
 
+    def _snapshot_runtime_file_for_reconciliation(
+        self,
+        path: Path,
+    ) -> tuple[bool, str | None]:
+        """Return (captured, content), preserving absence versus read failure."""
+        try:
+            return True, path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return True, None
+        except Exception:
+            return False, None
+
     def _restore_runtime_file_snapshot(self, path: Path, content: str | None) -> None:
         try:
             if content is None:
@@ -1178,6 +1192,7 @@ stdout_logfile_maxbytes=0
                     owned=owned,
                     ok=result.ok,
                     detail=result.detail,
+                    failure_reconciled=result.rollback_reconciled,
                 )
                 return result.as_tuple()
             finally:
@@ -1192,8 +1207,12 @@ stdout_logfile_maxbytes=0
         normalized = self.normalize_config_text(config_text or "")
         virus_path = self._virus_scan_config_path()
         icap_path = self._icap_include_path()
-        old_virus_scan_config = self._snapshot_runtime_file(virus_path)
-        old_icap_include = self._snapshot_runtime_file(icap_path)
+        virus_snapshot_captured, old_virus_scan_config = (
+            self._snapshot_runtime_file_for_reconciliation(virus_path)
+        )
+        icap_snapshot_captured, old_icap_include = (
+            self._snapshot_runtime_file_for_reconciliation(icap_path)
+        )
         old_icap_runtime_files = self._snapshot_managed_icap_runtime_files()
         squid_was_running = any(
             self._tcp_listener_accepts(port)
@@ -1209,13 +1228,17 @@ stdout_logfile_maxbytes=0
 
         recovery_parts = [str(result.detail or "").strip()]
         squid_restarted = False
+        rollback_reconciled = False
         try:
-            self._restore_runtime_file_snapshot(virus_path, old_virus_scan_config)
-            self._restore_runtime_file_snapshot(icap_path, old_icap_include)
+            if virus_snapshot_captured:
+                self._restore_runtime_file_snapshot(virus_path, old_virus_scan_config)
+            if icap_snapshot_captured:
+                self._restore_runtime_file_snapshot(icap_path, old_icap_include)
             self._restore_managed_icap_runtime_files(old_icap_runtime_files)
-            _reread_ok, reread_detail = self._supervisor_reread_update()
+            reread_ok, reread_detail = self._supervisor_reread_update()
             if reread_detail:
                 recovery_parts.append(reread_detail)
+            restart_ok = not squid_was_running
             if squid_was_running:
                 restart_ok, restart_detail = self._restart_squid_locked(
                     ready_timeout=75.0,
@@ -1224,6 +1247,30 @@ stdout_logfile_maxbytes=0
                 if restart_detail:
                     recovery_parts.append(restart_detail)
                 squid_restarted = bool(restart_ok)
+
+            def snapshot_matches(path: Path, expected: str | None) -> bool:
+                captured, observed = self._snapshot_runtime_file_for_reconciliation(
+                    path
+                )
+                return captured and observed == expected
+
+            current_managed_paths = self._managed_icap_runtime_paths()
+            files_restored = (
+                virus_snapshot_captured
+                and snapshot_matches(virus_path, old_virus_scan_config)
+                and icap_snapshot_captured
+                and snapshot_matches(icap_path, old_icap_include)
+                and current_managed_paths == set(old_icap_runtime_files)
+                and all(
+                    expected is not None and snapshot_matches(path, expected)
+                    for path, expected in old_icap_runtime_files.items()
+                )
+            )
+            rollback_reconciled = bool(reread_ok and restart_ok and files_restored)
+            if not files_restored:
+                recovery_parts.append(
+                    "Prior ICAP runtime files could not be verified after rollback."
+                )
         except Exception as exc:
             recovery_parts.append(
                 public_error_message(
@@ -1236,6 +1283,7 @@ stdout_logfile_maxbytes=0
             "\n".join(part for part in recovery_parts if part).strip(),
             squid_restarted=squid_restarted,
             changed=result.changed,
+            rollback_reconciled=rollback_reconciled,
         )
 
     def _materialize_clamav_runtime_files_transaction_locked(
