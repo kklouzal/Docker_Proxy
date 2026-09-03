@@ -74,6 +74,7 @@ class SquidTransactionJournal:
         runtime_paths: Iterable[str | Path] = (),
     ) -> None:
         self.path = Path(path)
+        self.owned_transaction_id = ""
         self.active_config = Path(active_config)
         self.persisted_config = Path(persisted_config)
         self.runtime_paths = tuple(dict.fromkeys(Path(item) for item in runtime_paths))
@@ -247,8 +248,14 @@ class SquidTransactionJournal:
         self._write(payload)
         return payload
 
-    def complete(self, *, detail: str = "", recovered: bool = False) -> None:
-        payload = self._require_active()
+    def complete(
+        self,
+        *,
+        detail: str = "",
+        recovered: bool = False,
+        transaction_id: str = "",
+    ) -> None:
+        payload = self._require_active(transaction_id=transaction_id)
         now = _utc_timestamp()
         payload.update(
             {
@@ -265,11 +272,17 @@ class SquidTransactionJournal:
         self._write(payload)
 
     def recovery_required(
-        self, detail: str, *, phase: str = "recovery_required"
+        self,
+        detail: str,
+        *,
+        phase: str = "recovery_required",
+        transaction_id: str = "",
     ) -> None:
         try:
-            payload = self._require_active()
+            payload = self._require_active(transaction_id=transaction_id)
         except SquidTransactionRecoveryRequiredError:
+            if transaction_id:
+                raise
             now = _utc_timestamp()
             payload = {
                 "schema_version": _SCHEMA_VERSION,
@@ -309,10 +322,17 @@ class SquidTransactionJournal:
             digest.update(b"\n")
         return {"manifest_sha256": digest.hexdigest(), "files": files}
 
-    def _require_active(self) -> dict[str, Any]:
+    def _require_active(self, *, transaction_id: str = "") -> dict[str, Any]:
         payload = self.read()
         if not payload or str(payload.get("status") or "") not in _DIRTY_STATUSES:
             msg = "No active Squid transaction journal is available."
+            raise SquidTransactionRecoveryRequiredError(msg)
+        expected = str(transaction_id or "").strip()
+        if expected and str(payload.get("transaction_id") or "") != expected:
+            msg = (
+                "Squid transaction journal ownership changed while the mutation "
+                "was active; refusing to overwrite the newer transaction."
+            )
             raise SquidTransactionRecoveryRequiredError(msg)
         return payload
 

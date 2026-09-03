@@ -4950,6 +4950,10 @@ class ProxyRuntime:
                         ),
                     ],
                 ).strip()
+                # Materialization may have entered rollback or lost journal
+                # ownership to startup recovery. Re-read the authoritative file
+                # instead of publishing the pre-transaction hash.
+                current_sha = self._current_config_sha()
                 self.registry.mark_apply_result(
                     self.proxy_id,
                     ok=False,
@@ -4967,6 +4971,7 @@ class ProxyRuntime:
                     "cache_cleared": cache_cleared,
                     "config_changed": False,
                     "detail": detail,
+                    "current_config_sha": current_sha,
                     **cert_evidence,
                     **policy_evidence,
                     **adblock_evidence,

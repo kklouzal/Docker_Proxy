@@ -340,11 +340,12 @@ class SquidController:
             _SQUID_TRANSACTION_STATE.depth = depth + 1
             return self._transaction_journal(target_config), False
         journal = self._transaction_journal(target_config)
-        journal.begin(
+        transaction = journal.begin(
             operation,
             intended_phase="mutation_terminal",
             target_config=target_config,
         )
+        journal.owned_transaction_id = str(transaction["transaction_id"])
         _SQUID_TRANSACTION_STATE.depth = 1
         return journal, True
 
@@ -364,10 +365,14 @@ class SquidController:
     ) -> None:
         if not owned:
             return
+        transaction_id = str(getattr(journal, "owned_transaction_id", "") or "")
         if ok or failure_reconciled:
-            journal.complete(detail=detail)
+            journal.complete(detail=detail, transaction_id=transaction_id)
         else:
-            journal.recovery_required(detail or "Squid lifecycle mutation failed.")
+            journal.recovery_required(
+                detail or "Squid lifecycle mutation failed.",
+                transaction_id=transaction_id,
+            )
 
     def _atomic_write_file(self, path: str, content: str) -> None:
         target = Path(path)
@@ -1187,13 +1192,16 @@ stdout_logfile_maxbytes=0
                     config_text,
                     adblock_enabled=adblock_enabled,
                 )
-                self._finish_public_transaction(
-                    journal,
-                    owned=owned,
-                    ok=result.ok,
-                    detail=result.detail,
-                    failure_reconciled=result.rollback_reconciled,
-                )
+                try:
+                    self._finish_public_transaction(
+                        journal,
+                        owned=owned,
+                        ok=result.ok,
+                        detail=result.detail,
+                        failure_reconciled=result.rollback_reconciled,
+                    )
+                except SquidTransactionRecoveryRequiredError as exc:
+                    return False, str(exc)
                 return result.as_tuple()
             finally:
                 self._end_public_transaction_scope(owned)

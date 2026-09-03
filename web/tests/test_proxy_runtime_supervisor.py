@@ -3881,6 +3881,52 @@ def test_public_squid_mutators_refuse_dirty_or_corrupt_journal(
     assert "journal" in result[1].lower()
 
 
+def test_successful_materialization_does_not_overwrite_newer_recovery_transaction(
+    tmp_path,
+) -> None:
+    from services.squid_core import (  # type: ignore
+        SquidController,
+        SquidRuntimeMaterializationResult,
+    )
+
+    active = tmp_path / "squid.conf"
+    persisted = tmp_path / "persisted.conf"
+    active.write_text("workers 1\n", encoding="utf-8")
+    persisted.write_text("workers 1\n", encoding="utf-8")
+    controller = SquidController(str(active))
+    controller.persisted_squid_conf_path = str(persisted)
+    controller.normalize_config_text = lambda text: text
+    controller._transaction_runtime_paths = lambda _text="": []
+
+    def succeed_after_startup_recovery(*_args, **_kwargs):
+        journal = controller._transaction_journal()
+        previous = journal.read()
+        assert previous is not None
+        replacement = dict(previous)
+        replacement["transaction_id"] = "startup-recovery-transaction"
+        replacement["operation"] = "startup_reconciliation"
+        replacement["status"] = "recovery_required"
+        replacement["phase"] = "startup_failed"
+        replacement["recovery_status"] = "required"
+        journal.replace_active(replacement)
+        return SquidRuntimeMaterializationResult(
+            True,
+            "ClamAV runtime files already current.",
+        )
+
+    controller._materialize_clamav_runtime_files_locked = succeed_after_startup_recovery
+
+    ok, detail = controller.materialize_clamav_runtime_files("workers 1\n")
+
+    assert ok is False
+    assert "ownership changed" in detail
+    payload = controller._transaction_journal().read()
+    assert payload is not None
+    assert payload["transaction_id"] == "startup-recovery-transaction"
+    assert payload["status"] == "recovery_required"
+    assert payload["operation"] == "startup_reconciliation"
+
+
 @pytest.mark.parametrize(
     (
         "reread_ok",
