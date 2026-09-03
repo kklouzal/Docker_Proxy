@@ -140,7 +140,11 @@ from services.policy_requests import (
 from services.policy_requests import (
     get_policy_request_store as _default_get_policy_request_store,
 )
-from services.privacy_labels import is_pseudonymized_label, pseudonymize
+from services.privacy_labels import (
+    configure_pseudonym_secret,
+    is_pseudonymized_label,
+    pseudonymize,
+)
 from services.proxy_client import ProxyClientError
 from services.proxy_client import get_proxy_client as _default_get_proxy_client
 from services.proxy_context import (
@@ -2247,6 +2251,8 @@ else:
             "Set FLASK_SECRET_KEY or make FLASK_SECRET_PATH writable."
         )
         raise RuntimeError(msg) from exc
+
+configure_pseudonym_secret(app.secret_key)
 
 # Cookie hardening. Plain HTTP remains supported, while cookies emitted by the
 # first-class HTTPS runtime (or an HTTPS WSGI request) are always Secure.
