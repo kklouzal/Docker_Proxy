@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 DEFAULT_LOG_TAIL_BYTES = 256 * 1024
+LOG_TAIL_SNAPSHOT_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -38,23 +40,45 @@ def _tail_bytes(
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     directory_fd = os.open(base, directory_flags)
     try:
-        fd = os.open(
-            relative_path,
-            os.O_RDONLY | os.O_NOFOLLOW,
-            dir_fd=directory_fd,
-        )
+        for _attempt in range(LOG_TAIL_SNAPSHOT_ATTEMPTS):
+            fd = os.open(
+                relative_path,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=directory_fd,
+            )
+            with os.fdopen(fd, "rb", closefd=True) as handle:
+                before = os.fstat(handle.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    message = "allowlisted log path is not a regular file"
+                    raise OSError(message)
+
+                size = before.st_size
+                offset = max(0, size - max_bytes)
+                previous_byte = b""
+                if offset > 0:
+                    handle.seek(offset - 1)
+                    previous_byte = handle.read(1)
+                handle.seek(offset)
+                raw = handle.read(max_bytes)
+                after = os.fstat(handle.fileno())
+
+            snapshot_fields = (
+                "st_dev",
+                "st_ino",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+            )
+            if all(
+                getattr(before, field) == getattr(after, field)
+                for field in snapshot_fields
+            ):
+                break
+        else:
+            message = "allowlisted log changed while its tail was being read"
+            raise OSError(message)
     finally:
         os.close(directory_fd)
-
-    with os.fdopen(fd, "rb", closefd=True) as handle:
-        size = os.fstat(handle.fileno()).st_size
-        offset = max(0, size - max_bytes)
-        previous_byte = b""
-        if offset > 0:
-            handle.seek(offset - 1)
-            previous_byte = handle.read(1)
-        handle.seek(offset)
-        raw = handle.read(max_bytes)
     if offset > 0 and previous_byte != b"\n":
         _partial, separator, remainder = raw.partition(b"\n")
         raw = remainder if separator else b""

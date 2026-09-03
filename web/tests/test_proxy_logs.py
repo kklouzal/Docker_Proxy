@@ -92,9 +92,10 @@ def test_proxy_log_max_bytes_parser_bounds_operator_input() -> None:
     assert proxy_logs.parse_proxy_log_max_bytes("not-an-int") == (
         proxy_logs.DEFAULT_LOG_TAIL_BYTES
     )
-    assert proxy_logs.parse_proxy_log_max_bytes(
-        str(proxy_logs.DEFAULT_LOG_TAIL_BYTES + 1)
-    ) == proxy_logs.DEFAULT_LOG_TAIL_BYTES
+    assert (
+        proxy_logs.parse_proxy_log_max_bytes(str(proxy_logs.DEFAULT_LOG_TAIL_BYTES + 1))
+        == proxy_logs.DEFAULT_LOG_TAIL_BYTES
+    )
 
 
 def test_proxy_logs_clamps_unsafe_max_bytes_values(monkeypatch, tmp_path) -> None:
@@ -180,6 +181,68 @@ def test_proxy_logs_rejects_symlink_swap_between_validation_and_open(
     assert payload["status"] == "unavailable"
     assert payload["content"] == ""
     assert "secret" not in str(payload)
+
+
+def test_proxy_logs_rejects_fifo_swap_without_blocking(monkeypatch, tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    log_path = log_dir / "access.log"
+    log_path.write_text("safe\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+
+    real_open = proxy_logs.os.open
+    swapped = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == "access.log" and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            log_path.unlink()
+            proxy_logs.os.mkfifo(log_path)
+            assert flags & proxy_logs.os.O_NONBLOCK
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(proxy_logs.os, "open", swapping_open)
+
+    payload = proxy_logs.read_proxy_log("access")
+
+    assert swapped is True
+    assert payload["ok"] is False
+    assert payload["status"] == "unavailable"
+    assert payload["content"] == ""
+    assert "not a regular file" in payload["detail"]
+
+
+def test_proxy_logs_retries_copytruncate_before_read(monkeypatch, tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    log_path = log_dir / "access.log"
+    original = "old first line\nold second line\n"
+    replacement = "new tail\n"
+    log_path.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+
+    real_fstat = proxy_logs.os.fstat
+    regular_file_stats = 0
+
+    def truncating_fstat(fd):
+        nonlocal regular_file_stats
+        result = real_fstat(fd)
+        if proxy_logs.stat.S_ISREG(result.st_mode):
+            regular_file_stats += 1
+            if regular_file_stats == 1:
+                log_path.write_text(replacement, encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(proxy_logs.os, "fstat", truncating_fstat)
+
+    payload = proxy_logs.read_proxy_log("access")
+
+    assert payload["ok"] is True
+    assert payload["content"] == replacement
+    assert payload["size_bytes"] == len(replacement)
+    assert payload["truncated"] is False
+    assert regular_file_stats == 4
 
 
 def test_proxy_logs_missing_allowlisted_file_is_graceful(monkeypatch, tmp_path) -> None:
