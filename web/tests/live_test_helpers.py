@@ -55,6 +55,48 @@ class LiveStackConfig:
     poll_interval_seconds: float
 
 
+def assert_adblock_revision_enforcement_ready(
+    *,
+    sync_payload: dict[str, Any],
+    revision: Any,
+    active_revision: Any,
+    application: Any,
+) -> None:
+    """Require exact active/runtime/apply evidence for a live adblock revision."""
+    revision_id = int(getattr(revision, "revision_id", 0) or 0)
+    artifact_sha256 = str(getattr(revision, "artifact_sha256", "") or "")
+    assert revision_id > 0
+    assert re.fullmatch(r"[0-9a-f]{64}", artifact_sha256)
+
+    assert active_revision is not None
+    assert getattr(active_revision, "revision_id", None) == revision_id
+    assert getattr(active_revision, "artifact_sha256", None) == artifact_sha256
+
+    assert sync_payload.get("adblock_revision_id") == revision_id
+    assert sync_payload.get("artifact_sha256") == artifact_sha256
+    assert sync_payload.get("current_adblock_artifact_sha256") == artifact_sha256
+    assert sync_payload.get("adblock_runtime_enabled") == "1"
+
+    assert application is not None
+    assert getattr(application, "revision_id", None) == revision_id
+    assert getattr(application, "ok", None) is True
+    assert getattr(application, "artifact_sha256", None) == artifact_sha256
+    assert sync_payload.get("adblock_application_id") == getattr(
+        application, "application_id", None
+    )
+
+    detail = str(sync_payload.get("detail") or "")
+    adblock_changed = sync_payload.get("adblock_changed")
+    assert adblock_changed is True or adblock_changed is False
+    if adblock_changed:
+        assert "Squid reconfigured for policy update." in detail
+    else:
+        # The periodic proxy agent can apply a just-published revision before the
+        # test's explicit sync. Accept only the runtime's exact converged no-op
+        # contract in addition to the revision/hash/application evidence above.
+        assert "Proxy is already using the active adblock artifact." in detail
+
+
 LIVE_CONFIG = LiveStackConfig(
     enabled=_env_bool("LIVE_TEST_ENABLE"),
     primary_proxy_id=_env_text("LIVE_TEST_PRIMARY_PROXY_ID", "live"),

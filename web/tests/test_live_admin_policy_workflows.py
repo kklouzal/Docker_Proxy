@@ -12,6 +12,7 @@ from .live_test_helpers import (
     LIVE_CONFIG,
     LiveStackClient,
     _live_poll_sleep,
+    assert_adblock_revision_enforcement_ready,
     query_params,
     unique_domain,
     unique_token,
@@ -1063,13 +1064,17 @@ def test_live_adblock_enforces_compiled_artifact_and_allow_exception(
         )
 
         sync_payload = _sync_primary_proxy(admin_client)
-        apply_row = artifacts.latest_apply(LIVE_CONFIG.primary_proxy_id)
-        assert apply_row is not None
-        assert apply_row.revision_id == revision.revision_id
-        assert apply_row.ok is True
-
-        sync_detail = sync_payload.get("detail", "")
-        assert "Squid reconfigured for policy update." in sync_detail
+        active_revision = artifacts.get_active_artifact_metadata()
+        apply_row = artifacts.latest_apply(
+            LIVE_CONFIG.primary_proxy_id,
+            revision_id=revision.revision_id,
+        )
+        assert_adblock_revision_enforcement_ready(
+            sync_payload=sync_payload,
+            revision=revision,
+            active_revision=active_revision,
+            application=apply_row,
+        )
 
         blocked = _wait_for_proxy_status(admin_client, blocked_path, 403)
         assert "ERR_ACCESS_DENIED" in blocked.text or "Access Denied" in blocked.text
