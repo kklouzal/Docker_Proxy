@@ -26,6 +26,7 @@ class _ValidationConn:
         missing_indexes=(),
         duplicate_ops: int = 0,
         schema_checksum: str | None = None,
+        corrupt_history_version: int | None = None,
         terminal_claims: int = 0,
         orphan_application_owners: int = 0,
         invalid_config_applications: int = 0,
@@ -50,6 +51,7 @@ class _ValidationConn:
         self.indexes = set(module._REQUIRED_INDEXES) - set(missing_indexes)
         self.duplicate_ops = duplicate_ops
         self.schema_checksum = schema_checksum or module.latest_schema_checksum()
+        self.corrupt_history_version = corrupt_history_version
         self.terminal_claims = terminal_claims
         self.orphan_application_owners = orphan_application_owners
         self.invalid_config_applications = invalid_config_applications
@@ -88,6 +90,25 @@ class _ValidationConn:
                 ],
             )
         if "from schema_migrations" in text:
+            if "where version between" in text:
+                from services import schema_lifecycle
+
+                return _Result(
+                    [
+                        {
+                            "version": spec.version,
+                            "name": spec.name,
+                            "checksum": spec.checksum,
+                            "status": (
+                                "failed"
+                                if spec.version == self.corrupt_history_version
+                                else "applied"
+                            ),
+                            "error": "",
+                        }
+                        for spec in schema_lifecycle._migration_specs()
+                    ]
+                )
             return _Result(
                 [{"status": "applied", "checksum": self.schema_checksum, "error": ""}]
             )
@@ -302,6 +323,18 @@ def test_mysql_state_validation_fails_missing_operation_progress_index() -> None
         and "proxy_operations.idx_proxy_operations_proxy_started_id" in error
         for error in result.errors
     )
+
+
+def test_mysql_state_validation_fails_corrupt_earlier_migration_history() -> None:
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(mysql_state_validation, corrupt_history_version=1),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert any("schema migration 1 is not applied" in error for error in result.errors)
 
 
 def test_mysql_state_validation_fails_invalid_schema_checksum() -> None:

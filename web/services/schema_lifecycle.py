@@ -163,7 +163,7 @@ def schema_migration_in_progress() -> bool:
     return bool(getattr(_MIGRATION_CONTEXT, "active", False))
 
 
-def _schema_history_error(conn: Any) -> str | None:
+def schema_history_error(conn: Any) -> str | None:
     rows = conn.execute(
         """
         SELECT version, name, checksum, status, error
@@ -189,7 +189,7 @@ def _schema_history_error(conn: Any) -> str | None:
 
 def runtime_schema_current_applied(conn: Any) -> bool:
     try:
-        return _schema_history_error(conn) is None
+        return schema_history_error(conn) is None
     except DATABASE_ERRORS as exc:
         if mysql_error_code(exc) == 1146:
             return False
@@ -1829,7 +1829,7 @@ def assert_schema_current(conn: Any | None = None) -> None:
     owns_connection = conn is None
     active_conn = connect() if owns_connection else conn
     try:
-        history_error = _schema_history_error(active_conn)
+        history_error = schema_history_error(active_conn)
         if history_error is not None:
             msg = (
                 f"{history_error}. Run startup schema migrations with a DDL-capable "

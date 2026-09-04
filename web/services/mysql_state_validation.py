@@ -7,7 +7,11 @@ from typing import Any
 
 from services.db import connect
 from services.row_access import row_value as _row_value
-from services.schema_lifecycle import latest_schema_checksum, latest_schema_version
+from services.schema_lifecycle import (
+    latest_schema_checksum,
+    latest_schema_version,
+    schema_history_error,
+)
 
 _REQUIRED_TABLES: tuple[str, ...] = (
     "schema_migrations",
@@ -282,6 +286,10 @@ def validate_mysql_state(
         if missing_tables:
             result.error("missing required MySQL tables: " + ", ".join(missing_tables))
             return result
+
+        history_error = schema_history_error(active_conn)
+        if history_error is not None:
+            result.error(history_error)
 
         latest = latest_schema_version()
         row = active_conn.execute(
