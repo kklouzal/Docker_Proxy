@@ -1,6 +1,6 @@
 services:
   mysql-test:
-    image: mysql:8.4
+    image: mysql:26.7
     command:
       - --max-allowed-packet=${LIVE_TEST_MYSQL_MAX_ALLOWED_PACKET:-256M}
     environment:
