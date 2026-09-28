@@ -2,7 +2,7 @@ name: squid-flask-proxy
 
 services:
   mysql:
-    image: ${MYSQL_IMAGE:-mysql:8.4}
+    image: ${MYSQL_IMAGE:-mysql:9.6}
     restart: unless-stopped
     command:
       - --character-set-server=utf8mb4
