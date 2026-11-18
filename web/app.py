@@ -71,6 +71,7 @@ from services.config_revisions import ConfigApplication, ConfigRevisionMetadata
 from services.config_revisions import (
     get_config_revisions as _default_get_config_revisions,
 )
+from services.db import DATABASE_ERRORS
 from services.diagnostic_store import (
     get_diagnostic_store as _default_get_diagnostic_store,
 )
@@ -95,7 +96,7 @@ from services.housekeeping import (
     stop_housekeeping,
 )
 from services.http_optimizations import install_http_optimizations
-from services.logutil import log_exception_throttled
+from services.logutil import log_database_unavailable, log_exception_throttled
 from services.observability_maintenance import (
     ObservabilityMaintenanceAlreadyRunningError,
 )
@@ -2373,6 +2374,18 @@ def _is_logged_in() -> bool:
         return False
     try:
         current_version = _auth_store.get_user_session_version(u)
+    except DATABASE_ERRORS as exc:
+        # Fail closed for this request, but keep the session: it is revalidated
+        # against the current credential version once MySQL answers again, so
+        # an outage must not log every administrator out.
+        log_database_unavailable(
+            app.logger,
+            "web.app.local_session_validation",
+            "Local administrator session validation deferred while MySQL is unavailable",
+            exc,
+            interval_seconds=60.0,
+        )
+        abort(503, description="The Admin UI database is temporarily unavailable.")
     except Exception:
         app.logger.exception("Failed to validate local administrator session")
         session.clear()
