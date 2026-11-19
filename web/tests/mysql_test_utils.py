@@ -258,6 +258,7 @@ def restore_runtime_modules() -> bool:
         return False
     _MODULE_SNAPSHOT = None
     _LOADED_ENV = False
+    _close_discarded_db_module(snapshot.get("services.db"))
     for module_name in [name for name in sys.modules if _is_runtime_module(name)]:
         if module_name not in snapshot:
             _detach_from_package(module_name)
@@ -272,6 +273,19 @@ def restore_runtime_modules() -> bool:
         if package is not None:
             setattr(package, attr_name, module)
     return True
+
+
+def _close_discarded_db_module(original: Any) -> None:
+    # The re-imported services.db owns its own connection pool and connect
+    # circuit (probe thread). Release them before the module is dropped, or
+    # every MySQL test strands idle connections until the server runs out
+    # (1040 Too many connections).
+    fresh = sys.modules.get("services.db")
+    if fresh is None or fresh is original:
+        return
+    reset = getattr(fresh, "reset_mysql_ready_for_tests", None)
+    if callable(reset):
+        reset()
 
 
 def _detach_from_package(module_name: str) -> None:
