@@ -2184,6 +2184,8 @@ def test_public_pac_listener_runs_apart_from_management_and_loads_no_database() 
     assert "PAC_HTTP_PORT" in public
     assert "proxy.public_app:app" in public
     assert "PAC_WEB_THREADS" in public
+    # Both gunicorn masters would otherwise claim the same default socket.
+    assert "--no-control-socket" in public
 
     probe = (
         "import sys; import proxy.public_app; "
