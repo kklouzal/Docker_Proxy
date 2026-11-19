@@ -190,6 +190,8 @@ class FakeRegistry:
             )
             for proxy_id in configured_proxy_ids
         ]
+        self.default_proxy_id: str | None = None
+        self.default_changes: list[str] = []
 
     def _proxy(
         self,
@@ -238,6 +240,32 @@ class FakeRegistry:
         if not self.proxies:
             self.proxies.append(self._proxy("default"))
         return self.proxies[0]
+
+    def default_proxy_selection(
+        self, *, max_age_seconds: float = 5.0
+    ) -> tuple[str, str]:
+        del max_age_seconds
+        if self.default_proxy_id is not None:
+            return self.default_proxy_id, "admin"
+        return "default", "environment"
+
+    def effective_default_proxy_id(self) -> str:
+        return self.default_proxy_selection()[0]
+
+    def set_default_proxy(self, proxy_id: object | None) -> Any:
+        key = str(proxy_id or "default")
+        proxy = self.get_proxy(key)
+        if proxy is None or proxy.status in {"removing", "remove_pending"}:
+            msg = f"Proxy {key!r} is not registered."
+            raise ValueError(msg)
+        previous = self.effective_default_proxy_id()
+        self.default_proxy_id = key
+        self.default_changes.append(key)
+        return SimpleNamespace(
+            previous_proxy_id=previous,
+            proxy_id=key,
+            changed=previous != key,
+        )
 
     def get_proxy(self, proxy_id: object | None) -> Any | None:
         key = str(proxy_id or "default")

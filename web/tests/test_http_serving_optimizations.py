@@ -34,6 +34,9 @@ class CountingRegistry:
     def ensure_default_proxy(self):
         return self._inner.ensure_default_proxy()
 
+    def effective_default_proxy_id(self):
+        return self._inner.effective_default_proxy_id()
+
     def get_proxy(self, proxy_id):
         self.get_calls += 1
         return self._inner.get_proxy(proxy_id)

@@ -53,6 +53,16 @@ from services.url_validation import (
 )
 
 _PROXY_REGISTRY_REMOVAL_LOCK_NAME = "docker_proxy:proxy_registry:remove"
+# Bounds how long another Admin UI worker may keep serving the previous
+# effective default after a change; the changing worker invalidates at once.
+_DEFAULT_PROXY_CACHE_TTL_SECONDS = 5.0
+_DEFAULT_PROXY_SELECTION_DDL = """
+CREATE TABLE IF NOT EXISTS proxy_default_selection (
+    id TINYINT PRIMARY KEY,
+    default_proxy_id VARCHAR(64) NOT NULL,
+    updated_ts BIGINT NOT NULL
+)
+"""
 
 
 def _is_mysql_error_code(exc: BaseException, codes: set[int]) -> bool:
@@ -421,6 +431,16 @@ class ProxyInstance:
 
 
 @dataclass(frozen=True)
+class DefaultProxyChange:
+    previous_proxy_id: str
+    proxy_id: str
+
+    @property
+    def changed(self) -> bool:
+        return self.previous_proxy_id != self.proxy_id
+
+
+@dataclass(frozen=True)
 class ProxyRemovalResult:
     proxy_id: str
     deleted_rows: int
@@ -450,6 +470,9 @@ class ProxyRegistry:
         self._schema_ready = False
         self._schema_lock = threading.Lock()
         self._columns_cache: dict[str, set[str]] = {}
+        self._default_cache_lock = threading.Lock()
+        self._default_cache: tuple[float, str, str] | None = None
+        self._default_cache_generation = 0
 
     def _connect(self):
         return connect()
@@ -542,6 +565,7 @@ class ProxyRegistry:
                             )
                             """,
                         )
+                        conn.execute(_DEFAULT_PROXY_SELECTION_DDL)
                         ensure_lifecycle_schema(conn)
                         self._columns_cache.pop("proxy_instances", None)
                         self._columns_cache["proxy_instances"] = self._existing_columns(
@@ -755,11 +779,135 @@ class ProxyRegistry:
         return instance
 
     def ensure_default_proxy(self) -> ProxyInstance:
-        default_id = get_default_proxy_id()
-        return self.ensure_proxy(
-            default_id,
-            display_name=os.environ.get("DEFAULT_PROXY_NAME") or default_id,
+        default_id, source = self.default_proxy_selection()
+        display_name = default_id
+        if source == "environment":
+            display_name = os.environ.get("DEFAULT_PROXY_NAME") or default_id
+        return self.ensure_proxy(default_id, display_name=display_name)
+
+    @staticmethod
+    def _stored_default_proxy_id(conn, *, lock_clause: str = "") -> str | None:
+        """Read the Admin UI default selection; None when never chosen.
+
+        ``lock_clause`` (`` FOR SHARE``/`` FOR UPDATE``) makes it a current
+        read so lifecycle guards see the latest committed selection rather than
+        a transaction snapshot, all taken after the proxy_instances row locks.
+        """
+        row = conn.execute(
+            "SELECT default_proxy_id FROM proxy_default_selection WHERE id=1"
+            + lock_clause,
+        ).fetchone()
+        if row is None:
+            return None
+        raw = str(row["default_proxy_id"] or "").strip()
+        return normalize_proxy_id(raw) if raw else None
+
+    def _locked_default_proxy_id(self, conn) -> str:
+        """Return the effective default inside a lifecycle transaction."""
+        return self._stored_default_proxy_id(conn, lock_clause=" FOR SHARE") or (
+            get_default_proxy_id()
         )
+
+    def default_proxy_selection(
+        self,
+        *,
+        max_age_seconds: float = _DEFAULT_PROXY_CACHE_TTL_SECONDS,
+    ) -> tuple[str, str]:
+        """Return ``(proxy_id, source)`` for the Admin UI default proxy.
+
+        The MySQL selection is authoritative once an administrator chooses a
+        default (source ``"admin"``); until then the process environment
+        (``DEFAULT_PROXY_ID`` precedence) is the bootstrap (source
+        ``"environment"``). Database errors propagate instead of silently
+        falling back to the environment, so an outage cannot retarget the UI
+        to a different proxy scope.
+        """
+        now = time.monotonic()
+        with self._default_cache_lock:
+            cached = self._default_cache
+            generation = self._default_cache_generation
+        if cached is not None and now - cached[0] <= max(0.0, max_age_seconds):
+            return cached[1], cached[2]
+        self.init_db()
+        with self._connect() as conn:
+            stored = self._stored_default_proxy_id(conn)
+        selection = (
+            (stored, "admin") if stored else (get_default_proxy_id(), "environment")
+        )
+        with self._default_cache_lock:
+            if generation == self._default_cache_generation:
+                self._default_cache = (now, *selection)
+        return selection
+
+    def effective_default_proxy_id(self) -> str:
+        return self.default_proxy_selection()[0]
+
+    def _invalidate_default_cache(self) -> None:
+        with self._default_cache_lock:
+            self._default_cache = None
+            self._default_cache_generation += 1
+
+    def set_default_proxy(self, proxy_id: object | None) -> DefaultProxyChange:
+        """Persist ``proxy_id`` as the Admin UI default proxy.
+
+        The target's lifecycle lock serializes this with removal and rename of
+        the same proxy, so a proxy that is being removed or renamed can never
+        become the default, and a default cannot be removed or renamed.
+        """
+        self.init_db()
+        proxy_key = normalize_proxy_id(proxy_id)
+        change: DefaultProxyChange | None = None
+
+        def _set() -> None:
+            nonlocal change
+            with self._connect() as conn:
+                with mysql_advisory_lock(
+                    conn,
+                    self._lifecycle_lock_name(proxy_key),
+                    mysql_schema_lock_timeout_seconds(),
+                ):
+                    row = conn.execute(
+                        "SELECT proxy_id, status FROM proxy_instances WHERE proxy_id=%s LIMIT 1 FOR SHARE",
+                        (proxy_key,),
+                    ).fetchone()
+                    if row is None:
+                        msg = f"Proxy {proxy_key!r} is not registered."
+                        raise ValueError(msg)
+                    status = str(row["status"] or "")
+                    if status in {"removing", "remove_pending"}:
+                        msg = (
+                            f"Proxy {proxy_key!r} is being removed and cannot "
+                            "become the default."
+                        )
+                        raise ValueError(msg)
+                    self._ensure_not_tombstoned(conn, proxy_key)
+                    # FOR UPDATE (not SHARE) so concurrent changes queue
+                    # instead of deadlocking on the share-to-exclusive upgrade.
+                    previous = self._stored_default_proxy_id(
+                        conn, lock_clause=" FOR UPDATE"
+                    )
+                    if previous is None:
+                        previous = get_default_proxy_id()
+                    conn.execute(
+                        """
+                        INSERT INTO proxy_default_selection(id, default_proxy_id, updated_ts)
+                        VALUES(1,%s,%s)
+                        ON DUPLICATE KEY UPDATE default_proxy_id=VALUES(default_proxy_id), updated_ts=VALUES(updated_ts)
+                        """,
+                        (proxy_key, int(time.time())),
+                    )
+                    conn.commit()
+                    change = DefaultProxyChange(
+                        previous_proxy_id=previous,
+                        proxy_id=proxy_key,
+                    )
+
+        try:
+            run_mysql_operation_with_retry(_set)
+        finally:
+            self._invalidate_default_cache()
+        assert change is not None
+        return change
 
     def get_proxy(self, proxy_id: object | None) -> ProxyInstance | None:
         self.init_db()
@@ -969,7 +1117,7 @@ class ProxyRegistry:
                             return
                         msg = f"Proxy {old_key!r} is not registered."
                         raise ValueError(msg)
-                    default_proxy_id = get_default_proxy_id()
+                    default_proxy_id = self._locked_default_proxy_id(conn)
                     if default_proxy_id in {old_key, new_key}:
                         msg = f"Default proxy {default_proxy_id!r} cannot be renamed."
                         raise ValueError(msg)
@@ -1198,7 +1346,7 @@ class ProxyRegistry:
                             return
                         msg = f"Proxy {proxy_key!r} is not registered."
                         raise ValueError(msg)
-                    if proxy_key == get_default_proxy_id():
+                    if proxy_key == self._locked_default_proxy_id(conn):
                         msg = f"Default proxy {proxy_key!r} cannot be removed."
                         raise ValueError(msg)
                     if len(rows) <= 1:

@@ -1187,6 +1187,8 @@ class _RegistryFaultConn:
             return _FaultResult()
         if text.startswith("CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones"):
             return _FaultResult()
+        if text.startswith("SELECT default_proxy_id FROM proxy_default_selection"):
+            return _FaultResult()
         if "FROM proxy_instances WHERE proxy_id=%s" in text and "FOR UPDATE" in text:
             row = self.proxy_rows.get(str(params[0]))
             return _FaultResult(row)

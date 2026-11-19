@@ -236,8 +236,20 @@ PROXY_PUBLIC_PAC_URL=http://site-a-proxy-1.example.com/proxy.pac
 PROXY_MANAGEMENT_URL=http://site-a-proxy-1.example.com:5000
 ```
 
-Set `DEFAULT_PROXY_ID` only on the admin UI host to choose the initial UI
-selection. Do not reuse the same `PROXY_INSTANCE_ID` on multiple proxy hosts;
+The Admin UI default proxy is the initial selection for new admin sessions and
+the one registration that cannot be removed or renamed. Choose it on the
+**Proxies** page with **Make default** (admin login and CSRF required; each
+change is audited as `proxy_default_set`). The choice is stored in MySQL
+(`proxy_default_selection`) and is authoritative from then on. Until a default
+has been chosen, the admin UI's `DEFAULT_PROXY_ID` (then `PROXY_INSTANCE_ID`,
+`PROXY_ID`, `default`) is used as the bootstrap default; after a choice exists,
+`DEFAULT_PROXY_ID` on the admin UI no longer changes the default. Admin UI
+workers cache the selection for at most 5 seconds. If MySQL is unavailable the
+admin UI does not fall back to `DEFAULT_PROXY_ID`; it fails like the rest of
+the MySQL-backed UI. A proxy container's runtime identity never depends on
+this setting: its own `DEFAULT_PROXY_ID`/`PROXY_INSTANCE_ID` stay authoritative
+and keep working without MySQL. To retire the current default, make another registered proxy
+the default first, then rename or remove the old one. Do not reuse the same `PROXY_INSTANCE_ID` on multiple proxy hosts;
 registration, heartbeat, queued operations, PAC metadata, and health status are
 keyed by that ID. If `PROXY_PUBLIC_PAC_URL` points at a non-default path such as
 `/wpad.dat` or a reverse-proxy route, generated PAC metadata preserves that

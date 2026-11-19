@@ -31,7 +31,7 @@ from services.sql_identifiers import normalize_mysql_identifier
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 31
+_SCHEMA_VERSION = 32
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -1684,6 +1684,22 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                     "adblock_events",
                     "decision_reason",
                     "ALTER TABLE adblock_events ADD COLUMN decision_reason VARCHAR(64) NOT NULL DEFAULT '' AFTER decision_action",
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=32,
+            name="admin_default_proxy_selection",
+            tables=(
+                SchemaObjectSpec(
+                    "proxy_default_selection",
+                    """
+                    CREATE TABLE IF NOT EXISTS proxy_default_selection (
+                        id TINYINT PRIMARY KEY,
+                        default_proxy_id VARCHAR(64) NOT NULL,
+                        updated_ts BIGINT NOT NULL
+                    )
+                    """,
                 ),
             ),
         ),

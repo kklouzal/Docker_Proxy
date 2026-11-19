@@ -2403,7 +2403,7 @@ def _query_flag(value: bool) -> str | None:
 
 
 _FLEET_MANAGEMENT_ENDPOINTS = frozenset(
-    {"proxies", "remove_proxy", "reconcile_proxy_identity"},
+    {"proxies", "remove_proxy", "reconcile_proxy_identity", "set_default_proxy"},
 )
 _NON_PROXY_CONTEXT_ENDPOINTS = frozenset(
     {
@@ -2424,6 +2424,7 @@ _NON_PROXY_LINK_ENDPOINTS = frozenset(
         "recover_admin_session",
         "remove_proxy",
         "reconcile_proxy_identity",
+        "set_default_proxy",
     },
 )
 
@@ -3407,6 +3408,21 @@ def _proxy_inventory_or_default(registry: Any) -> list[Any]:
     return proxies
 
 
+def _admin_default_proxy_id(registry: Any) -> str:
+    """Return the Admin UI default proxy (MySQL selection, else env bootstrap)."""
+    return normalize_proxy_id(registry.effective_default_proxy_id())
+
+
+def _default_or_first_proxy(registry: Any, proxies: list[Any]) -> Any | None:
+    if not proxies:
+        return None
+    default_id = _admin_default_proxy_id(registry)
+    return next(
+        (proxy for proxy in proxies if proxy.proxy_id == default_id),
+        proxies[0],
+    )
+
+
 def _resolve_proxy_from_inventory(
     registry: Any,
     proxies: list[Any],
@@ -3485,14 +3501,14 @@ def _resolve_selected_proxy_context() -> tuple[str, Any, list[Any]]:
         if requested_proxy is not None:
             session["active_proxy_id"] = normalize_route_proxy_id(requested_proxy)
 
-    preferred = normalize_proxy_id(
-        session.get("active_proxy_id") or get_default_proxy_id()
-    )
     registry = get_proxy_registry()
+    preferred = normalize_proxy_id(
+        session.get("active_proxy_id") or _admin_default_proxy_id(registry)
+    )
     proxies = _proxy_inventory_or_default(registry)
     active_proxy = _resolve_proxy_from_inventory(registry, proxies, preferred)
     if active_proxy is None:
-        active_proxy = proxies[0]
+        active_proxy = _default_or_first_proxy(registry, proxies)
     session["active_proxy_id"] = active_proxy.proxy_id
     return active_proxy.proxy_id, active_proxy, proxies
 
@@ -3538,11 +3554,11 @@ def _inject_proxy_context():
         registry = get_proxy_registry()
         proxies = _proxy_inventory_or_default(registry)
         preferred = normalize_proxy_id(
-            session.get("active_proxy_id") or get_default_proxy_id(),
+            session.get("active_proxy_id") or _admin_default_proxy_id(registry),
         )
         active_proxy = _resolve_proxy_from_inventory(registry, proxies, preferred)
         if active_proxy is None:
-            active_proxy = proxies[0] if proxies else None
+            active_proxy = _default_or_first_proxy(registry, proxies)
         if active_proxy is not None:
             session["active_proxy_id"] = active_proxy.proxy_id
         return {
@@ -6540,6 +6556,49 @@ def remove_proxy():
     )
 
 
+@app.route("/proxies/default", methods=["POST"])
+def set_default_proxy():
+    proxy_id = (request.form.get("proxy_id") or "").strip()
+    if not _is_exact_normalized_proxy_id(proxy_id):
+        return _redirect_to(
+            "proxies",
+            error="1",
+            msg="Default proxy selection requires an exact registered proxy ID.",
+        )
+    registry = get_proxy_registry()
+    try:
+        if proxy_id not in _registered_proxy_ids(registry):
+            return _redirect_to(
+                "proxies",
+                error="1",
+                msg="Default proxy selection requires an exact registered proxy ID.",
+            )
+        change = registry.set_default_proxy(proxy_id)
+    except Exception as exc:
+        _record_audit_event_for_proxy(
+            proxy_id,
+            "proxy_default_set",
+            ok=False,
+            detail=f"proxy_id={proxy_id} error={public_error_message(exc)}",
+        )
+        return _redirect_to("proxies", error="1", msg=public_error_message(exc))
+    _record_audit_event_for_proxy(
+        change.proxy_id,
+        "proxy_default_set",
+        ok=True,
+        detail=f"previous_proxy_id={change.previous_proxy_id} proxy_id={change.proxy_id}",
+    )
+    return _redirect_to(
+        "proxies",
+        default_set="1",
+        msg=(
+            f"{change.proxy_id} is now the default proxy."
+            if change.changed
+            else f"{change.proxy_id} was already the default proxy."
+        ),
+    )
+
+
 @app.route("/proxies", methods=["GET"])
 def proxies():
     active_proxy_id, active_proxy, proxies = _resolve_selected_proxy_context()
@@ -6583,11 +6642,19 @@ def proxies():
             )
         except Exception:
             observability_by_proxy[active_proxy_id] = _present_observability_summary()
+    # The management page reads the selection uncached so it never shows
+    # another worker's stale default.
+    registry = get_proxy_registry()
+    default_proxy_id, default_proxy_source = registry.default_proxy_selection(
+        max_age_seconds=0,
+    )
     return render_template(
         "fleet.html",
         proxies=proxies,
         live_health=live_health,
         observability_by_proxy=observability_by_proxy,
+        default_proxy_id=default_proxy_id,
+        default_proxy_source=default_proxy_source,
     )
 
 

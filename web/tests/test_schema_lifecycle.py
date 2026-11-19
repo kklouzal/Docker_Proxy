@@ -516,10 +516,12 @@ def test_schema_migration_ambiguous_finish_commit_does_not_record_failed() -> No
 
 
 def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
-    all_specs = schema_lifecycle._migration_specs()
+    every_spec = schema_lifecycle._migration_specs()
+    # Positional assertions below cover the stable history through version 31.
+    all_specs = every_spec[:31]
     specs = all_specs[:-7]
-    versions = [spec.version for spec in all_specs]
-    names = {spec.name for spec in all_specs}
+    versions = [spec.version for spec in every_spec]
+    names = {spec.name for spec in every_spec}
 
     assert versions == list(range(1, schema_lifecycle.latest_schema_version() + 1))
     assert {
@@ -552,8 +554,9 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "diagnostic_file_security_policy_attribution",
         "proxy_scoped_adblock_runtime_enablement",
         "adblock_event_policy_attribution",
+        "admin_default_proxy_selection",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 31
+    assert schema_lifecycle.latest_schema_version() == 32
     manual_spec = all_specs[-6]
     assert manual_spec.version == 26
     assert manual_spec.name == "observability_manual_export_preset_contract"
@@ -579,7 +582,7 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
     assert specs[-2].name == "application_ledger_evidence_completion"
     assert specs[-1].version == 24
     assert specs[-1].name == "live_stats_seed_checkpoint"
-    assert schema_lifecycle.latest_schema_checksum() == all_specs[-1].checksum
+    assert schema_lifecycle.latest_schema_checksum() == every_spec[-1].checksum
     assert specs[-9].tables[0].table == "control_plane_identity"
     assert "control_plane_id CHAR(36) NOT NULL" in specs[-9].tables[0].create_sql
     assert specs[-8].tables[0].table == "proxy_recovery_adoptions"
@@ -669,6 +672,16 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "decision_action",
         "decision_reason",
     ]
+    default_selection_spec = every_spec[31]
+    assert default_selection_spec.version == 32
+    assert default_selection_spec.name == "admin_default_proxy_selection"
+    assert default_selection_spec.tables[0].table == "proxy_default_selection"
+    # The column is deliberately not named proxy_id so lifecycle discovery never
+    # treats the singleton selection as proxy-scoped data to rewrite/delete.
+    assert "default_proxy_id VARCHAR(64) NOT NULL" in (
+        default_selection_spec.tables[0].create_sql
+    )
+    assert " proxy_id " not in default_selection_spec.tables[0].create_sql
 
 
 class _ApplicationLedgerEvidenceBackfillConn:
