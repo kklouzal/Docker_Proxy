@@ -26,6 +26,18 @@ class _Result:
         ]
 
 
+class _Rows:
+    def __init__(self, rows) -> None:
+        self.rows = rows
+        self.rowcount = len(rows)
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+    def fetchall(self):
+        return list(self.rows)
+
+
 class _Connection:
     def __init__(self) -> None:
         self.queries: list[tuple[str, tuple[object, ...]]] = []
@@ -42,6 +54,10 @@ class _Connection:
         self.queries.append((compact, params))
         if compact.startswith("UPDATE policy_exceptions SET status='expired'"):
             return _Result(max(0, len(params) - 2))
+        if compact.startswith("SELECT DISTINCT"):
+            return _Rows([{"partition_value": "edge-a"}])
+        if "AS boundary_ts" in compact:
+            return _Result(0, row={"boundary_ts": 900, "boundary_id": 9})
         return _Result(2)
 
 
@@ -83,10 +99,15 @@ def test_control_plane_prune_expires_policy_and_cache_rows(monkeypatch) -> None:
         for query in sql
     )
     assert any(
-        "DELETE target FROM `proxy_operations` AS target" in query
+        query.startswith("DELETE FROM `proxy_operations` AS candidate")
         and "candidate.status IN ('applied','superseded','failed')" in query
-        and "COUNT(*)" in query
+        and "COUNT(*)" not in query
         and "ROW_NUMBER" not in query.upper()
+        for query in sql
+    )
+    assert any(
+        "AS boundary_ts" in query
+        and "newer.status IN ('applied','superseded','failed')" in query
         for query in sql
     )
 
@@ -97,7 +118,11 @@ def test_control_plane_prune_keeps_active_blob_revisions(monkeypatch) -> None:
     class FakeAdblockArtifactStore:
         def prune_revisions(self, *, max_batches=None):
             assert max_batches == 10
-            return 3
+            return adblock_artifacts.AdblockArtifactPruneResult(
+                deleted_rows=3,
+                stripped_archives=2,
+                truncated=True,
+            )
 
     monkeypatch.setattr(
         maintenance,
@@ -123,6 +148,9 @@ def test_control_plane_prune_keeps_active_blob_revisions(monkeypatch) -> None:
     assert result["tables"][0]["table"] == "adblock_artifact_revisions"
     assert result["tables"][0]["status"] == "pruned"
     assert result["tables"][0]["deleted_rows"] == 3
+    assert result["tables"][0]["updated_rows"] == 2
+    assert result["tables"][0]["truncated"] is True
+    assert result["tables"][0]["detail"] == "stripped_archives=2 truncated=true"
 
 
 def test_control_plane_prune_invokes_webcat_stale_build_table_cleanup(
@@ -161,6 +189,7 @@ def test_control_plane_prune_invokes_webcat_stale_build_table_cleanup(
             "updated_rows": 0,
             "maintenance": "drop_stale",
             "detail": "dropped=1 discovered=1",
+            "truncated": False,
         },
     ]
 
@@ -195,6 +224,7 @@ def test_control_plane_prune_reports_webcat_cleanup_noop(monkeypatch) -> None:
             "updated_rows": 0,
             "maintenance": "drop_stale",
             "detail": "disabled",
+            "truncated": False,
         },
     ]
 
@@ -287,21 +317,44 @@ class _RetentionDeleteConnection(_SequencedConnection):
         return super().execute(sql, params)
 
 
+class _KeepNConnection(_SequencedConnection):
+    """Fake for the boundary-based keep-N delete: partitions, boundary, delete, probe."""
+
+    def __init__(
+        self,
+        rowcounts: list[int],
+        *,
+        partitions=("edge-a",),
+        boundary=(500, 50),
+        remaining_victim: bool = False,
+    ) -> None:
+        super().__init__(rowcounts)
+        self.partitions = partitions
+        self.boundary = boundary
+        self.remaining_victim = remaining_victim
+
+    def execute(self, sql, params=()):
+        compact = " ".join(str(sql).split())
+        if compact.startswith("SELECT DISTINCT"):
+            self.queries.append((compact, tuple(params or ())))
+            return _Rows([{"partition_value": value} for value in self.partitions])
+        if "AS boundary_ts" in compact:
+            self.queries.append((compact, tuple(params or ())))
+            row = None
+            if self.boundary is not None:
+                row = {"boundary_ts": self.boundary[0], "boundary_id": self.boundary[1]}
+            return _Result(0, row=row)
+        if compact.startswith("SELECT 1 FROM"):
+            self.queries.append((compact, tuple(params or ())))
+            return _Result(0, row=(1,) if self.remaining_victim else None)
+        return super().execute(sql, params)
+
+
 def test_control_plane_keep_n_exact_cap_with_remaining_victim_is_truncated(
     monkeypatch,
 ) -> None:
-    pending = [
-        _SequencedConnection([2]),
-        _RetentionDeleteConnection([1], remaining_victim=True),
-    ]
-    used: list[_SequencedConnection] = []
-
-    def connect():
-        conn = pending.pop(0)
-        used.append(conn)
-        return conn
-
-    monkeypatch.setattr(maintenance, "connect", connect)
+    conn = _KeepNConnection([2, 1], remaining_victim=True)
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
     monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 2)
     monkeypatch.setattr(maintenance, "default_max_rows", lambda: 3)
 
@@ -318,30 +371,37 @@ def test_control_plane_keep_n_exact_cap_with_remaining_victim_is_truncated(
     assert result.deleted_rows == 3
     assert result.iterations == 2
     assert result.truncated is True
-    first_sql, first_params = used[0].queries[0]
-    assert first_sql.startswith("DELETE target FROM `proxy_operations` AS target")
-    assert "ROW_NUMBER" not in first_sql.upper()
-    assert " OFFSET " not in first_sql.upper()
-    assert "newer.`proxy_id` = candidate.`proxy_id`" in first_sql
+    statements = [query for query, _params in conn.queries]
+    params = [params for _query, params in conn.queries]
+    assert statements[0].startswith("SELECT DISTINCT `proxy_id`")
+    boundary_sql = statements[1]
     assert (
-        "ORDER BY candidate.`updated_ts` ASC, candidate.`id` ASC LIMIT %s" in first_sql
+        "FROM `proxy_operations` AS newer WHERE newer.`proxy_id` = %s" in boundary_sql
     )
-    assert first_params == (1234, 5, 2)
-    probe_sql, probe_params = used[1].queries[1]
-    assert probe_sql.startswith("SELECT 1 FROM `proxy_operations` AS candidate")
-    assert "newer.`proxy_id` = candidate.`proxy_id`" in probe_sql
-    assert "candidate.status IN ('applied','superseded','failed')" in probe_sql
-    assert "newer.status IN ('applied','superseded','failed')" in probe_sql
-    assert " OFFSET " not in probe_sql.upper()
-    assert "ROW_NUMBER" not in probe_sql.upper()
-    assert probe_params == (1234, 5)
-    assert [conn.committed for conn in used] == [True, True]
+    assert "newer.status IN ('applied','superseded','failed')" in boundary_sql
+    assert boundary_sql.endswith(
+        "ORDER BY newer.`updated_ts` DESC, newer.`id` DESC LIMIT 1 OFFSET %s"
+    )
+    assert params[1] == ("edge-a", 4)
+    delete_sql = statements[2]
+    assert delete_sql.startswith("DELETE FROM `proxy_operations` AS candidate WHERE")
+    assert "candidate.status IN ('applied','superseded','failed')" in delete_sql
+    assert "COUNT(*)" not in delete_sql
+    assert "ROW_NUMBER" not in delete_sql.upper()
+    assert delete_sql.endswith(
+        "ORDER BY candidate.`updated_ts` ASC, candidate.`id` ASC LIMIT %s"
+    )
+    assert params[2] == ("edge-a", 1234, 500, 500, 50, 2)
+    # Second chunk re-reads the boundary before deleting, then probes at the cap.
+    assert "AS boundary_ts" in statements[3]
+    assert statements[5].startswith("SELECT 1 FROM `proxy_operations` AS candidate")
+    assert params[5] == ("edge-a", 1234, 500, 500, 50)
 
 
 def test_control_plane_keep_n_exact_cap_without_remaining_victim_is_not_truncated(
     monkeypatch,
 ) -> None:
-    conn = _RetentionDeleteConnection([2], remaining_victim=False)
+    conn = _KeepNConnection([2], remaining_victim=False)
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
     monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 2)
     monkeypatch.setattr(maintenance, "default_max_rows", lambda: 2)
@@ -353,25 +413,28 @@ def test_control_plane_keep_n_exact_cap_without_remaining_victim_is_not_truncate
         cutoff_ts=100,
         keep_rows=25,
         partition_column="proxy_id",
+        application_table="proxy_config_applications",
+        application_proxy_scoped=True,
     )
 
     assert result.deleted_rows == 2
     assert result.iterations == 1
     assert result.truncated is False
-    assert len(conn.queries) == 2
-    delete_sql, delete_params = conn.queries[0]
-    probe_sql, probe_params = conn.queries[1]
+    delete_sql, delete_params = conn.queries[2]
     assert "candidate.`is_active` = 0" in delete_sql
-    assert delete_params == (100, 25, 2)
-    assert probe_sql.startswith("SELECT 1 FROM `proxy_config_revisions` AS candidate")
-    assert "candidate.`is_active` = 0" in probe_sql
-    assert "newer.`proxy_id` = candidate.`proxy_id`" in probe_sql
-    assert probe_params == (100, 25)
-    assert conn.committed is True
+    assert (
+        "NOT EXISTS (SELECT 1 FROM `proxy_config_applications` app "
+        "WHERE app.revision_id = candidate.id AND app.proxy_id = candidate.proxy_id)"
+    ) in delete_sql
+    assert delete_params == ("edge-a", 100, 500, 500, 50, 2)
+    boundary_sql, boundary_params = conn.queries[1]
+    # Revision retention counts every newer revision, active or not.
+    assert "is_active" not in boundary_sql
+    assert boundary_params == ("edge-a", 24)
 
 
-def test_control_plane_keep_n_low_row_noop(monkeypatch) -> None:
-    conn = _SequencedConnection([0])
+def test_control_plane_keep_n_partition_below_floor_is_noop(monkeypatch) -> None:
+    conn = _KeepNConnection([], boundary=None)
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
     monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 50)
     monkeypatch.setattr(maintenance, "default_max_rows", lambda: 500)
@@ -388,10 +451,7 @@ def test_control_plane_keep_n_low_row_noop(monkeypatch) -> None:
     assert result.deleted_rows == 0
     assert result.iterations == 1
     assert result.truncated is False
-    sql, params = conn.queries[0]
-    assert "candidate.`is_active` = 0" in sql
-    assert "COUNT(*)" in sql
-    assert params == (100, 25, 50)
+    assert not any(query.startswith("DELETE") for query, _params in conn.queries)
     assert conn.committed is True
 
 
@@ -777,22 +837,12 @@ def test_control_plane_prune_reports_policy_sync_failure_and_continues(
 
 def test_control_plane_prune_reports_truncated_backlog(monkeypatch) -> None:
     tables = ("proxy_config_applications",)
-    conns = [
-        _SequencedConnection([0]),  # index exists lookup
-        _SequencedConnection([1]),
-        _RetentionDeleteConnection([1], remaining_victim=True),
-        _SequencedConnection([0]),  # webcat cleanup
-    ]
-    used: list[_SequencedConnection] = []
-
-    def connect():
-        conn = conns.pop(0)
-        used.append(conn)
-        return conn
+    conn = _KeepNConnection([1, 1], remaining_victim=True)
 
     monkeypatch.setattr(maintenance, "CONTROL_PLANE_MAINTENANCE_TABLES", tables)
     monkeypatch.setattr(maintenance, "_table_exists", lambda _table: True)
-    monkeypatch.setattr(maintenance, "connect", connect)
+    monkeypatch.setattr(maintenance, "_index_exists", lambda *_args: True)
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
     monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 1)
     monkeypatch.setattr(maintenance, "default_max_rows", lambda: 2)
     monkeypatch.setattr(maintenance.time, "time", lambda: 1_000_000)
@@ -809,6 +859,28 @@ def test_control_plane_prune_reports_truncated_backlog(monkeypatch) -> None:
     assert row["deleted_rows"] == 2
     assert row["maintenance"] == "bounded_retention_delete"
     assert row["detail"] == "iterations=2 truncated=true"
+    assert row["truncated"] is True
+
+
+def test_control_plane_keep_n_cap_with_unvisited_partition_is_truncated(
+    monkeypatch,
+) -> None:
+    conn = _KeepNConnection([2], partitions=("edge-a", "edge-b"))
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 5)
+    monkeypatch.setattr(maintenance, "default_max_rows", lambda: 2)
+
+    result = maintenance._delete_ranked_rows(
+        table="proxy_adblock_artifact_applications",
+        timestamp_column="applied_ts",
+        cutoff_ts=100,
+        keep_rows=200,
+        partition_column="proxy_id",
+    )
+
+    assert result.deleted_rows == 2
+    assert result.truncated is True
+    assert not any(params and params[0] == "edge-b" for _sql, params in conn.queries)
 
 
 def test_control_plane_ensures_retention_indexes_idempotently(monkeypatch) -> None:
@@ -836,3 +908,85 @@ def test_control_plane_ensures_retention_indexes_idempotently(monkeypatch) -> No
         for query in sql
     )
     assert not any("active_created_id" in query for query in sql)
+
+
+def test_keep_n_retention_matches_count_oracle_on_mysql(tmp_path, monkeypatch) -> None:
+    """Boundary-based keep-N deletes exactly the rows the COUNT definition selects."""
+    import importlib
+    import random
+
+    from tests.mysql_test_utils import configure_test_mysql_env
+
+    configure_test_mysql_env(tmp_path)
+    live = importlib.import_module("services.control_plane_maintenance")
+    rng = random.Random(20261118)  # noqa: S311 - deterministic test data
+    rows = [
+        (
+            row_id,
+            rng.choice(("edge-a", "edge-b", "edge-c")),
+            rng.randint(0, 60),  # many timestamp ties
+            rng.choice(("applied", "failed", "pending")),
+        )
+        for row_id in range(1, 401)
+    ]
+    with live.connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE keep_n_probe (
+                id BIGINT NOT NULL PRIMARY KEY,
+                proxy_id VARCHAR(64) NOT NULL,
+                updated_ts BIGINT NOT NULL,
+                status VARCHAR(16) NOT NULL,
+                KEY idx_keep_n_probe_proxy_ts_id (proxy_id, updated_ts, id)
+            )
+            """,
+        )
+        for row in rows:
+            conn.execute(
+                "INSERT INTO keep_n_probe(id, proxy_id, updated_ts, status) VALUES(%s,%s,%s,%s)",
+                row,
+            )
+
+    keep, cutoff, scope = 7, 45, {"applied", "failed"}
+
+    def is_victim(candidate) -> bool:
+        _id, proxy_id, ts, status = candidate
+        if ts >= cutoff or status not in scope:
+            return False
+        newer = sum(
+            1
+            for other in rows
+            if other[1] == proxy_id
+            and other[3] in scope
+            and (other[2] > ts or (other[2] == ts and other[0] > candidate[0]))
+        )
+        return newer >= keep
+
+    expected = {row[0] for row in rows if not is_victim(row)}
+    monkeypatch.setattr(live, "default_chunk_size", lambda: 9)
+    monkeypatch.setattr(live, "default_max_rows", lambda: 25)
+    passes = []
+    for _ in range(50):
+        result = live._delete_ranked_rows(
+            table="keep_n_probe",
+            timestamp_column="updated_ts",
+            cutoff_ts=cutoff,
+            keep_rows=keep,
+            partition_column="proxy_id",
+            candidate_scope_sql="candidate.status IN ('applied','failed')",
+            newer_scope_sql="newer.status IN ('applied','failed')",
+        )
+        passes.append(result)
+        if not result.truncated:
+            break
+    with live.connect() as conn:
+        survivors = {
+            int(row["id"])
+            for row in conn.execute("SELECT id FROM keep_n_probe").fetchall()
+        }
+
+    assert len(rows) - len(expected) > 25  # needs several bounded passes
+    assert len(passes) > 1
+    assert all(result.deleted_rows <= 25 for result in passes)
+    assert passes[-1].truncated is False
+    assert survivors == expected

@@ -148,6 +148,9 @@ class ControlPlaneMaintenanceResult:
     updated_rows: int = 0
     maintenance: str = ""
     detail: str = ""
+    # True when bounded work stopped with eligible rows remaining, so the
+    # housekeeping scheduler can run a catch-up pass before the next daily run.
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -215,6 +218,22 @@ def _bounded_retention_detail(result: BoundedDeleteResult) -> str:
     return detail
 
 
+def _retention_partitions(
+    table: str,
+    partition_column: str | None,
+) -> list[object]:
+    if not partition_column:
+        return [None]
+    safe_table = quote_mysql_identifier(table)
+    partition_col = quote_mysql_identifier(partition_column)
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT DISTINCT {partition_col} AS partition_value FROM {safe_table}",
+        ).fetchall()
+    values = {row_value(row, "partition_value", 0, None) for row in rows}
+    return sorted(value for value in values if value is not None)
+
+
 def _delete_retained_rows_in_chunks(
     *,
     table: str,
@@ -228,18 +247,26 @@ def _delete_retained_rows_in_chunks(
     candidate_only_sql: str = "",
     candidate_only_params: tuple[object, ...] = (),
 ) -> BoundedDeleteResult:
-    """Delete old rows beyond a keep-N floor using bounded candidate batches.
+    """Delete old rows beyond a keep-N floor using bounded index-ordered chunks.
 
-    The candidate subquery walks the oldest indexed rows and proves each victim has
-    at least ``keep_rows`` newer peers in the same retention scope. It does not use
-    full-table ROW_NUMBER/rank windows or OFFSET pagination; every DELETE is capped
-    by chunk size and the whole housekeeping step is capped by max_rows.
+    A row is a victim when it is older than ``cutoff_ts``, matches the candidate
+    scope, and at least ``keep_rows`` rows of its partition matching the newer
+    scope are strictly newer by ``(timestamp, id)``. That is equivalent to being
+    strictly older than the partition's keep-th newest in-scope row, so each
+    chunk reads that boundary row through the ``(partition, timestamp, id)``
+    index (``OFFSET`` bounded by ``keep_rows``) and deletes the oldest victims
+    below it. The boundary is re-read in every chunk transaction, so concurrent
+    deletes of newer rows can never shrink the retained floor. Cost per chunk is
+    O(keep_rows + chunk) index entries, unlike a correlated per-candidate
+    ``COUNT(*)`` (quadratic in partition size). Every DELETE is capped by the
+    chunk size and the whole step by max_rows.
     """
     safe_table = quote_mysql_identifier(table)
     id_col = quote_mysql_identifier(_RETENTION_ID_COLUMN)
     ts_col = quote_mysql_identifier(timestamp_column)
     per_chunk = default_chunk_size()
     per_run = default_max_rows()
+    keep = max(1, int(keep_rows))
     if per_run <= 0:
         return BoundedDeleteResult(
             table=table,
@@ -248,85 +275,112 @@ def _delete_retained_rows_in_chunks(
             truncated=False,
         )
 
-    candidate_predicates = [f"candidate.{ts_col} < %s"]
-    params_prefix: list[object] = [int(cutoff_ts)]
-    if candidate_scope_sql.strip():
-        candidate_predicates.append(f"({candidate_scope_sql.strip()})")
-        params_prefix.extend(scope_params)
-    if candidate_only_sql.strip():
-        candidate_predicates.append(f"({candidate_only_sql.strip()})")
-        params_prefix.extend(candidate_only_params)
-
-    newer_predicates = []
-    newer_params: list[object] = []
-    if partition_column:
-        partition_col = quote_mysql_identifier(partition_column)
-        newer_predicates.append(f"newer.{partition_col} = candidate.{partition_col}")
+    partition_col = quote_mysql_identifier(partition_column) if partition_column else ""
+    boundary_predicates: list[str] = []
+    if partition_col:
+        boundary_predicates.append(f"newer.{partition_col} = %s")
     if newer_scope_sql.strip():
-        newer_predicates.append(f"({newer_scope_sql.strip()})")
-        newer_params.extend(scope_params)
-    newer_predicates.append(
-        f"(newer.{ts_col} > candidate.{ts_col} "
-        f"OR (newer.{ts_col} = candidate.{ts_col} AND newer.{id_col} > candidate.{id_col}))",
+        boundary_predicates.append(f"({newer_scope_sql.strip()})")
+    boundary_where = (
+        " WHERE " + " AND ".join(boundary_predicates) if boundary_predicates else ""
     )
-    newer_where = " AND ".join(newer_predicates)
-    candidate_where = " AND ".join(candidate_predicates)
-    eligibility_params = (
-        *tuple(params_prefix),
-        *tuple(newer_params),
-        int(keep_rows),
+    boundary_sql = (
+        f"SELECT newer.{ts_col} AS boundary_ts, newer.{id_col} AS boundary_id "
+        f"FROM {safe_table} AS newer{boundary_where} "
+        f"ORDER BY newer.{ts_col} DESC, newer.{id_col} DESC "
+        "LIMIT 1 OFFSET %s"
     )
-    eligibility_sql = f"""
-        SELECT 1
-        FROM {safe_table} AS candidate
-        WHERE {candidate_where}
-          AND (
-              SELECT COUNT(*)
-              FROM {safe_table} AS newer
-              WHERE {newer_where}
-          ) >= %s
-        LIMIT 1
-    """
+
+    victim_predicates = [f"candidate.{ts_col} < %s"]
+    if partition_col:
+        victim_predicates.insert(0, f"candidate.{partition_col} = %s")
+    if candidate_scope_sql.strip():
+        victim_predicates.append(f"({candidate_scope_sql.strip()})")
+    if candidate_only_sql.strip():
+        victim_predicates.append(f"({candidate_only_sql.strip()})")
+    victim_predicates.append(
+        f"(candidate.{ts_col} < %s "
+        f"OR (candidate.{ts_col} = %s AND candidate.{id_col} < %s))",
+    )
+    victim_where = " AND ".join(victim_predicates)
+    delete_sql = (
+        f"DELETE FROM {safe_table} AS candidate WHERE {victim_where} "
+        f"ORDER BY candidate.{ts_col} ASC, candidate.{id_col} ASC LIMIT %s"
+    )
+    probe_sql = f"SELECT 1 FROM {safe_table} AS candidate WHERE {victim_where} LIMIT 1"
+
+    def partition_params(partition: object) -> tuple[object, ...]:
+        return (partition,) if partition_col else ()
+
+    def victim_params(
+        partition: object,
+        boundary_ts: int,
+        boundary_id: int,
+    ) -> tuple[object, ...]:
+        return (
+            *partition_params(partition),
+            int(cutoff_ts),
+            *tuple(scope_params if candidate_scope_sql.strip() else ()),
+            *tuple(candidate_only_params),
+            int(boundary_ts),
+            int(boundary_ts),
+            int(boundary_id),
+        )
+
+    def read_boundary(conn, partition: object) -> tuple[int, int] | None:
+        row = conn.execute(
+            boundary_sql,
+            (
+                *partition_params(partition),
+                *tuple(scope_params if newer_scope_sql.strip() else ()),
+                keep - 1,
+            ),
+        ).fetchone()
+        if row is None:
+            return None
+        return (
+            int(row_value(row, "boundary_ts", 0, 0) or 0),
+            int(row_value(row, "boundary_id", 1, 0) or 0),
+        )
 
     total = 0
     iterations = 0
-    remaining = None
-    while total < per_run:
-        limit = min(per_chunk, per_run - total)
-        sql = f"""
-            DELETE target FROM {safe_table} AS target
-            JOIN (
-                SELECT victim_id FROM (
-                    SELECT candidate.{id_col} AS victim_id
-                    FROM {safe_table} AS candidate
-                    WHERE {candidate_where}
-                      AND (
-                          SELECT COUNT(*)
-                          FROM {safe_table} AS newer
-                          WHERE {newer_where}
-                      ) >= %s
-                    ORDER BY candidate.{ts_col} ASC, candidate.{id_col} ASC
-                    LIMIT %s
-                ) AS limited_victims
-            ) AS victims ON victims.victim_id = target.{id_col}
-        """
-        params = (*eligibility_params, int(limit))
-        with connect() as conn:
-            result = conn.execute(sql, params)
-            deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
-            # Read after the cap-reaching DELETE in the same short transaction so
-            # ``truncated`` reports an eligible victim, not merely an exact cap hit.
-            if total + deleted >= per_run:
-                remaining = conn.execute(
-                    eligibility_sql,
-                    eligibility_params,
-                ).fetchone()
-        total += deleted
-        iterations += 1
-        if deleted < limit:
+    truncated = False
+    partitions = _retention_partitions(table, partition_column)
+    for index, partition in enumerate(partitions):
+        if total >= per_run:
+            truncated = True
             break
+        while total < per_run:
+            limit = min(per_chunk, per_run - total)
+            remaining = None
+            with connect() as conn:
+                boundary = read_boundary(conn, partition)
+                if boundary is None:
+                    deleted = 0
+                else:
+                    result = conn.execute(
+                        delete_sql,
+                        (*victim_params(partition, *boundary), int(limit)),
+                    )
+                    deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
+                    # Probe after the cap-reaching delete in the same short
+                    # transaction so ``truncated`` reports an eligible victim,
+                    # not merely an exact cap hit.
+                    if total + deleted >= per_run:
+                        remaining = conn.execute(
+                            probe_sql,
+                            victim_params(partition, *boundary),
+                        ).fetchone()
+            total += deleted
+            iterations += 1
+            if remaining is not None or (
+                total >= per_run and index < len(partitions) - 1
+            ):
+                truncated = True
+            if deleted < limit:
+                break
 
-    truncated = total >= per_run and remaining is not None
     return BoundedDeleteResult(
         table=table,
         deleted_rows=total,
@@ -357,7 +411,8 @@ def _delete_ranked_rows(
         keep_rows=keep_rows,
         partition_column=partition_column,
         candidate_scope_sql=candidate_scope_sql,
-        newer_scope_sql=newer_scope_sql or candidate_scope_sql,
+        newer_scope_sql=newer_scope_sql
+        or candidate_scope_sql.replace("candidate.", "newer."),
         scope_params=scope_params,
     )
 
@@ -600,6 +655,7 @@ def _run_one_prune(
             deleted_rows=deleted.deleted_rows,
             maintenance="bounded_retention_delete",
             detail=_bounded_retention_detail(deleted),
+            truncated=deleted.truncated,
         )
     if table == "certificate_bundle_revisions":
         deleted = _delete_revision_rows(
@@ -616,11 +672,12 @@ def _run_one_prune(
             deleted_rows=deleted.deleted_rows,
             maintenance="bounded_retention_delete",
             detail=_bounded_retention_detail(deleted),
+            truncated=deleted.truncated,
         )
     if table == "adblock_artifact_revisions":
         from services.adblock_artifacts import AdblockArtifactStore
 
-        deleted = AdblockArtifactStore().prune_revisions(
+        pruned = AdblockArtifactStore().prune_revisions(
             max_batches=_env_int(
                 "MYSQL_HOUSEKEEPING_ADBLOCK_ARTIFACT_PRUNE_MAX_BATCHES",
                 10,
@@ -628,10 +685,17 @@ def _run_one_prune(
                 maximum=1000,
             ),
         )
+        detail = f"stripped_archives={pruned.stripped_archives}"
+        if pruned.truncated:
+            detail += " truncated=true"
         return ControlPlaneMaintenanceResult(
             table=table,
             status="pruned",
-            deleted_rows=deleted,
+            deleted_rows=pruned.deleted_rows,
+            updated_rows=pruned.stripped_archives,
+            maintenance="bounded_retention_delete",
+            detail=detail,
+            truncated=pruned.truncated,
         )
     if table in {
         "proxy_config_applications",
@@ -651,6 +715,7 @@ def _run_one_prune(
             deleted_rows=deleted.deleted_rows,
             maintenance="bounded_retention_delete",
             detail=_bounded_retention_detail(deleted),
+            truncated=deleted.truncated,
         )
     if table == "proxy_operations":
         deleted = _delete_ranked_rows(
@@ -668,6 +733,7 @@ def _run_one_prune(
             deleted_rows=deleted.deleted_rows,
             maintenance="bounded_retention_delete",
             detail=_bounded_retention_detail(deleted),
+            truncated=deleted.truncated,
         )
     if table == "policy_requests":
         deleted = _delete_ranked_rows(
@@ -685,6 +751,7 @@ def _run_one_prune(
             deleted_rows=deleted.deleted_rows,
             maintenance="bounded_retention_delete",
             detail=_bounded_retention_detail(deleted),
+            truncated=deleted.truncated,
         )
     if table == "policy_exceptions":
         updated = _expire_policy_exceptions(now_ts=now_ts)
@@ -716,6 +783,7 @@ def _run_one_prune(
             updated_rows=updated.deleted_rows,
             maintenance="bounded_retention_delete",
             detail=" ".join(details),
+            truncated=deleted.truncated or updated.truncated,
         )
     if table in {"safe_browsing_full_hash_cache", "safe_browsing_negative_cache"}:
         deleted = _delete_expired_cache(table, now_ts=now_ts)
@@ -728,6 +796,7 @@ def _run_one_prune(
             deleted_rows=deleted.deleted_rows,
             maintenance="bounded_expiry_delete",
             detail=detail,
+            truncated=deleted.truncated,
         )
     if table == "observability_maintenance_runs":
         deleted = _delete_ranked_rows(
@@ -742,6 +811,7 @@ def _run_one_prune(
             deleted_rows=deleted.deleted_rows,
             maintenance="bounded_retention_delete",
             detail=_bounded_retention_detail(deleted),
+            truncated=deleted.truncated,
         )
 
     return ControlPlaneMaintenanceResult(table=table, status="skipped")

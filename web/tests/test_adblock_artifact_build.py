@@ -171,6 +171,7 @@ class _FakeAdblockRevisionConn:
         self.rows = rows
         self.deleted_batches: list[list[int]] = []
         self.updated_batches: list[list[int]] = []
+        self.stripped: list[int] = []
         self.commits = 0
 
     def commit(self) -> None:
@@ -198,7 +199,9 @@ class _FakeAdblockRevisionConn:
                 (
                     row
                     for row in self.rows
-                    if int(row["is_active"]) == 0 and int(row["id"]) not in keep_ids
+                    if int(row["is_active"]) == 0
+                    and int(row["id"]) not in keep_ids
+                    and not int(row.get("referenced", 0))
                 ),
                 key=lambda row: (int(row["created_ts"]), int(row["id"])),
             )[:limit]
@@ -238,6 +241,19 @@ class _FakeAdblockRevisionConn:
             self.rows[:] = [row for row in self.rows if int(row["id"]) not in ids]
             self.deleted_batches.append(sorted(ids))
             return _FakeSqlResult(rowcount=len(ids))
+        if text.startswith("UPDATE adblock_artifact_revisions SET archive_blob=%s"):
+            keep_ids = {int(value) for value in params[1:-1]}
+            for row in sorted(self.rows, key=lambda row: int(row["id"])):
+                if (
+                    int(row["is_active"]) == 0
+                    and int(row["id"]) not in keep_ids
+                    and row.get("archive", b"blob") != b""
+                    and int(row.get("referenced", 0))
+                ):
+                    row["archive"] = b""
+                    self.stripped.append(int(row["id"]))
+                    return _FakeSqlResult(rowcount=1)
+            return _FakeSqlResult(rowcount=0)
         msg = f"Unexpected SQL: {text}"
         raise AssertionError(msg)
 
@@ -2203,18 +2219,21 @@ def test_prune_revisions_converges_in_small_committed_batches(
             created_by="pytest",
         )
 
-    deleted = revision_store.prune_revisions(max_batches=2, batch_size=2)
+    pruned = revision_store.prune_revisions(max_batches=2, batch_size=2)
 
-    assert deleted == 4
+    assert pruned == artifacts_module.AdblockArtifactPruneResult(
+        deleted_rows=4,
+        truncated=True,
+    )
     with revision_store._connect() as conn:
         rows = conn.execute(
             "SELECT id, settings_version, is_active FROM adblock_artifact_revisions ORDER BY id"
         ).fetchall()
     assert [int(row[1]) for row in rows] == [5, 6, 7, 8]
 
-    deleted = revision_store.prune_revisions(max_batches=10, batch_size=2)
+    pruned = revision_store.prune_revisions(max_batches=10, batch_size=2)
 
-    assert deleted == 2
+    assert pruned == artifacts_module.AdblockArtifactPruneResult(deleted_rows=2)
     with revision_store._connect() as conn:
         rows = conn.execute(
             "SELECT settings_version, is_active, archive_blob FROM adblock_artifact_revisions ORDER BY created_ts, id"
@@ -2324,7 +2343,10 @@ def test_prune_revisions_skips_when_another_cleanup_holds_lock(
         ).fetchone()
         assert int(acquired["acquired"] or 0) == 1
         try:
-            assert revision_store.prune_revisions(max_batches=10, batch_size=1) == 0
+            assert (
+                revision_store.prune_revisions(max_batches=10, batch_size=1)
+                == artifacts_module.AdblockArtifactPruneResult()
+            )
         finally:
             held_conn.execute(
                 "DO RELEASE_LOCK(%s)",
@@ -2404,6 +2426,122 @@ def test_prune_revision_batch_demotes_stale_active_before_deleting_blobs() -> No
     ]
 
 
+def test_prune_strips_referenced_archives_but_keeps_active_and_previous(
+    monkeypatch,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    revision_store = artifacts_module.AdblockArtifactStore()
+
+    class FakeContextConn(_FakeAdblockRevisionConn):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc) -> bool:
+            return False
+
+        def execute(self, sql: str, params=()):
+            text = " ".join(sql.split())
+            if text.startswith("SELECT GET_LOCK"):
+                return _FakeSqlResult([{"acquired": 1}])
+            if text.startswith("DO RELEASE_LOCK"):
+                return _FakeSqlResult()
+            return super().execute(sql, params)
+
+    # Every revision has proxy application evidence (the production shape),
+    # so none may be deleted; all but active (8) and previous (7) lose blobs.
+    conn = FakeContextConn(
+        [
+            {
+                "id": index,
+                "created_ts": 30_000 + index,
+                "is_active": 1 if index == 8 else 0,
+                "referenced": 1,
+            }
+            for index in range(1, 9)
+        ],
+    )
+    monkeypatch.setattr(revision_store, "init_db", lambda: None)
+    monkeypatch.setattr(revision_store, "_connect", lambda: conn)
+
+    first = revision_store.prune_revisions(max_batches=2, batch_size=2)
+    second = revision_store.prune_revisions(max_batches=2, batch_size=2)
+
+    assert first == artifacts_module.AdblockArtifactPruneResult(
+        stripped_archives=4,
+        truncated=True,
+    )
+    assert second == artifacts_module.AdblockArtifactPruneResult(stripped_archives=2)
+    assert conn.deleted_batches == []
+    assert conn.stripped == [1, 2, 3, 4, 5, 6]
+    assert [row["id"] for row in conn.rows] == list(range(1, 9))
+    assert [row["id"] for row in conn.rows if row.get("archive", b"blob")] == [7, 8]
+
+
+def test_prune_revisions_strips_referenced_mysql_archives(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _store_module, artifacts_module = _import_artifact_modules(tmp_path)
+    revision_store = artifacts_module.AdblockArtifactStore()
+    revision_store.init_db()
+    monkeypatch.setattr(
+        revision_store,
+        "_prune_revisions_best_effort",
+        lambda *, max_batches: None,
+    )
+    revisions = []
+    for index in range(1, 6):
+        monkeypatch.setattr(artifacts_module, "_now", lambda index=index: 4000 + index)
+        revisions.append(
+            revision_store.create_revision(
+                artifact_sha256=f"{index:064x}"[-64:],
+                archive_blob=b"archive" * 64 + bytes([index]),
+                report_json="{}",
+                settings_version=index,
+                source_kind="compile",
+                enabled_lists=["easylist"],
+                created_by="pytest",
+            ),
+        )
+    with revision_store._connect() as conn:
+        # Application evidence references revisions 1-3 and the previous one.
+        for revision in (*revisions[:3], revisions[3]):
+            conn.execute(
+                """
+                INSERT INTO proxy_adblock_artifact_applications(
+                    proxy_id, revision_id, ok, detail, applied_by, applied_ts, artifact_sha256
+                )
+                VALUES('edge-a', %s, 1, '', 'proxy', %s, %s)
+                """,
+                (revision.revision_id, 5000, revision.artifact_sha256),
+            )
+
+    pruned = revision_store.prune_revisions(max_batches=10, batch_size=5)
+
+    assert pruned == artifacts_module.AdblockArtifactPruneResult(stripped_archives=3)
+    with revision_store._connect() as conn:
+        rows = conn.execute(
+            "SELECT settings_version, is_active, LENGTH(archive_blob) AS size FROM adblock_artifact_revisions ORDER BY id"
+        ).fetchall()
+        dangling = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM proxy_adblock_artifact_applications app
+            LEFT JOIN adblock_artifact_revisions revision ON revision.id=app.revision_id
+            WHERE revision.id IS NULL
+            """
+        ).fetchone()
+    assert [
+        (int(row["settings_version"]), int(row["is_active"]), int(row["size"]))
+        for row in rows
+    ] == [(1, 0, 0), (2, 0, 0), (3, 0, 0), (4, 0, 449), (5, 1, 449)]
+    assert int(dangling["n"]) == 0
+    assert revision_store.get_active_artifact().archive_blob.endswith(bytes([5]))
+    assert (
+        revision_store.prune_revisions(max_batches=10, batch_size=5)
+        == artifacts_module.AdblockArtifactPruneResult()
+    )
+
+
 def test_prune_revisions_commits_each_bounded_batch(monkeypatch) -> None:
     artifacts_module = _import_adblock_artifacts_module()
     revision_store = artifacts_module.AdblockArtifactStore()
@@ -2441,9 +2579,10 @@ def test_prune_revisions_commits_each_bounded_batch(monkeypatch) -> None:
     monkeypatch.setattr(revision_store, "init_db", lambda: None)
     monkeypatch.setattr(revision_store, "_connect", lambda: conn)
 
-    deleted = revision_store.prune_revisions(max_batches=2, batch_size=2)
+    pruned = revision_store.prune_revisions(max_batches=2, batch_size=2)
 
-    assert deleted == 4
+    assert pruned.deleted_rows == 4
+    assert pruned.truncated is True
     assert conn.deleted_batches == [[1, 2], [3, 4]]
     assert conn.commits == 2
     assert conn.released is True
