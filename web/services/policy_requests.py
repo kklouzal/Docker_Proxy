@@ -187,11 +187,13 @@ def normalize_client_ip(v: object) -> str:
 
 
 def normalize_domain(v: object, *, request_url: object = "") -> str:
-    h = (
-        _norm_domain(extract_domain(v))
-        or _norm_domain(str(v or ""))
-        or _norm_domain(extract_domain(request_url))
-    )
+    # The request URL only supplies a missing domain; an explicitly supplied
+    # domain that fails validation is rejected rather than silently replaced
+    # by a different scope.
+    if str(v or "").strip():
+        h = _norm_domain(extract_domain(v)) or _norm_domain(str(v))
+    else:
+        h = _norm_domain(extract_domain(request_url))
     return h if _looks_like_host(h) else ""
 
 
