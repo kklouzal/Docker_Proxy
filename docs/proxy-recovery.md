@@ -50,7 +50,9 @@ the Admin UI only writes desired state and operations to MySQL. The public
 PAC/WPAD listener (`proxy_public`, `PAC_WEB_THREADS` threads) is a separate
 process from the management API (`proxy_api`, port 5000): it serves local
 materialized PAC files and loads no database-backed modules, so management or
-control-plane database stalls never delay client auto-configuration. When MySQL
+control-plane database stalls never delay client auto-configuration (only the
+emergency PAC served before any PAC state was ever materialized, and block-page
+policy request submissions, consult MySQL). When MySQL
 is unreachable:
 
 - **Cold start.** The entrypoint probes MySQL once with a single bounded
