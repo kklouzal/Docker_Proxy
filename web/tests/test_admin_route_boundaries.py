@@ -4382,6 +4382,33 @@ def test_unhandled_admin_error_returns_recovery_page_and_clears_proxy_selection(
     assert recovered.headers["Location"].startswith("/?recovered=1")
 
 
+def test_unhandled_mysql_outage_returns_retryable_503_and_keeps_proxy_selection(
+    monkeypatch, tmp_path
+) -> None:
+    import pymysql
+
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=FakeRegistry(["proxy-p"]))
+    loaded.module.app.config.update(PROPAGATE_EXCEPTIONS=False)
+
+    @loaded.module.app.route("/mysql-down")
+    def _mysql_down():
+        raise pymysql.err.OperationalError(2003, "Can't connect to MySQL server")
+
+    client = loaded.module.app.test_client()
+    login_client(client)
+    assert client.get("/?proxy_id=proxy-p").status_code == 200
+
+    response = client.get("/mysql-down")
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "5"
+    assert "Admin UI recovered from a request error" not in response.get_data(
+        as_text=True
+    )
+    with client.session_transaction() as sess:
+        assert sess["active_proxy_id"] == "proxy-p"
+
+
 def test_observability_overview_merges_partial_payload_defaults(
     monkeypatch, tmp_path
 ) -> None:

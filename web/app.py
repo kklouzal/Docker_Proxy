@@ -71,7 +71,7 @@ from services.config_revisions import ConfigApplication, ConfigRevisionMetadata
 from services.config_revisions import (
     get_config_revisions as _default_get_config_revisions,
 )
-from services.db import DATABASE_ERRORS
+from services.db import DATABASE_ERRORS, transient_mysql_cause
 from services.diagnostic_store import (
     get_diagnostic_store as _default_get_diagnostic_store,
 )
@@ -250,7 +250,7 @@ from services.winhttp_registry_builder import (
     decode_basic_winhttp_settings_hex,
     normalize_reg_binary_export,
 )
-from werkzeug.exceptions import HTTPException
+from werkzeug.exceptions import HTTPException, ServiceUnavailable
 
 _ADMIN_UI_WEB_RESTART_LOCK_PATH = "/run/docker-proxy-admin-ui-web-restart.lock"
 _ADMIN_UI_WEB_RESTART_LOG_PATH = "/run/docker-proxy-admin-ui-web-restart.log"
@@ -3246,6 +3246,21 @@ def recover_admin_session():
 def _recover_from_unhandled_admin_error(exc: Exception):
     if isinstance(exc, HTTPException):
         return exc
+    database_cause = transient_mysql_cause(exc)
+    if database_cause is not None:
+        # A control-plane outage is not a broken session: answer retryable 503
+        # and keep the selected proxy context for when MySQL answers again.
+        log_database_unavailable(
+            app.logger,
+            "web.app.request_database_unavailable",
+            "Admin UI request deferred while MySQL is unavailable",
+            database_cause,
+            interval_seconds=60.0,
+        )
+        return ServiceUnavailable(
+            description="The Admin UI database is temporarily unavailable.",
+            retry_after=5,
+        )
 
     log_exception_throttled(
         app.logger,
