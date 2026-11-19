@@ -815,9 +815,31 @@ def test_register_local_proxy_reconciles_stale_identity_by_management_url(
     assert registry.get_proxy("Proxy-PR") is not None
 
 
+def test_admin_rename_into_unregistered_env_default_stays_refused(
+    monkeypatch, tmp_path
+):
+    # Only the local proxy's own identity reconciliation may claim the default
+    # id; an administrative rename of another proxy into it stays refused.
+    configure_test_mysql_env(tmp_path / "proxy-identity-default-target")
+    monkeypatch.setenv("DEFAULT_PROXY_ID", "Proxy-PR")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("Proxy-P", management_url="http://proxy-pr:5000")
+
+    with pytest.raises(ValueError, match="Default proxy 'Proxy-PR'"):
+        registry.rename_proxy("Proxy-P", "Proxy-PR")
+    assert registry.get_proxy("Proxy-P") is not None
+    assert registry.get_proxy("Proxy-PR") is None
+
+
 def test_new_proxy_runtime_adblock_default_is_explicitly_disabled(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "proxy-adblock-default-disabled")
     proxy_registry = _proxy_registry()
+    # Proxies created after startup migration see the adblock runtime schema.
+    from services.schema_lifecycle import migrate_schema  # type: ignore
+
+    migrate_schema()
 
     registry = proxy_registry.ProxyRegistry()
     registry.init_db()
@@ -879,6 +901,9 @@ def test_ensure_existing_proxy_preserves_explicit_runtime_adblock_state(
 ) -> None:
     configure_test_mysql_env(tmp_path / "proxy-adblock-existing-preserved")
     proxy_registry = _proxy_registry()
+    from services.schema_lifecycle import migrate_schema  # type: ignore
+
+    migrate_schema()
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy("edge-existing")
@@ -1186,6 +1211,8 @@ class _RegistryFaultConn:
         if text.startswith("DO RELEASE_LOCK"):
             return _FaultResult()
         if text.startswith("CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones"):
+            return _FaultResult()
+        if text.startswith("SELECT default_proxy_id FROM proxy_default_selection"):
             return _FaultResult()
         if "FROM proxy_instances WHERE proxy_id=%s" in text and "FOR UPDATE" in text:
             row = self.proxy_rows.get(str(params[0]))
@@ -2380,3 +2407,56 @@ def test_rename_proxy_adds_lifecycle_index_for_discovered_tables(tmp_path):
         ).fetchone()
     assert row["proxy_id"] == "edge-target"
     assert index_row is not None
+
+
+def test_resume_paused_removals_runs_bounded_passes_until_removed(
+    monkeypatch,
+    tmp_path,
+):
+    configure_test_mysql_env(tmp_path / "proxy-remove-background-resume")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-big", display_name="Edge")
+    registry.ensure_proxy("edge-keep", display_name="Keep")
+    with registry._connect() as conn:
+        conn.execute(
+            "CREATE TABLE proxy_large_backlog (id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL, value VARCHAR(32) NOT NULL, KEY idx_proxy_large_backlog_proxy (proxy_id))",
+        )
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO proxy_large_backlog(proxy_id, value) VALUES(%s,%s)",
+                ("edge-big", f"row-{i}"),
+            )
+    monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_CHUNK_SIZE", "2")
+    monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_MAX_ROWS_PER_TABLE", "2")
+    assert registry.remove_proxy("edge-big").complete is False
+
+    passes = []
+    for _ in range(5):
+        results = registry.resume_paused_removals()
+        if not results:
+            break
+        passes.append(results)
+
+    assert [[result.complete for result in batch] for batch in passes] == [
+        [False],
+        [True],
+    ]
+    assert [result.proxy_id for batch in passes for result in batch] == [
+        "edge-big",
+        "edge-big",
+    ]
+    assert registry.get_proxy("edge-big") is None
+    assert [proxy.proxy_id for proxy in registry.list_proxies()] == ["edge-keep"]
+    with registry._connect() as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS c FROM proxy_large_backlog WHERE proxy_id=%s",
+            ("edge-big",),
+        ).fetchone()
+        tombstone = conn.execute(
+            "SELECT action FROM proxy_lifecycle_tombstones WHERE proxy_id=%s",
+            ("edge-big",),
+        ).fetchone()
+    assert int(remaining["c"] or 0) == 0
+    assert tombstone["action"] == "removed"

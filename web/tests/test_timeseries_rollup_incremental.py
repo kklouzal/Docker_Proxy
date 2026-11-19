@@ -10,7 +10,7 @@ from services.timeseries_store import (
     resolve_resolution,
 )
 
-from .mysql_test_utils import configure_test_mysql_env
+from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
 
 class _QueryConn:
@@ -557,6 +557,7 @@ def test_daily_rollup_processes_bounded_oldest_buckets_and_is_idempotent(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path)
+    register_test_proxies()
     store = TimeSeriesStore()
     store.init_db()
     day0 = (1_777_000_000 // 86400) * 86400
@@ -602,6 +603,7 @@ def test_rollup_floors_non_aligned_source_timestamps_to_bucket_start(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path)
+    register_test_proxies()
     store = TimeSeriesStore()
     store.init_db()
     minute_start = (1_777_000_123 // 60) * 60
@@ -641,6 +643,7 @@ def test_rollup_floors_non_aligned_source_timestamps_to_bucket_start(
 
 def test_daily_rollup_late_hour_updates_existing_day_weighted_average(tmp_path) -> None:
     configure_test_mysql_env(tmp_path)
+    register_test_proxies()
     store = TimeSeriesStore()
     store.init_db()
     day0 = (1_777_000_000 // 86400) * 86400
@@ -662,15 +665,17 @@ def test_daily_rollup_late_hour_updates_existing_day_weighted_average(tmp_path) 
     store._rollup("ts_1h", "ts_1d", 86400, cutoff, "default", max_dst_buckets=1)
 
     with store._connect() as conn:
-        count, cpu = conn.execute(
+        row = conn.execute(
             "SELECT count, cpu FROM ts_1d WHERE ts=%s", (day0,)
         ).fetchone()
+        count, cpu = row["count"], row["cpu"]
     assert int(count) == 4
     assert float(cpu) == pytest.approx(20.0)
 
 
 def test_rollup_averages_ignore_null_metric_samples(tmp_path) -> None:
     configure_test_mysql_env(tmp_path)
+    register_test_proxies()
     store = TimeSeriesStore()
     store.init_db()
     minute_start = (1_777_000_123 // 60) * 60
@@ -701,10 +706,11 @@ def test_rollup_averages_ignore_null_metric_samples(tmp_path) -> None:
     )
 
     with store._connect() as conn:
-        count, cpu = conn.execute(
+        row = conn.execute(
             "SELECT count, cpu FROM ts_1m WHERE proxy_id=%s AND ts=%s",
             ("default", minute_start),
         ).fetchone()
+        count, cpu = row["count"], row["cpu"]
 
     assert int(count) == 2
     assert float(cpu) == pytest.approx(20.0)
@@ -714,6 +720,7 @@ def test_late_rollup_updates_existing_bucket_with_metric_sample_counts(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path)
+    register_test_proxies()
     store = TimeSeriesStore()
     store.init_db()
     minute_start = (1_777_000_123 // 60) * 60
@@ -752,10 +759,11 @@ def test_late_rollup_updates_existing_bucket_with_metric_sample_counts(
     )
 
     with store._connect() as conn:
-        count, cpu = conn.execute(
+        row = conn.execute(
             "SELECT count, cpu FROM ts_1m WHERE proxy_id=%s AND ts=%s",
             ("default", minute_start),
         ).fetchone()
+        count, cpu = row["count"], row["cpu"]
 
     assert int(count) == 11
     assert float(cpu) == pytest.approx(60.0)
@@ -793,10 +801,15 @@ def test_summary_averages_ignore_null_metric_samples_mysql(
     monkeypatch, tmp_path
 ) -> None:
     configure_test_mysql_env(tmp_path)
-    store = TimeSeriesStore()
+    register_test_proxies()
+    # Use the module re-imported against the test database so the patched
+    # clock is the one the store reads.
+    from services import timeseries_store  # type: ignore
+
+    store = timeseries_store.TimeSeriesStore()
     store.init_db()
     now = 1_777_000_180
-    monkeypatch.setattr("services.timeseries_store._now", lambda: now)
+    monkeypatch.setattr(timeseries_store, "_now", lambda: now)
 
     with store._connect() as conn:
         conn.execute(

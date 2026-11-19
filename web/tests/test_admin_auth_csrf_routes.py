@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pymysql
 import pytest
 
 from .admin_route_test_utils import (
@@ -156,6 +157,35 @@ def test_local_admin_session_fails_closed_when_auth_store_is_unavailable(
     loaded.auth_store.get_user_session_version = unavailable
     response = client.get("/", follow_redirects=False)
 
+    assert response.status_code in {302, 303}
+    assert response.headers["Location"].startswith("/login?")
+    with client.session_transaction() as sess:
+        assert "user" not in sess
+
+
+def test_local_admin_session_survives_mysql_outage_without_granting_access(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    available = loaded.auth_store.get_user_session_version
+
+    def unreachable(_username: str) -> str | None:
+        raise pymysql.err.OperationalError(2003, "Can't connect to MySQL server")
+
+    loaded.auth_store.get_user_session_version = unreachable
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 503
+    with client.session_transaction() as sess:
+        assert sess.get("user") == "admin"
+
+    loaded.auth_store.get_user_session_version = available
+    loaded.auth_store.set_password("admin", "replacement-password")
+    response = client.get("/", follow_redirects=False)
+
+    # Once MySQL answers, the retained session is revalidated, not trusted.
     assert response.status_code in {302, 303}
     assert response.headers["Location"].startswith("/login?")
     with client.session_transaction() as sess:

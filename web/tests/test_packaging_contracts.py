@@ -409,7 +409,8 @@ def test_admin_wsgi_imports_flat_packaged_application(tmp_path) -> None:
     supervisord = _read("docker/supervisord.admin.conf")
     launcher = _load_start_admin_ui_module()
     (tmp_path / "app.py").write_text(
-        'from flask import Flask\napp = Flask("packaged-admin-app")\n',
+        'from flask import Flask\napp = Flask("packaged-admin-app")\n'
+        "def install_admin_default_proxy_resolver():\n    pass\n",
         encoding="utf-8",
     )
     (tmp_path / "wsgi.py").write_text(_read("web/wsgi.py"), encoding="utf-8")
@@ -573,6 +574,21 @@ def test_local_deterministic_test_command_matches_ci_mysql_exclusion() -> None:
     assert expected_marker in _read("README.md")
 
 
+def test_mysql_backed_ci_job_runs_the_whole_non_live_suite() -> None:
+    # Most MySQL-backed tests are unmarked and skip without a database, so a
+    # mysql-marker or file-list selection would leave them unexercised.
+    mysql_job = _workflow_job_body(
+        _read(".github/workflows/publish-ghcr.yml"),
+        "mysql-integration-tests",
+    )
+
+    assert 'python -m pytest -m "not live" -p no:cacheprovider' in mysql_job
+    assert "MYSQL_TEST_HOST: 127.0.0.1" in mysql_job
+    assert '-m "not live" -p no:cacheprovider --durations=10 -ra web\\tests' in (
+        _read("README.md")
+    )
+
+
 def test_publish_workflow_enforces_static_and_local_image_security_gates() -> None:
     workflow = _read(".github/workflows/publish-ghcr.yml")
     static_job = _workflow_job_body(workflow, "static-analysis")
@@ -718,6 +734,16 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     mysql_conf = _read("config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf")
     assert "max_connections=160" in mysql_conf
     assert "max_allowed_packet=256M" in mysql_conf
+    assert "\ndisable_log_bin\n" in mysql_conf
+    mysql_settings = [
+        line.strip()
+        for line in mysql_conf.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert not any(
+        line.startswith(("log_bin", "log-bin", "binlog_expire"))
+        for line in mysql_settings
+    )
 
     live_compose = _read("docker-compose.live-tests.yml")
     assert "- squid_logs_edge_2:/var/log/squid" in live_compose

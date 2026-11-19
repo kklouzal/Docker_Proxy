@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
+
 POLICY_SHA = "a" * 64
 
 
@@ -127,26 +129,17 @@ class _LifecycleConnection:
     def _execute_lifecycle(self, compact: str, params: tuple[object, ...]):
         if compact.startswith("CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones"):
             return _Result()
-        if compact.startswith("SELECT 1 FROM information_schema.tables"):
-            return _Result([{"1": 1}])
-        if compact.startswith(
-            "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones",
-        ):
-            row = self.tombstones.get(str(params[0]))
-            if row is None:
-                return _Result()
-            action, target = row
-            return _Result([{"action": action, "target_proxy_id": target}])
-        if compact.startswith("SELECT proxy_id FROM proxy_id_aliases"):
-            target = self.aliases.get(str(params[0]))
-            if target is None:
-                return _Result()
-            return _Result([{"proxy_id": target}])
-        if compact.startswith("SELECT status FROM proxy_instances"):
-            status = self.registry.get(str(params[0]))
-            if status is None:
-                return _Result()
-            return _Result([{"status": status}])
+        if is_lifecycle_state_query(compact):
+            key = str(params[0])
+            return _Result(
+                [
+                    lifecycle_state_row(
+                        tombstone=self.tombstones.get(key),
+                        alias_target=self.aliases.get(key),
+                        registry_status=self.registry.get(key),
+                    )
+                ]
+            )
         if compact.startswith("SELECT GET_LOCK"):
             return _Result([{"acquired": 1}])
         if compact.startswith("DO RELEASE_LOCK"):
@@ -177,30 +170,28 @@ class _RetentionConnection:
         if compact.startswith("SELECT DISTINCT proxy_id FROM proxy_operations"):
             proxies = sorted({str(row["proxy_id"]) for row in self.rows.values()})
             return _Result([{"proxy_id": proxy_id} for proxy_id in proxies])
-        if compact.startswith("SELECT candidate.id AS victim_id"):
-            proxy_id, protected_id, limit = params
-            proxy_rows = [
-                row for row in self.rows.values() if row["proxy_id"] == proxy_id
-            ]
+        if compact.startswith("SELECT COUNT(*) AS active_count FROM proxy_operations"):
+            (proxy_id,) = params
             active_count = sum(
-                row["status"] in {"pending", "applying"} for row in proxy_rows
+                row["proxy_id"] == proxy_id and row["status"] in {"pending", "applying"}
+                for row in self.rows.values()
             )
+            return _Result([{"active_count": active_count}])
+        if compact.startswith("SELECT id AS victim_id FROM proxy_operations"):
+            proxy_id, offset = params
             terminals = sorted(
                 (
                     row
-                    for row in proxy_rows
-                    if row["status"] in {"applied", "superseded", "failed"}
+                    for row in self.rows.values()
+                    if row["proxy_id"] == proxy_id
+                    and row["status"] in {"applied", "superseded", "failed"}
                 ),
                 key=lambda row: (int(row["updated_ts"]), int(row["id"])),
                 reverse=True,
             )
-            keep_terminal = max(0, int(limit) - active_count)
-            victims = {
-                int(row["id"])
-                for row in terminals[keep_terminal:]
-                if int(row["id"]) != int(protected_id)
-            }
-            return _Result([{"victim_id": row_id} for row_id in sorted(victims)])
+            return _Result(
+                [{"victim_id": int(row["id"])} for row in terminals[int(offset) :]]
+            )
         if compact.startswith("DELETE FROM proxy_operations"):
             proxy_id, *victim_ids = params
             victims = {
@@ -245,10 +236,11 @@ def test_retention_sql_avoids_mysql_1093_target_table_delete() -> None:
 
     assert OperationLedger()._prune_proxy_history(conn, "edge-a") == 1
     statements = [sql for sql, _params in conn.queries]
-    assert statements[0].startswith("SELECT candidate.id AS victim_id")
-    assert statements[0].endswith("FOR UPDATE")
-    assert statements[1].startswith("DELETE FROM proxy_operations")
-    assert "JOIN (" not in statements[1]
+    assert statements[0].startswith("SELECT COUNT(*) AS active_count")
+    assert statements[1].startswith("SELECT id AS victim_id")
+    assert statements[1].endswith("FOR UPDATE")
+    assert statements[2].startswith("DELETE FROM proxy_operations")
+    assert "JOIN (" not in statements[2]
 
 
 def test_retention_keeps_exactly_128_terminal_operations() -> None:

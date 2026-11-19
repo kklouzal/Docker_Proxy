@@ -1365,6 +1365,8 @@ def test_build_db_stages_then_renames_without_deleting_live_tables(
                     self.statement = statement
 
                 def fetchone(self):
+                    if "GET_LOCK" in self.statement:
+                        return {"acquired": 1}
                     return (0,)
 
                 def fetchall(self):
@@ -1416,6 +1418,14 @@ def test_build_db_stages_then_renames_without_deleting_live_tables(
     )
     assert "`webcat_domains_stage_678_12345` TO `webcat_domains`" in joined
     assert conn.commits >= 1
+    lock_get = conn.sql.index("SELECT GET_LOCK(%s, %s) AS acquired")
+    first_create = next(
+        index
+        for index, sql in enumerate(conn.sql)
+        if sql.startswith("CREATE TABLE `webcat_")
+    )
+    assert lock_get < first_create
+    assert conn.sql[-1] == "DO RELEASE_LOCK(%s)"
 
 
 def test_build_db_drops_stale_stage_tables(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1430,6 +1440,10 @@ def test_build_db_drops_stale_stage_tables(monkeypatch: pytest.MonkeyPatch) -> N
 
             class _Result:
                 def fetchone(self):
+                    if "GET_LOCK" in sql:
+                        return {"acquired": 1}
+                    if "IS_USED_LOCK" in sql:
+                        return {"owner": None}
                     return (1,)
 
                 def fetchall(self):

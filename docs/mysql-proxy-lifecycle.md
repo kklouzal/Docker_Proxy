@@ -8,7 +8,7 @@ Writers that can insert/update/upsert rows under `proxy_id` and must not bypass 
 
 | Area | Tables | Writer entry points | Risk before guard | Current contract |
 | --- | --- | --- | --- | --- |
-| Registry | `proxy_instances`, `proxy_id_aliases`, `proxy_lifecycle_tombstones` | `ProxyRegistry.ensure_proxy`, `heartbeat`, `mark_apply_result`, `rename_proxy`, `remove_proxy` | stale heartbeats could recreate a retired id unless tombstone checked | registry checks tombstones; lifecycle transitions clear write-guard cache; heartbeat remains stale-id rejecting rather than alias-following |
+| Registry | `proxy_instances`, `proxy_id_aliases`, `proxy_lifecycle_tombstones`, `proxy_default_selection` | `ProxyRegistry.ensure_proxy`, `heartbeat`, `mark_apply_result`, `rename_proxy`, `remove_proxy` | stale heartbeats could recreate a retired id unless tombstone checked | registry checks tombstones; the Admin UI default (set under the target's lifecycle lock, read with a locking read by rename/remove) can never point at a removing/renaming proxy and is never removed or renamed; lifecycle transitions clear write-guard cache; heartbeat remains stale-id rejecting rather than alias-following |
 | Config revisions/apply evidence | `proxy_config_revisions`, `proxy_config_applications` | `ConfigRevisionStore.create_revision`, `ensure_active_revision`, `activate_revision`, `deactivate_revision`, `record_apply_result` | admin/config writers could recreate rows for removed IDs or keep using an obsolete alias | guarded writes hold the per-proxy lifecycle lock, resolve completed aliases to the canonical active id, and reject removing/removed/renaming IDs |
 | Operation ledger | `proxy_operations` | `OperationLedger.create_operation` | queued operations could target a removed or old alias id and recreate pending work after cleanup | guarded creation canonicalizes completed aliases and rejects tombstoned/in-progress identities |
 | Certificate/adblock apply evidence | `proxy_certificate_applications`, `proxy_adblock_artifact_applications` | `record_apply_result` in certificate/adblock stores | runtime apply evidence could repopulate a removed/renaming proxy scope | guarded writes reject lifecycle-blocked identities and canonicalize completed aliases |
@@ -33,7 +33,10 @@ the first scoped-row delete. Each request then commits at most
 chunks. If a table reaches that bound with scoped rows still remaining, the
 registry remains `remove_pending`, the Admin UI reports the retained progress,
 and repeating the removal resumes
-idempotently. A fleet-wide removal lock prevents a second proxy removal from
+idempotently. Scheduled housekeeping repeats that bounded pass for any
+`remove_pending`/`removing` proxy (with catch-up runs while progress remains),
+so a paused removal converges without an operator retry. Reconciliation nudges
+skip proxies in removal or rename transitions. A fleet-wide removal lock prevents a second proxy removal from
 invalidating the last-proxy guard while one of these durable passes is pending.
 Aliases and the registry row are deleted only after a pass proves that all
 scoped tables are empty; the final tombstone remains `removed`.

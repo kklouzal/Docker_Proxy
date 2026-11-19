@@ -8,7 +8,7 @@ A complete MySQL state export/import must include:
 
 - `schema_migrations` and `schema_migration_events` so code can prove the schema lifecycle and checksum history.
 - Generated active-slot columns and their unique indexes on `proxy_config_revisions`, `certificate_bundle_revisions`, and `adblock_artifact_revisions`.
-- Proxy lifecycle state: `proxy_instances`, `proxy_id_aliases`, and `proxy_lifecycle_tombstones`.
+- Proxy lifecycle state: `proxy_instances`, `proxy_id_aliases`, and `proxy_lifecycle_tombstones`, plus the Admin UI default proxy selection in `proxy_default_selection`.
 - Operation idempotency/claim state in `proxy_operations`, including `request_key` and `claim_token`.
 - Revision/apply evidence for proxy config, certificate bundles, and adblock artifacts.
 - Proxy config application evidence, including `proxy_config_applications.config_sha256`, so restored apply ledgers can be checked against the referenced revision content hash.

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .mysql_test_utils import configure_test_mysql_env
+from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
 
 def _request_line(
@@ -47,6 +47,7 @@ def _insert_request(diag_store, line: str) -> None:
 
 def _init_stats_stores(tmp_path, env_name: str):
     configure_test_mysql_env(tmp_path / env_name)
+    register_test_proxies()
 
     from services.diagnostic_store import DiagnosticStore  # type: ignore
     from services.live_stats import LiveStatsStore  # type: ignore

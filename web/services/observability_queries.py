@@ -397,7 +397,7 @@ class ObservabilityQueries:
                     COUNT(DISTINCT client_ip) AS clients,
                     COUNT(DISTINCT domain) AS destinations,
                     COUNT(DISTINCT {tx_sql}) AS transactions
-                FROM diagnostic_requests
+                FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_ts)
                 WHERE proxy_id = %s AND ts >= %s AND {self._present_sql("domain")}
                 """,
                 (proxy_id, int(since)),

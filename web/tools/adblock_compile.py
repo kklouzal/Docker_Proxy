@@ -1402,6 +1402,16 @@ def _write_request_lookup_index(
     return counts
 
 
+def _artifact_relative_paths(value: Any, out_dir: str) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _artifact_relative_paths(item, out_dir) for key, item in value.items()
+        }
+    if isinstance(value, str):
+        return os.path.relpath(value, out_dir)
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Compile EasyList-style adblock lists into request lookup artifacts",
@@ -2031,6 +2041,10 @@ def main(argv: list[str] | None = None) -> int:
             "request_lookup_sqlite": "request_lookup.sqlite is the fast lookup substrate: indexed domain suffix, exact host, host-pattern, regex, generic literal-key, option, resource-type, and domain-scope tables joined to full rule payloads by rule_id.",
         },
     }
+    # report.json is part of the published artifact and its SHA-256. Record
+    # artifact-relative names, not the (random temporary) build directory, so
+    # identical inputs produce an identical artifact and revision reuse works.
+    report["files"] = _artifact_relative_paths(report["files"], out_dir)
     with pathlib.Path(os.path.join(out_dir, "report.json")).open(
         "w",
         encoding="utf-8",

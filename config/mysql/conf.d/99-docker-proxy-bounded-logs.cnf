@@ -23,6 +23,10 @@ max_allowed_packet=256M
 # Bound redo growth on small/edge deployments.
 innodb_redo_log_capacity=256M
 
-# If binary logging is enabled, retain only one day by default. Operators who
-# rely on longer PITR windows should override this in a later conf.d file.
-binlog_expire_logs_seconds=86400
+# Binary logging is disabled: the control plane runs without replicas, and
+# binlogs only cost an extra fsync per commit plus disk (a single adblock
+# artifact change writes tens of MB of ROW images). Recovery uses MySQL
+# backups (docs/mysql-backup-restore-validation.md). Operators who need
+# replication or point-in-time recovery must re-enable it explicitly with
+# log_bin and a binlog_expire_logs_seconds budget in a later conf.d file.
+disable_log_bin

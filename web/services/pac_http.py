@@ -21,7 +21,7 @@ from services.pac_request import (
     select_manifest_file,
     substitute_request_host,
 )
-from services.proxy_context import get_default_proxy_id, normalize_proxy_id
+from services.proxy_context import get_env_default_proxy_id, normalize_proxy_id
 from services.public_endpoint import (
     _is_reserved_public_dns_host,
     _is_unsafe_request_host_ip,
@@ -380,7 +380,7 @@ class LocalPacCache:
     def __init__(self, pac_dir: str, *, proxy_id: object | None = None) -> None:
         self.pac_dir = Path(pac_dir)
         self.proxy_id = normalize_proxy_id(
-            get_default_proxy_id() if proxy_id is None else proxy_id
+            get_env_default_proxy_id() if proxy_id is None else proxy_id
         )
         self._lock = threading.Lock()
         self._state_sha = ""

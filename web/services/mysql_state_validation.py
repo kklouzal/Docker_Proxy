@@ -20,6 +20,7 @@ _REQUIRED_TABLES: tuple[str, ...] = (
     "proxy_instances",
     "proxy_lifecycle_tombstones",
     "proxy_id_aliases",
+    "proxy_default_selection",
     "proxy_recovery_adoptions",
     "proxy_config_revisions",
     "proxy_config_applications",

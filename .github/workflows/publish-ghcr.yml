@@ -175,7 +175,7 @@ jobs:
 
   mysql-integration-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     needs: ruff-check
     services:
       mysql:
@@ -215,17 +215,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r web/requirements-dev.txt
 
-      - name: Run MySQL lifecycle integration tests
+      # Most MySQL-backed tests are not marked "mysql" (they skip without a
+      # configured database), so run the whole non-live suite here.
+      - name: Run MySQL-backed tests
         run: >-
-          python -m pytest -m "mysql" -p no:cacheprovider
+          python -m pytest -m "not live" -p no:cacheprovider
           --durations=10
           -ra
-          web/tests/test_revision_lifecycle_invariants.py
-          web/tests/test_proxy_registry.py
-          web/tests/test_proxy_write_guard.py
-          web/tests/test_mysql_read_query_explain.py
-          web/tests/test_mysql_schema_lifecycle.py
-          web/tests/test_mysql_fault_injection.py
+          web/tests
 
   build-test-images:
     runs-on: ubuntu-latest

@@ -1,9 +1,10 @@
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from .mysql_test_utils import configure_test_mysql_env
+from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 from .subprocess_test_utils import run_test_process
 
 
@@ -19,12 +20,15 @@ def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "ssl-errors-seed")
+    register_test_proxies()
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
 
     cache_log = tmp_path / "cache.log"
+    # Seeding reads only complete (newline-terminated) records; a trailing
+    # partial line may still be mid-write (read_bounded_complete_lines).
     cache_log.write_text(
-        "2026/04/18 04:04:09 kid1| Processing Configuration File: /etc/squid/conf.d/10-sslfilter.conf (depth 1)\n2026/04/18 04:04:40 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1",
+        "2026/04/18 04:04:09 kid1| Processing Configuration File: /etc/squid/conf.d/10-sslfilter.conf (depth 1)\n2026/04/18 04:04:40 kid1| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1\n",
         encoding="utf-8",
     )
 
@@ -43,6 +47,7 @@ def test_live_stats_seed_checkpoint_skips_restarts_and_recovers_appends(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "live-stats-seed")
+    register_test_proxies()
 
     from services.live_stats import LiveStatsStore  # type: ignore
 
@@ -70,6 +75,7 @@ def test_live_stats_seed_checkpoint_skips_restarts_and_recovers_appends(
 
 def test_ssl_errors_store_ignores_startup_noise(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "ssl-errors")
+    register_test_proxies()
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
 
@@ -96,6 +102,7 @@ def test_ssl_errors_store_merges_followup_connection_context_without_double_coun
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "ssl-errors-context")
+    register_test_proxies()
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
 
@@ -120,6 +127,7 @@ def test_ssl_errors_store_merges_tls_accept_header_detail_and_context_into_one_b
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "ssl-errors-block")
+    register_test_proxies()
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
 
@@ -151,6 +159,7 @@ def test_ssl_errors_store_enriches_tls_accept_domain_from_master_xaction(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "ssl-errors-master-context")
+    register_test_proxies()
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
 
@@ -168,15 +177,22 @@ def test_ssl_errors_store_enriches_tls_accept_domain_from_master_xaction(
                 host VARCHAR(255) NOT NULL,
                 url TEXT NOT NULL,
                 master_xaction VARCHAR(128) NOT NULL,
-                KEY idx_diag_proxy_master_ts (proxy_id, master_xaction, ts)
+                KEY idx_diagnostic_requests_proxy_tx (proxy_id, master_xaction, ts)
             )
             """,
+        )
+        # cache.log timestamps are parsed as process-local time; derive the row ts
+        # the same way so the test does not assume the MySQL server time zone
+        # matches the test host's.
+        log_ts = int(
+            time.mktime(time.strptime("2026/04/21 23:37:04", "%Y/%m/%d %H:%M:%S"))
         )
         conn.execute(
             """
             INSERT INTO diagnostic_requests(proxy_id, ts, domain, sni, host, url, master_xaction)
-            VALUES('default', UNIX_TIMESTAMP('2026-04-21 23:37:04'), 'gateway.discord.gg', 'gateway.discord.gg', 'gateway.discord.gg:443', 'gateway.discord.gg:443', '55')
+            VALUES('default', %s, 'gateway.discord.gg', 'gateway.discord.gg', 'gateway.discord.gg:443', 'gateway.discord.gg:443', '55')
             """,
+            (log_ts,),
         )
 
     store.ingest_line("2026/04/21 23:37:04 kid1| ERROR: Cannot accept a TLS connection")
@@ -197,6 +213,7 @@ def test_ssl_errors_store_search_queries_escape_like_patterns_for_mysql(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "ssl-errors-search")
+    register_test_proxies()
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
 
@@ -1468,6 +1485,7 @@ https_port 0.0.0.0:3130 intercept ssl-bump \\
 
 def test_ssl_errors_store_suggests_review_only_exclusion_candidates(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "ssl-errors-candidates")
+    register_test_proxies()
 
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
 
@@ -1502,6 +1520,7 @@ def test_sslfilter_materialized_config_deduplicates_domains_covered_by_wildcards
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "sslfilter-domain-dedupe")
+    register_test_proxies()
 
     from services.sslfilter_store import SslFilterStore  # type: ignore
 
@@ -1511,6 +1530,9 @@ def test_sslfilter_materialized_config_deduplicates_domains_covered_by_wildcards
         nocache_src_list_path=str(tmp_path / "nocache-src.txt"),
     )
     store.init_db()
+    # Domain ACLs render only while inspection is on (the toggle defaults off
+    # since e42aff5 and then splices all TLS traffic).
+    store.set_inspection_enabled(True)
     for domain in [
         "example.com",
         "*.example.com",
@@ -1771,6 +1793,7 @@ def test_compatibility_presets_include_source_backed_collaboration_sslfilter_dom
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "compatibility-presets")
+    register_test_proxies()
 
     from services.ssl_compatibility_presets import COMPATIBILITY_PRESETS  # type: ignore
     from services.sslfilter_store import get_sslfilter_store  # type: ignore
@@ -1833,6 +1856,7 @@ def test_shared_infrastructure_preset_requires_explicit_acknowledgement(
     tmp_path, monkeypatch
 ) -> None:
     configure_test_mysql_env(tmp_path / "shared-infrastructure-preset")
+    register_test_proxies()
 
     import services.sslfilter_store as module  # type: ignore
 
@@ -1907,6 +1931,7 @@ def test_squid_controller_default_ssl_bump_uses_peek_stare_then_bump(tmp_path) -
 
 def test_webfilter_materialized_helper_name_tracks_webcat_revision(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "webfilter-helper-version")
+    register_test_proxies()
 
     from services.db import connect  # type: ignore
     from services.webfilter_store import WebFilterStore  # type: ignore

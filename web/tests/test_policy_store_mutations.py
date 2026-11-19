@@ -4,11 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from .mysql_test_utils import configure_test_mysql_env
+from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
 
 def test_pac_profiles_validate_scope_dedupe_match_and_delete(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "pac-profile-mutations")
+    register_test_proxies("default", "edge-a", "edge-b")
 
     from services.pac_profiles_store import PacProfilesStore  # type: ignore
     from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
@@ -102,6 +103,7 @@ def test_pac_profiles_validate_scope_dedupe_match_and_delete(tmp_path) -> None:
 
 def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "sslfilter-policy-mutations")
+    register_test_proxies("default", "edge-a", "edge-b")
 
     from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
     from services.sslfilter_store import SslFilterStore  # type: ignore
@@ -273,6 +275,7 @@ def test_sslfilter_store_canonicalizes_dedupes_removes_and_materializes(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "sslfilter-mutations")
+    register_test_proxies("default", "edge-a", "edge-b")
 
     from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
     from services.sslfilter_store import SslFilterStore  # type: ignore
@@ -280,7 +283,9 @@ def test_sslfilter_store_canonicalizes_dedupes_removes_and_materializes(
     include_path = tmp_path / "10-sslfilter.conf"
     list_path = tmp_path / "nobump.txt"
     store = SslFilterStore(
-        squid_include_path=str(include_path), nobump_list_path=str(list_path)
+        squid_include_path=str(include_path),
+        nobump_list_path=str(list_path),
+        nocache_src_list_path=str(tmp_path / "nocache_src.txt"),
     )
     store.init_db()
 
@@ -331,6 +336,7 @@ def test_webfilter_category_refresh_only_tracks_active_category_policy(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "webfilter-category-refresh")
+    register_test_proxies("default", "edge-a", "edge-b")
 
     from services.webfilter_store import WebFilterStore  # type: ignore
 

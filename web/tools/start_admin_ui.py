@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import random
 import re
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,6 +27,14 @@ GUNICORN_NUMERIC_DEFAULTS = {
     "WEB_KEEPALIVE": "5",
 }
 BIND_ALL_IPV4 = "0.0.0.0"  # noqa: S104 - intentional container listener wildcard
+DATABASE_ENV_NAMES = ("DATABASE_URL", "MYSQL_HOST", "MYSQL_DATABASE", "MYSQL_USER")
+# Startup waits only on MySQL failures that a starting, restarting, or not yet
+# routable server produces. Anything else (credentials, privileges, schema
+# history drift) is a configuration defect and fails startup loudly.
+MYSQL_STARTUP_TRANSIENT_CODES = frozenset({1040, 1053, 2002, 2003, 2005, 2006, 2013})
+MYSQL_WAIT_INITIAL_DELAY_SECONDS = 0.5
+MYSQL_WAIT_MAX_DELAY_SECONDS = 5.0
+MYSQL_WAIT_LOG_INTERVAL_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -119,6 +129,109 @@ def effective_gunicorn_numeric_env(environ: Mapping[str, str]) -> dict[str, str]
     return effective
 
 
+def database_configured(environ: Mapping[str, str]) -> bool:
+    return any((environ.get(name) or "").strip() for name in DATABASE_ENV_NAMES)
+
+
+def is_transient_mysql_startup_error(exc: BaseException) -> bool:
+    try:
+        import pymysql
+    except ImportError:
+        return False
+    if not isinstance(exc, pymysql.MySQLError):
+        return False
+    args = getattr(exc, "args", ())
+    code = args[0] if args and isinstance(args[0], int) else None
+    if isinstance(exc, pymysql.InterfaceError) and code in {None, 0}:
+        return True
+    return code in MYSQL_STARTUP_TRANSIENT_CODES
+
+
+def _probe_mysql_server() -> None:
+    """Open and close one unretried server connection.
+
+    The probe deliberately bypasses the pooled, internally retried connect path
+    so an unreachable server costs one quiet attempt per wait iteration instead
+    of a burst of per-attempt retry warnings. It does not select the database,
+    which the migration step may still need to create.
+    """
+    import pymysql
+    from services.db import resolve_database_config
+
+    cfg = resolve_database_config()
+    pymysql.connect(  # type: ignore[call-arg]
+        host=cfg.host,
+        port=int(cfg.port),
+        user=cfg.user,
+        password=cfg.password,
+        charset=cfg.charset,
+        connect_timeout=int(cfg.connect_timeout),
+        read_timeout=int(cfg.read_timeout),
+        write_timeout=int(cfg.write_timeout),
+    ).close()
+
+
+def run_when_mysql_ready[T](
+    operation: Callable[[], T],
+    *,
+    probe: Callable[[], None] = _probe_mysql_server,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+    uniform: Callable[[float, float], float] = random.uniform,  # noqa: S311 - retry jitter
+) -> T:
+    """Run ``operation`` once MySQL is reachable, waiting without a deadline.
+
+    Transient connectivity failures from the probe or the operation restart the
+    wait with capped exponential backoff and jitter. The Admin UI cannot serve
+    its DB-authoritative configuration without MySQL, so it waits instead of
+    starting degraded; no listener exists meanwhile, so the container
+    healthcheck truthfully reports not-ready. Logs are emitted on the first
+    failure, when the MySQL error code changes, and at most once per
+    ``MYSQL_WAIT_LOG_INTERVAL_SECONDS`` otherwise. Non-transient failures
+    propagate unchanged.
+    """
+    started = monotonic()
+    failures = 0
+    last_logged_at: float | None = None
+    last_code: object = None
+    unreachable = False
+    while True:
+        try:
+            probe()
+            if unreachable:
+                _log(
+                    f"MySQL became reachable after {monotonic() - started:.1f}s "
+                    f"({failures} failed attempts); continuing Admin UI startup.",
+                )
+                unreachable = False
+            return operation()
+        except Exception as exc:
+            if not is_transient_mysql_startup_error(exc):
+                raise
+            failures += 1
+            unreachable = True
+            now = monotonic()
+            cap = min(
+                MYSQL_WAIT_MAX_DELAY_SECONDS,
+                MYSQL_WAIT_INITIAL_DELAY_SECONDS * (2 ** min(failures - 1, 16)),
+            )
+            delay = uniform(cap / 2, cap)
+            code = exc.args[0] if exc.args else None
+            if (
+                last_logged_at is None
+                or code != last_code
+                or now - last_logged_at >= MYSQL_WAIT_LOG_INTERVAL_SECONDS
+            ):
+                _log(
+                    "Waiting for MySQL before starting the Admin UI "
+                    f"(elapsed {now - started:.1f}s, failed attempts {failures}, "
+                    f"next attempt in {delay:.1f}s): {type(exc).__name__}: {exc}",
+                )
+                last_logged_at = now
+                last_code = code
+            sleep(delay)
+
+
 def _env_https_config(
     environ: Mapping[str, str],
 ) -> AdminUiHttpsRuntimeConfig:
@@ -170,8 +283,10 @@ def resolve_admin_ui_https_config(
     """Resolve Admin UI HTTPS mode.
 
     Persisted UI settings become authoritative after the first explicit save.
-    Environment variables remain the bootstrap fallback when the DB is unavailable
-    or the settings row has not been changed from its seeded default.
+    Environment variables remain the bootstrap fallback when no database is
+    configured, the settings cannot be read for a non-transient reason, or the
+    settings row has not been changed from its seeded default. Transient MySQL
+    connectivity errors propagate so startup can wait for the authoritative row.
     """
     fallback = _env_https_config(environ)
     if settings_loader is None:
@@ -189,6 +304,10 @@ def resolve_admin_ui_https_config(
     except Exception as exc:
         if _is_invalid_saved_settings_error(exc):
             return _invalid_saved_https_config(str(exc))
+        if is_transient_mysql_startup_error(exc):
+            # MySQL is temporarily unreachable: the caller waits and retries
+            # rather than pinning this process to the bootstrap fallback.
+            raise
         _log(
             f"WARNING: failed to load Admin UI HTTPS settings; using environment fallback: {exc}",
         )
@@ -302,6 +421,8 @@ def _try_materialize_saved_admin_ui_leaf(
             source="db",
         )
     except Exception as exc:
+        if is_transient_mysql_startup_error(exc):
+            raise
         _log(
             "WARNING: failed to materialize saved Admin UI HTTPS leaf certificate; "
             f"starting HTTP so the Certificates page can recover the setting: {exc}",
@@ -342,6 +463,57 @@ def build_gunicorn_argv(
     return argv
 
 
+def select_admin_ui_https_config(
+    environ: Mapping[str, str],
+) -> AdminUiHttpsRuntimeConfig:
+    """Resolve the HTTPS mode, recovering a saved-enabled DB leaf if needed."""
+    from services.certificate_core import validate_tls_material_paths
+
+    config = resolve_admin_ui_https_config(environ)
+    if not (config.enabled and config.source == "db"):
+        return config
+    if validate_tls_material_paths(config.certfile, config.keyfile).ready:
+        return config
+    recovered = _try_materialize_saved_admin_ui_leaf(environ)
+    if (
+        recovered is not None
+        and validate_tls_material_paths(recovered.certfile, recovered.keyfile).ready
+    ):
+        return recovered
+    _log(
+        "WARNING: saved Admin UI HTTPS setting is enabled but the active "
+        "Admin UI leaf certificate is not valid TLS material; starting HTTP so the "
+        "Certificates page can recover the setting.",
+    )
+    return AdminUiHttpsRuntimeConfig(
+        enabled=False,
+        certfile="",
+        keyfile="",
+        source="db-missing-material",
+        error=(
+            "Saved Admin UI HTTPS is enabled, but the Admin UI leaf "
+            "certificate is not valid TLS material inside the admin-ui "
+            "container."
+        ),
+    )
+
+
+def prepare_database_startup(
+    environ: Mapping[str, str],
+) -> AdminUiHttpsRuntimeConfig:
+    """Apply schema migrations once, then select DB-authoritative HTTPS mode.
+
+    The launcher owns this step before Gunicorn starts, so workers boot against
+    a migrated schema and the listener is chosen from the saved settings row
+    instead of the environment fallback. The step is idempotent and is replayed
+    whole by ``run_when_mysql_ready`` after a transient MySQL failure.
+    """
+    from services.schema_lifecycle import ensure_startup_schema_if_configured
+
+    ensure_startup_schema_if_configured()
+    return select_admin_ui_https_config(environ)
+
+
 def main() -> int:
     if sys.argv[1:] == ["--print-effective-gunicorn-env"]:
         effective = effective_gunicorn_numeric_env(os.environ)
@@ -352,36 +524,13 @@ def main() -> int:
 
     from services.certificate_core import validate_tls_material_paths
 
-    config = resolve_admin_ui_https_config(os.environ)
-    if config.enabled:
+    if database_configured(os.environ):
+        config = run_when_mysql_ready(lambda: prepare_database_startup(os.environ))
+    else:
+        config = select_admin_ui_https_config(os.environ)
+    if config.enabled and config.source != "db":
         material = validate_tls_material_paths(config.certfile, config.keyfile)
-        if config.source == "db" and not material.ready:
-            recovered = _try_materialize_saved_admin_ui_leaf(os.environ)
-            if recovered is not None:
-                material = validate_tls_material_paths(
-                    recovered.certfile,
-                    recovered.keyfile,
-                )
-            if recovered is not None and material.ready:
-                config = recovered
-            else:
-                _log(
-                    "WARNING: saved Admin UI HTTPS setting is enabled but the active "
-                    "Admin UI leaf certificate is not valid TLS material; starting HTTP so the "
-                    "Certificates page can recover the setting.",
-                )
-                config = AdminUiHttpsRuntimeConfig(
-                    enabled=False,
-                    certfile="",
-                    keyfile="",
-                    source="db-missing-material",
-                    error=(
-                        "Saved Admin UI HTTPS is enabled, but the Admin UI leaf "
-                        "certificate is not valid TLS material inside the admin-ui "
-                        "container."
-                    ),
-                )
-        elif not material.ready:
+        if not material.ready:
             _log(
                 "ERROR: Admin UI HTTPS is enabled by "
                 f"{config.source} but TLS material is not valid: {material.detail}",

@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from services.db import connect_unpooled, resolve_database_config
+from services.runtime_helpers import env_int
 from services.sql_identifiers import quote_mysql_identifier
+
+# OPTIMIZE rebuilds the whole table; on multi-GB tables that takes far longer
+# than the default 15 s client read timeout. A timed-out client does not stop
+# the server-side rebuild, so the run was reported failed while the rebuild
+# kept running and the next table's maintenance overlapped it.
+DEFAULT_MAINTENANCE_READ_TIMEOUT_SECONDS = 4 * 60 * 60
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -19,6 +28,20 @@ def looks_like_stale_connection(exc: BaseException) -> bool:
         or "(0, '')" in text
         or "2006" in text
         or "2013" in text
+    )
+
+
+def maintenance_connect() -> Any:
+    """Open an unpooled connection whose read timeout covers table rebuilds."""
+    cfg = resolve_database_config()
+    read_timeout = env_int(
+        "MYSQL_MAINTENANCE_READ_TIMEOUT",
+        DEFAULT_MAINTENANCE_READ_TIMEOUT_SECONDS,
+        minimum=1,
+        maximum=24 * 60 * 60,
+    )
+    return connect_unpooled(
+        replace(cfg, read_timeout=max(int(cfg.read_timeout), read_timeout)),
     )
 
 

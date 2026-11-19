@@ -71,6 +71,7 @@ from services.config_revisions import ConfigApplication, ConfigRevisionMetadata
 from services.config_revisions import (
     get_config_revisions as _default_get_config_revisions,
 )
+from services.db import DATABASE_ERRORS
 from services.diagnostic_store import (
     get_diagnostic_store as _default_get_diagnostic_store,
 )
@@ -95,7 +96,7 @@ from services.housekeeping import (
     stop_housekeeping,
 )
 from services.http_optimizations import install_http_optimizations
-from services.logutil import log_exception_throttled
+from services.logutil import log_database_unavailable, log_exception_throttled
 from services.observability_maintenance import (
     ObservabilityMaintenanceAlreadyRunningError,
 )
@@ -148,11 +149,12 @@ from services.privacy_labels import (
 from services.proxy_client import ProxyClientError
 from services.proxy_client import get_proxy_client as _default_get_proxy_client
 from services.proxy_context import (
-    get_default_proxy_id,
+    get_bound_proxy_id,
     get_proxy_id,
     normalize_proxy_id,
     normalize_route_proxy_id,
     reset_proxy_id,
+    set_implicit_default_proxy_resolver,
     set_proxy_id,
 )
 from services.proxy_health import (
@@ -2373,6 +2375,18 @@ def _is_logged_in() -> bool:
         return False
     try:
         current_version = _auth_store.get_user_session_version(u)
+    except DATABASE_ERRORS as exc:
+        # Fail closed for this request, but keep the session: it is revalidated
+        # against the current credential version once MySQL answers again, so
+        # an outage must not log every administrator out.
+        log_database_unavailable(
+            app.logger,
+            "web.app.local_session_validation",
+            "Local administrator session validation deferred while MySQL is unavailable",
+            exc,
+            interval_seconds=60.0,
+        )
+        abort(503, description="The Admin UI database is temporarily unavailable.")
     except Exception:
         app.logger.exception("Failed to validate local administrator session")
         session.clear()
@@ -2390,7 +2404,7 @@ def _query_flag(value: bool) -> str | None:
 
 
 _FLEET_MANAGEMENT_ENDPOINTS = frozenset(
-    {"proxies", "remove_proxy", "reconcile_proxy_identity"},
+    {"proxies", "remove_proxy", "reconcile_proxy_identity", "set_default_proxy"},
 )
 _NON_PROXY_CONTEXT_ENDPOINTS = frozenset(
     {
@@ -2411,6 +2425,7 @@ _NON_PROXY_LINK_ENDPOINTS = frozenset(
         "recover_admin_session",
         "remove_proxy",
         "reconcile_proxy_identity",
+        "set_default_proxy",
     },
 )
 
@@ -3394,6 +3409,32 @@ def _proxy_inventory_or_default(registry: Any) -> list[Any]:
     return proxies
 
 
+def _admin_default_proxy_id(registry: Any) -> str:
+    """Return the Admin UI default proxy (MySQL selection, else env bootstrap)."""
+    return normalize_proxy_id(registry.effective_default_proxy_id())
+
+
+def install_admin_default_proxy_resolver() -> None:
+    """Make unbound proxy-scoped work in this process follow the UI default.
+
+    Called by the Admin UI WSGI entrypoint only. Proxy containers never call
+    it, so their implicit proxy stays their environment identity.
+    """
+    set_implicit_default_proxy_resolver(
+        lambda: get_proxy_registry().effective_default_proxy_id(),
+    )
+
+
+def _default_or_first_proxy(registry: Any, proxies: list[Any]) -> Any | None:
+    if not proxies:
+        return None
+    default_id = _admin_default_proxy_id(registry)
+    return next(
+        (proxy for proxy in proxies if proxy.proxy_id == default_id),
+        proxies[0],
+    )
+
+
 def _resolve_proxy_from_inventory(
     registry: Any,
     proxies: list[Any],
@@ -3434,8 +3475,9 @@ def _safe_resolve_registered_proxy_id(registry: Any, proxy_id: object | None) ->
 
 
 def _run_with_proxy_context(proxy_id: str, callback: Callable[[], Any]) -> Any:
-    current_proxy_id = get_proxy_id()
-    if normalize_proxy_id(current_proxy_id) == normalize_proxy_id(proxy_id):
+    # Compare only an explicitly bound proxy: resolving the implicit default
+    # here would add a MySQL dependency to every scoped audit write.
+    if get_bound_proxy_id() == normalize_proxy_id(proxy_id):
         return callback()
     token = set_proxy_id(proxy_id)
     try:
@@ -3472,14 +3514,14 @@ def _resolve_selected_proxy_context() -> tuple[str, Any, list[Any]]:
         if requested_proxy is not None:
             session["active_proxy_id"] = normalize_route_proxy_id(requested_proxy)
 
-    preferred = normalize_proxy_id(
-        session.get("active_proxy_id") or get_default_proxy_id()
-    )
     registry = get_proxy_registry()
+    preferred = normalize_proxy_id(
+        session.get("active_proxy_id") or _admin_default_proxy_id(registry)
+    )
     proxies = _proxy_inventory_or_default(registry)
     active_proxy = _resolve_proxy_from_inventory(registry, proxies, preferred)
     if active_proxy is None:
-        active_proxy = proxies[0]
+        active_proxy = _default_or_first_proxy(registry, proxies)
     session["active_proxy_id"] = active_proxy.proxy_id
     return active_proxy.proxy_id, active_proxy, proxies
 
@@ -3525,11 +3567,11 @@ def _inject_proxy_context():
         registry = get_proxy_registry()
         proxies = _proxy_inventory_or_default(registry)
         preferred = normalize_proxy_id(
-            session.get("active_proxy_id") or get_default_proxy_id(),
+            session.get("active_proxy_id") or _admin_default_proxy_id(registry),
         )
         active_proxy = _resolve_proxy_from_inventory(registry, proxies, preferred)
         if active_proxy is None:
-            active_proxy = proxies[0] if proxies else None
+            active_proxy = _default_or_first_proxy(registry, proxies)
         if active_proxy is not None:
             session["active_proxy_id"] = active_proxy.proxy_id
         return {
@@ -6503,26 +6545,73 @@ def remove_proxy():
         else:
             session.pop("active_proxy_id", None)
     _clear_admin_runtime_caches()
-    audit_proxy_id = normalize_proxy_id(
-        session.get("active_proxy_id")
-        or (remaining[0].proxy_id if remaining else get_default_proxy_id()),
+    audit_proxy_id = session.get("active_proxy_id") or (
+        remaining[0].proxy_id if remaining else ""
     )
-    _record_audit_event_for_proxy(
-        audit_proxy_id,
-        "proxy_remove",
-        ok=True,
-        detail=(
-            f"proxy_id={result.proxy_id} status=complete "
-            f"deleted_rows={result.deleted_rows} count_scope=final_pass "
-            f"tables={','.join(result.table_counts)}"
-        ),
+    audit_detail = (
+        f"proxy_id={result.proxy_id} status=complete "
+        f"deleted_rows={result.deleted_rows} count_scope=final_pass "
+        f"tables={','.join(result.table_counts)}"
     )
+    if audit_proxy_id:
+        _record_audit_event_for_proxy(
+            normalize_proxy_id(audit_proxy_id),
+            "proxy_remove",
+            ok=True,
+            detail=audit_detail,
+        )
+    else:
+        # Best-effort audit under the implicit default proxy.
+        _record_audit_event("proxy_remove", ok=True, detail=audit_detail)
     return _redirect_to(
         "proxies",
         removed="1",
         msg=(
             f"Removed {result.proxy_id}; the final bounded pass deleted "
             f"{result.deleted_rows} scoped MySQL rows."
+        ),
+    )
+
+
+@app.route("/proxies/default", methods=["POST"])
+def set_default_proxy():
+    proxy_id = (request.form.get("proxy_id") or "").strip()
+    if not _is_exact_normalized_proxy_id(proxy_id):
+        return _redirect_to(
+            "proxies",
+            error="1",
+            msg="Default proxy selection requires an exact registered proxy ID.",
+        )
+    registry = get_proxy_registry()
+    try:
+        if proxy_id not in _registered_proxy_ids(registry):
+            return _redirect_to(
+                "proxies",
+                error="1",
+                msg="Default proxy selection requires an exact registered proxy ID.",
+            )
+        change = registry.set_default_proxy(proxy_id)
+    except Exception as exc:
+        _record_audit_event_for_proxy(
+            proxy_id,
+            "proxy_default_set",
+            ok=False,
+            detail=f"proxy_id={proxy_id} error={public_error_message(exc)}",
+        )
+        return _redirect_to("proxies", error="1", msg=public_error_message(exc))
+    _record_audit_event_for_proxy(
+        change.proxy_id,
+        "proxy_default_set",
+        ok=True,
+        detail=f"previous_proxy_id={change.previous_proxy_id} proxy_id={change.proxy_id}",
+    )
+    return _redirect_to(
+        "proxies",
+        default_set="1",
+        msg=(
+            f"{change.proxy_id} is now the default proxy."
+            if change.changed
+            else f"{change.proxy_id} was already the default proxy."
         ),
     )
 
@@ -6570,11 +6659,19 @@ def proxies():
             )
         except Exception:
             observability_by_proxy[active_proxy_id] = _present_observability_summary()
+    # The management page reads the selection uncached so it never shows
+    # another worker's stale default.
+    registry = get_proxy_registry()
+    default_proxy_id, default_proxy_source = registry.default_proxy_selection(
+        max_age_seconds=0,
+    )
     return render_template(
         "fleet.html",
         proxies=proxies,
         live_health=live_health,
         observability_by_proxy=observability_by_proxy,
+        default_proxy_id=default_proxy_id,
+        default_proxy_source=default_proxy_source,
     )
 
 

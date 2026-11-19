@@ -17,6 +17,7 @@ from services.db import (
 from services.errors import redact_sensitive_text
 from services.proxy_context import normalize_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
+from services.row_access import row_value
 from services.schema_lifecycle import (
     ensure_column,
     ensure_index,
@@ -291,30 +292,39 @@ class OperationLedger:
         select/delete race. A just-created/completed operation may be protected;
         the next lifecycle write converges any resulting temporary overflow.
         """
+        # Terminal rows ranked at or beyond ``limit - active`` (newest-first by
+        # updated_ts, id) are victims.  Counting active rows once and skipping
+        # the kept prefix with OFFSET reads O(n) index entries instead of the
+        # O(n^2) correlated "newer rows" count per candidate.
+        active_row = conn.execute(
+            """
+            SELECT COUNT(*) AS active_count
+            FROM proxy_operations
+            WHERE proxy_id=%s
+              AND status IN ('pending','applying')
+            """,
+            (proxy_id,),
+        ).fetchone()
+        active_count = int(row_value(active_row, "active_count", 0, 0) or 0)
+        keep_terminal = max(0, OPERATION_HISTORY_LIMIT - active_count)
         rows = conn.execute(
             """
-            SELECT candidate.id AS victim_id
-            FROM proxy_operations AS candidate
-            WHERE candidate.proxy_id=%s
-              AND candidate.id<>%s
-              AND candidate.status IN ('applied','superseded','failed')
-              AND (
-                  (SELECT COUNT(*) FROM proxy_operations AS active
-                   WHERE active.proxy_id=candidate.proxy_id
-                     AND active.status IN ('pending','applying'))
-                  +
-                  (SELECT COUNT(*) FROM proxy_operations AS newer
-                   WHERE newer.proxy_id=candidate.proxy_id
-                     AND newer.status IN ('applied','superseded','failed')
-                     AND (newer.updated_ts>candidate.updated_ts OR
-                          (newer.updated_ts=candidate.updated_ts
-                           AND newer.id>candidate.id)))
-              ) >= %s
+            SELECT id AS victim_id
+            FROM proxy_operations
+            WHERE proxy_id=%s
+              AND status IN ('applied','superseded','failed')
+            ORDER BY updated_ts DESC, id DESC
+            LIMIT %s, 18446744073709551615
             FOR UPDATE
             """,
-            (proxy_id, int(protected_operation_id or 0), OPERATION_HISTORY_LIMIT),
+            (proxy_id, keep_terminal),
         ).fetchall()
-        victim_ids = [int(row["victim_id"]) for row in rows]
+        protected_id = int(protected_operation_id or 0)
+        victim_ids = [
+            int(row["victim_id"])
+            for row in rows
+            if int(row["victim_id"]) != protected_id
+        ]
         deleted = 0
         for offset in range(0, len(victim_ids), 500):
             batch = victim_ids[offset : offset + 500]

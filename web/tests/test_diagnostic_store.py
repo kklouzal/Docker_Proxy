@@ -11,7 +11,7 @@ from services.diagnostic_store import (
     _split_tsv,
 )
 
-from .mysql_test_utils import configure_test_mysql_env
+from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
 
 class _LifecycleThread:
@@ -1160,6 +1160,7 @@ def test_top_policy_tags_queries_materialized_policy_tag_table(monkeypatch) -> N
 
 def test_request_flush_materializes_policy_tags_for_top_query(tmp_path) -> None:
     configure_test_mysql_env(tmp_path)
+    register_test_proxies()
     store = DiagnosticStore()
     store.init_db()
     line = (

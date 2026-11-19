@@ -219,7 +219,7 @@ Run only the admin UI when proxy runtimes are deployed elsewhere:
 docker compose up -d --build admin-ui
 ```
 
-The admin UI still requires MySQL. Proxy-specific actions become available after proxy runtimes register management URLs and public PAC/proxy metadata. On admin-UI-only hosts, keep the proxy service out of the active Compose project and use `--remove-orphans` during updates so an old local proxy container is not recreated accidentally.
+The admin UI still requires MySQL. If MySQL is unreachable when the container starts, the launcher waits for it (capped backoff, a log line on the first failure and then at most once a minute) before applying schema migrations, selecting the saved HTTPS mode, and starting Gunicorn; the container healthcheck stays unhealthy until the listener is up. Orchestrator liveness probes must tolerate that wait (for example a Kubernetes `startupProbe` with a generous failure budget) so a slow database does not restart the container. Proxy-specific actions become available after proxy runtimes register management URLs and public PAC/proxy metadata. On admin-UI-only hosts, keep the proxy service out of the active Compose project and use `--remove-orphans` during updates so an old local proxy container is not recreated accidentally.
 
 Admin-UI HTTPS still depends on the active SSL inspection CA material at `/etc/squid/ssl/certs/ca.crt` and `/etc/squid/ssl/certs/ca.key` to sign a dedicated Admin UI server leaf certificate at `/etc/squid/ssl/certs/admin-ui.crt` and `/etc/squid/ssl/certs/admin-ui.key`. The packaged Compose definitions mount `./squid/ssl/certs` into the admin UI for this purpose; standalone admin-UI deployments must keep that same mount available and writable when using the Certificates page HTTPS toggle.
 
@@ -236,8 +236,22 @@ PROXY_PUBLIC_PAC_URL=http://site-a-proxy-1.example.com/proxy.pac
 PROXY_MANAGEMENT_URL=http://site-a-proxy-1.example.com:5000
 ```
 
-Set `DEFAULT_PROXY_ID` only on the admin UI host to choose the initial UI
-selection. Do not reuse the same `PROXY_INSTANCE_ID` on multiple proxy hosts;
+The Admin UI default proxy is the initial selection for new admin sessions and
+the one registration that cannot be removed or renamed. Choose it on the
+**Proxies** page with **Make default** (admin login and CSRF required; each
+change is audited as `proxy_default_set`). The choice is stored in MySQL
+(`proxy_default_selection`) and is authoritative from then on. Until a default
+has been chosen, the admin UI's `DEFAULT_PROXY_ID` (then `PROXY_INSTANCE_ID`,
+`PROXY_ID`, `default`) is used as the bootstrap default; after a choice exists,
+`DEFAULT_PROXY_ID` on the admin UI no longer changes the default. Admin UI
+workers cache the selection for at most 5 seconds. Inside the Admin UI,
+proxy-scoped work that runs without a selected proxy (background tasks and
+audit events from the Proxies page) also uses this default. If MySQL is unavailable the
+admin UI does not fall back to `DEFAULT_PROXY_ID`; it fails like the rest of
+the MySQL-backed UI. A proxy container's runtime identity never depends on
+this setting: its own `DEFAULT_PROXY_ID`/`PROXY_INSTANCE_ID` stay authoritative
+and keep working without MySQL. To retire the current default, make another registered proxy
+the default first, then rename or remove the old one. Do not reuse the same `PROXY_INSTANCE_ID` on multiple proxy hosts;
 registration, heartbeat, queued operations, PAC metadata, and health status are
 keyed by that ID. If `PROXY_PUBLIC_PAC_URL` points at a non-default path such as
 `/wpad.dat` or a reverse-proxy route, generated PAC metadata preserves that
@@ -260,11 +274,23 @@ one default admin UI stay well inside the 160-connection budget.
 The Admin UI starts scheduled MySQL housekeeping when background services are
 enabled. In multi-worker Gunicorn deployments, a file lock allows one process to
 run background tailers, samplers, and housekeeping while the other workers serve
-requests normally. Daily runs prune stored observability rows and stale
-control-plane history; weekly runs also refresh optimizer statistics.
+requests normally. Daily runs prune stored observability rows (diagnostic
+requests/ICAP events/policy tags, live stats, adblock events, SSL errors, and
+audit events) older than the Observability page's MySQL retention setting
+(default 30 days; there is no per-table override) and stale control-plane
+history; weekly runs also refresh optimizer statistics and
+rebuild tables (`MYSQL_MAINTENANCE_READ_TIMEOUT`, default 14400 seconds, bounds
+each ANALYZE/OPTIMIZE). Every prune step is bounded per run; when a run leaves
+eligible rows behind, or after a restart that missed the daily slot, a catch-up
+run follows after `MYSQL_HOUSEKEEPING_CATCHUP_INTERVAL_SECONDS` (default 900)
+until retention has converged. Housekeeping also resumes paused proxy removals
+one bounded pass per run.
 Control-plane cleanup preserves active config/certificate/adblock artifact
 revisions, keeps recent apply/operation/policy history, expires stale temporary
-policy exceptions, and removes expired Safe Browsing cache rows. Tune
+policy exceptions, and removes expired Safe Browsing cache rows. Adblock
+artifact retention keeps the active and previous archives; older revisions
+that proxy apply history still references keep their metadata row but release
+the archive payload. Tune
 `MYSQL_CONTROL_PLANE_RETENTION_DAYS`, `MYSQL_HOUSEKEEPING_KEEP_REVISIONS`,
 `MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, and
 `MYSQL_HOUSEKEEPING_KEEP_MAINTENANCE_RUNS` only when a deployment needs more
@@ -367,10 +393,10 @@ The containers expose the common production knobs as environment variables, eith
 | Public policy requests | `POLICY_REQUEST_MAX_CONTENT_LENGTH` (default 16384 bytes), `POLICY_REQUEST_MAX_PENDING_PER_PROXY` (default 5000; 1–100000), `POLICY_REQUEST_MAX_PENDING_PER_CLIENT` (default 20; 1–1000). Equivalent pending submissions reuse the existing request; admission limits are scoped by proxy and client IP. Invalid or out-of-range values use the safe defaults. |
 | Squid sizing | `SQUID_WORKERS`, `SQUID_CACHE_MEM_MB`, `PROXY_SHM_SIZE`, `SQUID_SSLCRTD_CHILDREN`, `SQUID_DYNAMIC_CERT_MEM_CACHE_MB`, `SQUID_MAX_FILEDESCRIPTORS`, `ULIMIT_NOFILE` |
 | ICAP and AV | `CICAP_PORT`, `CICAP_AV_PORT`, `CICAP_AV_RESP_PORT`, `CLAMD_HOST`, `CLAMD_PORT` |
-| Adblock helper | `ADBLOCK_CACHE_TTL`, `ADBLOCK_CACHE_MAX`, `ADBLOCK_UPDATE_INTERVAL` (scheduled subscription download/build cadence; default 43200 seconds / 12 hours), `ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES` (shared builder/runtime/recovery uncompressed-artifact budget; default 1073741824 / 1 GiB, hard cap 4 GiB), `ADBLOCK_ARTIFACT_EXTRACT_MAX_MEMBERS` (default 256), `ADBLOCK_RULE_CACHE_MAX`, `ADBLOCK_ICAP_MAX_REQUEST_BYTES`, `ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES`, `ADBLOCK_ICAP_REQUEST_TIMEOUT`, `ADBLOCK_ICAP_MAX_KEEPALIVE_REQUESTS` |
+| Adblock helper | `ADBLOCK_CACHE_TTL`, `ADBLOCK_CACHE_MAX`, `ADBLOCK_UPDATE_INTERVAL` (scheduled subscription download/build cadence; default 43200 seconds / 12 hours), `ADBLOCK_DOWNLOAD_RETRY_SECONDS` (wait after a failed subscription download before retrying it; default 900), `ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES` (shared builder/runtime/recovery uncompressed-artifact budget; default 1073741824 / 1 GiB, hard cap 4 GiB), `ADBLOCK_ARTIFACT_EXTRACT_MAX_MEMBERS` (default 256), `ADBLOCK_RULE_CACHE_MAX`, `ADBLOCK_ICAP_MAX_REQUEST_BYTES`, `ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES`, `ADBLOCK_ICAP_REQUEST_TIMEOUT`, `ADBLOCK_ICAP_MAX_KEEPALIVE_REQUESTS` |
 | Web filtering helpers | `WEBFILTER_HELPERS`, `WEBFILTER_CACHE_ENTRIES`, `WEBFILTER_CACHE_TTL_SECONDS`, `WEBFILTER_CACHE_NEGATIVE_TTL_SECONDS`, `WEBFILTER_SNAPSHOT_REFRESH_SECONDS`, `WEBFILTER_FAIL`, `SAFE_BROWSING_POLL_SECONDS`, `SAFE_BROWSING_HELPER_CACHE_ENTRIES`, `SAFE_BROWSING_HELPER_PREFIX_HIT_TTL_SECONDS`, `SAFE_BROWSING_HELPER_PREFIX_MISS_TTL_SECONDS`, `SAFE_BROWSING_FAIL` |
 | Runtime cadence | `PROXY_HEARTBEAT_INTERVAL_SECONDS`, `PROXY_SYNC_INTERVAL_SECONDS`, `PROXY_CONTROL_PLANE_RETRY_BACKOFF_INITIAL_SECONDS` (default 2), `PROXY_CONTROL_PLANE_RETRY_BACKOFF_MAX_SECONDS` (default 30), `PROXY_CONTROL_PLANE_RETRY_BACKOFF_JITTER_RATIO` (default 0.2), `LIVE_STATS_COMMIT_BATCH`, `LIVE_STATS_COMMIT_INTERVAL_SECONDS`, `LIVE_STATS_POLL_INTERVAL_SECONDS`, `LIVE_STATS_DB_WRITE_BACKOFF_INITIAL_SECONDS`, `LIVE_STATS_DB_WRITE_BACKOFF_MAX_SECONDS`, `LIVE_STATS_DB_WRITE_BACKOFF_JITTER_RATIO`, `LIVE_STATS_MAX_PENDING_ROWS`, `DIAGNOSTIC_COMMIT_BATCH`, `DIAGNOSTIC_COMMIT_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_DB_WRITE_BACKOFF_INITIAL_SECONDS`, `DIAGNOSTIC_DB_WRITE_BACKOFF_MAX_SECONDS`, `DIAGNOSTIC_DB_WRITE_BACKOFF_JITTER_RATIO`, `DIAGNOSTIC_PENDING_MAX_ROWS`, `TIMESERIES_STARTUP_JITTER_SECONDS`, `TIMESERIES_ROLLUP_INTERVAL_SECONDS`, `TIMESERIES_SAMPLE_DB_BACKOFF_INITIAL_SECONDS`, `TIMESERIES_SAMPLE_DB_BACKOFF_MAX_SECONDS`, `TIMESERIES_SAMPLE_DB_BACKOFF_JITTER_RATIO`, `TIMESERIES_ROLLUP_DB_BACKOFF_INITIAL_SECONDS`, `TIMESERIES_ROLLUP_DB_BACKOFF_MAX_SECONDS`, `TIMESERIES_ROLLUP_DB_BACKOFF_JITTER_RATIO`, `SSL_ERRORS_COMMIT_BATCH`, `SSL_ERRORS_COMMIT_INTERVAL_SECONDS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS`, `STATS_CACHE_DIR_SIZE_TTL_SECONDS` |
-| Background and housekeeping | `DISABLE_BACKGROUND`, `BACKGROUND_LOCK_PATH`, `BACKGROUND_FORCE`, `MYSQL_CONTROL_PLANE_RETENTION_DAYS`, `MYSQL_HOUSEKEEPING_KEEP_REVISIONS`, `MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_OPERATIONS`, `MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, `MYSQL_HOUSEKEEPING_KEEP_MAINTENANCE_RUNS` |
+| Background and housekeeping | `DISABLE_BACKGROUND`, `BACKGROUND_LOCK_PATH`, `BACKGROUND_FORCE`, `MYSQL_CONTROL_PLANE_RETENTION_DAYS`, `MYSQL_HOUSEKEEPING_KEEP_REVISIONS`, `MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_OPERATIONS`, `MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, `MYSQL_HOUSEKEEPING_KEEP_MAINTENANCE_RUNS`, `MYSQL_HOUSEKEEPING_CATCHUP_INTERVAL_SECONDS`, `MYSQL_MAINTENANCE_READ_TIMEOUT` |
 | Admin UI | `WEB_WORKERS`, `WEB_THREADS`, `WEB_TIMEOUT`, `WEB_GRACEFUL_TIMEOUT`, `WEB_KEEPALIVE`, `ADMIN_UI_HTTPS_ENABLED` |
 
 The proxy entrypoint sanitizes `PAC_HTTP_HOST`, `PAC_HTTP_PORT`, local-only `FORWARDING_CANARY_*`, and `WEB_*` numeric launcher knobs before supervisor expands them, and the container healthcheck probes the effective PAC bind host (falling back to loopback for wildcard binds). The forwarding canary binds only inside the proxy container on loopback and gives full health a deterministic Squid/RESPMOD target without self-proxying the public PAC listener.
@@ -400,7 +426,7 @@ MySQL service or add an explicit host-port mapping on the MySQL host, restrict i
 with host/network firewalls, and point every admin/proxy container at that
 reachable address with `MYSQL_HOST` and `MYSQL_PORT`.
 
-The bundled MySQL service mounts `config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf`, which disables general and slow query logs by default, sets `log_error_verbosity=2`, sets `max_connections=160`, sets `max_allowed_packet=256M`, caps `innodb_redo_log_capacity=256M`, and expires binary logs after one day when binlogs are enabled. Operators who need verbose SQL logging, a different connection or packet budget, or longer PITR retention should override these settings with a later-mounted MySQL config file and explicit disk monitoring.
+The bundled MySQL service mounts `config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf`, which disables general and slow query logs by default, sets `log_error_verbosity=2`, sets `max_connections=160`, sets `max_allowed_packet=256M`, caps `innodb_redo_log_capacity=256M`, and disables binary logging (`disable_log_bin`; no replicas, recovery from MySQL backups). Operators who need verbose SQL logging, a different connection or packet budget, replication, or binlog point-in-time recovery should override these settings with a later-mounted MySQL config file and explicit disk monitoring.
 
 For externally managed MySQL containers, apply equivalent MySQL settings and Docker log rotation on that host. Host-global Docker daemon rotation, if desired for every container on the host, still belongs in `/etc/docker/daemon.json`; this application can provide Compose defaults but cannot safely rewrite the host daemon policy.
 
@@ -456,6 +482,14 @@ Local deterministic tests:
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -m "not live and not mysql" -p no:cacheprovider --durations=10 -ra web\tests
+```
+
+MySQL-backed tests (the whole non-live suite against a disposable MySQL 8.4 server; each test uses its own `sfp_test_*` database, so never point this at a production server):
+
+```powershell
+docker run -d --name dp-test-mysql -e MYSQL_ROOT_PASSWORD=root -p 127.0.0.1:3306:3306 mysql:8.4
+$env:MYSQL_TEST_HOST = "127.0.0.1"; $env:MYSQL_TEST_PORT = "3306"; $env:MYSQL_TEST_USER = "root"; $env:MYSQL_TEST_PASSWORD = "root"
+.venv\Scripts\python.exe -m pytest -m "not live" -p no:cacheprovider --durations=10 -ra web\tests
 ```
 
 Live Compose test stack:

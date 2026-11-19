@@ -275,6 +275,22 @@ class AdblockArtifactMetadata:
     is_active: bool
 
 
+@dataclass(frozen=True)
+class AdblockArtifactPruneResult:
+    """Outcome of one bounded adblock revision retention pass.
+
+    ``deleted_rows`` counts deleted unreferenced inactive revisions (plus stale
+    duplicate-active demotions); ``stripped_archives`` counts inactive revisions
+    whose archive blob was released while their metadata row is kept because
+    proxy application evidence still references it. ``truncated`` means the
+    pass stopped at its bound with work possibly remaining.
+    """
+
+    deleted_rows: int = 0
+    stripped_archives: int = 0
+    truncated: bool = False
+
+
 class AdblockArtifactStore:
     def __init__(self, *, compiled_dir: str | None = None) -> None:
         self.compiled_dir = (
@@ -596,7 +612,18 @@ class AdblockArtifactStore:
         *,
         max_batches: int | None = None,
         batch_size: int | None = None,
-    ) -> int:
+    ) -> AdblockArtifactPruneResult:
+        """Bound adblock revision storage to the active and previous archives.
+
+        Only the active revision's archive is ever read (proxy apply and
+        recovery export); the newest inactive revision is kept intact as the
+        previous artifact. Older inactive revisions are deleted when no proxy
+        application evidence references them. Referenced ones keep their
+        metadata row (application/state-validation integrity) but their archive
+        blob is replaced by an empty value, which releases the multi-MB payload.
+        Each statement commits separately and the pass is bounded by
+        ``max_batches * batch_size`` deletions plus the same number of strips.
+        """
         self.init_db()
         batches_remaining = (
             _adblock_artifact_prune_max_batches()
@@ -608,10 +635,13 @@ class AdblockArtifactStore:
             if batch_size is None
             else max(1, int(batch_size))
         )
+        strip_limit = batches_remaining * delete_batch_size
         deleted = 0
+        stripped = 0
+        truncated = False
         with self._connect() as conn:
             if not self._try_acquire_prune_lock(conn):
-                return 0
+                return AdblockArtifactPruneResult()
             try:
                 while batches_remaining > 0:
                     batch_deleted = self._prune_revisions_with_conn(
@@ -623,10 +653,23 @@ class AdblockArtifactStore:
                     deleted += batch_deleted
                     batches_remaining -= 1
                     conn.commit()
+                else:
+                    truncated = True
+                # Strip only once unreferenced rows are gone, so a row about to
+                # be deleted is never rewritten first; the rest are referenced.
+                if not truncated:
+                    stripped, truncated = self._strip_inactive_archives_with_conn(
+                        conn,
+                        limit=strip_limit,
+                    )
             finally:
                 with contextlib.suppress(Exception):
                     conn.execute("DO RELEASE_LOCK(%s)", (_ARTIFACT_PRUNE_LOCK_NAME,))
-        return deleted
+        return AdblockArtifactPruneResult(
+            deleted_rows=deleted,
+            stripped_archives=stripped,
+            truncated=truncated,
+        )
 
     def _try_acquire_prune_lock(self, conn) -> bool:
         row = conn.execute(
@@ -656,13 +699,30 @@ class AdblockArtifactStore:
                 message="Adblock artifact retention cleanup failed.",
             )
 
+    def _retained_revision_ids(self, conn) -> set[int]:
+        """Return the revisions whose archives retention must keep intact."""
+        active = conn.execute(
+            "SELECT id FROM adblock_artifact_revisions WHERE is_active=1 ORDER BY created_ts DESC, id DESC LIMIT 1"
+        ).fetchone()
+        if active is None:
+            newest_rows = conn.execute(
+                "SELECT id FROM adblock_artifact_revisions ORDER BY created_ts DESC, id DESC LIMIT 2"
+            ).fetchall()
+            return {int(row[0]) for row in newest_rows}
+        keep_ids = {int(active[0])}
+        previous = conn.execute(
+            "SELECT id FROM adblock_artifact_revisions WHERE is_active=0 ORDER BY created_ts DESC, id DESC LIMIT 1"
+        ).fetchone()
+        if previous:
+            keep_ids.add(int(previous[0]))
+        return keep_ids
+
     def _prune_revisions_with_conn(self, conn, *, batch_size: int) -> int:
         active_rows = conn.execute(
             "SELECT id FROM adblock_artifact_revisions WHERE is_active=1 ORDER BY created_ts DESC, id DESC LIMIT %s",
             (int(batch_size) + 1,),
         ).fetchall()
         active_ids = [int(row[0]) for row in active_rows]
-        keep_ids = {active_ids[0]} if active_ids else set()
         if len(active_ids) > 1:
             stale_active_ids = active_ids[1 : int(batch_size) + 1]
             placeholders = ", ".join(["%s"] * len(stale_active_ids))
@@ -671,17 +731,7 @@ class AdblockArtifactStore:
                 tuple(stale_active_ids),
             )
             return max(0, int(getattr(result, "rowcount", 0) or 0))
-        if keep_ids:
-            previous = conn.execute(
-                "SELECT id FROM adblock_artifact_revisions WHERE is_active=0 ORDER BY created_ts DESC, id DESC LIMIT 1"
-            ).fetchone()
-            if previous:
-                keep_ids.add(int(previous[0]))
-        else:
-            newest_rows = conn.execute(
-                "SELECT id FROM adblock_artifact_revisions ORDER BY created_ts DESC, id DESC LIMIT 2"
-            ).fetchall()
-            keep_ids.update(int(row[0]) for row in newest_rows)
+        keep_ids = self._retained_revision_ids(conn)
         candidate_ids = self._select_prune_candidate_ids(
             conn,
             keep_ids=keep_ids,
@@ -695,6 +745,44 @@ class AdblockArtifactStore:
             tuple(candidate_ids),
         )
         return max(0, int(getattr(result, "rowcount", 0) or 0))
+
+    def _strip_inactive_archives_with_conn(
+        self,
+        conn,
+        *,
+        limit: int,
+    ) -> tuple[int, bool]:
+        """Release up to ``limit`` non-retained inactive archives.
+
+        Returns ``(stripped, truncated)``. Candidate ids are read without the
+        blob column, and each row is updated by primary key in its own commit,
+        so a pass reads only the archives it releases (stripped rows hold an
+        empty value) and each transaction/binlog event covers one archive.
+        Revisions never become active again and the retained set only moves to
+        newer rows, so ids selected up front stay safe to strip.
+        """
+        keep_ids = sorted(self._retained_revision_ids(conn))
+        keep_sql = ""
+        if keep_ids:
+            keep_sql = f" AND id NOT IN ({', '.join(['%s'] * len(keep_ids))})"
+        candidate_rows = conn.execute(
+            "SELECT id AS revision_id FROM adblock_artifact_revisions "
+            f"WHERE is_active=0{keep_sql} ORDER BY id ASC",
+            tuple(keep_ids),
+        ).fetchall()
+        stripped = 0
+        for row in candidate_rows:
+            if stripped >= limit:
+                return stripped, True
+            result = conn.execute(
+                "UPDATE adblock_artifact_revisions SET archive_blob=%s "
+                "WHERE id=%s AND is_active=0 AND archive_blob <> %s",
+                (b"", int(row[0]), b""),
+            )
+            if max(0, int(getattr(result, "rowcount", 0) or 0)) > 0:
+                stripped += 1
+                conn.commit()
+        return stripped, False
 
     def _select_prune_candidate_ids(
         self,
@@ -902,7 +990,10 @@ class AdblockArtifactStore:
                 has_local_rules = _list_file_has_rule_content(list_path)
                 needs_download = (
                     refresh_lists
-                    or not has_local_rules
+                    or (
+                        not has_local_rules
+                        and not store.download_retry_backoff(status, now_ts)
+                    )
                     or store.should_update(status, now_ts, False)
                 )
                 if not needs_download:
@@ -1112,7 +1203,9 @@ class AdblockArtifactStore:
             try:
                 self.init_db()
                 store.init_db()
-                active = self.get_active_artifact()
+                # Poll metadata only: the decision never needs the archive blob,
+                # which is tens of MB per read.
+                active = self.get_active_artifact_metadata()
                 statuses = store.list_statuses()
                 enabled_statuses = [status for status in statuses if status.enabled]
                 refresh_requested = bool(store.get_refresh_requested())
@@ -1120,15 +1213,31 @@ class AdblockArtifactStore:
                 # Subscription artifacts are shared; proxy enablement controls
                 # Squid routing and must not empty another proxy's artifact.
                 settings_enabled = True
+                now_ts = _now()
+                locally_available = {
+                    status.key
+                    for status in enabled_statuses
+                    if _list_file_has_rule_content(store.list_path(status.key))
+                }
+                # Compare against the lists a build could include right now; a
+                # list without local rules is handled by its download schedule,
+                # otherwise it would force an identical rebuild on every poll.
                 active_lists_drift = _active_enabled_lists_drift(
                     active,
                     settings_enabled=settings_enabled,
-                    enabled_statuses=enabled_statuses,
+                    enabled_statuses=[
+                        status
+                        for status in enabled_statuses
+                        if status.key in locally_available
+                    ],
                 )
                 due_download = settings_enabled and any(
                     (
-                        not _list_file_has_rule_content(store.list_path(status.key))
-                        or store.should_update(status, _now(), False)
+                        (
+                            status.key not in locally_available
+                            and not store.download_retry_backoff(status, now_ts)
+                        )
+                        or store.should_update(status, now_ts, False)
                     )
                     for status in enabled_statuses
                 )
@@ -1150,13 +1259,17 @@ class AdblockArtifactStore:
                     )
                     if bool(result.get("changed")):
                         nudge_registered_proxies(force=False)
+                    if bool(result.get("ok")):
+                        # A completed build consumed the refresh request; lists
+                        # whose download failed are retried after the
+                        # per-list download backoff, not on every poll.
+                        with contextlib.suppress(Exception):
+                            store.clear_refresh_requested()
                     if not bool(result.get("ok")) or bool(
                         result.get("download_pending"),
                     ):
                         sleep_seconds = error_seconds
                     else:
-                        with contextlib.suppress(Exception):
-                            store.clear_refresh_requested()
                         sleep_seconds = poll_seconds
             except DATABASE_ERRORS as exc:
                 log_database_unavailable(
@@ -1215,7 +1328,7 @@ def _compiled_request_rule_count(out_dir: str | os.PathLike[str]) -> int:
 
 
 def _active_enabled_lists_drift(
-    active: AdblockArtifactRevision | None,
+    active: AdblockArtifactMetadata | AdblockArtifactRevision | None,
     *,
     settings_enabled: bool,
     enabled_statuses: list[Any],

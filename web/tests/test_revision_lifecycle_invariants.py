@@ -9,6 +9,7 @@ import pytest
 from services import revision_lifecycle  # type: ignore
 from services.config_revisions import ConfigRevisionStore  # type: ignore
 
+from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
 from .mysql_test_utils import configure_test_mysql_env
 
 if TYPE_CHECKING:
@@ -190,6 +191,7 @@ class _ConfigRestoreConn:
     native = object()
 
     def __init__(self, *, current_id: int | None, previous_exists: bool = True) -> None:
+        self.tombstone: tuple[str, str] | None = None
         self.current_id = current_id
         self.previous_exists = previous_exists
         self.updates: list[tuple[str, tuple[object, ...]]] = []
@@ -203,12 +205,16 @@ class _ConfigRestoreConn:
     def execute(self, sql, params=()):
         text = " ".join(str(sql).split())
         params = tuple(params or ())
+        if is_lifecycle_state_query(text):
+            return _SqlResult(
+                [
+                    lifecycle_state_row(
+                        tombstone=self.tombstone, registry_status="running"
+                    )
+                ]
+            )
         if "proxy_lifecycle_tombstones" in text:
             return _SqlResult()
-        if "proxy_id_aliases" in text:
-            return _SqlResult()
-        if "proxy_instances" in text:
-            return _SqlResult([{"status": "running"}])
         if "GET_LOCK" in text:
             return _SqlResult([{"acquired": 1}])
         if "RELEASE_LOCK" in text:
@@ -239,10 +245,6 @@ def test_config_restore_previous_is_compare_and_swap(monkeypatch) -> None:
         "services.proxy_write_guard._ensure_metadata_tables",
         lambda _conn: None,
     )
-    monkeypatch.setattr(
-        "services.proxy_write_guard._table_available",
-        lambda _conn, _table_name: True,
-    )
 
     assert store.restore_previous_if_current("edge-a", 7, 3) is True
     assert any(
@@ -264,19 +266,8 @@ def test_config_restore_previous_respects_proxy_lifecycle_guard(monkeypatch) -> 
         "services.proxy_write_guard._ensure_metadata_tables",
         lambda _conn: None,
     )
-    monkeypatch.setattr(
-        "services.proxy_write_guard._table_available",
-        lambda _conn, _table_name: True,
-    )
 
-    def removed_tombstone(_conn, _proxy_key, *, allow_alias):
-        msg = "Proxy 'edge-a' has been removed; proxy-scoped writes are blocked."
-        raise ProxyLifecycleWriteError(msg)
-
-    monkeypatch.setattr(
-        "services.proxy_write_guard._check_tombstone",
-        removed_tombstone,
-    )
+    conn.tombstone = ("removed", "")
 
     with pytest.raises(ProxyLifecycleWriteError, match="removed"):
         store.restore_previous_if_current("edge-a", 7, 3)
@@ -292,10 +283,6 @@ def test_config_restore_does_not_stomp_newer_active(monkeypatch) -> None:
     monkeypatch.setattr(
         "services.proxy_write_guard._ensure_metadata_tables",
         lambda _conn: None,
-    )
-    monkeypatch.setattr(
-        "services.proxy_write_guard._table_available",
-        lambda _conn, _table_name: True,
     )
 
     assert store.restore_previous_if_current("edge-a", 7, 3) is False
