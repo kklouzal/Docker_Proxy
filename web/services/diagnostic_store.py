@@ -13,7 +13,7 @@ import threading
 import time
 from typing import Any
 
-from services.bounded_delete import delete_older_than_in_chunks
+from services.bounded_delete import BoundedDeleteResult, delete_older_than_in_chunks
 from services.db import (
     DATABASE_ERRORS,
     connect,
@@ -831,16 +831,19 @@ class DiagnosticStore:
             run_mysql_operation_with_retry(_ensure_schema)
             self._db_initialized = True
 
-    def prune_old_entries(self, *, retention_days: int = 0) -> None:
+    def prune_old_entries(
+        self, *, retention_days: int = 0
+    ) -> list[BoundedDeleteResult]:
         self.init_db()
         days = max(1, int(retention_days or self.retention_days))
         cutoff = _now() - (days * 24 * 60 * 60)
+        results: list[BoundedDeleteResult] = []
         for table, order_by in (
             ("diagnostic_icap_events", ("ts", "id")),
             ("diagnostic_policy_tags", ("ts", "proxy_id", "request_id", "tag")),
             ("diagnostic_requests", ("ts", "id")),
         ):
-            delete_older_than_in_chunks(
+            result = delete_older_than_in_chunks(
                 self._connect,
                 table=table,
                 timestamp_column="ts",
@@ -849,6 +852,8 @@ class DiagnosticStore:
                 log_key=f"diagnostic_store.prune.{table}",
                 log_label=f"Diagnostic store prune for {table}",
             )
+            results.append(result)
+        return results
 
     def start_background(self) -> None:
         with self._start_lock:

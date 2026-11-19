@@ -432,6 +432,17 @@ class ProxyRemovalResult:
     retry_detail: str = ""
 
 
+# Registry statuses of a removal that has published its tombstone but not yet
+# proved every scoped table empty. Removal passes commit bounded progress and
+# re-enter idempotently, so background housekeeping resumes them.
+PAUSED_REMOVAL_STATUSES = frozenset({"removing", "remove_pending"})
+# Statuses whose proxy-scoped writes are rejected by the lifecycle write guard.
+LIFECYCLE_TRANSITION_STATUSES = PAUSED_REMOVAL_STATUSES | {
+    "renaming",
+    "rename_pending",
+}
+
+
 class ProxyRegistry:
     _SELECT_COLUMNS = "proxy_id, display_name, hostname, management_url, public_host, public_pac_scheme, public_pac_port, public_pac_path, public_http_proxy_port, status, last_heartbeat, last_apply_ts, last_apply_ok, current_config_sha, detail, created_ts, updated_ts"
 
@@ -1340,6 +1351,22 @@ class ProxyRegistry:
             discovered_tables=discovered_tables,
             retry_detail=retry_detail,
         )
+
+    def resume_paused_removals(self) -> list[ProxyRemovalResult]:
+        """Run one bounded removal pass for every removal left paused.
+
+        A removal stops in ``remove_pending`` after the per-table row bound, or
+        stays ``removing`` when interrupted; both keep the tombstone published.
+        Each ``remove_proxy`` call is one bounded, committed, lock-serialized
+        pass, so repeated background calls converge without operator retries.
+        Renames are atomic (an incomplete rename rolls back), so they leave no
+        durable paused state to resume here.
+        """
+        return [
+            self.remove_proxy(instance.proxy_id)
+            for instance in self.list_proxies()
+            if instance.status in PAUSED_REMOVAL_STATUSES
+        ]
 
     def find_reconcile_candidate(
         self,

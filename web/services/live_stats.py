@@ -12,7 +12,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
-from services.bounded_delete import delete_older_than_in_chunks
+from services.bounded_delete import BoundedDeleteResult, delete_older_than_in_chunks
 from services.db import (
     DATABASE_ERRORS,
     connect,
@@ -540,7 +540,9 @@ class LiveStatsStore:
     def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
         ensure_index(conn, table_name=table_name, index_name=index_name, ddl=ddl)
 
-    def prune_old_entries(self, *, retention_days: int = 30) -> None:
+    def prune_old_entries(
+        self, *, retention_days: int = 30
+    ) -> list[BoundedDeleteResult]:
         """Prune stale aggregate rows.
 
         This store keeps only aggregates keyed by (domain/client/etc). Without pruning,
@@ -560,7 +562,7 @@ class LiveStatsStore:
                 (self._table(conn, table), order_by)
                 for table, order_by in logical_tables
             )
-        for table, order_by in physical_tables:
+        return [
             delete_older_than_in_chunks(
                 self._connect,
                 table=table,
@@ -570,6 +572,8 @@ class LiveStatsStore:
                 log_key=f"live_stats.prune.{table}",
                 log_label=f"Live stats prune for {table}",
             )
+            for table, order_by in physical_tables
+        ]
 
     def _upsert_agg(
         self,

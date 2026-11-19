@@ -10,7 +10,7 @@ from services.operation_ledger import (
     normalize_operation_target_ref,
 )
 from services.proxy_context import normalize_proxy_id
-from services.proxy_registry import get_proxy_registry
+from services.proxy_registry import LIFECYCLE_TRANSITION_STATUSES, get_proxy_registry
 
 logger = logging.getLogger(__name__)
 
@@ -178,12 +178,20 @@ def _canonical_registered_proxy_id(proxy: object) -> str:
 
 
 def nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:
-    """Queue reconciliation operations for all registered proxies."""
+    """Queue reconciliation operations for registered proxies.
+
+    Returns ``(registered, queued)``; proxies in a removal/rename transition are
+    counted as registered but skipped.
+    """
     proxies = list(get_proxy_registry().list_proxies())
     total = len(proxies)
     queued = 0
     seen_proxy_ids: set[str] = set()
     for proxy in proxies:
+        if str(getattr(proxy, "status", "") or "") in LIFECYCLE_TRANSITION_STATUSES:
+            # Removal/rename blocks proxy-scoped writes; housekeeping resumes
+            # paused removals, so there is nothing to reconcile or warn about.
+            continue
         proxy_id = canonical_registered_proxy_id(proxy)
         if not proxy_id:
             logger.warning(

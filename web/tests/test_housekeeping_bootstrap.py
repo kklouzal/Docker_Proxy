@@ -504,6 +504,11 @@ def test_housekeeping_prune_continues_after_step_failure(
     monkeypatch.setattr(housekeeping, "prune_control_plane_tables", control_plane)
     monkeypatch.setattr(
         housekeeping,
+        "_resume_paused_proxy_removals",
+        lambda: calls.append("removals") or {"ok": True, "truncated": False},
+    )
+    monkeypatch.setattr(
+        housekeeping,
         "log_exception_throttled",
         lambda *_args, **_kwargs: None,
     )
@@ -517,6 +522,7 @@ def test_housekeeping_prune_continues_after_step_failure(
         "ssl:7",
         "audit:7",
         "control",
+        "removals",
     ]
     assert result["ok"] is False
     assert [row["name"] for row in result["steps"] if row["ok"]] == [
@@ -525,6 +531,7 @@ def test_housekeeping_prune_continues_after_step_failure(
         "ssl_errors",
         "audit",
         "control_plane",
+        "proxy_removals",
     ]
 
 
@@ -567,7 +574,7 @@ def test_housekeeping_scheduled_due_runs_coalesce_daily_into_weekly(
     )
 
     now = datetime(2026, 5, 24, 3, 30, tzinfo=UTC)
-    next_daily, next_weekly = housekeeping._run_due_scheduled_housekeeping(
+    next_daily, next_weekly, catchup_due = housekeeping._run_due_scheduled_housekeeping(
         now=now,
         next_daily=datetime(2026, 5, 24, 2, 0, tzinfo=UTC),
         next_weekly=datetime(2026, 5, 24, 3, 0, tzinfo=UTC),
@@ -580,6 +587,7 @@ def test_housekeeping_scheduled_due_runs_coalesce_daily_into_weekly(
     assert calls == [(45, True, True)]
     assert next_daily == datetime(2026, 5, 25, 2, 0, tzinfo=UTC)
     assert next_weekly == datetime(2026, 5, 31, 3, 0, tzinfo=UTC)
+    assert catchup_due is None
 
 
 def test_housekeeping_scheduled_due_daily_only_preserved(
@@ -601,7 +609,7 @@ def test_housekeeping_scheduled_due_daily_only_preserved(
 
     now = datetime(2026, 5, 25, 2, 30, tzinfo=UTC)
     weekly_due = datetime(2026, 5, 31, 3, 0, tzinfo=UTC)
-    next_daily, next_weekly = housekeeping._run_due_scheduled_housekeeping(
+    next_daily, next_weekly, catchup_due = housekeeping._run_due_scheduled_housekeeping(
         now=now,
         next_daily=datetime(2026, 5, 25, 2, 0, tzinfo=UTC),
         next_weekly=weekly_due,
@@ -614,6 +622,7 @@ def test_housekeeping_scheduled_due_daily_only_preserved(
     assert calls == [(45, False, False)]
     assert next_daily == datetime(2026, 5, 26, 2, 0, tzinfo=UTC)
     assert next_weekly == weekly_due
+    assert catchup_due is None
 
 
 def test_housekeeping_scheduled_due_daily_logs_structured_failed_result(
@@ -642,19 +651,22 @@ def test_housekeeping_scheduled_due_daily_logs_structured_failed_result(
     monkeypatch.setattr(housekeeping, "should_log", lambda *_args, **_kwargs: True)
 
     with caplog.at_level("WARNING", logger=housekeeping.logger.name):
-        next_daily, next_weekly = housekeeping._run_due_scheduled_housekeeping(
-            now=datetime(2026, 5, 25, 2, 30, tzinfo=UTC),
-            next_daily=datetime(2026, 5, 25, 2, 0, tzinfo=UTC),
-            next_weekly=datetime(2026, 5, 31, 3, 0, tzinfo=UTC),
-            retention_days=45,
-            daily_hour=2,
-            weekly_weekday=6,
-            weekly_hour=3,
+        next_daily, next_weekly, catchup_due = (
+            housekeeping._run_due_scheduled_housekeeping(
+                now=datetime(2026, 5, 25, 2, 30, tzinfo=UTC),
+                next_daily=datetime(2026, 5, 25, 2, 0, tzinfo=UTC),
+                next_weekly=datetime(2026, 5, 31, 3, 0, tzinfo=UTC),
+                retention_days=45,
+                daily_hour=2,
+                weekly_weekday=6,
+                weekly_hour=3,
+            )
         )
 
     assert calls == [(45, False, False)]
     assert next_daily == datetime(2026, 5, 26, 2, 0, tzinfo=UTC)
     assert next_weekly == datetime(2026, 5, 31, 3, 0, tzinfo=UTC)
+    assert catchup_due is None
     assert len(caplog.records) == 1
     assert caplog.records[0].levelname == "WARNING"
     assert "Housekeeping daily returned failed result" in caplog.records[0].message
@@ -951,7 +963,7 @@ def test_housekeeping_scheduled_due_weekly_only_preserved(
 
     now = datetime(2026, 5, 24, 3, 30, tzinfo=UTC)
     daily_due = datetime(2026, 5, 25, 2, 0, tzinfo=UTC)
-    next_daily, next_weekly = housekeeping._run_due_scheduled_housekeeping(
+    next_daily, next_weekly, catchup_due = housekeeping._run_due_scheduled_housekeeping(
         now=now,
         next_daily=daily_due,
         next_weekly=datetime(2026, 5, 24, 3, 0, tzinfo=UTC),
@@ -964,3 +976,241 @@ def test_housekeeping_scheduled_due_weekly_only_preserved(
     assert calls == [(45, True, True)]
     assert next_daily == daily_due
     assert next_weekly == datetime(2026, 5, 31, 3, 0, tzinfo=UTC)
+    assert catchup_due is None
+
+
+def _stub_prune_stores(monkeypatch, housekeeping, *, diagnostic_result=None):
+    class Store:
+        def __init__(self, value=None) -> None:
+            self.value = value
+
+        def prune_old_entries(self, *, retention_days: int):
+            return self.value
+
+    monkeypatch.setattr(housekeeping, "get_store", Store)
+    monkeypatch.setattr(
+        housekeeping, "get_diagnostic_store", lambda: Store(diagnostic_result)
+    )
+    monkeypatch.setattr(housekeeping, "get_adblock_store", Store)
+    monkeypatch.setattr(housekeeping, "get_ssl_errors_store", Store)
+    monkeypatch.setattr(housekeeping, "get_audit_store", Store)
+
+
+def test_housekeeping_step_reporting_failed_tables_is_not_ok(
+    monkeypatch, housekeeping, caplog
+) -> None:
+    _stub_prune_stores(monkeypatch, housekeeping)
+    monkeypatch.setattr(
+        housekeeping,
+        "prune_control_plane_tables",
+        lambda: {
+            "ok": False,
+            "tables": [
+                {
+                    "table": "proxy_config_applications",
+                    "status": "failed",
+                    "detail": "(2013, 'Lost connection to MySQL server during query')",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        housekeeping,
+        "_resume_paused_proxy_removals",
+        lambda: {"ok": True, "truncated": False},
+    )
+    monkeypatch.setattr(housekeeping, "should_log", lambda *_args, **_kwargs: True)
+
+    with caplog.at_level("WARNING", logger=housekeeping.logger.name):
+        prune = housekeeping._run_prune_once(retention_days=30)
+
+    assert prune["ok"] is False
+    step = next(row for row in prune["steps"] if row["name"] == "control_plane")
+    assert step["ok"] is False
+    assert "proxy_config_applications: (2013" in caplog.records[0].message
+    assert housekeeping._prune_failure_detail(prune).startswith(
+        "control_plane: proxy_config_applications: (2013",
+    )
+
+
+def test_housekeeping_backlog_detects_truncated_bounded_steps(
+    monkeypatch, housekeeping
+) -> None:
+    from services.bounded_delete import BoundedDeleteResult  # type: ignore
+
+    _stub_prune_stores(
+        monkeypatch,
+        housekeeping,
+        diagnostic_result=[
+            BoundedDeleteResult("diagnostic_icap_events", 3, 1, False),
+            BoundedDeleteResult("diagnostic_requests", 50_000, 100, True),
+        ],
+    )
+    monkeypatch.setattr(
+        housekeeping,
+        "prune_control_plane_tables",
+        lambda: {"ok": True, "tables": [{"table": "x", "truncated": False}]},
+    )
+    monkeypatch.setattr(
+        housekeeping,
+        "_resume_paused_proxy_removals",
+        lambda: {"ok": True, "truncated": False},
+    )
+
+    prune = housekeeping._run_prune_once(retention_days=30)
+
+    assert prune["ok"] is True
+    assert [row["name"] for row in prune["steps"] if row["truncated"]] == [
+        "diagnostics",
+    ]
+    assert housekeeping.housekeeping_backlog({"prune": prune}) is True
+    assert housekeeping.housekeeping_backlog({"prune": {"steps": []}}) is False
+    assert housekeeping._value_truncated(
+        {"ok": True, "tables": [{"table": "y", "truncated": True}]},
+    )
+
+
+def test_housekeeping_backlog_schedules_catchup_until_converged(
+    monkeypatch, housekeeping
+) -> None:
+    results = [
+        {"ok": True, "prune": {"steps": [{"name": "diagnostics", "truncated": True}]}},
+        {"ok": True, "prune": {"steps": [{"name": "diagnostics", "truncated": True}]}},
+        {"ok": True, "prune": {"steps": [{"name": "diagnostics", "truncated": False}]}},
+    ]
+    run_types: list[str] = []
+
+    def run_once(*, retention_days: int, analyze=False, optimize=False, run_type=None):
+        run_types.append(run_type)
+        return results.pop(0)
+
+    monkeypatch.setattr(housekeeping, "current_retention_days", lambda default: default)
+    monkeypatch.setattr(housekeeping, "run_housekeeping_once", run_once)
+    monkeypatch.setenv("MYSQL_HOUSEKEEPING_CATCHUP_INTERVAL_SECONDS", "600")
+    schedule = {
+        "retention_days": 30,
+        "daily_hour": 2,
+        "weekly_weekday": 6,
+        "weekly_hour": 3,
+    }
+    daily = datetime(2026, 5, 25, 2, 0, tzinfo=UTC)
+    weekly = datetime(2026, 5, 31, 3, 0, tzinfo=UTC)
+
+    now = datetime(2026, 5, 25, 2, 0, 5, tzinfo=UTC)
+    daily, weekly, catchup = housekeeping._run_due_scheduled_housekeeping(
+        now=now, next_daily=daily, next_weekly=weekly, **schedule
+    )
+    assert catchup == datetime(2026, 5, 25, 2, 10, 5, tzinfo=UTC)
+    assert daily == datetime(2026, 5, 26, 2, 0, tzinfo=UTC)
+
+    # Not yet due: nothing runs and the catch-up time is preserved.
+    early = datetime(2026, 5, 25, 2, 5, tzinfo=UTC)
+    assert housekeeping._run_due_scheduled_housekeeping(
+        now=early, next_daily=daily, next_weekly=weekly, catchup_due=catchup, **schedule
+    ) == (daily, weekly, catchup)
+
+    now = catchup
+    daily, weekly, catchup = housekeeping._run_due_scheduled_housekeeping(
+        now=now, next_daily=daily, next_weekly=weekly, catchup_due=catchup, **schedule
+    )
+    assert catchup == datetime(2026, 5, 25, 2, 20, 5, tzinfo=UTC)
+    daily, weekly, catchup = housekeeping._run_due_scheduled_housekeeping(
+        now=catchup,
+        next_daily=daily,
+        next_weekly=weekly,
+        catchup_due=catchup,
+        **schedule,
+    )
+
+    assert catchup is None
+    assert daily == datetime(2026, 5, 26, 2, 0, tzinfo=UTC)
+    assert run_types == ["daily", "catchup", "catchup"]
+
+
+def test_housekeeping_failed_catchup_does_not_reschedule(
+    monkeypatch, housekeeping
+) -> None:
+    def run_once(**_kwargs):
+        msg = "MySQL unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(housekeeping, "current_retention_days", lambda default: default)
+    monkeypatch.setattr(housekeeping, "run_housekeeping_once", run_once)
+    monkeypatch.setattr(
+        housekeeping, "log_exception_throttled", lambda *_args, **_kwargs: None
+    )
+    due = datetime(2026, 5, 25, 4, 0, tzinfo=UTC)
+
+    result = housekeeping._run_due_scheduled_housekeeping(
+        now=due,
+        next_daily=datetime(2026, 5, 26, 2, 0, tzinfo=UTC),
+        next_weekly=datetime(2026, 5, 31, 3, 0, tzinfo=UTC),
+        retention_days=30,
+        daily_hour=2,
+        weekly_weekday=6,
+        weekly_hour=3,
+        catchup_due=due,
+    )
+
+    assert result[2] is None
+
+
+@pytest.mark.parametrize(
+    ("last_started_offset", "expect_catchup"),
+    [(None, True), (26 * 3600, True), (3 * 3600, False)],
+)
+def test_housekeeping_startup_catchup_after_missed_run(
+    monkeypatch, housekeeping, last_started_offset, expect_catchup
+) -> None:
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=UTC)
+    latest = (
+        {}
+        if last_started_offset is None
+        else {"started_ts": int(now.timestamp()) - last_started_offset}
+    )
+    monkeypatch.setattr(
+        housekeeping,
+        "get_observability_maintenance_status",
+        lambda *, limit: {"latest": latest, "history": []},
+    )
+    monkeypatch.setenv("MYSQL_HOUSEKEEPING_CATCHUP_INTERVAL_SECONDS", "300")
+
+    due = housekeeping._startup_catchup_due(now)
+
+    if expect_catchup:
+        assert due == datetime(2026, 5, 25, 12, 5, tzinfo=UTC)
+    else:
+        assert due is None
+
+
+def test_housekeeping_resumes_paused_proxy_removals(monkeypatch, housekeeping) -> None:
+    from services.proxy_registry import ProxyRemovalResult  # type: ignore
+
+    class Registry:
+        def resume_paused_removals(self):
+            return [
+                ProxyRemovalResult(
+                    proxy_id="edge-debug",
+                    deleted_rows=50_000,
+                    table_counts={"ts_1d": 50_000},
+                    complete=False,
+                    truncated_tables=("ts_1d",),
+                ),
+            ]
+
+    monkeypatch.setattr(housekeeping, "get_proxy_registry", Registry)
+
+    result = housekeeping._resume_paused_proxy_removals()
+
+    assert result == {
+        "ok": True,
+        "truncated": True,
+        "proxies": [
+            {
+                "proxy_id": "edge-debug",
+                "complete": False,
+                "deleted_rows": 50_000,
+                "truncated_tables": ["ts_1d"],
+            },
+        ],
+    }

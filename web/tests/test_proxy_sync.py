@@ -219,3 +219,25 @@ def test_request_proxy_reconcile_sanitizes_and_bounds_failed_operation_metadata(
     assert "ledger-secret" not in f"{payload['summary']}\n{payload['detail']}"
     assert len(payload["summary"]) == 512
     assert len(payload["detail"]) == 4000
+
+
+def test_nudge_registered_proxies_skips_lifecycle_transitions_without_warning(
+    monkeypatch, proxy_sync_module, caplog
+) -> None:
+    ledger = _Ledger()
+    registry = _Registry([])
+    registry._proxies = [
+        SimpleNamespace(proxy_id="live", status="ok"),
+        SimpleNamespace(proxy_id="edge-removing", status="removing"),
+        SimpleNamespace(proxy_id="edge-paused", status="remove_pending"),
+        SimpleNamespace(proxy_id="edge-renaming", status="renaming"),
+        SimpleNamespace(proxy_id="edge-rename", status="rename_pending"),
+    ]
+    monkeypatch.setattr(proxy_sync_module, "get_proxy_registry", lambda: registry)
+    monkeypatch.setattr(proxy_sync_module, "get_operation_ledger", lambda: ledger)
+
+    with caplog.at_level("WARNING"):
+        assert proxy_sync_module.nudge_registered_proxies(force=False) == (5, 1)
+
+    assert [op.proxy_id for op in ledger.operations] == ["live"]
+    assert caplog.text == ""

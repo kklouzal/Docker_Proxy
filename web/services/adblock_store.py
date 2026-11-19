@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from services import download_safety
-from services.bounded_delete import default_chunk_size, delete_older_than_in_chunks
+from services.bounded_delete import (
+    BoundedDeleteResult,
+    default_chunk_size,
+    delete_older_than_in_chunks,
+)
 from services.db import (
     DATABASE_ERRORS,
     INTEGRITY_ERRORS,
@@ -742,13 +746,15 @@ class AdblockStore:
             (int(cutoff), default_chunk_size()),
         )
 
-    def prune_old_entries(self, *, retention_days: int = 30) -> None:
+    def prune_old_entries(
+        self, *, retention_days: int = 30
+    ) -> list[BoundedDeleteResult]:
         """Prune old benign blocklog data to keep the DB bounded."""
         self.init_db()
         days = max(1, int(retention_days or 30))
         cutoff = _now() - days * 24 * 3600
         cutoff_day = int(cutoff // 86400)
-        delete_older_than_in_chunks(
+        events = delete_older_than_in_chunks(
             self._connect,
             table="adblock_events",
             timestamp_column="ts",
@@ -758,7 +764,7 @@ class AdblockStore:
             log_label="Adblock event prune",
         )
         # Daily rollup rows are small, but keep them aligned with the same retention.
-        delete_older_than_in_chunks(
+        counts = delete_older_than_in_chunks(
             self._connect,
             table="adblock_counts",
             timestamp_column="day",
@@ -767,6 +773,7 @@ class AdblockStore:
             log_key="adblock_store.prune.counts",
             log_label="Adblock daily count prune",
         )
+        return [events, counts]
 
     def list_recent_block_events(self, limit: int = 100) -> list[dict[str, Any]]:
         self.init_db()
