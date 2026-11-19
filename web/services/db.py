@@ -1012,7 +1012,6 @@ class _ConnectCircuit:
         self.opened_mono = 0.0
         self.failures = 0
         self.stop = threading.Event()
-        self.prober: threading.Thread | None = None
 
     def check(self) -> None:
         with self.lock:
@@ -1043,7 +1042,6 @@ class _ConnectCircuit:
                 name="mysql-connect-probe",
                 daemon=True,
             )
-            self.prober = prober
         with contextlib.suppress(Exception):
             logger.warning(
                 "MySQL %s:%s unreachable (%s); pausing new connection attempts and "
@@ -1053,7 +1051,15 @@ class _ConnectCircuit:
                 mysql_error_classification(exc),
                 _circuit_backoff_max_seconds(),
             )
-        prober.start()
+        try:
+            prober.start()
+        except Exception:
+            # Without a prober nothing could ever close the circuit; stay on
+            # the normal per-call retry path instead.
+            with self.lock:
+                self.open = False
+                self.stop.set()
+            logger.exception("Failed to start the MySQL reconnect probe")
 
     def record_success(self) -> None:
         with self.lock:

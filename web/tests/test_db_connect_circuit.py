@@ -290,3 +290,25 @@ def test_open_circuit_error_is_not_replayed_by_in_call_retries(monkeypatch) -> N
     assert sleeps == []
     assert isinstance(exc.value, db.DATABASE_ERRORS)
     assert db.mysql_error_classification(exc.value) == "connectivity"
+
+
+def test_probe_thread_start_failure_leaves_circuit_closed(monkeypatch) -> None:
+    def refused(_cfg):
+        raise pymysql.OperationalError(2003, "Connection refused")
+
+    class _UnstartableThread:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            msg = "can't start new thread"
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr(db, "_open_native_connection", refused)
+    monkeypatch.setattr(db.threading, "Thread", _UnstartableThread)
+    cfg = _cfg()
+
+    with pytest.raises(pymysql.OperationalError):
+        db.connect_unpooled(cfg)
+
+    assert not db._connect_circuit(cfg).open
