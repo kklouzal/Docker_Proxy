@@ -2451,3 +2451,44 @@ def test_remediation_repeated_proxy_5xx_ignores_singletons(tmp_path) -> None:
     ]
     assert [row["subject"] for row in failures] == ["updates.example"]
     assert failures[0]["count"] == 3
+
+
+def test_windowed_request_aggregates_pin_the_proxy_ts_range(monkeypatch) -> None:
+    from services import diagnostic_store, observability_queries  # type: ignore
+
+    statements: list[str] = []
+
+    class RecordingConnection:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_exc) -> bool:
+            return False
+
+        def execute(self, sql, _params=()):
+            statements.append(" ".join(str(sql).split()))
+
+            class Result:
+                def fetchone(self):
+                    return (0, 0, 0, 0, 0)
+
+            return Result()
+
+    monkeypatch.setattr(diagnostic_store, "get_proxy_id", lambda: "edge-a")
+    monkeypatch.setattr(observability_queries, "get_proxy_id", lambda: "edge-a")
+    store = diagnostic_store.DiagnosticStore()
+    monkeypatch.setattr(store, "_connect", RecordingConnection)
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", RecordingConnection)
+    hint = "FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_ts)"
+
+    store.activity_summary(since=100)
+    assert hint in statements[0]
+    statements.clear()
+    # Without a window every retained row is read; a forced index would only
+    # add primary-key lookups, so the optimizer keeps its choice.
+    store.activity_summary(since=None)
+    assert "FORCE INDEX" not in statements[0]
+    statements.clear()
+    queries.summary(since=100)
+    assert hint in statements[0]
