@@ -426,7 +426,7 @@ MySQL service or add an explicit host-port mapping on the MySQL host, restrict i
 with host/network firewalls, and point every admin/proxy container at that
 reachable address with `MYSQL_HOST` and `MYSQL_PORT`.
 
-The bundled MySQL service mounts `config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf`, which disables general and slow query logs by default, sets `log_error_verbosity=2`, sets `max_connections=160`, sets `max_allowed_packet=256M`, caps `innodb_redo_log_capacity=256M`, and expires binary logs after one day when binlogs are enabled. Operators who need verbose SQL logging, a different connection or packet budget, or longer PITR retention should override these settings with a later-mounted MySQL config file and explicit disk monitoring.
+The bundled MySQL service mounts `config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf`, which disables general and slow query logs by default, sets `log_error_verbosity=2`, sets `max_connections=160`, sets `max_allowed_packet=256M`, caps `innodb_redo_log_capacity=256M`, and disables binary logging (`disable_log_bin`; no replicas, recovery from MySQL backups). Operators who need verbose SQL logging, a different connection or packet budget, replication, or binlog point-in-time recovery should override these settings with a later-mounted MySQL config file and explicit disk monitoring.
 
 For externally managed MySQL containers, apply equivalent MySQL settings and Docker log rotation on that host. Host-global Docker daemon rotation, if desired for every container on the host, still belongs in `/etc/docker/daemon.json`; this application can provide Compose defaults but cannot safely rewrite the host daemon policy.
 

@@ -712,6 +712,16 @@ def test_admin_compose_and_cicap_startup_contracts() -> None:
     mysql_conf = _read("config/mysql/conf.d/99-docker-proxy-bounded-logs.cnf")
     assert "max_connections=160" in mysql_conf
     assert "max_allowed_packet=256M" in mysql_conf
+    assert "\ndisable_log_bin\n" in mysql_conf
+    mysql_settings = [
+        line.strip()
+        for line in mysql_conf.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert not any(
+        line.startswith(("log_bin", "log-bin", "binlog_expire"))
+        for line in mysql_settings
+    )
 
     live_compose = _read("docker-compose.live-tests.yml")
     assert "- squid_logs_edge_2:/var/log/squid" in live_compose
