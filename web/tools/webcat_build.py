@@ -28,7 +28,11 @@ if str(APP_ROOT) not in sys.path:
 from dataclasses import replace  # noqa: E402
 
 from services import webcat_hygiene  # noqa: E402
-from services.db import connect, resolve_database_config  # noqa: E402
+from services.db import (  # noqa: E402
+    connect,
+    mysql_advisory_lock,
+    resolve_database_config,
+)
 from services.domain_normalization import (  # noqa: E402
     looks_like_domain as _looks_like_host,
 )
@@ -728,14 +732,16 @@ def _upsert_meta_table(conn, table: str, k: str, v: str) -> None:
 
 
 def _cleanup_stale_build_tables(conn, *, current_suffix: str) -> None:
+    # Best effort: housekeeping retries the same cleanup, so a failure here must
+    # not abort the import, but it is reported instead of silently ignored.
     try:
         webcat_hygiene.cleanup_stale_webcat_build_tables(
             conn,
             current_suffix=current_suffix,
             now_ts=_now(),
         )
-    except Exception:
-        return
+    except Exception as exc:
+        sys.stderr.write(f"WebCat stale build table cleanup failed: {exc}\n")
 
 
 def _db_batch_size() -> int:
@@ -801,7 +807,16 @@ def _build_db(
                 "SELECT COUNT(DISTINCT domain) FROM pairs"
             ).fetchone()[0]
 
-            with _connect() as conn:
+            with (
+                _connect() as conn,
+                # Held for the lifetime of this import's stage/old tables so
+                # stale-table cleanup never drops an in-progress import.
+                mysql_advisory_lock(
+                    conn,
+                    webcat_hygiene.webcat_build_lock_name(suffix),
+                    1,
+                ),
+            ):
                 try:
                     _init_db(conn)
                     _cleanup_stale_build_tables(conn, current_suffix=suffix)
