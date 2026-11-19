@@ -14,6 +14,7 @@ from .mysql_test_utils import (
     configure_test_mysql_env,
     ensure_proxy_runtime_import_path,
     ensure_web_import_path,
+    register_test_proxies,
 )
 
 
@@ -105,6 +106,20 @@ class _PolicyApproveConn:
                 },
             )
         return _PolicyApproveResult(rowcount=1)
+
+
+def test_normalize_domain_uses_request_url_only_for_missing_domain() -> None:
+    ensure_web_import_path()
+    from services.policy_requests import normalize_domain
+
+    url = "https://blocked.example/path"
+    assert normalize_domain("", request_url=url) == "blocked.example"
+    assert normalize_domain(None, request_url=url) == "blocked.example"
+    assert normalize_domain("allowed.example", request_url=url) == "allowed.example"
+    # An explicitly supplied but invalid domain must not be silently replaced
+    # by the request URL's host (a different scope than the one submitted).
+    for invalid in ("not a host", "user@example.com", "-bad.example", "12345"):
+        assert normalize_domain(invalid, request_url=url) == ""
 
 
 def test_policy_exception_exposes_effective_expired_status(monkeypatch) -> None:
@@ -397,6 +412,7 @@ def test_policy_request_store_rejects_unsupported_approval_before_exception_writ
 
 def test_policy_request_store_normalizes_approves_lists_and_revokes(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "policy-requests")
+    register_test_proxies("default", "edge-a", "edge-b")
     ensure_web_import_path()
     from services.policy_requests import PolicyRequestStore
 
@@ -431,6 +447,7 @@ def test_policy_request_store_deduplicates_and_bounds_pending_admission(
     monkeypatch, tmp_path
 ) -> None:
     configure_test_mysql_env(tmp_path / "policy-request-admission")
+    register_test_proxies("default", "edge-a", "edge-b")
     ensure_web_import_path()
     from services import policy_requests
 
@@ -493,6 +510,7 @@ def test_policy_request_store_reuses_unexpired_duplicate_approval_scope(
     monkeypatch, tmp_path
 ) -> None:
     configure_test_mysql_env(tmp_path / "policy-request-dedupe")
+    register_test_proxies("default", "edge-a", "edge-b")
     ensure_web_import_path()
     from services import policy_requests
 
@@ -570,6 +588,7 @@ def test_policy_request_store_keeps_method_scoped_approvals_distinct(
     monkeypatch, tmp_path
 ) -> None:
     configure_test_mysql_env(tmp_path / "policy-request-method-scope")
+    register_test_proxies("default", "edge-a", "edge-b")
     ensure_web_import_path()
     from services import policy_requests
 
@@ -633,6 +652,7 @@ def test_policy_request_store_keeps_legacy_empty_method_exception_broad(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "policy-request-broad-method")
+    register_test_proxies("default", "edge-a", "edge-b")
     ensure_web_import_path()
     from services.policy_requests import PolicyRequestStore
 
@@ -680,6 +700,7 @@ def test_policy_request_store_keeps_legacy_empty_method_exception_broad(
 
 def test_policy_request_store_bounds_direct_approval_durations(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "policy-request-duration-bounds")
+    register_test_proxies("default", "edge-a", "edge-b")
     ensure_web_import_path()
     from services.policy_requests import (
         POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS,
@@ -2004,6 +2025,7 @@ def test_policy_request_store_rejects_invalid_scope_and_filters_active_exception
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "policy-request-filters")
+    register_test_proxies("default", "edge-a", "edge-b")
     ensure_web_import_path()
     from services.policy_requests import (
         PolicyRequestStore,
@@ -2098,6 +2120,7 @@ def test_policy_request_store_can_order_recent_admin_list_by_updated_ts(
     monkeypatch, tmp_path
 ) -> None:
     configure_test_mysql_env(tmp_path / "policy-request-updated-order")
+    register_test_proxies("default", "edge-a", "edge-b")
     ensure_web_import_path()
     from services import policy_requests
 
@@ -2154,6 +2177,7 @@ def test_policy_request_store_can_order_recent_admin_list_by_updated_ts(
 
 def test_policy_request_store_can_scope_admin_lists_and_mutations(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "policy-request-admin-scope")
+    register_test_proxies("default", "edge-a", "edge-b")
     ensure_web_import_path()
     from services.policy_requests import PolicyRequestStore
 
@@ -2209,6 +2233,7 @@ def test_policy_request_store_unscoped_mutations_reject_missing_or_stale_rows(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "policy-request-unscoped-stale")
+    register_test_proxies("default", "edge-a", "edge-b")
     ensure_web_import_path()
     from services.policy_requests import PolicyRequestStore
 
@@ -2272,6 +2297,7 @@ def test_policy_request_store_unscoped_mutations_reject_missing_or_stale_rows(
 
 def test_policy_request_store_state_transitions_are_one_way(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "policy-request-transitions")
+    register_test_proxies("default", "edge-a", "edge-b")
     ensure_web_import_path()
     from services.policy_requests import PolicyRequestStore
 

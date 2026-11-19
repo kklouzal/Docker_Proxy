@@ -216,12 +216,80 @@ def _set_database_name(database_name: str) -> None:
     os.environ["MYSQL_DATABASE"] = database_name
 
 
+# Runtime modules (and their parent-package attributes) as they were before the
+# first purge in the current test. ``configure_test_mysql_env`` purges them so the
+# test re-imports services against its private database; the snapshot lets the
+# suite-wide fixture restore the original module objects afterwards. Without the
+# restore, test modules that imported ``services.*`` at collection time keep the
+# old module objects while ``monkeypatch.setattr("services.x.attr", ...)`` and
+# fresh imports in later tests resolve to the purged-and-reimported copies, which
+# makes results depend on test order.
+_MODULE_SNAPSHOT: dict[str, Any] | None = None
+_MISSING = object()
+
+
+def _is_runtime_module(module_name: str) -> bool:
+    return module_name in _MODULES_TO_PURGE_EXACT or module_name.startswith(
+        _MODULES_TO_PURGE_PREFIXES
+    )
+
+
+def _snapshot_runtime_modules() -> None:
+    global _MODULE_SNAPSHOT
+    if _MODULE_SNAPSHOT is not None:
+        return
+    _MODULE_SNAPSHOT = {
+        name: module for name, module in sys.modules.items() if _is_runtime_module(name)
+    }
+
+
+def restore_runtime_modules() -> bool:
+    """Undo every runtime-module purge made since the last restore.
+
+    Called after each test by the suite-wide autouse fixture in the repository
+    ``conftest.py``. Returns False (and does nothing) unless the test called
+    ``configure_test_mysql_env``; the fixture then also restores the process
+    environment, so the MySQL settings mapped from ``MYSQL_TEST_*`` are mapped
+    again by the next MySQL test instead of leaking into later tests.
+    """
+    global _LOADED_ENV, _MODULE_SNAPSHOT
+    snapshot = _MODULE_SNAPSHOT
+    if snapshot is None:
+        return False
+    _MODULE_SNAPSHOT = None
+    _LOADED_ENV = False
+    for module_name in [name for name in sys.modules if _is_runtime_module(name)]:
+        if module_name not in snapshot:
+            _detach_from_package(module_name)
+            sys.modules.pop(module_name, None)
+    for module_name, module in snapshot.items():
+        sys.modules[module_name] = module
+    for module_name, module in snapshot.items():
+        if "." not in module_name:
+            continue
+        package_name, attr_name = module_name.rsplit(".", 1)
+        package = sys.modules.get(package_name)
+        if package is not None:
+            setattr(package, attr_name, module)
+    return True
+
+
+def _detach_from_package(module_name: str) -> None:
+    if "." not in module_name:
+        return
+    package_name, attr_name = module_name.rsplit(".", 1)
+    package = sys.modules.get(package_name)
+    if package is not None and getattr(package, attr_name, _MISSING) is sys.modules.get(
+        module_name
+    ):
+        delattr(package, attr_name)
+
+
 def _purge_runtime_modules() -> None:
+    _snapshot_runtime_modules()
     purged: list[str] = []
     for module_name in list(sys.modules):
-        if module_name in _MODULES_TO_PURGE_EXACT or module_name.startswith(
-            _MODULES_TO_PURGE_PREFIXES
-        ):
+        if _is_runtime_module(module_name):
             sys.modules.pop(module_name, None)
             purged.append(module_name)
     for module_name in purged:
@@ -253,3 +321,18 @@ def configure_test_mysql_env(
     _reset_db_module_cache()
     _purge_runtime_modules()
     return database_name
+
+
+def register_test_proxies(*proxy_ids: str) -> None:
+    """Register proxies the way Admin UI/proxy startup does before proxy writes.
+
+    Proxy-scoped stores write through ``guarded_proxy_write``, which fails closed
+    unless the proxy registry metadata exists and the target proxy is registered.
+    Call after ``configure_test_mysql_env`` so the registry uses the test database.
+    """
+    from services.proxy_registry import get_proxy_registry  # type: ignore
+
+    registry = get_proxy_registry()
+    registry.init_db()
+    for proxy_id in proxy_ids or ("default",):
+        registry.ensure_proxy(proxy_id)

@@ -1,11 +1,12 @@
-import os
 import pathlib
 import sys
 import unittest
 
 
 def _import_webfilter_store_module():
-    web_dir = pathlib.Path(os.path.join(pathlib.Path(__file__).parent, "..")).resolve()
+    # sys.path entries must be str (a Path entry breaks the multiprocessing
+    # forkserver used by later tests).
+    web_dir = str(pathlib.Path(__file__).resolve().parent.parent)
     if web_dir not in sys.path:
         sys.path.insert(0, web_dir)
     from services import webfilter_store  # type: ignore

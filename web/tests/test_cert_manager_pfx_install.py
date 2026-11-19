@@ -1,4 +1,3 @@
-import os
 import pathlib
 import subprocess
 import sys
@@ -12,7 +11,9 @@ from cryptography.x509.oid import NameOID
 
 
 def _import_cert_manager_module():
-    web_dir = pathlib.Path(os.path.join(pathlib.Path(__file__).parent, "..")).resolve()
+    # sys.path entries must be str: a Path entry breaks the multiprocessing
+    # forkserver that later tests start (it dies and resets connections).
+    web_dir = str(pathlib.Path(__file__).resolve().parent.parent)
     if web_dir not in sys.path:
         sys.path.insert(0, web_dir)
 

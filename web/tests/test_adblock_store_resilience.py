@@ -4,11 +4,12 @@ from types import SimpleNamespace
 
 import pymysql
 
-from .mysql_test_utils import configure_test_mysql_env
+from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
 
 def test_adblock_runtime_enablement_is_scoped_per_proxy(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "adblock-proxy-scoped-enablement")
+    register_test_proxies()
 
     from services.adblock_store import AdblockStore  # type: ignore
     from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
@@ -46,6 +47,7 @@ def test_adblock_fresh_default_is_disabled_and_init_preserves_explicit_opt_in(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "adblock-default-disabled")
+    register_test_proxies()
 
     from services.adblock_store import AdblockStore  # type: ignore
 
@@ -65,6 +67,7 @@ def test_adblock_fresh_default_is_disabled_and_init_preserves_explicit_opt_in(
 
 def test_runtime_toggle_does_not_change_shared_artifact_state(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "adblock-runtime-toggle-shared-state")
+    register_test_proxies()
 
     from services.adblock_store import AdblockStore  # type: ignore
 
@@ -82,6 +85,7 @@ def test_runtime_toggle_does_not_change_shared_artifact_state(tmp_path) -> None:
 
 def test_shared_cache_settings_bump_version_only_when_changed(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "adblock-shared-cache-settings")
+    register_test_proxies()
 
     from services.adblock_store import AdblockStore  # type: ignore
 

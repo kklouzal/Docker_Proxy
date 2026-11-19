@@ -484,6 +484,14 @@ Local deterministic tests:
 .venv\Scripts\python.exe -m pytest -m "not live and not mysql" -p no:cacheprovider --durations=10 -ra web\tests
 ```
 
+MySQL-backed tests (the whole non-live suite against a disposable MySQL 8.4 server; each test uses its own `sfp_test_*` database, so never point this at a production server):
+
+```powershell
+docker run -d --name dp-test-mysql -e MYSQL_ROOT_PASSWORD=root -p 127.0.0.1:3306:3306 mysql:8.4
+$env:MYSQL_TEST_HOST = "127.0.0.1"; $env:MYSQL_TEST_PORT = "3306"; $env:MYSQL_TEST_USER = "root"; $env:MYSQL_TEST_PASSWORD = "root"
+.venv\Scripts\python.exe -m pytest -m "not live" -p no:cacheprovider --durations=10 -ra web\tests
+```
+
 Live Compose test stack:
 
 ```powershell

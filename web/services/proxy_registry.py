@@ -965,7 +965,15 @@ class ProxyRegistry:
         new_proxy_id: object | None,
         *,
         display_name: str | None = None,
+        reconcile_local_identity: bool = False,
     ) -> ProxyInstance:
+        """Rename a registered proxy and every proxy-scoped row it owns.
+
+        The default proxy can never be renamed away, and administrative renames
+        cannot claim the default proxy id. ``reconcile_local_identity`` is only
+        for ``register_local_proxy``: a proxy whose own configured identity is
+        the (not yet registered) default may adopt its stale registration.
+        """
         self.init_db()
         old_key = normalize_proxy_id(old_proxy_id)
         new_key = normalize_proxy_id(new_proxy_id)
@@ -1118,7 +1126,9 @@ class ProxyRegistry:
                         msg = f"Proxy {old_key!r} is not registered."
                         raise ValueError(msg)
                     default_proxy_id = self._locked_default_proxy_id(conn)
-                    if default_proxy_id in {old_key, new_key}:
+                    if default_proxy_id == old_key or (
+                        default_proxy_id == new_key and not reconcile_local_identity
+                    ):
                         msg = f"Default proxy {default_proxy_id!r} cannot be renamed."
                         raise ValueError(msg)
                     lifecycle_state = conn.execute(
@@ -1730,6 +1740,7 @@ class ProxyRegistry:
                     candidate.proxy_id,
                     proxy_id,
                     display_name=display_name,
+                    reconcile_local_identity=True,
                 )
         return self.ensure_proxy(
             proxy_id,

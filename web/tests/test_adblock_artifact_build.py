@@ -15,7 +15,7 @@ import pymysql
 import pytest
 
 from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
-from .mysql_test_utils import configure_test_mysql_env
+from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
 
 def _import_artifact_modules(tmp_path: Path):
@@ -27,6 +27,7 @@ def _import_artifact_modules(tmp_path: Path):
 
     os.environ["DISABLE_BACKGROUND"] = "1"
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
+    register_test_proxies()
 
     import services.adblock_artifacts as artifacts_module  # type: ignore
     import services.adblock_store as store_module  # type: ignore
@@ -990,15 +991,21 @@ def test_build_active_artifact_persists_download_pending_when_no_cached_lists(
     assert "could not be downloaded" in str(recorded["detail"])
 
 
-def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
+def test_build_active_artifact_reports_no_effective_lists_when_none_selected(
     tmp_path, monkeypatch
 ) -> None:
+    # The shared artifact compiles the selected subscription lists regardless of
+    # any proxy's runtime toggle (47a7898; see
+    # test_manual_refresh_downloads_enabled_lists_even_when_adblock_disabled), so
+    # an artifact with no effective lists comes from selecting no lists. The
+    # runtime toggle stays disabled to prove it does not leak into the artifact.
     env_backup = {key: os.environ.get(key) for key in ("DISABLE_BACKGROUND",)}
     try:
         store_module, artifacts_module = _import_artifact_modules(tmp_path)
 
         store = store_module.get_adblock_store()
         _enable_first_default_list(store, tmp_path, enabled=False)
+        store.set_enabled({status.key: False for status in store.list_statuses()})
         monkeypatch.setattr(store, "update_one", lambda *_args, **_kwargs: False)
 
         result = artifacts_module.get_adblock_artifacts().build_active_artifact(
@@ -1053,7 +1060,8 @@ def test_build_active_artifact_reports_no_effective_lists_when_adblock_disabled(
             "network_type_popup.jsonl",
             "network_type_not_popup.jsonl",
         } <= names
-        assert settings["enabled"] is False
+        # Artifact-format compatibility field; runtime enablement is per proxy.
+        assert settings["enabled"] is True
         assert settings["enabled_lists"] == []
         assert report["enabled_lists"] == []
         assert report["breakdowns"]["lookup_index_counts"]["rules"] == 0
@@ -1449,6 +1457,10 @@ def test_build_active_artifact_preserves_previous_when_enabled_list_has_no_reque
         selected = _enable_first_default_list(store, tmp_path)
         list_path = Path(store.list_path(selected))
         list_path.write_text("||cached.example^\n", encoding="utf-8")
+        # The cached list is current: a due-but-failed download would (correctly)
+        # report download_pending, which is covered by
+        # test_build_active_artifact_reports_download_pending_when_due_download_fails_but_cached_lists_compile.
+        monkeypatch.setattr(store, "should_update", lambda *_args, **_kwargs: False)
         monkeypatch.setattr(store, "update_one", lambda *_args, **_kwargs: False)
 
         artifacts = artifacts_module.get_adblock_artifacts()
@@ -2303,11 +2315,12 @@ def test_create_revision_reuses_unchanged_active_artifact_without_new_blob(
 
     assert duplicate.revision_id == first.revision_id
     with revision_store._connect() as conn:
-        count, blob = conn.execute(
-            "SELECT COUNT(*), MAX(archive_blob) FROM adblock_artifact_revisions"
+        row = conn.execute(
+            "SELECT COUNT(*) AS revision_count, MAX(archive_blob) AS archive_blob "
+            "FROM adblock_artifact_revisions"
         ).fetchone()
-    assert int(count) == 1
-    assert bytes(blob) == b"large-archive-v1"
+    assert int(row["revision_count"]) == 1
+    assert bytes(row["archive_blob"]) == b"large-archive-v1"
 
 
 def test_create_revision_prunes_to_current_and_previous_artifacts(
@@ -2438,15 +2451,12 @@ def test_activation_commits_before_bounded_prune_cleanup(
     connect_count = 0
 
     def tracking_connect():
+        # Since ed3d9c8 the active-metadata check and the activation share one
+        # transaction, so the first connection is the activation and every later
+        # one belongs to the bounded prune cleanup.
         nonlocal connect_count
         connect_count += 1
-        label = (
-            "metadata"
-            if connect_count == 1
-            else "activation"
-            if connect_count == 2
-            else "cleanup"
-        )
+        label = "activation" if connect_count == 1 else "cleanup"
         return TrackingConn(original_connect(), label)
 
     monkeypatch.setattr(revision_store, "_connect", tracking_connect)
@@ -2462,7 +2472,11 @@ def test_activation_commits_before_bounded_prune_cleanup(
     )
 
     assert revision.artifact_sha256 == "2" * 64
-    assert commits.index("activation:exit") < commits.index("cleanup:exit")
+    assert (
+        commits.index("activation:commit")
+        < commits.index("activation:exit")
+        < commits.index("cleanup:exit")
+    )
 
 
 def test_prune_revisions_skips_when_another_cleanup_holds_lock(

@@ -567,6 +567,21 @@ def test_local_deterministic_test_command_matches_ci_mysql_exclusion() -> None:
     assert expected_marker in _read("README.md")
 
 
+def test_mysql_backed_ci_job_runs_the_whole_non_live_suite() -> None:
+    # Most MySQL-backed tests are unmarked and skip without a database, so a
+    # mysql-marker or file-list selection would leave them unexercised.
+    mysql_job = _workflow_job_body(
+        _read(".github/workflows/publish-ghcr.yml"),
+        "mysql-integration-tests",
+    )
+
+    assert 'python -m pytest -m "not live" -p no:cacheprovider' in mysql_job
+    assert "MYSQL_TEST_HOST: 127.0.0.1" in mysql_job
+    assert '-m "not live" -p no:cacheprovider --durations=10 -ra web\\tests' in (
+        _read("README.md")
+    )
+
+
 def test_publish_workflow_enforces_static_and_local_image_security_gates() -> None:
     workflow = _read(".github/workflows/publish-ghcr.yml")
     static_job = _workflow_job_body(workflow, "static-analysis")
