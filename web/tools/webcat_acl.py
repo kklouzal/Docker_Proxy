@@ -49,7 +49,7 @@ def _parent_domains(domain: str, *, max_levels: int = 6) -> Iterable[str]:
 class _Db:
     def __init__(self) -> None:
         self._conn = None
-        self._last_open_attempt = 0
+        self._last_failed_open = 0
         self._cache_max_entries = _env_int(
             "WEBFILTER_CACHE_ENTRIES",
             200000,
@@ -115,13 +115,16 @@ class _Db:
         # one-shot to avoid pinning broken MySQL sockets.
         if self._conn is not None:
             return self._conn
-        # Retry open at most once per second if DB missing during startup.
-        if now == self._last_open_attempt:
+        # Retry open at most once per second after a failed open (for example
+        # while the DB is missing during startup). Successful opens are not
+        # throttled: connections are one-shot, so a snapshot refresh opens one
+        # for the remote built_ts probe and another for the rebuild.
+        if now == self._last_failed_open:
             return None
-        self._last_open_attempt = now
         try:
             return connect()
         except Exception:
+            self._last_failed_open = now
             return None
 
     def _discard_remote_conn(self) -> None:

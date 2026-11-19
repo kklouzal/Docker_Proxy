@@ -49,7 +49,8 @@ def test_webcat_acl_uses_local_snapshot_for_parent_domain_lookups(
     assert (snapshot_dir / "webcat.sqlite").exists()
 
     db._conn = None
-    db._last_open_attempt = webcat_acl._now()
+    # Simulate a just-failed MySQL open so the lookup must use the snapshot.
+    db._last_failed_open = webcat_acl._now()
 
     assert db.lookup_categories("cdn.example.com") == {"adult", "phishing"}
 
@@ -115,10 +116,12 @@ def test_webcat_acl_refreshes_snapshot_lock_while_building(
 
         def fetchmany(self, _size):
             self.calls += 1
+            # webcat_domains.domain is the primary key, so batches carry
+            # distinct domains (the snapshot validates its row count).
             if self.calls == 1:
-                return [("a.example", "adult")] * 2
+                return [("a1.example", "adult"), ("a2.example", "adult")]
             if self.calls == 2:
-                return [("b.example", "adult")] * 2
+                return [("b1.example", "adult"), ("b2.example", "adult")]
             return []
 
         def close(self) -> None:
@@ -1277,3 +1280,39 @@ def test_webfilter_store_list_blocked_log_clamps_orders_and_redacts(
         rows[0]["url"]
         == "https://example.test/path?access_token=[redacted]&token=[redacted]"
     )
+
+
+def test_webcat_acl_throttles_only_failed_mysql_opens(monkeypatch) -> None:
+    webcat_acl = _webcat_acl_module()
+    opened: list[object] = []
+    fail = {"next": False}
+
+    def fake_connect():
+        if fail["next"]:
+            msg = "mysql unavailable"
+            raise OSError(msg)
+        conn = object()
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(webcat_acl, "connect", fake_connect)
+    monkeypatch.setattr(webcat_acl, "_now", lambda: 1000)
+    db = webcat_acl._Db()
+
+    # A snapshot refresh opens one-shot connections back to back (built_ts
+    # probe, then rebuild); successful opens in the same second must not be
+    # refused, or a stale snapshot is never refreshed.
+    first = db._connect()
+    second = db._connect()
+    assert first is not None
+    assert second is not None
+    assert len(opened) == 2
+
+    fail["next"] = True
+    assert db._connect() is None
+    fail["next"] = False
+    # Retry after a failed open waits for the next second.
+    assert db._connect() is None
+    monkeypatch.setattr(webcat_acl, "_now", lambda: 1001)
+    assert db._connect() is not None
+    assert len(opened) == 3
