@@ -815,9 +815,31 @@ def test_register_local_proxy_reconciles_stale_identity_by_management_url(
     assert registry.get_proxy("Proxy-PR") is not None
 
 
+def test_admin_rename_into_unregistered_env_default_stays_refused(
+    monkeypatch, tmp_path
+):
+    # Only the local proxy's own identity reconciliation may claim the default
+    # id; an administrative rename of another proxy into it stays refused.
+    configure_test_mysql_env(tmp_path / "proxy-identity-default-target")
+    monkeypatch.setenv("DEFAULT_PROXY_ID", "Proxy-PR")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("Proxy-P", management_url="http://proxy-pr:5000")
+
+    with pytest.raises(ValueError, match="Default proxy 'Proxy-PR'"):
+        registry.rename_proxy("Proxy-P", "Proxy-PR")
+    assert registry.get_proxy("Proxy-P") is not None
+    assert registry.get_proxy("Proxy-PR") is None
+
+
 def test_new_proxy_runtime_adblock_default_is_explicitly_disabled(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "proxy-adblock-default-disabled")
     proxy_registry = _proxy_registry()
+    # Proxies created after startup migration see the adblock runtime schema.
+    from services.schema_lifecycle import migrate_schema  # type: ignore
+
+    migrate_schema()
 
     registry = proxy_registry.ProxyRegistry()
     registry.init_db()
@@ -879,6 +901,9 @@ def test_ensure_existing_proxy_preserves_explicit_runtime_adblock_state(
 ) -> None:
     configure_test_mysql_env(tmp_path / "proxy-adblock-existing-preserved")
     proxy_registry = _proxy_registry()
+    from services.schema_lifecycle import migrate_schema  # type: ignore
+
+    migrate_schema()
 
     registry = proxy_registry.ProxyRegistry()
     registry.ensure_proxy("edge-existing")
