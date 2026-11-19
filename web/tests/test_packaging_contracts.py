@@ -83,7 +83,7 @@ def _entrypoint_perf_tuning_script() -> str:
             ),
             _entrypoint_shell_block(
                 "apply_squid_perf_tuning() {",
-                "\npython3 /app/tools/adblock_compile.py",
+                "\n# Adblock request lookup state.",
             ),
         ],
     )

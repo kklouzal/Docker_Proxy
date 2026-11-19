@@ -651,10 +651,18 @@ apply_squid_perf_tuning() {
     fi
 }
 
-python3 /app/tools/adblock_compile.py \
-    --lists-dir /var/lib/squid-flask-proxy/adblock/lists \
-    --out-dir /var/lib/squid-flask-proxy/adblock/compiled \
-    || true
+# Adblock request lookup state. Once the agent has materialized an active
+# control-plane artifact (.artifact-sha256 marker), the compiled directory is
+# owned by that artifact: recompiling the local lists here would replace its
+# request_lookup.sqlite (usually with an empty ruleset), leave adblock without
+# rules until the first successful sync (for the whole outage when MySQL is
+# unreachable at boot), and force a cicap_adblock restart on that sync.
+if [ ! -f /var/lib/squid-flask-proxy/adblock/compiled/.artifact-sha256 ]; then
+    python3 /app/tools/adblock_compile.py \
+        --lists-dir /var/lib/squid-flask-proxy/adblock/lists \
+        --out-dir /var/lib/squid-flask-proxy/adblock/compiled \
+        || true
+fi
 mkdir -p /var/lib/squid-flask-proxy/adblock/compiled
 if [ ! -f /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite ]; then
     python3 - <<'PY' || true
