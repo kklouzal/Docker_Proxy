@@ -436,7 +436,7 @@ def test_background_audit_write_follows_stored_default(tmp_path, monkeypatch):
     assert [row["proxy_id"] for row in rows] == ["livingroom-proxy"]
 
 
-def test_admin_installer_uses_registry_default_and_links_stay_unbound(
+def test_admin_installer_uses_registry_default_without_db_for_scoped_audit(
     monkeypatch, tmp_path
 ):
     registry = FakeRegistry(proxy_ids=["default", "edge-2"])
@@ -453,11 +453,11 @@ def test_admin_installer_uses_registry_default_and_links_stay_unbound(
             msg = "mysql unavailable"
             raise RuntimeError(msg)
 
+        # Scoped audit writes compare only the bound proxy, so recording an
+        # event for an explicit proxy never needs the default (or MySQL).
         monkeypatch.setattr(registry, "effective_default_proxy_id", unavailable)
-        # Link generation without a bound proxy or session pin stays unpinned
-        # and never resolves the default (no MySQL dependency for links).
         with module.app.test_request_context("/proxies"):
-            assert module._link_proxy_id() is None
-            assert "proxy_id=" not in module._endpoint_url("index")
+            module._record_audit_event_for_proxy("edge-2", "probe", ok=True)
+        assert loaded.audit_store.records[-1]["kind"] == "probe"
     finally:
         proxy_context.set_implicit_default_proxy_resolver(None)

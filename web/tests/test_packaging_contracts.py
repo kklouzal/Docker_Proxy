@@ -408,7 +408,8 @@ def test_admin_wsgi_imports_flat_packaged_application(tmp_path) -> None:
     supervisord = _read("docker/supervisord.admin.conf")
     launcher = _load_start_admin_ui_module()
     (tmp_path / "app.py").write_text(
-        'from flask import Flask\napp = Flask("packaged-admin-app")\n',
+        'from flask import Flask\napp = Flask("packaged-admin-app")\n'
+        "def install_admin_default_proxy_resolver():\n    pass\n",
         encoding="utf-8",
     )
     (tmp_path / "wsgi.py").write_text(_read("web/wsgi.py"), encoding="utf-8")
