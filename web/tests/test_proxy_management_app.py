@@ -4,6 +4,16 @@ import importlib
 from types import SimpleNamespace
 from typing import NoReturn
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _control_plane_ready():
+    """Most tests exercise a proxy whose agent finished control-plane startup."""
+    from proxy.control_plane_state import mark_control_plane_ready  # type: ignore
+
+    mark_control_plane_ready()
+
 
 def _load_proxy_app(monkeypatch):
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
@@ -1198,3 +1208,51 @@ def test_public_health_declares_lightweight_non_forwarding_scope(monkeypatch) ->
 
     assert management.status_code == 200
     assert management.get_json()["health_scope"] == "management-listener"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/api/manage/sync", "/api/manage/config/rollback", "/api/manage/cache/clear"],
+)
+def test_management_mutations_wait_for_agent_control_plane_startup(
+    monkeypatch, path
+) -> None:
+    from proxy.control_plane_state import (  # type: ignore
+        clear_control_plane_ready,
+        mark_control_plane_ready,
+    )
+
+    proxy_app = _load_proxy_app(monkeypatch)
+    monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
+
+    class _NoMutationRuntime(_Runtime):
+        def sync_from_db(self, **_kwargs):
+            pytest.fail("no control-plane mutation before startup completes")
+
+        def rollback_last_known_good_config(self, **_kwargs):
+            pytest.fail("no control-plane mutation before startup completes")
+
+        def clear_cache(self):
+            pytest.fail("no control-plane mutation before startup completes")
+
+    proxy_app.runtime = _NoMutationRuntime()
+    client = proxy_app.app.test_client()
+    headers = {"Authorization": "Bearer secret"}
+
+    clear_control_plane_ready()
+    refused = _management_post(client, path, json={}, headers=headers)
+    # Read-only management endpoints keep working meanwhile.
+    health = _management_get(client, "/api/manage/health", headers=headers)
+
+    assert refused.status_code == 503
+    assert refused.headers["Retry-After"] == "5"
+    assert refused.get_json()["status"] == "control_plane_starting"
+    assert refused.get_json()["retryable"] is True
+    assert health.status_code == 200
+
+    # Authentication is still checked first.
+    assert _management_post(client, path, json={}).status_code == 403
+
+    mark_control_plane_ready()
+    proxy_app.runtime = _Runtime()
+    assert _management_post(client, path, json={}, headers=headers).status_code != 503

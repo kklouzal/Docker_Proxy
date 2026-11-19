@@ -1436,6 +1436,10 @@ printf '[proxy-entrypoint] squid cache-dir prepare complete pidfile=%s squid_pid
 rm -f /var/run/squid.pid || true
 printf '%s\n' "$WORKERS" > "$WORKERS_MARKER_PATH" 2>/dev/null || true
 
+# Control-plane readiness is per agent process: never inherit it from an
+# earlier container run (proxy.control_plane_state).
+rm -f "${PROXY_CONTROL_PLANE_READY_FILE:-/run/squid-flask-proxy/control-plane-ready}"
+
 # Start Supervisor to manage Squid and Flask
 python3 /app/services/squid_transaction.py startup-complete \
     --active /etc/squid/squid.conf \

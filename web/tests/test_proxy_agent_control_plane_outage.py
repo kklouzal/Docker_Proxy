@@ -226,3 +226,25 @@ def test_transient_classification_covers_wrapped_connectivity_and_lock_waits(
     assert not agent._is_transient_control_plane_failure(
         pymysql.OperationalError(1045, "Access denied")
     )
+
+
+def test_agent_publishes_control_plane_readiness_only_after_startup(
+    agent, monkeypatch
+) -> None:
+    from proxy.control_plane_state import (  # type: ignore
+        control_plane_ready,
+        mark_control_plane_ready,
+    )
+
+    # A marker left by an earlier agent process must not count.
+    mark_control_plane_ready()
+    recovered = SimpleNamespace(proxy_id="edge", capture_required=False)
+    runtime = _Runtime([_db_down_recovery_error(), recovered])
+    monkeypatch.setattr(agent, "get_runtime", lambda: runtime)
+
+    agent.start_agent()
+    assert control_plane_ready() is False
+
+    _interval, sync_cycle, *_rest = _loop_args("proxy-sync-loop")
+    sync_cycle()
+    assert control_plane_ready() is True

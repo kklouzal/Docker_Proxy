@@ -68,6 +68,13 @@ is unreachable:
   with bounded exponential backoff and jitter
   (`PROXY_CONTROL_PLANE_RETRY_BACKOFF_*`, 2-30 s), while the heartbeat runs only
   local Squid/ICAP self-healing and writes nothing to the control plane.
+- **Management API.** Until the agent has completed this startup for its current
+  process lifetime, `/api/manage/sync`, `/api/manage/config/rollback` and
+  `/api/manage/cache/clear` answer `503` with `status=control_plane_starting`,
+  `retryable=true` and `Retry-After: 5` instead of writing to the control plane
+  (readiness marker `PROXY_CONTROL_PLANE_READY_FILE`, default
+  `/run/squid-flask-proxy/control-plane-ready`, removed at every container and
+  agent start). Read-only management endpoints keep answering.
 - **Mid-run.** Each process keeps a MySQL reachability circuit
   (`services.db`): after a connectivity failure (or one attempt that hangs for
   the whole connect/read timeout) further connects fail immediately with a

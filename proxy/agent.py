@@ -15,6 +15,10 @@ from services.logutil import log_exception_throttled, should_log
 from services.observability_backoff import DatabaseWriteBackoff
 from services.runtime_helpers import env_float as _env_float
 
+from proxy.control_plane_state import (
+    clear_control_plane_ready,
+    mark_control_plane_ready,
+)
 from proxy.runtime import get_runtime
 
 logger = logging.getLogger(__name__)
@@ -352,7 +356,22 @@ class _ControlPlaneStartup:
                     getattr(startup_recovery, "proxy_id", ""),
                 )
         self.complete = True
+        _publish_control_plane_ready()
         return True
+
+
+def _publish_control_plane_ready() -> None:
+    try:
+        mark_control_plane_ready()
+    except Exception:
+        # Fail closed: management mutations stay refused (503) until the
+        # marker can be written; local proxy services are unaffected.
+        log_exception_throttled(
+            logger,
+            "proxy.agent.control_plane_ready",
+            interval_seconds=300.0,
+            message="Failed to publish proxy control-plane readiness",
+        )
 
 
 def _control_plane_cycle(
@@ -393,6 +412,9 @@ def start_agent(*, stop_event: threading.Event | None = None) -> None:
         if _started:
             return
 
+        # A marker from an earlier agent process must not let the management
+        # API mutate the control plane before this process finishes startup.
+        clear_control_plane_ready()
         runtime = get_runtime()
         if stop_event is not None and stop_event.is_set():
             return

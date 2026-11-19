@@ -20,6 +20,7 @@ from services.version_status import current_component_metadata
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from proxy.agent import start_agent
+from proxy.control_plane_state import control_plane_ready
 from proxy.runtime import get_runtime
 
 if TYPE_CHECKING:
@@ -88,6 +89,32 @@ def _require_management_auth[F: Callable[..., Any]](func: F) -> F:
         provided = _provided_token()
         if not provided or not hmac.compare_digest(provided, expected):
             abort(403)
+        return func(*args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
+
+
+def _require_control_plane_ready[F: Callable[..., Any]](func: F) -> F:
+    """Refuse control-plane mutations until the agent finished startup.
+
+    Recovery adoption and the startup schema must precede any normal
+    control-plane write (docs/proxy-recovery.md); the agent signals completion
+    for its current process lifetime through proxy.control_plane_state.
+    """
+
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any):
+        if not control_plane_ready():
+            response = jsonify(
+                {
+                    "ok": False,
+                    "status": "control_plane_starting",
+                    "retryable": True,
+                    "detail": "Proxy control-plane startup (recovery adoption, schema, registration) has not completed yet; retry shortly.",
+                },
+            )
+            response.headers["Retry-After"] = "5"
+            return response, 503
         return func(*args, **kwargs)
 
     return wrapper  # type: ignore[return-value]
@@ -312,6 +339,7 @@ def manage_logs() -> Any:
 
 @app.route("/api/manage/sync", methods=["POST"])
 @_require_management_auth
+@_require_control_plane_ready
 def manage_sync() -> Any:
     payload = _management_json_payload()
     operation_id = payload.get("operation_id")
@@ -375,6 +403,7 @@ def manage_config_validate() -> Any:
 
 @app.route("/api/manage/config/rollback", methods=["POST"])
 @_require_management_auth
+@_require_control_plane_ready
 def manage_config_rollback() -> Any:
     payload = _management_json_payload()
     result = _runtime().rollback_last_known_good_config(
@@ -385,6 +414,7 @@ def manage_config_rollback() -> Any:
 
 @app.route("/api/manage/cache/clear", methods=["POST"])
 @_require_management_auth
+@_require_control_plane_ready
 def manage_cache_clear() -> Any:
     _management_json_payload()
     result = _runtime().clear_cache()

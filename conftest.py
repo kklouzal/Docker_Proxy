@@ -31,3 +31,12 @@ def _isolated_policy_last_known_good_dir(tmp_path_factory, monkeypatch):
         "PROXY_POLICY_LKG_DIR",
         str(tmp_path_factory.mktemp("policy-last-known-good")),
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_control_plane_ready_file(tmp_path_factory, monkeypatch):
+    """Keep the agent readiness marker out of the real /run path."""
+    monkeypatch.setenv(
+        "PROXY_CONTROL_PLANE_READY_FILE",
+        str(tmp_path_factory.mktemp("control-plane") / "ready"),
+    )
