@@ -727,24 +727,35 @@ def _timed_out(started_mono: float, timeout_seconds: float) -> bool:
     )
 
 
-def _open_gated_native_connection(cfg: DatabaseConfig) -> Any:
-    """Open one connection attempt through the reachability circuit.
+def _open_native_connection_with_retries(
+    cfg: DatabaseConfig,
+    *,
+    caller_opened_circuit: bool = False,
+) -> Any:
+    """Open a connection with the bounded in-call retries, through the circuit.
 
     An attempt that fails only after (nearly) the whole connect timeout is
-    evidence of a hung or black-holed server, not a blip: it opens the circuit
-    at once, so the caller's remaining in-call retries and every other thread
-    fail fast instead of each waiting MYSQL_CONNECT_TIMEOUT again. Fast
-    failures (refused, reset) keep the normal bounded in-call retries.
+    evidence of a hung or black-holed server: it opens the circuit at once, so
+    every other caller fails fast instead of each waiting MYSQL_CONNECT_TIMEOUT
+    again. The caller that observed it keeps its own in-call retries, so a
+    genuinely transient stall still recovers within the same call.
     """
-    circuit = _connect_circuit(cfg)
-    circuit.check()
-    started = time.monotonic()
-    try:
-        return _open_native_connection(cfg)
-    except Exception as exc:
-        if _timed_out(started, cfg.connect_timeout):
-            circuit.record_failure(exc)
-        raise
+    opened_here = caller_opened_circuit
+
+    def attempt() -> Any:
+        nonlocal opened_here
+        circuit = _connect_circuit(cfg)
+        if not opened_here:
+            circuit.check()
+        started = time.monotonic()
+        try:
+            return _open_native_connection(cfg)
+        except Exception as exc:
+            if _timed_out(started, cfg.connect_timeout) and circuit.record_failure(exc):
+                opened_here = True
+            raise
+
+    return _retry_mysql_operation(attempt)
 
 
 def _close_native_connection(native: Any) -> None:
@@ -795,7 +806,7 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
     key = _pool_key(cfg)
     maxsize = _pool_maxsize()
     if maxsize <= 0:
-        native = _retry_mysql_operation(lambda: _open_gated_native_connection(cfg))
+        native = _open_native_connection_with_retries(cfg)
         try:
             _configure_native_connection(native, cfg)
             return native
@@ -804,6 +815,7 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
             raise
 
     deadline = time.monotonic() + _pool_acquire_timeout_seconds()
+    opened_by_caller = False
     while True:
         source = ""
         native = None
@@ -837,14 +849,19 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
                 return native
             except Exception as exc:
                 if _timed_out(ping_started, cfg.read_timeout):
-                    _connect_circuit(cfg).record_failure(exc)
+                    opened_by_caller = (
+                        _connect_circuit(cfg).record_failure(exc) or opened_by_caller
+                    )
                 _close_native_connection(native)
                 with _pool_condition:
                     _release_pool_slot_locked(key)
                 continue
 
         try:
-            native = _retry_mysql_operation(lambda: _open_gated_native_connection(cfg))
+            native = _open_native_connection_with_retries(
+                cfg,
+                caller_opened_circuit=opened_by_caller,
+            )
             _configure_native_connection(native, cfg)
             return native
         except Exception:
@@ -1024,12 +1041,13 @@ class _ConnectCircuit:
         )
         raise MySQLUnreachableError(2003, msg)
 
-    def record_failure(self, exc: BaseException) -> None:
+    def record_failure(self, exc: BaseException) -> bool:
+        """Open the circuit for a connectivity failure; True if this call opened it."""
         if mysql_error_classification(exc) not in _CIRCUIT_TRIP_CLASSIFICATIONS:
-            return
+            return False
         with self.lock:
             if self.open:
-                return
+                return False
             self.open = True
             self.opened_mono = time.monotonic()
             self.failures = 1
@@ -1060,6 +1078,8 @@ class _ConnectCircuit:
                 self.open = False
                 self.stop.set()
             logger.exception("Failed to start the MySQL reconnect probe")
+            return False
+        return True
 
     def record_success(self) -> None:
         with self.lock:
@@ -1206,7 +1226,7 @@ def connect(config: DatabaseConfig | None = None) -> CompatConnection:
 
 
 def _open_configured_unpooled(cfg: DatabaseConfig) -> Any:
-    native = _retry_mysql_operation(lambda: _open_gated_native_connection(cfg))
+    native = _open_native_connection_with_retries(cfg)
     try:
         _configure_native_connection(native, cfg)
     except Exception:

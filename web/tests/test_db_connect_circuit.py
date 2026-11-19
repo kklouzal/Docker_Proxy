@@ -174,21 +174,28 @@ def test_forked_child_starts_with_closed_circuits(monkeypatch) -> None:
     monkeypatch.setattr(db, "_open_native_connection", open_native)
     with pytest.raises(pymysql.OperationalError):
         db.connect_unpooled(_cfg())
-    assert db._connect_circuits
+    parent_circuits = list(db._connect_circuits.values())
+    assert parent_circuits
 
     db._reinitialize_connect_circuits_after_fork()
 
     assert not db._connect_circuits
+    # A real fork has no probe threads in the child; stop this process's one.
+    for circuit in parent_circuits:
+        circuit.stop.set()
 
 
 def test_mysql_recovery_releases_pending_observability_write_backoffs() -> None:
+    # MySQL integration helpers purge and re-import services.*; use the current
+    # module pair rather than this file's import-time db module.
+    from services import db as current_db  # type: ignore
     from services.observability_backoff import DatabaseWriteBackoff  # type: ignore
 
     backoff = DatabaseWriteBackoff(base_seconds=60.0, max_seconds=120.0)
     backoff.record_failure()
     assert not backoff.can_attempt()
 
-    db._notify_mysql_recovery_listeners()
+    current_db._notify_mysql_recovery_listeners()
 
     # Telemetry resumes on the next writer tick, but a flapping database still
     # backs off from the accumulated failure count.
@@ -196,29 +203,43 @@ def test_mysql_recovery_releases_pending_observability_write_backoffs() -> None:
     assert backoff.failures == 1
 
 
-def test_timed_out_attempt_opens_circuit_without_spending_remaining_retries(
+def test_timed_out_attempt_opens_circuit_for_others_but_caller_keeps_retries(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "4")
+    monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "3")
+    monkeypatch.setenv("MYSQL_CONNECT_CIRCUIT_BACKOFF_INITIAL_SECONDS", "60")
+    monkeypatch.setenv("MYSQL_CONNECT_CIRCUIT_BACKOFF_MAX_SECONDS", "60")
     real_sleep = time.sleep
     monkeypatch.setattr(db.time, "sleep", lambda _seconds: None)
     attempts: list[str] = []
+    other_call: dict[str, BaseException] = {}
 
-    def hung_open(_cfg):
+    cfg = _cfg(connect_timeout=1)
+
+    def stalled_then_up(_cfg):
         attempts.append(threading.current_thread().name)
-        real_sleep(0.95)
-        raise pymysql.OperationalError(2013, "Lost connection (timed out)")
+        if len(attempts) == 1:
+            real_sleep(0.95)
+            raise pymysql.OperationalError(2003, "Can't connect (timed out)")
+        # During the observing caller's retry, any other caller fails fast
+        # instead of waiting out the connect timeout again.
+        started = time.monotonic()
+        try:
+            db.connect_unpooled(cfg)
+        except db.MySQLUnreachableError as exc:
+            other_call["error"] = exc
+        other_call["elapsed"] = time.monotonic() - started  # type: ignore[assignment]
+        return _Native()
 
-    monkeypatch.setattr(db, "_open_native_connection", hung_open)
+    monkeypatch.setattr(db, "_open_native_connection", stalled_then_up)
 
-    started = time.monotonic()
-    with pytest.raises(pymysql.OperationalError):
-        db.connect_unpooled(_cfg(connect_timeout=1))
+    # The observing caller still recovers from a transient stall in-call.
+    db.connect_unpooled(cfg).close()
 
-    # One hung attempt is enough evidence; the other three fail fast (only the
-    # background prober may try again).
-    assert attempts.count(threading.main_thread().name) == 1
-    assert time.monotonic() - started < 1.5
+    assert len(attempts) == 2
+    assert isinstance(other_call["error"], db.MySQLUnreachableError)
+    assert other_call["elapsed"] < 0.05  # type: ignore[operator]
+    assert not db._connect_circuit(cfg).open
 
 
 def test_fast_connect_failures_keep_bounded_in_call_retries(monkeypatch) -> None:
@@ -245,6 +266,9 @@ def test_hung_pooled_session_ping_opens_circuit(monkeypatch) -> None:
     db._clear_pooled_connections()
     opened: list[int] = []
 
+    monkeypatch.setenv("MYSQL_CONNECT_CIRCUIT_BACKOFF_INITIAL_SECONDS", "60")
+    monkeypatch.setenv("MYSQL_CONNECT_CIRCUIT_BACKOFF_MAX_SECONDS", "60")
+
     class _PooledNative(_Native):
         def ping(self, reconnect=False):
             assert reconnect is False
@@ -254,19 +278,23 @@ def test_hung_pooled_session_ping_opens_circuit(monkeypatch) -> None:
     def open_native(_cfg):
         opened.append(1)
         if len(opened) > 1:
-            msg = "circuit must fail fast after a hung ping"
-            raise AssertionError(msg)
+            raise pymysql.OperationalError(2003, "Can't connect (refused)")
         return _PooledNative()
 
     monkeypatch.setattr(db, "_open_native_connection", open_native)
     cfg = _cfg(read_timeout=1)
     db.connect(cfg).close()
 
-    with pytest.raises(pymysql.OperationalError) as exc:
+    # The caller whose pooled ping hung still tries a fresh connection ...
+    with pytest.raises(pymysql.OperationalError):
         db.connect(cfg)
-
-    assert db.mysql_error_code(exc.value) in {2003, 2013}
+    assert len(opened) == 2
     assert db._connect_circuit(cfg).open
+
+    # ... while later callers fail fast without any attempt.
+    with pytest.raises(db.MySQLUnreachableError):
+        db.connect(cfg)
+    assert len(opened) == 2
     db._clear_pooled_connections()
 
 
