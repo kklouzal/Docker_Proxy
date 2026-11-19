@@ -21,7 +21,7 @@ from services.db import (
     table_exists,
 )
 from services.domain_normalization import is_ambiguous_ipv4_like_host
-from services.proxy_context import get_default_proxy_id, normalize_proxy_id
+from services.proxy_context import get_env_default_proxy_id, normalize_proxy_id
 from services.proxy_lifecycle import (
     ProxyLifecycleIncompleteError,
     ProxyLifecycleRunResult,
@@ -805,7 +805,7 @@ class ProxyRegistry:
     def _locked_default_proxy_id(self, conn) -> str:
         """Return the effective default inside a lifecycle transaction."""
         return self._stored_default_proxy_id(conn, lock_clause=" FOR SHARE") or (
-            get_default_proxy_id()
+            get_env_default_proxy_id()
         )
 
     def default_proxy_selection(
@@ -832,7 +832,7 @@ class ProxyRegistry:
         with self._connect() as conn:
             stored = self._stored_default_proxy_id(conn)
         selection = (
-            (stored, "admin") if stored else (get_default_proxy_id(), "environment")
+            (stored, "admin") if stored else (get_env_default_proxy_id(), "environment")
         )
         with self._default_cache_lock:
             if generation == self._default_cache_generation:
@@ -887,7 +887,7 @@ class ProxyRegistry:
                         conn, lock_clause=" FOR UPDATE"
                     )
                     if previous is None:
-                        previous = get_default_proxy_id()
+                        previous = get_env_default_proxy_id()
                     conn.execute(
                         """
                         INSERT INTO proxy_default_selection(id, default_proxy_id, updated_ts)
@@ -1707,7 +1707,7 @@ class ProxyRegistry:
         proxy_id = normalize_proxy_id(
             os.environ.get("PROXY_INSTANCE_ID")
             or os.environ.get("PROXY_ID")
-            or get_default_proxy_id(),
+            or get_env_default_proxy_id(),
         )
         display_name = (
             os.environ.get("PROXY_DISPLAY_NAME") or proxy_id

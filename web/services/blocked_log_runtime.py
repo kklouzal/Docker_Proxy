@@ -10,7 +10,7 @@ import time
 
 from services.db import connect
 from services.errors import redact_url_for_display
-from services.proxy_context import get_default_proxy_id, normalize_proxy_id
+from services.proxy_context import get_env_default_proxy_id, normalize_proxy_id
 from services.proxy_write_guard import (
     guarded_proxy_rows,
     is_proxy_lifecycle_write_error,
@@ -110,7 +110,7 @@ class BlockedLogDb:
             os.environ.get("PROXY_INSTANCE_ID")
             or os.environ.get("PROXY_ID")
             or os.environ.get("DEFAULT_PROXY_ID")
-            or get_default_proxy_id(),
+            or get_env_default_proxy_id(),
         )
 
     def _table(self, conn) -> str:

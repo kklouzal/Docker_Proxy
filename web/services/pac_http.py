@@ -20,7 +20,7 @@ from services.pac_renderer import (
     select_manifest_file,
     substitute_request_host,
 )
-from services.proxy_context import get_default_proxy_id, normalize_proxy_id
+from services.proxy_context import get_env_default_proxy_id, normalize_proxy_id
 from services.proxy_registry import (
     _safe_decoded_path_segments,
     normalize_public_pac_path,
@@ -379,7 +379,7 @@ class LocalPacCache:
     def __init__(self, pac_dir: str, *, proxy_id: object | None = None) -> None:
         self.pac_dir = Path(pac_dir)
         self.proxy_id = normalize_proxy_id(
-            get_default_proxy_id() if proxy_id is None else proxy_id
+            get_env_default_proxy_id() if proxy_id is None else proxy_id
         )
         self._lock = threading.Lock()
         self._state_sha = ""
