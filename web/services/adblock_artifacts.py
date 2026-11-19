@@ -657,13 +657,11 @@ class AdblockArtifactStore:
                     truncated = True
                 # Strip only once unreferenced rows are gone, so a row about to
                 # be deleted is never rewritten first; the rest are referenced.
-                while not truncated and stripped < strip_limit:
-                    if not self._strip_inactive_archive_with_conn(conn):
-                        break
-                    stripped += 1
-                    conn.commit()
-                else:
-                    truncated = truncated or stripped >= strip_limit
+                if not truncated:
+                    stripped, truncated = self._strip_inactive_archives_with_conn(
+                        conn,
+                        limit=strip_limit,
+                    )
             finally:
                 with contextlib.suppress(Exception):
                     conn.execute("DO RELEASE_LOCK(%s)", (_ARTIFACT_PRUNE_LOCK_NAME,))
@@ -748,24 +746,43 @@ class AdblockArtifactStore:
         )
         return max(0, int(getattr(result, "rowcount", 0) or 0))
 
-    def _strip_inactive_archive_with_conn(self, conn) -> bool:
-        """Release one non-retained inactive archive; return False when none remain.
+    def _strip_inactive_archives_with_conn(
+        self,
+        conn,
+        *,
+        limit: int,
+    ) -> tuple[int, bool]:
+        """Release up to ``limit`` non-retained inactive archives.
 
-        One row per statement keeps each transaction (and its binlog row image)
-        to a single archive. Already-stripped rows hold an empty blob, so the
-        ``archive_blob <> ''`` scan over them is cheap.
+        Returns ``(stripped, truncated)``. Candidate ids are read without the
+        blob column, and each row is updated by primary key in its own commit,
+        so a pass reads only the archives it releases (stripped rows hold an
+        empty value) and each transaction/binlog event covers one archive.
+        Revisions never become active again and the retained set only moves to
+        newer rows, so ids selected up front stay safe to strip.
         """
         keep_ids = sorted(self._retained_revision_ids(conn))
         keep_sql = ""
         if keep_ids:
             keep_sql = f" AND id NOT IN ({', '.join(['%s'] * len(keep_ids))})"
-        result = conn.execute(
-            "UPDATE adblock_artifact_revisions SET archive_blob=%s "
-            f"WHERE is_active=0{keep_sql} AND archive_blob <> %s "
-            "ORDER BY id ASC LIMIT 1",
-            (b"", *keep_ids, b""),
-        )
-        return max(0, int(getattr(result, "rowcount", 0) or 0)) > 0
+        candidate_rows = conn.execute(
+            "SELECT id AS revision_id FROM adblock_artifact_revisions "
+            f"WHERE is_active=0{keep_sql} ORDER BY id ASC",
+            tuple(keep_ids),
+        ).fetchall()
+        stripped = 0
+        for row in candidate_rows:
+            if stripped >= limit:
+                return stripped, True
+            result = conn.execute(
+                "UPDATE adblock_artifact_revisions SET archive_blob=%s "
+                "WHERE id=%s AND is_active=0 AND archive_blob <> %s",
+                (b"", int(row[0]), b""),
+            )
+            if max(0, int(getattr(result, "rowcount", 0) or 0)) > 0:
+                stripped += 1
+                conn.commit()
+        return stripped, False
 
     def _select_prune_candidate_ids(
         self,

@@ -241,17 +241,24 @@ class _FakeAdblockRevisionConn:
             self.rows[:] = [row for row in self.rows if int(row["id"]) not in ids]
             self.deleted_batches.append(sorted(ids))
             return _FakeSqlResult(rowcount=len(ids))
+        if text.startswith("SELECT id AS revision_id FROM adblock_artifact_revisions"):
+            keep_ids = {int(value) for value in params}
+            rows = sorted(
+                int(row["id"])
+                for row in self.rows
+                if int(row["is_active"]) == 0 and int(row["id"]) not in keep_ids
+            )
+            return _FakeSqlResult([(row_id,) for row_id in rows])
         if text.startswith("UPDATE adblock_artifact_revisions SET archive_blob=%s"):
-            keep_ids = {int(value) for value in params[1:-1]}
-            for row in sorted(self.rows, key=lambda row: int(row["id"])):
+            row_id = int(params[1])
+            for row in self.rows:
                 if (
-                    int(row["is_active"]) == 0
-                    and int(row["id"]) not in keep_ids
+                    int(row["id"]) == row_id
+                    and int(row["is_active"]) == 0
                     and row.get("archive", b"blob") != b""
-                    and int(row.get("referenced", 0))
                 ):
                     row["archive"] = b""
-                    self.stripped.append(int(row["id"]))
+                    self.stripped.append(row_id)
                     return _FakeSqlResult(rowcount=1)
             return _FakeSqlResult(rowcount=0)
         msg = f"Unexpected SQL: {text}"
