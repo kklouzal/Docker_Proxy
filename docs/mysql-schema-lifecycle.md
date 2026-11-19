@@ -1,6 +1,6 @@
 # MySQL schema lifecycle hardening
 
-Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 32.
+Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 33.
 
 ## Version ownership
 
@@ -38,6 +38,7 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 | 30 | `proxy_scoped_adblock_runtime_enablement` | Seeds each registered proxy's adblock routing state from the legacy global switch; subscriptions and compiled artifacts remain shared. |
 | 31 | `adblock_event_policy_attribution` | Adds `adblock_events.list_key`, `rule_id`, `decision_action`, and `decision_reason` so durable adblock events retain the matched policy list/rule and decision outcome/reason; all four columns are non-null with empty-string defaults for existing rows. |
 | 32 | `admin_default_proxy_selection` | `proxy_default_selection` singleton holding the Admin UI default proxy chosen on the Proxies page; absent row means the `DEFAULT_PROXY_ID` environment bootstrap still applies. The column is `default_proxy_id` (not `proxy_id`) so proxy lifecycle discovery never treats it as proxy-scoped data. |
+| 33 | `diagnostic_requests_drop_duplicate_indexes` | Drops `idx_diagnostic_requests_proxy_tx` and `idx_diagnostic_requests_proxy_domain`, each the same physical B-tree (declared columns plus the implicit `id` suffix) as the kept `idx_diagnostic_requests_proxy_tx_ts_id` / `idx_diagnostic_requests_proxy_domain_ts_id`; a duplicate is dropped only while its twin exists, with `ALGORITHM=INPLACE, LOCK=NONE` (metadata-only, online). |
 
 ## Lifecycle model
 
