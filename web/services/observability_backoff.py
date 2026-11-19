@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import random
+import threading
 import time
 import weakref
 from dataclasses import dataclass, field
@@ -14,6 +15,9 @@ from services.runtime_helpers import env_float
 _LIVE_BACKOFFS: weakref.WeakValueDictionary[int, DatabaseWriteBackoff] = (
     weakref.WeakValueDictionary()
 )
+# Writers create backoffs on their own threads while the probe thread releases
+# them; inserting during that iteration would raise "changed size".
+_LIVE_BACKOFFS_LOCK = threading.Lock()
 
 
 @dataclass
@@ -28,7 +32,8 @@ class DatabaseWriteBackoff:
     _rand: object = field(default=random.random, repr=False)  # noqa: S311
 
     def __post_init__(self) -> None:
-        _LIVE_BACKOFFS[id(self)] = self
+        with _LIVE_BACKOFFS_LOCK:
+            _LIVE_BACKOFFS[id(self)] = self
 
     @classmethod
     def from_env(
@@ -99,7 +104,9 @@ def _release_backoffs_after_mysql_recovery() -> None:
     # Keep the failure count so a flapping database still backs off; only the
     # pending wait is released. A lost race with the owner thread at worst
     # defers one attempt by a single backoff step.
-    for backoff in list(_LIVE_BACKOFFS.values()):
+    with _LIVE_BACKOFFS_LOCK:
+        backoffs = list(_LIVE_BACKOFFS.values())
+    for backoff in backoffs:
         backoff._next_attempt_at = 0.0
 
 
