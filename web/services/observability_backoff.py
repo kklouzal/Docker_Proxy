@@ -3,9 +3,17 @@ from __future__ import annotations
 import math
 import random
 import time
+import weakref
 from dataclasses import dataclass, field
 
+from services.db import add_mysql_recovery_listener
 from services.runtime_helpers import env_float
+
+# Live backoffs, so a MySQL reconnect can release them all at once instead of
+# each writer waiting out its remaining (up to *_BACKOFF_MAX_SECONDS) delay.
+_LIVE_BACKOFFS: weakref.WeakValueDictionary[int, DatabaseWriteBackoff] = (
+    weakref.WeakValueDictionary()
+)
 
 
 @dataclass
@@ -18,6 +26,9 @@ class DatabaseWriteBackoff:
     _failures: int = 0
     _next_attempt_at: float = 0.0
     _rand: object = field(default=random.random, repr=False)  # noqa: S311
+
+    def __post_init__(self) -> None:
+        _LIVE_BACKOFFS[id(self)] = self
 
     @classmethod
     def from_env(
@@ -49,7 +60,9 @@ class DatabaseWriteBackoff:
         return cls(base_seconds=base, max_seconds=maximum, jitter_ratio=jitter)
 
     def can_attempt(self, now: float | None = None) -> bool:
-        return float(now if now is not None else time.monotonic()) >= self._next_attempt_at
+        return (
+            float(now if now is not None else time.monotonic()) >= self._next_attempt_at
+        )
 
     @property
     def failures(self) -> int:
@@ -82,7 +95,20 @@ class DatabaseWriteBackoff:
         return delay
 
 
-def stagger_delay_from_env(env_name: str, default_seconds: float, *, maximum: float) -> float:
+def _release_backoffs_after_mysql_recovery() -> None:
+    # Keep the failure count so a flapping database still backs off; only the
+    # pending wait is released. A lost race with the owner thread at worst
+    # defers one attempt by a single backoff step.
+    for backoff in list(_LIVE_BACKOFFS.values()):
+        backoff._next_attempt_at = 0.0
+
+
+add_mysql_recovery_listener(_release_backoffs_after_mysql_recovery)
+
+
+def stagger_delay_from_env(
+    env_name: str, default_seconds: float, *, maximum: float
+) -> float:
     """Return a random startup/cadence stagger delay bounded by an env knob."""
     span = env_float(env_name, default_seconds, minimum=0.0, maximum=maximum)
     if span <= 0.0:

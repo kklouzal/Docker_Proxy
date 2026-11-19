@@ -179,3 +179,18 @@ def test_forked_child_starts_with_closed_circuits(monkeypatch) -> None:
     db._reinitialize_connect_circuits_after_fork()
 
     assert not db._connect_circuits
+
+
+def test_mysql_recovery_releases_pending_observability_write_backoffs() -> None:
+    from services.observability_backoff import DatabaseWriteBackoff  # type: ignore
+
+    backoff = DatabaseWriteBackoff(base_seconds=60.0, max_seconds=120.0)
+    backoff.record_failure()
+    assert not backoff.can_attempt()
+
+    db._notify_mysql_recovery_listeners()
+
+    # Telemetry resumes on the next writer tick, but a flapping database still
+    # backs off from the accumulated failure count.
+    assert backoff.can_attempt()
+    assert backoff.failures == 1

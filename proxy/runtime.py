@@ -4413,9 +4413,10 @@ class ProxyRuntime:
         finally:
             self._health_refresh_lock.release()
 
-    def heartbeat(self) -> dict[str, Any]:
+    def run_local_self_heal(self, *, reason: str = "heartbeat") -> None:
+        """Repair local Squid/ICAP runtime state; needs no control-plane access."""
         try:
-            self.self_heal_config_if_needed(reason="heartbeat")
+            self.self_heal_config_if_needed(reason=reason)
         except Exception:
             log_exception_throttled(
                 logger,
@@ -4424,7 +4425,7 @@ class ProxyRuntime:
                 message="Proxy config self-heal check failed",
             )
         try:
-            self.self_heal_runtime_services_if_needed(reason="heartbeat")
+            self.self_heal_runtime_services_if_needed(reason=reason)
         except Exception:
             log_exception_throttled(
                 logger,
@@ -4432,6 +4433,9 @@ class ProxyRuntime:
                 interval_seconds=30.0,
                 message="Proxy runtime service self-heal check failed",
             )
+
+    def heartbeat(self) -> dict[str, Any]:
+        self.run_local_self_heal(reason="heartbeat")
         health = self.collect_health()
         public_fields = resolve_local_proxy_public_fields()
         self.registry.heartbeat(
