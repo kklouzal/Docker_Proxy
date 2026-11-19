@@ -268,3 +268,25 @@ def test_hung_pooled_session_ping_opens_circuit(monkeypatch) -> None:
     assert db.mysql_error_code(exc.value) in {2003, 2013}
     assert db._connect_circuit(cfg).open
     db._clear_pooled_connections()
+
+
+def test_open_circuit_error_is_not_replayed_by_in_call_retries(monkeypatch) -> None:
+    monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "4")
+    sleeps: list[float] = []
+    monkeypatch.setattr(db.time, "sleep", sleeps.append)
+
+    def refused(_cfg):
+        raise pymysql.OperationalError(2003, "Connection refused")
+
+    monkeypatch.setattr(db, "_open_native_connection", refused)
+    cfg = _cfg()
+    with pytest.raises(pymysql.OperationalError):
+        db.connect_unpooled(cfg)
+    sleeps.clear()
+
+    with pytest.raises(db.MySQLUnreachableError) as exc:
+        db.connect_unpooled(cfg)
+
+    assert sleeps == []
+    assert isinstance(exc.value, db.DATABASE_ERRORS)
+    assert db.mysql_error_classification(exc.value) == "connectivity"

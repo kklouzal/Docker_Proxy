@@ -338,7 +338,9 @@ def mysql_error_classification(exc: BaseException) -> str:
 
 
 def _is_retryable_mysql_connect_error(exc: BaseException) -> bool:
-    if not isinstance(exc, pymysql.MySQLError):
+    if not isinstance(exc, pymysql.MySQLError) or isinstance(
+        exc, MySQLUnreachableError
+    ):
         return False
     if isinstance(exc, pymysql.InterfaceError) and mysql_error_code(exc) in {None, 0}:
         return True
@@ -979,6 +981,14 @@ def resolve_database_config() -> DatabaseConfig:
 _CIRCUIT_TRIP_CLASSIFICATIONS = frozenset({"connectivity", "connection_lost"})
 
 
+class MySQLUnreachableError(pymysql.OperationalError):  # type: ignore[misc,name-defined]
+    """Raised without a network attempt while the connect circuit is open.
+
+    Carries code 2003 so callers classify it as ``connectivity`` like any other
+    unreachable-server error; in-call connect retries never replay it.
+    """
+
+
 class _ConnectCircuit:
     """Process-local MySQL reachability gate for one server/database target.
 
@@ -1013,7 +1023,7 @@ class _ConnectCircuit:
             f"MySQL {self.cfg.host}:{self.cfg.port} is unreachable; new connection "
             f"attempts are paused while a background probe retries (down {elapsed:.0f}s)"
         )
-        raise pymysql.OperationalError(2003, msg)  # type: ignore[attr-defined]
+        raise MySQLUnreachableError(2003, msg)
 
     def record_failure(self, exc: BaseException) -> None:
         if mysql_error_classification(exc) not in _CIRCUIT_TRIP_CLASSIFICATIONS:
