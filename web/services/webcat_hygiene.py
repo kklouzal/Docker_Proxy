@@ -14,11 +14,16 @@ _WEBCAT_BUILD_TABLE_RE = re.compile(
     r"^webcat_(?:domains|categories|aliases|meta|pairs)_(?:stage|old)_(\d+)_(\d+)$",
 )
 
+# The LIKE pattern is bound as a parameter: DB-API drivers apply ``%``
+# formatting to the statement whenever parameters are passed (CompatConnection
+# always passes a tuple), so a literal ``%`` in the SQL text would fail.
 _LIST_WEBCAT_BUILD_TABLES_SQL = (
     "SELECT TABLE_NAME FROM information_schema.TABLES "
     "WHERE TABLE_SCHEMA = DATABASE() "
-    "AND TABLE_NAME LIKE 'webcat\\\\_%' ESCAPE '\\\\'"
+    "AND TABLE_NAME LIKE %s"
 )
+_WEBCAT_TABLE_LIKE_PATTERN = "webcat\\_%"
+_WEBCAT_BUILD_LOCK_PREFIX = "docker_proxy:webcat_build:"
 
 
 @dataclass(frozen=True)
@@ -91,8 +96,37 @@ def commit_if_supported(conn) -> None:
         commit()
 
 
+def webcat_build_lock_name(suffix: str) -> str:
+    """Named MySQL lock an importer holds while its ``<pid>_<ts>`` tables exist.
+
+    The lock is session-scoped, so MySQL releases it when the importer process
+    or its connection dies; cleanup treats a held lock as an in-progress import.
+    """
+    return f"{_WEBCAT_BUILD_LOCK_PREFIX}{suffix}"[:64]
+
+
+def _build_lock_in_use(conn, suffix: str) -> bool:
+    row = conn.execute(
+        "SELECT IS_USED_LOCK(%s) AS owner",
+        (webcat_build_lock_name(suffix),),
+    ).fetchone()
+    if row is None:
+        return False
+    if isinstance(row, Mapping):
+        owner = row.get("owner")
+    else:
+        try:
+            owner = row["owner"]
+        except (KeyError, IndexError, TypeError):
+            owner = row[0]
+    return owner is not None
+
+
 def list_webcat_build_tables(conn) -> list[str]:
-    rows = conn.execute(_LIST_WEBCAT_BUILD_TABLES_SQL).fetchall()
+    rows = conn.execute(
+        _LIST_WEBCAT_BUILD_TABLES_SQL,
+        (_WEBCAT_TABLE_LIKE_PATTERN,),
+    ).fetchall()
     tables: list[str] = []
     for row in rows:
         table = _table_name_from_row(row)
@@ -129,6 +163,18 @@ def cleanup_stale_webcat_build_tables(
             ttl_seconds=ttl_seconds,
             current_suffix=current_suffix,
         )
+    ]
+    # Never drop tables of an import that still holds its build lock, even when
+    # its suffix timestamp is older than the TTL (for example a manual import).
+    in_use_suffixes = {
+        suffix
+        for suffix in {webcat_build_table_suffix(table) or "" for table in stale}
+        if suffix and _build_lock_in_use(conn, suffix)
+    }
+    stale = [
+        table
+        for table in stale
+        if (webcat_build_table_suffix(table) or "") not in in_use_suffixes
     ]
     if stale:
         drop_tables(conn, stale)

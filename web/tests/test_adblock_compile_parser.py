@@ -574,3 +574,48 @@ def test_cosmetic_parser_splits_scriptlets_and_html_filters(tmp_path: Path) -> N
 
     elemhide = _read_jsonl(out / "cosmetic_elemhide.jsonl")
     assert elemhide[0]["kind"] == "elemhide"
+
+
+def test_identical_inputs_compile_to_identical_artifact_digest(tmp_path: Path) -> None:
+    """Rebuilding unchanged lists must reuse the active revision, not add one.
+
+    report.json is part of the artifact digest; it previously embedded the
+    random temporary build directory, so every rebuild produced a new
+    multi-MB revision.
+    """
+    from services import adblock_artifacts  # type: ignore
+    from tools import adblock_compile as ac  # type: ignore
+
+    lists = tmp_path / "lists"
+    lists.mkdir()
+    (lists / "easylist.txt").write_text(
+        "||ads.example^\n||track.example^$third-party\nexample.com##.ad\n/banner[0-9]+/\n",
+        encoding="utf-8",
+    )
+    digests = []
+    archives = []
+    for name in ("build-a", "build-b"):
+        out = tmp_path / name
+        out.mkdir()
+        assert (
+            ac.main(
+                [
+                    "--lists-dir",
+                    str(lists),
+                    "--out-dir",
+                    str(out),
+                    "--enabled-list",
+                    "easylist",
+                ],
+            )
+            == 0
+        )
+        report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        assert report["files"]["request_lookup_sqlite"] == "request_lookup.sqlite"
+        assert str(tmp_path) not in (out / "report.json").read_text(encoding="utf-8")
+        file_map = adblock_artifacts._load_directory_files(out)
+        digests.append(adblock_artifacts._calculate_artifact_sha(file_map))
+        archives.append(adblock_artifacts._build_deterministic_archive(file_map))
+
+    assert digests[0] == digests[1]
+    assert archives[0] == archives[1]

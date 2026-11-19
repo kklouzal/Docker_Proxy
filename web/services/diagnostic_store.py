@@ -13,7 +13,7 @@ import threading
 import time
 from typing import Any
 
-from services.bounded_delete import delete_older_than_in_chunks
+from services.bounded_delete import BoundedDeleteResult, delete_older_than_in_chunks
 from services.db import (
     DATABASE_ERRORS,
     connect,
@@ -502,12 +502,10 @@ class DiagnosticStore:
         access_log_path: str = "/var/log/squid/access-observe.log",
         icap_log_path: str = "/var/log/squid/icap.log",
         seed_max_lines: int = 5000,
-        retention_days: int = 7,
     ) -> None:
         self.access_log_path = access_log_path
         self.icap_log_path = icap_log_path
         self.seed_max_lines = seed_max_lines
-        self.retention_days = max(1, int(retention_days or 7))
 
         self._started = False
         self._start_lock = threading.Lock()
@@ -831,16 +829,23 @@ class DiagnosticStore:
             run_mysql_operation_with_retry(_ensure_schema)
             self._db_initialized = True
 
-    def prune_old_entries(self, *, retention_days: int = 0) -> None:
+    def prune_old_entries(self, *, retention_days: int) -> list[BoundedDeleteResult]:
+        """Delete diagnostic rows older than the observability retention window.
+
+        Housekeeping passes the operator's Observability retention setting
+        (``observability_settings.retention_days``); there is no separate
+        diagnostics-specific retention.
+        """
         self.init_db()
-        days = max(1, int(retention_days or self.retention_days))
+        days = max(1, int(retention_days))
         cutoff = _now() - (days * 24 * 60 * 60)
+        results: list[BoundedDeleteResult] = []
         for table, order_by in (
             ("diagnostic_icap_events", ("ts", "id")),
             ("diagnostic_policy_tags", ("ts", "proxy_id", "request_id", "tag")),
             ("diagnostic_requests", ("ts", "id")),
         ):
-            delete_older_than_in_chunks(
+            result = delete_older_than_in_chunks(
                 self._connect,
                 table=table,
                 timestamp_column="ts",
@@ -849,6 +854,8 @@ class DiagnosticStore:
                 log_key=f"diagnostic_store.prune.{table}",
                 log_label=f"Diagnostic store prune for {table}",
             )
+            results.append(result)
+        return results
 
     def start_background(self) -> None:
         with self._start_lock:
@@ -2429,12 +2436,6 @@ def get_diagnostic_store() -> DiagnosticStore:
                     5000,
                     minimum=500,
                     maximum=20000,
-                ),
-                retention_days=_env_int(
-                    "DIAGNOSTIC_RETENTION_DAYS",
-                    7,
-                    minimum=1,
-                    maximum=90,
                 ),
             )
         return _store

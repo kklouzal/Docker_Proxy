@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from services import download_safety
-from services.bounded_delete import default_chunk_size, delete_older_than_in_chunks
+from services.bounded_delete import (
+    BoundedDeleteResult,
+    default_chunk_size,
+    delete_older_than_in_chunks,
+)
 from services.db import (
     DATABASE_ERRORS,
     INTEGRITY_ERRORS,
@@ -40,6 +44,10 @@ from services.schema_lifecycle import ensure_column, ensure_index
 logger = logging.getLogger(__name__)
 
 ADBLOCK_DEFAULT_UPDATE_INTERVAL_SECONDS = 12 * 60 * 60
+# After a failed subscription download, wait this long before retrying it. The
+# artifact builder polls every 30 s; without a backoff an unreachable list
+# re-triggered a download plus full artifact rebuild on every poll.
+ADBLOCK_DEFAULT_DOWNLOAD_RETRY_SECONDS = 15 * 60
 
 
 def _is_duplicate_key_error(exc: BaseException) -> bool:
@@ -111,9 +119,11 @@ class AdblockStore:
         update_interval_seconds: int = ADBLOCK_DEFAULT_UPDATE_INTERVAL_SECONDS,
         cicap_access_log_path: str = "/var/log/cicap-access.log",
         blocklog_retention_days: int = 30,
+        download_retry_seconds: int = ADBLOCK_DEFAULT_DOWNLOAD_RETRY_SECONDS,
     ) -> None:
         self.lists_dir = lists_dir
         self.update_interval_seconds = update_interval_seconds
+        self.download_retry_seconds = max(0, int(download_retry_seconds))
         self.cicap_access_log_path = cicap_access_log_path
         self.blocklog_retention_days = int(blocklog_retention_days)
 
@@ -742,13 +752,15 @@ class AdblockStore:
             (int(cutoff), default_chunk_size()),
         )
 
-    def prune_old_entries(self, *, retention_days: int = 30) -> None:
+    def prune_old_entries(
+        self, *, retention_days: int = 30
+    ) -> list[BoundedDeleteResult]:
         """Prune old benign blocklog data to keep the DB bounded."""
         self.init_db()
         days = max(1, int(retention_days or 30))
         cutoff = _now() - days * 24 * 3600
         cutoff_day = int(cutoff // 86400)
-        delete_older_than_in_chunks(
+        events = delete_older_than_in_chunks(
             self._connect,
             table="adblock_events",
             timestamp_column="ts",
@@ -758,7 +770,7 @@ class AdblockStore:
             log_label="Adblock event prune",
         )
         # Daily rollup rows are small, but keep them aligned with the same retention.
-        delete_older_than_in_chunks(
+        counts = delete_older_than_in_chunks(
             self._connect,
             table="adblock_counts",
             timestamp_column="day",
@@ -767,6 +779,7 @@ class AdblockStore:
             log_key="adblock_store.prune.counts",
             log_label="Adblock daily count prune",
         )
+        return [events, counts]
 
     def list_recent_block_events(self, limit: int = 100) -> list[dict[str, Any]]:
         self.init_db()
@@ -1118,9 +1131,18 @@ class AdblockStore:
             return False
         if force:
             return True
+        if self.download_retry_backoff(status, now_ts):
+            return False
         if status.last_success <= 0:
             return True
         return (now_ts - status.last_success) >= int(self.update_interval_seconds)
+
+    def download_retry_backoff(self, status: ListStatus, now_ts: int) -> bool:
+        """Whether the last download attempt failed within the retry window."""
+        return (
+            status.last_attempt > status.last_success
+            and (now_ts - status.last_attempt) < self.download_retry_seconds
+        )
 
     def download_list(
         self,
@@ -1334,5 +1356,9 @@ def get_adblock_store() -> AdblockStore:
                     "/var/log/cicap-access.log",
                 ),
                 blocklog_retention_days=_env_int("ADBLOCK_BLOCKLOG_RETENTION_DAYS", 30),
+                download_retry_seconds=_env_int(
+                    "ADBLOCK_DOWNLOAD_RETRY_SECONDS",
+                    ADBLOCK_DEFAULT_DOWNLOAD_RETRY_SECONDS,
+                ),
             )
         return _store

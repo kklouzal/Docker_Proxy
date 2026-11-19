@@ -16,6 +16,7 @@ from services.db import DATABASE_ERRORS, connect, connect_unpooled, table_exists
 from services.errors import redact_sensitive_text
 from services.mysql_table_maintenance import (
     looks_like_stale_connection,
+    maintenance_connect,
     run_mysql_table_maintenance,
 )
 from services.sql_identifiers import quote_mysql_identifier
@@ -152,7 +153,7 @@ def _delete_table_in_chunks(table: str) -> BoundedDeleteResult:
 
 def _run_table_maintenance(table: str, *, analyze: bool, optimize: bool) -> str:
     return run_mysql_table_maintenance(
-        connect,
+        maintenance_connect,
         table,
         analyze=analyze,
         optimize=optimize,

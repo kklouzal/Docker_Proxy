@@ -10,6 +10,7 @@ from typing import Any
 
 from services.adblock_store import get_adblock_store
 from services.audit_store import get_audit_store
+from services.bounded_delete import BoundedDeleteResult
 from services.control_plane_maintenance import (
     maintain_control_plane_tables,
     prune_control_plane_tables,
@@ -21,6 +22,7 @@ from services.logutil import log_exception_throttled, should_log
 from services.observability_maintenance import (
     ObservabilityMaintenanceAlreadyRunningError,
     acquire_observability_maintenance_lock,
+    get_observability_maintenance_status,
     get_observability_retention_settings,
     maintain_observability_tables,
     normalize_retention_days,
@@ -28,6 +30,8 @@ from services.observability_maintenance import (
     record_observability_maintenance_run,
     release_observability_maintenance_lock,
 )
+from services.proxy_registry import get_proxy_registry
+from services.runtime_helpers import env_int
 from services.ssl_errors_store import get_ssl_errors_store
 
 logger = logging.getLogger(__name__)
@@ -39,6 +43,80 @@ _stop_event = threading.Event()
 _thread: threading.Thread | None = None
 
 _SUNDAY = 6
+# A scheduled run is considered missed when no run started within this window.
+_MISSED_RUN_AGE_SECONDS = 25 * 60 * 60
+
+
+def _catchup_interval_seconds() -> int:
+    """Delay before a catch-up prune when bounded work left a backlog."""
+    return env_int(
+        "MYSQL_HOUSEKEEPING_CATCHUP_INTERVAL_SECONDS",
+        900,
+        minimum=60,
+        maximum=24 * 60 * 60,
+    )
+
+
+def _value_truncated(value: object) -> bool:
+    """Whether a prune step result reports bounded work with rows remaining."""
+    if isinstance(value, BoundedDeleteResult):
+        return bool(value.truncated)
+    if isinstance(value, (list, tuple)):
+        return any(_value_truncated(item) for item in value)
+    if isinstance(value, dict):
+        return bool(value.get("truncated")) or any(
+            _value_truncated(item) for item in value.get("tables") or ()
+        )
+    return bool(getattr(value, "truncated", False))
+
+
+def _failed_tables_detail(value: dict[str, Any]) -> str:
+    failed = [
+        f"{table.get('table')}: {table.get('detail') or 'failed'}"
+        for table in value.get("tables") or ()
+        if isinstance(table, dict) and table.get("status") == "failed"
+    ]
+    return "; ".join(failed)[:400] or str(value.get("detail") or "failed")[:400]
+
+
+def _prune_failure_detail(prune: dict[str, Any]) -> str:
+    details = []
+    for step in prune.get("steps") or ():
+        if step.get("ok"):
+            continue
+        result = step.get("result")
+        reason = (
+            _failed_tables_detail(result)
+            if isinstance(result, dict)
+            else str(step.get("detail") or "failed")
+        )
+        details.append(f"{step.get('name')}: {reason}")
+    return "; ".join(details)[:512]
+
+
+def housekeeping_backlog(result: dict[str, Any] | None) -> bool:
+    """Whether a housekeeping result needs a catch-up pass before the next daily run."""
+    if not isinstance(result, dict):
+        return False
+    prune = result.get("prune") or {}
+    return any(bool(step.get("truncated")) for step in prune.get("steps") or ())
+
+
+def _resume_paused_proxy_removals() -> dict[str, Any]:
+    results = get_proxy_registry().resume_paused_removals()
+    return {
+        "ok": True,
+        "truncated": any(not result.complete for result in results),
+        "proxies": [
+            {
+                "proxy_id": result.proxy_id,
+                "complete": result.complete,
+                "deleted_rows": result.deleted_rows,
+                "truncated_tables": list(result.truncated_tables),
+            }
+            for result in results
+        ],
+    }
 
 
 def _run_with_db_lock_retry(
@@ -73,7 +151,6 @@ def _run_prune_once(*, retention_days: int) -> dict[str, Any]:
     def run_step(name: str, fn) -> None:
         try:
             value = _run_with_db_lock_retry(fn)
-            results.append({"name": name, "ok": True, "result": value or {}})
         except Exception as exc:
             results.append({"name": name, "ok": False, "detail": str(exc)[:300]})
             log_exception_throttled(
@@ -81,6 +158,27 @@ def _run_prune_once(*, retention_days: int) -> dict[str, Any]:
                 f"housekeeping.prune.{name}",
                 interval_seconds=300,
                 message=f"Housekeeping prune step failed: {name}",
+            )
+            return
+        # Steps that contain per-table failures report them as ok=False
+        # instead of raising; they must not be recorded as successful.
+        step_ok = not (isinstance(value, dict) and value.get("ok") is False)
+        results.append(
+            {
+                "name": name,
+                "ok": step_ok,
+                "truncated": _value_truncated(value),
+                "result": value or {},
+            },
+        )
+        if not step_ok and should_log(
+            f"housekeeping.prune.{name}.result",
+            interval_seconds=300,
+        ):
+            logger.warning(
+                "Housekeeping prune step reported failures: %s: %s",
+                name,
+                _failed_tables_detail(value),
             )
 
     run_step(
@@ -107,6 +205,7 @@ def _run_prune_once(*, retention_days: int) -> dict[str, Any]:
         "control_plane",
         prune_control_plane_tables,
     )
+    run_step("proxy_removals", _resume_paused_proxy_removals)
     return {
         "ok": all(bool(row.get("ok")) for row in results),
         "steps": results,
@@ -243,6 +342,8 @@ def run_housekeeping_once(
             "prune": prune,
             "maintenance": maintenance or {},
         }
+        if not prune_ok:
+            result["detail"] = _prune_failure_detail(prune)
         with contextlib.suppress(Exception):
             record_observability_maintenance_run(
                 run_type=resolved_run_type, result=result
@@ -339,6 +440,56 @@ def _log_failed_housekeeping_result(
         pass
 
 
+def _startup_catchup_due(now: datetime) -> datetime | None:
+    """Schedule a catch-up prune soon after start when a scheduled run was missed.
+
+    The daily run only fires at a fixed local hour, so restarts or outages
+    spanning it would otherwise skip retention until the next day.
+    """
+    catchup_at = now + timedelta(seconds=_catchup_interval_seconds())
+    try:
+        latest = get_observability_maintenance_status(limit=1).get("latest") or {}
+        last_started = int(latest.get("started_ts") or 0)
+    except Exception:
+        log_exception_throttled(
+            logger,
+            "housekeeping.startup_catchup",
+            interval_seconds=300,
+            message="Housekeeping could not read the last maintenance run; scheduling a catch-up run",
+        )
+        return catchup_at
+    if now.timestamp() - last_started > _MISSED_RUN_AGE_SECONDS:
+        return catchup_at
+    return None
+
+
+def _run_scheduled_housekeeping_once(
+    *,
+    run_label: str,
+    retention_days: int,
+    analyze: bool = False,
+    optimize: bool = False,
+) -> bool:
+    """Run one scheduled pass; return whether bounded work left a backlog."""
+    try:
+        result = run_housekeeping_once(
+            retention_days=current_retention_days(retention_days),
+            analyze=analyze,
+            optimize=optimize,
+            run_type=run_label,
+        )
+    except Exception:
+        log_exception_throttled(
+            logger,
+            "housekeeping.loop",
+            interval_seconds=300,
+            message="Housekeeping run failed",
+        )
+        return False
+    _log_failed_housekeeping_result(result, run_label=run_label)
+    return housekeeping_backlog(result)
+
+
 def _run_due_scheduled_housekeeping(
     *,
     now: datetime,
@@ -348,49 +499,51 @@ def _run_due_scheduled_housekeeping(
     daily_hour: int,
     weekly_weekday: int,
     weekly_hour: int,
-) -> tuple[datetime, datetime]:
+    catchup_due: datetime | None = None,
+) -> tuple[datetime, datetime, datetime | None]:
+    """Run whichever scheduled pass is due and return the next due times.
+
+    A daily run coalesces into a due weekly run. While a run reports a bounded
+    backlog (rows left by per-run caps or a paused proxy removal), a catch-up
+    pass is scheduled after ``MYSQL_HOUSEKEEPING_CATCHUP_INTERVAL_SECONDS`` so
+    retention converges instead of waiting for the next daily slot. Failed runs
+    do not schedule catch-ups.
+    """
     daily_due = now >= next_daily
     weekly_due = now >= next_weekly
+    catchup_is_due = catchup_due is not None and now >= catchup_due
+    backlog: bool | None = None
 
     if weekly_due:
-        try:
-            result = run_housekeeping_once(
-                retention_days=current_retention_days(retention_days),
-                analyze=True,
-                optimize=True,
-            )
-            _log_failed_housekeeping_result(result, run_label="weekly")
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "housekeeping.loop",
-                interval_seconds=300,
-                message="Housekeeping run failed",
-            )
-        finally:
-            if daily_due:
-                next_daily = _next_local_run(hour=daily_hour, now=now)
-            next_weekly = _next_local_run(
-                hour=weekly_hour,
-                weekday=weekly_weekday,
-                now=now,
-            )
-    elif daily_due:
-        try:
-            result = run_housekeeping_once(
-                retention_days=current_retention_days(retention_days),
-            )
-            _log_failed_housekeeping_result(result, run_label="daily")
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "housekeeping.loop",
-                interval_seconds=300,
-                message="Housekeeping run failed",
-            )
-        finally:
+        backlog = _run_scheduled_housekeeping_once(
+            run_label="weekly",
+            retention_days=retention_days,
+            analyze=True,
+            optimize=True,
+        )
+        if daily_due:
             next_daily = _next_local_run(hour=daily_hour, now=now)
-    return next_daily, next_weekly
+        next_weekly = _next_local_run(
+            hour=weekly_hour,
+            weekday=weekly_weekday,
+            now=now,
+        )
+    elif daily_due:
+        backlog = _run_scheduled_housekeeping_once(
+            run_label="daily",
+            retention_days=retention_days,
+        )
+        next_daily = _next_local_run(hour=daily_hour, now=now)
+    elif catchup_is_due:
+        backlog = _run_scheduled_housekeeping_once(
+            run_label="catchup",
+            retention_days=retention_days,
+        )
+    if backlog is not None:
+        catchup_due = (
+            now + timedelta(seconds=_catchup_interval_seconds()) if backlog else None
+        )
+    return next_daily, next_weekly, catchup_due
 
 
 def start_housekeeping(
@@ -425,13 +578,16 @@ def start_housekeeping(
 
         next_daily = _next_local_run(hour=daily_hour)
         next_weekly = _next_local_run(hour=weekly_hour, weekday=weekly_weekday)
+        catchup_due = _startup_catchup_due(datetime.now().astimezone())
         while not _stop_event.is_set():
-            target = min(next_daily, next_weekly)
+            target = min(
+                due for due in (next_daily, next_weekly, catchup_due) if due is not None
+            )
             _sleep_until(target, stop_event=_stop_event)
             if _stop_event.is_set():
                 return
             now = datetime.now().astimezone()
-            next_daily, next_weekly = _run_due_scheduled_housekeeping(
+            next_daily, next_weekly, catchup_due = _run_due_scheduled_housekeeping(
                 now=now,
                 next_daily=next_daily,
                 next_weekly=next_weekly,
@@ -439,6 +595,7 @@ def start_housekeeping(
                 daily_hour=daily_hour,
                 weekly_weekday=weekly_weekday,
                 weekly_hour=weekly_hour,
+                catchup_due=catchup_due,
             )
 
     with _lock:

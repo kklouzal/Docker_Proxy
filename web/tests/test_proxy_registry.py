@@ -2380,3 +2380,56 @@ def test_rename_proxy_adds_lifecycle_index_for_discovered_tables(tmp_path):
         ).fetchone()
     assert row["proxy_id"] == "edge-target"
     assert index_row is not None
+
+
+def test_resume_paused_removals_runs_bounded_passes_until_removed(
+    monkeypatch,
+    tmp_path,
+):
+    configure_test_mysql_env(tmp_path / "proxy-remove-background-resume")
+    proxy_registry = _proxy_registry()
+
+    registry = proxy_registry.ProxyRegistry()
+    registry.ensure_proxy("edge-big", display_name="Edge")
+    registry.ensure_proxy("edge-keep", display_name="Keep")
+    with registry._connect() as conn:
+        conn.execute(
+            "CREATE TABLE proxy_large_backlog (id BIGINT PRIMARY KEY AUTO_INCREMENT, proxy_id VARCHAR(64) NOT NULL, value VARCHAR(32) NOT NULL, KEY idx_proxy_large_backlog_proxy (proxy_id))",
+        )
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO proxy_large_backlog(proxy_id, value) VALUES(%s,%s)",
+                ("edge-big", f"row-{i}"),
+            )
+    monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_CHUNK_SIZE", "2")
+    monkeypatch.setenv("MYSQL_PROXY_LIFECYCLE_MAX_ROWS_PER_TABLE", "2")
+    assert registry.remove_proxy("edge-big").complete is False
+
+    passes = []
+    for _ in range(5):
+        results = registry.resume_paused_removals()
+        if not results:
+            break
+        passes.append(results)
+
+    assert [[result.complete for result in batch] for batch in passes] == [
+        [False],
+        [True],
+    ]
+    assert [result.proxy_id for batch in passes for result in batch] == [
+        "edge-big",
+        "edge-big",
+    ]
+    assert registry.get_proxy("edge-big") is None
+    assert [proxy.proxy_id for proxy in registry.list_proxies()] == ["edge-keep"]
+    with registry._connect() as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS c FROM proxy_large_backlog WHERE proxy_id=%s",
+            ("edge-big",),
+        ).fetchone()
+        tombstone = conn.execute(
+            "SELECT action FROM proxy_lifecycle_tombstones WHERE proxy_id=%s",
+            ("edge-big",),
+        ).fetchone()
+    assert int(remaining["c"] or 0) == 0
+    assert tombstone["action"] == "removed"

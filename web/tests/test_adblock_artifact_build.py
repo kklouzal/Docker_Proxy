@@ -171,6 +171,7 @@ class _FakeAdblockRevisionConn:
         self.rows = rows
         self.deleted_batches: list[list[int]] = []
         self.updated_batches: list[list[int]] = []
+        self.stripped: list[int] = []
         self.commits = 0
 
     def commit(self) -> None:
@@ -198,7 +199,9 @@ class _FakeAdblockRevisionConn:
                 (
                     row
                     for row in self.rows
-                    if int(row["is_active"]) == 0 and int(row["id"]) not in keep_ids
+                    if int(row["is_active"]) == 0
+                    and int(row["id"]) not in keep_ids
+                    and not int(row.get("referenced", 0))
                 ),
                 key=lambda row: (int(row["created_ts"]), int(row["id"])),
             )[:limit]
@@ -238,6 +241,26 @@ class _FakeAdblockRevisionConn:
             self.rows[:] = [row for row in self.rows if int(row["id"]) not in ids]
             self.deleted_batches.append(sorted(ids))
             return _FakeSqlResult(rowcount=len(ids))
+        if text.startswith("SELECT id AS revision_id FROM adblock_artifact_revisions"):
+            keep_ids = {int(value) for value in params}
+            rows = sorted(
+                int(row["id"])
+                for row in self.rows
+                if int(row["is_active"]) == 0 and int(row["id"]) not in keep_ids
+            )
+            return _FakeSqlResult([(row_id,) for row_id in rows])
+        if text.startswith("UPDATE adblock_artifact_revisions SET archive_blob=%s"):
+            row_id = int(params[1])
+            for row in self.rows:
+                if (
+                    int(row["id"]) == row_id
+                    and int(row["is_active"]) == 0
+                    and row.get("archive", b"blob") != b""
+                ):
+                    row["archive"] = b""
+                    self.stripped.append(row_id)
+                    return _FakeSqlResult(rowcount=1)
+            return _FakeSqlResult(rowcount=0)
         msg = f"Unexpected SQL: {text}"
         raise AssertionError(msg)
 
@@ -948,6 +971,9 @@ def test_build_active_artifact_persists_download_pending_when_no_cached_lists(
             assert force is True
             return False
 
+        def download_retry_backoff(self, _status, _now_ts: int) -> bool:
+            return False
+
         def record_artifact_build_result(self, **kwargs: object) -> None:
             recorded.update(kwargs)
 
@@ -1200,7 +1226,9 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
         raise AssertionError(msg)
 
     assert nudges == [False]
-    assert cleared == []
+    # The completed build consumed the refresh; the pending list is retried by
+    # its download backoff instead of a forced re-download on every poll.
+    assert cleared == [True]
     assert sleeps == [30.0]
 
 
@@ -1612,6 +1640,35 @@ def test_should_update_uses_twelve_hour_success_cadence_by_default(tmp_path) -> 
     assert store.should_update(disabled, 1_001, True) is False
 
 
+def test_should_update_backs_off_after_failed_download(tmp_path: Path) -> None:
+    from services import adblock_store as store_module  # type: ignore
+
+    store = store_module.AdblockStore(
+        lists_dir=str(tmp_path / "lists"),
+        update_interval_seconds=12 * 60 * 60,
+        download_retry_seconds=900,
+    )
+    failed = store_module.ListStatus(
+        key="easylist",
+        url="https://example.invalid/list.txt",
+        enabled=True,
+        last_success=1_000,
+        last_attempt=100_000,
+        last_error="timeout",
+        bytes=0,
+        rules=0,
+    )
+
+    # Overdue list whose last attempt failed: no retry inside the window ...
+    assert store.download_retry_backoff(failed, 100_899) is True
+    assert store.should_update(failed, 100_899, False) is False
+    # ... retry after it, and an operator-forced refresh is never delayed.
+    assert store.should_update(failed, 100_900, False) is True
+    assert store.should_update(failed, 100_001, True) is True
+    succeeded = store_module.ListStatus(**{**failed.__dict__, "last_success": 100_000})
+    assert store.download_retry_backoff(succeeded, 100_001) is False
+
+
 def _run_background_loop_due_check(
     tmp_path: Path,
     monkeypatch,
@@ -1719,6 +1776,99 @@ def _run_background_loop_due_check(
         raise AssertionError(msg)
 
     return build_calls, fake_store.cleared, sleeps
+
+
+def test_background_loop_skips_rebuild_while_missing_list_download_backs_off(
+    tmp_path, monkeypatch
+) -> None:
+    from services import adblock_store as store_module  # type: ignore
+
+    artifacts_module = _import_adblock_artifacts_module()
+    lists_dir = tmp_path / "lists"
+    lists_dir.mkdir()
+    (lists_dir / "easylist.txt").write_text("||cached.example^\n", encoding="utf-8")
+    sleeps: list[float] = []
+    build_calls: list[dict[str, object]] = []
+
+    class StopLoopError(Exception):
+        pass
+
+    def status(key: str, last_success: int, last_attempt: int):
+        return store_module.ListStatus(
+            key=key,
+            url=f"https://example.invalid/{key}.txt",
+            enabled=True,
+            last_success=last_success,
+            last_attempt=last_attempt,
+            last_error="",
+            bytes=0,
+            rules=0,
+        )
+
+    real_store = store_module.AdblockStore(
+        lists_dir=str(lists_dir), download_retry_seconds=900
+    )
+
+    class FakeStore:
+        def init_db(self) -> None:
+            return None
+
+        def list_statuses(self):
+            # easylist is current; "unreachable" never downloaded and its
+            # last attempt failed 100 s ago.
+            return [status("easylist", 9_000, 9_000), status("unreachable", 0, 9_900)]
+
+        def get_refresh_requested(self) -> int:
+            return 0
+
+        def get_settings_version(self) -> int:
+            return 7
+
+        def list_path(self, key: str) -> str:
+            return str(lists_dir / f"{key}.txt")
+
+        should_update = real_store.should_update
+        download_retry_backoff = real_store.download_retry_backoff
+
+    monkeypatch.setattr(store_module, "get_adblock_store", FakeStore)
+    monkeypatch.setattr(artifacts_module, "_now", lambda: 10_000)
+
+    def sleep_once(seconds: float) -> None:
+        sleeps.append(seconds)
+        raise StopLoopError
+
+    artifact_store = artifacts_module.AdblockArtifactStore(
+        compiled_dir=str(tmp_path / "compiled"),
+    )
+    monkeypatch.setattr(artifact_store._stop_event, "wait", sleep_once)
+    monkeypatch.setattr(artifact_store, "init_db", lambda: None)
+    monkeypatch.setattr(
+        artifact_store,
+        "get_active_artifact",
+        lambda: SimpleNamespace(
+            revision_id=4,
+            settings_version=7,
+            enabled_lists=["easylist"],
+            source_kind="background",
+        ),
+    )
+    monkeypatch.setattr(
+        artifact_store,
+        "build_active_artifact",
+        lambda **kwargs: build_calls.append(kwargs) or {"ok": True},
+    )
+
+    with pytest.raises(StopLoopError):
+        artifact_store._loop()
+
+    assert build_calls == []
+    assert sleeps == [30.0]
+
+    # Once the retry window passes the missing list is due again.
+    monkeypatch.setattr(artifacts_module, "_now", lambda: 10_800)
+    with pytest.raises(StopLoopError):
+        artifact_store._loop()
+    assert len(build_calls) == 1
 
 
 def test_background_loop_poll_checks_due_without_downloading_before_twelve_hours(
@@ -2203,18 +2353,21 @@ def test_prune_revisions_converges_in_small_committed_batches(
             created_by="pytest",
         )
 
-    deleted = revision_store.prune_revisions(max_batches=2, batch_size=2)
+    pruned = revision_store.prune_revisions(max_batches=2, batch_size=2)
 
-    assert deleted == 4
+    assert pruned == artifacts_module.AdblockArtifactPruneResult(
+        deleted_rows=4,
+        truncated=True,
+    )
     with revision_store._connect() as conn:
         rows = conn.execute(
             "SELECT id, settings_version, is_active FROM adblock_artifact_revisions ORDER BY id"
         ).fetchall()
     assert [int(row[1]) for row in rows] == [5, 6, 7, 8]
 
-    deleted = revision_store.prune_revisions(max_batches=10, batch_size=2)
+    pruned = revision_store.prune_revisions(max_batches=10, batch_size=2)
 
-    assert deleted == 2
+    assert pruned == artifacts_module.AdblockArtifactPruneResult(deleted_rows=2)
     with revision_store._connect() as conn:
         rows = conn.execute(
             "SELECT settings_version, is_active, archive_blob FROM adblock_artifact_revisions ORDER BY created_ts, id"
@@ -2324,7 +2477,10 @@ def test_prune_revisions_skips_when_another_cleanup_holds_lock(
         ).fetchone()
         assert int(acquired["acquired"] or 0) == 1
         try:
-            assert revision_store.prune_revisions(max_batches=10, batch_size=1) == 0
+            assert (
+                revision_store.prune_revisions(max_batches=10, batch_size=1)
+                == artifacts_module.AdblockArtifactPruneResult()
+            )
         finally:
             held_conn.execute(
                 "DO RELEASE_LOCK(%s)",
@@ -2404,6 +2560,122 @@ def test_prune_revision_batch_demotes_stale_active_before_deleting_blobs() -> No
     ]
 
 
+def test_prune_strips_referenced_archives_but_keeps_active_and_previous(
+    monkeypatch,
+) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+    revision_store = artifacts_module.AdblockArtifactStore()
+
+    class FakeContextConn(_FakeAdblockRevisionConn):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc) -> bool:
+            return False
+
+        def execute(self, sql: str, params=()):
+            text = " ".join(sql.split())
+            if text.startswith("SELECT GET_LOCK"):
+                return _FakeSqlResult([{"acquired": 1}])
+            if text.startswith("DO RELEASE_LOCK"):
+                return _FakeSqlResult()
+            return super().execute(sql, params)
+
+    # Every revision has proxy application evidence (the production shape),
+    # so none may be deleted; all but active (8) and previous (7) lose blobs.
+    conn = FakeContextConn(
+        [
+            {
+                "id": index,
+                "created_ts": 30_000 + index,
+                "is_active": 1 if index == 8 else 0,
+                "referenced": 1,
+            }
+            for index in range(1, 9)
+        ],
+    )
+    monkeypatch.setattr(revision_store, "init_db", lambda: None)
+    monkeypatch.setattr(revision_store, "_connect", lambda: conn)
+
+    first = revision_store.prune_revisions(max_batches=2, batch_size=2)
+    second = revision_store.prune_revisions(max_batches=2, batch_size=2)
+
+    assert first == artifacts_module.AdblockArtifactPruneResult(
+        stripped_archives=4,
+        truncated=True,
+    )
+    assert second == artifacts_module.AdblockArtifactPruneResult(stripped_archives=2)
+    assert conn.deleted_batches == []
+    assert conn.stripped == [1, 2, 3, 4, 5, 6]
+    assert [row["id"] for row in conn.rows] == list(range(1, 9))
+    assert [row["id"] for row in conn.rows if row.get("archive", b"blob")] == [7, 8]
+
+
+def test_prune_revisions_strips_referenced_mysql_archives(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _store_module, artifacts_module = _import_artifact_modules(tmp_path)
+    revision_store = artifacts_module.AdblockArtifactStore()
+    revision_store.init_db()
+    monkeypatch.setattr(
+        revision_store,
+        "_prune_revisions_best_effort",
+        lambda *, max_batches: None,
+    )
+    revisions = []
+    for index in range(1, 6):
+        monkeypatch.setattr(artifacts_module, "_now", lambda index=index: 4000 + index)
+        revisions.append(
+            revision_store.create_revision(
+                artifact_sha256=f"{index:064x}"[-64:],
+                archive_blob=b"archive" * 64 + bytes([index]),
+                report_json="{}",
+                settings_version=index,
+                source_kind="compile",
+                enabled_lists=["easylist"],
+                created_by="pytest",
+            ),
+        )
+    with revision_store._connect() as conn:
+        # Application evidence references revisions 1-3 and the previous one.
+        for revision in (*revisions[:3], revisions[3]):
+            conn.execute(
+                """
+                INSERT INTO proxy_adblock_artifact_applications(
+                    proxy_id, revision_id, ok, detail, applied_by, applied_ts, artifact_sha256
+                )
+                VALUES('edge-a', %s, 1, '', 'proxy', %s, %s)
+                """,
+                (revision.revision_id, 5000, revision.artifact_sha256),
+            )
+
+    pruned = revision_store.prune_revisions(max_batches=10, batch_size=5)
+
+    assert pruned == artifacts_module.AdblockArtifactPruneResult(stripped_archives=3)
+    with revision_store._connect() as conn:
+        rows = conn.execute(
+            "SELECT settings_version, is_active, LENGTH(archive_blob) AS size FROM adblock_artifact_revisions ORDER BY id"
+        ).fetchall()
+        dangling = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM proxy_adblock_artifact_applications app
+            LEFT JOIN adblock_artifact_revisions revision ON revision.id=app.revision_id
+            WHERE revision.id IS NULL
+            """
+        ).fetchone()
+    assert [
+        (int(row["settings_version"]), int(row["is_active"]), int(row["size"]))
+        for row in rows
+    ] == [(1, 0, 0), (2, 0, 0), (3, 0, 0), (4, 0, 449), (5, 1, 449)]
+    assert int(dangling["n"]) == 0
+    assert revision_store.get_active_artifact().archive_blob.endswith(bytes([5]))
+    assert (
+        revision_store.prune_revisions(max_batches=10, batch_size=5)
+        == artifacts_module.AdblockArtifactPruneResult()
+    )
+
+
 def test_prune_revisions_commits_each_bounded_batch(monkeypatch) -> None:
     artifacts_module = _import_adblock_artifacts_module()
     revision_store = artifacts_module.AdblockArtifactStore()
@@ -2441,9 +2713,10 @@ def test_prune_revisions_commits_each_bounded_batch(monkeypatch) -> None:
     monkeypatch.setattr(revision_store, "init_db", lambda: None)
     monkeypatch.setattr(revision_store, "_connect", lambda: conn)
 
-    deleted = revision_store.prune_revisions(max_batches=2, batch_size=2)
+    pruned = revision_store.prune_revisions(max_batches=2, batch_size=2)
 
-    assert deleted == 4
+    assert pruned.deleted_rows == 4
+    assert pruned.truncated is True
     assert conn.deleted_batches == [[1, 2], [3, 4]]
     assert conn.commits == 2
     assert conn.released is True
