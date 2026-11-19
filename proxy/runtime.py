@@ -81,7 +81,11 @@ from services.proxy_registry import (
 from services.runtime_helpers import decode_bytes as _decode_bytes
 from services.runtime_helpers import normalize_config_bool, normalize_icap_worker_count
 from services.schema_lifecycle import ensure_startup_schema_if_configured
-from services.squid_core import SquidController, _exclusive_squid_lifecycle_lock
+from services.squid_core import (
+    SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS,
+    SquidController,
+    _exclusive_squid_lifecycle_lock,
+)
 from services.squid_transaction import SquidTransactionJournal, default_journal_path
 from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
@@ -2807,7 +2811,7 @@ class ProxyRuntime:
             stopped = subprocess.run(
                 ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
                 capture_output=True,
-                timeout=20,
+                timeout=SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS,
             )
             decoded = _decode_completed(stopped)
             if decoded:
