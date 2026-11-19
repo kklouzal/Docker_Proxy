@@ -2427,12 +2427,7 @@ def _should_preserve_proxy(endpoint: str, params: dict[str, Any] | None = None) 
     return not (params and params.get("proxy_id") is not None)
 
 
-def _link_proxy_id() -> str | None:
-    """Return the proxy to pin in generated links; None leaves links unpinned.
-
-    Unbound links stay unpinned rather than resolving the implicit default, so
-    rendering login/redirect links never depends on MySQL.
-    """
+def _link_proxy_id() -> str:
     if has_request_context():
         active_proxy = getattr(g, "_active_proxy", None)
         active_proxy_id = getattr(active_proxy, "proxy_id", None)
@@ -2442,7 +2437,7 @@ def _link_proxy_id() -> str | None:
             session_proxy_id = session.get("active_proxy_id")
             if session_proxy_id:
                 return normalize_proxy_id(session_proxy_id)
-    return get_bound_proxy_id()
+    return get_proxy_id()
 
 
 def _endpoint_url(endpoint: str, **params: Any) -> str:
