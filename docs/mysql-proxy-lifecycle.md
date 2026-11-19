@@ -33,7 +33,10 @@ the first scoped-row delete. Each request then commits at most
 chunks. If a table reaches that bound with scoped rows still remaining, the
 registry remains `remove_pending`, the Admin UI reports the retained progress,
 and repeating the removal resumes
-idempotently. A fleet-wide removal lock prevents a second proxy removal from
+idempotently. Scheduled housekeeping repeats that bounded pass for any
+`remove_pending`/`removing` proxy (with catch-up runs while progress remains),
+so a paused removal converges without an operator retry. Reconciliation nudges
+skip proxies in removal or rename transitions. A fleet-wide removal lock prevents a second proxy removal from
 invalidating the last-proxy guard while one of these durable passes is pending.
 Aliases and the registry row are deleted only after a pass proves that all
 scoped tables are empty; the final tombstone remains `removed`.

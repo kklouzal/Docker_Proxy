@@ -261,10 +261,19 @@ The Admin UI starts scheduled MySQL housekeeping when background services are
 enabled. In multi-worker Gunicorn deployments, a file lock allows one process to
 run background tailers, samplers, and housekeeping while the other workers serve
 requests normally. Daily runs prune stored observability rows and stale
-control-plane history; weekly runs also refresh optimizer statistics.
+control-plane history; weekly runs also refresh optimizer statistics and
+rebuild tables (`MYSQL_MAINTENANCE_READ_TIMEOUT`, default 14400 seconds, bounds
+each ANALYZE/OPTIMIZE). Every prune step is bounded per run; when a run leaves
+eligible rows behind, or after a restart that missed the daily slot, a catch-up
+run follows after `MYSQL_HOUSEKEEPING_CATCHUP_INTERVAL_SECONDS` (default 900)
+until retention has converged. Housekeeping also resumes paused proxy removals
+one bounded pass per run.
 Control-plane cleanup preserves active config/certificate/adblock artifact
 revisions, keeps recent apply/operation/policy history, expires stale temporary
-policy exceptions, and removes expired Safe Browsing cache rows. Tune
+policy exceptions, and removes expired Safe Browsing cache rows. Adblock
+artifact retention keeps the active and previous archives; older revisions
+that proxy apply history still references keep their metadata row but release
+the archive payload. Tune
 `MYSQL_CONTROL_PLANE_RETENTION_DAYS`, `MYSQL_HOUSEKEEPING_KEEP_REVISIONS`,
 `MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, and
 `MYSQL_HOUSEKEEPING_KEEP_MAINTENANCE_RUNS` only when a deployment needs more
@@ -370,7 +379,7 @@ The containers expose the common production knobs as environment variables, eith
 | Adblock helper | `ADBLOCK_CACHE_TTL`, `ADBLOCK_CACHE_MAX`, `ADBLOCK_UPDATE_INTERVAL` (scheduled subscription download/build cadence; default 43200 seconds / 12 hours), `ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES` (shared builder/runtime/recovery uncompressed-artifact budget; default 1073741824 / 1 GiB, hard cap 4 GiB), `ADBLOCK_ARTIFACT_EXTRACT_MAX_MEMBERS` (default 256), `ADBLOCK_RULE_CACHE_MAX`, `ADBLOCK_ICAP_MAX_REQUEST_BYTES`, `ADBLOCK_ICAP_MAX_BODY_DRAIN_BYTES`, `ADBLOCK_ICAP_REQUEST_TIMEOUT`, `ADBLOCK_ICAP_MAX_KEEPALIVE_REQUESTS` |
 | Web filtering helpers | `WEBFILTER_HELPERS`, `WEBFILTER_CACHE_ENTRIES`, `WEBFILTER_CACHE_TTL_SECONDS`, `WEBFILTER_CACHE_NEGATIVE_TTL_SECONDS`, `WEBFILTER_SNAPSHOT_REFRESH_SECONDS`, `WEBFILTER_FAIL`, `SAFE_BROWSING_POLL_SECONDS`, `SAFE_BROWSING_HELPER_CACHE_ENTRIES`, `SAFE_BROWSING_HELPER_PREFIX_HIT_TTL_SECONDS`, `SAFE_BROWSING_HELPER_PREFIX_MISS_TTL_SECONDS`, `SAFE_BROWSING_FAIL` |
 | Runtime cadence | `PROXY_HEARTBEAT_INTERVAL_SECONDS`, `PROXY_SYNC_INTERVAL_SECONDS`, `LIVE_STATS_COMMIT_BATCH`, `LIVE_STATS_COMMIT_INTERVAL_SECONDS`, `LIVE_STATS_POLL_INTERVAL_SECONDS`, `LIVE_STATS_DB_WRITE_BACKOFF_INITIAL_SECONDS`, `LIVE_STATS_DB_WRITE_BACKOFF_MAX_SECONDS`, `LIVE_STATS_DB_WRITE_BACKOFF_JITTER_RATIO`, `LIVE_STATS_MAX_PENDING_ROWS`, `DIAGNOSTIC_COMMIT_BATCH`, `DIAGNOSTIC_COMMIT_INTERVAL_SECONDS`, `DIAGNOSTIC_POLL_INTERVAL_SECONDS`, `DIAGNOSTIC_DB_WRITE_BACKOFF_INITIAL_SECONDS`, `DIAGNOSTIC_DB_WRITE_BACKOFF_MAX_SECONDS`, `DIAGNOSTIC_DB_WRITE_BACKOFF_JITTER_RATIO`, `DIAGNOSTIC_PENDING_MAX_ROWS`, `TIMESERIES_STARTUP_JITTER_SECONDS`, `TIMESERIES_ROLLUP_INTERVAL_SECONDS`, `TIMESERIES_SAMPLE_DB_BACKOFF_INITIAL_SECONDS`, `TIMESERIES_SAMPLE_DB_BACKOFF_MAX_SECONDS`, `TIMESERIES_SAMPLE_DB_BACKOFF_JITTER_RATIO`, `TIMESERIES_ROLLUP_DB_BACKOFF_INITIAL_SECONDS`, `TIMESERIES_ROLLUP_DB_BACKOFF_MAX_SECONDS`, `TIMESERIES_ROLLUP_DB_BACKOFF_JITTER_RATIO`, `SSL_ERRORS_COMMIT_BATCH`, `SSL_ERRORS_COMMIT_INTERVAL_SECONDS`, `SSL_ERRORS_POLL_INTERVAL_SECONDS`, `STATS_CACHE_DIR_SIZE_TTL_SECONDS` |
-| Background and housekeeping | `DISABLE_BACKGROUND`, `BACKGROUND_LOCK_PATH`, `BACKGROUND_FORCE`, `MYSQL_CONTROL_PLANE_RETENTION_DAYS`, `MYSQL_HOUSEKEEPING_KEEP_REVISIONS`, `MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_OPERATIONS`, `MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, `MYSQL_HOUSEKEEPING_KEEP_MAINTENANCE_RUNS` |
+| Background and housekeeping | `DISABLE_BACKGROUND`, `BACKGROUND_LOCK_PATH`, `BACKGROUND_FORCE`, `MYSQL_CONTROL_PLANE_RETENTION_DAYS`, `MYSQL_HOUSEKEEPING_KEEP_REVISIONS`, `MYSQL_HOUSEKEEPING_KEEP_APPLICATIONS`, `MYSQL_HOUSEKEEPING_KEEP_OPERATIONS`, `MYSQL_HOUSEKEEPING_KEEP_POLICY_ROWS`, `MYSQL_HOUSEKEEPING_KEEP_MAINTENANCE_RUNS`, `MYSQL_HOUSEKEEPING_CATCHUP_INTERVAL_SECONDS`, `MYSQL_MAINTENANCE_READ_TIMEOUT` |
 | Admin UI | `WEB_WORKERS`, `WEB_THREADS`, `WEB_TIMEOUT`, `WEB_GRACEFUL_TIMEOUT`, `WEB_KEEPALIVE`, `ADMIN_UI_HTTPS_ENABLED` |
 
 The proxy entrypoint sanitizes `PAC_HTTP_HOST`, `PAC_HTTP_PORT`, local-only `FORWARDING_CANARY_*`, and `WEB_*` numeric launcher knobs before supervisor expands them, and the container healthcheck probes the effective PAC bind host (falling back to loopback for wildcard binds). The forwarding canary binds only inside the proxy container on loopback and gives full health a deterministic Squid/RESPMOD target without self-proxying the public PAC listener.
