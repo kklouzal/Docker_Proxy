@@ -21,6 +21,11 @@ from services.db import (
     table_exists,
 )
 from services.domain_normalization import is_ambiguous_ipv4_like_host
+from services.pac_request import (
+    _has_unsafe_url_text,
+    _safe_decoded_path_segments,
+    normalize_public_pac_path,
+)
 from services.proxy_context import get_default_proxy_id, normalize_proxy_id
 from services.proxy_lifecycle import (
     ProxyLifecycleIncompleteError,
@@ -46,11 +51,6 @@ from services.public_endpoint import (
     normalize_public_scheme as _normalize_public_scheme,
 )
 from services.runtime_helpers import authority_has_empty_explicit_port
-from services.url_validation import (
-    has_ascii_control_chars,
-    has_url_whitespace_or_control_chars,
-    repeatedly_percent_decode,
-)
 
 _PROXY_REGISTRY_REMOVAL_LOCK_NAME = "docker_proxy:proxy_registry:remove"
 
@@ -109,109 +109,11 @@ def _lifecycle_incomplete_retry_detail(result: ProxyLifecycleRunResult) -> str:
     return "paused after bounded chunk limit; retry to resume."
 
 
-def _has_unsafe_url_text(value: str) -> bool:
-    return has_url_whitespace_or_control_chars(value)
-
-
-def _has_unsafe_query_text(value: str) -> bool:
-    return has_ascii_control_chars(value)
-
-
-_MAX_PERCENT_DECODE_PASSES = 8
-
-
-def _strict_percent_unquote(value: str) -> str | None:
-    result = repeatedly_percent_decode(value, max_passes=1, errors="strict")
-    if result.malformed or result.invalid_utf8:
-        return None
-    return result.values[-1]
-
-
-def _bounded_repeated_unquote(value: str) -> str | None:
-    # Preserve the historical initial decode plus eight additional bounded passes.
-    result = repeatedly_percent_decode(
-        value,
-        max_passes=_MAX_PERCENT_DECODE_PASSES + 1,
-        errors="strict",
-    )
-    if result.malformed or result.invalid_utf8 or result.excessive_nesting:
-        return None
-    return result.values[-1]
-
-
 def _canonical_management_dns_host(value: str) -> str:
     candidate = _canonical_public_dns_host(value, allow_single_label=True)
     if not candidate or is_ambiguous_ipv4_like_host(candidate):
         return ""
     return candidate
-
-
-def _safe_decoded_path_segments(path: str) -> list[str] | None:
-    raw_segments = path.split("/")
-    decoded_segments = []
-    repeatedly_decoded_segments = []
-    for segment in raw_segments:
-        decoded_segment = _strict_percent_unquote(segment)
-        if decoded_segment is None:
-            return None
-        repeatedly_decoded_segment = _bounded_repeated_unquote(segment)
-        if repeatedly_decoded_segment is None:
-            return None
-        decoded_segments.append(decoded_segment)
-        repeatedly_decoded_segments.append(repeatedly_decoded_segment)
-    if any(
-        "/" in segment or "\\" in segment or _has_unsafe_url_text(segment)
-        for segment in repeatedly_decoded_segments
-    ):
-        return None
-    segments = [segment for segment in repeatedly_decoded_segments if segment]
-    if any(segment in {".", ".."} for segment in segments):
-        return None
-    return decoded_segments
-
-
-def _safe_repeatedly_decoded_query(query: str) -> bool:
-    decoded_query = _bounded_repeated_unquote(query)
-    if decoded_query is None:
-        return False
-    return "\\" not in decoded_query and not _has_unsafe_query_text(decoded_query)
-
-
-def normalize_public_pac_path(value: object | None, default: str = "/proxy.pac") -> str:
-    fallback = str(default if default is not None else "/proxy.pac").strip()
-    if fallback and not fallback.startswith("/"):
-        fallback = f"/{fallback}"
-    candidate = str(value or "").strip()
-    if not candidate:
-        return fallback
-    if _has_unsafe_url_text(candidate):
-        return fallback
-    try:
-        parsed = urlsplit(candidate)
-    except Exception:
-        return fallback
-    if parsed.username is not None or parsed.password is not None:
-        return fallback
-    if parsed.fragment:
-        return fallback
-    if parsed.netloc and not parsed.scheme:
-        return fallback
-    if parsed.scheme and parsed.scheme.lower() not in {"http", "https"}:
-        return fallback
-    if parsed.scheme and not parsed.netloc:
-        return fallback
-    path = parsed.path or fallback
-    if path.startswith("//") or "\\" in path:
-        return fallback
-    if not path.startswith("/"):
-        path = f"/{path}"
-    if _safe_decoded_path_segments(path) is None:
-        return fallback
-    query = parsed.query
-    if query:
-        if not _safe_repeatedly_decoded_query(query):
-            return fallback
-    return f"{path}?{query}" if query else path
 
 
 def normalize_management_url(value: object | None) -> str:
