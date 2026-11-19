@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
+
 
 class StopLoop(BaseException):
     pass
@@ -988,7 +990,7 @@ def test_adblock_blocklog_tailer_does_not_open_db_connection_when_log_missing(
         store._blocklog_tail_loop()
 
 
-def test_adblock_checkpoint_updates_existing_meta_rows_without_upsert(
+def test_adblock_proxy_meta_values_write_one_row_alias_upsert(
     monkeypatch, adblock_store
 ) -> None:
     calls: list[tuple[str, tuple[object, ...]]] = []
@@ -998,7 +1000,7 @@ def test_adblock_checkpoint_updates_existing_meta_rows_without_upsert(
             calls.append((" ".join(str(sql).split()), tuple(params or ())))
 
             class Result:
-                rowcount = 1
+                rowcount = 2
 
             return Result()
 
@@ -1009,58 +1011,23 @@ def test_adblock_checkpoint_updates_existing_meta_rows_without_upsert(
         {"cicap_access_pos": "20", "cicap_access_inode": "10"},
     )
 
+    # One statement for every key; the row alias avoids the deprecated VALUES()
+    # function, and unchanged values cannot fall into an UPDATE/INSERT/UPDATE
+    # retry chain (MySQL reports 0 affected rows for an unchanged UPDATE).
     assert calls == [
         (
-            "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
-            ("10", "proxy-a", "cicap_access_inode"),
-        ),
-        (
-            "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
-            ("20", "proxy-a", "cicap_access_pos"),
-        ),
-    ]
-
-
-def test_adblock_proxy_meta_insert_duplicate_falls_back_to_update(
-    monkeypatch, adblock_store
-) -> None:
-    class DuplicateKeyError(Exception):
-        def __init__(self) -> None:
-            super().__init__(
-                1062, "Duplicate entry 'proxy-a-cache_current_size' for key 'PRIMARY'"
-            )
-
-    calls: list[tuple[str, tuple[object, ...]]] = []
-
-    class Conn:
-        def execute(self, sql, params=()):
-            normalized = " ".join(str(sql).split())
-            calls.append((normalized, tuple(params or ())))
-            if normalized.startswith("INSERT INTO adblock_proxy_meta"):
-                raise DuplicateKeyError
-
-            class Result:
-                rowcount = 0 if len(calls) == 1 else 1
-
-            return Result()
-
-    monkeypatch.setattr(adblock_store, "INTEGRITY_ERRORS", (DuplicateKeyError,))
-    monkeypatch.setattr(adblock_store, "get_proxy_id", lambda: "proxy-a")
-
-    adblock_store.AdblockStore()._set_proxy_meta(Conn(), "cache_current_size", "42")
-
-    assert calls == [
-        (
-            "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
-            ("42", "proxy-a", "cache_current_size"),
-        ),
-        (
-            "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,%s)",
-            ("proxy-a", "cache_current_size", "42"),
-        ),
-        (
-            "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
-            ("42", "proxy-a", "cache_current_size"),
+            (
+                "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES (%s,%s,%s),(%s,%s,%s) "
+                "AS incoming ON DUPLICATE KEY UPDATE v=incoming.v"
+            ),
+            (
+                "proxy-a",
+                "cicap_access_inode",
+                "10",
+                "proxy-a",
+                "cicap_access_pos",
+                "20",
+            ),
         ),
     ]
 
@@ -1080,13 +1047,19 @@ def test_adblock_tailer_keeps_partial_line_until_newline(
     inserted: list[tuple[object, ...]] = []
     calls: list[str] = []
 
+    meta_writes: list[dict[str, str]] = []
+
     class Result:
-        def __init__(self, row=None, *, rowcount: int = 1) -> None:
+        def __init__(self, row=None, *, rows=None, rowcount: int = 1) -> None:
             self._row = row
+            self._rows = list(rows or ())
             self.rowcount = rowcount
 
         def fetchone(self):
             return self._row
+
+        def fetchall(self):
+            return list(self._rows)
 
     class Conn:
         native = object()
@@ -1094,32 +1067,23 @@ def test_adblock_tailer_keeps_partial_line_until_newline(
         def execute(self, sql, params=()):
             normalized = " ".join(str(sql).split())
             calls.append(normalized)
-            if "SELECT v FROM adblock_proxy_meta" in normalized:
-                key = str((params or ("", ""))[1])
-                value = meta.get(key, "0")
-                return Result((value,))
+            if "SELECT k, v FROM adblock_proxy_meta" in normalized:
+                keys = [str(key) for key in tuple(params or ())[1:]]
+                return Result(rows=[(key, meta[key]) for key in keys if key in meta])
             if "CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones" in normalized:
                 return Result()
-            if "FROM proxy_lifecycle_tombstones" in normalized:
-                return Result()
-            if "FROM information_schema.tables" in normalized:
-                table_name = str((params or ("",))[0])
-                available_tables = {
-                    "proxy_id_aliases",
-                    "proxy_instances",
-                }
-                return Result({"1": 1} if table_name in available_tables else None)
-            if "FROM proxy_id_aliases" in normalized:
-                return Result()
-            if "FROM proxy_instances" in normalized:
-                return Result({"status": "healthy"})
+            if is_lifecycle_state_query(normalized):
+                return Result(lifecycle_state_row(registry_status="healthy"))
             if "GET_LOCK" in normalized:
                 return Result({"acquired": 1})
             if "RELEASE_LOCK" in normalized:
                 return Result()
-            if normalized.startswith("UPDATE adblock_proxy_meta"):
-                value, _proxy_id, key = params
-                meta[str(key)] = str(value)
+            if normalized.startswith("INSERT INTO adblock_proxy_meta"):
+                values = tuple(params or ())
+                for offset in range(0, len(values), 3):
+                    _proxy_id, key, value = values[offset : offset + 3]
+                    meta[str(key)] = str(value)
+                meta_writes.append(dict(meta))
             elif normalized.startswith("INSERT IGNORE INTO adblock_events"):
                 inserted.append(tuple(params or ()))
 
@@ -1158,6 +1122,22 @@ def test_adblock_tailer_keeps_partial_line_until_newline(
     assert inserted[0][0] == "proxy-a"
     assert inserted[0][5] == "http://ads.example/banner.js"
     assert meta["cicap_access_pos"] == str(log_path.stat().st_size)
+    # The inode changed on the first pass and the position on the second; each
+    # pass wrote only the keys that moved.
+    assert [sorted(write) for write in meta_writes] == [
+        ["cicap_access_inode", "cicap_access_pos"],
+        ["cicap_access_inode", "cicap_access_pos"],
+    ]
+
+    # An idle poll with an unchanged checkpoint reads once and writes nothing:
+    # no lifecycle lock, no upsert, no commit traffic.
+    calls.clear()
+    store._ingest_new_cicap_lines(conn)
+    assert len(meta_writes) == 2
+    assert not any("GET_LOCK" in call for call in calls)
+    assert [call for call in calls if "adblock_proxy_meta" in call] == [
+        "SELECT k, v FROM adblock_proxy_meta WHERE proxy_id=%s AND k IN (%s,%s)"
+    ]
 
 
 def test_adblock_seed_ignores_syntactically_valid_partial_trailing_record(
@@ -1241,37 +1221,26 @@ def test_adblock_seed_reader_keeps_line_when_window_starts_at_boundary(
     assert lines == [tailed_record.decode().rstrip("\n")]
 
 
-def test_adblock_meta_insert_duplicate_falls_back_to_update(
-    monkeypatch, adblock_store
-) -> None:
-    class DuplicateKeyError(Exception):
-        def __init__(self) -> None:
-            super().__init__(
-                1062, "Duplicate entry 'refresh_requested' for key 'PRIMARY'"
-            )
-
+def test_adblock_meta_set_is_one_row_alias_upsert(monkeypatch, adblock_store) -> None:
     calls: list[tuple[str, tuple[object, ...]]] = []
 
     class Conn:
         def execute(self, sql, params=()):
-            normalized = " ".join(str(sql).split())
-            calls.append((normalized, tuple(params or ())))
-            if normalized.startswith("INSERT INTO adblock_meta"):
-                raise DuplicateKeyError
+            calls.append((" ".join(str(sql).split()), tuple(params or ())))
 
             class Result:
-                rowcount = 0 if len(calls) == 1 else 1
+                rowcount = 0
 
             return Result()
 
-    monkeypatch.setattr(adblock_store, "INTEGRITY_ERRORS", (DuplicateKeyError,))
+    adblock_store.AdblockStore()._set_meta(Conn(), "refresh_requested", "1")
 
-    adblock_store.AdblockStore()._set_meta(Conn(), "refresh_requested", "123")
-
-    assert calls[-1] == (
-        "UPDATE adblock_meta SET v=%s WHERE k=%s",
-        ("123", "refresh_requested"),
-    )
+    assert calls == [
+        (
+            "INSERT INTO adblock_meta(k,v) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
+            ("refresh_requested", "1"),
+        ),
+    ]
 
 
 def test_adblock_blocklog_tailer_logs_database_outage_without_traceback(

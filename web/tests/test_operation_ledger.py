@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
+
 POLICY_SHA = "a" * 64
 
 
@@ -127,26 +129,17 @@ class _LifecycleConnection:
     def _execute_lifecycle(self, compact: str, params: tuple[object, ...]):
         if compact.startswith("CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones"):
             return _Result()
-        if compact.startswith("SELECT 1 FROM information_schema.tables"):
-            return _Result([{"1": 1}])
-        if compact.startswith(
-            "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones",
-        ):
-            row = self.tombstones.get(str(params[0]))
-            if row is None:
-                return _Result()
-            action, target = row
-            return _Result([{"action": action, "target_proxy_id": target}])
-        if compact.startswith("SELECT proxy_id FROM proxy_id_aliases"):
-            target = self.aliases.get(str(params[0]))
-            if target is None:
-                return _Result()
-            return _Result([{"proxy_id": target}])
-        if compact.startswith("SELECT status FROM proxy_instances"):
-            status = self.registry.get(str(params[0]))
-            if status is None:
-                return _Result()
-            return _Result([{"status": status}])
+        if is_lifecycle_state_query(compact):
+            key = str(params[0])
+            return _Result(
+                [
+                    lifecycle_state_row(
+                        tombstone=self.tombstones.get(key),
+                        alias_target=self.aliases.get(key),
+                        registry_status=self.registry.get(key),
+                    )
+                ]
+            )
         if compact.startswith("SELECT GET_LOCK"):
             return _Result([{"acquired": 1}])
         if compact.startswith("DO RELEASE_LOCK"):

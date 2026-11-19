@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
 from .mysql_test_utils import (
     configure_test_mysql_env,
     ensure_proxy_runtime_import_path,
@@ -308,6 +309,8 @@ class _PolicyMutationConn:
         self.calls.append((text, params_t))
         if "SELECT GET_LOCK" in text:
             return _PolicyApproveResult({"acquired": 1})
+        if is_lifecycle_state_query(text):
+            return _PolicyApproveResult(lifecycle_state_row())
         return _PolicyApproveResult(rowcount=1)
 
 

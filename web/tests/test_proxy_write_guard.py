@@ -6,6 +6,7 @@ from unittest import SkipTest
 
 import pytest
 
+from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
 from .mysql_test_utils import configure_test_mysql_env
 
 if TYPE_CHECKING:
@@ -38,18 +39,26 @@ class _GuardConn:
         params = tuple(params or ())
         if "CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones" in text:
             return _Result()
-        if "FROM proxy_lifecycle_tombstones" in text:
+        if is_lifecycle_state_query(text):
             if self.fail_tombstone:
                 msg = "metadata offline"
                 raise RuntimeError(msg)
-            row = self.tombstones.get(str(params[0]))
-            return _Result([] if row is None else [row])
-        if "FROM proxy_id_aliases" in text:
-            target = self.aliases.get(str(params[0]))
-            return _Result([] if target is None else [{"proxy_id": target}])
-        if "FROM proxy_instances" in text:
-            status = self.instances.get(str(params[0]))
-            return _Result([] if status is None else [{"status": status}])
+            key = str(params[0])
+            tombstone = self.tombstones.get(key)
+            return _Result(
+                [
+                    lifecycle_state_row(
+                        tombstone=None
+                        if tombstone is None
+                        else (
+                            str(tombstone["action"]),
+                            str(tombstone["target_proxy_id"]),
+                        ),
+                        alias_target=self.aliases.get(key),
+                        registry_status=self.instances.get(key),
+                    )
+                ]
+            )
         if "GET_LOCK" in text:
             return _Result([{"acquired": 1}])
         if "RELEASE_LOCK" in text:
@@ -62,11 +71,6 @@ def _guard_module(monkeypatch):
     from services import proxy_write_guard  # type: ignore
 
     module = importlib.reload(proxy_write_guard)
-    monkeypatch.setattr(
-        module,
-        "table_exists",
-        lambda _conn, name: name in {"proxy_id_aliases", "proxy_instances"},
-    )
     module.clear_proxy_write_guard_cache()
     return module
 
@@ -314,3 +318,67 @@ def test_mysql_lifecycle_write_guard_aliases_and_stale_rejection(
             "SELECT proxy_id, COUNT(*) AS c FROM proxy_config_revisions GROUP BY proxy_id",
         ).fetchall()
     assert rows == []
+
+
+def test_guarded_proxy_write_uses_one_metadata_round_trip_per_check(
+    monkeypatch,
+) -> None:
+    guard = _guard_module(monkeypatch)
+    monkeypatch.setenv("MYSQL_PROXY_WRITE_GUARD_CACHE_SECONDS", "30")
+    conn = _GuardConn()
+    conn.native = object()
+    conn.instances["edge-a"] = "healthy"
+
+    with guard.guarded_proxy_write(conn, "edge-a"):
+        pass
+    first_calls = list(conn.calls)
+    conn.calls.clear()
+    with guard.guarded_proxy_write(conn, "edge-a"):
+        pass
+
+    def kinds(calls):
+        return [
+            "ddl"
+            if call.startswith("CREATE TABLE")
+            else "state"
+            if is_lifecycle_state_query(call)
+            else call.split()[0] + (" GET_LOCK" if "GET_LOCK" in call else "")
+            for call in calls
+        ]
+
+    # Tombstone DDL runs once per process; information_schema is never probed.
+    assert kinds(first_calls) == ["ddl", "state", "SELECT GET_LOCK", "state", "DO"]
+    # Later writes: cached pre-lock decision, then lock + one recheck + release.
+    assert kinds(conn.calls) == ["SELECT GET_LOCK", "state", "DO"]
+    assert not any("information_schema" in call for call in first_calls)
+
+
+def test_proxy_write_guard_follows_alias_and_tombstone_chain(monkeypatch) -> None:
+    guard = _guard_module(monkeypatch)
+    conn = _GuardConn()
+    conn.aliases["edge-legacy"] = "edge-old"
+    conn.tombstones["edge-old"] = {"action": "renamed", "target_proxy_id": "edge-new"}
+    conn.instances["edge-new"] = "healthy"
+
+    decision = guard.resolve_proxy_write_id(conn, "edge-legacy")
+    assert decision.proxy_id == "edge-new"
+    assert decision.resolved_alias is True
+    assert decision.alias_action == "renamed"
+
+    with pytest.raises(guard.ProxyLifecycleWriteError, match="renamed"):
+        guard.resolve_proxy_write_id(conn, "edge-old", allow_alias=False)
+
+    conn.aliases["edge-new"] = "edge-legacy"
+    with pytest.raises(guard.ProxyLifecycleWriteError, match="cycle"):
+        guard.resolve_proxy_write_id(conn, "edge-legacy")
+
+    conn.aliases.clear()
+    conn.tombstones.clear()
+    with pytest.raises(guard.ProxyLifecycleWriteError, match="not registered"):
+        guard.resolve_proxy_write_id(conn, "edge-missing")
+    assert (
+        guard.resolve_proxy_write_id(
+            conn, "edge-missing", require_registered=False
+        ).proxy_id
+        == "edge-missing"
+    )

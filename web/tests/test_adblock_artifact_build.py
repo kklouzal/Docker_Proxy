@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pymysql
 import pytest
 
+from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
 from .mysql_test_utils import configure_test_mysql_env
 
 
@@ -98,20 +99,15 @@ class _AdblockAliasReadConn:
         self.queries.append((compact, params))
         if compact.startswith("CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones"):
             return _FakeSqlResult()
-        if compact.startswith("SELECT 1 FROM information_schema.tables"):
-            return _FakeSqlResult([{"1": 1}])
-        if compact.startswith(
-            "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones",
-        ):
-            return _FakeSqlResult()
-        if compact.startswith("SELECT proxy_id FROM proxy_id_aliases"):
-            if params[0] == "live":
-                return _FakeSqlResult([{"proxy_id": "edge-a"}])
-            return _FakeSqlResult()
-        if compact.startswith("SELECT status FROM proxy_instances"):
-            if params[0] == "edge-a":
-                return _FakeSqlResult([{"status": "active"}])
-            return _FakeSqlResult()
+        if is_lifecycle_state_query(compact):
+            return _FakeSqlResult(
+                [
+                    lifecycle_state_row(
+                        alias_target="edge-a" if params[0] == "live" else None,
+                        registry_status="active" if params[0] == "edge-a" else None,
+                    )
+                ]
+            )
         if compact.startswith("SELECT * FROM proxy_adblock_artifact_applications"):
             if params[:2] == ("edge-a", 42):
                 return _FakeSqlResult([self.application])
@@ -138,23 +134,18 @@ class _AdblockProxyMetaAliasConn:
         self.queries.append((compact, params))
         if compact.startswith("CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones"):
             return _FakeSqlResult()
-        if compact.startswith("SELECT 1 FROM information_schema.tables"):
-            return _FakeSqlResult([{"1": 1}])
-        if compact.startswith(
-            "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones",
-        ):
-            return _FakeSqlResult()
-        if compact.startswith("SELECT proxy_id FROM proxy_id_aliases"):
-            if params[0] == "live":
-                return _FakeSqlResult([{"proxy_id": "edge-a"}])
-            return _FakeSqlResult()
-        if compact.startswith("SELECT status FROM proxy_instances"):
-            if params[0] == "edge-a":
-                return _FakeSqlResult([{"status": "active"}])
-            return _FakeSqlResult()
-        if compact.startswith("SELECT v FROM adblock_proxy_meta"):
+        if is_lifecycle_state_query(compact):
+            return _FakeSqlResult(
+                [
+                    lifecycle_state_row(
+                        alias_target="edge-a" if params[0] == "live" else None,
+                        registry_status="active" if params[0] == "edge-a" else None,
+                    )
+                ]
+            )
+        if compact.startswith("SELECT k, v FROM adblock_proxy_meta"):
             if params == ("edge-a", "cache_flush_requested"):
-                return _FakeSqlResult([("123",)])
+                return _FakeSqlResult([("cache_flush_requested", "123")])
             return _FakeSqlResult()
         msg = f"Unexpected SQL: {compact}"
         raise AssertionError(msg)
@@ -310,8 +301,9 @@ def test_latest_apply_resolves_proxy_alias_before_read(monkeypatch) -> None:
     assert latest.revision_id == 42
     assert latest.artifact_sha256 == "a" * 64
     assert any(
-        query.startswith("SELECT proxy_id FROM proxy_id_aliases")
-        and params == ("live",)
+        is_lifecycle_state_query(query)
+        and "proxy_id_aliases" in query
+        and params[0] == "live"
         for query, params in conn.queries
     )
     assert any(
@@ -335,7 +327,7 @@ def test_cache_flush_read_resolves_proxy_alias(monkeypatch) -> None:
         reset_proxy_id(token)
 
     assert any(
-        query.startswith("SELECT v FROM adblock_proxy_meta")
+        query.startswith("SELECT k, v FROM adblock_proxy_meta")
         and params == ("edge-a", "cache_flush_requested")
         for query, params in conn.queries
     )

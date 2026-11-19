@@ -21,10 +21,8 @@ from services.bounded_delete import (
 )
 from services.db import (
     DATABASE_ERRORS,
-    INTEGRITY_ERRORS,
     connect,
     mysql_advisory_lock,
-    mysql_error_code,
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
 )
@@ -48,10 +46,6 @@ ADBLOCK_DEFAULT_UPDATE_INTERVAL_SECONDS = 12 * 60 * 60
 # artifact builder polls every 30 s; without a backoff an unreachable list
 # re-triggered a download plus full artifact rebuild on every poll.
 ADBLOCK_DEFAULT_DOWNLOAD_RETRY_SECONDS = 15 * 60
-
-
-def _is_duplicate_key_error(exc: BaseException) -> bool:
-    return mysql_error_code(exc) == 1062
 
 
 def _is_internal_host(hostname: str) -> bool:
@@ -348,56 +342,42 @@ class AdblockStore:
         return str(row[0]) if row and row[0] is not None else default
 
     def _set_meta(self, conn, key: str, value: str) -> None:
-        result = conn.execute(
-            "UPDATE adblock_meta SET v=%s WHERE k=%s",
-            (value, key),
+        conn.execute(
+            "INSERT INTO adblock_meta(k,v) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
+            (key, value),
         )
-        if int(getattr(result, "rowcount", 0) or 0) <= 0:
-            try:
-                conn.execute(
-                    "INSERT INTO adblock_meta(k,v) VALUES(%s,%s)",
-                    (key, value),
-                )
-            except INTEGRITY_ERRORS as exc:
-                if not _is_duplicate_key_error(exc):
-                    raise
-                conn.execute(
-                    "UPDATE adblock_meta SET v=%s WHERE k=%s",
-                    (value, key),
-                )
 
     def _get_proxy_meta(self, conn, key: str, default: str = "") -> str:
+        return self._get_proxy_meta_values(conn, (key,)).get(key, default)
+
+    def _get_proxy_meta_values(self, conn, keys: tuple[str, ...]) -> dict[str, str]:
+        """Read several proxy-scoped meta keys in one round trip."""
         proxy_id = resolve_proxy_read_id_cached(conn, get_proxy_id()).proxy_id
-        row = conn.execute(
-            "SELECT v FROM adblock_proxy_meta WHERE proxy_id=%s AND k=%s",
-            (proxy_id, key),
-        ).fetchone()
-        return str(row[0]) if row and row[0] is not None else default
+        placeholders = ",".join(["%s"] * len(keys))
+        rows = conn.execute(
+            f"SELECT k, v FROM adblock_proxy_meta WHERE proxy_id=%s AND k IN ({placeholders})",
+            (proxy_id, *keys),
+        ).fetchall()
+        return {str(row[0]): str(row[1]) for row in rows if row[1] is not None}
 
     def _set_proxy_meta(self, conn, key: str, value: str) -> None:
-        with guarded_proxy_write(conn, get_proxy_id()) as guard:
-            proxy_id = guard.proxy_id
-            result = conn.execute(
-                "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
-                (value, proxy_id, key),
-            )
-            if int(getattr(result, "rowcount", 0) or 0) <= 0:
-                try:
-                    conn.execute(
-                        "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,%s,%s)",
-                        (proxy_id, key, value),
-                    )
-                except INTEGRITY_ERRORS as exc:
-                    if not _is_duplicate_key_error(exc):
-                        raise
-                    conn.execute(
-                        "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k=%s",
-                        (value, proxy_id, key),
-                    )
+        self._set_proxy_meta_values(conn, {key: value})
 
     def _set_proxy_meta_values(self, conn, values: dict[str, str]) -> None:
-        for key in sorted(values):
-            self._set_proxy_meta(conn, key, values[key])
+        """Upsert proxy-scoped meta keys under one lifecycle guard and statement."""
+        if not values:
+            return
+        keys = sorted(values)
+        with guarded_proxy_write(conn, get_proxy_id()) as guard:
+            proxy_id = guard.proxy_id
+            placeholders = ",".join(["(%s,%s,%s)"] * len(keys))
+            params: list[str] = []
+            for key in keys:
+                params.extend((proxy_id, key, values[key]))
+            conn.execute(
+                f"INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES {placeholders} AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
+                tuple(params),
+            )
 
     def start_blocklog_background(self) -> None:
         with self._blocklog_lock:
@@ -495,13 +475,34 @@ class AdblockStore:
         size = int(getattr(st, "st_size", 0) or 0)
 
         try:
-            last_inode = int(self._get_proxy_meta(conn, "cicap_access_inode", "0") or 0)
+            stored = self._get_proxy_meta_values(
+                conn, ("cicap_access_inode", "cicap_access_pos")
+            )
+        except Exception:
+            stored = {}
+        stored_inode = stored.get("cicap_access_inode", "0")
+        stored_pos = stored.get("cicap_access_pos", "0")
+        try:
+            last_inode = int(stored_inode or 0)
         except Exception:
             last_inode = 0
         try:
-            pos = int(self._get_proxy_meta(conn, "cicap_access_pos", "0") or 0)
+            pos = int(stored_pos or 0)
         except Exception:
             pos = 0
+
+        def checkpoint_changes(checkpoint: int) -> dict[str, str]:
+            # Idle polls must not rewrite an unchanged checkpoint: every write
+            # costs a lifecycle-guarded transaction against the control plane.
+            wanted = {
+                "cicap_access_inode": str(inode),
+                "cicap_access_pos": str(checkpoint),
+            }
+            current = {
+                "cicap_access_inode": stored_inode,
+                "cicap_access_pos": stored_pos,
+            }
+            return {k: v for k, v in wanted.items() if current[k] != v}
 
         if inode != 0 and last_inode not in {0, inode}:
             # Log rotated/recreated.
@@ -522,14 +523,11 @@ class AdblockStore:
 
         if not data:
             # Still update inode if it changed (so we don't keep resetting).
+            changes = checkpoint_changes(pos)
+            if not changes:
+                return
             try:
-                self._set_proxy_meta_values(
-                    conn,
-                    {
-                        "cicap_access_inode": str(inode),
-                        "cicap_access_pos": str(pos),
-                    },
-                )
+                self._set_proxy_meta_values(conn, changes)
                 conn.commit()
             except Exception:
                 with contextlib.suppress(Exception):
@@ -573,13 +571,7 @@ class AdblockStore:
                     event_rows,
                 )
 
-            self._set_proxy_meta_values(
-                conn,
-                {
-                    "cicap_access_inode": str(inode),
-                    "cicap_access_pos": str(checkpoint_pos),
-                },
-            )
+            self._set_proxy_meta_values(conn, checkpoint_changes(checkpoint_pos))
 
             if event_rows:
                 if created_ts - int(self._last_events_prune_ts or 0) >= 60:
@@ -943,14 +935,13 @@ class AdblockStore:
     def mark_cache_flushed(self, *, size: int | None = None) -> None:
         def write() -> None:
             with self._connect() as conn:
-                self._set_proxy_meta(conn, "cache_flush_requested", "0")
-                self._set_proxy_meta(conn, "cache_last_flush", str(_now()))
+                values = {
+                    "cache_flush_requested": "0",
+                    "cache_last_flush": str(_now()),
+                }
                 if size is not None:
-                    self._set_proxy_meta(
-                        conn,
-                        "cache_current_size",
-                        str(max(0, int(size))),
-                    )
+                    values["cache_current_size"] = str(max(0, int(size)))
+                self._set_proxy_meta_values(conn, values)
 
         self._with_db_write_retry(write)
 
@@ -1295,15 +1286,10 @@ class AdblockStore:
                         (proxy_id, int(evictions)),
                     )
                 if size is not None:
-                    result = conn.execute(
-                        "UPDATE adblock_proxy_meta SET v=%s WHERE proxy_id=%s AND k='cache_current_size'",
-                        (str(max(0, int(size))), proxy_id),
+                    conn.execute(
+                        "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,'cache_current_size',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
+                        (proxy_id, str(max(0, int(size)))),
                     )
-                    if int(getattr(result, "rowcount", 0) or 0) <= 0:
-                        conn.execute(
-                            "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,'cache_current_size',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
-                            (proxy_id, str(max(0, int(size)))),
-                        )
 
     def cache_stats(self) -> dict[str, int]:
         proxy_id = get_proxy_id()
