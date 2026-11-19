@@ -242,6 +242,7 @@ def test_control_plane_maintenance_analyzes_existing_tables(monkeypatch) -> None
         lambda table: table == "proxy_config_revisions",
     )
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance, "maintenance_connect", lambda: conn)
 
     result = maintenance.maintain_control_plane_tables(analyze=True, optimize=False)
 
@@ -270,6 +271,7 @@ def test_control_plane_maintenance_records_table_exists_failures(monkeypatch) ->
 
     monkeypatch.setattr(maintenance, "_table_exists", table_exists)
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance, "maintenance_connect", lambda: conn)
 
     result = maintenance.maintain_control_plane_tables(analyze=True, optimize=False)
 

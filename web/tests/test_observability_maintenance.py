@@ -127,6 +127,7 @@ def test_maintain_observability_tables_analyzes_and_optimizes_existing_tables(
     conn = FakeConnection(existing)
 
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    monkeypatch.setattr(maintenance, "maintenance_connect", lambda: conn)
     monkeypatch.setattr(
         maintenance, "table_exists", lambda _conn, table: table in existing
     )

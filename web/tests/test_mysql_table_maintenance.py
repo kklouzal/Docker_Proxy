@@ -80,3 +80,24 @@ def test_ignores_context_exit_failure_after_all_actions_acknowledged() -> None:
     )
 
     assert result == "analyzed"
+
+
+def test_maintenance_connect_extends_only_the_read_timeout(monkeypatch) -> None:
+    from services import mysql_table_maintenance as module
+    from services.db import DatabaseConfig
+
+    captured = {}
+    base = DatabaseConfig(host="mysql.example", read_timeout=15)
+    monkeypatch.setattr(module, "resolve_database_config", lambda: base)
+    monkeypatch.setattr(
+        module, "connect_unpooled", lambda cfg: captured.setdefault("cfg", cfg)
+    )
+    monkeypatch.delenv("MYSQL_MAINTENANCE_READ_TIMEOUT", raising=False)
+
+    module.maintenance_connect()
+
+    assert (
+        captured["cfg"].read_timeout == module.DEFAULT_MAINTENANCE_READ_TIMEOUT_SECONDS
+    )
+    assert captured["cfg"].write_timeout == base.write_timeout
+    assert captured["cfg"].host == base.host
