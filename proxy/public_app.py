@@ -17,6 +17,7 @@ from flask import Flask, Response, abort, jsonify, request
 from markupsafe import escape
 from services.errors import public_error_message
 from services.http_optimizations import install_http_optimizations
+from services.logutil import configure_process_logging
 from services.pac_http import (
     PAC_CONTENT_TYPE,
     client_ip_from_headers,
@@ -255,4 +256,5 @@ def public_policy_request() -> Any:
         )
 
 
+configure_process_logging()
 application = app

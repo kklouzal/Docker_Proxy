@@ -1320,7 +1320,7 @@ stdout_logfile_maxbytes=0
             os.environ["SQUID_WORKERS"] = str(workers)
             options = _effective_clamav_options(extract_clamav_options(normalized))
             policy_mode = "bypassed" if clamav_fail_open(options) else "blocked"
-            logger.info(
+            logger.debug(
                 "ClamAV file policy applied: preset=%s fail-%s scan_downloads=%s scan_uploads=%s risky_extensions=%s archive_block=%s nested_archives=%s quarantine_metadata=%s size_caps=%s/%s",
                 options.get("file_security_preset"),
                 "open" if clamav_fail_open(options) else "closed",
@@ -1333,7 +1333,7 @@ stdout_logfile_maxbytes=0
                 options.get("file_security_max_upload_size"),
                 options.get("file_security_max_download_size"),
             )
-            logger.info("AV unavailable, %s due to policy", policy_mode)
+            logger.debug("AV unavailable, %s due to policy", policy_mode)
             virus_path = self._virus_scan_config_path()
             icap_path = self._icap_include_path()
             old_virus_scan_config = self._snapshot_runtime_file(virus_path)
@@ -1445,6 +1445,13 @@ stdout_logfile_maxbytes=0
                     changed.append("Squid restarted after ICAP supervisor update.")
                 changed.extend(supervisor_paths)
             if changed:
+                # Reconciliation runs every sync; only a real change is news.
+                logger.info(
+                    "ClamAV runtime files updated (fail-%s, AV unavailable is %s): %s",
+                    "open" if clamav_fail_open(options) else "closed",
+                    policy_mode,
+                    ", ".join(changed),
+                )
                 return SquidRuntimeMaterializationResult(
                     True,
                     "ClamAV runtime files updated: " + ", ".join(changed),

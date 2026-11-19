@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import logging
 import math
+import os
+import sys
 import threading
 import time
-from typing import TYPE_CHECKING
 
 from services.errors import public_error_message
-
-if TYPE_CHECKING:
-    import logging
 
 _lock = threading.Lock()
 _last_log: dict[str, float] = {}
@@ -112,3 +111,27 @@ def log_database_unavailable(
             )
     except Exception:
         pass
+
+
+_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
+def configure_process_logging(*, default_level: str = "INFO") -> None:
+    """Give a long-running proxy process a stderr log handler.
+
+    Without one, Python only prints WARNING+ through ``logging.lastResort`` and
+    INFO lifecycle events (recovery capture, control-plane startup/reconnect,
+    Squid restarts) are silently dropped. ``PROXY_LOG_LEVEL`` overrides the
+    level. Processes that already configured logging are left untouched.
+    """
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    requested = (os.environ.get("PROXY_LOG_LEVEL") or default_level).strip().upper()
+    level = requested if requested in _LOG_LEVELS else default_level
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"),
+    )
+    root.addHandler(handler)
+    root.setLevel(level)

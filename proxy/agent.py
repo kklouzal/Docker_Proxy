@@ -11,7 +11,11 @@ from services.db import (
     mysql_error_classification,
 )
 from services.errors import public_error_message
-from services.logutil import log_exception_throttled, should_log
+from services.logutil import (
+    configure_process_logging,
+    log_exception_throttled,
+    should_log,
+)
 from services.observability_backoff import DatabaseWriteBackoff
 from services.runtime_helpers import env_float as _env_float
 
@@ -357,6 +361,14 @@ class _ControlPlaneStartup:
                 )
         self.complete = True
         _publish_control_plane_ready()
+        logger.info(
+            "Proxy control-plane startup completed: recovery=%s registered=%s "
+            "bootstrap=%s initial_sync=%s",
+            getattr(startup_recovery, "status", "not_applicable"),
+            registered_ok,
+            bootstrap_ok,
+            bool(sync_ok and _sync_result_ok(sync_result)),
+        )
         return True
 
 
@@ -416,6 +428,10 @@ def start_agent(*, stop_event: threading.Event | None = None) -> None:
         # API mutate the control plane before this process finishes startup.
         clear_control_plane_ready()
         runtime = get_runtime()
+        logger.info(
+            "Proxy agent starting control-plane startup for proxy_id=%s",
+            getattr(runtime, "proxy_id", ""),
+        )
         if stop_event is not None and stop_event.is_set():
             return
         loop_stop = stop_event or threading.Event()
@@ -446,6 +462,9 @@ def start_agent(*, stop_event: threading.Event | None = None) -> None:
         def _wake_after_mysql_recovery() -> None:
             # Re-register, finish skipped startup, resync and report at once
             # instead of waiting out the steady intervals.
+            logger.info(
+                "Control-plane database reachable again; resynchronizing proxy now",
+            )
             sync_wake.set()
             heartbeat_wake.set()
 
@@ -523,6 +542,7 @@ def _shutdown(runtime, *, timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> bool:
 
 
 def main() -> None:
+    configure_process_logging()
     stop_event = threading.Event()
 
     def request_shutdown(_signum, _frame) -> None:

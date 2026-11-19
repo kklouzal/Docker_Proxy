@@ -158,8 +158,12 @@ def run_startup_recovery(
         ) from exc
 
     if result.status == "not_eligible":
-        reason = result.reason or "target database is not fresh enough for recovery adoption"
-        raise ProxyRecoveryStartupError(_manual_recovery_message(normalized_proxy_id, reason))
+        reason = (
+            result.reason or "target database is not fresh enough for recovery adoption"
+        )
+        raise ProxyRecoveryStartupError(
+            _manual_recovery_message(normalized_proxy_id, reason)
+        )
     if result.status not in _RECOVERY_OK_STATUSES:
         raise ProxyRecoveryStartupError(
             _manual_recovery_message(
@@ -224,7 +228,11 @@ def capture_recovery_bundle_after_authoritative_state(
             max_bundle_bytes=resolved_max_bundle_bytes,
         )
     except Exception as exc:
-        detail = "required recovery capture failed" if required else "recovery capture failed"
+        detail = (
+            "required recovery capture failed"
+            if required
+            else "recovery capture failed"
+        )
         if required:
             raise ProxyRecoveryCaptureError(
                 _manual_recovery_message(normalized_proxy_id, detail),
@@ -243,7 +251,10 @@ def capture_recovery_bundle_after_authoritative_state(
             required=required,
             detail=detail,
         )
-    logger.info(
+    # Periodic unchanged refresh captures are routine; keep INFO for required
+    # and changed captures so the log rate stays bounded by real events.
+    logger.log(
+        logging.INFO if (required or changed) else logging.DEBUG,
         "Proxy recovery capture completed for proxy_id=%s reason=%s required=%s",
         normalized_proxy_id,
         reason_text,
@@ -259,7 +270,9 @@ def capture_recovery_bundle_after_authoritative_state(
 
 
 def _register_minimal_proxy_identity(registry: Any, proxy_id: str) -> Any:
-    display_name = (os.environ.get("PROXY_DISPLAY_NAME") or proxy_id).strip() or proxy_id
+    display_name = (
+        os.environ.get("PROXY_DISPLAY_NAME") or proxy_id
+    ).strip() or proxy_id
     hostname = (os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip()
     public_fields = resolve_local_proxy_public_fields()
     management_url = resolve_local_proxy_management_url(
@@ -281,7 +294,9 @@ def _register_minimal_proxy_identity(registry: Any, proxy_id: str) -> Any:
     )
 
 
-def _recovery_file_state(proxy_id: str, recovery_dir: str | Path | None) -> dict[str, bool]:
+def _recovery_file_state(
+    proxy_id: str, recovery_dir: str | Path | None
+) -> dict[str, bool]:
     bundle_path = proxy_recovery.bundle_path_for_proxy(proxy_id, recovery_dir)
     key_path = proxy_recovery.key_path_for_proxy(proxy_id, recovery_dir)
     return {

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 from flask import Flask, abort, jsonify, make_response, request
 from services.errors import public_error_message
 from services.http_optimizations import install_http_optimizations
+from services.logutil import configure_process_logging
 from services.proxy_logs import (
     parse_proxy_log_max_bytes,
     proxy_log_status_code,
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
     from werkzeug.exceptions import HTTPException
 
 F = TypeVar("F", bound=Callable[..., Any])
+# proxy_api runs under gunicorn, which only configures its own gunicorn.* loggers.
+configure_process_logging()
 app = Flask(__name__)
 install_http_optimizations(app, default_dynamic_max_age_seconds=0)
 runtime: Any | None = None
