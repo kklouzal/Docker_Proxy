@@ -162,10 +162,22 @@ class _EmptyCursor:
         return []
 
 
+def _is_hung_session_error(exc: BaseException) -> bool:
+    """A statement that hit the socket read/write timeout on an open session."""
+    return mysql_error_code(exc) == 2013 and "timed out" in str(exc).lower()
+
+
 class CompatConnection:
-    def __init__(self, native: Any, cfg: DatabaseConfig | None = None) -> None:
+    def __init__(
+        self,
+        native: Any,
+        cfg: DatabaseConfig | None = None,
+        *,
+        circuit: _ConnectCircuit | None = None,
+    ) -> None:
         self.native = native
         self._cfg = cfg
+        self._circuit = circuit
         self._closed = False
         self._discard_on_close = False
         self._results: set[CompatResult] = set()
@@ -173,6 +185,10 @@ class CompatConnection:
     def _mark_discard_for_error(self, exc: BaseException) -> None:
         if _should_discard_native_connection(exc):
             self._discard_on_close = True
+        if self._circuit is not None and _is_hung_session_error(exc):
+            # Reused pooled sessions skip the liveness ping, so a hung server
+            # shows up here first; let other callers fail fast meanwhile.
+            self._circuit.record_failure(exc)
 
     def _mark_discard_for_result_close_error(self, _exc: BaseException) -> None:
         # A cursor can fail while draining an unread server-side result.  The
@@ -202,8 +218,7 @@ class CompatConnection:
         try:
             cur.execute(sql, tuple(params or ()))
         except Exception as exc:
-            if _should_discard_native_connection(exc):
-                self._discard_on_close = True
+            self._mark_discard_for_error(exc)
             with contextlib.suppress(Exception):
                 cur.close()
             raise
@@ -224,8 +239,7 @@ class CompatConnection:
         try:
             cur.executemany(sql, [tuple(p) for p in seq_of_params])
         except Exception as exc:
-            if _should_discard_native_connection(exc):
-                self._discard_on_close = True
+            self._mark_discard_for_error(exc)
             with contextlib.suppress(Exception):
                 cur.close()
             raise
@@ -1246,7 +1260,7 @@ def _establish(cfg: DatabaseConfig, opener):
 def connect(config: DatabaseConfig | None = None) -> CompatConnection:
     cfg = config or resolve_database_config()
     native = _establish(cfg, lambda: _checkout_connection(cfg))
-    return CompatConnection(native, cfg=cfg)
+    return CompatConnection(native, cfg=cfg, circuit=_connect_circuit(cfg))
 
 
 def _open_configured_unpooled(cfg: DatabaseConfig) -> Any:
@@ -1262,7 +1276,7 @@ def _open_configured_unpooled(cfg: DatabaseConfig) -> Any:
 def connect_unpooled(config: DatabaseConfig | None = None) -> CompatConnection:
     cfg = config or resolve_database_config()
     native = _establish(cfg, lambda: _open_configured_unpooled(cfg))
-    return CompatConnection(native, cfg=None)
+    return CompatConnection(native, cfg=None, circuit=_connect_circuit(cfg))
 
 
 def _ensure_mysql_database(cfg: DatabaseConfig) -> None:

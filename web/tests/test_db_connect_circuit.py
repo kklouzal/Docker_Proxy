@@ -475,3 +475,50 @@ def test_pool_idle_lifetime_stays_below_session_wait_timeout(
             monkeypatch.setenv(name, value)
 
     assert db._pool_max_idle_seconds() == expected
+
+
+@pytest.mark.parametrize(
+    ("error", "opens"),
+    [
+        (
+            pymysql.OperationalError(
+                2013, "Lost connection to MySQL server during query (timed out)"
+            ),
+            True,
+        ),
+        (
+            pymysql.OperationalError(
+                2013, "Lost connection to MySQL server during query"
+            ),
+            False,
+        ),
+        (pymysql.OperationalError(1205, "Lock wait timeout exceeded"), False),
+    ],
+)
+def test_statement_read_timeout_on_reused_session_opens_circuit(
+    monkeypatch, error, opens
+) -> None:
+    monkeypatch.setenv("MYSQL_CONNECT_CIRCUIT_BACKOFF_INITIAL_SECONDS", "60")
+    monkeypatch.setenv("MYSQL_CONNECT_CIRCUIT_BACKOFF_MAX_SECONDS", "60")
+
+    class _HungNative(_Native):
+        def cursor(self):
+            class _Cursor:
+                def execute(self, sql, *_args, **_kwargs):
+                    if "SET SESSION" in str(sql):
+                        return 0
+                    raise error
+
+                def close(self):
+                    return None
+
+            return _Cursor()
+
+    monkeypatch.setattr(db, "_open_native_connection", lambda _cfg: _HungNative())
+    cfg = _cfg()
+    conn = db.connect_unpooled(cfg)
+    with pytest.raises(pymysql.OperationalError):
+        conn.execute("SELECT 1")
+    conn.close()
+
+    assert db._connect_circuit(cfg).open is opens
