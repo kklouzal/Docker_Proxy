@@ -9655,3 +9655,63 @@ def test_operation_config_force_is_limited_to_config_affecting_requests() -> Non
     assert not runtime_module._operations_request_reconciliation_force(
         [cache_operation]
     )
+
+
+def test_runtime_self_heal_recovers_stranded_squid_transaction_with_backoff(
+    monkeypatch,
+) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: clock["now"])
+    journal = {"status": "recovery_required", "transaction_id": "tx-1"}
+    runtime._squid_transaction_health = lambda: dict(journal)
+    runtime.controller = SimpleNamespace(
+        get_status=lambda: (b"squid ok", b""),
+        _wait_for_http_listener=lambda *, timeout: True,
+    )
+    outcomes = [{"ok": False, "detail": "rollback failed"}, {"ok": True}]
+    reasons: list[str] = []
+
+    def rollback(*, reason):
+        reasons.append(reason)
+        return outcomes.pop(0)
+
+    runtime.rollback_last_known_good_config = rollback
+
+    # Healthy Squid with a stranded journal: designated recovery runs at once.
+    assert runtime.self_heal_config_if_needed(reason="heartbeat")["ok"] is False
+    assert "recovery_required (tx-1)" in reasons[0]
+
+    # A failed attempt backs off instead of restarting Squid every heartbeat.
+    clock["now"] += 90.0
+    assert runtime.self_heal_config_if_needed(reason="heartbeat")["ok"] is True
+    assert len(reasons) == 1
+
+    clock["now"] += 300.0
+    assert runtime.self_heal_config_if_needed(reason="heartbeat")["ok"] is True
+    assert len(reasons) == 2
+
+    # Once reconciled, nothing further runs.
+    journal["status"] = "recovered"
+    clock["now"] += 3600.0
+    assert runtime.self_heal_config_if_needed(reason="heartbeat")["changed"] is False
+    assert len(reasons) == 2
+
+
+@pytest.mark.parametrize("status", ["in_progress", "recovering", "complete"])
+def test_runtime_self_heal_leaves_live_or_reconciled_transactions_alone(
+    status,
+) -> None:
+    runtime = _runtime_shell()
+    runtime._squid_transaction_health = lambda: {"status": status}
+    runtime.controller = SimpleNamespace(
+        get_status=lambda: (b"squid ok", b""),
+        _wait_for_http_listener=lambda *, timeout: True,
+    )
+    runtime.rollback_last_known_good_config = lambda **_kwargs: pytest.fail(
+        "only a failed (recovery_required) journal may be recovered here"
+    )
+
+    assert runtime.self_heal_config_if_needed(reason="heartbeat")["ok"] is True

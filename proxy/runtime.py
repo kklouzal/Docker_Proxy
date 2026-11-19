@@ -2629,16 +2629,53 @@ class ProxyRuntime:
                 status_detail = "Squid listener probe failed."
 
         if proxy_ok and listener_ok:
-            return {
+            healthy = {
                 "ok": True,
                 "proxy_id": self.proxy_id,
                 "changed": False,
                 "rolled_back": False,
                 "detail": status_detail or "Squid is healthy.",
             }
+            return self._recover_stranded_squid_transaction(reason) or healthy
 
         detail_reason = f"Self-heal triggered by {reason}: {status_detail or 'Squid health check failed.'}"
         return self.rollback_last_known_good_config(reason=detail_reason)
+
+    def _recover_stranded_squid_transaction(self, reason: str) -> dict[str, Any] | None:
+        """Run the designated last-known-good recovery for a failed journal.
+
+        A recovery_required journal blocks every later Squid mutation (config,
+        policy, ICAP, certificate applies) even while Squid keeps serving, and
+        previously only a container restart cleared it. The designated rollback
+        restores the persisted last-known-good config under the lifecycle lock.
+        Failed attempts back off exponentially (5 min .. 1 h) so a persistent
+        fault cannot turn into a Squid restart loop.
+        """
+        journal = self._squid_transaction_health()
+        if str(journal.get("status") or "") != "recovery_required":
+            self._journal_recovery_failures = 0
+            self._journal_recovery_not_before = 0.0
+            return None
+        now = time.monotonic()
+        if now < float(getattr(self, "_journal_recovery_not_before", 0.0) or 0.0):
+            return None
+        result = self.rollback_last_known_good_config(
+            reason=(
+                f"Self-heal triggered by {reason}: Squid transaction journal is "
+                f"recovery_required ({journal.get('transaction_id') or 'unknown'}); "
+                "restoring the persisted last-known-good config."
+            ),
+        )
+        if result.get("ok"):
+            self._journal_recovery_failures = 0
+            self._journal_recovery_not_before = 0.0
+        else:
+            failures = int(getattr(self, "_journal_recovery_failures", 0) or 0) + 1
+            self._journal_recovery_failures = failures
+            self._journal_recovery_not_before = now + min(
+                3600.0, 300.0 * (2 ** min(failures - 1, 4))
+            )
+        return result
 
     def self_heal_runtime_services_if_needed(
         self,
