@@ -194,3 +194,77 @@ def test_mysql_recovery_releases_pending_observability_write_backoffs() -> None:
     # backs off from the accumulated failure count.
     assert backoff.can_attempt()
     assert backoff.failures == 1
+
+
+def test_timed_out_attempt_opens_circuit_without_spending_remaining_retries(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "4")
+    real_sleep = time.sleep
+    monkeypatch.setattr(db.time, "sleep", lambda _seconds: None)
+    attempts: list[str] = []
+
+    def hung_open(_cfg):
+        attempts.append(threading.current_thread().name)
+        real_sleep(0.95)
+        raise pymysql.OperationalError(2013, "Lost connection (timed out)")
+
+    monkeypatch.setattr(db, "_open_native_connection", hung_open)
+
+    started = time.monotonic()
+    with pytest.raises(pymysql.OperationalError):
+        db.connect_unpooled(_cfg(connect_timeout=1))
+
+    # One hung attempt is enough evidence; the other three fail fast (only the
+    # background prober may try again).
+    assert attempts.count(threading.main_thread().name) == 1
+    assert time.monotonic() - started < 1.5
+
+
+def test_fast_connect_failures_keep_bounded_in_call_retries(monkeypatch) -> None:
+    monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "4")
+    monkeypatch.setattr(db.time, "sleep", lambda _seconds: None)
+    attempts: list[int] = []
+
+    def refused_then_up(_cfg):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise pymysql.OperationalError(2003, "Connection refused")
+        return _Native()
+
+    monkeypatch.setattr(db, "_open_native_connection", refused_then_up)
+
+    db.connect_unpooled(_cfg(connect_timeout=10)).close()
+
+    assert len(attempts) == 3
+    assert not db._connect_circuit(_cfg()).open
+
+
+def test_hung_pooled_session_ping_opens_circuit(monkeypatch) -> None:
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    db._clear_pooled_connections()
+    opened: list[int] = []
+
+    class _PooledNative(_Native):
+        def ping(self, reconnect=False):
+            assert reconnect is False
+            time.sleep(0.95)
+            raise pymysql.OperationalError(2013, "Lost connection (timed out)")
+
+    def open_native(_cfg):
+        opened.append(1)
+        if len(opened) > 1:
+            msg = "circuit must fail fast after a hung ping"
+            raise AssertionError(msg)
+        return _PooledNative()
+
+    monkeypatch.setattr(db, "_open_native_connection", open_native)
+    cfg = _cfg(read_timeout=1)
+    db.connect(cfg).close()
+
+    with pytest.raises(pymysql.OperationalError) as exc:
+        db.connect(cfg)
+
+    assert db.mysql_error_code(exc.value) in {2003, 2013}
+    assert db._connect_circuit(cfg).open
+    db._clear_pooled_connections()

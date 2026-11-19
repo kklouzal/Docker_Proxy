@@ -716,6 +716,35 @@ def _open_native_connection(cfg: DatabaseConfig) -> Any:
     )
 
 
+_TIMEOUT_EVIDENCE_FRACTION = 0.9
+
+
+def _timed_out(started_mono: float, timeout_seconds: float) -> bool:
+    return time.monotonic() - started_mono >= _TIMEOUT_EVIDENCE_FRACTION * float(
+        timeout_seconds
+    )
+
+
+def _open_gated_native_connection(cfg: DatabaseConfig) -> Any:
+    """Open one connection attempt through the reachability circuit.
+
+    An attempt that fails only after (nearly) the whole connect timeout is
+    evidence of a hung or black-holed server, not a blip: it opens the circuit
+    at once, so the caller's remaining in-call retries and every other thread
+    fail fast instead of each waiting MYSQL_CONNECT_TIMEOUT again. Fast
+    failures (refused, reset) keep the normal bounded in-call retries.
+    """
+    circuit = _connect_circuit(cfg)
+    circuit.check()
+    started = time.monotonic()
+    try:
+        return _open_native_connection(cfg)
+    except Exception as exc:
+        if _timed_out(started, cfg.connect_timeout):
+            circuit.record_failure(exc)
+        raise
+
+
 def _close_native_connection(native: Any) -> None:
     with contextlib.suppress(Exception):
         native.close()
@@ -764,7 +793,7 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
     key = _pool_key(cfg)
     maxsize = _pool_maxsize()
     if maxsize <= 0:
-        native = _retry_mysql_operation(lambda: _open_native_connection(cfg))
+        native = _retry_mysql_operation(lambda: _open_gated_native_connection(cfg))
         try:
             _configure_native_connection(native, cfg)
             return native
@@ -797,18 +826,23 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
                 state = _pooled_connections.setdefault(key, _PoolState())
 
         if source == "idle":
+            ping_started = time.monotonic()
             try:
-                native.ping(reconnect=True)
+                # No implicit reconnect: a dead pooled session is discarded and
+                # replaced through the circuit-gated open below.
+                native.ping(reconnect=False)
                 _configure_native_connection(native, cfg)
                 return native
-            except Exception:
+            except Exception as exc:
+                if _timed_out(ping_started, cfg.read_timeout):
+                    _connect_circuit(cfg).record_failure(exc)
                 _close_native_connection(native)
                 with _pool_condition:
                     _release_pool_slot_locked(key)
                 continue
 
         try:
-            native = _retry_mysql_operation(lambda: _open_native_connection(cfg))
+            native = _retry_mysql_operation(lambda: _open_gated_native_connection(cfg))
             _configure_native_connection(native, cfg)
             return native
         except Exception:
@@ -1156,7 +1190,7 @@ def connect(config: DatabaseConfig | None = None) -> CompatConnection:
 
 
 def _open_configured_unpooled(cfg: DatabaseConfig) -> Any:
-    native = _retry_mysql_operation(lambda: _open_native_connection(cfg))
+    native = _retry_mysql_operation(lambda: _open_gated_native_connection(cfg))
     try:
         _configure_native_connection(native, cfg)
     except Exception:
