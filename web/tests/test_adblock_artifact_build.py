@@ -1196,6 +1196,13 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
     monkeypatch.setattr(
         artifact_store,
         "get_active_artifact",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("builder poll must not read the archive blob")
+        ),
+    )
+    monkeypatch.setattr(
+        artifact_store,
+        "get_active_artifact_metadata",
         lambda: SimpleNamespace(
             revision_id=4,
             settings_version=7,
@@ -1745,6 +1752,13 @@ def _run_background_loop_due_check(
     monkeypatch.setattr(
         artifact_store,
         "get_active_artifact",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("builder poll must not read the archive blob")
+        ),
+    )
+    monkeypatch.setattr(
+        artifact_store,
+        "get_active_artifact_metadata",
         lambda: SimpleNamespace(
             revision_id=4,
             settings_version=7,
@@ -1837,6 +1851,13 @@ def test_background_loop_skips_rebuild_while_missing_list_download_backs_off(
     monkeypatch.setattr(
         artifact_store,
         "get_active_artifact",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("builder poll must not read the archive blob")
+        ),
+    )
+    monkeypatch.setattr(
+        artifact_store,
+        "get_active_artifact_metadata",
         lambda: SimpleNamespace(
             revision_id=4,
             settings_version=7,
