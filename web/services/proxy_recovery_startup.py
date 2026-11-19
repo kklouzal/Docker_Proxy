@@ -12,7 +12,9 @@ if TYPE_CHECKING:
 
 from services import proxy_recovery
 from services.db import connect
-from services.proxy_recovery_db import capture_and_write_recovery_bundle
+from services.proxy_recovery_db import (
+    capture_and_write_recovery_bundle,
+)
 from services.proxy_recovery_restore import (
     ProxyRecoveryRestoreError,
     RestoreResult,
@@ -221,7 +223,7 @@ def capture_recovery_bundle_after_authoritative_state(
         resolved_max_bundle_bytes = proxy_recovery.resolve_max_bundle_bytes(
             max_bundle_bytes,
         )
-        path = capture_and_write_recovery_bundle(
+        bundle_write = capture_and_write_recovery_bundle(
             connect_factory,
             normalized_proxy_id,
             recovery_dir=recovery_dir,
@@ -255,17 +257,22 @@ def capture_recovery_bundle_after_authoritative_state(
     # and changed captures so the log rate stays bounded by real events.
     logger.log(
         logging.INFO if (required or changed) else logging.DEBUG,
-        "Proxy recovery capture completed for proxy_id=%s reason=%s required=%s",
+        "Proxy recovery capture completed for proxy_id=%s reason=%s required=%s "
+        "bundle=%s",
         normalized_proxy_id,
         reason_text,
         required,
+        "rewritten" if bundle_write.written else "already current",
     )
+    # An unchanged state is a successful capture: the verified current bundle is
+    # the authoritative snapshot (so a required initial capture is satisfied).
     return RecoveryCaptureResult(
         ok=True,
         proxy_id=normalized_proxy_id,
-        path=str(path),
+        path=str(bundle_write.path),
         reason=reason_text,
         required=required,
+        detail="" if bundle_write.written else "recovery bundle already current",
     )
 
 

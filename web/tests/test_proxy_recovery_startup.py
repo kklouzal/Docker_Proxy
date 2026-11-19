@@ -12,6 +12,7 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 from services import proxy_recovery_startup as startup  # type: ignore  # noqa: E402
+from services.proxy_recovery_db import RecoveryBundleWrite  # type: ignore  # noqa: E402
 
 
 class _Registry:
@@ -56,7 +57,9 @@ def test_missing_bundle_skips_without_schema_or_registration(tmp_path: Path) -> 
     assert calls == []
 
 
-def test_startup_adoption_order_is_before_normal_mutation(monkeypatch, tmp_path: Path) -> None:
+def test_startup_adoption_order_is_before_normal_mutation(
+    monkeypatch, tmp_path: Path
+) -> None:
     calls: list[str] = []
     bundle = object()
     _touch_bundle_and_key(tmp_path)
@@ -105,7 +108,9 @@ def test_successful_or_explicit_skip_statuses_continue(
     status: str,
 ) -> None:
     _touch_bundle_and_key(tmp_path)
-    monkeypatch.setattr(startup.proxy_recovery, "read_recovery_bundle", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        startup.proxy_recovery, "read_recovery_bundle", lambda *_a, **_k: object()
+    )
     monkeypatch.setattr(
         startup,
         "restore_recovery_bundle",
@@ -162,10 +167,14 @@ def test_startup_uses_operator_max_bundle_bytes_for_bundle_read(
     assert f"read_max:{configured}" in calls
 
 
-def test_not_eligible_fails_closed_after_restore_decision(monkeypatch, tmp_path: Path) -> None:
+def test_not_eligible_fails_closed_after_restore_decision(
+    monkeypatch, tmp_path: Path
+) -> None:
     calls: list[str] = []
     _touch_bundle_and_key(tmp_path)
-    monkeypatch.setattr(startup.proxy_recovery, "read_recovery_bundle", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        startup.proxy_recovery, "read_recovery_bundle", lambda *_a, **_k: object()
+    )
     monkeypatch.setattr(
         startup,
         "restore_recovery_bundle",
@@ -189,7 +198,9 @@ def test_not_eligible_fails_closed_after_restore_decision(monkeypatch, tmp_path:
     assert not any(call.startswith("normal_") for call in calls)
 
 
-def test_schema_failure_prevents_registration_and_bundle_read(monkeypatch, tmp_path: Path) -> None:
+def test_schema_failure_prevents_registration_and_bundle_read(
+    monkeypatch, tmp_path: Path
+) -> None:
     calls: list[str] = []
     _touch_bundle_and_key(tmp_path)
     monkeypatch.setattr(
@@ -215,7 +226,9 @@ def test_schema_failure_prevents_registration_and_bundle_read(monkeypatch, tmp_p
     assert calls == ["schema"]
 
 
-def test_tampered_bundle_fails_closed_without_secret_logging(monkeypatch, tmp_path: Path, caplog) -> None:
+def test_tampered_bundle_fails_closed_without_secret_logging(
+    monkeypatch, tmp_path: Path, caplog
+) -> None:
     calls: list[str] = []
     _touch_bundle_and_key(tmp_path)
 
@@ -238,7 +251,9 @@ def test_tampered_bundle_fails_closed_without_secret_logging(monkeypatch, tmp_pa
     assert "connect" not in calls
 
 
-def test_optional_capture_interval_gate_requires_caller_state(monkeypatch, tmp_path: Path) -> None:
+def test_optional_capture_interval_gate_requires_caller_state(
+    monkeypatch, tmp_path: Path
+) -> None:
     calls: list[str] = []
     configured = 2 * 1024 * 1024
     monkeypatch.setenv(
@@ -248,7 +263,7 @@ def test_optional_capture_interval_gate_requires_caller_state(monkeypatch, tmp_p
 
     def capture(*_args, **kwargs):
         calls.append(f"capture:{kwargs['max_bundle_bytes']}")
-        return tmp_path / "edge-01.bundle.json"
+        return RecoveryBundleWrite(tmp_path / "edge-01.bundle.json", written=True)
 
     monkeypatch.setattr(startup, "capture_and_write_recovery_bundle", capture)
 
@@ -275,7 +290,9 @@ def test_optional_capture_interval_gate_requires_caller_state(monkeypatch, tmp_p
     assert calls == [f"capture:{configured}"]
 
 
-def test_capture_failure_is_fatal_only_when_required(monkeypatch, tmp_path: Path) -> None:
+def test_capture_failure_is_fatal_only_when_required(
+    monkeypatch, tmp_path: Path
+) -> None:
     old_bundle = tmp_path / "edge-01.bundle.json"
     old_bundle.write_text("old", encoding="utf-8")
 
@@ -293,7 +310,9 @@ def test_capture_failure_is_fatal_only_when_required(monkeypatch, tmp_path: Path
     assert nonfatal.ok is False
     assert old_bundle.read_text(encoding="utf-8") == "old"
 
-    with pytest.raises(startup.ProxyRecoveryCaptureError, match="required recovery capture failed"):
+    with pytest.raises(
+        startup.ProxyRecoveryCaptureError, match="required recovery capture failed"
+    ):
         startup.capture_recovery_bundle_after_authoritative_state(
             proxy_id="edge-01",
             reason="startup_initial",

@@ -438,13 +438,14 @@ def test_capture_and_write_is_all_or_nothing_and_does_not_fsync_inside_db_contex
     monkeypatch.setattr(
         proxy_recovery, "write_recovery_bundle", assert_closed_then_write
     )
-    path = recovery_db.capture_and_write_recovery_bundle(
+    bundle_write = recovery_db.capture_and_write_recovery_bundle(
         lambda: good_conn,
         "edge-01",
         recovery_dir=tmp_path,
     )
 
-    assert path == tmp_path / "edge-01.bundle.json"
+    assert bundle_write.path == tmp_path / "edge-01.bundle.json"
+    assert bundle_write.written is True
     assert writes[-1]["args"][0] == "edge-01"
     assert writes[-1]["kwargs"]["source_control_plane_id"] == _SOURCE_CONTROL_PLANE_ID
     assert good_conn.commits == 1

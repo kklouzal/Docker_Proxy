@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
+import hmac
+import json
+import logging
 import os
 import stat
 import time
@@ -17,6 +21,8 @@ from services import proxy_recovery
 from services.db import connect
 from services.schema_lifecycle import read_control_plane_identity
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class RecoveryExportQueryPlan:
@@ -24,6 +30,16 @@ class RecoveryExportQueryPlan:
     columns: tuple[str, ...]
     sql: str
     param_mode: str
+    # Large binary columns. The state fingerprint pass reads their SHA-256 and
+    # length computed by MySQL (fingerprint_sql) instead of the bytes.
+    blob_columns: tuple[str, ...] = ()
+    fingerprint_sql: str = ""
+
+
+@dataclass(frozen=True)
+class RecoveryBundleWrite:
+    path: Path
+    written: bool
 
 
 @dataclass(frozen=True)
@@ -81,6 +97,15 @@ EXPORT_QUERY_PLANS: Final = (
         ORDER BY created_ts DESC, id DESC
         """,
         _PARAM_NONE,
+        blob_columns=("archive_blob",),
+        fingerprint_sql="""
+        SELECT artifact_sha256, SHA2(archive_blob, 256) AS archive_blob_sha256,
+               LENGTH(archive_blob) AS archive_blob_length,
+               report_json, settings_version, enabled_lists_json
+        FROM adblock_artifact_revisions
+        WHERE is_active=1
+        ORDER BY created_ts DESC, id DESC
+        """,
     ),
     RecoveryExportQueryPlan(
         "certificate_bundle_revisions",
@@ -370,6 +395,11 @@ def validate_export_query_plan_coverage() -> None:
         if plan.table_name not in lowered:
             msg = f"recovery export query does not reference {plan.table_name}"
             raise proxy_recovery.ProxyRecoveryError(msg)
+        if bool(plan.blob_columns) != bool(plan.fingerprint_sql.strip()) or not set(
+            plan.blob_columns
+        ) <= set(plan.columns):
+            msg = f"inconsistent recovery fingerprint query for {plan.table_name}"
+            raise proxy_recovery.ProxyRecoveryError(msg)
         if len(plan.columns) != len(set(plan.columns)):
             msg = f"duplicate recovery export columns for {plan.table_name}"
             raise proxy_recovery.ProxyRecoveryError(msg)
@@ -470,23 +500,252 @@ def capture_and_write_recovery_bundle(
     *,
     recovery_dir: Path | str | None = None,
     max_bundle_bytes: int | None = None,
-) -> Path:
+) -> RecoveryBundleWrite:
+    """Capture the authoritative state and publish it as the local bundle.
+
+    When a verified fingerprint record proves that the current bundle already
+    holds exactly the exportable state, the capture is skipped without reading
+    the large blob columns or rewriting the bundle (``written=False``). The
+    bundle is then still the complete authoritative snapshot; only its
+    ``created_ts`` keeps the time that state was first captured.
+    """
     normalized_proxy_id = proxy_recovery.normalize_proxy_id(proxy_id)
     validated_limit = proxy_recovery.resolve_max_bundle_bytes(max_bundle_bytes)
+    bundle_path = proxy_recovery.bundle_path_for_proxy(
+        normalized_proxy_id, recovery_dir
+    )
     with _recovery_capture_lock(normalized_proxy_id, recovery_dir):
         # The lock must precede the DB snapshot: locking only publication allows
         # a slow, older snapshot to replace a newer bundle.
+        recorded_fingerprint = _read_fingerprint_record(
+            normalized_proxy_id, bundle_path, recovery_dir
+        )
         with connect_factory() as conn:
+            if recorded_fingerprint is not None and (
+                current_state_fingerprint(conn, normalized_proxy_id)
+                == recorded_fingerprint
+            ):
+                return RecoveryBundleWrite(bundle_path, written=False)
             captured = capture_recovery_state(
                 conn, normalized_proxy_id, max_bundle_bytes=validated_limit
             )
-        return proxy_recovery.write_recovery_bundle(
+        path = proxy_recovery.write_recovery_bundle(
             captured.proxy_id,
             captured.tables,
             source_control_plane_id=captured.source_control_plane_id,
             created_ts=captured.created_ts,
             recovery_dir=recovery_dir,
             max_bundle_bytes=validated_limit,
+        )
+        _write_fingerprint_record(
+            captured.proxy_id,
+            path,
+            recovery_dir,
+            captured_state_fingerprint(captured),
+        )
+        return RecoveryBundleWrite(path, written=True)
+
+
+# A bundle is always rewritten from a full capture at least this often, so a
+# skipped capture never relies on an old fingerprint record indefinitely.
+_FINGERPRINT_MAX_AGE_SECONDS: Final = 24 * 3600
+_FINGERPRINT_FORMAT: Final = 1
+
+
+def _state_fingerprint(
+    proxy_id: str,
+    source_control_plane_id: str,
+    tables: Sequence[tuple[str, Sequence[Mapping[str, Any]]]],
+) -> str:
+    payload = {
+        "format_version": proxy_recovery.FORMAT_VERSION,
+        "schema_version": proxy_recovery.DATA_SCHEMA_VERSION,
+        "proxy_id": proxy_id,
+        "source_control_plane_id": source_control_plane_id,
+        "tables": [
+            {
+                "name": name,
+                "rows": [proxy_recovery._encode_json_value(dict(row)) for row in rows],
+            }
+            for name, rows in tables
+        ],
+    }
+    return hashlib.sha256(proxy_recovery._canonical_json_bytes(payload)).hexdigest()
+
+
+def _blob_digest(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"sha256": None, "length": None}
+    data = bytes(value)
+    return {"sha256": hashlib.sha256(data).hexdigest(), "length": len(data)}
+
+
+def _fingerprint_row(
+    plan: RecoveryExportQueryPlan, row: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    if not plan.blob_columns:
+        return row
+    return {
+        column: (_blob_digest(value) if column in plan.blob_columns else value)
+        for column, value in row.items()
+    }
+
+
+def captured_state_fingerprint(captured: CapturedRecoveryState) -> str:
+    """Fingerprint of a full capture (blob columns reduced to SHA-256/length)."""
+    plans = {plan.table_name: plan for plan in EXPORT_QUERY_PLANS}
+    return _state_fingerprint(
+        captured.proxy_id,
+        captured.source_control_plane_id,
+        [
+            (
+                table.name,
+                [_fingerprint_row(plans[table.name], row) for row in table.rows],
+            )
+            for table in captured.tables
+        ],
+    )
+
+
+def current_state_fingerprint(
+    conn: Any, proxy_id: str, *, now_ts: int | None = None
+) -> str:
+    """Fingerprint the exportable state without transferring blob columns.
+
+    Uses the same consistent-snapshot reads as a capture; MySQL hashes blob
+    columns server-side (SHA2/LENGTH), so the result equals
+    ``captured_state_fingerprint`` of a full capture of the same state.
+    """
+    normalized_proxy_id = proxy_recovery.normalize_proxy_id(proxy_id)
+    snapshot_ts = int(time.time() if now_ts is None else now_ts)
+    conn.execute("START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT")
+    try:
+        source_control_plane_id = read_control_plane_identity(conn)
+        if source_control_plane_id is None:
+            msg = "control plane identity is missing; run schema migration first"
+            raise proxy_recovery.ProxyRecoveryError(msg)
+        tables = []
+        for plan in EXPORT_QUERY_PLANS:
+            params = _params_for_plan(plan, normalized_proxy_id, snapshot_ts)
+            if not plan.blob_columns:
+                result = conn.execute(plan.sql, params)
+                rows = [_normalize_row(row, plan.columns) for row in result]
+            else:
+                result = conn.execute(plan.fingerprint_sql, params)
+                rows = [_fingerprint_query_row(plan, row) for row in result]
+            tables.append((plan.table_name, rows))
+        conn.commit()
+    except Exception:
+        rollback = getattr(conn, "rollback", None)
+        if callable(rollback):
+            rollback()
+        raise
+    return _state_fingerprint(normalized_proxy_id, source_control_plane_id, tables)
+
+
+def _fingerprint_query_row(
+    plan: RecoveryExportQueryPlan, row: Any
+) -> Mapping[str, Any]:
+    # Columns differ from the export plan here, so read strictly by name.
+    normalized: dict[str, Any] = {}
+    for column in plan.columns:
+        if column in plan.blob_columns:
+            digest = row[f"{column}_sha256"]
+            length = row[f"{column}_length"]
+            normalized[column] = {
+                "sha256": None if digest is None else str(digest).lower(),
+                "length": None if length is None else int(length),
+            }
+        else:
+            normalized[column] = _normalize_value(row[column])
+    return normalized
+
+
+def _fingerprint_record_path(bundle_path: Path) -> Path:
+    return bundle_path.with_name(f".{bundle_path.name}.fingerprint")
+
+
+def _bundle_identity(bundle_path: Path) -> dict[str, int]:
+    stat_result = proxy_recovery._stat_regular_nosymlink(bundle_path)
+    return {
+        "size": stat_result.st_size,
+        "mtime_ns": stat_result.st_mtime_ns,
+        "ino": stat_result.st_ino,
+    }
+
+
+def _fingerprint_record_mac(key: bytes, record: Mapping[str, Any]) -> str:
+    return hmac.new(
+        key, proxy_recovery._canonical_json_bytes(record), hashlib.sha256
+    ).hexdigest()
+
+
+def _read_fingerprint_record(
+    proxy_id: str,
+    bundle_path: Path,
+    recovery_dir: Path | str | None,
+) -> str | None:
+    """Return the recorded state fingerprint if it still describes the bundle.
+
+    The record is signed with the bundle's HMAC key and bound to the bundle
+    file's identity (size, mtime, inode), so a replaced, rewritten or missing
+    bundle, an unsigned/altered record or one older than a day forces a full
+    capture.
+    """
+    record_path = _fingerprint_record_path(bundle_path)
+    try:
+        if not record_path.exists():
+            return None
+        raw = proxy_recovery._read_private_regular_file(record_path, max_bytes=4096)
+        envelope = json.loads(raw)
+        record = envelope["record"]
+        key = proxy_recovery.read_signing_key(proxy_id, recovery_dir)
+        if not hmac.compare_digest(
+            str(envelope["mac"]), _fingerprint_record_mac(key, record)
+        ):
+            return None
+        if (
+            record["format"] != _FINGERPRINT_FORMAT
+            or record["proxy_id"] != proxy_id
+            or record["bundle"] != _bundle_identity(bundle_path)
+            or not 0
+            <= time.time() - int(record["written_at"])
+            < _FINGERPRINT_MAX_AGE_SECONDS
+        ):
+            return None
+        return str(record["fingerprint"])
+    except Exception:
+        return None
+
+
+def _write_fingerprint_record(
+    proxy_id: str,
+    bundle_path: Path,
+    recovery_dir: Path | str | None,
+    fingerprint: str,
+) -> None:
+    # Best effort: without a valid record the next capture is simply a full one.
+    try:
+        record = {
+            "format": _FINGERPRINT_FORMAT,
+            "proxy_id": proxy_id,
+            "fingerprint": fingerprint,
+            "bundle": _bundle_identity(bundle_path),
+            "written_at": int(time.time()),
+        }
+        key = proxy_recovery.read_signing_key(proxy_id, recovery_dir)
+        envelope = {"record": record, "mac": _fingerprint_record_mac(key, record)}
+        proxy_recovery._atomic_write_private(
+            _fingerprint_record_path(bundle_path),
+            json.dumps(envelope, sort_keys=True).encode("utf-8"),
+            0o600,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to record the recovery bundle fingerprint for proxy_id=%s; "
+            "the next capture will be a full capture",
+            proxy_id,
+            exc_info=True,
         )
 
 

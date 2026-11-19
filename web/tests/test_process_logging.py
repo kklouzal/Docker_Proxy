@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 from .mysql_test_utils import REPO_ROOT
 
@@ -54,12 +55,14 @@ def test_unchanged_periodic_recovery_capture_logs_below_info(
 ) -> None:
     import logging
 
-    from services import proxy_recovery_startup  # type: ignore
+    from services import proxy_recovery_db, proxy_recovery_startup  # type: ignore
 
     monkeypatch.setattr(
         proxy_recovery_startup,
         "capture_and_write_recovery_bundle",
-        lambda *_args, **_kwargs: "/tmp/bundle.json",
+        lambda *_args, **_kwargs: proxy_recovery_db.RecoveryBundleWrite(
+            Path("/tmp/bundle.json"), written=True
+        ),
     )
     with caplog.at_level(logging.DEBUG, logger=proxy_recovery_startup.logger.name):
         for changed in (False, True):
