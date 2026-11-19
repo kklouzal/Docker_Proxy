@@ -4,6 +4,7 @@ import ast
 import importlib.util
 import os
 import re
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -435,6 +436,7 @@ def test_admin_wsgi_imports_flat_packaged_application(tmp_path) -> None:
 
 PROXY_PYTHON_RUNTIME_ROOTS = {
     "proxy.wsgi",
+    "proxy.public_app",
     "proxy.agent",
     "proxy.forwarding_canary",
     "tools.adblock_compile",
@@ -462,7 +464,12 @@ def _proxy_packaged_local_modules() -> set[str]:
 def test_proxy_dockerfile_contains_transitive_local_import_closure() -> None:
     supervisord = _read("docker/supervisord.proxy.conf")
     entrypoint = _read("docker/entrypoint.sh")
-    for marker in ("proxy.wsgi:app", "proxy.agent", "proxy.forwarding_canary"):
+    for marker in (
+        "proxy.wsgi:app",
+        "proxy.public_app:app",
+        "proxy.agent",
+        "proxy.forwarding_canary",
+    ):
         assert marker in supervisord
     for tool in sorted(
         name.removeprefix("tools.")
@@ -2163,3 +2170,32 @@ def test_proxy_entrypoint_env_avoids_listener_port_collisions(tmp_path) -> None:
     assert "http_port 0.0.0.0:3130 ssl-bump" in rendered
     assert "http_port 0.0.0.0:3131 intercept" in rendered
     assert "https_port 0.0.0.0:3132 intercept ssl-bump" in rendered
+
+
+def test_public_pac_listener_runs_apart_from_management_and_loads_no_database() -> None:
+    import configparser
+
+    parser = configparser.RawConfigParser(inline_comment_prefixes=(";",))
+    parser.read(REPO_ROOT / "docker" / "supervisord.proxy.conf", encoding="utf-8")
+    api = parser.get("program:proxy_api", "command")
+    public = parser.get("program:proxy_public", "command")
+    # PAC/WPAD must never wait behind management or control-plane DB work.
+    assert "PAC_HTTP_PORT" not in api
+    assert "PAC_HTTP_PORT" in public
+    assert "proxy.public_app:app" in public
+    assert "PAC_WEB_THREADS" in public
+
+    probe = (
+        "import sys; import proxy.public_app; "
+        "print(sorted(m for m in sys.modules if m in "
+        "{'pymysql', 'services.db', 'proxy.runtime', 'proxy.agent'}))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": f"{REPO_ROOT}:{REPO_ROOT / 'web'}"},
+    )
+    assert result.stdout.strip() == "[]"

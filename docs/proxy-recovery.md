@@ -46,8 +46,12 @@ The recovery bundle is a convenience for adopting retained proxy-local configura
 ## Control-plane outages (MySQL and Admin UI)
 
 Proxy containers serve from local state and never need the Admin UI at runtime;
-the Admin UI only writes desired state and operations to MySQL. When MySQL is
-unreachable:
+the Admin UI only writes desired state and operations to MySQL. The public
+PAC/WPAD listener (`proxy_public`, `PAC_WEB_THREADS` threads) is a separate
+process from the management API (`proxy_api`, port 5000): it serves local
+materialized PAC files and loads no database-backed modules, so management or
+control-plane database stalls never delay client auto-configuration. When MySQL
+is unreachable:
 
 - **Cold start.** The entrypoint probes MySQL once with a single bounded
   connection attempt. When it is unreachable, boot skips the local adblock

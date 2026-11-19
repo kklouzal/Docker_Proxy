@@ -36,7 +36,7 @@ def _write_pac_artifacts(
 def public_pac_client(monkeypatch):
     from services import pac_http  # type: ignore
 
-    from proxy import app as proxy_app  # type: ignore
+    from proxy import public_app as proxy_app  # type: ignore
 
     def build_client(pac_dir: Path):
         monkeypatch.setenv("PAC_RENDER_DIR", str(pac_dir))

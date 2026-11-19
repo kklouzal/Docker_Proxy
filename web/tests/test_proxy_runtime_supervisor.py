@@ -6390,6 +6390,7 @@ def test_supervisor_programs_health_uses_single_status_call(monkeypatch) -> None
                 "cicap_adblock RUNNING pid 2\n"
                 "cicap_av RUNNING pid 3\n"
                 "proxy_api RUNNING pid 4\n"
+                "proxy_public RUNNING pid 7\n"
                 "forwarding_canary RUNNING pid 5\n"
                 "proxy_agent RUNNING pid 6\n"
             ),

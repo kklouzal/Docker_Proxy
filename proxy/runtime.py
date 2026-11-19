@@ -1673,6 +1673,7 @@ class ProxyRuntime:
             "cicap_adblock",
             "cicap_av",
             "proxy_api",
+            "proxy_public",
             "forwarding_canary",
             "proxy_agent",
         )

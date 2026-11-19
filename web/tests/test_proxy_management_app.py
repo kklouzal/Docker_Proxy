@@ -20,6 +20,12 @@ def _management_post(client, path: str, **kwargs):
     return client.post(path, base_url="http://localhost:5000", **kwargs)
 
 
+def _load_public_app(monkeypatch):
+    from proxy import public_app  # type: ignore
+
+    return importlib.reload(public_app)
+
+
 def _public_get(client, path: str, **kwargs):
     return client.get(path, base_url="http://localhost", **kwargs)
 
@@ -1082,9 +1088,7 @@ def test_proxy_management_test_supervisor_route_requires_test_mode_and_uses_allo
 
 
 def test_proxy_public_listener_serves_health_pac_wpad_and_root(monkeypatch) -> None:
-    proxy_app = _load_proxy_app(monkeypatch)
-    proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = _load_public_app(monkeypatch).app.test_client()
 
     health = _public_get(client, "/health")
     pac = _public_get(client, "/proxy.pac")
@@ -1111,12 +1115,13 @@ def test_proxy_public_listener_rejects_management_and_management_listener_reject
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _Runtime()
     client = proxy_app.app.test_client()
+    public_client = _load_public_app(monkeypatch).app.test_client()
 
     health = _public_get(
-        client, "/api/manage/health", headers={"Authorization": "Bearer secret"}
+        public_client, "/api/manage/health", headers={"Authorization": "Bearer secret"}
     )
     sync = _public_get(
-        client, "/api/manage/sync", headers={"Authorization": "Bearer secret"}
+        public_client, "/api/manage/sync", headers={"Authorization": "Bearer secret"}
     )
     assert health.status_code == 404
     assert health.is_json
@@ -1178,11 +1183,10 @@ def test_proxy_management_health_defaults_to_navigation_scope_and_full_is_opt_in
 
 def test_public_health_declares_lightweight_non_forwarding_scope(monkeypatch) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
-    monkeypatch.setenv("PAC_HTTP_PORT", "80")
     proxy_app.runtime = _Runtime()
     client = proxy_app.app.test_client()
 
-    public = _public_get(client, "/health")
+    public = _public_get(_load_public_app(monkeypatch).app.test_client(), "/health")
     management = _management_get(client, "/health")
 
     assert public.status_code == 200
