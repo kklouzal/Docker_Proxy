@@ -266,6 +266,8 @@ WEB_WORKERS="$(sanitize_positive_int "${WEB_WORKERS:-1}")"
 export WEB_WORKERS="${WEB_WORKERS:-1}"
 WEB_THREADS="$(sanitize_positive_int "${WEB_THREADS:-2}")"
 export WEB_THREADS="${WEB_THREADS:-2}"
+PAC_WEB_THREADS="$(sanitize_bounded_int "${PAC_WEB_THREADS:-4}" 1 64)"
+export PAC_WEB_THREADS="${PAC_WEB_THREADS:-4}"
 WEB_TIMEOUT="$(sanitize_positive_int "${WEB_TIMEOUT:-120}")"
 export WEB_TIMEOUT="${WEB_TIMEOUT:-120}"
 WEB_GRACEFUL_TIMEOUT="$(sanitize_positive_int "${WEB_GRACEFUL_TIMEOUT:-30}")"
@@ -1365,6 +1367,21 @@ done
     echo "adaptation_access av_resp_set deny all"
 } > /etc/squid/conf.d/20-icap.conf
 
+# The include above is the conservative startup fallback. When this proxy has
+# already applied the persisted UI ICAP policy for the same ICAP services, use
+# that last-known-good copy instead (adblock routing and file-security policy
+# then survive restarts without MySQL, and runtime reconciliation finds no
+# change to reload).
+python3 - <<'PY' || true
+from services.policy_materializer import restore_last_known_good_icap_runtime
+
+if restore_last_known_good_icap_runtime(
+    "/etc/squid/conf.d/20-icap.conf",
+    "/etc/virus_scan.conf",
+):
+    print("[proxy-entrypoint] restored last-applied ICAP policy include")
+PY
+
 # Normalize known distro path differences without overwriting user config
 if [ -f /etc/squid/squid.conf ] && grep -q "/usr/share/squid/errors/English" /etc/squid/squid.conf 2>/dev/null; then
     sed -i 's#/usr/share/squid/errors/English#/usr/share/squid/errors/en#g' /etc/squid/squid.conf
@@ -1433,6 +1450,10 @@ printf '[proxy-entrypoint] squid cache-dir prepare complete pidfile=%s squid_pid
     "$(pgrep -x squid 2>/dev/null | paste -sd, - || true)"
 rm -f /var/run/squid.pid || true
 printf '%s\n' "$WORKERS" > "$WORKERS_MARKER_PATH" 2>/dev/null || true
+
+# Control-plane readiness is per agent process: never inherit it from an
+# earlier container run (proxy.control_plane_state).
+rm -f "${PROXY_CONTROL_PLANE_READY_FILE:-/run/squid-flask-proxy/control-plane-ready}"
 
 # Start Supervisor to manage Squid and Flask
 python3 /app/services/squid_transaction.py startup-complete \

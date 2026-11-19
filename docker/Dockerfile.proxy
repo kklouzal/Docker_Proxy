@@ -166,6 +166,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/pac_private_local.py \
     web/services/pac_profiles_store.py \
     web/services/pac_renderer.py \
+    web/services/pac_request.py \
     web/services/policy_requests.py \
     web/services/policy_materializer.py \
     web/services/proxy_context.py \

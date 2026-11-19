@@ -861,10 +861,8 @@ def test_normal_admin_gets_revalidate_instead_of_immutable_cache(
 def test_proxy_pac_emergency_responses_are_private_no_store_and_conditional_etag(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
-    monkeypatch.setenv("PAC_HTTP_PORT", "80")
-    sys.modules.pop("proxy.app", None)
-    import proxy.app as proxy_app  # type: ignore
+    sys.modules.pop("proxy.public_app", None)
+    import proxy.public_app as proxy_app  # type: ignore
 
     proxy_app = importlib.reload(proxy_app)
     client = proxy_app.app.test_client()

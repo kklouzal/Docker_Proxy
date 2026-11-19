@@ -8,28 +8,10 @@ from collections.abc import Callable
 from functools import wraps
 from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
-from flask import Flask, Response, abort, jsonify, make_response, request
-from markupsafe import escape
-from services.db import DATABASE_ERRORS, mysql_error_classification
+from flask import Flask, abort, jsonify, make_response, request
 from services.errors import public_error_message
 from services.http_optimizations import install_http_optimizations
-from services.pac_http import (
-    PAC_CONTENT_TYPE,
-    client_ip_from_headers,
-    forwarded_client_ip_from_headers,
-    forwarded_headers_trusted,
-    pac_content_disposition,
-    public_pac_request_allowed,
-    public_pac_request_path_safe,
-    request_host_from_headers,
-    resolve_pac,
-)
-from services.policy_requests import (
-    PolicyRequestAdmissionError,
-    get_policy_request_store,
-    normalize_client_ip,
-)
-from services.proxy_context import get_proxy_id
+from services.logutil import configure_process_logging
 from services.proxy_logs import (
     parse_proxy_log_max_bytes,
     proxy_log_status_code,
@@ -39,17 +21,18 @@ from services.version_status import current_component_metadata
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from proxy.agent import start_agent
+from proxy.control_plane_state import control_plane_ready
 from proxy.runtime import get_runtime
 
 if TYPE_CHECKING:
     from werkzeug.exceptions import HTTPException
 
 F = TypeVar("F", bound=Callable[..., Any])
+# proxy_api runs under gunicorn, which only configures its own gunicorn.* loggers.
+configure_process_logging()
 app = Flask(__name__)
 install_http_optimizations(app, default_dynamic_max_age_seconds=0)
 runtime: Any | None = None
-_PUBLIC_LISTENER_NON_PAC_PATHS = frozenset({"/", "/health", "/policy-request"})
-_POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH = 16 * 1024
 _MANAGEMENT_JSON_DEFAULT_MAX_CONTENT_LENGTH = 1024 * 1024
 
 
@@ -74,60 +57,12 @@ def _bounded_env_int(
     return value
 
 
-def _policy_request_max_content_length() -> int:
-    return _bounded_env_int(
-        "POLICY_REQUEST_MAX_CONTENT_LENGTH",
-        default=_POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH,
-    )
-
-
 def _management_json_max_content_length() -> int:
     return _bounded_env_int(
         "PROXY_MANAGEMENT_JSON_MAX_CONTENT_LENGTH",
         default=_MANAGEMENT_JSON_DEFAULT_MAX_CONTENT_LENGTH,
         maximum=16 * 1024 * 1024,
     )
-
-
-def _policy_request_too_large_response(max_content_length: int) -> Response:
-    return Response(
-        "<!doctype html><title>Request too large</title><h1>Request too large</h1>"
-        f"<p>Policy request submissions are limited to {max_content_length} bytes.</p>",
-        status=413,
-        mimetype="text/html; charset=utf-8",
-    )
-
-
-def _policy_request_malformed_form_response() -> Response:
-    return Response(
-        "<!doctype html><title>Request failed</title><h1>Request failed</h1>"
-        "<p>The policy request form could not be parsed.</p>",
-        status=400,
-        mimetype="text/html; charset=utf-8",
-    )
-
-
-def _reject_oversized_policy_request_body() -> Response | None:
-    max_content_length = _policy_request_max_content_length()
-    request.max_content_length = max_content_length
-    content_length = request.content_length
-    if content_length is not None and content_length > max_content_length:
-        return _policy_request_too_large_response(max_content_length)
-    return None
-
-
-def _policy_request_form_or_error() -> tuple[Any | None, Response | None]:
-    oversized_response = _reject_oversized_policy_request_body()
-    if oversized_response is not None:
-        return None, oversized_response
-    try:
-        return request.form, None
-    except RequestEntityTooLarge:
-        return None, _policy_request_too_large_response(
-            _policy_request_max_content_length(),
-        )
-    except BadRequest:
-        return None, _policy_request_malformed_form_response()
 
 
 def _runtime() -> Any:
@@ -157,6 +92,32 @@ def _require_management_auth[F: Callable[..., Any]](func: F) -> F:
         provided = _provided_token()
         if not provided or not hmac.compare_digest(provided, expected):
             abort(403)
+        return func(*args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
+
+
+def _require_control_plane_ready[F: Callable[..., Any]](func: F) -> F:
+    """Refuse control-plane mutations until the agent finished startup.
+
+    Recovery adoption and the startup schema must precede any normal
+    control-plane write (docs/proxy-recovery.md); the agent signals completion
+    for its current process lifetime through proxy.control_plane_state.
+    """
+
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any):
+        if not control_plane_ready():
+            response = jsonify(
+                {
+                    "ok": False,
+                    "status": "control_plane_starting",
+                    "retryable": True,
+                    "detail": "Proxy control-plane startup (recovery adoption, schema, registration) has not completed yet; retry shortly.",
+                },
+            )
+            response.headers["Retry-After"] = "5"
+            return response, 503
         return func(*args, **kwargs)
 
     return wrapper  # type: ignore[return-value]
@@ -256,68 +217,6 @@ def _management_config_text_or_abort(payload: dict[str, Any]) -> str:
     return config_text
 
 
-def _public_pac_port() -> str:
-    raw = (os.environ.get("PAC_HTTP_PORT") or "80").strip() or "80"
-    try:
-        port = int(raw)
-    except Exception:
-        port = 80
-    if port < 1 or port > 65535:
-        port = 80
-    return str(port)
-
-
-def _request_server_port() -> str:
-    return str(request.environ.get("SERVER_PORT") or "").strip()
-
-
-def _is_public_listener_request() -> bool:
-    return _request_server_port() == _public_pac_port()
-
-
-def _is_public_listener_path(
-    path: str,
-    query_string: object | None = None,
-) -> bool:
-    normalized_path = str(path or "/")
-    raw_target = (
-        request.environ.get("RAW_URI")
-        or request.environ.get("REQUEST_URI")
-        or request.full_path
-    )
-    raw_path = str(raw_target or normalized_path).split("?", 1)[0]
-    if not public_pac_request_path_safe(raw_path):
-        return normalized_path in _PUBLIC_LISTENER_NON_PAC_PATHS
-    if normalized_path in _PUBLIC_LISTENER_NON_PAC_PATHS:
-        return True
-    try:
-        return public_pac_request_allowed(normalized_path, query_string)
-    except Exception:
-        return normalized_path in {"/proxy.pac", "/wpad.dat"}
-
-
-def _policy_request_client_ip(form: Any) -> str:
-    forwarded_ip = forwarded_client_ip_from_headers(
-        request.headers, request.remote_addr
-    )
-    if forwarded_ip:
-        return forwarded_ip
-    remote_ip = request.remote_addr or ""
-    form_ip = form.get("client_ip") or ""
-    if forwarded_headers_trusted(remote_ip) and normalize_client_ip(form_ip):
-        return form_ip
-    return remote_ip
-
-
-@app.before_request
-def _restrict_public_listener() -> None:
-    if _is_public_listener_request() and not _is_public_listener_path(
-        request.path,
-        request.query_string,
-    ):
-        abort(404)
-
-
 @app.errorhandler(403)
 def _management_forbidden(exc: HTTPException):
     if request.path.startswith("/api/manage/"):
@@ -346,22 +245,8 @@ def _management_not_found(exc: HTTPException):
 
 @app.route("/health", methods=["GET"])
 def health() -> Any:
-    if _is_public_listener_request():
-        return jsonify(
-            {
-                "ok": True,
-                "service": "proxy",
-                "status": "serving_public_pac",
-                "health_scope": "public-listener",
-                "forwarding_checked": False,
-                "detail": "Public PAC/WPAD listener is serving. This lightweight endpoint does not assert Squid forwarding readiness; use authenticated /api/manage/health?full=1 for deep proxy health.",
-                "components": {
-                    "proxy_api": "ok",
-                    "pac": "ok",
-                    "forwarding": "not_checked",
-                },
-            },
-        ), 200
+    # The public PAC/WPAD listener runs as its own program (proxy.public_app);
+    # this process serves only the management listener.
     return jsonify(
         {
             "ok": True,
@@ -371,109 +256,6 @@ def health() -> Any:
             "forwarding_checked": False,
         },
     ), 200
-
-
-@app.route("/", methods=["GET"])
-@app.route("/proxy.pac", methods=["GET"])
-@app.route("/wpad.dat", methods=["GET"])
-@app.route("/<path:_pac_path>", methods=["GET"])
-def public_pac(_pac_path: str = "") -> Any:
-    if not _is_public_listener_request():
-        abort(404)
-    path = "/wpad.dat" if request.path == "/" else request.path
-    resolution = resolve_pac(
-        client_ip=client_ip_from_headers(request.headers, request.remote_addr),
-        request_host=request_host_from_headers(request.headers, request.remote_addr),
-    )
-    data = resolution.content
-    response = Response(data, content_type=PAC_CONTENT_TYPE)
-    response.headers["Content-Disposition"] = pac_content_disposition(path)
-    response.headers["Cache-Control"] = (
-        "private, max-age=30"
-        if resolution.source == "materialized"
-        else "no-store, private"
-    )
-    response.headers["Vary"] = "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
-    etag_material = b"\0".join(
-        (
-            resolution.source.encode("utf-8", errors="replace"),
-            resolution.state_sha256.encode("utf-8", errors="replace"),
-            resolution.selected_file.encode("utf-8", errors="replace"),
-            data,
-        ),
-    )
-    response.set_etag(hashlib.sha256(etag_material).hexdigest())
-    return response.make_conditional(request)
-
-
-@app.route("/policy-request", methods=["GET"])
-def public_policy_request_get() -> Any:
-    if not _is_public_listener_request():
-        abort(404)
-    abort(405)
-
-
-def _policy_request_store_unavailable(exc: BaseException) -> bool:
-    """Classify retryable persistence/control-plane availability failures."""
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, DATABASE_ERRORS) and mysql_error_classification(
-            current
-        ) in {
-            "connectivity",
-            "connection_lost",
-            "pool_or_server_exhausted",
-            "lock_wait_timeout",
-            "deadlock",
-        }:
-            return True
-        current = current.__cause__ or current.__context__
-    return False
-
-
-@app.route("/policy-request", methods=["POST"])
-def public_policy_request() -> Any:
-    if not _is_public_listener_request():
-        abort(404)
-    form, form_error = _policy_request_form_or_error()
-    if form_error is not None:
-        return form_error
-    client_ip = _policy_request_client_ip(form)
-    try:
-        req = get_policy_request_store().create_request(
-            proxy_id=get_proxy_id(),
-            block_type=form.get("block_type") or "webfilter",
-            client_ip=client_ip,
-            request_url=form.get("request_url") or "",
-            domain=form.get("domain") or form.get("destination") or "",
-            category=form.get("category") or "",
-            method=form.get("method") or "",
-            squid_error=form.get("squid_error") or form.get("error") or "",
-            user_note=form.get("user_note") or "",
-        )
-        body = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Request submitted</title><style>body{{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}}main{{max-width:760px;margin:48px auto;padding:24px}}.card{{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}}code{{overflow-wrap:anywhere}}</style></head><body><main><section class="card"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #{req.id}: <code>{escape(req.domain)}</code></p></section></main></body></html>"""
-        return Response(body, mimetype="text/html; charset=utf-8")
-    except PolicyRequestAdmissionError as exc:
-        detail = escape(public_error_message(exc))
-        return Response(
-            f"<!doctype html><title>Request not accepted</title><h1>Request not accepted</h1><p>{detail}</p>",
-            status=429,
-            mimetype="text/html; charset=utf-8",
-        )
-    except Exception as exc:
-        unavailable = _policy_request_store_unavailable(exc)
-        detail = (
-            "The request service is temporarily unavailable. Please try again later."
-            if unavailable
-            else "The request could not be recorded due to an internal error."
-        )
-        return Response(
-            f"<!doctype html><title>Request failed</title><h1>Request failed</h1><p>{detail}</p>",
-            status=503 if unavailable else 500,
-            mimetype="text/html; charset=utf-8",
-        )
 
 
 @app.route("/api/manage/health", methods=["GET"])
@@ -560,6 +342,7 @@ def manage_logs() -> Any:
 
 @app.route("/api/manage/sync", methods=["POST"])
 @_require_management_auth
+@_require_control_plane_ready
 def manage_sync() -> Any:
     payload = _management_json_payload()
     operation_id = payload.get("operation_id")
@@ -623,6 +406,7 @@ def manage_config_validate() -> Any:
 
 @app.route("/api/manage/config/rollback", methods=["POST"])
 @_require_management_auth
+@_require_control_plane_ready
 def manage_config_rollback() -> Any:
     payload = _management_json_payload()
     result = _runtime().rollback_last_known_good_config(
@@ -633,6 +417,7 @@ def manage_config_rollback() -> Any:
 
 @app.route("/api/manage/cache/clear", methods=["POST"])
 @_require_management_auth
+@_require_control_plane_ready
 def manage_cache_clear() -> Any:
     _management_json_payload()
     result = _runtime().clear_cache()

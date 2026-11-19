@@ -10,21 +10,18 @@ from pathlib import Path
 from typing import Any
 
 from services.domain_normalization import is_ambiguous_ipv4_like_host
-from services.pac_renderer import (
+from services.pac_request import (
     PAC_MANIFEST_FILENAME,
     PAC_RENDER_DIR,
     PAC_STATE_SHA_FILENAME,
     RenderedPacFile,
-    build_emergency_pac,
+    _safe_decoded_path_segments,
     calculate_pac_state_sha,
+    normalize_public_pac_path,
     select_manifest_file,
     substitute_request_host,
 )
 from services.proxy_context import get_env_default_proxy_id, normalize_proxy_id
-from services.proxy_registry import (
-    _safe_decoded_path_segments,
-    normalize_public_pac_path,
-)
 from services.public_endpoint import (
     _is_reserved_public_dns_host,
     _is_unsafe_request_host_ip,
@@ -371,6 +368,10 @@ def _materialized_state_sha_matches(
 
 
 def default_pac_bytes(request_host: str) -> bytes:
+    # Emergency path only (no usable materialized PAC state): keep the
+    # database-backed renderer out of the public listener's normal imports.
+    from services.pac_renderer import build_emergency_pac
+
     content = build_emergency_pac()
     return substitute_request_host(content, request_host).encode("utf-8")
 

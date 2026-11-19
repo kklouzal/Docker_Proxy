@@ -100,3 +100,61 @@ def test_apply_helper_restores_last_applied_include_when_control_plane_fails(
         item.unlink()
     assert module.main(["--out", str(out), "--last-known-good-only"]) == 5
     assert safe_marker in out.read_text(encoding="utf-8")
+
+
+_STARTUP_ICAP = (
+    "icap_service adblock_req reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on\n"
+    "icap_service av_resp respmod_precache icap://127.0.0.1:14002/avrespmod bypass=on\n"
+    "# Adblock request routing disabled by ADBLOCK_ENABLED=0 startup setting.\n"
+    "adaptation_access adblock_req_set deny all\n"
+)
+_APPLIED_ICAP = (
+    "icap_service adblock_req_e2fa reqmod_precache icap://127.0.0.1:14000/adblockreq bypass=on\n"
+    "icap_service av_resp respmod_precache icap://127.0.0.1:14002/avrespmod bypass=on\n"
+    "adaptation_access adblock_req_set allow icap_adblockable\n"
+)
+
+
+def test_boot_restores_last_applied_icap_policy_for_same_services(
+    tmp_path, lkg_dir
+) -> None:
+    from services import policy_materializer  # type: ignore
+
+    include = tmp_path / "20-icap.conf"
+    virus = tmp_path / "virus_scan.conf"
+    include.write_text(_STARTUP_ICAP, encoding="utf-8")
+    virus.write_text("# image default\n", encoding="utf-8")
+    assert not policy_materializer.restore_last_known_good_icap_runtime(
+        str(include), str(virus)
+    )
+
+    policy_materializer.remember_last_known_good_policy_files(
+        [(str(include), _APPLIED_ICAP), (str(virus), "virus_scan.MaxObjectSize 64M\n")],
+    )
+
+    assert policy_materializer.restore_last_known_good_icap_runtime(
+        str(include), str(virus)
+    )
+    assert include.read_text(encoding="utf-8") == _APPLIED_ICAP
+    assert virus.read_text(encoding="utf-8") == "virus_scan.MaxObjectSize 64M\n"
+
+
+def test_boot_keeps_startup_icap_include_when_services_changed(
+    tmp_path, lkg_dir
+) -> None:
+    from services import policy_materializer  # type: ignore
+
+    include = tmp_path / "20-icap.conf"
+    virus = tmp_path / "virus_scan.conf"
+    policy_materializer.remember_last_known_good_policy_files(
+        [(str(include), _APPLIED_ICAP)],
+    )
+    # Worker count/ports changed since the mirror was taken: its ICAP service
+    # URIs no longer match this boot, so the safe startup include stays.
+    rebased = _STARTUP_ICAP.replace("14002", "14004")
+    include.write_text(rebased, encoding="utf-8")
+
+    assert not policy_materializer.restore_last_known_good_icap_runtime(
+        str(include), str(virus)
+    )
+    assert include.read_text(encoding="utf-8") == rebased

@@ -34,6 +34,15 @@ def _isolated_policy_last_known_good_dir(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_control_plane_ready_file(tmp_path_factory, monkeypatch):
+    """Keep the agent readiness marker out of the real /run path."""
+    monkeypatch.setenv(
+        "PROXY_CONTROL_PLANE_READY_FILE",
+        str(tmp_path_factory.mktemp("control-plane") / "ready"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_mysql_test_configuration():
     """Undo ``configure_test_mysql_env`` side effects after each test.
 

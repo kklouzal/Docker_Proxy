@@ -932,7 +932,7 @@ def test_error_page_only_webfilter_has_exception_request_guidance() -> None:
 def test_proxy_public_policy_request_route_records(monkeypatch) -> None:
     ensure_proxy_runtime_import_path()
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
-    import proxy.app as proxy_app
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
     recorded = {}
@@ -962,7 +962,7 @@ def test_proxy_public_policy_request_route_records(monkeypatch) -> None:
                 None,
             )
 
-    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
     res = proxy_app.app.test_client().post(
         "/policy-request",
         base_url="http://localhost",
@@ -986,7 +986,7 @@ def test_proxy_public_policy_request_rejects_oversized_form_before_store(
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
     monkeypatch.setenv("POLICY_REQUEST_MAX_CONTENT_LENGTH", "128")
-    import proxy.app as proxy_app
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
     store_requested = False
@@ -1001,7 +1001,7 @@ def test_proxy_public_policy_request_rejects_oversized_form_before_store(
 
         return Store()
 
-    monkeypatch.setattr(proxy_app, "get_policy_request_store", get_store)
+    monkeypatch.setattr("services.policy_requests.get_policy_request_store", get_store)
     res = proxy_app.app.test_client().post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -1023,15 +1023,17 @@ def test_proxy_public_policy_request_capacity_response_is_429(monkeypatch) -> No
     ensure_proxy_runtime_import_path()
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
-    import proxy.app as proxy_app
+    from services.policy_requests import PolicyRequestAdmissionError
+
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
 
     class Store:
         def create_request(self, **_kwargs):
-            raise proxy_app.PolicyRequestAdmissionError.proxy_capacity()
+            raise PolicyRequestAdmissionError.proxy_capacity()
 
-    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
     res = proxy_app.app.test_client().post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -1052,7 +1054,7 @@ def test_proxy_public_policy_request_database_unavailable_is_sanitized_503(
     monkeypatch.setenv("EXPOSE_INTERNAL_ERRORS", "1")
     import pymysql
 
-    import proxy.app as proxy_app
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
 
@@ -1062,7 +1064,7 @@ def test_proxy_public_policy_request_database_unavailable_is_sanitized_503(
                 2003, "password=database-secret host=internal-db"
             )
 
-    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
     res = proxy_app.app.test_client().post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -1086,7 +1088,7 @@ def test_proxy_public_policy_request_control_plane_database_failure_is_503(
     import pymysql
     from services.proxy_write_guard import ProxyLifecycleWriteError
 
-    import proxy.app as proxy_app
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
 
@@ -1098,7 +1100,7 @@ def test_proxy_public_policy_request_control_plane_database_failure_is_503(
                 message = "metadata unavailable"
                 raise ProxyLifecycleWriteError(message) from exc
 
-    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
     res = proxy_app.app.test_client().post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -1119,7 +1121,7 @@ def test_proxy_public_policy_request_unexpected_store_failure_is_sanitized_500(
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
     monkeypatch.setenv("EXPOSE_INTERNAL_ERRORS", "1")
-    import proxy.app as proxy_app
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
 
@@ -1128,7 +1130,7 @@ def test_proxy_public_policy_request_unexpected_store_failure_is_sanitized_500(
             message = "sql detail password=unexpected-secret"
             raise RuntimeError(message)
 
-    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
     res = proxy_app.app.test_client().post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -1152,7 +1154,7 @@ def test_proxy_public_policy_request_rejects_parser_enforced_oversize(
     monkeypatch.setenv("POLICY_REQUEST_MAX_CONTENT_LENGTH", "128")
     from werkzeug.exceptions import RequestEntityTooLarge
 
-    import proxy.app as proxy_app
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
     store_requested = False
@@ -1171,7 +1173,7 @@ def test_proxy_public_policy_request_rejects_parser_enforced_oversize(
         return Store()
 
     monkeypatch.setattr(proxy_app.app.request_class, "form", property(raise_too_large))
-    monkeypatch.setattr(proxy_app, "get_policy_request_store", get_store)
+    monkeypatch.setattr("services.policy_requests.get_policy_request_store", get_store)
     res = proxy_app.app.test_client().post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -1195,7 +1197,7 @@ def test_proxy_public_policy_request_rejects_malformed_form_parse(
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
     from werkzeug.exceptions import BadRequest
 
-    import proxy.app as proxy_app
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
     store_requested = False
@@ -1216,7 +1218,7 @@ def test_proxy_public_policy_request_rejects_malformed_form_parse(
     monkeypatch.setattr(
         proxy_app.app.request_class, "form", property(raise_bad_request)
     )
-    monkeypatch.setattr(proxy_app, "get_policy_request_store", get_store)
+    monkeypatch.setattr("services.policy_requests.get_policy_request_store", get_store)
     res = proxy_app.app.test_client().post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -1239,7 +1241,7 @@ def test_proxy_public_policy_request_invalid_size_limit_env_falls_back(
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
     monkeypatch.setenv("POLICY_REQUEST_MAX_CONTENT_LENGTH", "not-a-number")
-    import proxy.app as proxy_app
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
     recorded = {}
@@ -1269,7 +1271,7 @@ def test_proxy_public_policy_request_invalid_size_limit_env_falls_back(
                 None,
             )
 
-    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
     res = proxy_app.app.test_client().post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -1290,7 +1292,7 @@ def test_proxy_public_policy_request_get_does_not_fall_through_to_pac(
     ensure_proxy_runtime_import_path()
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
-    import proxy.app as proxy_app
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
 
@@ -2348,7 +2350,7 @@ def test_proxy_policy_request_route_is_public_listener_only_and_ignores_spoofed_
     ensure_proxy_runtime_import_path()
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
-    import proxy.app as proxy_app
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
     recorded = {}
@@ -2378,14 +2380,17 @@ def test_proxy_policy_request_route_is_public_listener_only_and_ignores_spoofed_
                 None,
             )
 
-    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
-    client = proxy_app.app.test_client()
-    management = client.post(
+    monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
+    import proxy.app as management_app
+
+    management_app = importlib.reload(management_app)
+    management = management_app.app.test_client().post(
         "/policy-request",
         base_url="http://localhost:5000",
         data={"request_url": "https://bad.example/", "domain": "bad.example"},
     )
     assert management.status_code == 404
+    client = proxy_app.app.test_client()
     public = client.post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -2407,7 +2412,7 @@ def test_proxy_policy_request_route_uses_trusted_forwarded_client_ip(
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
-    import proxy.app as proxy_app
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
     recorded = {}
@@ -2437,7 +2442,7 @@ def test_proxy_policy_request_route_uses_trusted_forwarded_client_ip(
                 None,
             )
 
-    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
     res = proxy_app.app.test_client().post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -2456,7 +2461,7 @@ def test_proxy_policy_request_route_uses_form_client_ip_from_trusted_proxy(
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
     monkeypatch.setenv("PAC_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
-    import proxy.app as proxy_app
+    import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
     recorded = {}
@@ -2486,7 +2491,7 @@ def test_proxy_policy_request_route_uses_form_client_ip_from_trusted_proxy(
                 None,
             )
 
-    monkeypatch.setattr(proxy_app, "get_policy_request_store", Store)
+    monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
     res = proxy_app.app.test_client().post(
         "/policy-request",
         base_url="http://localhost:80",

@@ -11,10 +11,18 @@ from services.db import (
     mysql_error_classification,
 )
 from services.errors import public_error_message
-from services.logutil import log_exception_throttled, should_log
+from services.logutil import (
+    configure_process_logging,
+    log_exception_throttled,
+    should_log,
+)
 from services.observability_backoff import DatabaseWriteBackoff
 from services.runtime_helpers import env_float as _env_float
 
+from proxy.control_plane_state import (
+    clear_control_plane_ready,
+    mark_control_plane_ready,
+)
 from proxy.runtime import get_runtime
 
 logger = logging.getLogger(__name__)
@@ -352,7 +360,30 @@ class _ControlPlaneStartup:
                     getattr(startup_recovery, "proxy_id", ""),
                 )
         self.complete = True
+        _publish_control_plane_ready()
+        logger.info(
+            "Proxy control-plane startup completed: recovery=%s registered=%s "
+            "bootstrap=%s initial_sync=%s",
+            getattr(startup_recovery, "status", "not_applicable"),
+            registered_ok,
+            bootstrap_ok,
+            bool(sync_ok and _sync_result_ok(sync_result)),
+        )
         return True
+
+
+def _publish_control_plane_ready() -> None:
+    try:
+        mark_control_plane_ready()
+    except Exception:
+        # Fail closed: management mutations stay refused (503) until the
+        # marker can be written; local proxy services are unaffected.
+        log_exception_throttled(
+            logger,
+            "proxy.agent.control_plane_ready",
+            interval_seconds=300.0,
+            message="Failed to publish proxy control-plane readiness",
+        )
 
 
 def _control_plane_cycle(
@@ -393,7 +424,14 @@ def start_agent(*, stop_event: threading.Event | None = None) -> None:
         if _started:
             return
 
+        # A marker from an earlier agent process must not let the management
+        # API mutate the control plane before this process finishes startup.
+        clear_control_plane_ready()
         runtime = get_runtime()
+        logger.info(
+            "Proxy agent starting control-plane startup for proxy_id=%s",
+            getattr(runtime, "proxy_id", ""),
+        )
         if stop_event is not None and stop_event.is_set():
             return
         loop_stop = stop_event or threading.Event()
@@ -424,6 +462,9 @@ def start_agent(*, stop_event: threading.Event | None = None) -> None:
         def _wake_after_mysql_recovery() -> None:
             # Re-register, finish skipped startup, resync and report at once
             # instead of waiting out the steady intervals.
+            logger.info(
+                "Control-plane database reachable again; resynchronizing proxy now",
+            )
             sync_wake.set()
             heartbeat_wake.set()
 
@@ -501,6 +542,7 @@ def _shutdown(runtime, *, timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> bool:
 
 
 def main() -> None:
+    configure_process_logging()
     stop_event = threading.Event()
 
     def request_shutdown(_signum, _frame) -> None:

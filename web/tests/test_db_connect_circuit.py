@@ -263,6 +263,8 @@ def test_fast_connect_failures_keep_bounded_in_call_retries(monkeypatch) -> None
 
 def test_hung_pooled_session_ping_opens_circuit(monkeypatch) -> None:
     monkeypatch.setenv("DB_POOL_SIZE", "1")
+    # Every reuse counts as idle long enough to be pinged.
+    monkeypatch.setattr(db, "_POOLED_PING_AFTER_IDLE_SECONDS", 0.0)
     db._clear_pooled_connections()
     opened: list[int] = []
 
@@ -340,3 +342,183 @@ def test_probe_thread_start_failure_leaves_circuit_closed(monkeypatch) -> None:
         db.connect_unpooled(cfg)
 
     assert not db._connect_circuit(cfg).open
+
+
+class _CountingNative(_Native):
+    """Counts the round trips the pool itself issues on a physical connection."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.statements: list[str] = []
+        self.rollbacks = 0
+        self.pings = 0
+
+    def cursor(self):
+        statements = self.statements
+
+        class _Cursor:
+            def execute(self, sql, *_args, **_kwargs):
+                statements.append(" ".join(str(sql).split()))
+                return 0
+
+            def close(self):
+                return None
+
+        return _Cursor()
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+
+    def ping(self, reconnect=False):
+        assert reconnect is False
+        self.pings += 1
+
+
+def test_pooled_reuse_issues_no_session_setup_rollback_or_ping(monkeypatch) -> None:
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    db._clear_pooled_connections()
+    natives: list[_CountingNative] = []
+
+    def open_native(_cfg):
+        natives.append(_CountingNative())
+        return natives[-1]
+
+    monkeypatch.setattr(db, "_open_native_connection", open_native)
+    cfg = _cfg()
+
+    db.connect(cfg).close()
+    native = natives[0]
+    setup_statements = list(native.statements)
+    # Session settings are applied once for the physical connection.
+    assert sum(sql.startswith("SET SESSION") for sql in setup_statements) == 4
+
+    for _ in range(5):
+        db.connect(cfg).close()
+
+    assert natives == [native]
+    assert native.statements == setup_statements
+    assert native.pings == 0
+    # One configure rollback at open, then exactly one return-path rollback per
+    # checkout (it is what makes reuse without a checkout rollback safe).
+    assert native.rollbacks == 1 + 6
+    db._clear_pooled_connections()
+
+
+def test_pooled_session_idle_past_threshold_is_pinged_once(monkeypatch) -> None:
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    db._clear_pooled_connections()
+    natives: list[_CountingNative] = []
+
+    def open_native(_cfg):
+        natives.append(_CountingNative())
+        return natives[-1]
+
+    monkeypatch.setattr(db, "_open_native_connection", open_native)
+    cfg = _cfg()
+    db.connect(cfg).close()
+    monkeypatch.setattr(db, "_POOLED_PING_AFTER_IDLE_SECONDS", 0.0)
+
+    db.connect(cfg).close()
+
+    assert natives[0].pings == 1
+    assert sum(sql.startswith("SET SESSION") for sql in natives[0].statements) == 4
+    db._clear_pooled_connections()
+
+
+def test_failed_return_rollback_never_puts_session_back_in_pool(monkeypatch) -> None:
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    db._clear_pooled_connections()
+    natives: list[_CountingNative] = []
+
+    class _BrokenRollback(_CountingNative):
+        def rollback(self) -> None:
+            if self.statements:  # configure-time rollback succeeds
+                self.rollbacks += 1
+                if self.rollbacks > 1:
+                    msg = "lost"
+                    raise pymysql.OperationalError(2013, msg)
+
+    def open_native(_cfg):
+        natives.append(_BrokenRollback() if not natives else _CountingNative())
+        return natives[-1]
+
+    monkeypatch.setattr(db, "_open_native_connection", open_native)
+    cfg = _cfg()
+    db.connect(cfg).close()
+    db.connect(cfg).close()
+
+    # The session whose return rollback failed was discarded, not reused.
+    assert len(natives) == 2
+    assert natives[0].closed
+    db._clear_pooled_connections()
+
+
+@pytest.mark.parametrize(
+    ("configured", "wait_timeout", "expected"),
+    [
+        (None, None, 240.0),
+        ("600", None, 270.0),
+        ("60", None, 60.0),
+        (None, "120", 90.0),
+    ],
+)
+def test_pool_idle_lifetime_stays_below_session_wait_timeout(
+    monkeypatch, configured, wait_timeout, expected
+) -> None:
+    for name, value in (
+        ("DB_POOL_MAX_IDLE_SECONDS", configured),
+        ("MYSQL_SESSION_WAIT_TIMEOUT", wait_timeout),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+    assert db._pool_max_idle_seconds() == expected
+
+
+@pytest.mark.parametrize(
+    ("error", "opens"),
+    [
+        (
+            pymysql.OperationalError(
+                2013, "Lost connection to MySQL server during query (timed out)"
+            ),
+            True,
+        ),
+        (
+            pymysql.OperationalError(
+                2013, "Lost connection to MySQL server during query"
+            ),
+            False,
+        ),
+        (pymysql.OperationalError(1205, "Lock wait timeout exceeded"), False),
+    ],
+)
+def test_statement_read_timeout_on_reused_session_opens_circuit(
+    monkeypatch, error, opens
+) -> None:
+    monkeypatch.setenv("MYSQL_CONNECT_CIRCUIT_BACKOFF_INITIAL_SECONDS", "60")
+    monkeypatch.setenv("MYSQL_CONNECT_CIRCUIT_BACKOFF_MAX_SECONDS", "60")
+
+    class _HungNative(_Native):
+        def cursor(self):
+            class _Cursor:
+                def execute(self, sql, *_args, **_kwargs):
+                    if "SET SESSION" in str(sql):
+                        return 0
+                    raise error
+
+                def close(self):
+                    return None
+
+            return _Cursor()
+
+    monkeypatch.setattr(db, "_open_native_connection", lambda _cfg: _HungNative())
+    cfg = _cfg()
+    conn = db.connect_unpooled(cfg)
+    with pytest.raises(pymysql.OperationalError):
+        conn.execute("SELECT 1")
+    conn.close()
+
+    assert db._connect_circuit(cfg).open is opens

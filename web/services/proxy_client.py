@@ -12,10 +12,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.errors import redact_sensitive_text
-from services.proxy_context import normalize_proxy_id
-from services.proxy_registry import (
+from services.pac_request import (
     _bounded_repeated_unquote as _bounded_repeated_query_unquote,
 )
+from services.proxy_context import normalize_proxy_id
 from services.proxy_registry import (
     get_proxy_registry,
     normalize_management_url,

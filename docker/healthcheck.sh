@@ -383,6 +383,11 @@ if ! supervisor_program_running proxy_api; then
     exit 1
 fi
 
+if ! supervisor_program_running proxy_public; then
+    echo "supervisor reports proxy_public is not RUNNING"
+    exit 1
+fi
+
 if ! supervisor_program_running proxy_agent; then
     echo "supervisor reports proxy_agent is not RUNNING"
     exit 1

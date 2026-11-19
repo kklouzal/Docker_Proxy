@@ -260,6 +260,18 @@ def restore_runtime_modules() -> bool:
     _LOADED_ENV = False
     _close_discarded_db_module(snapshot.get("services.db"))
     for module_name in [name for name in sys.modules if _is_runtime_module(name)]:
+        if snapshot.get(module_name) is sys.modules.get(module_name):
+            continue
+        if module_name == "services.db":
+            # Close the test-private pool before dropping its module: pooled
+            # sessions idle for up to DB_POOL_MAX_IDLE_SECONDS and would
+            # otherwise accumulate toward the server's max_connections.
+            clear_pool = getattr(
+                sys.modules[module_name], "_clear_pooled_connections", None
+            )
+            if callable(clear_pool):
+                with contextlib.suppress(Exception):
+                    clear_pool()
         if module_name not in snapshot:
             _detach_from_package(module_name)
             sys.modules.pop(module_name, None)
