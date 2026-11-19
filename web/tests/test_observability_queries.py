@@ -4,7 +4,7 @@ from typing import Self
 
 import pytest
 
-from .mysql_test_utils import configure_test_mysql_env
+from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
 
 def _request_line(
@@ -1208,6 +1208,7 @@ def test_observability_queries_roll_up_destinations_clients_and_cache_reasons(
     tmp_path, monkeypatch
 ) -> None:
     configure_test_mysql_env(tmp_path / "observability-queries")
+    register_test_proxies()
 
     from services import observability_queries  # type: ignore
     from services.diagnostic_store import DiagnosticStore  # type: ignore
@@ -1373,6 +1374,7 @@ def test_observability_queries_surface_ssl_security_and_performance(
     tmp_path, monkeypatch
 ) -> None:
     configure_test_mysql_env(tmp_path / "observability-hub")
+    register_test_proxies()
 
     from services import observability_queries  # type: ignore
     from services.adblock_store import AdblockStore  # type: ignore
@@ -1682,6 +1684,7 @@ def test_observability_overview_bundle_reuses_precomputed_summary(
     tmp_path, monkeypatch
 ) -> None:
     configure_test_mysql_env(tmp_path / "observability-queries-summary-reuse")
+    register_test_proxies()
 
     from services import observability_queries  # type: ignore
 
@@ -1750,12 +1753,22 @@ def test_observability_overview_bundle_reuses_precomputed_summary(
         },
     )
 
+    remediation_summaries: list[object] = []
+
+    def _remediation(**kwargs):
+        remediation_summaries.append(kwargs.get("summary"))
+        return {"summary": {}, "rows": []}
+
+    monkeypatch.setattr(queries, "remediation_overview", _remediation)
+
+    precomputed = _summary()
     payload = queries.overview_bundle(
-        since=2800, limit=5, resolve_hostnames=False, summary=_summary()
+        since=2800, limit=5, resolve_hostnames=False, summary=precomputed
     )
 
     assert summary_calls["count"] == 1
     assert payload["summary"]["request_records"] == 7
+    assert remediation_summaries == [precomputed]
 
 
 def test_observability_performance_overview_reuses_precomputed_summary(
@@ -1764,6 +1777,7 @@ def test_observability_performance_overview_reuses_precomputed_summary(
     configure_test_mysql_env(
         tmp_path / "observability-queries-performance-summary-reuse"
     )
+    register_test_proxies()
 
     from services import observability_queries  # type: ignore
 
@@ -2064,13 +2078,18 @@ def test_observability_reporting_overview_correlates_bandwidth_security_ssl_and_
     tmp_path, monkeypatch
 ) -> None:
     configure_test_mysql_env(tmp_path / "observability-reporting-overview")
+    register_test_proxies()
 
     from services import observability_queries  # type: ignore
     from services.adblock_store import AdblockStore  # type: ignore
     from services.audit_store import AuditStore  # type: ignore
     from services.diagnostic_store import DiagnosticStore  # type: ignore
+    from services.privacy_labels import configure_pseudonym_secret  # type: ignore
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
     from services.webfilter_store import WebFilterStore  # type: ignore
+
+    # The Admin UI derives the pseudonym key from its app secret at startup.
+    configure_pseudonym_secret("observability-reporting-test-secret")
 
     diag_store = DiagnosticStore()
     diag_store.init_db()
@@ -2222,6 +2241,7 @@ def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "observability-remediation")
+    register_test_proxies()
 
     from services import observability_queries  # type: ignore
     from services.diagnostic_store import DiagnosticStore  # type: ignore
@@ -2327,7 +2347,12 @@ def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
         limit=20,
         runtime_health=runtime_health,
     )
-    assert {row["kind"] for row in h3_payload["rows"]} == {"http3_alt_svc"}
+    # Search also matches the source requests behind each suggestion (bceac1d);
+    # the Cloudflare-challenged request carries the same h3 Alt-Svc header.
+    assert {row["kind"] for row in h3_payload["rows"]} == {
+        "cloudflare_challenge",
+        "http3_alt_svc",
+    }
 
     cloudflare_payload = queries.remediation_overview(
         since=2990,
@@ -2335,8 +2360,10 @@ def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
         limit=20,
         runtime_health=runtime_health,
     )
+    # The h3 suggestion's source request was served by Cloudflare (bceac1d).
     assert {row["kind"] for row in cloudflare_payload["rows"]} == {
         "cloudflare_challenge",
+        "http3_alt_svc",
     }
 
     media_payload = queries.remediation_overview(
@@ -2355,8 +2382,11 @@ def test_remediation_overview_surfaces_quic_cloudflare_and_icap_signals(
         limit=20,
         runtime_health=runtime_health,
     )
+    # Runtime alerts match the search over their visible fields (02119de); the
+    # runtime ICAP action text mentions "scan timeouts".
     assert {row["kind"] for row in icap_payload["rows"]} == {
         "icap_degraded",
+        "runtime_icap_degraded",
         "slow_icap",
     }
 
@@ -2365,6 +2395,7 @@ def test_remediation_surfaces_grouped_proxy_policy_denial_with_search_and_age(
     tmp_path,
 ) -> None:
     configure_test_mysql_env(tmp_path / "observability-policy-denial")
+    register_test_proxies()
 
     from services import observability_queries  # type: ignore
     from services.diagnostic_store import DiagnosticStore  # type: ignore
@@ -2411,6 +2442,7 @@ def test_remediation_surfaces_grouped_proxy_policy_denial_with_search_and_age(
 
 def test_remediation_repeated_proxy_5xx_ignores_singletons(tmp_path) -> None:
     configure_test_mysql_env(tmp_path / "observability-proxy-5xx")
+    register_test_proxies()
 
     from services import observability_queries  # type: ignore
     from services.diagnostic_store import DiagnosticStore  # type: ignore
