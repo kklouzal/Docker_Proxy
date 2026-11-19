@@ -274,6 +274,10 @@ class AdblockArtifactMetadata:
     created_ts: int
     is_active: bool
 
+    @property
+    def enabled_lists(self) -> list[str]:
+        return _parse_enabled_lists_json(self.enabled_lists_json)
+
 
 @dataclass(frozen=True)
 class AdblockArtifactPruneResult:

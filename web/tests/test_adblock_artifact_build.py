@@ -2952,3 +2952,35 @@ def test_builder_mysql_operation_propagates_non_database_errors(monkeypatch) -> 
     with pytest.raises(ValueError, match="not transient mysql"):
         artifacts_module._run_builder_mysql_operation(fail)
     assert sleeps == []
+
+
+def test_active_lists_drift_accepts_builder_poll_metadata(tmp_path: Path) -> None:
+    """The builder loop polls metadata only (no archive); drift must work on it."""
+    _store_module, artifacts_module = _import_artifact_modules(tmp_path)
+    metadata = artifacts_module.AdblockArtifactMetadata(
+        revision_id=7,
+        artifact_sha256="a" * 64,
+        settings_version=1,
+        source_kind="background",
+        enabled_lists_json='["easyprivacy", "easylist"]',
+        created_by="test",
+        created_ts=1,
+        is_active=True,
+    )
+    statuses = [
+        SimpleNamespace(key="easylist", enabled=True),
+        SimpleNamespace(key="easyprivacy", enabled=True),
+    ]
+    assert metadata.enabled_lists == ["easyprivacy", "easylist"]
+    assert (
+        artifacts_module._active_enabled_lists_drift(
+            metadata, settings_enabled=True, enabled_statuses=statuses
+        )
+        is False
+    )
+    assert (
+        artifacts_module._active_enabled_lists_drift(
+            metadata, settings_enabled=True, enabled_statuses=statuses[:1]
+        )
+        is True
+    )
