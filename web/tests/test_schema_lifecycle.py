@@ -555,8 +555,9 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "proxy_scoped_adblock_runtime_enablement",
         "adblock_event_policy_attribution",
         "admin_default_proxy_selection",
+        "diagnostic_requests_drop_duplicate_indexes",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 32
+    assert schema_lifecycle.latest_schema_version() == 33
     manual_spec = all_specs[-6]
     assert manual_spec.version == 26
     assert manual_spec.name == "observability_manual_export_preset_contract"
@@ -682,6 +683,69 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         default_selection_spec.tables[0].create_sql
     )
     assert " proxy_id " not in default_selection_spec.tables[0].create_sql
+    duplicate_index_spec = every_spec[32]
+    assert duplicate_index_spec.version == 33
+    assert duplicate_index_spec.name == "diagnostic_requests_drop_duplicate_indexes"
+    assert [step.name for step in duplicate_index_spec.data_steps] == [
+        "drop_duplicate_diagnostic_indexes"
+    ]
+
+
+class _DuplicateIndexConn:
+    def __init__(self, indexes: set[tuple[str, str]]) -> None:
+        self.indexes = set(indexes)
+        self.ddl: list[str] = []
+
+    def execute(self, sql, params=()):
+        text = " ".join(str(sql).split())
+        params = tuple(params or ())
+
+        class _Result:
+            def __init__(self, row=None) -> None:
+                self._row = row
+
+            def fetchone(self):
+                return self._row
+
+        if "FROM information_schema.tables" in text:
+            return _Result({"1": 1} if params[0] == "diagnostic_requests" else None)
+        if "FROM information_schema.statistics" in text:
+            return _Result({"1": 1} if (params[0], params[1]) in self.indexes else None)
+        if text.startswith("ALTER TABLE"):
+            self.ddl.append(text)
+            return _Result()
+        msg = f"Unexpected SQL: {text}"
+        raise AssertionError(msg)
+
+
+def test_duplicate_diagnostic_index_drop_is_online_and_requires_twin() -> None:
+    table = "diagnostic_requests"
+    conn = _DuplicateIndexConn(
+        {
+            (table, "idx_diagnostic_requests_proxy_tx"),
+            (table, "idx_diagnostic_requests_proxy_tx_ts_id"),
+            (table, "idx_diagnostic_requests_proxy_domain"),
+        }
+    )
+
+    schema_lifecycle._drop_duplicate_diagnostic_indexes(conn)
+
+    # The domain duplicate has no surviving twin here, so it is kept.
+    assert conn.ddl == [
+        (
+            "ALTER TABLE `diagnostic_requests` DROP INDEX "
+            "`idx_diagnostic_requests_proxy_tx`, ALGORITHM=INPLACE, LOCK=NONE"
+        )
+    ]
+
+    already_clean = _DuplicateIndexConn(
+        {
+            (table, "idx_diagnostic_requests_proxy_tx_ts_id"),
+            (table, "idx_diagnostic_requests_proxy_domain_ts_id"),
+        }
+    )
+    schema_lifecycle._drop_duplicate_diagnostic_indexes(already_clean)
+    assert already_clean.ddl == []
 
 
 class _ApplicationLedgerEvidenceBackfillConn:

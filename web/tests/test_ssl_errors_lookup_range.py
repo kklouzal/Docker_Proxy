@@ -47,7 +47,10 @@ def test_ssl_context_lookup_uses_indexed_bounded_ranges(monkeypatch):
 
     assert len(conn.calls) == 2
     sql, params = conn.calls[0]
-    assert "FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_tx)" in sql
+    assert (
+        "FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_tx_ts_id)"
+        in sql
+    )
     assert "ts BETWEEN %s AND %s" in sql
     assert "ORDER BY ts DESC" in sql
     assert params == ("proxy-a", "tx-1", 995, 1000)
@@ -60,7 +63,10 @@ def test_ssl_context_lookup_widens_bounded_ranges_until_match(monkeypatch):
     conn = _LookupConn(rows=[[], [], [("", "fallback.example", "", "", 1987, 9)], []])
     store = SslErrorsStore()
 
-    assert store._lookup_domain_for_master_xaction(conn, "tx-2", 2000) == "fallback.example"
+    assert (
+        store._lookup_domain_for_master_xaction(conn, "tx-2", 2000)
+        == "fallback.example"
+    )
 
     assert len(conn.calls) == 4
     assert conn.calls[0][1] == ("proxy-a", "tx-2", 1995, 2000)
@@ -85,4 +91,6 @@ def test_ssl_context_lookup_reads_mapping_row_values(monkeypatch):
     )
     store = SslErrorsStore()
 
-    assert store._lookup_domain_for_master_xaction(conn, "tx-3", 3000) == "mapped.example"
+    assert (
+        store._lookup_domain_for_master_xaction(conn, "tx-3", 3000) == "mapped.example"
+    )

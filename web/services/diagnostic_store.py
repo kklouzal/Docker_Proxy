@@ -577,9 +577,7 @@ class DiagnosticStore:
                                 UNIQUE KEY idx_diagnostic_requests_proxy_event (proxy_id, event_key),
                                 KEY idx_diagnostic_requests_ts_id (ts, id),
                                 KEY idx_diagnostic_requests_proxy_ts (proxy_id, ts, id),
-                                KEY idx_diagnostic_requests_proxy_tx (proxy_id, master_xaction, ts),
                                 KEY idx_diagnostic_requests_proxy_tx_ts_id (proxy_id, master_xaction, ts, id),
-                                KEY idx_diagnostic_requests_proxy_domain (proxy_id, domain, ts),
                                 KEY idx_diagnostic_requests_proxy_domain_ts_id (proxy_id, domain, ts, id),
                                 KEY idx_diagnostic_requests_proxy_client (proxy_id, client_ip, ts),
                                 KEY idx_diagnostic_requests_proxy_client_bytes (proxy_id, client_ip, ts, bytes),
@@ -2135,12 +2133,20 @@ class DiagnosticStore:
 
         request_where_sql = "WHERE " + " AND ".join(request_where)
         icap_where_sql = "WHERE " + " AND ".join(icap_where)
+        # A bounded window must use the (proxy_id, ts) range: production
+        # statistics intermittently flipped this aggregate to a full scan of
+        # every retained row (466k rows, ~5.5 s instead of ~0.1 s).
+        request_index_hint = (
+            "FORCE INDEX (idx_diagnostic_requests_proxy_ts)"
+            if since is not None
+            else ""
+        )
 
         with self._connect() as conn:
             req_row = conn.execute(
                 f"""
                 SELECT COUNT(*), COUNT(DISTINCT client_ip), COUNT(DISTINCT domain), COUNT(DISTINCT master_xaction)
-                FROM diagnostic_requests
+                FROM diagnostic_requests {request_index_hint}
                 {request_where_sql}
                 """,
                 tuple(request_params),

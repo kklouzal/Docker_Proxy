@@ -10,7 +10,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
 
-from services.db import DATABASE_ERRORS, mysql_error_code, table_exists
+from services.db import DATABASE_ERRORS, mysql_error_code
 from services.proxy_context import normalize_proxy_id
 from services.proxy_lifecycle import ensure_lifecycle_schema
 from services.row_access import row_value
@@ -85,6 +85,8 @@ def proxy_lifecycle_lock_name(proxy_id: object | None) -> str:
 
 
 def clear_proxy_write_guard_cache(proxy_id: object | None = None) -> None:
+    if proxy_id is None:
+        _reset_metadata_schema_flag()
     with _cache_lock:
         if proxy_id is None:
             _decision_cache.clear()
@@ -138,42 +140,114 @@ def _row_value(row: object, key: str, default: object = "") -> object:
     return row_value(row, key, default=default)
 
 
+_schema_lock = threading.Lock()
+_tombstone_schema_ensured = False
+
+# One round trip returns every lifecycle fact the guard needs for one proxy id.
+# Each subquery is a primary-key lookup; every selected column is NOT NULL, so a
+# NULL value means "no row".  A missing table raises (fail closed) instead of
+# being treated as "no metadata".  Alias and registry lookups are included only
+# when the caller's contract consults them.
+_TOMBSTONE_STATE_SQL = (
+    "SELECT"
+    " (SELECT action FROM proxy_lifecycle_tombstones WHERE proxy_id=%s LIMIT 1) AS tombstone_action,"
+    " (SELECT target_proxy_id FROM proxy_lifecycle_tombstones WHERE proxy_id=%s LIMIT 1) AS tombstone_target,"
+)
+_ALIAS_STATE_SQL = " (SELECT proxy_id FROM proxy_id_aliases WHERE alias_proxy_id=%s LIMIT 1) AS alias_target,"
+_REGISTRY_STATE_SQL = (
+    " (SELECT status FROM proxy_instances WHERE proxy_id=%s LIMIT 1) AS registry_status"
+)
+
+
+def _lifecycle_state_sql(*, allow_alias: bool, require_registered: bool) -> str:
+    return (
+        _TOMBSTONE_STATE_SQL
+        + (_ALIAS_STATE_SQL if allow_alias else " NULL AS alias_target,")
+        + (_REGISTRY_STATE_SQL if require_registered else " NULL AS registry_status")
+    )
+
+
+@dataclass(frozen=True)
+class _LifecycleState:
+    tombstone_action: str | None
+    tombstone_target: str
+    alias_target: str | None
+    registry_status: str | None
+
+
 def _ensure_metadata_tables(conn: Any) -> None:
+    """Create the tombstone table once per process instead of once per write.
+
+    Schema migrations own the lifecycle tables; this keeps the historical
+    self-healing CREATE for the tombstone table without issuing DDL on every
+    guarded write.  A later "table missing" error resets the flag so the next
+    write re-ensures it.
+    """
+    global _tombstone_schema_ensured
+    if _tombstone_schema_ensured:
+        return
+    with _schema_lock:
+        if _tombstone_schema_ensured:
+            return
+        try:
+            ensure_lifecycle_schema(conn)
+        except DATABASE_ERRORS as exc:
+            raise _metadata_error(
+                "Proxy lifecycle metadata is unavailable", exc
+            ) from exc
+        except Exception as exc:
+            raise _metadata_error(
+                "Proxy lifecycle metadata is unavailable", exc
+            ) from exc
+        _tombstone_schema_ensured = True
+
+
+def _reset_metadata_schema_flag() -> None:
+    global _tombstone_schema_ensured
+    with _schema_lock:
+        _tombstone_schema_ensured = False
+
+
+def _lookup_lifecycle_state(
+    conn: Any,
+    proxy_key: str,
+    *,
+    allow_alias: bool,
+    require_registered: bool,
+) -> _LifecycleState:
     try:
-        ensure_lifecycle_schema(conn)
+        sql = _lifecycle_state_sql(
+            allow_alias=allow_alias, require_registered=require_registered
+        )
+        row = conn.execute(sql, (proxy_key,) * sql.count("%s")).fetchone()
     except DATABASE_ERRORS as exc:
+        if mysql_error_code(exc) == 1146:
+            _reset_metadata_schema_flag()
         raise _metadata_error("Proxy lifecycle metadata is unavailable", exc) from exc
     except Exception as exc:
         raise _metadata_error("Proxy lifecycle metadata is unavailable", exc) from exc
-
-
-def _table_available(conn: Any, table_name: str) -> bool:
-    try:
-        return table_exists(conn, table_name)
-    except DATABASE_ERRORS as exc:
-        raise _metadata_error("Proxy lifecycle metadata is unavailable", exc) from exc
-    except Exception as exc:
-        raise _metadata_error("Proxy lifecycle metadata is unavailable", exc) from exc
-
-
-def _check_tombstone(conn: Any, proxy_key: str, *, allow_alias: bool) -> str | None:
-    try:
-        row = conn.execute(
-            "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones WHERE proxy_id=%s LIMIT 1",
-            (proxy_key,),
-        ).fetchone()
-    except DATABASE_ERRORS as exc:
-        raise _metadata_error(
-            "Proxy lifecycle tombstones are unavailable", exc
-        ) from exc
-    except Exception as exc:
-        raise _metadata_error(
-            "Proxy lifecycle tombstones are unavailable", exc
-        ) from exc
     if row is None:
+        raise _metadata_error("Proxy lifecycle metadata is unavailable")
+
+    def _optional(key: str, index: int) -> str | None:
+        value = row_value(row, key, index)
+        return None if value is None else str(value)
+
+    return _LifecycleState(
+        tombstone_action=_optional("tombstone_action", 0),
+        tombstone_target=_optional("tombstone_target", 1) or "",
+        alias_target=_optional("alias_target", 2),
+        registry_status=_optional("registry_status", 3),
+    )
+
+
+def _tombstone_redirect(
+    proxy_key: str, state: _LifecycleState, *, allow_alias: bool
+) -> str | None:
+    if state.tombstone_action is None:
         return None
-    action = str(_row_value(row, "action") or "removed")
-    target = str(_row_value(row, "target_proxy_id") or "")
+    action = state.tombstone_action or "removed"
+    target = state.tombstone_target
     if action in _BLOCKING_ACTIONS:
         if action == "renaming" and target:
             msg = f"Proxy {proxy_key!r} is being renamed to {target!r}; proxy-scoped writes are blocked."
@@ -194,47 +268,12 @@ def _check_tombstone(conn: Any, proxy_key: str, *, allow_alias: bool) -> str | N
     )
 
 
-def _alias_target(conn: Any, proxy_key: str) -> str | None:
-    if not _table_available(conn, "proxy_id_aliases"):
-        return None
-    try:
-        row = conn.execute(
-            "SELECT proxy_id FROM proxy_id_aliases WHERE alias_proxy_id=%s LIMIT 1",
-            (proxy_key,),
-        ).fetchone()
-    except DATABASE_ERRORS as exc:
-        raise _metadata_error("Proxy alias metadata is unavailable", exc) from exc
-    except Exception as exc:
-        raise _metadata_error("Proxy alias metadata is unavailable", exc) from exc
-    if row is None:
-        return None
-    return normalize_proxy_id(_row_value(row, "proxy_id"))
-
-
-def _ensure_registered(conn: Any, proxy_key: str) -> None:
-    if not _table_available(conn, "proxy_instances"):
-        if not hasattr(conn, "native"):
-            # Unit tests commonly use lightweight fake connections that only model
-            # the service table under test. Real MySQL connections must have
-            # registry metadata and fail closed above.
-            return
-        raise ProxyLifecycleWriteError(
-            "Proxy registry metadata is unavailable; proxy-scoped writes are blocked.",
-        )
-    try:
-        row = conn.execute(
-            "SELECT status FROM proxy_instances WHERE proxy_id=%s LIMIT 1",
-            (proxy_key,),
-        ).fetchone()
-    except DATABASE_ERRORS as exc:
-        raise _metadata_error("Proxy registry metadata is unavailable", exc) from exc
-    except Exception as exc:
-        raise _metadata_error("Proxy registry metadata is unavailable", exc) from exc
-    if row is None:
+def _ensure_registered(proxy_key: str, state: _LifecycleState) -> None:
+    if state.registry_status is None:
         raise ProxyLifecycleWriteError(
             f"Proxy {proxy_key!r} is not registered; proxy-scoped writes are blocked.",
         )
-    status = str(_row_value(row, "status") or "unknown")
+    status = state.registry_status or "unknown"
     if status in {
         "renaming",
         "rename_pending",
@@ -258,8 +297,10 @@ def resolve_proxy_write_id(
     """Resolve and validate a proxy id immediately before a proxy-owned write.
 
     The guard fails closed when tombstone/alias/registry metadata cannot be read.
-    Positive cache entries are opt-in and bounded; lifecycle transitions clear the
-    in-process cache, and guarded writes re-check after acquiring the lifecycle lock.
+    Each hop of the alias chain costs one combined metadata query; the common
+    unaliased case is a single round trip.  Positive cache entries are opt-in and
+    bounded; lifecycle transitions clear the in-process cache, and guarded writes
+    re-check after acquiring the lifecycle lock.
     """
     requested = normalize_proxy_id(proxy_id)
     cache_key = (requested, bool(allow_alias), bool(require_registered))
@@ -274,7 +315,13 @@ def resolve_proxy_write_id(
     alias_action = ""
     seen = {requested}
     for _ in range(4):
-        tombstone_target = _check_tombstone(conn, current, allow_alias=allow_alias)
+        state = _lookup_lifecycle_state(
+            conn,
+            current,
+            allow_alias=allow_alias,
+            require_registered=require_registered,
+        )
+        tombstone_target = _tombstone_redirect(current, state, allow_alias=allow_alias)
         if tombstone_target is not None:
             if tombstone_target in seen:
                 raise ProxyLifecycleWriteError(
@@ -285,9 +332,9 @@ def resolve_proxy_write_id(
             resolved_alias = True
             alias_action = "renamed"
             continue
-        if allow_alias:
-            target = _alias_target(conn, current)
-            if target is not None and target != current:
+        if allow_alias and state.alias_target is not None:
+            target = normalize_proxy_id(state.alias_target)
+            if target != current:
                 if target in seen:
                     raise ProxyLifecycleWriteError(
                         f"Proxy alias cycle detected for {requested!r}; proxy-scoped writes are blocked.",
@@ -303,9 +350,10 @@ def resolve_proxy_write_id(
             f"Proxy alias chain for {requested!r} is too deep; proxy-scoped writes are blocked.",
         )
 
-    _check_tombstone(conn, current, allow_alias=False)
+    # ``state`` was read for ``current`` in the final loop iteration and showed
+    # no tombstone, so the registry status from the same statement is checked.
     if require_registered:
-        _ensure_registered(conn, current)
+        _ensure_registered(current, state)
     decision = ProxyWriteDecision(
         requested_proxy_id=requested,
         proxy_id=current,

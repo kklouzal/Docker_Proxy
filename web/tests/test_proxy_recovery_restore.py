@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
+
 WEB_ROOT = Path(__file__).resolve().parents[1]
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
@@ -116,6 +118,17 @@ class _StrictRestoreConn:
             if not self.adoption_marker:
                 return _Result()
             return _Result([{"target_control_plane_id": self.adoption_marker_target}])
+        if is_lifecycle_state_query(text):
+            return _Result(
+                [
+                    lifecycle_state_row(
+                        tombstone=None
+                        if self.tombstone_action is None
+                        else (self.tombstone_action, self.tombstone_target),
+                        registry_status=self.lifecycle_status,
+                    )
+                ]
+            )
         if text.startswith(
             "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones"
         ):
@@ -263,14 +276,6 @@ class _StrictRestoreConn:
 
 def _sql(sql: str) -> str:
     return " ".join(str(sql).split())
-
-
-@pytest.fixture(autouse=True)
-def _metadata_tables_available(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "services.proxy_write_guard.table_exists",
-        lambda _conn, name: name in {"proxy_instances", "proxy_lifecycle_tombstones"},
-    )
 
 
 def _probe_table(sql: str) -> str:

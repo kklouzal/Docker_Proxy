@@ -6,6 +6,8 @@ from typing import Any
 
 import pytest
 
+from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
+
 WEB_ROOT = Path(__file__).resolve().parents[1]
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
@@ -57,8 +59,8 @@ class _CompatRestoreConn:
             return _Result([{"control_plane_id": self.control_plane_id}])
         if "FROM proxy_recovery_adoptions" in text:
             return _Result()
-        if text.startswith("SELECT status FROM proxy_instances"):
-            return _Result([{"status": "active"}])
+        if is_lifecycle_state_query(text):
+            return _Result([lifecycle_state_row(registry_status="active")])
         if text.startswith("SELECT GET_LOCK"):
             return _Result([{"acquired": 1}])
         if text.startswith("SELECT `key`, url, enabled FROM adblock_lists"):
@@ -110,14 +112,6 @@ class _CompatRestoreConn:
 
     def rollback(self) -> None:
         self.rollbacks += 1
-
-
-@pytest.fixture(autouse=True)
-def _metadata_tables_available(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "services.proxy_write_guard.table_exists",
-        lambda _conn, name: name in {"proxy_instances", "proxy_lifecycle_tombstones"},
-    )
 
 
 def _bundle(restored_enabled: str) -> proxy_recovery.RecoveryBundle:

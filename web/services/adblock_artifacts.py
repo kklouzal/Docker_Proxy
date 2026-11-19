@@ -1203,7 +1203,9 @@ class AdblockArtifactStore:
             try:
                 self.init_db()
                 store.init_db()
-                active = self.get_active_artifact()
+                # Poll metadata only: the decision never needs the archive blob,
+                # which is tens of MB per read.
+                active = self.get_active_artifact_metadata()
                 statuses = store.list_statuses()
                 enabled_statuses = [status for status in statuses if status.enabled]
                 refresh_requested = bool(store.get_refresh_requested())
@@ -1326,7 +1328,7 @@ def _compiled_request_rule_count(out_dir: str | os.PathLike[str]) -> int:
 
 
 def _active_enabled_lists_drift(
-    active: AdblockArtifactRevision | None,
+    active: AdblockArtifactMetadata | AdblockArtifactRevision | None,
     *,
     settings_enabled: bool,
     enabled_statuses: list[Any],
