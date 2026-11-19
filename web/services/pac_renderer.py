@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from services.keyed_locks import KeyedLockRegistry
+from services.logutil import should_log
 from services.pac_private_local import (
     LOCAL_DOMAIN_SUFFIXES,
     PAC_PRIVATE_LOCAL_IPV4_NETS,
@@ -392,11 +393,17 @@ def resolve_proxy_pac_target(
         # reuse another proxy's policy or an indefinitely stale process cache.
         backup_proxies = ()
         direct_enabled = False
-        _LOGGER.warning(
-            "PAC chain settings unavailable for proxy %s; using primary proxy only",
-            normalized_proxy_id,
-            exc_info=True,
-        )
+        # Throttled: during an outage the emergency PAC path reaches this on
+        # every client PAC request.
+        if should_log(
+            f"pac_renderer.chain_settings_unavailable.{normalized_proxy_id}",
+            interval_seconds=60.0,
+        ):
+            _LOGGER.warning(
+                "PAC chain settings unavailable for proxy %s; using primary proxy only",
+                normalized_proxy_id,
+                exc_info=True,
+            )
     finally:
         reset_proxy_id(token)
     return ProxyPacTarget(

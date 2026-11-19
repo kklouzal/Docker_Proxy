@@ -1187,16 +1187,17 @@ def test_housekeeping_resumes_paused_proxy_removals(monkeypatch, housekeeping) -
     from services.proxy_registry import ProxyRemovalResult  # type: ignore
 
     class Registry:
-        def resume_paused_removals(self):
-            return [
-                ProxyRemovalResult(
-                    proxy_id="edge-debug",
-                    deleted_rows=50_000,
-                    table_counts={"ts_1d": 50_000},
-                    complete=False,
-                    truncated_tables=("ts_1d",),
-                ),
-            ]
+        def paused_removal_proxy_ids(self):
+            return ["edge-debug"]
+
+        def remove_proxy(self, proxy_id):
+            return ProxyRemovalResult(
+                proxy_id=proxy_id,
+                deleted_rows=50_000,
+                table_counts={"ts_1d": 50_000},
+                complete=False,
+                truncated_tables=("ts_1d",),
+            )
 
     monkeypatch.setattr(housekeeping, "get_proxy_registry", Registry)
 
@@ -1214,3 +1215,36 @@ def test_housekeeping_resumes_paused_proxy_removals(monkeypatch, housekeeping) -
             },
         ],
     }
+
+
+def test_housekeeping_removal_failure_does_not_block_other_proxies(
+    monkeypatch, housekeeping
+) -> None:
+    from services.proxy_registry import ProxyRemovalResult  # type: ignore
+
+    attempted: list[str] = []
+
+    class Registry:
+        def paused_removal_proxy_ids(self):
+            return ["edge-stuck", "edge-old"]
+
+        def remove_proxy(self, proxy_id):
+            attempted.append(proxy_id)
+            if proxy_id == "edge-stuck":
+                msg = "Timed out acquiring MySQL lifecycle lock."
+                raise RuntimeError(msg)
+            return ProxyRemovalResult(
+                proxy_id=proxy_id,
+                deleted_rows=3,
+                table_counts={"ts_1d": 3},
+            )
+
+    monkeypatch.setattr(housekeeping, "get_proxy_registry", Registry)
+
+    result = housekeeping._resume_paused_proxy_removals()
+
+    assert attempted == ["edge-stuck", "edge-old"]
+    assert result["ok"] is False
+    assert result["truncated"] is False
+    assert [proxy["proxy_id"] for proxy in result["proxies"]] == ["edge-old"]
+    assert result["detail"].startswith("edge-stuck: ")

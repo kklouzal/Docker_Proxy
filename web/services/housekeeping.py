@@ -17,6 +17,7 @@ from services.control_plane_maintenance import (
 )
 from services.db import run_mysql_lock_contention_with_retry
 from services.diagnostic_store import get_diagnostic_store
+from services.errors import public_error_message
 from services.live_stats import get_store
 from services.logutil import log_exception_throttled, should_log
 from services.observability_maintenance import (
@@ -103,20 +104,43 @@ def housekeeping_backlog(result: dict[str, Any] | None) -> bool:
 
 
 def _resume_paused_proxy_removals() -> dict[str, Any]:
-    results = get_proxy_registry().resume_paused_removals()
-    return {
-        "ok": True,
-        "truncated": any(not result.complete for result in results),
-        "proxies": [
+    """Run one bounded removal pass per paused removal, isolating failures.
+
+    A proxy whose pass fails (for example lifecycle lock contention) is
+    reported in ``detail`` and makes the step fail, but never keeps the other
+    paused removals from progressing.
+    """
+    registry = get_proxy_registry()
+    proxies: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for proxy_id in registry.paused_removal_proxy_ids():
+        try:
+            result = registry.remove_proxy(proxy_id)
+        except Exception as exc:
+            failures.append(f"{proxy_id}: {public_error_message(exc)}")
+            log_exception_throttled(
+                logger,
+                f"housekeeping.proxy_removal.{proxy_id}",
+                interval_seconds=300,
+                message=f"Paused proxy removal pass failed for {proxy_id}",
+            )
+            continue
+        proxies.append(
             {
                 "proxy_id": result.proxy_id,
                 "complete": result.complete,
                 "deleted_rows": result.deleted_rows,
                 "truncated_tables": list(result.truncated_tables),
-            }
-            for result in results
-        ],
+            },
+        )
+    outcome: dict[str, Any] = {
+        "ok": not failures,
+        "truncated": any(not proxy["complete"] for proxy in proxies),
+        "proxies": proxies,
     }
+    if failures:
+        outcome["detail"] = "; ".join(failures)[:400]
+    return outcome
 
 
 def _run_with_db_lock_retry(

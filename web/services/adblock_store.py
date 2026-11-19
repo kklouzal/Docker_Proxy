@@ -490,12 +490,11 @@ class AdblockStore:
         inode = int(getattr(st, "st_ino", 0) or 0)
         size = int(getattr(st, "st_size", 0) or 0)
 
-        try:
-            stored = self._get_proxy_meta_values(
-                conn, ("cicap_access_inode", "cicap_access_pos")
-            )
-        except Exception:
-            stored = {}
+        # A failed checkpoint read must not be taken as "offset 0": that would
+        # re-ingest the whole log. The poll loop reports it and retries.
+        stored = self._get_proxy_meta_values(
+            conn, ("cicap_access_inode", "cicap_access_pos")
+        )
         stored_inode = stored.get("cicap_access_inode", "0")
         stored_pos = stored.get("cicap_access_pos", "0")
         try:

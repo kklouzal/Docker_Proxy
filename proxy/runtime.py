@@ -3141,7 +3141,13 @@ class ProxyRuntime:
             if not callable(reader):
                 return
             path = str(reader())
-            files.append((path, self._read_text_file(path)))
+            try:
+                content = pathlib.Path(path).read_text(encoding="utf-8")
+            except OSError:
+                # An unreadable runtime file must not overwrite the mirror with
+                # empty content: restoring that at boot would break c-icap.
+                return
+            files.append((path, content))
         self._remember_last_known_good_files(files)
 
     def _remember_last_known_good_files(self, files: Any) -> None:

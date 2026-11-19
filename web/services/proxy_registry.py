@@ -1412,18 +1412,17 @@ class ProxyRegistry:
             retry_detail=retry_detail,
         )
 
-    def resume_paused_removals(self) -> list[ProxyRemovalResult]:
-        """Run one bounded removal pass for every removal left paused.
+    def paused_removal_proxy_ids(self) -> list[str]:
+        """Return proxies whose removal is paused with its tombstone published.
 
         A removal stops in ``remove_pending`` after the per-table row bound, or
-        stays ``removing`` when interrupted; both keep the tombstone published.
-        Each ``remove_proxy`` call is one bounded, committed, lock-serialized
-        pass, so repeated background calls converge without operator retries.
-        Renames are atomic (an incomplete rename rolls back), so they leave no
-        durable paused state to resume here.
+        stays ``removing`` when interrupted. Each ``remove_proxy`` call is one
+        bounded, committed, lock-serialized pass, so repeated background calls
+        converge without operator retries. Renames are atomic (an incomplete
+        rename rolls back), so they leave no durable paused state to resume.
         """
         return [
-            self.remove_proxy(instance.proxy_id)
+            instance.proxy_id
             for instance in self.list_proxies()
             if instance.status in PAUSED_REMOVAL_STATUSES
         ]

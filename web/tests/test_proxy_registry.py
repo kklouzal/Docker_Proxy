@@ -2409,7 +2409,7 @@ def test_rename_proxy_adds_lifecycle_index_for_discovered_tables(tmp_path):
     assert index_row is not None
 
 
-def test_resume_paused_removals_runs_bounded_passes_until_removed(
+def test_paused_removal_passes_run_bounded_until_removed(
     monkeypatch,
     tmp_path,
 ):
@@ -2434,7 +2434,10 @@ def test_resume_paused_removals_runs_bounded_passes_until_removed(
 
     passes = []
     for _ in range(5):
-        results = registry.resume_paused_removals()
+        results = [
+            registry.remove_proxy(proxy_id)
+            for proxy_id in registry.paused_removal_proxy_ids()
+        ]
         if not results:
             break
         passes.append(results)
