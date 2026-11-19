@@ -42,3 +42,43 @@ Startup fails closed for nonfresh/conflicting target DB state, ambiguous adoptio
 After successful startup/sync, and after successful runtime config/materialization reconciliation, the proxy captures the current authoritative DB state back to the local bundle with atomic/private writes. Runtime capture failure is logged as an operator warning and preserves the previous bundle; the first post-startup capture for a new proxy without a bundle is required once DB startup has completed.
 
 The recovery bundle is a convenience for adopting retained proxy-local configuration during Admin UI/MySQL replacement. It is not a substitute for normal MySQL backups, and it may contain policy, certificate, directory/SAML, and other sensitive declarative settings.
+
+## Control-plane outages (MySQL and Admin UI)
+
+Proxy containers serve from local state and never need the Admin UI at runtime;
+the Admin UI only writes desired state and operations to MySQL. When MySQL is
+unreachable:
+
+- **Cold start.** The entrypoint probes MySQL once with a single bounded
+  connection attempt. When it is unreachable, boot skips the local adblock
+  compile and restores the SSL/web filtering includes from the durable
+  last-known-good mirror (`PROXY_POLICY_LKG_DIR`, refreshed after every
+  successful policy apply); only a proxy that never applied a policy gets the
+  safe (filtering-disabled) include. Squid config, PAC files, certificates, the
+  adblock artifact and the web-category snapshot already live on the durable
+  volume. Squid, PAC/WPAD, the ICAP helpers and health start normally.
+- **Agent startup.** Recovery adoption and the startup schema still run before
+  any normal registration/default refresh/apply (the fail-closed ordering
+  above). A transient database failure keeps them pending; fail-closed recovery
+  outcomes keep normal DB mutation blocked. Neither exits the agent: it retries
+  with bounded exponential backoff and jitter
+  (`PROXY_CONTROL_PLANE_RETRY_BACKOFF_*`, 2-30 s), while the heartbeat runs only
+  local Squid/ICAP self-healing and writes nothing to the control plane.
+- **Mid-run.** Each process keeps a MySQL reachability circuit
+  (`services.db`): after a connectivity failure (or one attempt that hangs for
+  the whole connect/read timeout) further connects fail immediately with a
+  `connectivity` error instead of each paying `MYSQL_CONNECT_RETRIES x
+  MYSQL_CONNECT_TIMEOUT`, and one background probe retries with backoff
+  (`MYSQL_CONNECT_CIRCUIT_BACKOFF_INITIAL_SECONDS`/`_MAX_SECONDS`, 1-10 s).
+  Telemetry writers keep their bounded pending buffers and back off.
+- **Restoration.** The first successful probe closes the circuit and wakes the
+  agent: pending startup steps (recovery, schema, registration, bootstrap,
+  initial capture) finish, the sync loop re-registers and claims pending
+  operations, the heartbeat reports immediately, and telemetry writers flush on
+  their next tick instead of waiting out their backoff.
+
+A Squid lifecycle mutation that fails mid-transaction leaves the Squid
+transaction journal `recovery_required`, which blocks later Squid mutations.
+Startup reconciles such a journal from the persisted last-known-good config;
+while the container keeps running, the heartbeat self-heal runs the same
+designated last-known-good rollback (with 5 min to 1 h backoff after failures).
