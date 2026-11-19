@@ -3128,13 +3128,27 @@ class ProxyRuntime:
         return False
 
     def _remember_last_known_good_policy(self, desired: Any) -> None:
+        self._remember_last_known_good_files(
+            (str(item.path), str(item.content or ""))
+            for item in tuple(getattr(desired, "files", ()) or ())
+        )
+
+    def _remember_last_known_good_icap_runtime(self) -> None:
+        controller = self.controller
+        files = []
+        for path_reader in ("_icap_include_path", "_virus_scan_config_path"):
+            reader = getattr(controller, path_reader, None)
+            if not callable(reader):
+                return
+            path = str(reader())
+            files.append((path, self._read_text_file(path)))
+        self._remember_last_known_good_files(files)
+
+    def _remember_last_known_good_files(self, files: Any) -> None:
         # Best effort: the mirror only matters for a later restart without
         # control-plane access, so a failure must not fail the live sync.
         try:
-            remember_last_known_good_policy_files(
-                (str(item.path), str(item.content or ""))
-                for item in tuple(getattr(desired, "files", ()) or ())
-            )
+            remember_last_known_good_policy_files(files)
         except Exception:
             log_exception_throttled(
                 logger,
@@ -5014,6 +5028,8 @@ class ProxyRuntime:
             )
             if str(clamav_runtime_detail or "").strip() and clamav_runtime_changed:
                 detail_parts.append(str(clamav_runtime_detail or "").strip())
+            if ok_clamav_runtime:
+                self._remember_last_known_good_icap_runtime()
             if not ok_clamav_runtime:
                 detail = "\n".join(
                     [

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pathlib
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -179,4 +180,39 @@ def restore_last_known_good_policy_file(path: str) -> bool:
     if content is None:
         return False
     write_managed_text_files((path, content))
+    return True
+
+
+_ICAP_SERVICE_URI_RE = re.compile(r"^\s*icap_service\s+\S+\s+\S+\s+(\S+)", re.MULTILINE)
+
+
+def _icap_service_uris(text: str) -> list[str]:
+    return sorted(_ICAP_SERVICE_URI_RE.findall(text))
+
+
+def restore_last_known_good_icap_runtime(
+    icap_include_path: str,
+    virus_scan_config_path: str,
+) -> bool:
+    """Replace the boot-time ICAP startup fallback with the last applied policy.
+
+    The entrypoint can only write a conservative ICAP include (adblock routing
+    off, download-only AV) because the persisted UI policy lives in MySQL. When
+    this proxy previously applied the policy for the same ICAP services
+    (worker count and ports unchanged), restore that include and the matching
+    c-icap virus_scan config so adblock and file-security policy keep working
+    without the control plane, and a reachable control plane finds nothing to
+    reconfigure. Returns False when there is no compatible mirror.
+    """
+    mirrored_include = _read_text_or_none(_policy_lkg_path(icap_include_path))
+    startup_include = _read_text_or_none(pathlib.Path(icap_include_path))
+    if mirrored_include is None or startup_include is None:
+        return False
+    if _icap_service_uris(mirrored_include) != _icap_service_uris(startup_include):
+        return False
+    files = [(icap_include_path, mirrored_include)]
+    mirrored_virus_scan = _read_text_or_none(_policy_lkg_path(virus_scan_config_path))
+    if mirrored_virus_scan is not None:
+        files.append((virus_scan_config_path, mirrored_virus_scan))
+    write_managed_text_files(*files)
     return True

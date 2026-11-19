@@ -1367,6 +1367,21 @@ done
     echo "adaptation_access av_resp_set deny all"
 } > /etc/squid/conf.d/20-icap.conf
 
+# The include above is the conservative startup fallback. When this proxy has
+# already applied the persisted UI ICAP policy for the same ICAP services, use
+# that last-known-good copy instead (adblock routing and file-security policy
+# then survive restarts without MySQL, and runtime reconciliation finds no
+# change to reload).
+python3 - <<'PY' || true
+from services.policy_materializer import restore_last_known_good_icap_runtime
+
+if restore_last_known_good_icap_runtime(
+    "/etc/squid/conf.d/20-icap.conf",
+    "/etc/virus_scan.conf",
+):
+    print("[proxy-entrypoint] restored last-applied ICAP policy include")
+PY
+
 # Normalize known distro path differences without overwriting user config
 if [ -f /etc/squid/squid.conf ] && grep -q "/usr/share/squid/errors/English" /etc/squid/squid.conf 2>/dev/null; then
     sed -i 's#/usr/share/squid/errors/English#/usr/share/squid/errors/en#g' /etc/squid/squid.conf
