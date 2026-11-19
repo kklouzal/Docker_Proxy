@@ -583,12 +583,24 @@ def mysql_advisory_lock(
             conn._discard_on_close = True
 
 
+def _session_wait_timeout_seconds() -> int:
+    return _env_int(
+        "MYSQL_SESSION_WAIT_TIMEOUT",
+        300,
+        minimum=30,
+        maximum=86400,
+    )
+
+
 def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
-    """Apply defensive per-session settings to every checked-out connection.
+    """Apply defensive session settings once per physical connection.
 
     These guardrails keep application sessions from waiting indefinitely behind
-    a stale transaction/metadata lock and make pooled connections deterministic
-    after reconnects.
+    a stale transaction/metadata lock and make every connection deterministic.
+    Session variables persist for the life of the physical connection, and no
+    caller changes them, so pooled reuse does not re-apply them; pooled
+    sessions never reconnect implicitly (a dead one is replaced by a new,
+    freshly configured connection).
     """
     statements: list[tuple[str, tuple[Any, ...]]] = []
     lock_wait_timeout = _env_int("MYSQL_LOCK_WAIT_TIMEOUT", 10, minimum=1, maximum=300)
@@ -598,12 +610,7 @@ def _configure_native_connection(native: Any, cfg: DatabaseConfig) -> None:
         minimum=1,
         maximum=300,
     )
-    wait_timeout = _env_int(
-        "MYSQL_SESSION_WAIT_TIMEOUT",
-        300,
-        minimum=30,
-        maximum=86400,
-    )
+    wait_timeout = _session_wait_timeout_seconds()
     isolation = (
         (os.environ.get("MYSQL_TRANSACTION_ISOLATION") or "READ COMMITTED")
         .strip()
@@ -687,20 +694,25 @@ def _pool_maxsize() -> int:
     return max(4, min(16, threads + 4))
 
 
+_POOL_IDLE_WAIT_TIMEOUT_MARGIN_SECONDS = 30.0
+
+
 def _pool_max_idle_seconds() -> float:
+    """Idle lifetime of a pooled connection (DB_POOL_MAX_IDLE_SECONDS, default 240).
+
+    Always kept MYSQL_SESSION_WAIT_TIMEOUT minus a 30 s margin or lower, so the
+    server never closes an idle pooled session before the pool retires it.
+    """
     try:
-        return max(
-            1.0,
-            min(
-                300.0,
-                float(
-                    (os.environ.get("DB_POOL_MAX_IDLE_SECONDS") or "30").strip()
-                    or "30",
-                ),
-            ),
+        configured = float(
+            (os.environ.get("DB_POOL_MAX_IDLE_SECONDS") or "240").strip() or "240",
         )
     except Exception:
-        return 30.0
+        configured = 240.0
+    server_bound = (
+        float(_session_wait_timeout_seconds()) - _POOL_IDLE_WAIT_TIMEOUT_MARGIN_SECONDS
+    )
+    return max(1.0, min(configured, server_bound))
 
 
 def _open_native_connection(cfg: DatabaseConfig) -> Any:
@@ -802,6 +814,9 @@ def _release_pool_slot_locked(
     _pool_condition.notify_all()
 
 
+_POOLED_PING_AFTER_IDLE_SECONDS = 5.0
+
+
 def _checkout_connection(cfg: DatabaseConfig) -> Any:
     key = _pool_key(cfg)
     maxsize = _pool_maxsize()
@@ -819,12 +834,13 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
     while True:
         source = ""
         native = None
+        last_used = 0.0
         with _pool_condition:
             _reap_pool_locked()
             state = _pooled_connections.setdefault(key, _PoolState())
             while True:
                 if state.idle:
-                    _last_used, native = state.idle.pop()
+                    last_used, native = state.idle.pop()
                     state.active += 1
                     source = "idle"
                     break
@@ -840,12 +856,20 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
                 state = _pooled_connections.setdefault(key, _PoolState())
 
         if source == "idle":
+            # Pooled sessions were rolled back successfully when returned
+            # (_return_connection discards them otherwise) and keep their
+            # once-per-connection session settings, so reuse needs neither a
+            # ROLLBACK nor SETs. Only a session idle long enough to have been
+            # dropped (server restart, network, NAT) is pinged first; a failure
+            # after that on a just-used session surfaces to the caller as
+            # connection_lost and the session is discarded.
+            if time.monotonic() - last_used < _POOLED_PING_AFTER_IDLE_SECONDS:
+                return native
             ping_started = time.monotonic()
             try:
                 # No implicit reconnect: a dead pooled session is discarded and
                 # replaced through the circuit-gated open below.
                 native.ping(reconnect=False)
-                _configure_native_connection(native, cfg)
                 return native
             except Exception as exc:
                 if _timed_out(ping_started, cfg.read_timeout):
