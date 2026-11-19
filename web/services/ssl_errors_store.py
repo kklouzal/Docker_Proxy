@@ -292,7 +292,7 @@ class SslErrorsStore:
             row = None
             select_sql = """
                     SELECT domain, sni, host, url, ts, id
-                    FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_tx)
+                    FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_tx_ts_id)
                     WHERE proxy_id = %s
                       AND master_xaction = %s
                       AND {window_predicate}

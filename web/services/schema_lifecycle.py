@@ -26,12 +26,15 @@ from services.db import (
     run_mysql_operation_with_retry,
 )
 from services.row_access import row_value as _row_value
-from services.sql_identifiers import normalize_mysql_identifier
+from services.sql_identifiers import (
+    normalize_mysql_identifier,
+    quote_mysql_identifier,
+)
 
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 32
+_SCHEMA_VERSION = 33
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -612,6 +615,45 @@ def _init_operation_ledger_schema(_conn: Any) -> None:
     importlib.import_module(
         "services.operation_ledger"
     ).get_operation_ledger().init_db()
+
+
+# Secondary indexes whose declared columns plus the implicit primary-key suffix
+# are the same B-tree as a surviving twin: (proxy_id, x, ts) is stored as
+# (proxy_id, x, ts, id), identical to the kept (proxy_id, x, ts, id) index.
+# Each entry is (table, duplicate, twin); a duplicate is dropped only while its
+# twin exists.
+_DUPLICATE_DIAGNOSTIC_INDEXES: tuple[tuple[str, str, str], ...] = (
+    (
+        "diagnostic_requests",
+        "idx_diagnostic_requests_proxy_tx",
+        "idx_diagnostic_requests_proxy_tx_ts_id",
+    ),
+    (
+        "diagnostic_requests",
+        "idx_diagnostic_requests_proxy_domain",
+        "idx_diagnostic_requests_proxy_domain_ts_id",
+    ),
+)
+
+
+def _drop_duplicate_diagnostic_indexes(conn: Any) -> None:
+    """Drop exact physical duplicates; DROP INDEX is online and in-place."""
+    by_table: dict[str, list[str]] = {}
+    for table, duplicate, twin in _DUPLICATE_DIAGNOSTIC_INDEXES:
+        if (
+            table_exists(conn, table)
+            and index_exists(conn, table, duplicate)
+            and index_exists(conn, table, twin)
+        ):
+            by_table.setdefault(table, []).append(duplicate)
+    for table, index_names in by_table.items():
+        drops = ", ".join(
+            f"DROP INDEX {quote_mysql_identifier(name)}" for name in index_names
+        )
+        conn.execute(
+            f"ALTER TABLE {quote_mysql_identifier(table)} {drops}, "
+            "ALGORITHM=INPLACE, LOCK=NONE"
+        )
 
 
 def _backfill_operation_ledger_active_request_keys(conn: Any) -> None:
@@ -1700,6 +1742,16 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                         updated_ts BIGINT NOT NULL
                     )
                     """,
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=33,
+            name="diagnostic_requests_drop_duplicate_indexes",
+            data_steps=(
+                SchemaDataStep(
+                    "drop_duplicate_diagnostic_indexes",
+                    _drop_duplicate_diagnostic_indexes,
                 ),
             ),
         ),
