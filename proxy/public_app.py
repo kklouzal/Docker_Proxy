@@ -35,15 +35,6 @@ app = Flask(__name__)
 install_http_optimizations(app, default_dynamic_max_age_seconds=0)
 _PUBLIC_NON_PAC_PATHS = frozenset({"/", "/health", "/policy-request"})
 _POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH = 16 * 1024
-_POLICY_REQUEST_UNAVAILABLE_CLASSIFICATIONS = frozenset(
-    {
-        "connectivity",
-        "connection_lost",
-        "pool_or_server_exhausted",
-        "lock_wait_timeout",
-        "deadlock",
-    },
-)
 
 
 def _policy_request_max_content_length() -> int:
@@ -193,20 +184,9 @@ def _policy_request_client_ip(form: Any, normalize_client_ip) -> str:
 
 def _policy_request_store_unavailable(exc: BaseException) -> bool:
     """Classify retryable persistence/control-plane availability failures."""
-    from services.db import DATABASE_ERRORS, mysql_error_classification
+    from services.db import transient_mysql_cause
 
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if (
-            isinstance(current, DATABASE_ERRORS)
-            and mysql_error_classification(current)
-            in _POLICY_REQUEST_UNAVAILABLE_CLASSIFICATIONS
-        ):
-            return True
-        current = current.__cause__ or current.__context__
-    return False
+    return transient_mysql_cause(exc) is not None
 
 
 @app.route("/policy-request", methods=["POST"])

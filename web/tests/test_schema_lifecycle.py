@@ -13,7 +13,7 @@ WEB_ROOT = Path(__file__).resolve().parents[1]
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
-from services import schema_lifecycle  # type: ignore  # noqa: E402
+from services import db, schema_lifecycle  # type: ignore  # noqa: E402
 
 
 class _DdlRaceConn:
@@ -1063,10 +1063,10 @@ class _LockPollConn:
         return _Result()
 
 
-def test_migration_lock_waits_in_slices_shorter_than_read_timeout() -> None:
+def test_advisory_lock_waits_in_slices_shorter_than_read_timeout() -> None:
     conn = _LockPollConn(read_timeout=15, busy_waits=2)
 
-    with schema_lifecycle._migration_advisory_lock(conn, "lock", 60):
+    with db.mysql_advisory_lock(conn, "lock", 60):
         assert conn.released == 0
 
     # Each server-side GET_LOCK wait ends before the 15 s client read timeout,
@@ -1075,16 +1075,16 @@ def test_migration_lock_waits_in_slices_shorter_than_read_timeout() -> None:
     assert conn.released == 1
 
 
-def test_migration_lock_without_known_read_timeout_keeps_single_wait() -> None:
+def test_advisory_lock_without_known_read_timeout_keeps_single_wait() -> None:
     conn = _LockPollConn(read_timeout=None, busy_waits=0)
 
-    with schema_lifecycle._migration_advisory_lock(conn, "lock", 60):
+    with db.mysql_advisory_lock(conn, "lock", 60):
         pass
 
     assert conn.lock_waits == [60]
 
 
-def test_migration_lock_times_out_at_the_overall_deadline(monkeypatch) -> None:
+def test_advisory_lock_times_out_at_the_overall_deadline(monkeypatch) -> None:
     clock = {"now": 1000.0}
 
     class _ClockConn(_LockPollConn):
@@ -1093,11 +1093,11 @@ def test_migration_lock_times_out_at_the_overall_deadline(monkeypatch) -> None:
                 clock["now"] += float(params[1])
             return super().execute(sql, params)
 
-    monkeypatch.setattr(schema_lifecycle.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(db.time, "monotonic", lambda: clock["now"])
     conn = _ClockConn(read_timeout=15, busy_waits=10**6)
 
     with pytest.raises(TimeoutError):
-        with schema_lifecycle._migration_advisory_lock(conn, "lock", 30):
+        with db.mysql_advisory_lock(conn, "lock", 30):
             pytest.fail("lock body must not run without the lock")
 
     assert conn.lock_waits == [13, 13, 4]

@@ -4,7 +4,6 @@ import contextlib
 import hashlib
 import importlib
 import json
-import math
 import os
 import re
 import threading
@@ -1762,53 +1761,6 @@ def _default_spec() -> SchemaMigrationSpec:
     return _migration_specs()[-1]
 
 
-_MIGRATION_LOCK_READ_TIMEOUT_MARGIN_SECONDS = 2
-
-
-def _migration_lock_poll_seconds(conn: Any, timeout_seconds: int) -> int:
-    """Return a GET_LOCK wait slice that completes inside the client read timeout.
-
-    GET_LOCK blocks server-side without sending bytes, so a single wait longer
-    than the session's socket read timeout surfaces as 2013 "Lost connection"
-    instead of a lock timeout. Connections without a known read timeout keep the
-    single full-length wait.
-    """
-    read_timeout = getattr(getattr(conn, "native", None), "_read_timeout", None)
-    try:
-        read_timeout_seconds = int(read_timeout or 0)
-    except (TypeError, ValueError):
-        read_timeout_seconds = 0
-    if read_timeout_seconds <= 0:
-        return timeout_seconds
-    return max(
-        1,
-        min(
-            timeout_seconds,
-            read_timeout_seconds - _MIGRATION_LOCK_READ_TIMEOUT_MARGIN_SECONDS,
-        ),
-    )
-
-
-@contextlib.contextmanager
-def _migration_advisory_lock(conn: Any, name: str, timeout_seconds: int):
-    """Wait up to timeout_seconds for the migration lock in read-timeout-safe slices."""
-    timeout = max(1, int(timeout_seconds))
-    poll_seconds = _migration_lock_poll_seconds(conn, timeout)
-    deadline = time.monotonic() + timeout
-    stack = contextlib.ExitStack()
-    while True:
-        remaining = deadline - time.monotonic()
-        wait = max(1, min(poll_seconds, math.ceil(remaining)))
-        try:
-            stack.enter_context(mysql_advisory_lock(conn, name, wait))
-            break
-        except TimeoutError:
-            if time.monotonic() >= deadline:
-                raise
-    with stack:
-        yield
-
-
 def apply_schema_migration(
     spec: SchemaMigrationSpec,
     *,
@@ -1819,7 +1771,7 @@ def apply_schema_migration(
 
     def _run() -> list[SchemaMigrationResult]:
         with connect_factory() as conn:
-            with _migration_advisory_lock(
+            with mysql_advisory_lock(
                 conn,
                 _MIGRATION_LOCK_NAME,
                 mysql_schema_lock_timeout_seconds(60),

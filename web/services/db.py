@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import os
 import random
 import re
@@ -351,6 +352,37 @@ def mysql_error_classification(exc: BaseException) -> str:
     return "non_mysql_error"
 
 
+# Availability failures that a later retry can clear without operator action.
+TRANSIENT_MYSQL_CLASSIFICATIONS = frozenset(
+    {
+        "connectivity",
+        "connection_lost",
+        "pool_or_server_exhausted",
+        "lock_wait_timeout",
+        "deadlock",
+    },
+)
+
+
+def transient_mysql_cause(
+    exc: BaseException,
+    *,
+    also: tuple[type[BaseException], ...] = (),
+) -> BaseException | None:
+    """Return the first transient MySQL failure (or ``also`` instance) in exc's cause chain."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, DATABASE_ERRORS):
+            if mysql_error_classification(current) in TRANSIENT_MYSQL_CLASSIFICATIONS:
+                return current
+        elif also and isinstance(current, also):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def _is_retryable_mysql_connect_error(exc: BaseException) -> bool:
     if not isinstance(exc, pymysql.MySQLError) or isinstance(
         exc, MySQLUnreachableError
@@ -570,6 +602,75 @@ def mysql_schema_lock_timeout_seconds(default: int = 30) -> int:
     )
 
 
+_NAMED_LOCK_READ_TIMEOUT_MARGIN_SECONDS = 2
+
+
+def _named_lock_wait_slice_seconds(conn: Any, timeout_seconds: int) -> int:
+    """Return a GET_LOCK wait slice that completes inside the client read timeout.
+
+    GET_LOCK blocks server-side without sending bytes, so a single wait longer
+    than the session's socket read timeout surfaces as 2013 "Lost connection
+    (timed out)" instead of a lock timeout, discards the session, and is read
+    by the connect circuit as a hung server. Connections without a known read
+    timeout keep the single full-length wait.
+    """
+    read_timeout = getattr(getattr(conn, "native", None), "_read_timeout", None)
+    try:
+        read_timeout_seconds = int(read_timeout or 0)
+    except (TypeError, ValueError):
+        read_timeout_seconds = 0
+    if read_timeout_seconds <= 0:
+        return timeout_seconds
+    return max(
+        1,
+        min(
+            timeout_seconds,
+            read_timeout_seconds - _NAMED_LOCK_READ_TIMEOUT_MARGIN_SECONDS,
+        ),
+    )
+
+
+def _lock_row_acquired(row: Any) -> int | None:
+    """GET_LOCK result: 1 acquired, 0 timed out, None for an error or no row."""
+    if row is None:
+        return None
+    try:
+        value = row["acquired"]
+    except (IndexError, KeyError, TypeError):
+        try:
+            value = row[0]
+        except (IndexError, KeyError, TypeError):
+            return None
+    try:
+        return None if value is None else int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def acquire_mysql_named_lock(conn: Any, name: str, timeout_seconds: int) -> bool:
+    """Wait up to ``timeout_seconds`` for MySQL named lock ``name`` on ``conn``.
+
+    The wait is issued as GET_LOCK slices that each finish inside the session's
+    socket read timeout, so contention reports a lock timeout (False) rather
+    than a lost connection. A GET_LOCK error result (NULL) stops at once.
+    """
+    timeout = max(0, int(timeout_seconds))
+    poll_seconds = _named_lock_wait_slice_seconds(conn, timeout)
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        wait = max(0, min(poll_seconds, math.ceil(remaining)))
+        acquired = _lock_row_acquired(
+            conn.execute(
+                "SELECT GET_LOCK(%s, %s) AS acquired", (name, wait)
+            ).fetchone(),
+        )
+        if acquired == 1:
+            return True
+        if acquired is None or time.monotonic() >= deadline:
+            return False
+
+
 @contextlib.contextmanager
 def mysql_advisory_lock(
     conn: CompatConnection,
@@ -578,11 +679,7 @@ def mysql_advisory_lock(
 ):
     lock_name = str(name or "docker_proxy:schema")[:64]
     timeout = max(1, int(timeout_seconds or 30))
-    row = conn.execute(
-        "SELECT GET_LOCK(%s, %s) AS acquired", (lock_name, timeout)
-    ).fetchone()
-    acquired = row["acquired"] if row is not None else 0
-    if int(acquired or 0) != 1:
+    if not acquire_mysql_named_lock(conn, lock_name, timeout):
         msg = f"Timed out waiting for MySQL advisory lock {lock_name!r}"
         raise TimeoutError(msg)
     try:

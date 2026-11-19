@@ -76,12 +76,19 @@ is unreachable:
   `/run/squid-flask-proxy/control-plane-ready`, removed at every container and
   agent start). Read-only management endpoints keep answering.
 - **Mid-run.** Each process keeps a MySQL reachability circuit
-  (`services.db`): after a connectivity failure (or one attempt that hangs for
-  the whole connect/read timeout) further connects fail immediately with a
+  (`services.db`): after a connectivity failure (or a connect, pooled ping or
+  statement that hangs for the whole connect/read timeout) further connects
+  fail immediately with a
   `connectivity` error instead of each paying `MYSQL_CONNECT_RETRIES x
   MYSQL_CONNECT_TIMEOUT`, and one background probe retries with backoff
   (`MYSQL_CONNECT_CIRCUIT_BACKOFF_INITIAL_SECONDS`/`_MAX_SECONDS`, 1-10 s).
   Telemetry writers keep their bounded pending buffers and back off.
+  Named-lock waits (`GET_LOCK`) are issued in slices shorter than the session
+  read timeout, so lock contention reports a lock timeout and never looks like
+  a hung server; a statement that legitimately runs longer than
+  `MYSQL_READ_TIMEOUT` on a default session is reported as a timeout and also
+  opens the circuit until the next successful probe (about 1 s), so long
+  maintenance work uses sessions with their own longer read timeouts.
 - **Restoration.** The first successful probe closes the circuit and wakes the
   agent: pending startup steps (recovery, schema, registration, bootstrap,
   initial capture) finish, the sync loop re-registers and claims pending

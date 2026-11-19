@@ -6,7 +6,10 @@ from contextlib import contextmanager, suppress
 from typing import Any
 
 from services import schema_lifecycle as _schema_lifecycle
-from services.db import run_mysql_lock_contention_with_retry
+from services.db import (
+    acquire_mysql_named_lock,
+    run_mysql_lock_contention_with_retry,
+)
 
 _ADVISORY_LOCK_TIMEOUT_SECONDS = 10
 _SCOPED_LOCK_PREFIX = "docker_proxy"
@@ -123,19 +126,7 @@ def mysql_advisory_lock(
     timeout_seconds: int = _ADVISORY_LOCK_TIMEOUT_SECONDS,
 ):
     name = scoped_lock_name(namespace, scope)
-    row = conn.execute(
-        "SELECT GET_LOCK(%s, %s) AS acquired", (name, timeout_seconds)
-    ).fetchone()
-    acquired = False
-    if row is not None:
-        try:
-            acquired = int(row["acquired"] or 0) == 1
-        except (IndexError, KeyError, TypeError, ValueError):
-            try:
-                acquired = int(row[0] or 0) == 1
-            except (IndexError, TypeError, ValueError):
-                acquired = False
-    if not acquired:
+    if not acquire_mysql_named_lock(conn, name, timeout_seconds):
         msg = f"Timed out acquiring MySQL lifecycle lock {name}."
         raise RuntimeError(msg)
     try:

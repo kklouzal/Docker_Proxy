@@ -8,7 +8,7 @@ import time
 from services.db import (
     DATABASE_ERRORS,
     add_mysql_recovery_listener,
-    mysql_error_classification,
+    transient_mysql_cause,
 )
 from services.errors import public_error_message
 from services.logutil import (
@@ -33,30 +33,11 @@ _loop_threads: list[threading.Thread] = []
 _start_lock = threading.Lock()
 _SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _WAKE_POLL_SECONDS = 1.0
-_TRANSIENT_DB_CLASSIFICATIONS = frozenset(
-    {
-        "connectivity",
-        "connection_lost",
-        "pool_or_server_exhausted",
-        "lock_wait_timeout",
-        "deadlock",
-    },
-)
 
 
 def _transient_control_plane_cause(exc: BaseException) -> BaseException | None:
     """Return the availability failure in exc's cause chain, if any."""
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, DATABASE_ERRORS):
-            if mysql_error_classification(current) in _TRANSIENT_DB_CLASSIFICATIONS:
-                return current
-        elif isinstance(current, TimeoutError):
-            return current
-        current = current.__cause__ or current.__context__
-    return None
+    return transient_mysql_cause(exc, also=(TimeoutError,))
 
 
 def _is_transient_control_plane_failure(exc: BaseException) -> bool:
