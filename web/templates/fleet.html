@@ -22,6 +22,8 @@
 
 {% if request.args.get('pending') %}
 <div class="banner"><span class="badge warn">Removal pending</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'A bounded removal pass completed. Retry the removal to continue.' }}</span></div></div>
+{% elif request.args.get('default_set') %}
+<div class="banner success"><span class="badge ok">Default updated</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'Default proxy updated.' }}</span></div></div>
 {% elif request.args.get('removed') %}
 <div class="banner success"><span class="badge ok">Removed</span><div class="banner-copy"><span class="small">{{ request.args.get('msg') or 'Proxy removed.' }}</span></div></div>
 {% elif request.args.get('error') %}
@@ -57,6 +59,16 @@
                 <div class="stat-k">Pinned in this tab</div>
                 <div class="stat-v">{{ active_proxy_id or 'None' }}</div>
             </div>
+            <div class="stat compact-stat">
+                <div class="stat-k">Default proxy</div>
+                <div class="stat-v">{{ default_proxy_id }}</div>
+            </div>
+        </div>
+        {% set default_registered = proxies | selectattr('proxy_id', 'equalto', default_proxy_id) | list %}
+        <div class="surface-note small">
+            The default proxy is the initial selection for new Admin UI sessions and cannot be removed or renamed.
+            {% if default_proxy_source == 'admin' %}It was chosen on this page.{% else %}It comes from the <span class="mono">DEFAULT_PROXY_ID</span> bootstrap setting; choose a default below to store it in MySQL.{% endif %}
+            {% if not default_registered %}<span class="warn-text"><span class="mono">{{ default_proxy_id }}</span> is not registered; choose a registered default.</span>{% endif %}
         </div>
         <div class="actions">
             <a class="btn ghost" href="{{ url_for('index') }}">Back to status</a>
@@ -93,6 +105,7 @@
                             <div class="stack-sm">
                                 <div><strong>{{ proxy.display_name }}</strong></div>
                                 <span class="small mono">{{ proxy.proxy_id }}</span>
+                                {% if proxy.proxy_id == default_proxy_id %}<div><span class="badge ok">Default</span></div>{% endif %}
                                 {% if proxy.proxy_id == active_proxy_id %}<div>{{ scope_chip('proxy', 'Active in this tab') }}</div>{% endif %}
                                 {% if proxy.hostname %}<div class="small">{{ proxy.hostname }}</div>{% endif %}
                             </div>
@@ -147,6 +160,17 @@
                                     <input type="hidden" name="proxy_id" value="{{ proxy.proxy_id }}">
                                     <button class="btn" type="submit">Clear cache</button>
                                 </form>
+                                {% set removal_pending = proxy.status in ['removing', 'remove_pending'] %}
+                                {% if proxy.proxy_id == default_proxy_id %}
+                                <span class="small">Default proxy: choose another default before renaming or removing it.</span>
+                                {% else %}
+                                {% if not removal_pending %}
+                                <form action="{{ url_for('set_default_proxy') }}" method="post">
+                                    {{ csrf_field() }}
+                                    <input type="hidden" name="proxy_id" value="{{ proxy.proxy_id }}">
+                                    <button class="btn" type="submit" data-confirm-message="Make {{ proxy.display_name }} the default proxy?">Make default</button>
+                                </form>
+                                {% endif %}
                                 <details class="inline-details">
                                     <summary class="btn ghost">Rename ID</summary>
                                     <form action="{{ url_for('reconcile_proxy_identity') }}" method="post" class="stack-sm">
@@ -160,7 +184,6 @@
                                     </form>
                                 </details>
                                 <details class="inline-details">
-                                    {% set removal_pending = proxy.status in ['removing', 'remove_pending'] %}
                                     <summary class="btn danger">{{ 'Continue removal' if removal_pending else 'Remove' }}</summary>
                                     <form action="{{ url_for('remove_proxy') }}" method="post" class="stack-sm">
                                         {{ csrf_field() }}
@@ -171,6 +194,7 @@
                                         <button class="btn danger" type="submit" data-confirm-message="Remove {{ proxy.display_name }} and delete all MySQL data scoped to {{ proxy.proxy_id }}?" data-pending-label="Removing...">{{ 'Continue removal' if removal_pending else 'Remove proxy' }}</button>
                                     </form>
                                 </details>
+                                {% endif %}
                             </div>
                         </td>
                     </tr>
