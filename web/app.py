@@ -148,11 +148,12 @@ from services.privacy_labels import (
 from services.proxy_client import ProxyClientError
 from services.proxy_client import get_proxy_client as _default_get_proxy_client
 from services.proxy_context import (
-    get_default_proxy_id,
+    get_bound_proxy_id,
     get_proxy_id,
     normalize_proxy_id,
     normalize_route_proxy_id,
     reset_proxy_id,
+    set_implicit_default_proxy_resolver,
     set_proxy_id,
 )
 from services.proxy_health import (
@@ -2426,7 +2427,12 @@ def _should_preserve_proxy(endpoint: str, params: dict[str, Any] | None = None) 
     return not (params and params.get("proxy_id") is not None)
 
 
-def _link_proxy_id() -> str:
+def _link_proxy_id() -> str | None:
+    """Return the proxy to pin in generated links; None leaves links unpinned.
+
+    Unbound links stay unpinned rather than resolving the implicit default, so
+    rendering login/redirect links never depends on MySQL.
+    """
     if has_request_context():
         active_proxy = getattr(g, "_active_proxy", None)
         active_proxy_id = getattr(active_proxy, "proxy_id", None)
@@ -2436,7 +2442,7 @@ def _link_proxy_id() -> str:
             session_proxy_id = session.get("active_proxy_id")
             if session_proxy_id:
                 return normalize_proxy_id(session_proxy_id)
-    return get_proxy_id()
+    return get_bound_proxy_id()
 
 
 def _endpoint_url(endpoint: str, **params: Any) -> str:
@@ -3400,6 +3406,17 @@ def _admin_default_proxy_id(registry: Any) -> str:
     return normalize_proxy_id(registry.effective_default_proxy_id())
 
 
+def install_admin_default_proxy_resolver() -> None:
+    """Make unbound proxy-scoped work in this process follow the UI default.
+
+    Called by the Admin UI WSGI entrypoint only. Proxy containers never call
+    it, so their implicit proxy stays their environment identity.
+    """
+    set_implicit_default_proxy_resolver(
+        lambda: get_proxy_registry().effective_default_proxy_id(),
+    )
+
+
 def _default_or_first_proxy(registry: Any, proxies: list[Any]) -> Any | None:
     if not proxies:
         return None
@@ -3450,8 +3467,9 @@ def _safe_resolve_registered_proxy_id(registry: Any, proxy_id: object | None) ->
 
 
 def _run_with_proxy_context(proxy_id: str, callback: Callable[[], Any]) -> Any:
-    current_proxy_id = get_proxy_id()
-    if normalize_proxy_id(current_proxy_id) == normalize_proxy_id(proxy_id):
+    # Compare only an explicitly bound proxy: resolving the implicit default
+    # here would add a MySQL dependency to every scoped audit write.
+    if get_bound_proxy_id() == normalize_proxy_id(proxy_id):
         return callback()
     token = set_proxy_id(proxy_id)
     try:
@@ -6519,20 +6537,24 @@ def remove_proxy():
         else:
             session.pop("active_proxy_id", None)
     _clear_admin_runtime_caches()
-    audit_proxy_id = normalize_proxy_id(
-        session.get("active_proxy_id")
-        or (remaining[0].proxy_id if remaining else get_default_proxy_id()),
+    audit_proxy_id = session.get("active_proxy_id") or (
+        remaining[0].proxy_id if remaining else ""
     )
-    _record_audit_event_for_proxy(
-        audit_proxy_id,
-        "proxy_remove",
-        ok=True,
-        detail=(
-            f"proxy_id={result.proxy_id} status=complete "
-            f"deleted_rows={result.deleted_rows} count_scope=final_pass "
-            f"tables={','.join(result.table_counts)}"
-        ),
+    audit_detail = (
+        f"proxy_id={result.proxy_id} status=complete "
+        f"deleted_rows={result.deleted_rows} count_scope=final_pass "
+        f"tables={','.join(result.table_counts)}"
     )
+    if audit_proxy_id:
+        _record_audit_event_for_proxy(
+            normalize_proxy_id(audit_proxy_id),
+            "proxy_remove",
+            ok=True,
+            detail=audit_detail,
+        )
+    else:
+        # Best-effort audit under the implicit default proxy.
+        _record_audit_event("proxy_remove", ok=True, detail=audit_detail)
     return _redirect_to(
         "proxies",
         removed="1",

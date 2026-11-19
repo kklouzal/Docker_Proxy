@@ -244,7 +244,9 @@ change is audited as `proxy_default_set`). The choice is stored in MySQL
 has been chosen, the admin UI's `DEFAULT_PROXY_ID` (then `PROXY_INSTANCE_ID`,
 `PROXY_ID`, `default`) is used as the bootstrap default; after a choice exists,
 `DEFAULT_PROXY_ID` on the admin UI no longer changes the default. Admin UI
-workers cache the selection for at most 5 seconds. If MySQL is unavailable the
+workers cache the selection for at most 5 seconds. Inside the Admin UI,
+proxy-scoped work that runs without a selected proxy (background tasks and
+audit events from the Proxies page) also uses this default. If MySQL is unavailable the
 admin UI does not fall back to `DEFAULT_PROXY_ID`; it fails like the rest of
 the MySQL-backed UI. A proxy container's runtime identity never depends on
 this setting: its own `DEFAULT_PROXY_ID`/`PROXY_INSTANCE_ID` stay authoritative

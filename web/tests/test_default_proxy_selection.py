@@ -330,3 +330,134 @@ def test_set_default_route_reports_and_audits_registry_refusal(monkeypatch, tmp_
     assert audit_store.records[-1]["kind"] == "proxy_default_set"
     assert audit_store.records[-1]["ok"] is False
     assert registry.default_proxy_id is None
+
+
+# --- Implicit default resolver (Admin UI process only) ----------------------
+
+
+@pytest.fixture
+def proxy_context_module():
+    from services import proxy_context  # type: ignore
+
+    yield proxy_context
+    proxy_context.set_implicit_default_proxy_resolver(None)
+
+
+def test_without_resolver_implicit_proxy_is_env_identity(
+    proxy_context_module, monkeypatch
+):
+    monkeypatch.setenv("DEFAULT_PROXY_ID", "edge-env")
+    proxy_context_module.set_implicit_default_proxy_resolver(None)
+
+    assert proxy_context_module.get_default_proxy_id() == "edge-env"
+    assert proxy_context_module.get_proxy_id() == "edge-env"
+    assert proxy_context_module.get_bound_proxy_id() is None
+
+
+def test_resolver_drives_unbound_proxy_but_not_bound_or_env_identity(
+    proxy_context_module, monkeypatch
+):
+    monkeypatch.setenv("DEFAULT_PROXY_ID", "edge-env")
+    calls: list[int] = []
+
+    def resolver() -> str:
+        calls.append(1)
+        return "edge-ui"
+
+    proxy_context_module.set_implicit_default_proxy_resolver(resolver)
+
+    assert proxy_context_module.get_proxy_id() == "edge-ui"
+    assert proxy_context_module.get_default_proxy_id() == "edge-ui"
+    assert proxy_context_module.get_env_default_proxy_id() == "edge-env"
+    token = proxy_context_module.set_proxy_id("edge-bound")
+    try:
+        before = len(calls)
+        assert proxy_context_module.get_proxy_id() == "edge-bound"
+        assert proxy_context_module.get_bound_proxy_id() == "edge-bound"
+        assert len(calls) == before
+    finally:
+        proxy_context_module.reset_proxy_id(token)
+
+
+def test_resolver_errors_propagate_and_reentry_is_rejected(proxy_context_module):
+    import pymysql
+    from services.db import DATABASE_ERRORS  # type: ignore
+
+    def unavailable() -> str:
+        raise pymysql.OperationalError(2003, "mysql unavailable")
+
+    proxy_context_module.set_implicit_default_proxy_resolver(unavailable)
+    with pytest.raises(DATABASE_ERRORS):
+        proxy_context_module.get_proxy_id()
+
+    proxy_context_module.set_implicit_default_proxy_resolver(
+        proxy_context_module.get_proxy_id,
+    )
+    with pytest.raises(RuntimeError, match="re-entered"):
+        proxy_context_module.get_proxy_id()
+
+
+def test_background_audit_write_follows_stored_default(tmp_path, monkeypatch):
+    # Admin UI env still names the stale proxy; the UI selection must win for
+    # proxy-scoped writes made by background threads without a bound proxy.
+    monkeypatch.setenv("DEFAULT_PROXY_ID", "workstation-proxy")
+    configure_test_mysql_env(tmp_path / "default-selection-background")
+    from services import proxy_context  # type: ignore
+    from services.audit_store import get_audit_store  # type: ignore
+
+    registry = _registry_module().get_proxy_registry()
+    registry.ensure_proxy("workstation-proxy")
+    registry.ensure_proxy("livingroom-proxy")
+    registry.set_default_proxy("livingroom-proxy")
+    registry.remove_proxy("workstation-proxy")
+    proxy_context.set_implicit_default_proxy_resolver(
+        registry.effective_default_proxy_id
+    )
+    errors: list[BaseException] = []
+
+    def background() -> None:
+        try:
+            get_audit_store().record(kind="background_probe", ok=True)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    try:
+        thread = threading.Thread(target=background)
+        thread.start()
+        thread.join(30)
+    finally:
+        proxy_context.set_implicit_default_proxy_resolver(None)
+
+    assert errors == []
+    with registry._connect() as conn:
+        rows = conn.execute(
+            "SELECT proxy_id FROM audit_events WHERE kind='background_probe'",
+        ).fetchall()
+    assert [row["proxy_id"] for row in rows] == ["livingroom-proxy"]
+
+
+def test_admin_installer_uses_registry_default_and_links_stay_unbound(
+    monkeypatch, tmp_path
+):
+    registry = FakeRegistry(proxy_ids=["default", "edge-2"])
+    registry.default_proxy_id = "edge-2"
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    module = loaded.module
+    from services import proxy_context  # type: ignore
+
+    module.install_admin_default_proxy_resolver()
+    try:
+        assert module.get_proxy_id() == "edge-2"
+
+        def unavailable() -> str:
+            msg = "mysql unavailable"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(registry, "effective_default_proxy_id", unavailable)
+        # Link generation without a bound proxy or session pin stays unpinned
+        # and never resolves the default (no MySQL dependency for links).
+        with module.app.test_request_context("/proxies"):
+            assert module._link_proxy_id() is None
+            assert "proxy_id=" not in module._endpoint_url("index")
+    finally:
+        proxy_context.set_implicit_default_proxy_resolver(None)
