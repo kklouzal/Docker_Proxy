@@ -971,6 +971,9 @@ def test_build_active_artifact_persists_download_pending_when_no_cached_lists(
             assert force is True
             return False
 
+        def download_retry_backoff(self, _status, _now_ts: int) -> bool:
+            return False
+
         def record_artifact_build_result(self, **kwargs: object) -> None:
             recorded.update(kwargs)
 
@@ -1633,6 +1636,35 @@ def test_should_update_uses_twelve_hour_success_cadence_by_default(tmp_path) -> 
         rules=0,
     )
     assert store.should_update(disabled, 1_001, True) is False
+
+
+def test_should_update_backs_off_after_failed_download(tmp_path: Path) -> None:
+    from services import adblock_store as store_module  # type: ignore
+
+    store = store_module.AdblockStore(
+        lists_dir=str(tmp_path / "lists"),
+        update_interval_seconds=12 * 60 * 60,
+        download_retry_seconds=900,
+    )
+    failed = store_module.ListStatus(
+        key="easylist",
+        url="https://example.invalid/list.txt",
+        enabled=True,
+        last_success=1_000,
+        last_attempt=100_000,
+        last_error="timeout",
+        bytes=0,
+        rules=0,
+    )
+
+    # Overdue list whose last attempt failed: no retry inside the window ...
+    assert store.download_retry_backoff(failed, 100_899) is True
+    assert store.should_update(failed, 100_899, False) is False
+    # ... retry after it, and an operator-forced refresh is never delayed.
+    assert store.should_update(failed, 100_900, False) is True
+    assert store.should_update(failed, 100_001, True) is True
+    succeeded = store_module.ListStatus(**{**failed.__dict__, "last_success": 100_000})
+    assert store.download_retry_backoff(succeeded, 100_001) is False
 
 
 def _run_background_loop_due_check(

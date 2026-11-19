@@ -990,7 +990,10 @@ class AdblockArtifactStore:
                 has_local_rules = _list_file_has_rule_content(list_path)
                 needs_download = (
                     refresh_lists
-                    or not has_local_rules
+                    or (
+                        not has_local_rules
+                        and not store.download_retry_backoff(status, now_ts)
+                    )
                     or store.should_update(status, now_ts, False)
                 )
                 if not needs_download:
@@ -1213,10 +1216,14 @@ class AdblockArtifactStore:
                     settings_enabled=settings_enabled,
                     enabled_statuses=enabled_statuses,
                 )
+                now_ts = _now()
                 due_download = settings_enabled and any(
                     (
-                        not _list_file_has_rule_content(store.list_path(status.key))
-                        or store.should_update(status, _now(), False)
+                        (
+                            not _list_file_has_rule_content(store.list_path(status.key))
+                            and not store.download_retry_backoff(status, now_ts)
+                        )
+                        or store.should_update(status, now_ts, False)
                     )
                     for status in enabled_statuses
                 )
@@ -1238,13 +1245,17 @@ class AdblockArtifactStore:
                     )
                     if bool(result.get("changed")):
                         nudge_registered_proxies(force=False)
+                    if bool(result.get("ok")):
+                        # A completed build consumed the refresh request; lists
+                        # whose download failed are retried after the
+                        # per-list download backoff, not on every poll.
+                        with contextlib.suppress(Exception):
+                            store.clear_refresh_requested()
                     if not bool(result.get("ok")) or bool(
                         result.get("download_pending"),
                     ):
                         sleep_seconds = error_seconds
                     else:
-                        with contextlib.suppress(Exception):
-                            store.clear_refresh_requested()
                         sleep_seconds = poll_seconds
             except DATABASE_ERRORS as exc:
                 log_database_unavailable(
