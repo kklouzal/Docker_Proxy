@@ -962,3 +962,83 @@ def test_lazy_store_init_db_skips_hot_path_ddl_when_schema_current(
             or op.startswith(("ALTER TABLE", "CREATE TABLE"))
         ]
         assert forbidden == []
+
+
+class _LockPollConn:
+    """GET_LOCK fake that reports contention for the first N waits."""
+
+    def __init__(self, *, read_timeout: object, busy_waits: int) -> None:
+        self.native = type("_Native", (), {"_read_timeout": read_timeout})()
+        self.busy_waits = busy_waits
+        self.lock_waits: list[int] = []
+        self.released = 0
+        self._discard_on_close = False
+
+    def execute(self, sql: str, params=()):
+        text = " ".join(str(sql).split())
+        if "GET_LOCK" in text:
+            self.lock_waits.append(int(params[1]))
+            if len(self.lock_waits) <= self.busy_waits:
+                return _Result([{"acquired": 0}])
+            return _Result([{"acquired": 1}])
+        if "RELEASE_LOCK" in text:
+            self.released += 1
+        return _Result()
+
+
+def test_migration_lock_waits_in_slices_shorter_than_read_timeout() -> None:
+    conn = _LockPollConn(read_timeout=15, busy_waits=2)
+
+    with schema_lifecycle._migration_advisory_lock(conn, "lock", 60):
+        assert conn.released == 0
+
+    # Each server-side GET_LOCK wait ends before the 15 s client read timeout,
+    # so contention is reported as a lock wait, not as a 2013 lost connection.
+    assert conn.lock_waits == [13, 13, 13]
+    assert conn.released == 1
+
+
+def test_migration_lock_without_known_read_timeout_keeps_single_wait() -> None:
+    conn = _LockPollConn(read_timeout=None, busy_waits=0)
+
+    with schema_lifecycle._migration_advisory_lock(conn, "lock", 60):
+        pass
+
+    assert conn.lock_waits == [60]
+
+
+def test_migration_lock_times_out_at_the_overall_deadline(monkeypatch) -> None:
+    clock = {"now": 1000.0}
+
+    class _ClockConn(_LockPollConn):
+        def execute(self, sql: str, params=()):
+            if "GET_LOCK" in str(sql):
+                clock["now"] += float(params[1])
+            return super().execute(sql, params)
+
+    monkeypatch.setattr(schema_lifecycle.time, "monotonic", lambda: clock["now"])
+    conn = _ClockConn(read_timeout=15, busy_waits=10**6)
+
+    with pytest.raises(TimeoutError):
+        with schema_lifecycle._migration_advisory_lock(conn, "lock", 30):
+            pytest.fail("lock body must not run without the lock")
+
+    assert conn.lock_waits == [13, 13, 4]
+    assert conn.released == 0
+
+
+def test_migrate_schema_holds_migration_lock_outside_the_pool(monkeypatch) -> None:
+    factories: list[object] = []
+
+    def _fake_apply(spec, *, require_privileges, connect_factory):
+        factories.append(connect_factory)
+        return []
+
+    monkeypatch.setattr(schema_lifecycle, "apply_schema_migration", _fake_apply)
+
+    schema_lifecycle.migrate_schema(require_privileges=False)
+
+    # Store init_db() hooks inside _apply_spec check out pooled connections; the
+    # lock-holding outer session must not consume the only DB_POOL_SIZE=1 slot.
+    assert factories
+    assert all(factory is schema_lifecycle.connect_unpooled for factory in factories)

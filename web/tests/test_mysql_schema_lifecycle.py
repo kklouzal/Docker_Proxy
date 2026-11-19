@@ -171,3 +171,23 @@ def test_mysql_schema_lifecycle_lock_timeout_is_clear(tmp_path: Path, monkeypatc
         with pytest.raises(TimeoutError, match="schema_lifecycle"):
             schema_lifecycle.apply_schema_migration(spec, require_privileges=False)
         holder.execute("DO RELEASE_LOCK(%s)", ("docker_proxy:schema_lifecycle:migrate",))
+
+
+@pytest.mark.integration
+@pytest.mark.mysql
+def test_mysql_schema_lifecycle_migrates_fresh_database_with_single_pool_slot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    schema_lifecycle, connect = _schema_module(tmp_path)
+    from services import db  # type: ignore
+
+    monkeypatch.setenv("DB_POOL_SIZE", "1")
+    monkeypatch.setenv("DB_POOL_ACQUIRE_TIMEOUT_SECONDS", "1")
+    db._clear_pooled_connections()
+
+    results = schema_lifecycle.migrate_schema(require_privileges=False)
+
+    assert results
+    with connect() as conn:
+        assert schema_lifecycle.schema_history_error(conn) is None
