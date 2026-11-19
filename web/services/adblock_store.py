@@ -128,6 +128,10 @@ class AdblockStore:
         self._db_initialized = False
         self._db_init_lock = threading.Lock()
         self._last_events_prune_ts = 0
+        # (inode, byte offset) of the c-icap checkpoint this process last read
+        # or committed.  Only the tailer thread touches it; when the log's
+        # inode and size still equal it, the poll skips MySQL entirely.
+        self._cicap_checkpoint: tuple[int, int] | None = None
 
     def _connect(self):
         return connect()
@@ -443,8 +447,9 @@ class AdblockStore:
             try:
                 path = self.cicap_access_log_path
                 if path and pathlib.Path(path).exists():
-                    with self._connect() as conn:
-                        self._ingest_new_cicap_lines(conn)
+                    if not self._cicap_log_unchanged(path):
+                        with self._connect() as conn:
+                            self._ingest_new_cicap_lines(conn)
             except DATABASE_ERRORS as exc:
                 log_database_unavailable(
                     logger,
@@ -461,7 +466,18 @@ class AdblockStore:
                 )
             self._blocklog_stop_event.wait(1.0)
 
+    def _cicap_log_unchanged(self, path: str) -> bool:
+        checkpoint = self._cicap_checkpoint
+        if checkpoint is None:
+            return False
+        try:
+            st = os.stat(path)
+        except Exception:
+            return False
+        return (int(st.st_ino or 0), int(st.st_size or 0)) == checkpoint
+
     def _ingest_new_cicap_lines(self, conn) -> None:
+        self._cicap_checkpoint = None
         path = self.cicap_access_log_path
         if not path:
             return
@@ -525,10 +541,12 @@ class AdblockStore:
             # Still update inode if it changed (so we don't keep resetting).
             changes = checkpoint_changes(pos)
             if not changes:
+                self._cicap_checkpoint = (inode, pos)
                 return
             try:
                 self._set_proxy_meta_values(conn, changes)
                 conn.commit()
+                self._cicap_checkpoint = (inode, pos)
             except Exception:
                 with contextlib.suppress(Exception):
                     conn.rollback()
@@ -582,6 +600,7 @@ class AdblockStore:
             with contextlib.suppress(Exception):
                 conn.rollback()
             raise
+        self._cicap_checkpoint = (inode, checkpoint_pos)
 
     def _parse_cicap_access_line(self, line: str) -> dict[str, Any] | None:
         raw = (line or "").strip("\r\n")

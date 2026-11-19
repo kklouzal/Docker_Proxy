@@ -1129,6 +1129,12 @@ def test_adblock_tailer_keeps_partial_line_until_newline(
         ["cicap_access_inode", "cicap_access_pos"],
     ]
 
+    assert store._cicap_checkpoint == (
+        log_path.stat().st_ino,
+        log_path.stat().st_size,
+    )
+    assert store._cicap_log_unchanged(str(log_path)) is True
+
     # An idle poll with an unchanged checkpoint reads once and writes nothing:
     # no lifecycle lock, no upsert, no commit traffic.
     calls.clear()
@@ -1683,3 +1689,45 @@ def test_missing_log_poll_is_interruptible_by_bounded_stop(
     getattr(store, start_name)()
     assert entered_wait.wait(1.0), "tailer did not enter its interruptible poll wait"
     assert getattr(store, stop_name)(timeout=0.25) is True
+
+
+def test_adblock_tailer_poll_skips_mysql_while_log_is_unchanged(
+    monkeypatch, tmp_path, adblock_store
+) -> None:
+    log_path = tmp_path / "cicap-access.log"
+    log_path.write_text("", encoding="utf-8")
+    store = adblock_store.AdblockStore(cicap_access_log_path=str(log_path))
+    ingests: list[int] = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def fake_ingest(_conn) -> None:
+        ingests.append(1)
+        st = log_path.stat()
+        store._cicap_checkpoint = (st.st_ino, st.st_size)
+
+    polls = iter(range(4))
+
+    def wait_once(_seconds: float) -> bool:
+        index = next(polls, None)
+        if index == 1:
+            # The log grows after the second idle poll.
+            log_path.write_text("x\n", encoding="utf-8")
+        if index is None or index >= 3:
+            store._blocklog_stop_event.set()
+        return False
+
+    monkeypatch.setattr(store, "_connect", Conn)
+    monkeypatch.setattr(store, "_ingest_new_cicap_lines", fake_ingest)
+    monkeypatch.setattr(store._blocklog_stop_event, "wait", wait_once)
+
+    store._blocklog_tail_loop()
+
+    # First poll establishes the checkpoint; identical (inode, size) polls do
+    # not open a connection; growth goes back to MySQL once.
+    assert len(ingests) == 2
