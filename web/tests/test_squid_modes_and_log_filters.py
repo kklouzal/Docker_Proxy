@@ -177,7 +177,7 @@ def test_ssl_errors_store_enriches_tls_accept_domain_from_master_xaction(
                 host VARCHAR(255) NOT NULL,
                 url TEXT NOT NULL,
                 master_xaction VARCHAR(128) NOT NULL,
-                KEY idx_diagnostic_requests_proxy_tx (proxy_id, master_xaction, ts)
+                KEY idx_diagnostic_requests_proxy_tx_ts_id (proxy_id, master_xaction, ts, id)
             )
             """,
         )
