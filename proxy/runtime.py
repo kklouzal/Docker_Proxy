@@ -59,6 +59,7 @@ from services.policy_materializer import (
     MaterializedPolicyFile,
     build_proxy_policy_state,
     calculate_policy_sha,
+    remember_last_known_good_policy_files,
 )
 from services.proxy_context import get_proxy_id
 from services.proxy_health import check_adblock_icap_health as _check_icap_adblock
@@ -3088,8 +3089,35 @@ class ProxyRuntime:
                 return True
         return False
 
+    def _remember_last_known_good_policy(self, desired: Any) -> None:
+        # Best effort: the mirror only matters for a later restart without
+        # control-plane access, so a failure must not fail the live sync.
+        try:
+            remember_last_known_good_policy_files(
+                (str(item.path), str(item.content or ""))
+                for item in tuple(getattr(desired, "files", ()) or ())
+            )
+        except Exception:
+            log_exception_throttled(
+                logger,
+                "proxy_runtime.policy_last_known_good",
+                interval_seconds=300.0,
+                message="Failed to persist last-known-good proxy policy files",
+            )
+
     def sync_policy_state(self, *, force: bool = False) -> dict[str, Any]:
         desired = self.policy_state_builder(self.proxy_id)
+        result = self._materialize_policy_state(desired, force=force)
+        if result.get("ok"):
+            self._remember_last_known_good_policy(desired)
+        return result
+
+    def _materialize_policy_state(
+        self,
+        desired: Any,
+        *,
+        force: bool,
+    ) -> dict[str, Any]:
         if self._policy_requires_webcat_snapshot(desired):
             snapshot_ok, snapshot_detail = (
                 self._publish_webcat_snapshot_for_policy_sync()

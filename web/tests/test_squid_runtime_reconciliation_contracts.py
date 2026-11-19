@@ -101,7 +101,7 @@ def test_entrypoint_keeps_materialized_adblock_artifact_at_boot(tmp_path: Path) 
     compiled = tmp_path / "compiled"
     compiled.mkdir()
     calls = tmp_path / "calls"
-    script = block.replace(
+    script = "CONTROL_PLANE_DB_REACHABLE=1\n" + block.replace(
         "/var/lib/squid-flask-proxy/adblock/compiled", str(compiled)
     ).replace("python3 /app/tools/adblock_compile.py", f"echo compiled >> {calls}")
 

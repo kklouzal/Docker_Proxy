@@ -22,3 +22,12 @@ def _reset_mysql_connect_circuits():
     reset = getattr(db, "_reset_connect_circuits", None)
     if callable(reset):
         reset()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_policy_last_known_good_dir(tmp_path_factory, monkeypatch):
+    """Keep proxy policy mirrors out of the real durable volume path."""
+    monkeypatch.setenv(
+        "PROXY_POLICY_LKG_DIR",
+        str(tmp_path_factory.mktemp("policy-last-known-good")),
+    )
