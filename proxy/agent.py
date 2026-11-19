@@ -36,19 +36,23 @@ _TRANSIENT_DB_CLASSIFICATIONS = frozenset(
 )
 
 
-def _is_transient_control_plane_failure(exc: BaseException) -> bool:
-    """Return whether exc (or its cause chain) is a control-plane availability failure."""
+def _transient_control_plane_cause(exc: BaseException) -> BaseException | None:
+    """Return the availability failure in exc's cause chain, if any."""
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if isinstance(current, DATABASE_ERRORS):
             if mysql_error_classification(current) in _TRANSIENT_DB_CLASSIFICATIONS:
-                return True
+                return current
         elif isinstance(current, TimeoutError):
-            return True
+            return current
         current = current.__cause__ or current.__context__
-    return False
+    return None
+
+
+def _is_transient_control_plane_failure(exc: BaseException) -> bool:
+    return _transient_control_plane_cause(exc) is not None
 
 
 def _wait_for_next_cycle(
@@ -224,13 +228,14 @@ class _ControlPlaneStartup:
         try:
             self.recovery = run_startup_recovery()
         except Exception as exc:
-            if _is_transient_control_plane_failure(exc):
+            cause = _transient_control_plane_cause(exc)
+            if cause is not None:
                 if should_log("proxy.agent.startup_recovery", interval_seconds=60.0):
                     logger.warning(
                         "Proxy startup recovery is waiting for the control-plane "
                         "database; local proxy services keep serving the last "
                         "materialized state: %s",
-                        public_error_message(exc, default="Database is unavailable."),
+                        public_error_message(cause, default="Database is unavailable."),
                     )
             else:
                 # Fail closed: normal DB mutation stays blocked until recovery
