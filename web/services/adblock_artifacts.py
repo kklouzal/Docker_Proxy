@@ -1211,16 +1211,28 @@ class AdblockArtifactStore:
                 # Subscription artifacts are shared; proxy enablement controls
                 # Squid routing and must not empty another proxy's artifact.
                 settings_enabled = True
+                now_ts = _now()
+                locally_available = {
+                    status.key
+                    for status in enabled_statuses
+                    if _list_file_has_rule_content(store.list_path(status.key))
+                }
+                # Compare against the lists a build could include right now; a
+                # list without local rules is handled by its download schedule,
+                # otherwise it would force an identical rebuild on every poll.
                 active_lists_drift = _active_enabled_lists_drift(
                     active,
                     settings_enabled=settings_enabled,
-                    enabled_statuses=enabled_statuses,
+                    enabled_statuses=[
+                        status
+                        for status in enabled_statuses
+                        if status.key in locally_available
+                    ],
                 )
-                now_ts = _now()
                 due_download = settings_enabled and any(
                     (
                         (
-                            not _list_file_has_rule_content(store.list_path(status.key))
+                            status.key not in locally_available
                             and not store.download_retry_backoff(status, now_ts)
                         )
                         or store.should_update(status, now_ts, False)
