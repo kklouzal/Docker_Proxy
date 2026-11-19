@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import socket
 from types import SimpleNamespace
 
@@ -52,10 +53,25 @@ def _loaded(monkeypatch, tmp_path, *, controller=None, **overrides):
 def _allow_public_example_dns(monkeypatch) -> None:
     from services import download_safety
 
-    def fake_getaddrinfo(*_args, **_kwargs):
+    real_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        # download_safety.socket is the global socket module: keep IP-literal
+        # and loopback lookups (the MySQL test server) real so only the public
+        # example hostnames under test resolve to the fake public address.
+        if str(host) == "localhost" or _is_ip_literal(host):
+            return real_getaddrinfo(host, *args, **kwargs)
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
 
     monkeypatch.setattr(download_safety.socket, "getaddrinfo", fake_getaddrinfo)
+
+
+def _is_ip_literal(host: object) -> bool:
+    try:
+        ipaddress.ip_address(str(host))
+    except ValueError:
+        return False
+    return True
 
 
 def _assert_redirect_success(response) -> None:

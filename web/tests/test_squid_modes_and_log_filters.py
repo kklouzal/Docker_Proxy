@@ -505,6 +505,10 @@ stdout_logfile_maxbytes=0
     )
     (supervisor_dir / "cicap_av_1.conf").write_text(
         f"""[program:cicap_av_1]
+# Required AV waits for clamd before c-icap starts; optional AV degrades immediately so browsing is not delayed.
+# Keep the backend probe inside the supervisor child process. RouterOS/supervisord
+# otherwise logs the short-lived probe helper as an unknown reaped pid whenever
+# clamd is unavailable.
 command=/bin/sh -c 'export CLAMD_HOST="clamav.edge-2.internal" CLAMD_PORT="3311" CLAMAV_REQUIRED="0"; rm -f "/var/run/c-icap/c-icap-av-1.pid"; exec /usr/local/bin/cicap_av_runner.py "{cicap_dir / "c-icap-av-1.conf"}"'
 autostart=true
 autorestart=true

@@ -14,6 +14,7 @@ from urllib.parse import unquote, urlparse
 
 import pymysql  # type: ignore
 
+from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
 from services.sql_identifiers import quote_mysql_identifier
 
@@ -337,7 +338,9 @@ def mysql_error_classification(exc: BaseException) -> str:
 
 
 def _is_retryable_mysql_connect_error(exc: BaseException) -> bool:
-    if not isinstance(exc, pymysql.MySQLError):
+    if not isinstance(exc, pymysql.MySQLError) or isinstance(
+        exc, MySQLUnreachableError
+    ):
         return False
     if isinstance(exc, pymysql.InterfaceError) and mysql_error_code(exc) in {None, 0}:
         return True
@@ -715,6 +718,46 @@ def _open_native_connection(cfg: DatabaseConfig) -> Any:
     )
 
 
+_TIMEOUT_EVIDENCE_FRACTION = 0.9
+
+
+def _timed_out(started_mono: float, timeout_seconds: float) -> bool:
+    return time.monotonic() - started_mono >= _TIMEOUT_EVIDENCE_FRACTION * float(
+        timeout_seconds
+    )
+
+
+def _open_native_connection_with_retries(
+    cfg: DatabaseConfig,
+    *,
+    caller_opened_circuit: bool = False,
+) -> Any:
+    """Open a connection with the bounded in-call retries, through the circuit.
+
+    An attempt that fails only after (nearly) the whole connect timeout is
+    evidence of a hung or black-holed server: it opens the circuit at once, so
+    every other caller fails fast instead of each waiting MYSQL_CONNECT_TIMEOUT
+    again. The caller that observed it keeps its own in-call retries, so a
+    genuinely transient stall still recovers within the same call.
+    """
+    opened_here = caller_opened_circuit
+
+    def attempt() -> Any:
+        nonlocal opened_here
+        circuit = _connect_circuit(cfg)
+        if not opened_here:
+            circuit.check()
+        started = time.monotonic()
+        try:
+            return _open_native_connection(cfg)
+        except Exception as exc:
+            if _timed_out(started, cfg.connect_timeout) and circuit.record_failure(exc):
+                opened_here = True
+            raise
+
+    return _retry_mysql_operation(attempt)
+
+
 def _close_native_connection(native: Any) -> None:
     with contextlib.suppress(Exception):
         native.close()
@@ -763,7 +806,7 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
     key = _pool_key(cfg)
     maxsize = _pool_maxsize()
     if maxsize <= 0:
-        native = _retry_mysql_operation(lambda: _open_native_connection(cfg))
+        native = _open_native_connection_with_retries(cfg)
         try:
             _configure_native_connection(native, cfg)
             return native
@@ -772,6 +815,7 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
             raise
 
     deadline = time.monotonic() + _pool_acquire_timeout_seconds()
+    opened_by_caller = False
     while True:
         source = ""
         native = None
@@ -796,18 +840,28 @@ def _checkout_connection(cfg: DatabaseConfig) -> Any:
                 state = _pooled_connections.setdefault(key, _PoolState())
 
         if source == "idle":
+            ping_started = time.monotonic()
             try:
-                native.ping(reconnect=True)
+                # No implicit reconnect: a dead pooled session is discarded and
+                # replaced through the circuit-gated open below.
+                native.ping(reconnect=False)
                 _configure_native_connection(native, cfg)
                 return native
-            except Exception:
+            except Exception as exc:
+                if _timed_out(ping_started, cfg.read_timeout):
+                    opened_by_caller = (
+                        _connect_circuit(cfg).record_failure(exc) or opened_by_caller
+                    )
                 _close_native_connection(native)
                 with _pool_condition:
                     _release_pool_slot_locked(key)
                 continue
 
         try:
-            native = _retry_mysql_operation(lambda: _open_native_connection(cfg))
+            native = _open_native_connection_with_retries(
+                cfg,
+                caller_opened_circuit=opened_by_caller,
+            )
             _configure_native_connection(native, cfg)
             return native
         except Exception:
@@ -941,22 +995,249 @@ def resolve_database_config() -> DatabaseConfig:
     )
 
 
+_CIRCUIT_TRIP_CLASSIFICATIONS = frozenset({"connectivity", "connection_lost"})
+
+
+class MySQLUnreachableError(pymysql.OperationalError):  # type: ignore[misc,name-defined]
+    """Raised without a network attempt while the connect circuit is open.
+
+    Carries code 2003 so callers classify it as ``connectivity`` like any other
+    unreachable-server error; in-call connect retries never replay it.
+    """
+
+
+class _ConnectCircuit:
+    """Process-local MySQL reachability gate for one server/database target.
+
+    Closed: connections are established normally, including the bounded
+    in-call connect retries for transient blips. When establishment still fails
+    with a connectivity-class error (2002/2003/2006/2013, InterfaceError 0) the
+    circuit opens: further connect attempts in this process fail immediately
+    with ``OperationalError(2003)`` instead of each paying
+    ``MYSQL_CONNECT_RETRIES x MYSQL_CONNECT_TIMEOUT``. One daemon prober thread
+    retries a single bounded connection with exponential backoff and jitter;
+    the first successful probe closes the circuit and runs the registered
+    recovery listeners so owners can resynchronize immediately.
+
+    Local pool exhaustion (1040) and SQL/privilege errors never open it.
+    """
+
+    def __init__(self, cfg: DatabaseConfig) -> None:
+        self.cfg = cfg
+        self.lock = threading.Lock()
+        self.open = False
+        self.opened_mono = 0.0
+        self.failures = 0
+        self.stop = threading.Event()
+
+    def check(self) -> None:
+        with self.lock:
+            if not self.open:
+                return
+            elapsed = time.monotonic() - self.opened_mono
+        msg = (
+            f"MySQL {self.cfg.host}:{self.cfg.port} is unreachable; new connection "
+            f"attempts are paused while a background probe retries (down {elapsed:.0f}s)"
+        )
+        raise MySQLUnreachableError(2003, msg)
+
+    def record_failure(self, exc: BaseException) -> bool:
+        """Open the circuit for a connectivity failure; True if this call opened it."""
+        if mysql_error_classification(exc) not in _CIRCUIT_TRIP_CLASSIFICATIONS:
+            return False
+        with self.lock:
+            if self.open:
+                return False
+            self.open = True
+            self.opened_mono = time.monotonic()
+            self.failures = 1
+            # Each outage gets its own stop event so a prober from an earlier
+            # outage can never be revived by a later reopen.
+            self.stop = threading.Event()
+            prober = threading.Thread(
+                target=self._probe_loop,
+                args=(self.stop,),
+                name="mysql-connect-probe",
+                daemon=True,
+            )
+        with contextlib.suppress(Exception):
+            logger.warning(
+                "MySQL %s:%s unreachable (%s); pausing new connection attempts and "
+                "probing in the background with backoff up to %.0fs",
+                self.cfg.host,
+                self.cfg.port,
+                mysql_error_classification(exc),
+                _circuit_backoff_max_seconds(),
+            )
+        try:
+            prober.start()
+        except Exception:
+            # Without a prober nothing could ever close the circuit; stay on
+            # the normal per-call retry path instead.
+            with self.lock:
+                self.open = False
+                self.stop.set()
+            logger.exception("Failed to start the MySQL reconnect probe")
+            return False
+        return True
+
+    def record_success(self) -> None:
+        with self.lock:
+            if not self.open:
+                return
+        self._close()
+
+    def _close(self) -> None:
+        with self.lock:
+            if not self.open:
+                return
+            self.open = False
+            down = time.monotonic() - self.opened_mono
+            self.failures = 0
+            self.stop.set()
+        with contextlib.suppress(Exception):
+            logger.warning(
+                "MySQL %s:%s reachable again after %.1fs; connections resumed",
+                self.cfg.host,
+                self.cfg.port,
+                down,
+            )
+        _notify_mysql_recovery_listeners()
+
+    def _probe_delay(self) -> float:
+        base = _circuit_backoff_initial_seconds()
+        cap = max(base, _circuit_backoff_max_seconds())
+        delay = min(cap, base * (2 ** max(0, min(self.failures - 1, 30))))
+        return max(0.05, delay * random.uniform(0.8, 1.2))  # noqa: S311
+
+    def _probe_once(self) -> bool:
+        try:
+            native = _open_native_connection(self.cfg)
+        except Exception as exc:
+            # A reachable server rejecting the session (unknown database,
+            # privileges, too many connections) is not a connectivity outage;
+            # callers must see that error themselves.
+            return mysql_error_classification(exc) not in _CIRCUIT_TRIP_CLASSIFICATIONS
+        _close_native_connection(native)
+        return True
+
+    def _probe_loop(self, stop: threading.Event) -> None:
+        while not stop.wait(self._probe_delay()):
+            if self._probe_once():
+                self._close()
+                return
+            with self.lock:
+                if not self.open:
+                    return
+                self.failures += 1
+
+
+def _circuit_backoff_initial_seconds() -> float:
+    return _env_float(
+        "MYSQL_CONNECT_CIRCUIT_BACKOFF_INITIAL_SECONDS",
+        1.0,
+        minimum=0.1,
+        maximum=60.0,
+    )
+
+
+def _circuit_backoff_max_seconds() -> float:
+    return _env_float(
+        "MYSQL_CONNECT_CIRCUIT_BACKOFF_MAX_SECONDS",
+        10.0,
+        minimum=0.1,
+        maximum=300.0,
+    )
+
+
+_connect_circuits: dict[tuple[str, int, str, str, str], _ConnectCircuit] = {}
+_connect_circuits_lock = threading.Lock()
+_mysql_recovery_listeners: list[Any] = []
+
+
+def _connect_circuit(cfg: DatabaseConfig) -> _ConnectCircuit:
+    key = _mysql_ready_key(cfg)
+    with _connect_circuits_lock:
+        circuit = _connect_circuits.get(key)
+        if circuit is None:
+            circuit = _ConnectCircuit(cfg)
+            _connect_circuits[key] = circuit
+        return circuit
+
+
+def add_mysql_recovery_listener(callback) -> None:
+    """Register a callback for MySQL becoming reachable again.
+
+    ``callback()`` runs on the probe thread whenever this process observed MySQL
+    unreachable and connectivity returns. Callbacks must be fast and
+    non-blocking (for example, set an Event); exceptions are logged.
+    """
+    with _connect_circuits_lock:
+        if callback not in _mysql_recovery_listeners:
+            _mysql_recovery_listeners.append(callback)
+
+
+def _notify_mysql_recovery_listeners() -> None:
+    with _connect_circuits_lock:
+        listeners = list(_mysql_recovery_listeners)
+    for callback in listeners:
+        try:
+            callback()
+        except Exception:
+            logger.exception("MySQL recovery listener failed")
+
+
+def _reset_connect_circuits() -> None:
+    with _connect_circuits_lock:
+        circuits = list(_connect_circuits.values())
+        _connect_circuits.clear()
+    for circuit in circuits:
+        circuit.stop.set()
+
+
+def _reinitialize_connect_circuits_after_fork() -> None:
+    # A forked child inherits the parent's circuit state (and possibly a held
+    # lock) but not its probe thread; start the child from a clean closed state.
+    global _connect_circuits_lock
+    _connect_circuits_lock = threading.Lock()
+    _connect_circuits.clear()
+
+
+os.register_at_fork(after_in_child=_reinitialize_connect_circuits_after_fork)
+
+
+def _establish(cfg: DatabaseConfig, opener):
+    circuit = _connect_circuit(cfg)
+    circuit.check()
+    try:
+        _ensure_mysql_database(cfg)
+        native = opener()
+    except Exception as exc:
+        circuit.record_failure(exc)
+        raise
+    circuit.record_success()
+    return native
+
+
 def connect(config: DatabaseConfig | None = None) -> CompatConnection:
     cfg = config or resolve_database_config()
-    _ensure_mysql_database(cfg)
-    native = _checkout_connection(cfg)
+    native = _establish(cfg, lambda: _checkout_connection(cfg))
     return CompatConnection(native, cfg=cfg)
 
 
-def connect_unpooled(config: DatabaseConfig | None = None) -> CompatConnection:
-    cfg = config or resolve_database_config()
-    _ensure_mysql_database(cfg)
-    native = _retry_mysql_operation(lambda: _open_native_connection(cfg))
+def _open_configured_unpooled(cfg: DatabaseConfig) -> Any:
+    native = _open_native_connection_with_retries(cfg)
     try:
         _configure_native_connection(native, cfg)
     except Exception:
         _close_native_connection(native)
         raise
+    return native
+
+
+def connect_unpooled(config: DatabaseConfig | None = None) -> CompatConnection:
+    cfg = config or resolve_database_config()
+    native = _establish(cfg, lambda: _open_configured_unpooled(cfg))
     return CompatConnection(native, cfg=None)
 
 
@@ -1015,3 +1296,4 @@ def reset_mysql_ready_for_tests() -> None:
         _mysql_ready = False
         _mysql_ready_keys.clear()
     _clear_pooled_connections()
+    _reset_connect_circuits()

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import pathlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from services.materialized_files import write_managed_text_files
 from services.proxy_context import normalize_proxy_id, reset_proxy_id, set_proxy_id
 from services.sslfilter_store import get_sslfilter_store
 from services.webfilter_core import get_proxy_webfilter_store
@@ -49,7 +51,11 @@ def _validated_materialized_policy_files(
             by_target[target_key] = item
             validated.append(item)
             continue
-        conflict = "conflicting content" if existing.content != item.content else "duplicate target"
+        conflict = (
+            "conflicting content"
+            if existing.content != item.content
+            else "duplicate target"
+        )
         msg = (
             f"Materialized policy file target has {conflict}: "
             f"{existing.path!r} and {item.path!r}"
@@ -125,3 +131,52 @@ def build_proxy_policy_state(proxy_id: object | None = None) -> ProxyPolicyState
         sslfilter_store=get_sslfilter_store(),
         webfilter_store=get_proxy_webfilter_store(),
     )
+
+
+_POLICY_LKG_DIR_DEFAULT = "/var/lib/squid-flask-proxy/policy-last-known-good"
+
+
+def _policy_lkg_dir() -> pathlib.Path:
+    return pathlib.Path(
+        (os.environ.get("PROXY_POLICY_LKG_DIR") or _POLICY_LKG_DIR_DEFAULT).strip()
+        or _POLICY_LKG_DIR_DEFAULT,
+    )
+
+
+def _policy_lkg_path(path: str) -> pathlib.Path:
+    key = _materialized_policy_path_key(path)
+    digest = hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return _policy_lkg_dir() / f"{digest}-{pathlib.Path(key).name}"
+
+
+def _read_text_or_none(path: pathlib.Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
+def remember_last_known_good_policy_files(files: Iterable[tuple[str, str]]) -> None:
+    """Mirror materialized policy files onto the proxy's durable volume.
+
+    The Squid policy includes live in the container's ephemeral /etc/squid; the
+    mirror lets a restart without control-plane access serve the last policy
+    this proxy applied instead of an empty (filtering-disabled) include.
+    """
+    changed = [
+        (str(lkg_path), content)
+        for path, content in files
+        if _read_text_or_none(lkg_path := _policy_lkg_path(path)) != content
+    ]
+    if changed:
+        _policy_lkg_dir().mkdir(parents=True, exist_ok=True)
+        write_managed_text_files(*changed)
+
+
+def restore_last_known_good_policy_file(path: str) -> bool:
+    """Restore path from the durable mirror; return False when none exists."""
+    content = _read_text_or_none(_policy_lkg_path(path))
+    if content is None:
+        return False
+    write_managed_text_files((path, content))
+    return True

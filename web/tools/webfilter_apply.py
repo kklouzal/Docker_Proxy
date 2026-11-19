@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import pathlib
 import sys
 from typing import TYPE_CHECKING
 
@@ -28,15 +29,51 @@ def _write_safe_include(path: str, reason: str) -> None:
     )
 
 
+def _restore_last_known_good(path: str) -> bool:
+    """Serve the last policy this proxy applied when the control plane is unavailable."""
+    try:
+        from services.policy_materializer import (  # type: ignore
+            restore_last_known_good_policy_file,
+        )
+
+        return restore_last_known_good_policy_file(path)
+    except Exception as exc:
+        _emit_failure("last_known_good_restore_failed", exc)
+        return False
+
+
+def _remember_last_known_good(path: str) -> None:
+    try:
+        from services.policy_materializer import (  # type: ignore
+            remember_last_known_good_policy_files,
+        )
+
+        with pathlib.Path(path).open(encoding="utf-8") as handle:
+            remember_last_known_good_policy_files(((path, handle.read()),))
+    except Exception as exc:
+        _emit_failure("last_known_good_save_failed", exc)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Generate /etc/squid/conf.d/30-webfilter.conf from UI settings",
     )
     ap.add_argument("--out", default="/etc/squid/conf.d/30-webfilter.conf")
+    ap.add_argument(
+        "--last-known-good-only",
+        action="store_true",
+        help="Skip the control-plane database and restore the last applied include.",
+    )
     args = ap.parse_args(list(argv) if argv is not None else None)
 
     # Import from the app package (works in container where /app is present).
     sys.path.insert(0, "/app")
+    if args.last_known_good_only:
+        if _restore_last_known_good(args.out):
+            return 0
+        with contextlib.suppress(Exception):
+            _write_safe_include(args.out, "control plane unavailable")
+        return 5
     try:
         from services.webfilter_core import ProxyWebFilterStore
     except Exception as exc:
@@ -48,24 +85,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     store = ProxyWebFilterStore(squid_include_path=args.out)
     try:
         store.apply_squid_include()
-        snapshot_ok, snapshot_detail = getattr(
-            store,
-            "last_webcat_snapshot_status",
-            (True, ""),
-        )
-        if not snapshot_ok:
-            _emit_failure(
-                "snapshot_publish_failed",
-                ValueError(snapshot_detail or "Web category snapshot publish failed."),
-            )
-            return 4
-        return 0
     except Exception as exc:
         _emit_failure("apply_failed", exc)
-        # Ensure include exists so Squid include is safe.
-        with contextlib.suppress(Exception):
-            _write_safe_include(args.out, "apply failed")
+        if not _restore_last_known_good(args.out):
+            # Ensure include exists so Squid include is safe.
+            with contextlib.suppress(Exception):
+                _write_safe_include(args.out, "apply failed")
         return 3
+    _remember_last_known_good(args.out)
+    snapshot_ok, snapshot_detail = getattr(
+        store,
+        "last_webcat_snapshot_status",
+        (True, ""),
+    )
+    if not snapshot_ok:
+        _emit_failure(
+            "snapshot_publish_failed",
+            ValueError(snapshot_detail or "Web category snapshot publish failed."),
+        )
+        return 4
+    return 0
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 
 - Startup applies versions in order and records each version checksum/status/events. Already-applied matching versions are no-ops; checksum drift on an applied version blocks startup.
 - MySQL DDL is non-transactional, so every version records a `running` checkpoint before DDL and uses idempotent table/index/column repairs. A failed or interrupted version is marked `failed` and can be retried safely.
+- The migration advisory lock and ledger rows are held on a dedicated non-pooled session, so store `init_db()` hooks inside a migration can use the pool even with `DB_POOL_SIZE=1`. Waiting for a concurrent migrator polls `GET_LOCK` in slices shorter than `MYSQL_READ_TIMEOUT`, bounded overall by `MYSQL_SCHEMA_LOCK_TIMEOUT_SECONDS` (default 60).
 - DDL privilege checks run at startup. Set `MYSQL_CREATE_DATABASE=0` for externally managed databases; migrations still require a DDL-capable account unless a privileged migration job ran first.
 - After the lifecycle-current cutover and subsequent startup migrations, lazy store constructors and control-plane stores use cheap process guards/current-schema assertions instead of repeated hot-path `CREATE TABLE`, `ALTER TABLE`, or `information_schema` repair loops.
 

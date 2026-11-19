@@ -102,6 +102,13 @@ def _allocate_icap_base(candidate: int, workers: int, *occupied: int) -> int:
     raise ValueError(msg)
 
 
+# docker/supervisord.proxy.conf gives Squid stopwaitsecs=40 (shutdown_lifetime
+# 30 s drain plus cleanup); `supervisorctl stop squid` blocks for up to that
+# long, so the client timeout must exceed it or a normal draining stop is
+# misreported as a failure.
+SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS = 50
+
+
 def _icap_port_bases(
     workers: int, *, adblock_port: object = None, av_port: object = None
 ) -> tuple[int, int]:
@@ -968,6 +975,9 @@ class SquidController:
         workers: int,
         config_text: str | None = None,
     ) -> dict[Path, str]:
+        # Must stay byte-identical to the files docker/entrypoint.sh writes at
+        # boot: any difference makes the first runtime ICAP reconciliation
+        # treat the supervisor files as changed and pause/restart Squid.
         count = normalize_icap_worker_count(workers)
         options = _effective_clamav_options(extract_clamav_options(config_text or ""))
         supervisor_dir = self._supervisor_include_dir()
@@ -1018,6 +1028,10 @@ stdout_logfile_maxbytes=0
             rendered[
                 supervisor_dir / f"cicap_av_{instance}.conf"
             ] = f"""[program:cicap_av_{instance}]
+# Required AV waits for clamd before c-icap starts; optional AV degrades immediately so browsing is not delayed.
+# Keep the backend probe inside the supervisor child process. RouterOS/supervisord
+# otherwise logs the short-lived probe helper as an unknown reaped pid whenever
+# clamd is unavailable.
 command=/bin/sh -c 'export CLAMD_HOST="{clamd_host}" CLAMD_PORT="{clamd_port}" CLAMAV_REQUIRED="{clamav_required}"; rm -f "{av_pid}"; exec /usr/local/bin/cicap_av_runner.py "{av_conf}"'
 autostart=true
 autorestart=true
@@ -1361,7 +1375,7 @@ stdout_logfile_maxbytes=0
                                 "squid",
                             ],
                             capture_output=True,
-                            timeout=25,
+                            timeout=SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS,
                         )
                         stop_detail = self._decode_completed(stop)
                         if not self._wait_for_http_listener_absent(timeout=30.0):
@@ -2155,7 +2169,7 @@ stdout_logfile_maxbytes=0
             stop = self._run(
                 ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
                 capture_output=True,
-                timeout=25,
+                timeout=SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS,
             )
             stop_detail = self._decode_completed(stop) or "supervisorctl stop squid"
             logger.info(
@@ -2527,7 +2541,7 @@ stdout_logfile_maxbytes=0
                         "squid",
                     ],
                     capture_output=True,
-                    timeout=20,
+                    timeout=SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS,
                 )
                 detail_parts.append(
                     self._decode_completed(stop) or "supervisorctl stop squid",
@@ -2619,7 +2633,7 @@ stdout_logfile_maxbytes=0
             stop = self._run(
                 ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
                 capture_output=True,
-                timeout=20,
+                timeout=SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS,
             )
             detail_parts.append(
                 self._decode_completed(stop) or "supervisorctl stop squid",
@@ -2686,7 +2700,7 @@ stdout_logfile_maxbytes=0
             stop = self._run(
                 ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
                 capture_output=True,
-                timeout=20,
+                timeout=SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS,
             )
             detail_parts.append(
                 self._decode_completed(stop) or "supervisorctl stop squid",

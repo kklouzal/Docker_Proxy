@@ -651,10 +651,35 @@ apply_squid_perf_tuning() {
     fi
 }
 
-python3 /app/tools/adblock_compile.py \
-    --lists-dir /var/lib/squid-flask-proxy/adblock/lists \
-    --out-dir /var/lib/squid-flask-proxy/adblock/compiled \
-    || true
+# The adblock compile and policy include helpers below read MySQL. Probe it once
+# with a single bounded connection attempt: a cold start without the control
+# plane then restores this proxy's last-applied local state immediately instead
+# of paying MYSQL_CONNECT_RETRIES x MYSQL_CONNECT_TIMEOUT per helper before
+# Squid can start. The proxy agent resynchronizes once MySQL is reachable.
+CONTROL_PLANE_DB_REACHABLE=1
+if ! MYSQL_CONNECT_RETRIES=1 python3 - >/dev/null 2>&1 <<'PY'
+from services.db import connect_unpooled
+
+connect_unpooled().close()
+PY
+then
+    CONTROL_PLANE_DB_REACHABLE=0
+    printf '[proxy-entrypoint] control-plane database unreachable; starting from last-applied local state\n'
+fi
+
+# Adblock request lookup state. Once the agent has materialized an active
+# control-plane artifact (.artifact-sha256 marker), the compiled directory is
+# owned by that artifact: recompiling the local lists here would replace its
+# request_lookup.sqlite (usually with an empty ruleset), leave adblock without
+# rules until the first successful sync (for the whole outage when MySQL is
+# unreachable at boot), and force a cicap_adblock restart on that sync.
+if [ "$CONTROL_PLANE_DB_REACHABLE" = "1" ] \
+    && [ ! -f /var/lib/squid-flask-proxy/adblock/compiled/.artifact-sha256 ]; then
+    python3 /app/tools/adblock_compile.py \
+        --lists-dir /var/lib/squid-flask-proxy/adblock/lists \
+        --out-dir /var/lib/squid-flask-proxy/adblock/compiled \
+        || true
+fi
 mkdir -p /var/lib/squid-flask-proxy/adblock/compiled
 if [ ! -f /var/lib/squid-flask-proxy/adblock/compiled/request_lookup.sqlite ]; then
     python3 - <<'PY' || true
@@ -993,13 +1018,17 @@ apply_squid_perf_tuning /etc/squid/squid.conf
 # We derive the worker count from squid.conf so UI edits like "workers 4" validate.
 mkdir -p /etc/squid/conf.d
 
-# SSL filtering include is driven by the admin UI database state.
-# Always generate a safe include so squid.conf can include it.
-python3 /app/tools/sslfilter_apply.py || true
-
-# Web filtering include is driven by the admin UI database state.
-# Always generate a safe include so squid.conf.template's include succeeds.
-python3 /app/tools/webfilter_apply.py || true
+# SSL and web filtering includes are driven by the admin UI database state and
+# mirrored on the durable volume after every successful apply. Without the
+# control plane the helpers restore that last-known-good copy; a safe include is
+# written only when none exists, so squid.conf's includes always succeed.
+if [ "$CONTROL_PLANE_DB_REACHABLE" = "1" ]; then
+    python3 /app/tools/sslfilter_apply.py || true
+    python3 /app/tools/webfilter_apply.py || true
+else
+    python3 /app/tools/sslfilter_apply.py --last-known-good-only || true
+    python3 /app/tools/webfilter_apply.py --last-known-good-only || true
+fi
 
 # Ensure the SSL filtering include is present in squid.conf even if a user edited/persisted it.
 # It should appear after 'ssl_bump peek step1' and before any 'ssl_bump bump' rule.

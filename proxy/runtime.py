@@ -59,6 +59,7 @@ from services.policy_materializer import (
     MaterializedPolicyFile,
     build_proxy_policy_state,
     calculate_policy_sha,
+    remember_last_known_good_policy_files,
 )
 from services.proxy_context import get_proxy_id
 from services.proxy_health import check_adblock_icap_health as _check_icap_adblock
@@ -81,7 +82,11 @@ from services.proxy_registry import (
 from services.runtime_helpers import decode_bytes as _decode_bytes
 from services.runtime_helpers import normalize_config_bool, normalize_icap_worker_count
 from services.schema_lifecycle import ensure_startup_schema_if_configured
-from services.squid_core import SquidController, _exclusive_squid_lifecycle_lock
+from services.squid_core import (
+    SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS,
+    SquidController,
+    _exclusive_squid_lifecycle_lock,
+)
 from services.squid_transaction import SquidTransactionJournal, default_journal_path
 from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
@@ -2624,16 +2629,53 @@ class ProxyRuntime:
                 status_detail = "Squid listener probe failed."
 
         if proxy_ok and listener_ok:
-            return {
+            healthy = {
                 "ok": True,
                 "proxy_id": self.proxy_id,
                 "changed": False,
                 "rolled_back": False,
                 "detail": status_detail or "Squid is healthy.",
             }
+            return self._recover_stranded_squid_transaction(reason) or healthy
 
         detail_reason = f"Self-heal triggered by {reason}: {status_detail or 'Squid health check failed.'}"
         return self.rollback_last_known_good_config(reason=detail_reason)
+
+    def _recover_stranded_squid_transaction(self, reason: str) -> dict[str, Any] | None:
+        """Run the designated last-known-good recovery for a failed journal.
+
+        A recovery_required journal blocks every later Squid mutation (config,
+        policy, ICAP, certificate applies) even while Squid keeps serving, and
+        previously only a container restart cleared it. The designated rollback
+        restores the persisted last-known-good config under the lifecycle lock.
+        Failed attempts back off exponentially (5 min .. 1 h) so a persistent
+        fault cannot turn into a Squid restart loop.
+        """
+        journal = self._squid_transaction_health()
+        if str(journal.get("status") or "") != "recovery_required":
+            self._journal_recovery_failures = 0
+            self._journal_recovery_not_before = 0.0
+            return None
+        now = time.monotonic()
+        if now < float(getattr(self, "_journal_recovery_not_before", 0.0) or 0.0):
+            return None
+        result = self.rollback_last_known_good_config(
+            reason=(
+                f"Self-heal triggered by {reason}: Squid transaction journal is "
+                f"recovery_required ({journal.get('transaction_id') or 'unknown'}); "
+                "restoring the persisted last-known-good config."
+            ),
+        )
+        if result.get("ok"):
+            self._journal_recovery_failures = 0
+            self._journal_recovery_not_before = 0.0
+        else:
+            failures = int(getattr(self, "_journal_recovery_failures", 0) or 0) + 1
+            self._journal_recovery_failures = failures
+            self._journal_recovery_not_before = now + min(
+                3600.0, 300.0 * (2 ** min(failures - 1, 4))
+            )
+        return result
 
     def self_heal_runtime_services_if_needed(
         self,
@@ -2807,7 +2849,7 @@ class ProxyRuntime:
             stopped = subprocess.run(
                 ["supervisorctl", "-c", "/etc/supervisord.conf", "stop", "squid"],
                 capture_output=True,
-                timeout=20,
+                timeout=SUPERVISOR_SQUID_STOP_TIMEOUT_SECONDS,
             )
             decoded = _decode_completed(stopped)
             if decoded:
@@ -3084,8 +3126,35 @@ class ProxyRuntime:
                 return True
         return False
 
+    def _remember_last_known_good_policy(self, desired: Any) -> None:
+        # Best effort: the mirror only matters for a later restart without
+        # control-plane access, so a failure must not fail the live sync.
+        try:
+            remember_last_known_good_policy_files(
+                (str(item.path), str(item.content or ""))
+                for item in tuple(getattr(desired, "files", ()) or ())
+            )
+        except Exception:
+            log_exception_throttled(
+                logger,
+                "proxy_runtime.policy_last_known_good",
+                interval_seconds=300.0,
+                message="Failed to persist last-known-good proxy policy files",
+            )
+
     def sync_policy_state(self, *, force: bool = False) -> dict[str, Any]:
         desired = self.policy_state_builder(self.proxy_id)
+        result = self._materialize_policy_state(desired, force=force)
+        if result.get("ok"):
+            self._remember_last_known_good_policy(desired)
+        return result
+
+    def _materialize_policy_state(
+        self,
+        desired: Any,
+        *,
+        force: bool,
+    ) -> dict[str, Any]:
         if self._policy_requires_webcat_snapshot(desired):
             snapshot_ok, snapshot_detail = (
                 self._publish_webcat_snapshot_for_policy_sync()
@@ -4409,9 +4478,10 @@ class ProxyRuntime:
         finally:
             self._health_refresh_lock.release()
 
-    def heartbeat(self) -> dict[str, Any]:
+    def run_local_self_heal(self, *, reason: str = "heartbeat") -> None:
+        """Repair local Squid/ICAP runtime state; needs no control-plane access."""
         try:
-            self.self_heal_config_if_needed(reason="heartbeat")
+            self.self_heal_config_if_needed(reason=reason)
         except Exception:
             log_exception_throttled(
                 logger,
@@ -4420,7 +4490,7 @@ class ProxyRuntime:
                 message="Proxy config self-heal check failed",
             )
         try:
-            self.self_heal_runtime_services_if_needed(reason="heartbeat")
+            self.self_heal_runtime_services_if_needed(reason=reason)
         except Exception:
             log_exception_throttled(
                 logger,
@@ -4428,6 +4498,9 @@ class ProxyRuntime:
                 interval_seconds=30.0,
                 message="Proxy runtime service self-heal check failed",
             )
+
+    def heartbeat(self) -> dict[str, Any]:
+        self.run_local_self_heal(reason="heartbeat")
         health = self.collect_health()
         public_fields = resolve_local_proxy_public_fields()
         self.registry.heartbeat(
