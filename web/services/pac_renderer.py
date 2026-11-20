@@ -443,7 +443,6 @@ def _render_pac(
             f"  var proxyHost = {json.dumps(str(proxy_host or PAC_HOST_PLACEHOLDER))};",
             "  var normalizedProxyHost = normalizePacHost(proxyHost);",
             "  var isIpv6Literal = host.indexOf(':') >= 0;",
-            "  var ipv6FirstHextet = isIpv6Literal ? host.split(':', 1)[0] : '';",
             "  function isIpv4Address(value) {",
             "    if (!/^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(value || '')) return false;",
             "    var parts = value.split('.');",
@@ -489,7 +488,7 @@ def _render_pac(
             "  var cachedIp = '';",
             "  function hostIp() {",
             "    if (cachedIp) return cachedIp;",
-            "    if (isIpv4Address(host)) {",
+            "    if (isIpv4Address(host) || isIpv6Literal) {",
             "      cachedIp = host;",
             "      return cachedIp;",
             "    }",
@@ -545,7 +544,11 @@ def _render_pac(
         )
         lines.extend(
             (
-                "  if (isIpv6Literal && /^[0-9a-f]{1,4}$/.test(ipv6FirstHextet)) {",
+                # IPv6 literals and IPv6 DNS answers (Firefox's dnsResolve can
+                # return one) both get the private/link-local range check.
+                "  var ipv6Address = /^[0-9a-f:.]+$/i.test(ip) && ip.indexOf(':') >= 0 ? ip.toLowerCase() : '';",
+                "  var ipv6FirstHextet = ipv6Address.split(':', 1)[0];",
+                "  if (/^[0-9a-f]{1,4}$/.test(ipv6FirstHextet)) {",
                 "    var ipv6FirstHextetValue = parseInt(ipv6FirstHextet, 16);",
                 f"    if ({ipv6_private_conditions}) return 'DIRECT';",
                 "  }",

@@ -1423,10 +1423,6 @@ def test_rendered_pac_bypasses_private_ipv6_literals_only_when_enabled() -> None
         include_private=False,
     )
 
-    assert (
-        "var ipv6FirstHextet = isIpv6Literal ? host.split(':', 1)[0] : '';"
-        in private_rendered
-    )
     assert "ipv6FirstHextetValue >= 0xfc00" in private_rendered
     assert "ipv6FirstHextetValue <= 0xfdff" in private_rendered
     assert "ipv6FirstHextetValue >= 0xfe80" in private_rendered
@@ -1491,6 +1487,64 @@ def test_pac_ipv4_direct_rules_ignore_ipv6_dns_answer_without_throwing() -> None
             "10.20.3.4",
         )
         == "DIRECT"
+    )
+
+
+def test_private_pac_bypasses_private_ipv6_dns_answers() -> None:
+    from services import pac_renderer  # type: ignore
+
+    def render(include_private: bool) -> str:
+        return pac_renderer._render_pac(
+            "PROXY proxy.example:3128",
+            proxy_host="proxy.example",
+            direct_domains=[],
+            direct_dst_nets=[],
+            include_private=include_private,
+        )
+
+    private_rendered = render(True)
+    assert (
+        _evaluate_pac_with_dns_answer(private_rendered, "nas.example", "fd12:3456::7")
+        == "DIRECT"
+    )
+    assert (
+        _evaluate_pac_with_dns_answer(private_rendered, "nas.example", "FE80::1")
+        == "DIRECT"
+    )
+    assert (
+        _evaluate_pac_with_dns_answer(private_rendered, "www.example", "2001:db8::10")
+        == "PROXY proxy.example:3128"
+    )
+    assert (
+        _evaluate_pac_with_dns_answer(
+            private_rendered, "stale.example", "fd12::7 garbage"
+        )
+        == "PROXY proxy.example:3128"
+    )
+    assert (
+        _evaluate_pac_with_dns_answer(render(False), "nas.example", "fd12:3456::7")
+        == "PROXY proxy.example:3128"
+    )
+
+
+def test_pac_ip_rules_do_not_resolve_ipv6_literal_hosts() -> None:
+    from services import pac_renderer  # type: ignore
+
+    rendered = pac_renderer._render_pac(
+        "PROXY proxy.example:3128",
+        proxy_host="proxy.example",
+        direct_domains=[],
+        direct_dst_nets=["10.20.0.0/16"],
+        include_private=True,
+    )
+
+    # A DNS answer for an IP literal must not change its routing.
+    assert (
+        _evaluate_pac_with_dns_answer(rendered, "2001:db8::10", "10.20.3.4")
+        == "PROXY proxy.example:3128"
+    )
+    assert (
+        _evaluate_pac_with_dns_answer(rendered, "[fd00::1]", "203.0.113.7") == "DIRECT"
     )
 
 
