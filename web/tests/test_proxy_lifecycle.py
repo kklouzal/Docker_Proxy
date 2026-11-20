@@ -119,6 +119,7 @@ def test_rename_proxy_scoped_rows_skips_metadata_discovery_and_reports_custom_ta
         conn,
         old_proxy_id="edge-old",
         new_proxy_id="edge-new",
+        ensure_indexes=True,
     )
 
     assert result.table_counts == {"proxy_z_custom_rows": 1}
@@ -172,6 +173,7 @@ def test_rename_proxy_scoped_rows_processes_proxy_recovery_adoptions(
         conn,
         old_proxy_id="edge-old",
         new_proxy_id="edge-new",
+        ensure_indexes=True,
     )
 
     assert result.table_counts == {"proxy_recovery_adoptions": 1}
@@ -208,7 +210,9 @@ def test_remove_proxy_scoped_rows_processes_discovered_tables_in_inventory_order
     monkeypatch.setattr(lifecycle, "lifecycle_chunk_size", lambda: 10)
     monkeypatch.setattr(lifecycle, "lifecycle_max_rows_per_table", lambda: 100)
 
-    result = lifecycle.remove_proxy_scoped_rows(conn, proxy_id="edge-old")
+    result = lifecycle.remove_proxy_scoped_rows(
+        conn, proxy_id="edge-old", ensure_indexes=True
+    )
 
     assert result.table_counts == {
         "proxy_alpha_custom_rows": 1,
@@ -263,7 +267,9 @@ def test_remove_proxy_scoped_rows_processes_proxy_recovery_adoptions(
     monkeypatch.setattr(lifecycle, "lifecycle_chunk_size", lambda: 10)
     monkeypatch.setattr(lifecycle, "lifecycle_max_rows_per_table", lambda: 100)
 
-    result = lifecycle.remove_proxy_scoped_rows(conn, proxy_id="edge-old")
+    result = lifecycle.remove_proxy_scoped_rows(
+        conn, proxy_id="edge-old", ensure_indexes=True
+    )
 
     assert result.table_counts == {"proxy_recovery_adoptions": 1}
     assert result.discovered_tables == ()

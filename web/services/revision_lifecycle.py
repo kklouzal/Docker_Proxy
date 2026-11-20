@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from typing import Any
 
 from services import schema_lifecycle as _schema_lifecycle
@@ -24,6 +25,8 @@ _SCOPED_LOCK_MAX_READABLE_PREFIX = (
 )
 _LOCK_PREFIX_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _LOCK_PREFIX_SEPARATORS_RE = re.compile(r"_+")
+
+logger = logging.getLogger(__name__)
 
 
 def run_revision_store_transaction(
@@ -124,18 +127,35 @@ def mysql_advisory_lock(
         raise RuntimeError(msg)
     try:
         yield name
-    except Exception:
-        with suppress(Exception):
-            conn.rollback()
+    except Exception as exc:
+        _rollback_after_failure(conn, exc)
         raise
     else:
         commit = getattr(conn, "commit", None)
         if callable(commit):
             try:
                 commit()
-            except Exception:
-                with suppress(Exception):
-                    conn.rollback()
+            except Exception as exc:
+                _rollback_after_failure(conn, exc)
                 raise
     finally:
         release_mysql_named_lock(conn, name)
+
+
+def _rollback_after_failure(conn: Any, primary: BaseException) -> None:
+    """Roll back after *primary*; a rollback failure is reported on it.
+
+    The primary failure stays the raised exception; a failed rollback leaves
+    the session state unknown, so it is attached as a note and logged instead
+    of being silently dropped.
+    """
+    try:
+        conn.rollback()
+    except Exception as rollback_exc:
+        detail = f"{rollback_exc.__class__.__name__}: {rollback_exc}"
+        primary.add_note(f"Rollback after this failure also failed: {detail}")
+        logger.warning(
+            "MySQL lifecycle-lock rollback failed after %s: %s",
+            primary.__class__.__name__,
+            detail,
+        )

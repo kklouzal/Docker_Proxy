@@ -113,9 +113,21 @@ class FakeSamlAuthStore:
 
         self._base = SamlAuthStore()
         self.profile = self._base.default_profile()
+        self.assertion_uses: set[str] = set()
 
     def ensure_default_profile(self) -> None:
         return None
+
+    def get_session_policy(self, *, now=None):
+        from services.saml_auth import saml_session_policy  # type: ignore
+
+        return saml_session_policy(self.profile, now=now)
+
+    def record_assertion_use(self, use, *, now) -> bool:
+        if use.replay_key in self.assertion_uses:
+            return False
+        self.assertion_uses.add(use.replay_key)
+        return True
 
     def default_profile(self):
         return self._base.default_profile()
@@ -583,21 +595,6 @@ class FakeOperationLedger:
                 counts[op.status] += 1
         return counts
 
-    def list_recent_since(
-        self,
-        proxy_id: object,
-        *,
-        after_updated_ts: int = 0,
-        after_id: int = 0,
-        limit: int = 100,
-    ) -> list[Any]:
-        return [
-            op
-            for op in self.list_operations(proxy_id, limit=limit)
-            if op.updated_ts > after_updated_ts
-            or (op.updated_ts == after_updated_ts and op.operation_id > after_id)
-        ]
-
     def get_operation(self, operation_id: object) -> Any | None:
         target = int(operation_id or 0)
         return next((op for op in self.operations if op.operation_id == target), None)
@@ -969,15 +966,7 @@ class FakeSslfilterStore:
             exclude_private_nets=self.exclude_private_nets,
         )
 
-    def list_nobump(self) -> list[tuple[str, int]]:
-        return [(cidr, 1) for cidr in self.no_bump_src_nets]
-
-    def add_domain(
-        self, policy: str, value: str | None = None
-    ) -> tuple[bool, str, str]:
-        if value is None:
-            value = policy
-            policy = "nobump"
+    def add_domain(self, policy: str, value: str) -> tuple[bool, str, str]:
         value = (value or "").strip().lower()
         if not value or " " in value or "/" in value:
             return False, "Invalid domain.", ""
@@ -1014,10 +1003,7 @@ class FakeSslfilterStore:
         ok, detail, canonical = self.add_domain(policy, value)
         return ok, detail, canonical, ok
 
-    def remove_domain(self, policy: str, value: str | None = None) -> None:
-        if value is None:
-            value = policy
-            policy = "nobump"
+    def remove_domain(self, policy: str, value: str) -> None:
         target = self.no_bump_domains if policy == "nobump" else self.no_cache_domains
         target[:] = [item for item in target if item != (value or "").strip().lower()]
 
@@ -1041,12 +1027,6 @@ class FakeSslfilterStore:
     def remove_src_net(self, policy: str, cidr: str) -> None:
         target = self.no_bump_src_nets if policy == "nobump" else self.no_cache_src_nets
         target[:] = [item for item in target if item != cidr]
-
-    def add_nobump(self, cidr: str) -> tuple[bool, str, str]:
-        return self.add_src_net("nobump", cidr)
-
-    def remove_nobump(self, cidr: str) -> None:
-        self.remove_src_net("nobump", cidr)
 
     def set_exclude_private_nets(self, enabled: bool) -> None:
         self.exclude_private_nets = bool(enabled)
@@ -1239,7 +1219,25 @@ class FakeCertificateBundles:
     def get_revision(self, revision_id: object) -> Any | None:
         return self._revisions.get(int(revision_id or 0))
 
-    def create_revision(self, bundle: Any, **_kwargs: Any) -> Any:
+    def create_revision(
+        self,
+        bundle: Any,
+        *,
+        expected_active_revision_id: int | None = None,
+        **_kwargs: Any,
+    ) -> Any:
+        if expected_active_revision_id is not None:
+            from services.certificate_bundles import (
+                CertificateActiveRevisionChangedError,
+            )
+
+            current_id = int(getattr(self.bundle, "revision_id", 0) or 0)
+            if current_id != int(expected_active_revision_id):
+                msg = (
+                    "The active CA changed since this page was loaded "
+                    f"(revision {current_id} is active); no new CA was published."
+                )
+                raise CertificateActiveRevisionChangedError(msg)
         revision = SimpleNamespace(
             revision_id=len(self.created) + 1,
             bundle_sha256=getattr(bundle, "bundle_sha256", "bundle-sha"),

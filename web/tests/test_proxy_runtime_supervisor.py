@@ -5032,8 +5032,8 @@ def test_sync_adblock_state_cache_flush_refreshes_helpers_without_squid_stop(
         def get_cache_flush_requested(self) -> bool:
             return True
 
-        def mark_cache_flushed(self, *, size=0) -> None:
-            recorded.append({"cache_flushed_size": size})
+        def mark_cache_flushed(self) -> None:
+            recorded.append({"cache_flushed": True})
 
     class Controller:
         def restart_squid(self, **_kwargs) -> NoReturn:
@@ -5365,8 +5365,8 @@ def test_sync_adblock_state_reports_cache_flush_as_runtime_change() -> None:
         def get_cache_flush_requested(self) -> bool:
             return True
 
-        def mark_cache_flushed(self, *, size=0) -> None:
-            recorded.append({"cache_flushed_size": size})
+        def mark_cache_flushed(self) -> None:
+            recorded.append({"cache_flushed": True})
 
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
@@ -5410,8 +5410,8 @@ def test_sync_adblock_state_cache_flush_does_not_fetch_current_artifact_archive(
         def get_cache_flush_requested(self) -> bool:
             return True
 
-        def mark_cache_flushed(self, *, size=0) -> None:
-            recorded.append({"cache_flushed_size": size})
+        def mark_cache_flushed(self) -> None:
+            recorded.append({"cache_flushed": True})
 
     runtime = _runtime_shell()
     runtime.services = SimpleNamespace(current_adblock_sha_reader=lambda: "same-sha")
@@ -5455,7 +5455,7 @@ def test_sync_adblock_state_reports_cache_flush_marker_failure() -> None:
         def get_cache_flush_requested(self) -> bool:
             return True
 
-        def mark_cache_flushed(self, *, size=0) -> None:
+        def mark_cache_flushed(self) -> None:
             msg = "db unavailable"
             raise RuntimeError(msg)
 

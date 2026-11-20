@@ -115,7 +115,7 @@
                 {% if bundle.not_before or bundle.not_after %}
                     <div><strong>Validity:</strong> {{ bundle.not_before or 'unknown' }} → {{ bundle.not_after or 'unknown' }}</div>
                 {% endif %}
-                {% if bundle.cert_sha256 %}<div><strong>Fingerprint:</strong> <code class="mono">{{ bundle.cert_sha256 }}</code></div>{% endif %}
+                {% if ca_sha256_fingerprint %}<div><strong>SHA-256 fingerprint:</strong> <code class="mono">{{ ca_sha256_fingerprint }}</code></div>{% endif %}
                 {% if bundle.created_ts %}<div><strong>Published:</strong> {{ fmt_ts(bundle.created_ts) }}</div>{% endif %}
             </div>
             {% endif %}
@@ -131,7 +131,8 @@
             <div class="actions">
                 <form action="{{ url_for('generate_certificate') }}" method="post">
                     {{ csrf_field() }}
-                    <button class="btn primary" type="submit">Generate/Ensure CA</button>
+                    <input type="hidden" name="expected_active_revision" value="{{ bundle.revision_id if bundle else 0 }}">
+                    <button class="btn primary" type="submit" data-confirm-message="{{ 'Generate a new CA and publish it to every registered proxy? Clients must then trust the new ca.crt.' if bundle else 'Generate a CA and publish it to every registered proxy?' }}">{{ 'Generate New CA' if bundle else 'Generate CA' }}</button>
                 </form>
                 {% if certificate %}
                     <a class="btn" href="{{ url_for('download_certificate', filename=certificate) }}">Download CA</a>

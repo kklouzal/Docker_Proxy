@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import threading
 import time
 from collections import Counter
@@ -9,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-from services.adblock_store import get_adblock_store
 from services.client_identity_cache import get_client_identity_cache
 from services.db import connect
 from services.diagnostic_store import get_diagnostic_store
@@ -32,7 +30,6 @@ from services.ui_support import (
     present_top_value_rows,
     present_transaction_rows,
 )
-from services.webfilter_store import get_webfilter_store
 
 
 def _pct(part: int, whole: int) -> float:
@@ -667,8 +664,6 @@ class ObservabilityQueries:
         limit: int = 50,
     ) -> dict[str, Any]:
         store = get_ssl_errors_store()
-        with contextlib.suppress(Exception):
-            store.init_db()
         raw_rows = store.list_recent(
             since=since,
             search=search,
@@ -721,8 +716,6 @@ class ObservabilityQueries:
         lim = max(5, min(100, int(limit)))
         search_value = (search or "").strip().lower()
         diagnostic_store = get_diagnostic_store()
-        get_adblock_store().init_db()
-        get_webfilter_store().init_db()
 
         av_where_sql, av_params = self._security_event_filters(
             since=since,

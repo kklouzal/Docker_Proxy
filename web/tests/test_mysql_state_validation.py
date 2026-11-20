@@ -515,3 +515,20 @@ def test_mysql_state_validation_cli_returns_failure_for_invalid_state(
 
     assert mysql_state_validation.main(["--phase", "audit"]) == 1
     assert '"ok": false' in capsys.readouterr().out
+
+
+def test_mysql_state_validation_passes_freshly_migrated_mysql(tmp_path) -> None:
+    from .mysql_test_utils import configure_test_mysql_env
+
+    configure_test_mysql_env(tmp_path / "state-validation-real-mysql")
+    from services import mysql_state_validation  # type: ignore
+    from services.schema_lifecycle import migrate_schema  # type: ignore
+
+    migrate_schema()
+    result = mysql_state_validation.validate_mysql_state(phase="post-restore")
+
+    # CompatRow answers positional lookups, so an un-aliased upper-case
+    # information_schema label used to read the table name as the column and
+    # index name and report every required column/index as missing.
+    assert result.errors == []
+    assert result.ok is True

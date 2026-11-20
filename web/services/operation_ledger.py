@@ -618,36 +618,6 @@ class OperationLedger:
             op for op in (self._row_to_operation(row) for row in rows) if op is not None
         ]
 
-    def list_recent_since(
-        self,
-        proxy_id: object | None,
-        *,
-        after_updated_ts: int = 0,
-        after_id: int = 0,
-        limit: int = OPERATION_HISTORY_LIMIT,
-    ) -> list[ProxyOperation]:
-        self.init_db()
-        proxy_key = normalize_proxy_id(proxy_id)
-        limit = max(1, min(500, int(limit)))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT {self._SELECT_COLUMNS} FROM proxy_operations
-                WHERE proxy_id=%s AND (updated_ts>%s OR (updated_ts=%s AND id>%s))
-                ORDER BY updated_ts ASC, id ASC LIMIT %s
-                """,
-                (
-                    proxy_key,
-                    int(after_updated_ts or 0),
-                    int(after_updated_ts or 0),
-                    int(after_id or 0),
-                    limit,
-                ),
-            ).fetchall()
-        return [
-            op for op in (self._row_to_operation(row) for row in rows) if op is not None
-        ]
-
     def get_operation(self, operation_id: object) -> ProxyOperation | None:
         self.init_db()
         with self._connect() as conn:

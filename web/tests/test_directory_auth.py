@@ -13,6 +13,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+from services import directory_auth
 from services.directory_auth import DirectoryAuthResult, DirectoryAuthStore
 
 
@@ -1603,3 +1604,196 @@ def test_test_evidence_counts_identical_same_second_result_as_current(
         is expected
     )
     assert "bind_password = %s" in statements[0]
+
+
+_FAKE_LDAP3 = SimpleNamespace(
+    utils=SimpleNamespace(conv=SimpleNamespace(escape_filter_chars=lambda value: value))
+)
+
+
+def _revalidation_store(monkeypatch, *, users, groups, searches=None):
+    """Store whose service bind answers user/group searches from fixed data."""
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("active_directory"),
+        bind_password=store._encrypt("bind-secret"),
+        user_filter="(sAMAccountName={username})",
+        group_filter="(member={user_dn})",
+        required_admin_group="CN=Admins,DC=example,DC=local",
+    )
+    searches = searches if searches is not None else []
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.entries = []
+
+        def search(self, _base, search_filter, **_kwargs):
+            searches.append(search_filter)
+            self.entries = list(groups if "member" in search_filter else users)
+            return bool(self.entries)
+
+        def unbind(self):
+            return None
+
+    monkeypatch.setattr(
+        store, "_service_connection", lambda _profile: (FakeConn(), _FAKE_LDAP3)
+    )
+    monkeypatch.setattr(
+        store,
+        "_user_bind",
+        lambda *_args: pytest.fail("revalidation must not need the user password"),
+    )
+    return store, profile
+
+
+_ALICE = SimpleNamespace(
+    entry_dn="CN=Alice,OU=People,DC=example,DC=local",
+    entry_attributes_as_dict={"sAMAccountName": ["alice"]},
+)
+_ADMINS = SimpleNamespace(entry_dn="CN=Admins,DC=example,DC=local", cn="Admins")
+
+
+def test_directory_revalidation_reuses_login_lookup_without_password(
+    monkeypatch,
+) -> None:
+    searches: list[str] = []
+    store, profile = _revalidation_store(
+        monkeypatch, users=[_ALICE], groups=[_ADMINS], searches=searches
+    )
+
+    result = store.revalidate_admin(profile, "alice", "EXAMPLE\\Alice")
+
+    assert result.ok is True
+    assert result.username == "alice"
+    assert result.policy_fingerprint == (
+        directory_auth.directory_policy_fingerprint(profile)
+    )
+    # The typed login name drives the lookup, exactly as at login.
+    assert searches[0] == "(sAMAccountName=Alice)"
+
+
+@pytest.mark.parametrize(
+    ("users", "groups", "session_user", "detail"),
+    [
+        ([], [_ADMINS], "alice", "not found"),
+        ([_ALICE, _ALICE], [_ADMINS], "alice", "ambiguous"),
+        ([_ALICE], [], "alice", "required admin group"),
+        ([_ALICE], [_ADMINS], "alice.old", "different username"),
+    ],
+)
+def test_directory_revalidation_returns_definitive_negatives(
+    monkeypatch, users, groups, session_user, detail
+) -> None:
+    store, profile = _revalidation_store(monkeypatch, users=users, groups=groups)
+
+    result = store.revalidate_admin(profile, session_user, "alice")
+
+    assert result.ok is False
+    assert detail in result.detail
+
+
+def test_directory_revalidation_reports_unreachable_directory(monkeypatch) -> None:
+    store, profile = _revalidation_store(monkeypatch, users=[_ALICE], groups=[_ADMINS])
+
+    def unreachable(_profile):
+        msg = "All configured LDAP server URLs failed; last error: timed out"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(store, "_service_connection", unreachable)
+
+    with pytest.raises(directory_auth.DirectoryUnavailableError, match="timed out"):
+        store.revalidate_admin(profile, "alice", "alice")
+
+
+def test_directory_login_records_lookup_name_and_policy_fingerprint(
+    monkeypatch,
+) -> None:
+    store, profile = _revalidation_store(monkeypatch, users=[_ALICE], groups=[_ADMINS])
+    monkeypatch.setattr(store, "_user_bind", lambda *_args: True)
+
+    result = store.authenticate(profile, " EXAMPLE\\Alice ", "secret")
+
+    assert result.ok is True
+    assert result.username == "alice"
+    assert result.lookup_name == "EXAMPLE\\Alice"
+    assert result.policy_fingerprint == (
+        directory_auth.directory_policy_fingerprint(profile)
+    )
+
+
+def test_directory_policy_fingerprint_tracks_authorization_fields_only() -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = store.default_profile("ldap")
+    fingerprint = directory_auth.directory_policy_fingerprint(profile)
+
+    for volatile in (
+        replace(profile, last_test_ok=True, last_test_ts=99, last_test_detail="ok"),
+        replace(profile, updated_ts=12345),
+        replace(profile, timeout_seconds=9),
+        replace(profile, bind_password=store._encrypt("rotated")),
+        replace(profile, enabled=True),
+    ):
+        assert directory_auth.directory_policy_fingerprint(volatile) == fingerprint
+    for changed in (
+        replace(profile, required_admin_group="cn=other,dc=example,dc=org"),
+        replace(profile, user_filter="(mail={username})"),
+        replace(profile, group_filter="(member={user_dn})"),
+        replace(profile, base_dn="dc=other,dc=org"),
+        replace(profile, user_search_base="ou=other"),
+        replace(profile, group_search_base="ou=other"),
+        replace(profile, user_attribute="mail"),
+        replace(profile, server_urls="ldaps://other.example.org:636"),
+        replace(profile, provider="active_directory"),
+    ):
+        assert directory_auth.directory_policy_fingerprint(changed) != fingerprint
+
+
+def test_directory_revalidation_backoff_is_bounded_and_keyed_by_policy() -> None:
+    backoff = directory_auth.DirectoryRevalidationBackoff(30)
+
+    assert backoff.active("fp-a", now=100.0) is False
+    backoff.record_failure("fp-a", now=100.0)
+    assert backoff.active("fp-a", now=129.9) is True
+    assert backoff.active("fp-a", now=130.0) is False
+    # A changed provider policy is retried at once.
+    assert backoff.active("fp-b", now=110.0) is False
+    backoff.record_success("fp-b")
+    assert backoff.active("fp-a", now=110.0) is True
+    backoff.record_success("fp-a")
+    assert backoff.active("fp-a", now=110.0) is False
+
+
+class _EnabledProfilesConnection:
+    def __init__(self, rows) -> None:
+        self.rows = rows
+        self.statements: list[tuple[str, tuple]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=()):
+        self.statements.append((" ".join(str(sql).split()), tuple(params)))
+        return SimpleNamespace(fetchall=lambda: self.rows)
+
+
+def test_session_active_profile_lookup_is_a_single_read(monkeypatch) -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(store.default_profile("ldap"), enabled=True)
+    row = tuple(getattr(profile, name) for name in profile.__dataclass_fields__)
+    conn = _EnabledProfilesConnection([row])
+    monkeypatch.setattr(store, "ensure_schema", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(
+        store,
+        "ensure_default_profiles",
+        lambda: pytest.fail("per-request lookup must not upsert default rows"),
+    )
+
+    assert store.get_active_profile_for_session() == profile
+    assert len(conn.statements) == 1
+    sql, params = conn.statements[0]
+    assert sql.startswith("SELECT provider, enabled")
+    assert params == (1,)

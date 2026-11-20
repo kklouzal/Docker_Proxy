@@ -12,6 +12,7 @@ from services.domain_normalization import normalize_domain as _shared_normalize_
 from services.proxy_context import get_proxy_id, normalize_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import extract_domain, now_ts
+from services.safe_browsing_v5 import SAFE_BROWSING_PROVIDER_CATEGORY
 
 PENDING = "pending"
 APPROVED = "approved"
@@ -20,6 +21,9 @@ CLOSED = "closed"
 ACTIVE = "active"
 REVOKED = "revoked"
 EXPIRED = "expired"
+# An active exception whose category is a Safe Browsing verdict: it is never
+# rendered (Safe Browsing is not a category deny), so it exempts nothing.
+NOT_APPLICABLE = "not_applicable"
 REQ_STATUS = {PENDING, APPROVED, REJECTED, CLOSED}
 REQUEST_LIST_ORDER_COLUMNS = {
     "created": "created_ts",
@@ -27,6 +31,10 @@ REQUEST_LIST_ORDER_COLUMNS = {
 }
 BLOCK_TYPES = {"webfilter", "adblock", "clamav", "download", "mime"}
 APPROVABLE_BLOCK_TYPES = {"webfilter"}
+SAFE_BROWSING_APPROVAL_UNAVAILABLE = (
+    "Safe Browsing verdicts cannot be exempted by a policy request. "
+    "Reject or close it after review."
+)
 POLICY_EXCEPTION_DEFAULT_DURATION_SECONDS = 24 * 60 * 60
 POLICY_EXCEPTION_MIN_DURATION_SECONDS = 60
 POLICY_EXCEPTION_MAX_DURATION_SECONDS = 30 * 24 * 60 * 60
@@ -67,6 +75,14 @@ def _looks_like_host(value: object) -> bool:
     return any(re.search(r"[a-z]", part) for part in parts)
 
 
+def is_safe_browsing_category(category: object) -> bool:
+    """Whether *category* names a Safe Browsing verdict (google-safe-browsing[/threat])."""
+    value = str(category or "").strip().lower()
+    return value == SAFE_BROWSING_PROVIDER_CATEGORY or value.startswith(
+        SAFE_BROWSING_PROVIDER_CATEGORY + "/"
+    )
+
+
 @dataclass(frozen=True)
 class PolicyRequest:
     id: int
@@ -86,6 +102,19 @@ class PolicyRequest:
     reviewed_ts: int
     reviewer: str
     exception_id: int | None
+
+    @property
+    def approval_unavailable_reason(self) -> str:
+        """Why this request cannot become an enforced exception ("" = it can)."""
+        if self.block_type not in APPROVABLE_BLOCK_TYPES:
+            return (
+                f"Approval is unavailable for {self.block_type} requests because "
+                "this request type does not materialize into enforced runtime "
+                "policy. Reject or close it after review."
+            )
+        if is_safe_browsing_category(self.category):
+            return SAFE_BROWSING_APPROVAL_UNAVAILABLE
+        return ""
 
 
 @dataclass(frozen=True)
@@ -113,11 +142,15 @@ class PolicyException:
 
     @property
     def effective_status(self) -> str:
-        return EXPIRED if self.is_expired() else self.status
+        if self.is_expired():
+            return EXPIRED
+        if self.status == ACTIVE and is_safe_browsing_category(self.category):
+            return NOT_APPLICABLE
+        return self.status
 
     @property
     def can_revoke(self) -> bool:
-        return self.effective_status == ACTIVE
+        return self.effective_status in {ACTIVE, NOT_APPLICABLE}
 
 
 def _text(v: object, max_len: int, multiline: bool = False) -> str:
@@ -520,6 +553,8 @@ class PolicyRequestStore:
                     "exceptions. Use reject or close for this request type."
                 )
                 raise ValueError(msg)
+            if is_safe_browsing_category(req.category):
+                raise ValueError(SAFE_BROWSING_APPROVAL_UNAVAILABLE)
             req_method = normalize_method(req.method)
             if req.method and not req_method:
                 msg = "Policy request method is invalid."

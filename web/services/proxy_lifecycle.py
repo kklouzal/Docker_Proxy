@@ -98,7 +98,6 @@ PROXY_LIFECYCLE_TABLES: tuple[ProxyLifecycleTable, ...] = (
         child_fk="profile_id",
         note="owned through pac_profiles.id",
     ),
-    ProxyLifecycleTable("adblock_cache_stats", order_columns=("proxy_id", "k")),
     ProxyLifecycleTable(
         "adblock_counts", order_columns=("proxy_id", "day", "list_key")
     ),
@@ -402,7 +401,7 @@ def _bounded_update_proxy_id(
     *,
     old_proxy_id: str,
     new_proxy_id: str,
-    ensure_indexes: bool = True,
+    ensure_indexes: bool,
 ) -> ProxyLifecycleStepResult:
     if not table.rename or table.is_indirect_child:
         return ProxyLifecycleStepResult(table.table, "rename", skipped=True)
@@ -460,7 +459,7 @@ def _bounded_delete_proxy_id(
     table: ProxyLifecycleTable,
     *,
     proxy_id: str,
-    ensure_indexes: bool = True,
+    ensure_indexes: bool,
 ) -> ProxyLifecycleStepResult:
     if not table.remove:
         return ProxyLifecycleStepResult(table.table, "remove", skipped=True)
@@ -583,7 +582,7 @@ def rename_proxy_scoped_rows(
     *,
     old_proxy_id: str,
     new_proxy_id: str,
-    ensure_indexes: bool = True,
+    ensure_indexes: bool,
 ) -> ProxyLifecycleRunResult:
     table_results: list[ProxyLifecycleStepResult] = []
     for table in lifecycle_inventory(conn):
@@ -646,7 +645,7 @@ def remove_proxy_scoped_rows(
     conn: Any,
     *,
     proxy_id: str,
-    ensure_indexes: bool = True,
+    ensure_indexes: bool,
 ) -> ProxyLifecycleRunResult:
     table_results: list[ProxyLifecycleStepResult] = []
     for table in lifecycle_inventory(conn):

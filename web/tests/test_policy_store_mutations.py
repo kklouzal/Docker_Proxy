@@ -291,17 +291,16 @@ def test_sslfilter_store_canonicalizes_dedupes_removes_and_materializes(
 
     token = set_proxy_id("edge-a")
     try:
-        ok, detail, canonical = store.add_nobump("10.1.2.3")
+        ok, detail, canonical = store.add_src_net("nobump", "10.1.2.3")
         assert ok is True, detail
         assert canonical == "10.1.2.3/32"
-        assert store.add_nobump("10.1.2.3/32")[0] is True
-        ok, detail, canonical = store.add_nobump("not-a-cidr")
+        assert store.add_src_net("nobump", "10.1.2.3/32")[0] is True
+        ok, detail, canonical = store.add_src_net("nobump", "not-a-cidr")
         assert ok is False
         assert canonical == ""
         assert "invalid" in detail.lower()
 
-        rows = store.list_nobump()
-        assert [cidr for cidr, _ts in rows] == ["10.1.2.3/32"]
+        assert store.list_all().no_bump_src_nets == ["10.1.2.3/32"]
 
         store.apply_squid_include()
         fresh_include = include_path.read_text(encoding="utf-8")
@@ -322,9 +321,9 @@ def test_sslfilter_store_canonicalizes_dedupes_removes_and_materializes(
         assert "ssl_bump splice sslfilter_nobump" not in disabled_include
 
         store.set_inspection_enabled(True)
-        store.remove_nobump("10.1.2.3/32")
-        store.remove_nobump("10.1.2.3/32")
-        assert store.list_nobump() == []
+        store.remove_src_net("nobump", "10.1.2.3/32")
+        store.remove_src_net("nobump", "10.1.2.3/32")
+        assert store.list_all().no_bump_src_nets == []
         store.apply_squid_include()
         assert list_path.read_text(encoding="utf-8") == ""
         assert "none configured" in include_path.read_text(encoding="utf-8")
@@ -641,3 +640,51 @@ def test_webfilter_changed_disabled_source_is_validated_before_persistence(
 
     assert writes == []
     assert values["source_url"] == "https://example.test/old-feed.tar.gz"
+
+
+def test_webfilter_whitelist_cap_is_enforced_on_add_and_never_truncates_render(
+    tmp_path, monkeypatch
+) -> None:
+    configure_test_mysql_env(tmp_path / "webfilter-whitelist-cap")
+    register_test_proxies("default", "edge-a", "edge-b")
+
+    from services import webfilter_core  # type: ignore
+    from services.proxy_context import reset_proxy_id, set_proxy_id  # type: ignore
+    from services.webfilter_store import WebFilterStore  # type: ignore
+
+    monkeypatch.setattr(webfilter_core, "WHITELIST_MAX_ENTRIES", 3)
+    store = WebFilterStore()
+    store.init_db()
+
+    token = set_proxy_id("edge-a")
+    try:
+        for domain in ("a.example", "b.example", "*.c.example"):
+            assert store.add_whitelist(domain)[0] is True
+        # Re-adding an existing entry is not a new entry.
+        assert store.add_whitelist("a.example") == (True, "", "a.example")
+        ok, detail, canonical = store.add_whitelist("d.example")
+        assert ok is False
+        assert canonical == ""
+        assert "whitelist is full (3 entries)" in detail
+        # Every stored entry is rendered: the old render-time LIMIT dropped
+        # entries silently; the cap now applies when entries are added.
+        assert sorted(store.get_whitelist_patterns()) == [
+            "*.c.example",
+            "a.example",
+            "b.example",
+        ]
+        assert len(store.list_whitelist()) == 3
+        assert store.get_settings().whitelist_domains == [
+            "a.example",
+            "b.example",
+            "*.c.example",
+        ]
+    finally:
+        reset_proxy_id(token)
+
+    # The cap is per proxy.
+    token = set_proxy_id("edge-b")
+    try:
+        assert store.add_whitelist("d.example")[0] is True
+    finally:
+        reset_proxy_id(token)

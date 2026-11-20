@@ -241,10 +241,6 @@ def test_config_restore_previous_is_compare_and_swap(monkeypatch) -> None:
     conn = _ConfigRestoreConn(current_id=7)
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "_connect", lambda: conn)
-    monkeypatch.setattr(
-        "services.proxy_write_guard._ensure_metadata_tables",
-        lambda _conn: None,
-    )
 
     assert store.restore_previous_if_current("edge-a", 7, 3) is True
     assert any(
@@ -262,10 +258,6 @@ def test_config_restore_previous_respects_proxy_lifecycle_guard(monkeypatch) -> 
     conn = _ConfigRestoreConn(current_id=7)
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "_connect", lambda: conn)
-    monkeypatch.setattr(
-        "services.proxy_write_guard._ensure_metadata_tables",
-        lambda _conn: None,
-    )
 
     conn.tombstone = ("removed", "")
 
@@ -280,10 +272,6 @@ def test_config_restore_does_not_stomp_newer_active(monkeypatch) -> None:
     conn = _ConfigRestoreConn(current_id=9)
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "_connect", lambda: conn)
-    monkeypatch.setattr(
-        "services.proxy_write_guard._ensure_metadata_tables",
-        lambda _conn: None,
-    )
 
     assert store.restore_previous_if_current("edge-a", 7, 3) is False
     assert conn.updates == []
@@ -557,3 +545,42 @@ def test_mysql_adblock_artifact_legacy_repair_enforces_global_single_active(
             ).fetchone()
             is not None
         )
+
+
+@pytest.mark.parametrize("fail_in", ["body", "commit"])
+def test_advisory_lock_reports_rollback_failure_on_the_primary_error(
+    monkeypatch, fail_in
+) -> None:
+    monkeypatch.setattr(
+        revision_lifecycle, "acquire_mysql_named_lock", lambda *_a, **_k: True
+    )
+    released: list[str] = []
+    monkeypatch.setattr(
+        revision_lifecycle,
+        "release_mysql_named_lock",
+        lambda _conn, name: released.append(name),
+    )
+
+    class Conn:
+        def commit(self):
+            if fail_in == "commit":
+                msg = "commit lost"
+                raise RuntimeError(msg)
+
+        def rollback(self):
+            msg = "connection gone"
+            raise OSError(msg)
+
+    with pytest.raises(RuntimeError) as caught:
+        with revision_lifecycle.mysql_advisory_lock(Conn(), namespace="test"):
+            if fail_in == "body":
+                msg = "body failed"
+                raise RuntimeError(msg)
+
+    # The primary failure propagates; the failed rollback is not swallowed.
+    assert str(caught.value) in {"body failed", "commit lost"}
+    assert any(
+        "Rollback after this failure also failed: OSError: connection gone" in note
+        for note in getattr(caught.value, "__notes__", [])
+    )
+    assert len(released) == 1

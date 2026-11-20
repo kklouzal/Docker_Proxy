@@ -356,3 +356,35 @@ def test_admin_ui_https_settings_reject_malformed_writes(
         match=detail,
     ):
         store.set_admin_ui_https_settings(**kwargs)
+
+
+def test_create_revision_activation_is_conditional_on_expected_active_revision(
+    tmp_path,
+) -> None:
+    from .mysql_test_utils import configure_test_mysql_env
+    from .test_certificate_core import _valid_ca_bundle
+
+    configure_test_mysql_env(tmp_path / "certificate-expected-active")
+    from services import certificate_bundles as bundles_module  # type: ignore
+
+    store = bundles_module.CertificateBundleStore()
+    first = store.create_revision(_valid_ca_bundle(), expected_active_revision_id=0)
+    assert first.is_active is True
+
+    # A duplicate submit rendered from the same (empty) state is rejected and
+    # leaves the first CA active.
+    with pytest.raises(
+        bundles_module.CertificateActiveRevisionChangedError,
+        match=f"revision {first.revision_id} is active",
+    ):
+        store.create_revision(_valid_ca_bundle(), expected_active_revision_id=0)
+    assert store.get_active_bundle().revision_id == first.revision_id
+
+    second = store.create_revision(
+        _valid_ca_bundle(), expected_active_revision_id=first.revision_id
+    )
+    assert store.get_active_bundle().revision_id == second.revision_id
+    with pytest.raises(ValueError, match="requires activate=True"):
+        store.create_revision(
+            _valid_ca_bundle(), activate=False, expected_active_revision_id=0
+        )

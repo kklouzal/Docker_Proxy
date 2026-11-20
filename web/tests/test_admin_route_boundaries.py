@@ -5499,3 +5499,46 @@ def test_sslfilter_policy_change_queues_fingerprinted_policy_operation(
     assert operation.operation_type == "policy_sync"
     assert operation.target_kind == "policy_state"
     assert operation.target_ref == POLICY_SHA
+
+
+def test_index_reports_unreadable_config_apply_audit_instead_of_no_events(
+    monkeypatch, tmp_path
+) -> None:
+    class BrokenAuditStore(FakeAuditStore):
+        def latest_config_apply(self):
+            msg = "audit history unavailable"
+            raise RuntimeError(msg)
+
+    loaded = load_admin_app(monkeypatch, tmp_path, audit_store=BrokenAuditStore())
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "Last config apply unavailable: Operation failed." in body
+    assert "No config apply events recorded yet." not in body
+
+
+def test_webfilter_whitelist_read_failure_is_shown_not_empty(
+    monkeypatch, tmp_path
+) -> None:
+    class BrokenWhitelistStore(FakeWebfilterStore):
+        def list_whitelist(self):
+            msg = "whitelist read failed"
+            raise RuntimeError(msg)
+
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, webfilter_store=BrokenWhitelistStore()
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/webfilter?tab=whitelist")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "Whitelist unavailable: Operation failed." in body
+    assert "No whitelist entries yet." not in body
+    assert "Each proxy holds up to 10,000 entries." in body

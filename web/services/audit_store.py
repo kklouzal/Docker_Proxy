@@ -60,7 +60,6 @@ class AuditStore:
                         detail TEXT,
                         config_sha256 CHAR(64),
                         config_text LONGTEXT,
-                        KEY idx_audit_ts (ts),
                         KEY idx_audit_ts_id (ts, id),
                         KEY idx_audit_kind (kind),
                         KEY idx_audit_proxy_ts (proxy_id, ts)

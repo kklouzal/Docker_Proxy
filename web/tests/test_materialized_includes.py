@@ -1666,3 +1666,36 @@ def test_write_managed_text_files_keeps_runtime_files_world_readable(tmp_path) -
     assert list_path.read_text(encoding="utf-8") == "example.com\n"
     assert include_path.stat().st_mode & 0o777 == 0o644
     assert list_path.stat().st_mode & 0o777 == 0o644
+
+
+def test_webfilter_category_acl_names_are_injective(tmp_path, monkeypatch) -> None:
+    module = _import_webfilter_core_module()
+    store = module.ProxyWebFilterStore(
+        squid_include_path=str(tmp_path / "30-webfilter.conf"),
+        whitelist_path=str(tmp_path / "webfilter_whitelist.txt"),
+    )
+    settings = module.WebFilterSettings(
+        enabled=True,
+        source_url="",
+        blocked_categories=["remote-control", "remote_control", "remotecontrol"],
+        whitelist_domains=[],
+        last_success=0,
+        last_attempt=0,
+        last_error="",
+        next_run_ts=0,
+    )
+    monkeypatch.setattr(store, "get_settings", lambda: settings)
+    monkeypatch.setattr(store, "_resolve_category_aliases", list)
+    monkeypatch.setattr(store, "_webcat_built_ts", lambda: 0)
+
+    rendered = store.render_materialized_state().include_text
+
+    acl_lines = [line for line in rendered.splitlines() if line.startswith("acl ")]
+    names = [line.split()[1] for line in acl_lines if "webfilter_block_" in line]
+    assert names == [
+        "webfilter_block_remote_x2d_control",
+        "webfilter_block_remote__control",
+        "webfilter_block_remotecontrol",
+    ]
+    assert len(set(names)) == 3
+    assert module.category_acl_token("google_safe_browsing") != "google_safe_browsing"

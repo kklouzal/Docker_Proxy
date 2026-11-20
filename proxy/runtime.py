@@ -3356,7 +3356,7 @@ class ProxyRuntime:
             )
             if ok_restart:
                 try:
-                    store.mark_cache_flushed(size=0)
+                    store.mark_cache_flushed()
                 except Exception as exc:
                     clear_detail = public_error_message(
                         exc,
@@ -3609,7 +3609,7 @@ class ProxyRuntime:
         cache_flushed = False
         if ok_restart and flush_requested:
             try:
-                store.mark_cache_flushed(size=0)
+                store.mark_cache_flushed()
                 cache_flushed = True
             except Exception as exc:
                 cache_flush_detail = public_error_message(
