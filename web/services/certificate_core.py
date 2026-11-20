@@ -778,6 +778,21 @@ def _load_bundle_ca_material(
     return ca_cert, ca_key
 
 
+def _authority_key_identifier_for(
+    issuer: x509.Certificate,
+) -> x509.AuthorityKeyIdentifier:
+    """Match the issuer's own SKI when it has one, else derive it from its key."""
+    try:
+        issuer_ski = issuer.extensions.get_extension_for_class(
+            x509.SubjectKeyIdentifier,
+        ).value
+    except x509.ExtensionNotFound:
+        return x509.AuthorityKeyIdentifier.from_issuer_public_key(
+            issuer.public_key(),
+        )
+    return x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(issuer_ski)
+
+
 def materialize_admin_ui_server_certificate(
     ca_dir: str,
     bundle: CertificateBundle | object,
@@ -830,6 +845,13 @@ def materialize_admin_ui_server_certificate(
             critical=False,
         )
         .add_extension(x509.SubjectAlternativeName(general_names), critical=False)
+        # RFC 5280 key identifiers; strict verifiers (e.g. Python 3.13+
+        # default contexts) reject a leaf without an Authority Key Identifier.
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()),
+            critical=False,
+        )
+        .add_extension(_authority_key_identifier_for(ca_cert), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
 

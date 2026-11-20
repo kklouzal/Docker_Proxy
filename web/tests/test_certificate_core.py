@@ -742,3 +742,58 @@ def test_admin_ui_san_normalization_strips_valid_numeric_ports(
     expected: str,
 ) -> None:
     assert certificate_core.normalize_admin_ui_certificate_san_token(value) == expected
+
+
+def _strict_tls_handshake(ca_pem: str, certfile: str, keyfile: str, host: str) -> None:
+    import ssl
+
+    client_ctx = ssl.create_default_context(cadata=ca_pem)
+    assert client_ctx.verify_flags & ssl.VERIFY_X509_STRICT
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(certfile, keyfile)
+    c_in, c_out, s_in, s_out = (ssl.MemoryBIO() for _ in range(4))
+    client = client_ctx.wrap_bio(c_in, c_out, server_hostname=host)
+    server = server_ctx.wrap_bio(s_in, s_out, server_side=True)
+    done = {"client": False, "server": False}
+    for _ in range(20):
+        for name, conn in (("client", client), ("server", server)):
+            if done[name]:
+                continue
+            try:
+                conn.do_handshake()
+                done[name] = True
+            except ssl.SSLWantReadError:
+                pass
+        s_in.write(c_out.read())
+        c_in.write(s_out.read())
+        if all(done.values()):
+            return
+    pytest.fail("TLS handshake did not complete")
+
+
+def test_generated_ca_and_admin_ui_leaf_pass_strict_x509_verification(
+    tmp_path,
+) -> None:
+    from services.cert_manager import generate_self_signed_ca_bundle
+
+    bundle = generate_self_signed_ca_bundle(days_valid=30)
+    certificate_core.materialize_certificate_bundle(tmp_path, bundle)
+    material = certificate_core.materialize_admin_ui_server_certificate(
+        tmp_path,
+        bundle,
+        san_tokens=["admin.example.test"],
+    )
+
+    leaf = x509.load_pem_x509_certificate(Path(material.certfile).read_bytes())
+    ca = x509.load_pem_x509_certificate(bundle.cert_pem.encode("utf-8"))
+    aki = leaf.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier).value
+    ca_ski = ca.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
+    assert aki.key_identifier == ca_ski.digest
+    leaf.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
+
+    _strict_tls_handshake(
+        bundle.cert_pem,
+        material.certfile,
+        material.keyfile,
+        "admin.example.test",
+    )
