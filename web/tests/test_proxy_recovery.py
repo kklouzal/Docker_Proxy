@@ -25,14 +25,6 @@ def _write_recovery_bundle(*args, **kwargs):
     )
 
 
-def _create_recovery_bundle(*args, **kwargs):
-    return recovery.create_recovery_bundle(
-        *args,
-        source_control_plane_id=_SOURCE_CONTROL_PLANE_ID,
-        **kwargs,
-    )
-
-
 def _rows() -> dict[str, list[dict[str, object]]]:
     return {
         "adblock_settings": [
@@ -163,11 +155,9 @@ def test_canonical_json_round_trip_includes_bytes_base64_and_hmac(
 
     raw = bundle_path.read_bytes()
     assert raw.endswith(b"\n")
-    assert raw == recovery.serialize_recovery_bundle(
-        recovery.read_recovery_bundle("edge-01", recovery_dir=tmp_path)
-    )
-
     envelope = json.loads(raw)
+    # The file is the canonical encoding of its own envelope.
+    assert raw == recovery.serialize_envelope(envelope)
     assert list(envelope) == sorted(envelope)
     assert envelope["format_version"] == 2
     assert envelope["source_control_plane_id"] == _SOURCE_CONTROL_PLANE_ID
@@ -186,6 +176,9 @@ def test_canonical_json_round_trip_includes_bytes_base64_and_hmac(
     assert bundle.tables[0].rows[0]["marker"] == b"\x00proxy-bytes\xff"
     assert bundle.tables[0].rows[0]["nested"] == {"payload": b"nested"}
     assert bundle.source_control_plane_id == _SOURCE_CONTROL_PLANE_ID
+    assert bundle.integrity.content_sha256 == envelope["integrity"]["content_sha256"]
+    assert bundle.integrity.mac == envelope["integrity"]["mac"]
+    assert bundle.created_ts == envelope["created_ts"]
 
     with pytest.raises(recovery.ProxyRecoveryError, match="control plane identity"):
         recovery.read_recovery_bundle(
@@ -202,14 +195,14 @@ def test_recovery_bundle_rejects_excessive_json_nesting_before_authentication(
     supported_value: object = "leaf"
     for _ in range(24):
         supported_value = {"nested": [supported_value]}
-    valid = _create_recovery_bundle(
+    valid = _write_recovery_bundle(
         "edge-01",
         {"adblock_settings": [{"value": supported_value}]},
         created_ts="2026-07-28T19:27:00Z",
         recovery_dir=tmp_path,
-    )
+    ).read_bytes()
     parsed = recovery.parse_recovery_bundle(
-        recovery.serialize_recovery_bundle(valid),
+        valid,
         expected_proxy_id="edge-01",
         key=key,
     )
@@ -322,7 +315,7 @@ def test_bundle_validation_rejects_tamper_wrong_proxy_duplicates_and_reserved_ke
     with pytest.raises(
         recovery.ProxyRecoveryError, match="reserved recovery encoding key"
     ):
-        _create_recovery_bundle(
+        _write_recovery_bundle(
             "edge-01",
             {"adblock_settings": [{"__proxy_recovery_type__": "bytes/base64"}]},
             recovery_dir=tmp_path,
@@ -334,13 +327,13 @@ def test_unauthenticated_wide_rows_are_not_decoded_before_integrity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     key = recovery.get_or_create_signing_key("edge-01", tmp_path)
-    bundle = _create_recovery_bundle(
+    bundle = _write_recovery_bundle(
         "edge-01",
         {"adblock_settings": [{f"blob_{index}": b"x" * 1024 for index in range(512)}]},
         created_ts="2026-07-28T19:27:00Z",
         recovery_dir=tmp_path,
-    )
-    envelope = json.loads(recovery.serialize_recovery_bundle(bundle))
+    ).read_bytes()
+    envelope = json.loads(bundle)
     envelope["integrity"]["content_sha256"] = "0" * 64
     raw = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
     assert len(raw) < recovery.MIN_MAX_BUNDLE_BYTES
@@ -363,7 +356,7 @@ def test_unauthenticated_wide_rows_are_not_decoded_before_integrity(
     assert decode_calls == 0
 
     parsed = recovery.parse_recovery_bundle(
-        recovery.serialize_recovery_bundle(bundle),
+        bundle,
         expected_proxy_id="edge-01",
         key=key,
     )
@@ -375,13 +368,13 @@ def test_authenticated_invalid_encoding_fails_after_integrity(
     tmp_path: Path,
 ) -> None:
     key = recovery.get_or_create_signing_key("edge-01", tmp_path)
-    bundle = _create_recovery_bundle(
+    bundle = _write_recovery_bundle(
         "edge-01",
         {"adblock_settings": [{"marker": "valid"}]},
         created_ts="2026-07-28T19:27:00Z",
         recovery_dir=tmp_path,
-    )
-    envelope = json.loads(recovery.serialize_recovery_bundle(bundle))
+    ).read_bytes()
+    envelope = json.loads(bundle)
     envelope["tables"][0]["rows"][0]["marker"] = {
         "__proxy_recovery_type__": "bytes/base64",
         "data": "not base64!",
@@ -455,14 +448,7 @@ def test_env_max_bundle_bytes_enforces_create_write_read_and_parse_limits(
     )
 
     with pytest.raises(recovery.ProxyRecoveryError, match="exceeds maximum size"):
-        _create_recovery_bundle("edge-01", rows, recovery_dir=tmp_path)
-
-    with pytest.raises(recovery.ProxyRecoveryError, match="exceeds maximum size"):
-        _write_recovery_bundle(
-            "edge-01",
-            rows,
-            recovery_dir=tmp_path,
-        )
+        _write_recovery_bundle("edge-01", rows, recovery_dir=tmp_path)
 
     path = _write_recovery_bundle(
         "edge-01",
@@ -484,15 +470,15 @@ def test_env_max_bundle_bytes_enforces_create_write_read_and_parse_limits(
 
 def test_scope_and_value_validation_errors(tmp_path: Path) -> None:
     with pytest.raises(recovery.ProxyRecoveryError, match="invalid proxy id"):
-        _create_recovery_bundle("../bad", {}, recovery_dir=tmp_path)
+        _write_recovery_bundle("../bad", {}, recovery_dir=tmp_path)
     with pytest.raises(recovery.ProxyRecoveryError, match="not in recovery scope"):
-        _create_recovery_bundle(
+        _write_recovery_bundle(
             "edge-01",
             {"audit_log": []},
             recovery_dir=tmp_path,
         )
     with pytest.raises(recovery.ProxyRecoveryError, match="duplicate recovery table"):
-        _create_recovery_bundle(
+        _write_recovery_bundle(
             "edge-01",
             [
                 recovery.RecoveryTablePayload("adblock_settings", ()),
@@ -503,7 +489,7 @@ def test_scope_and_value_validation_errors(tmp_path: Path) -> None:
     with pytest.raises(
         recovery.ProxyRecoveryError, match="unsupported recovery value type"
     ):
-        _create_recovery_bundle(
+        _write_recovery_bundle(
             "edge-01",
             {"adblock_settings": [{"bad": object()}]},
             recovery_dir=tmp_path,

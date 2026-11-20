@@ -817,23 +817,37 @@ class AdblockStore:
         )
 
     def request_refresh_now(self) -> None:
+        # The stored request is a token: a timestamp that strictly increases per
+        # request, so a builder clearing the token it observed cannot clear a
+        # request made while it was building.
         def write() -> None:
             with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT v FROM adblock_meta WHERE k='refresh_requested' FOR UPDATE",
+                ).fetchone()
+                try:
+                    previous = int(row[0]) if row else 0
+                except TypeError, ValueError:
+                    previous = 0  # an unreadable token is replaced by this request
                 conn.execute(
                     "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
-                    (str(_now()),),
+                    (str(max(_now(), previous + 1)),),
                 )
 
         self._with_db_write_retry(write)
 
-    def clear_refresh_requested(self) -> None:
+    def clear_refresh_requested(self, observed: int) -> None:
+        """Clear the refresh request only if it is still the observed token."""
+
         def write() -> None:
             with self._connect() as conn:
                 conn.execute(
-                    "INSERT INTO adblock_meta(k,v) VALUES('refresh_requested','0') AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
+                    "UPDATE adblock_meta SET v='0' WHERE k='refresh_requested' AND v=%s",
+                    (str(int(observed)),),
                 )
 
-        self._with_db_write_retry(write)
+        if int(observed) > 0:
+            self._with_db_write_retry(write)
 
     def request_cache_flush(self) -> None:
         def write() -> None:
@@ -860,14 +874,13 @@ class AdblockStore:
                 return 1
 
     def get_refresh_requested(self) -> int:
+        # A corrupt token raises instead of reading as "no request", which would
+        # silently drop an operator refresh.
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT v FROM adblock_meta WHERE k='refresh_requested'",
             ).fetchone()
-            try:
-                return int(row[0]) if row else 0
-            except Exception:
-                return 0
+        return int(row[0]) if row else 0
 
     def record_artifact_build_result(
         self,

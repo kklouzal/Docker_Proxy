@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import errno
+import hashlib
 import io
 import ipaddress
 import math
@@ -429,3 +430,19 @@ def env_float(
     if maximum is not None:
         value = min(float(maximum), value)
     return value
+
+
+def sha256_text(text: str) -> str:
+    """Hex SHA-256 of UTF-8 text (replacement for unencodable code points).
+
+    Same encoding as the persisted config-revision digest.
+    """
+    return hashlib.sha256((text or "").encode("utf-8", errors="replace")).hexdigest()
+
+
+def int_or(value: object, default: int = 0) -> int:
+    """``int(value)`` for display/report values; falsy or unparsable -> default."""
+    try:
+        return int(value or default)
+    except Exception:
+        return int(default)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 # ruff: file-ignore[raw-string-in-exception, f-string-in-exception, raise-vanilla-args]
-import hashlib
 import time
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -11,7 +10,6 @@ from services import adblock_artifacts, proxy_recovery
 from services.certificate_digest import certificate_bundle_sha256
 from services.db import (
     acquire_mysql_named_lock,
-    connect,
     release_mysql_named_lock,
     staged_blob_parameter,
 )
@@ -23,6 +21,7 @@ from services.proxy_write_guard import (
     resolve_proxy_write_id,
 )
 from services.row_access import row_value as _row_value
+from services.runtime_helpers import sha256_text as _sha256_text
 from services.schema_lifecycle import read_control_plane_identity
 
 
@@ -273,7 +272,6 @@ _SAML_DEFAULT_ROW: Final = MappingProxyType(
     },
 )
 
-_ADOPTION_MARKER_TABLE: Final = "proxy_recovery_adoptions"
 _ADOPTION_MARKER_PAIR_SELECT_SQL: Final = (
     "SELECT source_control_plane_id, target_control_plane_id, bundle_content_sha256, status, detail "
     "FROM proxy_recovery_adoptions "
@@ -503,28 +501,6 @@ def restore_recovery_bundle(
         restored_identity,
         adopted_ts=plan.now_ts,
     )
-
-
-def read_validate_and_restore(
-    target_proxy_id: str,
-    *,
-    connect_factory=connect,
-    expected_source_control_plane_id: str | None = None,
-    recovery_dir: str | None = None,
-    now_ts: int | None = None,
-    max_bundle_bytes: int | None = None,
-) -> RestoreResult:
-    resolved_max_bundle_bytes = proxy_recovery.resolve_max_bundle_bytes(
-        max_bundle_bytes
-    )
-    bundle = proxy_recovery.read_recovery_bundle(
-        target_proxy_id,
-        expected_source_control_plane_id=expected_source_control_plane_id,
-        recovery_dir=recovery_dir,
-        max_bundle_bytes=resolved_max_bundle_bytes,
-    )
-    with connect_factory() as conn:
-        return restore_recovery_bundle(conn, bundle, target_proxy_id, now_ts=now_ts)
 
 
 def validate_restore_contract() -> None:
@@ -759,10 +735,6 @@ def _validate_certificate_bundle_revision_digests(
             raise ProxyRecoveryRestoreError(
                 "certificate bundle revision bundle digest does not match certificate material",
             )
-
-
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256((text or "").encode("utf-8", errors="replace")).hexdigest()
 
 
 def _normalize_column_value(

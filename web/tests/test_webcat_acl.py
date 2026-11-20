@@ -576,9 +576,46 @@ def test_webcat_acl_discards_stale_remote_connection_after_lookup_error() -> Non
     broken = BrokenConn()
     db._conn = broken
 
-    assert db._lookup_categories_remote("example.com") == set()
+    assert db._lookup_categories_remote("example.com") is None
     assert broken.closed is True
     assert db._conn is None
+
+
+def test_webcat_acl_does_not_cache_unavailable_remote_lookup_as_unknown(
+    monkeypatch, capsys
+) -> None:
+    webcat_acl = _webcat_acl_module()
+    db = webcat_acl._Db()
+    monkeypatch.setattr(db, "start", lambda: None)
+    monkeypatch.setattr(db, "_ensure_snapshot", lambda force=False: False)
+    monkeypatch.setattr(db, "_lookup_categories_from_snapshot", lambda _domain: None)
+    answers: list[set[str] | None] = [None, {"adult"}]
+    monkeypatch.setattr(db, "_lookup_categories_remote", lambda _d: answers.pop(0))
+
+    assert db.lookup_categories("example.com") == set()
+    assert db.lookup_categories("example.com") == {"adult"}
+    assert capsys.readouterr().out == ""
+
+
+def test_webcat_acl_snapshot_start_failure_is_reported_on_stderr(
+    monkeypatch, capsys
+) -> None:
+    webcat_acl = _webcat_acl_module()
+    db = webcat_acl._Db()
+
+    def fail(*_args, **_kwargs) -> NoReturn:
+        msg = "snapshot unreadable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(db, "_load_snapshot_from_disk", fail)
+    monkeypatch.setattr(db, "_snapshot_loop", lambda: None)
+
+    db.start()
+    db.close()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "snapshot_start_failed" in captured.err
 
 
 def test_webcat_acl_discards_stale_remote_connection_after_metadata_error() -> None:
@@ -1234,52 +1271,6 @@ def test_webcat_helper_closes_blocked_log_writer_at_eof(monkeypatch) -> None:
     assert inserted[0]["url"] == "http://blocked.example/path"
     assert inserted[0]["category"] == "adult"
     assert outputs == ["OK message=category=adult\n"]
-
-
-def test_webfilter_store_list_blocked_log_clamps_orders_and_redacts(
-    monkeypatch,
-) -> None:
-    from services import webfilter_store  # type: ignore
-
-    class Result:
-        def fetchall(self):
-            return [
-                (
-                    123,
-                    "192.0.2.10",
-                    "https://user:secret@example.test/path?access_token=&token#fragment",
-                    "adult",
-                ),
-            ]
-
-    class FakeConn:
-        def __init__(self) -> None:
-            self.calls = []
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-        def execute(self, sql, params=None):
-            self.calls.append((" ".join(str(sql).split()), tuple(params or ())))
-            return Result()
-
-    conn = FakeConn()
-    store = webfilter_store.WebFilterStore()
-    monkeypatch.setattr(store, "init_db", lambda: None)
-    monkeypatch.setattr(store, "_connect", lambda: conn)
-    monkeypatch.setattr(webfilter_store, "get_proxy_id", lambda: "edge-a")
-
-    rows = store.list_blocked_log(limit=999999)
-
-    assert "ORDER BY ts DESC, id DESC LIMIT" in conn.calls[0][0]
-    assert conn.calls[0][1] == ("edge-a", 1000)
-    assert (
-        rows[0]["url"]
-        == "https://example.test/path?access_token=[redacted]&token=[redacted]"
-    )
 
 
 def test_webcat_acl_throttles_only_failed_mysql_opens(monkeypatch) -> None:

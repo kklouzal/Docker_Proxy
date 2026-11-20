@@ -12,6 +12,7 @@ from werkzeug.datastructures import MultiDict
 
 from .admin_route_test_utils import (
     FakeAdblockArtifacts,
+    FakeAdblockStore,
     FakeAuditStore,
     FakeConfigRevisions,
     FakeProxyClient,
@@ -1870,6 +1871,40 @@ def test_safe_config_apply_failure_returns_to_active_form_tab(
     assert response.status_code in {301, 302, 303}
     assert "tab=network" in response.headers["Location"]
     assert "error=1" in response.headers["Location"]
+
+
+def test_safe_config_apply_fails_without_publishing_when_config_read_fails(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    client = loaded.module.app.test_client()
+    login_client(client)
+    published: list[object] = []
+
+    def fail_read():
+        msg = "config read failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(loaded.module, "_current_managed_config", fail_read)
+    monkeypatch.setattr(
+        loaded.module,
+        "_publish_template_config",
+        lambda *args, **_kwargs: published.append(args) or (True, "published"),
+    )
+
+    response = client.post(
+        "/squid/config/apply-safe",
+        data={
+            "csrf_token": csrf_token(client, "/squid/config?tab=network"),
+            "form_kind": "network",
+            "explicit_proxy_port": "3128",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {301, 302, 303}
+    assert "error=1" in response.headers["Location"]
+    assert published == []
 
 
 def test_safe_config_apply_failure_shows_publish_detail(monkeypatch, tmp_path) -> None:
@@ -4730,6 +4765,53 @@ def test_webfilter_save_clears_stored_safe_browsing_key_when_requested(
     assert store.last_set_settings["safe_browsing_api_key"] == ""
 
 
+@pytest.mark.parametrize(
+    "form",
+    [
+        {
+            "action": "save",
+            "source_url": "https://example.com/categories.csv",
+            "source_provider": "csv",
+        },
+        {
+            "action": "safe_browsing_save",
+            "safe_browsing_enabled": "on",
+            "safe_browsing_api_key": "",
+            "safe_browsing_lists": ["se-4b", "mw-4b"],
+        },
+    ],
+)
+def test_webfilter_save_fails_without_writing_when_settings_read_fails(
+    monkeypatch, tmp_path, form
+) -> None:
+    class SettingsReadFailsStore(FakeWebfilterStore):
+        def get_settings(self) -> object:
+            msg = "settings read failed"
+            raise RuntimeError(msg)
+
+    store = SettingsReadFailsStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, webfilter_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/webfilter?tab=categories",
+        data={
+            "csrf_token": csrf_token(client, "/webfilter"),
+            "tab": "categories",
+            **form,
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    assert "err=" in response.headers["Location"]
+    assert not hasattr(store, "last_set_settings")
+    page = client.get(response.headers["Location"])
+    assert page.status_code == 200
+    assert "Not saved" in page.get_data(as_text=True)
+
+
 def test_webfilter_safe_browsing_save_rejects_without_lists(
     monkeypatch, tmp_path
 ) -> None:
@@ -5545,3 +5627,47 @@ def test_webfilter_whitelist_read_failure_is_shown_not_empty(
     assert "Whitelist unavailable: Operation failed." in body
     assert "No whitelist entries yet." not in body
     assert "Each proxy holds up to 10,000 entries." in body
+
+
+def test_adblock_refresh_reports_error_when_list_statuses_read_fails(
+    monkeypatch, tmp_path
+) -> None:
+    class StatusesReadFailsStore(FakeAdblockStore):
+        def list_statuses(self) -> list[object]:
+            msg = "statuses read failed"
+            raise RuntimeError(msg)
+
+    store = StatusesReadFailsStore()
+    loaded = load_admin_app(monkeypatch, tmp_path, adblock_store=store)
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.post(
+        "/adblock",
+        data={"csrf_token": csrf_token(client, "/adblock"), "action": "refresh"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 303}
+    params = parse_qs(urlparse(response.headers["Location"]).query)
+    assert params["error"] == ["1"]
+    assert "refresh_no_lists" not in params
+    assert store.refresh_requested == 0
+
+
+def test_adblock_page_reports_unavailable_store_reads(monkeypatch, tmp_path) -> None:
+    class SettingsReadFailsStore(FakeAdblockStore):
+        def get_settings(self) -> object:
+            msg = "settings read failed"
+            raise RuntimeError(msg)
+
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, adblock_store=SettingsReadFailsStore()
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/adblock")
+
+    assert response.status_code == 200
+    assert "Could not read adblock settings" in response.get_data(as_text=True)

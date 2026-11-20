@@ -307,7 +307,6 @@ class CompatConnection:
 
 DATABASE_ERRORS: tuple[type[BaseException], ...] = (pymysql.MySQLError,)  # type: ignore[attr-defined]
 INTEGRITY_ERRORS: tuple[type[BaseException], ...] = (pymysql.IntegrityError,)  # type: ignore[attr-defined]
-OPERATIONAL_ERRORS: tuple[type[BaseException], ...] = (pymysql.OperationalError,)  # type: ignore[attr-defined]
 
 # 4 MiB keeps each append statement near 0.2 s server-side for a ~59 MB
 # adblock archive on MySQL 8.4 (measured), well under long_query_time=1 and

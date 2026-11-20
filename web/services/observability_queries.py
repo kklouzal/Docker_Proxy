@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import Counter
@@ -11,12 +12,15 @@ if TYPE_CHECKING:
 from services.client_identity_cache import get_client_identity_cache
 from services.db import connect
 from services.diagnostic_store import get_diagnostic_store
+from services.errors import public_error_message
+from services.logutil import log_exception_throttled
 from services.privacy_labels import pseudonymize
 from services.proxy_context import get_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import cache_hit_sql as _cache_hit_sql
 from services.runtime_helpers import escape_like as _escape_like
 from services.runtime_helpers import extract_domain as _extract_domain
+from services.runtime_helpers import int_or as _int_or
 from services.runtime_helpers import not_cached_reason_sql as _not_cached_reason_sql
 from services.runtime_helpers import present_value_sql as _present_value_sql
 from services.ssl_errors_store import get_ssl_errors_store
@@ -31,18 +35,13 @@ from services.ui_support import (
     present_transaction_rows,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _pct(part: int, whole: int) -> float:
     if whole <= 0:
         return 0.0
     return round((float(part) / float(whole)) * 100.0, 1)
-
-
-def _int_or(value: object, default: int) -> int:
-    try:
-        return int(value or default)
-    except Exception:
-        return int(default)
 
 
 def normalize_runtime_health_state_errors(value: object) -> list[str]:
@@ -1419,13 +1418,23 @@ class ObservabilityQueries:
                     """,
                     (proxy_id, int(since), lim),
                 ).fetchall()
-        except Exception:
+        except Exception as exc:
+            # The report must not read as "no activity" when the audit table is
+            # unreadable; the template shows the error instead of zero counts.
+            log_exception_throttled(
+                logger,
+                "observability_queries.audit_activity",
+                interval_seconds=300.0,
+                message="Observability report could not read audit activity",
+            )
             return {
                 "summary": {"events": 0, "failed_events": 0, "last_seen": 0},
                 "top_kinds": [],
                 "recent": [],
+                "error": public_error_message(exc),
             }
         return {
+            "error": "",
             "summary": {
                 "events": int(summary[0] or 0) if summary else 0,
                 "failed_events": int(summary[1] or 0) if summary else 0,

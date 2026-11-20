@@ -1105,7 +1105,7 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
     lists_dir.mkdir(parents=True, exist_ok=True)
     list_path = lists_dir / "easylist.txt"
     list_path.write_text("||cached.example^\n", encoding="utf-8")
-    cleared: list[bool] = []
+    cleared: list[int] = []
     nudges: list[bool] = []
     sleeps: list[float] = []
 
@@ -1135,8 +1135,8 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
         def should_update(self, *_args, **_kwargs) -> bool:
             return False
 
-        def clear_refresh_requested(self) -> None:
-            cleared.append(True)
+        def clear_refresh_requested(self, observed: int) -> None:
+            cleared.append(observed)
 
     monkeypatch.setattr(store_module, "get_adblock_store", FakeStore)
     monkeypatch.setattr(
@@ -1189,7 +1189,7 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
     assert nudges == [False]
     # The completed build consumed the refresh; the pending list is retried by
     # its download backoff instead of a forced re-download on every poll.
-    assert cleared == [True]
+    assert cleared == [1]
     assert sleeps == [30.0]
 
 
@@ -1691,7 +1691,7 @@ def _run_background_loop_due_check(
                 self.update_interval_seconds
             )
 
-        def clear_refresh_requested(self) -> None:
+        def clear_refresh_requested(self, _observed: int) -> None:
             self.cleared += 1
 
     fake_store = FakeStore()
@@ -1881,7 +1881,8 @@ def test_background_loop_builds_when_twelve_hour_download_is_due(
             "source_kind": "background",
         }
     ]
-    assert cleared == 1
+    # No operator refresh was pending, so there is no request token to clear.
+    assert cleared == 0
     assert sleeps == [30.0]
 
 
@@ -3044,7 +3045,7 @@ def test_background_loop_rebuilds_other_lookup_schema_once_per_revision(
         def list_path(self, key: str) -> str:
             return str(lists_dir / f"{key}.txt")
 
-        def clear_refresh_requested(self) -> None:
+        def clear_refresh_requested(self, observed: int) -> None:
             return None
 
         should_update = real_store.should_update
@@ -3088,3 +3089,17 @@ def test_background_loop_rebuilds_other_lookup_schema_once_per_revision(
             artifact_store._loop()
 
     assert len(build_calls) == expected_builds
+
+
+def test_build_result_recording_failure_is_logged_not_raised(caplog) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+
+    class Store:
+        def record_artifact_build_result(self, **_kwargs: object) -> None:
+            msg = "status write failed"
+            raise RuntimeError(msg)
+
+    with caplog.at_level("ERROR"):
+        artifacts_module._record_build_result(Store(), ok=True, detail="built")
+
+    assert "Failed to record the adblock artifact build result" in caplog.text

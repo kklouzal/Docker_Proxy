@@ -208,7 +208,7 @@ def test_housekeeping_resolves_current_retention_setting(
     assert housekeeping.current_retention_days(30) == 45
 
 
-def test_housekeeping_retention_setting_falls_back_to_default(
+def test_housekeeping_skips_prune_when_retention_setting_unreadable(
     monkeypatch, housekeeping
 ) -> None:
     def fail():
@@ -216,8 +216,23 @@ def test_housekeeping_retention_setting_falls_back_to_default(
         raise RuntimeError(msg)
 
     monkeypatch.setattr(housekeeping, "get_observability_retention_settings", fail)
+    monkeypatch.setattr(
+        housekeeping,
+        "run_housekeeping_once",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not prune with a guessed retention")
+        ),
+    )
 
-    assert housekeeping.current_retention_days(30) == 30
+    with pytest.raises(RuntimeError, match="db unavailable"):
+        housekeeping.current_retention_days(30)
+    assert (
+        housekeeping._run_scheduled_housekeeping_once(
+            run_label="daily",
+            retention_days=30,
+        )
+        is False
+    )
 
 
 def test_housekeeping_lock_retry_skips_sleep_after_final_failure(

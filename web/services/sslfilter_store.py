@@ -327,12 +327,6 @@ class SslFilterStore:
     def set_inspection_enabled(self, enabled: bool) -> None:
         self._set_setting("inspection_enabled", "1" if enabled else "0")
 
-    def get_inspection_enabled(self) -> bool:
-        self.init_db()
-        with self._connect() as conn:
-            v = self._get_setting_conn(conn, "inspection_enabled")
-        return False if v is None else (v == "1")
-
     def add_domain(self, policy: str, domain: str) -> tuple[bool, str, str]:
         policy_key = _canonical_policy(policy)
         if policy_key not in _DOMAIN_POLICIES:

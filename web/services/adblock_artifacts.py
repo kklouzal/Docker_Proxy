@@ -184,6 +184,23 @@ def _parse_report_json(report_json: str) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _record_build_result(store: Any, **result: Any) -> None:
+    """Record a build outcome for the admin UI without replacing that outcome.
+
+    A recording failure leaves the displayed build status stale, so it is logged
+    rather than silently dropped; the build result returned to the caller stands.
+    """
+    try:
+        store.record_artifact_build_result(**result)
+    except Exception:
+        log_exception_throttled(
+            logger,
+            "adblock_artifacts.record_build_result",
+            interval_seconds=300.0,
+            message="Failed to record the adblock artifact build result",
+        )
+
+
 def _list_file_has_rule_content(path: str | os.PathLike[str]) -> bool:
     try:
         with Path(path).open(encoding="utf-8", errors="replace") as handle:
@@ -1023,14 +1040,14 @@ class AdblockArtifactStore:
                     "Enabled adblock subscription lists could not be downloaded and "
                     "no cached lists with rule content are available."
                 )
-            with contextlib.suppress(Exception):
-                store.record_artifact_build_result(
-                    ok=False,
-                    detail=detail,
-                    revision_id=getattr(previous, "revision_id", 0),
-                    artifact_sha256=getattr(previous, "artifact_sha256", ""),
-                    download_pending=download_pending,
-                )
+            _record_build_result(
+                store,
+                ok=False,
+                detail=detail,
+                revision_id=getattr(previous, "revision_id", 0),
+                artifact_sha256=getattr(previous, "artifact_sha256", ""),
+                download_pending=download_pending,
+            )
             return {
                 "ok": False,
                 "detail": detail,
@@ -1053,18 +1070,18 @@ class AdblockArtifactStore:
                             "Enabled adblock subscription lists compiled without any "
                             "request-time rules; preserving the previous artifact."
                         )
-                        with contextlib.suppress(Exception):
-                            store.record_artifact_build_result(
-                                ok=False,
-                                detail=detail,
-                                revision_id=getattr(previous, "revision_id", 0),
-                                artifact_sha256=getattr(
-                                    previous,
-                                    "artifact_sha256",
-                                    "",
-                                ),
-                                download_pending=download_pending,
-                            )
+                        _record_build_result(
+                            store,
+                            ok=False,
+                            detail=detail,
+                            revision_id=getattr(previous, "revision_id", 0),
+                            artifact_sha256=getattr(
+                                previous,
+                                "artifact_sha256",
+                                "",
+                            ),
+                            download_pending=download_pending,
+                        )
                         return {
                             "ok": False,
                             "detail": detail,
@@ -1096,14 +1113,14 @@ class AdblockArtifactStore:
                 exc,
                 default="Adblock artifact build failed.",
             )
-            with contextlib.suppress(Exception):
-                store.record_artifact_build_result(
-                    ok=False,
-                    detail=detail,
-                    revision_id=getattr(previous, "revision_id", 0),
-                    artifact_sha256=getattr(previous, "artifact_sha256", ""),
-                    download_pending=download_pending,
-                )
+            _record_build_result(
+                store,
+                ok=False,
+                detail=detail,
+                revision_id=getattr(previous, "revision_id", 0),
+                artifact_sha256=getattr(previous, "artifact_sha256", ""),
+                download_pending=download_pending,
+            )
             return {
                 "ok": False,
                 "detail": detail,
@@ -1126,15 +1143,15 @@ class AdblockArtifactStore:
                 f"{detail} One or more enabled subscription downloads are still "
                 "pending; the active artifact was built from locally cached lists."
             )
-        with contextlib.suppress(Exception):
-            store.record_artifact_build_result(
-                ok=True,
-                detail=detail,
-                revision_id=revision.revision_id,
-                artifact_sha256=revision.artifact_sha256,
-                archive_bytes=archive_bytes,
-                download_pending=download_pending,
-            )
+        _record_build_result(
+            store,
+            ok=True,
+            detail=detail,
+            revision_id=revision.revision_id,
+            artifact_sha256=revision.artifact_sha256,
+            archive_bytes=archive_bytes,
+            download_pending=download_pending,
+        )
         return {
             "ok": True,
             "detail": detail,
@@ -1202,7 +1219,8 @@ class AdblockArtifactStore:
                 active = self.get_active_artifact_summary()
                 statuses = store.list_statuses()
                 enabled_statuses = [status for status in statuses if status.enabled]
-                refresh_requested = bool(store.get_refresh_requested())
+                refresh_token = int(store.get_refresh_requested())
+                refresh_requested = refresh_token > 0
                 settings_version = store.get_settings_version()
                 # Subscription artifacts are shared; proxy enablement controls
                 # Squid routing and must not empty another proxy's artifact.
@@ -1266,12 +1284,12 @@ class AdblockArtifactStore:
                     )
                     if bool(result.get("changed")):
                         nudge_registered_proxies(force=False)
-                    if bool(result.get("ok")):
-                        # A completed build consumed the refresh request; lists
-                        # whose download failed are retried after the
-                        # per-list download backoff, not on every poll.
-                        with contextlib.suppress(Exception):
-                            store.clear_refresh_requested()
+                    if bool(result.get("ok")) and refresh_requested:
+                        # A completed build consumed the observed refresh
+                        # request; lists whose download failed are retried after
+                        # the per-list download backoff, not on every poll. A
+                        # newer request made during the build stays pending.
+                        store.clear_refresh_requested(refresh_token)
                     if not bool(result.get("ok")) or bool(
                         result.get("download_pending"),
                     ):

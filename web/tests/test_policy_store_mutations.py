@@ -183,7 +183,6 @@ def test_sslfilter_store_validates_dedupes_and_scopes_granular_policy(tmp_path) 
         assert current.inspection_enabled is False
 
         store.set_inspection_enabled(True)
-        assert store.get_inspection_enabled() is True
         assert store.list_all().inspection_enabled is True
 
         store.remove_domain("nobump", "*.example.com")
@@ -688,3 +687,34 @@ def test_webfilter_whitelist_cap_is_enforced_on_add_and_never_truncates_render(
         assert store.add_whitelist("d.example")[0] is True
     finally:
         reset_proxy_id(token)
+
+
+def test_webfilter_domain_test_propagates_category_lookup_failure(
+    monkeypatch,
+) -> None:
+    from services.webfilter_store import WebFilterStore  # type: ignore
+
+    store = WebFilterStore()
+    monkeypatch.setattr(
+        store,
+        "get_settings",
+        lambda: SimpleNamespace(
+            enabled=True,
+            blocked_categories=["adult"],
+            safe_browsing_enabled=False,
+            safe_browsing_api_key="",
+            safe_browsing_lists=[],
+        ),
+    )
+    monkeypatch.setattr(store, "get_whitelist_patterns", list)
+
+    def unavailable():
+        msg = "webcat database unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(store, "_connect_webcat", unavailable)
+
+    # The route reports an exception as verdict "error"; it must not read as
+    # "allowed / not in the category database".
+    with pytest.raises(RuntimeError, match="webcat database unavailable"):
+        store.test_domain("example.com")

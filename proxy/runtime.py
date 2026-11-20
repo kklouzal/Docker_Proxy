@@ -2467,8 +2467,15 @@ class ProxyRuntime:
         if ok and not callable(getattr(self.controller, "reconfigure_squid", None)):
             try:
                 ok = bool(self.controller._wait_for_http_listener(timeout=10.0))
-            except Exception:
-                ok = True
+            except Exception as exc:
+                ok = False
+                probe_detail = public_error_message(
+                    exc,
+                    default="Squid listener probe failed after policy reconfigure.",
+                )
+                detail = "\n".join(
+                    part for part in (detail, probe_detail) if str(part or "").strip()
+                ).strip()
         if ok and wait_for_adblock_icap:
             # Squid can accept TCP connections before ICAP OPTIONS/helper state has
             # fully converged after rapid policy/adblock churn. Wait for the local
@@ -2546,12 +2553,20 @@ class ProxyRuntime:
             reason=reason or "Rollback requested.",
         )
         current_sha = self._current_config_sha()
-        with suppress(Exception):
+        try:
             self.registry.mark_apply_result(
                 self.proxy_id,
                 ok=ok,
                 detail=detail,
                 current_config_sha=current_sha,
+            )
+        except Exception:
+            # The rollback outcome stands; only its registry record is missing.
+            log_exception_throttled(
+                logger,
+                "proxy.runtime.rollback_mark_apply_result",
+                interval_seconds=300.0,
+                message="Failed to record the rollback result in the proxy registry",
             )
         result = {
             "ok": bool(ok),
@@ -3286,33 +3301,51 @@ class ProxyRuntime:
             "degraded": not snapshot_ok,
         }
 
-    def _build_adblock_artifact_for_runtime_operation(self) -> dict[str, Any]:
-        refresh_lists = False
-        with suppress(Exception):
-            refresh_lists = bool(self.adblock_store.get_refresh_requested())
-        try:
-            result = self.adblock_artifacts.build_active_artifact(
-                refresh_lists=refresh_lists,
-                created_by="proxy-runtime",
-                source_kind="background",
-            )
-        except Exception as exc:
+    def _build_adblock_artifact_for_runtime_operation(self) -> dict[str, Any] | None:
+        """Honor a pending operator refresh; None means no request is pending.
+
+        Only the observed request token is cleared, so a refresh requested while
+        the build runs stays pending for the next build.
+        """
+
+        def failure(exc: Exception, default: str) -> dict[str, Any]:
             return {
                 "ok": False,
                 "changed": False,
-                "detail": public_error_message(
-                    exc,
-                    default="Adblock artifact build failed.",
-                ),
+                "detail": public_error_message(exc, default=default),
                 "revision_id": None,
                 "adblock_settings_version": None,
                 "artifact_sha256": "",
                 "download_pending": False,
             }
+
+        try:
+            refresh_requested = int(self.adblock_store.get_refresh_requested())
+        except Exception as exc:
+            return failure(exc, "Adblock refresh request could not be read.")
+        if not refresh_requested:
+            return None
+        try:
+            result = self.adblock_artifacts.build_active_artifact(
+                refresh_lists=True,
+                created_by="proxy-runtime",
+                source_kind="background",
+            )
+        except Exception as exc:
+            return failure(exc, "Adblock artifact build failed.")
         revision = result.get("revision")
         if bool(result.get("ok")) and not bool(result.get("download_pending")):
-            with suppress(Exception):
-                self.adblock_store.clear_refresh_requested()
+            try:
+                self.adblock_store.clear_refresh_requested(refresh_requested)
+            except Exception:
+                # The build result stands; the uncleared request only causes
+                # one redundant rebuild later.
+                log_exception_throttled(
+                    logger,
+                    "proxy.runtime.adblock_refresh_clear",
+                    interval_seconds=300.0,
+                    message="Failed to clear the honored adblock refresh request",
+                )
         return {
             "ok": bool(result.get("ok")),
             "changed": bool(result.get("changed")),
@@ -4646,16 +4679,32 @@ class ProxyRuntime:
             )
         except Exception as exc:
             if ledger is not None and claimed_operations:
-                with suppress(Exception):
+                try:
                     ledger.mark_many(
                         claimed_operations,
                         status="failed",
                         detail=redact_sensitive_text(exc)[:4000],
                     )
+                except Exception:
+                    log_exception_throttled(
+                        logger,
+                        "proxy.runtime.mark_claimed_operations",
+                        interval_seconds=300.0,
+                        message="Failed to record claimed operation results; stale-claim recovery will requeue them",
+                    )
             raise
         if ledger is not None and claimed_operations:
-            with suppress(Exception):
+            # The sync result stands; unrecorded claims are requeued by the
+            # ledger's stale-applying recovery and re-executed.
+            try:
                 self._mark_claimed_operations(ledger, claimed_operations, result)
+            except Exception:
+                log_exception_throttled(
+                    logger,
+                    "proxy.runtime.mark_claimed_operations",
+                    interval_seconds=300.0,
+                    message="Failed to record claimed operation results; stale-claim recovery will requeue them",
+                )
         self._capture_recovery_bundle_after_sync(result)
         return result
 
@@ -4819,19 +4868,12 @@ class ProxyRuntime:
             return policy_result
 
         if _operations_request_adblock_artifact_build(operations):
-            build_still_requested = True
-            try:
-                build_still_requested = bool(self.adblock_store.get_refresh_requested())
-            except Exception:
-                build_still_requested = True
-            if not build_still_requested:
+            adblock_build_result = self._build_adblock_artifact_for_runtime_operation()
+            if adblock_build_result is None:
                 detail_parts.append(
                     "Queued adblock artifact build request was already cleared; reconciling the active adblock artifact.",
                 )
             else:
-                adblock_build_result = (
-                    self._build_adblock_artifact_for_runtime_operation()
-                )
                 if str(adblock_build_result.get("detail") or "").strip():
                     detail_parts.append(str(adblock_build_result["detail"]).strip())
                 if not bool(adblock_build_result.get("ok")):

@@ -552,11 +552,29 @@ def test_sslfilter_apply_logs_safe_failure_when_store_init_fails(
     assert payload["reason"] == "Operation failed. Check server logs for details."
 
 
-def test_sslfilter_apply_reports_safe_include_publish_failure(
-    tmp_path, monkeypatch, capsys
+@pytest.mark.parametrize(
+    ("tool", "store_module", "store_class", "include_name"),
+    [
+        (
+            "sslfilter_apply",
+            "services.sslfilter_store",
+            "SslFilterStore",
+            "10-sslfilter.conf",
+        ),
+        (
+            "webfilter_apply",
+            "services.webfilter_core",
+            "ProxyWebFilterStore",
+            "30-webfilter.conf",
+        ),
+    ],
+)
+def test_apply_helpers_report_safe_include_publish_failure(
+    tmp_path, monkeypatch, capsys, tool, store_module, store_class, include_name
 ) -> None:
-    module = _import_tool_module("sslfilter_apply")
-    out = tmp_path / "etc" / "squid" / "conf.d" / "10-sslfilter.conf"
+    module = _import_tool_module(tool)
+    common = importlib.import_module("tools.apply_common")
+    out = tmp_path / "etc" / "squid" / "conf.d" / include_name
     out.parent.mkdir(parents=True)
     stale_policy = "ssl_bump bump all\n"
     out.write_text(stale_policy, encoding="utf-8")
@@ -569,16 +587,16 @@ def test_sslfilter_apply_reports_safe_include_publish_failure(
             msg = "database password=primary-secret"
             raise RuntimeError(msg)
 
-    def fail_safe_include(_path: str) -> NoReturn:
+    def fail_safe_include(_path: str, _content: str) -> NoReturn:
         msg = "permission denied for /secret/operator-path"
         raise PermissionError(msg)
 
     _install_fake_store_module(
         monkeypatch,
-        "services.sslfilter_store",
-        SimpleNamespace(SslFilterStore=BrokenStore),
+        store_module,
+        SimpleNamespace(**{store_class: BrokenStore}),
     )
-    monkeypatch.setattr(module, "_write_safe_include", fail_safe_include)
+    monkeypatch.setattr(common, "write_safe_include", fail_safe_include)
 
     assert module.main(["--out", str(out)]) == 3
     assert out.read_text(encoding="utf-8") == stale_policy
@@ -588,7 +606,7 @@ def test_sslfilter_apply_reports_safe_include_publish_failure(
         "apply_failed",
         "safe_include_publish_failed",
     ]
-    assert payloads[1]["helper"] == "sslfilter_apply"
+    assert payloads[1]["helper"] == tool
     assert payloads[1]["error_type"] == "PermissionError"
     assert payloads[1]["reason"] == "Operation failed. Check server logs for details."
     assert "primary-secret" not in stderr

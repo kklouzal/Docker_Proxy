@@ -3375,6 +3375,55 @@ def test_reload_for_policy_update_accepts_missing_pid_when_listener_healthy(
     assert "Squid reconfigured for policy update." in detail
 
 
+def test_reload_for_policy_update_fails_when_listener_probe_raises() -> None:
+    runtime = _runtime_shell()
+
+    class Controller:
+        def _run(self, *_args, **_kwargs):
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        def _wait_for_http_listener(self, *, timeout: float) -> bool:
+            msg = "listener probe crashed"
+            raise OSError(msg)
+
+    runtime.controller = Controller()
+
+    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=False)
+
+    assert ok is False
+    assert "Squid reconfigured for policy update." not in detail
+
+
+def test_sync_logs_when_claimed_operation_marking_fails(monkeypatch, caplog) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    sync_result = {"ok": True, "detail": "synced"}
+    claimed = [SimpleNamespace(operation_type="policy_refresh")]
+
+    class Ledger:
+        def requeue_stale_applying(self, *_args, **_kwargs) -> int:
+            return 0
+
+        def claim_pending(self, *_args, **_kwargs) -> list[object]:
+            return claimed
+
+    def fail_mark(*_args, **_kwargs) -> NoReturn:
+        msg = "ledger write failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._sync_from_db_unlocked = lambda **_kwargs: sync_result
+    runtime._capture_recovery_bundle_after_sync = lambda _result: None
+    runtime._mark_claimed_operations = fail_mark
+
+    with caplog.at_level("ERROR"):
+        result = runtime._sync_from_db_locked(force=False, operation_id=None)
+
+    assert result is sync_result
+    assert "Failed to record claimed operation results" in caplog.text
+
+
 def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeout(
     tmp_path, monkeypatch
 ) -> None:
@@ -8683,7 +8732,7 @@ def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None
 def test_sync_from_db_builds_adblock_artifact_for_build_operation() -> None:
     runtime = _runtime_shell()
     build_calls: list[dict[str, object]] = []
-    cleared_refresh: list[bool] = []
+    cleared_refresh: list[int] = []
 
     runtime.ensure_registered = lambda: None
     runtime.bootstrap_revision_if_missing = lambda: None
@@ -8716,8 +8765,8 @@ def test_sync_from_db_builds_adblock_artifact_for_build_operation() -> None:
     )
     runtime.registry = SimpleNamespace(mark_apply_result=lambda *args, **kwargs: None)
     runtime.adblock_store = SimpleNamespace(
-        get_refresh_requested=lambda: 1,
-        clear_refresh_requested=lambda: cleared_refresh.append(True),
+        get_refresh_requested=lambda: 1700000000,
+        clear_refresh_requested=cleared_refresh.append,
     )
     runtime.adblock_artifacts = SimpleNamespace(
         build_active_artifact=lambda **kwargs: (
@@ -8767,7 +8816,7 @@ def test_sync_from_db_builds_adblock_artifact_for_build_operation() -> None:
             "source_kind": "background",
         }
     ]
-    assert cleared_refresh == [True]
+    assert cleared_refresh == [1700000000]
 
 
 def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() -> None:
@@ -8814,7 +8863,7 @@ def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() 
     runtime.registry = SimpleNamespace(mark_apply_result=lambda *args, **kwargs: None)
     runtime.adblock_store = SimpleNamespace(
         get_refresh_requested=lambda: 0,
-        clear_refresh_requested=lambda: (_ for _ in ()).throw(
+        clear_refresh_requested=lambda _observed: (_ for _ in ()).throw(
             AssertionError("cleared build operation should not clear refresh again")
         ),
     )
@@ -8855,6 +8904,32 @@ def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() 
     assert result["executed_operation_types"] == ["adblock_refresh"]
     assert "build request was already cleared" in result["detail"]
     assert adblock_calls == [True]
+
+
+def test_runtime_adblock_build_fails_when_refresh_request_unreadable() -> None:
+    runtime = _runtime_shell()
+
+    def unreadable() -> int:
+        msg = "refresh request read failed"
+        raise RuntimeError(msg)
+
+    runtime.adblock_store = SimpleNamespace(
+        get_refresh_requested=unreadable,
+        clear_refresh_requested=lambda _observed: (_ for _ in ()).throw(
+            AssertionError("an unread request must not be cleared")
+        ),
+    )
+    runtime.adblock_artifacts = SimpleNamespace(
+        build_active_artifact=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("build must not run without the request state")
+        )
+    )
+
+    result = runtime._build_adblock_artifact_for_runtime_operation()
+
+    assert result is not None
+    assert result["ok"] is False
+    assert result["detail"]
 
 
 def test_sync_certificate_bundle_rolls_back_material_after_restart_failure(

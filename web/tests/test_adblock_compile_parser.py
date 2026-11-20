@@ -118,6 +118,48 @@ def test_main_compiles_explicit_enabled_lists_without_database_state(
     assert _domain_index_hosts(out / "request_lookup.sqlite") == {"ads.example"}
 
 
+def test_main_fails_when_explicit_list_is_missing(tmp_path: Path) -> None:
+    from tools import adblock_compile as ac  # type: ignore
+
+    lists = tmp_path / "lists"
+    out = tmp_path / "compiled"
+    lists.mkdir()
+
+    rc = ac.main(
+        ["--lists-dir", str(lists), "--out-dir", str(out), "--enabled-list", "gone"],
+    )
+
+    assert rc == 1
+    assert not (out / "report.json").exists()
+    assert not (out / "request_lookup.sqlite").exists()
+
+
+def test_main_fails_when_enabled_list_catalog_is_unreadable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from services import adblock_store  # type: ignore
+    from tools import adblock_compile as ac  # type: ignore
+
+    class UnreadableStore:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def init_db(self) -> None:
+            return None
+
+        def list_statuses(self) -> list[object]:
+            msg = "statuses read failed"
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr(adblock_store, "AdblockStore", UnreadableStore)
+    out = tmp_path / "compiled"
+
+    rc = ac.main(["--lists-dir", str(tmp_path / "lists"), "--out-dir", str(out)])
+
+    assert rc == 1
+    assert not (out / "request_lookup.sqlite").exists()
+
+
 def test_script_entrypoint_compiles_explicit_enabled_lists_without_pythonpath(
     tmp_path: Path,
 ) -> None:

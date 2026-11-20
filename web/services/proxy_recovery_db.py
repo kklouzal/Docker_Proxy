@@ -54,11 +54,6 @@ _PARAM_NONE: Final = "none"
 _PARAM_PROXY: Final = "proxy"
 _PARAM_PROXY_NOW: Final = "proxy_now"
 
-WEBFILTER_SETTING_KEYS: Final = (
-    "enabled",
-    "blocked_categories",
-)
-
 EXPORT_QUERY_PLANS: Final = (
     RecoveryExportQueryPlan(
         "adblock_lists",

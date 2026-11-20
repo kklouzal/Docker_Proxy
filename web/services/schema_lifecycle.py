@@ -32,7 +32,6 @@ from services.sql_identifiers import (
 )
 
 _SCHEMA_VERSION = 38
-_MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _CONTROL_PLANE_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -131,31 +130,6 @@ def _raise_privilege_error(exc: BaseException) -> None:
         )
         raise PermissionError(msg) from exc
     raise exc
-
-
-def _migration_assertion_error(
-    table_name: str, object_name: str, object_type: str
-) -> RuntimeError:
-    return RuntimeError(
-        f"MySQL schema migration is incomplete: missing {object_type} "
-        f"{table_name}.{object_name}. Run startup schema migrations with a "
-        "DDL-capable account before using DML-only runtime paths."
-    )
-
-
-def assert_table(conn: Any, table_name: str) -> None:
-    if not table_exists(conn, table_name):
-        raise _migration_assertion_error(table_name, table_name, "table")
-
-
-def assert_column(conn: Any, table_name: str, column_name: str) -> None:
-    if not column_exists(conn, table_name, column_name):
-        raise _migration_assertion_error(table_name, column_name, "column")
-
-
-def assert_index(conn: Any, table_name: str, index_name: str) -> None:
-    if not index_exists(conn, table_name, index_name):
-        raise _migration_assertion_error(table_name, index_name, "index")
 
 
 def schema_migration_in_progress() -> bool:
@@ -533,17 +507,6 @@ def _apply_embedded_schema(conn: Any, spec: SchemaMigrationSpec) -> None:
         )
     for index in spec.indexes:
         ensure_index(conn, table_name=index.table, index_name=index.name, ddl=index.ddl)
-
-
-def _repair_revision_uniques(conn: Any) -> None:
-    if table_exists(conn, "proxy_config_revisions"):
-        repair_duplicate_active_rows(
-            conn, table_name="proxy_config_revisions", scope_column="proxy_id"
-        )
-    if table_exists(conn, "certificate_bundle_revisions"):
-        repair_duplicate_active_rows(conn, table_name="certificate_bundle_revisions")
-    if table_exists(conn, "adblock_artifact_revisions"):
-        repair_duplicate_active_rows(conn, table_name="adblock_artifact_revisions")
 
 
 def _init_auth_schema(conn: Any) -> None:

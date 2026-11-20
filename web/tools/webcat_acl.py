@@ -19,15 +19,18 @@ import contextlib  # ruff: ignore[module-import-not-at-top-of-file]
 import fcntl  # ruff: ignore[module-import-not-at-top-of-file]
 
 from services.blocked_log_runtime import BlockedLogDb as _BlockedLogDb  # ruff: ignore[module-import-not-at-top-of-file]
+from services.blocked_log_runtime import default_blocked_log_max_rows  # ruff: ignore[module-import-not-at-top-of-file]
 from services.db import connect  # ruff: ignore[module-import-not-at-top-of-file]
 from services.domain_normalization import normalize_domain as _norm_domain  # ruff: ignore[module-import-not-at-top-of-file]
 from services.domain_normalization import parent_domain_suffixes  # ruff: ignore[module-import-not-at-top-of-file]
 from services.helper_runtime import (  # ruff: ignore[module-import-not-at-top-of-file]
     HelperStats,
     TtlLruCache,
+    helper_failure_event,
     split_acl_channel,
     write_acl_response,
 )
+from services.logutil import should_log  # ruff: ignore[module-import-not-at-top-of-file]
 from services.runtime_helpers import env_float as _env_float  # ruff: ignore[module-import-not-at-top-of-file]
 from services.runtime_helpers import env_int as _env_int  # ruff: ignore[module-import-not-at-top-of-file]
 from services.runtime_helpers import now_ts as _now  # ruff: ignore[module-import-not-at-top-of-file]
@@ -35,9 +38,7 @@ from services.runtime_helpers import now_ts as _now  # ruff: ignore[module-impor
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-
-def _parent_domains(domain: str) -> list[str]:
-    return parent_domain_suffixes(_norm_domain(domain))
+_HELPER = "webcat_acl"
 
 
 class _Db:
@@ -165,8 +166,9 @@ class _Db:
                 # Always compare the loaded snapshot with MySQL once at helper
                 # startup; the steady-state refresh loop still owns periodic updates.
                 self._ensure_snapshot(force=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Lookups fall back to MySQL; the refresh loop retries the snapshot.
+                helper_failure_event(_HELPER, "snapshot_start_failed", exc)
             thread = threading.Thread(
                 target=self._snapshot_loop,
                 name="webcat-snapshot-refresh",
@@ -579,15 +581,15 @@ class _Db:
                     local_built_ts = self._local_snapshot_built_ts
                 if remote_built_ts > local_built_ts:
                     self._build_snapshot_from_db(expected_built_ts=remote_built_ts)
-            except Exception:
-                pass
+            except Exception as exc:
+                helper_failure_event(_HELPER, "snapshot_refresh_failed", exc)
 
     def _lookup_categories_from_snapshot(self, normalized: str) -> set[str] | None:
         with self._snapshot_state_lock:
             conn = self._local_conn
             if conn is None:
                 return None
-            for candidate in _parent_domains(normalized):
+            for candidate in parent_domain_suffixes(normalized):
                 row = conn.execute(
                     "SELECT categories FROM domains WHERE domain = ?",
                     (candidate,),
@@ -596,14 +598,14 @@ class _Db:
                     return {c for c in str(row[0]).split("|") if c}
         return set()
 
-    def _lookup_categories_remote(self, normalized: str) -> set[str]:
+    def _lookup_categories_remote(self, normalized: str) -> set[str] | None:
+        """Return the domain's categories, or None when MySQL is unavailable."""
+        candidates = parent_domain_suffixes(normalized)
+        if not candidates:
+            return set()
         conn = self._connect()
         if conn is None:
-            return set()
-        candidates = list(_parent_domains(normalized))
-        if not candidates:
-            self._close_remote_conn(conn)
-            return set()
+            return None
         placeholders = ",".join(["%s"] * len(candidates))
         params = tuple(candidates + candidates)
         try:
@@ -611,10 +613,12 @@ class _Db:
                 f"SELECT categories FROM webcat_domains WHERE domain IN ({placeholders}) ORDER BY FIELD(domain, {placeholders}) LIMIT 1",
                 params,
             ).fetchone()
-        except Exception:
+        except Exception as exc:
             self._discard_remote_conn()
             conn = None
-            return set()
+            if should_log("webcat_acl.remote_lookup", interval_seconds=60.0):
+                helper_failure_event(_HELPER, "remote_lookup_failed", exc)
+            return None
         finally:
             if conn is not None:
                 self._close_remote_conn(conn)
@@ -638,7 +642,12 @@ class _Db:
         if snapshot_hit is not None:
             return self._cache_put(normalized, snapshot_hit)
 
-        return self._cache_put(normalized, self._lookup_categories_remote(normalized))
+        remote = self._lookup_categories_remote(normalized)
+        if remote is None:
+            # Unavailable is not "uncategorized": answer per the fail mode for
+            # this request without caching it as an unknown domain.
+            return set()
+        return self._cache_put(normalized, remote)
 
 
 def _parse_line(
@@ -676,10 +685,6 @@ def _write_response(
     write_acl_response(channel_id, ok, message=message)
 
 
-def _default_log_max_rows() -> int:
-    return _env_int("WEBFILTER_LOG_MAX_ROWS", 5000)
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Squid external ACL helper for domain category blocking (local categories DB).",
@@ -687,7 +692,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument(
         "--log-max-rows",
         type=int,
-        default=_default_log_max_rows(),
+        default=default_blocked_log_max_rows(),
     )
     ap.add_argument(
         "--fail",
@@ -700,7 +705,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     log_db = _BlockedLogDb(max_rows=int(args.log_max_rows))
     log_db.start()
     fail_open = args.fail == "open"
-    stats = HelperStats("webcat_acl")
+    stats = HelperStats(_HELPER)
     stats.started(
         fail_mode=args.fail,
         log_max_rows=int(args.log_max_rows),

@@ -5,7 +5,6 @@ from services.errors import (
     redact_sensitive_text,
     redact_url_for_display,
 )
-from services.webfilter_store import _sanitize_blocked_log_url
 
 
 def test_clean_text_strips_newlines_and_bounds_length() -> None:
@@ -61,7 +60,6 @@ def test_url_redactors_remove_userinfo_from_malformed_authority() -> None:
 
     assert redact_url_for_display(url) == expected
     assert _normalize_log_url(url) == expected
-    assert _sanitize_blocked_log_url(url) == expected
 
 
 def test_public_error_message_hides_details_by_default(monkeypatch) -> None:
