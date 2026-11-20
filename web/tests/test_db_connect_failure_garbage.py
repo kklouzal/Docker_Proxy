@@ -22,7 +22,7 @@ def test_failed_connect_leaves_no_cyclic_garbage() -> None:
     try:
         for _ in range(attempts):
             with pytest.raises(db.pymysql.err.OperationalError):
-                db._pymysql_connect(
+                db.pymysql_connect(
                     host="127.0.0.1",
                     port=port,
                     user="nobody",

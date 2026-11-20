@@ -921,7 +921,7 @@ def _clear_exception_frames(exc: BaseException) -> None:
         )
 
 
-def _pymysql_connect(**kwargs: Any) -> Any:
+def pymysql_connect(**kwargs: Any) -> Any:
     try:
         return pymysql.connect(**kwargs)  # type: ignore[call-arg]
     except BaseException as exc:
@@ -930,7 +930,7 @@ def _pymysql_connect(**kwargs: Any) -> Any:
 
 
 def _open_native_connection(cfg: DatabaseConfig) -> Any:
-    return _pymysql_connect(
+    return pymysql_connect(
         host=cfg.host,
         port=int(cfg.port),
         user=cfg.user,
@@ -1489,7 +1489,7 @@ def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
             return
 
         def _create_database() -> None:
-            native = _pymysql_connect(
+            native = pymysql_connect(
                 host=cfg.host,
                 port=int(cfg.port),
                 user=cfg.user,
