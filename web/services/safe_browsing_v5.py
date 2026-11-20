@@ -1069,7 +1069,12 @@ class SafeBrowsingStore:
     ) -> tuple[list[dict[str, object]], int]:
         if not api_key or not prefixes:
             return [], 0
-        requested_prefixes = tuple(prefixes[:30])
+        requested_prefixes = tuple(prefixes)
+        # One URL has at most 30 expressions. Truncating would leave the
+        # dropped prefixes looking like "full hash not returned" (safe).
+        if len(requested_prefixes) > 30:
+            msg = "Google Safe Browsing hash search accepts at most 30 prefixes"
+            raise ValueError(msg)
         if any(
             not isinstance(prefix, bytes) or len(prefix) != 4
             for prefix in requested_prefixes

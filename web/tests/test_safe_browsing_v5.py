@@ -662,6 +662,20 @@ def test_safe_browsing_search_hashes_rejects_malformed_response(
         store.search_hashes("key", [b"abcd"])
 
 
+def test_safe_browsing_search_hashes_rejects_more_prefixes_than_one_url(
+    monkeypatch,
+) -> None:
+    store = SafeBrowsingStore()
+    requests: list[object] = []
+    monkeypatch.setattr(
+        store, "_request_json", lambda *args, **_kwargs: requests.append(args)
+    )
+
+    with pytest.raises(ValueError, match="at most 30 prefixes"):
+        store.search_hashes("key", [i.to_bytes(4, "big") for i in range(31)])
+    assert requests == []
+
+
 def test_safe_browsing_search_hashes_accepts_valid_multi_prefix_multi_threat(
     monkeypatch,
 ) -> None:
