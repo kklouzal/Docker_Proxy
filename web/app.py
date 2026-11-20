@@ -3347,7 +3347,8 @@ def _csrf_guard() -> None:
 
 @app.after_request
 def _security_headers(resp):
-    # Conservative baseline. Avoid breaking existing inline scripts/styles.
+    # Scripts load from 'self' only (no inline handlers); inline styles stay
+    # allowed.
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -3359,7 +3360,7 @@ def _security_headers(resp):
         if (resp.mimetype or "").lower().startswith("text/html"):
             resp.headers.setdefault(
                 "Content-Security-Policy",
-                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'",
+                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'",
             )
     except Exception:
         pass
@@ -4991,10 +4992,6 @@ def _webfilter_setting_bool(settings: Any, name: str, default: bool = False) -> 
     )
 
 
-def _truthy_env(value: object | None) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
-
-
 def _admin_ui_https_path_status(path: str) -> dict[str, Any]:
     clean_path = (path or "").strip()
     path_obj = pathlib.Path(clean_path)
@@ -5188,7 +5185,7 @@ def _materialize_admin_ui_https_leaf(
 def _admin_ui_https_status(bundle: Any | None = None) -> dict[str, Any]:
     default_certfile = ADMIN_UI_SSL_CERTFILE
     default_keyfile = ADMIN_UI_SSL_KEYFILE
-    runtime_enabled = _truthy_env(
+    runtime_enabled = normalize_config_bool(
         os.environ.get("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED")
         if os.environ.get("ADMIN_UI_EFFECTIVE_HTTPS_ENABLED") is not None
         else os.environ.get("ADMIN_UI_HTTPS_ENABLED"),

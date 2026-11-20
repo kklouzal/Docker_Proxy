@@ -526,3 +526,17 @@ def test_irreversible_admin_actions_ask_for_confirmation() -> None:
     administration = (TEMPLATES / "administration.html").read_text(encoding="utf-8")
     assert 'value="disable_saml_provider" data-confirm-message=' in administration
     assert 'value="disable_auth_provider" data-confirm-message=' in administration
+
+
+def test_templates_have_no_inline_scripts_or_event_handlers() -> None:
+    """The CSP's script-src is 'self' only: inline code would not run."""
+    handler = re.compile(r"\son[a-z]+\s*=", re.IGNORECASE)
+    inline_script = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>", re.IGNORECASE)
+    offenders = [
+        template.name
+        for template in TEMPLATES.rglob("*.html")
+        if handler.search(text := template.read_text(encoding="utf-8"))
+        or inline_script.search(text)
+        or "javascript:" in text
+    ]
+    assert offenders == []

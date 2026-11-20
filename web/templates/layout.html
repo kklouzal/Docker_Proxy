@@ -102,7 +102,7 @@
                             {% endif %}
                         {% endfor %}
                         <label for="proxy-id" class="small">Proxy</label>
-                        <select id="proxy-id" name="proxy_id" onchange="this.form.submit()">
+                        <select id="proxy-id" name="proxy_id" data-autosubmit>
                             {% for proxy in proxy_inventory %}
                             <option value="{{ proxy.proxy_id }}" {{ 'selected' if proxy.proxy_id == active_proxy_id else '' }}>
                                 {{ proxy.display_name }} ({{ proxy.status }})
