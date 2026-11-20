@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from datetime import timedelta
 
 import pymysql
@@ -570,4 +571,63 @@ def test_csrf_can_be_disabled_explicitly_for_test_mode(monkeypatch, tmp_path) ->
         sess["user"] = "admin"
 
     response = client.post("/reload", follow_redirects=False)
+    assert response.status_code in {302, 303}
+
+
+class _RecordingStream(io.BytesIO):
+    def __init__(self, payload: bytes) -> None:
+        super().__init__(payload)
+        self.read_bytes = 0
+
+    def read(self, size: int | None = -1) -> bytes:
+        chunk = super().read(size)
+        self.read_bytes += len(chunk)
+        return chunk
+
+    def readline(self, size: int | None = -1) -> bytes:
+        chunk = super().readline(size)
+        self.read_bytes += len(chunk)
+        return chunk
+
+
+@pytest.mark.parametrize("path", ["/login", "/cache/clear"])
+def test_pre_auth_form_posts_are_bounded_before_the_body_is_read(
+    monkeypatch, tmp_path, path: str
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    app = loaded.module.app
+    limit = app.config["MAX_FORM_MEMORY_SIZE"]
+    assert limit < app.config["MAX_CONTENT_LENGTH"]
+    payload = b"username=admin&password=" + b"x" * limit
+    stream = _RecordingStream(payload)
+
+    response = app.test_client().post(
+        path,
+        input_stream=stream,
+        content_type="application/x-www-form-urlencoded",
+        headers={"Content-Length": str(len(payload))},
+    )
+
+    assert response.status_code == 413
+    assert stream.read_bytes == 0
+
+
+def test_authenticated_form_posts_keep_the_global_body_limit(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    app = loaded.module.app
+    client = app.test_client()
+    login_client(client)
+    token = csrf_token(client, "/")
+
+    response = client.post(
+        "/cache/clear",
+        data={
+            "csrf_token": token,
+            "filler": "x" * (app.config["MAX_FORM_MEMORY_SIZE"] + 1),
+        },
+        follow_redirects=False,
+    )
+
     assert response.status_code in {302, 303}

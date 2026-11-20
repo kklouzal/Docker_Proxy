@@ -3329,6 +3329,21 @@ def _ensure_csrf_token() -> str:
 
 
 @app.before_request
+def _bound_pre_auth_request_body() -> None:
+    # Registered before the CSRF guard, which parses request.form for every
+    # mutating request. Werkzeug >= 3.1.9 bounds urlencoded forms only by
+    # max_content_length (no longer MAX_FORM_MEMORY_SIZE), so cap requests
+    # from sessions that are not logged in at the form-memory size; larger
+    # bodies get 413 from the Content-Length check before anything is read.
+    if _is_logged_in():
+        return
+    pre_auth_limit = int(app.config["MAX_FORM_MEMORY_SIZE"])
+    current_limit = request.max_content_length
+    if current_limit is None or current_limit > pre_auth_limit:
+        request.max_content_length = pre_auth_limit
+
+
+@app.before_request
 def _csrf_guard() -> None:
     if _csrf_disabled():
         return
