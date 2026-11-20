@@ -13,10 +13,8 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
-import decimal
 import gzip
 import json
-import uuid
 from email.utils import format_datetime
 from typing import TYPE_CHECKING, Any
 
@@ -95,7 +93,14 @@ INTERNAL_ERROR_PAGE = error_page(
 
 
 def _json_default(value: Any) -> Any:
-    """Flask ``DefaultJSONProvider`` conversions for non-JSON types."""
+    """Flask ``DefaultJSONProvider`` conversions for non-JSON types.
+
+    Only reached for values ``json`` cannot encode, so ``decimal`` and ``uuid``
+    are imported here rather than in every listener.
+    """
+    import decimal
+    import uuid
+
     if isinstance(value, dt.date):
         if not isinstance(value, dt.datetime):
             # Werkzeug ``http_date``: a plain date is midnight UTC.
