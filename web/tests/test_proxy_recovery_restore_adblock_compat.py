@@ -147,8 +147,13 @@ def test_canonical_bootstrap_states_normalize_legacy_enabled_to_proxy_runtime(
     target_enabled: str,
     restored_enabled: str,
 ) -> None:
-    target_settings = dict(restore._ADBLOCK_DEFAULT_SETTINGS)
-    target_settings["enabled"] = target_enabled
+    # The legacy enabled=1 seed predates the 50,000-entry cache default.
+    target_settings = dict(
+        restore._ADBLOCK_LEGACY_DEFAULT_SETTINGS
+        if target_enabled == "1"
+        else restore._ADBLOCK_DEFAULT_SETTINGS
+    )
+    assert target_settings["enabled"] == target_enabled
     conn = _CompatRestoreConn(target_settings)
 
     result = restore.restore_recovery_bundle(
@@ -240,3 +245,16 @@ def test_legacy_restore_recapture_restore_preserves_explicit_enablement(
 
     assert rerestored.status == "adopted"
     assert second.adblock_proxy_meta["edge-01", "enabled"] == legacy_enabled
+
+
+def test_settings_seeded_with_the_previous_cache_default_are_still_fresh() -> None:
+    conn = _CompatRestoreConn(dict(restore._ADBLOCK_PRE_50K_DEFAULT_SETTINGS))
+
+    result = restore.restore_recovery_bundle(
+        conn,
+        _bundle("1"),
+        "edge-01",
+        now_ts=NOW,
+    )
+
+    assert result.status == "adopted"

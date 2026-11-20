@@ -7,8 +7,9 @@ import sqlite3
 import threading
 import time
 from collections import OrderedDict
+from operator import itemgetter
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from services.adblock_hosts import (
     adblock_host_suffix_candidates as _host_suffix_candidates,
@@ -16,12 +17,19 @@ from services.adblock_hosts import (
 from services.adblock_hosts import normalize_adblock_host as _normalize_host
 from services.adblock_hosts import safe_adblock_urlsplit as _safe_urlsplit
 
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{2,}", re.IGNORECASE)
 _DEFAULT_SQLITE_CACHE_KIB = 32768
 _DEFAULT_SQLITE_MMAP_BYTES = 256 * 1024 * 1024
 _DEFAULT_RULE_CACHE_MAX = 50000
+_DEFAULT_HOST_CACHE_MAX = 8192
 _SQLITE_IN_CHUNK_SIZE = 500
 _DEFAULT_CLOSE_TIMEOUT_SECONDS = 5.0
+
+# Candidate decision order of a rule (see _rule_order).
+_OrderKey = tuple[int, str, str, str, str]
 
 # Version of the request lookup database the compiler writes
 # (tools/adblock_compile.py) and this reader requires. Readers reject any other
@@ -185,24 +193,34 @@ class AdblockLookupIndex:
         db_path: str | Path,
         *,
         rule_cache_max: int = _DEFAULT_RULE_CACHE_MAX,
+        host_cache_max: int = _DEFAULT_HOST_CACHE_MAX,
         close_timeout_seconds: float = _DEFAULT_CLOSE_TIMEOUT_SECONDS,
+        prepare_rule: Callable[[dict[str, Any]], Any] | None = None,
     ) -> None:
+        """Open a read-only lookup over the compiled artifact at ``db_path``.
+
+        ``prepare_rule`` converts each decoded rule dict once, before it enters
+        the bounded rule cache; ``candidate_rules`` then returns the prepared
+        values (the rule dicts themselves by default).
+        """
         self.db_path = Path(db_path)
         self.rule_cache_max = max(0, int(rule_cache_max or 0))
+        self.host_cache_max = max(0, int(host_cache_max or 0))
+        self._prepare_rule = prepare_rule
         self.close_timeout_seconds = max(0.0, float(close_timeout_seconds))
         self._local = threading.local()
         self._connections_condition = threading.Condition()
         self._connections: set[sqlite3.Connection] = set()
         self._connection_users: dict[sqlite3.Connection, int] = {}
         self._closed = False
-        self._rule_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        # rule_id -> (candidate order key, prepared rule)
+        self._rule_cache: OrderedDict[str, tuple[_OrderKey, Any]] = OrderedDict()
         self._rule_cache_lock = threading.Lock()
-        self._host_patterns: dict[str, _HostPatternCandidate] | None = None
-        self._host_patterns_lock = threading.Lock()
-        self._host_pattern_token_fallback_ids: set[str] | None = None
-        self._regex_candidates: dict[str, _RegexCandidate] | None = None
-        self._regex_candidates_lock = threading.Lock()
-        self._regex_token_fallback_ids: set[str] | None = None
+        # normalized request host -> ids of the rules indexed by that host
+        self._host_cache: OrderedDict[str, frozenset[str]] = OrderedDict()
+        self._host_cache_lock = threading.Lock()
+        self._indexes: _MemoryIndexes | None = None
+        self._indexes_lock = threading.Lock()
 
     def check_schema(self) -> None:
         """Raise ``AdblockLookupSchemaError`` unless the database is supported."""
@@ -213,11 +231,6 @@ class AdblockLookupIndex:
             self._release_thread_connection(conn)
         if error:
             raise AdblockLookupSchemaError(error)
-
-    def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
-        _configure_read_connection(conn)
-        return conn
 
     def _acquire_thread_connection(self) -> sqlite3.Connection:
         with self._connections_condition:
@@ -297,12 +310,21 @@ class AdblockLookupIndex:
         for conn in connections:
             conn.close()
 
+    def load_indexes(self) -> None:
+        """Load the in-memory candidate indexes now instead of on first lookup."""
+        conn = self._acquire_thread_connection()
+        try:
+            self._memory_indexes(conn)
+        finally:
+            self._release_thread_connection(conn)
+
     def candidate_rules(
         self,
         url: str,
         *,
         resource_type: str = "",
-    ) -> list[dict[str, Any]]:
+    ) -> list[Any]:
+        """Return the candidate rules for ``url`` in decision order."""
         conn = self._acquire_thread_connection()
         try:
             return self._rules_by_ids(
@@ -320,34 +342,42 @@ class AdblockLookupIndex:
         self,
         conn: sqlite3.Connection,
         rule_ids: set[str],
-    ) -> list[dict[str, Any]]:
+    ) -> list[Any]:
         if not rule_ids:
             return []
-        cached: dict[str, dict[str, Any]] = {}
-        missing: set[str] = set()
+        entries: list[tuple[_OrderKey, Any]] = []
+        missing: list[str] = []
         with self._rule_cache_lock:
             for rule_id in rule_ids:
-                rule = self._rule_cache.get(rule_id)
-                if rule is None:
-                    missing.add(rule_id)
+                entry = self._rule_cache.get(rule_id)
+                if entry is None:
+                    missing.append(rule_id)
                 else:
                     self._rule_cache.move_to_end(rule_id)
-                    cached[rule_id] = rule
+                    entries.append(entry)
 
-        loaded: dict[str, dict[str, Any]] = {}
+        prepare = self._prepare_rule
+        loaded: list[tuple[str, tuple[_OrderKey, Any]]] = []
         for row in _rules_by_ids(conn, missing):
             rule = _row_to_rule(row)
-            loaded[str(rule["rule_id"])] = rule
+            loaded.append(
+                (
+                    str(rule["rule_id"]),
+                    (_rule_order(rule), rule if prepare is None else prepare(rule)),
+                )
+            )
 
         if loaded and self.rule_cache_max:
             with self._rule_cache_lock:
-                for rule_id, rule in loaded.items():
-                    self._rule_cache[rule_id] = rule
+                for rule_id, entry in loaded:
+                    self._rule_cache[rule_id] = entry
                     self._rule_cache.move_to_end(rule_id)
                 while len(self._rule_cache) > self.rule_cache_max:
                     self._rule_cache.popitem(last=False)
 
-        return sorted([*cached.values(), *loaded.values()], key=_rule_order)
+        entries.extend(entry for _rule_id, entry in loaded)
+        entries.sort(key=itemgetter(0))
+        return [prepared for _order, prepared in entries]
 
     def _candidate_rule_ids(
         self,
@@ -359,73 +389,211 @@ class AdblockLookupIndex:
         parsed = _safe_urlsplit(url)
         if parsed is None:
             return set()
+        indexes = self._memory_indexes(conn)
         host = _normalize_host(parsed.hostname or "")
-        rule_ids: set[str] = set()
+        rule_ids = set(self._host_rule_ids(conn, indexes, host))
+        url_tokens = _url_literal_tokens(url)
+        rule_ids.update(indexes.matching_regex_ids(url, url_tokens))
+        generic_by_key = indexes.generic_by_key
+        rule_ids.update(generic_by_key.get("", ()))
+        for token in url_tokens:
+            rule_ids.update(generic_by_key.get(token, ()))
 
+        return indexes.filter_by_resource_type(rule_ids, resource_type)
+
+    def _host_rule_ids(
+        self,
+        conn: sqlite3.Connection,
+        indexes: _MemoryIndexes,
+        host: str,
+    ) -> frozenset[str]:
+        """Return the ids of every rule indexed by ``host`` or its parents.
+
+        A page load repeats a few hosts many times, so the result (a pure
+        function of the host and the immutable artifact) is kept in a bounded
+        LRU cache.
+        """
+        if self.host_cache_max:
+            with self._host_cache_lock:
+                cached = self._host_cache.get(host)
+                if cached is not None:
+                    self._host_cache.move_to_end(host)
+                    return cached
         host_suffixes = _host_suffix_candidates(host)
-        rule_ids.update(
-            str(row["rule_id"])
+        # domain_index holds most of the artifact's rules, so it stays in
+        # SQLite; every smaller index is answered from memory.
+        rule_ids = {
+            row[0]
             for row in _query_by_values(
                 conn,
                 "SELECT rule_id FROM domain_index WHERE host IN ",
                 host_suffixes,
             )
-        )
-
+        }
         if host:
-            rule_ids.update(
-                str(row["rule_id"])
-                for row in conn.execute(
-                    "SELECT rule_id FROM host_index WHERE host=? AND pattern_kind='absolute_url'",
-                    (host,),
-                )
-            )
-            rule_ids.update(
-                str(row["rule_id"])
-                for row in _query_by_values(
-                    conn,
-                    "SELECT rule_id FROM host_index WHERE pattern_kind='host_anchored' AND host IN ",
-                    host_suffixes,
-                )
-            )
-            rule_ids.update(
-                self._matching_host_pattern_ids(conn, host, host_suffixes),
-            )
+            rule_ids.update(indexes.absolute_url_by_host.get(host, ()))
+            for suffix in host_suffixes:
+                rule_ids.update(indexes.host_anchored_by_host.get(suffix, ()))
+            rule_ids.update(indexes.matching_host_pattern_ids(host, host_suffixes))
+        result = frozenset(rule_ids)
+        if self.host_cache_max:
+            with self._host_cache_lock:
+                self._host_cache[host] = result
+                self._host_cache.move_to_end(host)
+                while len(self._host_cache) > self.host_cache_max:
+                    self._host_cache.popitem(last=False)
+        return result
 
-        rule_ids.update(self._matching_regex_ids(conn, url))
+    def _memory_indexes(self, conn: sqlite3.Connection) -> _MemoryIndexes:
+        indexes = self._indexes
+        if indexes is not None:
+            return indexes
+        with self._indexes_lock:
+            if self._indexes is None:
+                self._indexes = _MemoryIndexes.load(conn)
+            return self._indexes
 
-        literal_tokens = _url_literal_tokens(url)
-        rule_ids.update(
-            str(row["rule_id"])
-            for row in _query_by_values(
-                conn,
-                "SELECT rule_id FROM generic_index WHERE literal_key IN ",
-                literal_tokens,
+
+def _ids_by_key(rows: Iterable[tuple[str, str]]) -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[str]] = {}
+    for key, rule_id in rows:
+        if rule_id:
+            grouped.setdefault(str(key or ""), []).append(str(rule_id))
+    return {key: tuple(ids) for key, ids in grouped.items()}
+
+
+class _MemoryIndexes:
+    """Immutable in-memory copy of an artifact's small candidate indexes.
+
+    The lookup database is a published, read-only artifact: the helper is
+    restarted when another artifact is applied, so these tables are loaded once
+    per index lifetime, like the decoded rule cache. Candidate sets are exactly
+    those the equivalent SQL lookups return.
+    """
+
+    __slots__ = (
+        "absolute_url_by_host",
+        "generic_by_key",
+        "host_anchored_by_host",
+        "host_pattern_fallback_ids",
+        "host_pattern_ids_by_key",
+        "host_patterns",
+        "regex_candidates",
+        "regex_fallback_ids",
+        "regex_ids_by_key",
+        "resource_types_by_id",
+    )
+
+    def __init__(self) -> None:
+        self.absolute_url_by_host: dict[str, tuple[str, ...]] = {}
+        self.host_anchored_by_host: dict[str, tuple[str, ...]] = {}
+        self.generic_by_key: dict[str, tuple[str, ...]] = {}
+        self.host_patterns: dict[str, _HostPatternCandidate] = {}
+        self.host_pattern_ids_by_key: dict[str, tuple[str, ...]] = {}
+        self.host_pattern_fallback_ids: frozenset[str] = frozenset()
+        self.regex_candidates: dict[str, _RegexCandidate] = {}
+        self.regex_ids_by_key: dict[str, tuple[str, ...]] = {}
+        self.regex_fallback_ids: frozenset[str] = frozenset()
+        # rule_id -> (positive resource types, negated resource types)
+        self.resource_types_by_id: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+
+    @classmethod
+    def load(cls, conn: sqlite3.Connection) -> _MemoryIndexes:
+        indexes = cls()
+        indexes.absolute_url_by_host = _ids_by_key(
+            conn.execute(
+                "SELECT host, rule_id FROM host_index WHERE pattern_kind='absolute_url'"
             )
         )
-        rule_ids.update(
-            str(row["rule_id"])
+        indexes.host_anchored_by_host = _ids_by_key(
+            conn.execute(
+                "SELECT host, rule_id FROM host_index WHERE pattern_kind='host_anchored'"
+            )
+        )
+        indexes.generic_by_key = _ids_by_key(
+            conn.execute("SELECT literal_key, rule_id FROM generic_index")
+        )
+
+        indexes.host_patterns = {
+            str(row[2] or ""): _HostPatternCandidate(
+                str(row[0] or ""),
+                str(row[1] or ""),
+                str(row[2] or ""),
+            )
             for row in conn.execute(
-                "SELECT rule_id FROM generic_index WHERE literal_key=''",
+                "SELECT host_pattern, pattern_kind, rule_id FROM host_pattern_index"
+            )
+            if row[0] and row[2]
+        }
+        host_pattern_keys = _token_keys_by_rule_id(conn, "host_pattern_token_index")
+        indexes.host_pattern_ids_by_key = _ids_by_key(
+            (key, rule_id)
+            for rule_id, keys in host_pattern_keys.items()
+            for key in keys
+        )
+        indexes.host_pattern_fallback_ids = frozenset(
+            rule_id
+            for rule_id, candidate in indexes.host_patterns.items()
+            if not _single_token_key_is_safe(
+                host_pattern_keys.get(rule_id, []),
+                lambda key, candidate=candidate: _host_pattern_token_key_is_safe(
+                    candidate.host_pattern,
+                    key,
+                ),
             )
         )
 
-        return _filter_by_resource_type(conn, rule_ids, resource_type)
+        indexes.regex_candidates = {
+            str(row[0] or ""): _RegexCandidate(str(row[0] or ""), str(row[1] or ""))
+            for row in conn.execute("SELECT rule_id, regex FROM regex_index")
+            if row[0] and row[1]
+        }
+        regex_keys = _token_keys_by_rule_id(conn, "regex_token_index")
+        indexes.regex_ids_by_key = _ids_by_key(
+            (key, rule_id) for rule_id, keys in regex_keys.items() for key in keys
+        )
+        indexes.regex_fallback_ids = frozenset(
+            rule_id
+            for rule_id, candidate in indexes.regex_candidates.items()
+            if not _single_token_key_is_safe(
+                regex_keys.get(rule_id, []),
+                lambda key, candidate=candidate: _regex_token_key_is_safe(
+                    candidate.regex.pattern if candidate.regex is not None else "",
+                    key,
+                ),
+            )
+        )
 
-    def _matching_host_pattern_ids(
+        positive: dict[str, set[str]] = {}
+        negated: dict[str, set[str]] = {}
+        for rule_id, indexed_type, is_negated in conn.execute(
+            "SELECT rule_id, resource_type, negated FROM resource_type_index"
+        ):
+            if not rule_id:
+                continue
+            target = negated if int(is_negated or 0) else positive
+            target.setdefault(str(rule_id), set()).add(str(indexed_type or "").lower())
+        indexes.resource_types_by_id = {
+            rule_id: (
+                frozenset(positive.get(rule_id, ())),
+                frozenset(negated.get(rule_id, ())),
+            )
+            for rule_id in positive.keys() | negated.keys()
+        }
+        return indexes
+
+    def matching_host_pattern_ids(
         self,
-        conn: sqlite3.Connection,
         host: str,
         host_suffixes: list[str],
     ) -> set[str]:
-        candidates_by_id = self._load_host_patterns(conn)
+        candidates_by_id = self.host_patterns
         if not candidates_by_id:
             return set()
-        candidate_ids = self._host_pattern_candidate_ids(
-            conn,
-            host,
-            candidates_by_id,
-        )
+        candidate_ids = set(self.host_pattern_ids_by_key.get("", ()))
+        for token in _url_literal_tokens(host):
+            candidate_ids.update(self.host_pattern_ids_by_key.get(token, ()))
+        candidate_ids.update(self.host_pattern_fallback_ids)
         return {
             rule_id
             for rule_id in candidate_ids
@@ -435,140 +603,47 @@ class AdblockLookupIndex:
             )
         }
 
-    def _host_pattern_candidate_ids(
-        self,
-        conn: sqlite3.Connection,
-        host: str,
-        candidates_by_id: dict[str, _HostPatternCandidate],
-    ) -> set[str]:
-        literal_tokens = _url_literal_tokens(host)
-        rule_ids = {
-            str(row["rule_id"])
-            for row in _query_by_values(
-                conn,
-                "SELECT rule_id FROM host_pattern_token_index WHERE literal_key IN ",
-                literal_tokens,
-            )
-        }
-        rule_ids.update(
-            str(row["rule_id"])
-            for row in conn.execute(
-                "SELECT rule_id FROM host_pattern_token_index WHERE literal_key=''",
-            )
-        )
-        if self._host_pattern_token_fallback_ids is None:
-            keys_by_id = _token_keys_by_rule_id(conn, "host_pattern_token_index")
-            self._host_pattern_token_fallback_ids = {
-                rule_id
-                for rule_id, candidate in candidates_by_id.items()
-                if not _single_token_key_is_safe(
-                    keys_by_id.get(rule_id, []),
-                    lambda key: _host_pattern_token_key_is_safe(
-                        candidate.host_pattern,
-                        key,
-                    ),
-                )
-            }
-        rule_ids.update(self._host_pattern_token_fallback_ids)
-        return rule_ids
-
-    def _load_host_patterns(
-        self,
-        conn: sqlite3.Connection,
-    ) -> dict[str, _HostPatternCandidate]:
-        if self._host_patterns is not None:
-            return self._host_patterns
-        with self._host_patterns_lock:
-            if self._host_patterns is not None:
-                return self._host_patterns
-            self._host_patterns = {
-                str(row["rule_id"] or ""): _HostPatternCandidate(
-                    str(row["host_pattern"] or ""),
-                    str(row["pattern_kind"] or ""),
-                    str(row["rule_id"] or ""),
-                )
-                for row in conn.execute(
-                    "SELECT host_pattern, pattern_kind, rule_id FROM host_pattern_index"
-                )
-                if row["host_pattern"] and row["rule_id"]
-            }
-            return self._host_patterns
-
-    def _matching_regex_ids(
-        self,
-        conn: sqlite3.Connection,
-        url: str,
-    ) -> set[str]:
-        candidates_by_id = self._load_regex_candidates(conn)
+    def matching_regex_ids(self, url: str, url_tokens: list[str]) -> set[str]:
+        candidates_by_id = self.regex_candidates
         if not candidates_by_id:
             return set()
-        candidate_ids = self._regex_candidate_ids(conn, url, candidates_by_id)
-        candidates = (
-            candidates_by_id[rule_id]
-            for rule_id in candidate_ids
-            if rule_id in candidates_by_id
-        )
-        return {
-            candidate.rule_id
-            for candidate in candidates
-            if candidate.regex is not None and candidate.regex.search(url or "")
-        }
+        candidate_ids = set(self.regex_ids_by_key.get("", ()))
+        for token in url_tokens:
+            candidate_ids.update(self.regex_ids_by_key.get(token, ()))
+        candidate_ids.update(self.regex_fallback_ids)
+        matched: set[str] = set()
+        for rule_id in candidate_ids:
+            candidate = candidates_by_id.get(rule_id)
+            if (
+                candidate is not None
+                and candidate.regex is not None
+                and candidate.regex.search(url or "")
+            ):
+                matched.add(candidate.rule_id)
+        return matched
 
-    def _regex_candidate_ids(
+    def filter_by_resource_type(
         self,
-        conn: sqlite3.Connection,
-        url: str,
-        candidates_by_id: dict[str, _RegexCandidate],
+        rule_ids: set[str],
+        resource_type: str,
     ) -> set[str]:
-        literal_tokens = _url_literal_tokens(url)
-        rule_ids = {
-            str(row["rule_id"])
-            for row in _query_by_values(
-                conn,
-                "SELECT rule_id FROM regex_token_index WHERE literal_key IN ",
-                literal_tokens,
-            )
-        }
-        rule_ids.update(
-            str(row["rule_id"])
-            for row in conn.execute(
-                "SELECT rule_id FROM regex_token_index WHERE literal_key=''",
-            )
-        )
-        if self._regex_token_fallback_ids is None:
-            keys_by_id = _token_keys_by_rule_id(conn, "regex_token_index")
-            self._regex_token_fallback_ids = {
-                rule_id
-                for rule_id, candidate in candidates_by_id.items()
-                if not _single_token_key_is_safe(
-                    keys_by_id.get(rule_id, []),
-                    lambda key: _regex_token_key_is_safe(
-                        candidate.regex.pattern if candidate.regex is not None else "",
-                        key,
-                    ),
-                )
-            }
-        rule_ids.update(self._regex_token_fallback_ids)
-        return rule_ids
-
-    def _load_regex_candidates(
-        self,
-        conn: sqlite3.Connection,
-    ) -> dict[str, _RegexCandidate]:
-        if self._regex_candidates is not None:
-            return self._regex_candidates
-        with self._regex_candidates_lock:
-            if self._regex_candidates is not None:
-                return self._regex_candidates
-            self._regex_candidates = {
-                str(row["rule_id"] or ""): _RegexCandidate(
-                    str(row["rule_id"] or ""),
-                    str(row["regex"] or ""),
-                )
-                for row in conn.execute("SELECT rule_id, regex FROM regex_index")
-                if row["rule_id"] and row["regex"]
-            }
-            return self._regex_candidates
+        normalized_type = (resource_type or "").strip().lower()
+        if not rule_ids or not normalized_type:
+            return rule_ids
+        types_by_id = self.resource_types_by_id
+        kept: set[str] = set()
+        for rule_id in rule_ids:
+            types = types_by_id.get(rule_id)
+            if types is None:
+                kept.add(rule_id)
+                continue
+            positive, negated = types
+            if normalized_type in negated:
+                continue
+            if positive and normalized_type not in positive:
+                continue
+            kept.add(rule_id)
+        return kept
 
 
 def _query_by_values(
@@ -676,7 +751,7 @@ def _host_pattern_matches_candidate(
     )
 
 
-def _rule_order(rule: dict[str, Any]) -> tuple[int, str, str, str, str]:
+def _rule_order(rule: dict[str, Any]) -> _OrderKey:
     """Total candidate order: the first matching rule is attributed the decision.
 
     The same rule text in two lists ties on (action, kind, raw); list key and
@@ -692,7 +767,7 @@ def _rule_order(rule: dict[str, Any]) -> tuple[int, str, str, str, str]:
     )
 
 
-def _rules_by_ids(conn: sqlite3.Connection, rule_ids: set[str]) -> list[sqlite3.Row]:
+def _rules_by_ids(conn: sqlite3.Connection, rule_ids: list[str]) -> list[sqlite3.Row]:
     if not rule_ids:
         return []
     return _query_by_values(
@@ -700,41 +775,3 @@ def _rules_by_ids(conn: sqlite3.Connection, rule_ids: set[str]) -> list[sqlite3.
         "SELECT * FROM rules WHERE rule_id IN ",
         sorted(rule_ids),
     )
-
-
-def _filter_by_resource_type(
-    conn: sqlite3.Connection,
-    rule_ids: set[str],
-    resource_type: str,
-) -> set[str]:
-    normalized_type = (resource_type or "").strip().lower()
-    if not rule_ids or not normalized_type:
-        return rule_ids
-    rows = _query_by_values(
-        conn,
-        """
-        SELECT rule_id, resource_type, negated
-        FROM resource_type_index
-        WHERE rule_id IN
-        """,
-        sorted(rule_ids),
-    )
-    positive: dict[str, set[str]] = {}
-    excluded: set[str] = set()
-    for row in rows:
-        rule_id = str(row["rule_id"] or "")
-        indexed_type = str(row["resource_type"] or "").lower()
-        if not rule_id:
-            continue
-        if int(row["negated"] or 0):
-            if indexed_type == normalized_type:
-                excluded.add(rule_id)
-            continue
-        positive.setdefault(rule_id, set()).add(indexed_type)
-
-    return {
-        rule_id
-        for rule_id in rule_ids
-        if rule_id not in excluded
-        and (rule_id not in positive or normalized_type in positive[rule_id])
-    }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from functools import lru_cache
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -11,8 +12,14 @@ _HOST_RE = re.compile(
     r"^(?=.{1,255}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$",
     re.IGNORECASE,
 )
+# Whitespace (str.isspace), C0 controls, DEL, and backslash: URLs carrying any
+# of them are parser-ambiguous and never matched.
+_UNSAFE_URL_CHAR_RE = re.compile(r"[\s\x00-\x1f\x7f\\]")
 
 
+# Request hosts repeat heavily across a page load; normalization (IP literal
+# and IDNA parsing) is a pure function of the input, so memoize a bounded set.
+@lru_cache(maxsize=8192)
 def normalize_adblock_host(host: str) -> str:
     value = (host or "").strip().lower().rstrip(".")
     if not value:
@@ -56,11 +63,7 @@ def normalize_adblock_host(host: str) -> str:
 
 def safe_adblock_urlsplit(url: str) -> Any | None:
     raw = str(url or "")
-    if (
-        not raw
-        or "\\" in raw
-        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw)
-    ):
+    if not raw or _UNSAFE_URL_CHAR_RE.search(raw):
         return None
     try:
         parsed = urlsplit(raw)

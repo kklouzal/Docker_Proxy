@@ -112,11 +112,16 @@ class AdblockDecision:
     list_key: str = ""
 
 
+# Shared by every unmatched request (and so by most decision cache entries).
+_NO_MATCH = AdblockDecision(blocked=False)
+
+
 @dataclass(frozen=True)
 class _RequestContext:
     """Per-request facts shared by every candidate rule evaluation."""
 
     url: str
+    url_lower: str
     method: str
     resource_type: str
     request_host: str
@@ -131,21 +136,12 @@ def _normalized_rule_host(value: str) -> str:
     return _normalize_host(value)
 
 
+@lru_cache(maxsize=8192)
 def _host_suffix_set(normalized_host: str) -> frozenset[str]:
     return frozenset(adblock_host_suffix_candidates(normalized_host))
 
 
-def _domain_matches(host: str, suffixes: frozenset[str], domain: str) -> bool:
-    domain = (domain or "").strip().lower().rstrip(".")
-    if not domain:
-        return False
-    if "*" in domain:
-        return fnmatch.fnmatchcase(host, domain)
-    # Bracketed IPv6 literals are exact hosts, never fnmatch character classes.
-    normalized = _normalized_rule_host(domain)
-    return bool(normalized) and normalized in suffixes
-
-
+@lru_cache(maxsize=8192)
 def _site_key(host: str) -> str:
     normalized = _normalize_host(host)
     if not normalized:
@@ -286,21 +282,7 @@ def third_party_hint_from_headers(headers: dict[str, str] | None) -> bool | None
     return None
 
 
-def _first_match(
-    matches: list[dict[str, Any]],
-    action: str,
-    *,
-    important: bool,
-) -> dict[str, Any] | None:
-    for rule in matches:
-        if rule.get("action") != action:
-            continue
-        if not important or "important" in set(rule.get("behavior_options") or []):
-            return rule
-    return None
-
-
-def _decision_for_matches(matches: list[dict[str, Any]]) -> AdblockDecision:
+def _decision_for_matches(matches: list[_RuleMatcher]) -> AdblockDecision:
     # uBO precedence: important exception > important block > exception > block.
     for action, important, reason in (
         ("allow", True, "important-exception"),
@@ -308,17 +290,283 @@ def _decision_for_matches(matches: list[dict[str, Any]]) -> AdblockDecision:
         ("allow", False, "exception"),
         ("block", False, "rule-match"),
     ):
-        rule = _first_match(matches, action, important=important)
-        if rule is not None:
-            return AdblockDecision(
-                blocked=action == "block",
-                rule_id=str(rule.get("rule_id") or rule.get("id") or ""),
-                raw=str(rule.get("raw") or ""),
-                action=action,
-                reason=reason,
-                list_key=str(rule.get("list_key") or ""),
+        for matcher in matches:
+            if matcher.action == action and (not important or matcher.important):
+                rule = matcher.rule
+                return AdblockDecision(
+                    blocked=action == "block",
+                    rule_id=str(rule.get("rule_id") or rule.get("id") or ""),
+                    raw=str(rule.get("raw") or ""),
+                    action=action,
+                    reason=reason,
+                    list_key=str(rule.get("list_key") or ""),
+                )
+    return _NO_MATCH
+
+
+def _compiled_domain_test(domain: Any) -> tuple[bool, str] | None:
+    """Compile one domain option value for ``_any_domain_matches``.
+
+    A value containing ``*`` is an fnmatch pattern over the whole host; any
+    other value matches the host or one of its parent domains. Returns
+    (is_pattern, value), or None when the value can never match.
+    """
+    text = str(domain).strip().lower().rstrip(".")
+    if not text:
+        return None
+    if "*" in text:
+        return True, text
+    normalized = _normalized_rule_host(text)
+    return (False, normalized) if normalized else None
+
+
+def _compiled_domain_tests(domains: Any) -> tuple[tuple[bool, str], ...]:
+    tests = (_compiled_domain_test(item) for item in domains or [])
+    return tuple(test for test in tests if test is not None)
+
+
+def _any_domain_matches(
+    host: str,
+    suffixes: frozenset[str],
+    tests: tuple[tuple[bool, str], ...],
+) -> bool:
+    for is_pattern, value in tests:
+        if is_pattern:
+            if fnmatch.fnmatchcase(host, value):
+                return True
+        elif value in suffixes:
+            return True
+    return False
+
+
+class _RuleMatcher:
+    """A candidate rule with its request-independent matching work done once.
+
+    ``matches`` is exactly the ABP/uBO evaluation of the decoded rule dict:
+    option checks (method, resource type, party, domain scope, denyallow,
+    discarded/non-blocking options) and then the URL pattern. Matchers are
+    built when a rule enters the lookup's bounded rule cache.
+    """
+
+    __slots__ = (
+        "action",
+        "case_sensitive",
+        "denyallow",
+        "domain_exclude_patterns",
+        "domain_excludes",
+        "domain_include_patterns",
+        "domain_includes",
+        "domain_scoped",
+        "excluded_methods",
+        "excluded_resource_types",
+        "has_domain_includes",
+        "host_test",
+        "important",
+        "included_methods",
+        "kind",
+        "needle",
+        "regex",
+        "resource_types",
+        "rule",
+        "third_party",
+        "unusable",
+    )
+
+    def __init__(self, rule: dict[str, Any]) -> None:
+        self.rule = rule
+        self.action = rule.get("action")
+        behavior_options = set(rule.get("behavior_options") or [])
+        self.important = "important" in behavior_options
+        self.case_sensitive = "match-case" in behavior_options
+        self.unusable = False
+        self.included_methods: frozenset[str] | None = None
+        self.excluded_methods: frozenset[str] = frozenset()
+        self.resource_types = frozenset(
+            str(item) for item in rule.get("resource_types") or []
+        )
+        self.excluded_resource_types = frozenset(
+            str(item) for item in rule.get("excluded_resource_types") or []
+        )
+        self.third_party = str(rule.get("third_party") or "any")
+        self.domain_includes = _compiled_domain_tests(rule.get("domain_includes"))
+        self.domain_excludes = _compiled_domain_tests(rule.get("domain_excludes"))
+        self.domain_include_patterns = tuple(
+            _normalized_rule_host(str(item))
+            for item in rule.get("domain_include_patterns") or []
+        )
+        self.domain_exclude_patterns = tuple(
+            _normalized_rule_host(str(item))
+            for item in rule.get("domain_exclude_patterns") or []
+        )
+        # Scope presence follows the raw lists: an entry that can never match
+        # still makes the rule domain-scoped (and include-restricted).
+        self.has_domain_includes = bool(
+            rule.get("domain_includes") or rule.get("domain_include_patterns")
+        )
+        self.domain_scoped = self.has_domain_includes or bool(
+            rule.get("domain_excludes") or rule.get("domain_exclude_patterns")
+        )
+        self.denyallow: tuple[tuple[bool, str], ...] = ()
+        self.kind = str(rule.get("pattern_kind") or "")
+        self.host_test: tuple[bool, str] | None = None
+        self.needle = ""
+        self.regex: re.Pattern[str] | None = None
+
+        value_options = rule.get("value_options") or {}
+        if rule.get("misc_options") or not isinstance(value_options, dict):
+            # Like ABP and uBlock Origin, discard a filter carrying an option
+            # this engine does not understand rather than enforcing it without
+            # the restriction (or non-blocking meaning) that option adds.
+            self.unusable = True
+            return
+        if "badfilter" in behavior_options or (
+            (behavior_options | set(value_options.keys()))
+            & _NON_BLOCKING_MODIFIER_OPTIONS
+        ):
+            self.unusable = True
+            return
+        if "method" in value_options:
+            method_values = value_options["method"]
+            # An explicitly present but malformed method= must not become an
+            # unrestricted rule merely because it has no usable values.
+            if not isinstance(method_values, list) or not method_values:
+                self.unusable = True
+                return
+            included: set[str] = set()
+            excluded: set[str] = set()
+            for item in method_values:
+                option_value = str(item or "").strip().upper()
+                negated = option_value.startswith("~")
+                option_method = option_value[1:] if negated else option_value
+                if option_method not in SUPPORTED_REQUEST_METHODS:
+                    self.unusable = True
+                    return
+                (excluded if negated else included).add(option_method)
+            self.included_methods = frozenset(included)
+            self.excluded_methods = frozenset(excluded)
+        self.denyallow = _compiled_domain_tests(value_options.get("denyallow"))
+        self._compile_pattern()
+
+    def _compile_pattern(self) -> None:
+        rule = self.rule
+        kind = self.kind
+        pattern = str(rule.get("pattern") or "")
+        ignore_case = not self.case_sensitive
+        if kind == "domain_only":
+            self.host_test = _compiled_domain_test(rule.get("host") or "")
+        elif kind == "absolute_url":
+            self.regex = _compile_regex(
+                str(rule.get("compiled_regex") or _abp_to_regex(pattern)),
+                ignore_case=ignore_case,
             )
-    return AdblockDecision(blocked=False)
+        elif kind == "host_anchored":
+            self.host_test = _compiled_domain_test(rule.get("host") or "")
+            self.regex = _compile_regex(
+                str(
+                    rule.get("compiled_regex")
+                    or _abp_host_anchored_to_regex(
+                        str(rule.get("host") or ""),
+                        str(rule.get("suffix") or ""),
+                    )
+                ),
+                ignore_case=ignore_case,
+            )
+        elif kind in {"host_anchored_pattern", "absolute_url_pattern"}:
+            self.regex = _compile_regex(
+                str(rule.get("compiled_regex") or ""),
+                ignore_case=ignore_case,
+            )
+        elif kind in {"left_anchored", "right_anchored", "wildcard"}:
+            self.regex = _compile_regex(
+                str(rule.get("compiled_regex") or _abp_to_regex(pattern)),
+                ignore_case=ignore_case,
+            )
+        elif kind == "regex":
+            self.regex = _compile_regex(
+                str(rule.get("regex") or pattern),
+                ignore_case=ignore_case,
+            )
+        elif kind == "substring":
+            needle = _unescape_abp_literal(pattern)
+            self.needle = needle if self.case_sensitive else needle.lower()
+
+    def matches(self, context: _RequestContext) -> bool:
+        return (
+            not self.unusable
+            and self._options_match(context)
+            and self._pattern_matches(context)
+        )
+
+    def _options_match(self, context: _RequestContext) -> bool:
+        included_methods = self.included_methods
+        if included_methods is not None:
+            request_method = context.method
+            if request_method not in SUPPORTED_REQUEST_METHODS:
+                return False
+            if included_methods and request_method not in included_methods:
+                return False
+            if request_method in self.excluded_methods:
+                return False
+        if self.resource_types and context.resource_type not in self.resource_types:
+            return False
+        if context.resource_type in self.excluded_resource_types:
+            return False
+        third_party = self.third_party
+        if third_party == "only" and context.third_party is not True:
+            return False
+        if third_party == "exclude" and context.third_party is not False:
+            return False
+        if self.domain_scoped and not self._domain_scope_matches(context):
+            return False
+        return not (
+            self.denyallow
+            and _any_domain_matches(
+                context.request_host, context.request_suffixes, self.denyallow
+            )
+        )
+
+    def _domain_scope_matches(self, context: _RequestContext) -> bool:
+        source_host = context.source_host
+        if not source_host:
+            return False
+        suffixes = context.source_suffixes
+        if _any_domain_matches(source_host, suffixes, self.domain_excludes):
+            return False
+        if any(
+            fnmatch.fnmatchcase(source_host, item)
+            for item in self.domain_exclude_patterns
+        ):
+            return False
+        if self.has_domain_includes:
+            return _any_domain_matches(
+                source_host, suffixes, self.domain_includes
+            ) or any(
+                fnmatch.fnmatchcase(source_host, item)
+                for item in self.domain_include_patterns
+            )
+        return True
+
+    def _pattern_matches(self, context: _RequestContext) -> bool:
+        kind = self.kind
+        if kind == "option_only":
+            return True
+        if kind == "domain_only":
+            return self.host_test is not None and _any_domain_matches(
+                context.request_host, context.request_suffixes, (self.host_test,)
+            )
+        if kind == "host_anchored" and (
+            self.host_test is None
+            or not _any_domain_matches(
+                context.request_host, context.request_suffixes, (self.host_test,)
+            )
+        ):
+            return False
+        if self.regex is not None:
+            return self.regex.search(context.url) is not None
+        if kind == "substring":
+            haystack = context.url if self.case_sensitive else context.url_lower
+            return self.needle in haystack
+        return False
 
 
 class AdblockDecisionEngine:
@@ -327,19 +575,20 @@ class AdblockDecisionEngine:
         db_path: str | Path,
         *,
         cache_ttl_seconds: int = 3600,
-        cache_max: int = 200000,
+        cache_max: int = 50000,
         rule_cache_max: int = 50000,
     ) -> None:
-        self.lookup = AdblockLookupIndex(db_path, rule_cache_max=rule_cache_max)
+        self.lookup = AdblockLookupIndex(
+            db_path,
+            rule_cache_max=rule_cache_max,
+            prepare_rule=_RuleMatcher,
+        )
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds or 0))
         self.cache_max = max(0, int(cache_max or 0))
         self._cache: OrderedDict[
             tuple[str, str, str, str, str], tuple[float, AdblockDecision]
         ] = OrderedDict()
         self._cache_lock = threading.Lock()
-
-    def close_thread_connection(self) -> None:
-        self.lookup.close_thread_connection()
 
     def close(self) -> None:
         self.lookup.close()
@@ -385,7 +634,7 @@ class AdblockDecisionEngine:
             third_party_hint=effective_third_party_hint,
         )
         if context is None:
-            decision = AdblockDecision(blocked=False)
+            decision = _NO_MATCH
             self._put_cached(cache_key, decision)
             return decision
 
@@ -393,7 +642,7 @@ class AdblockDecisionEngine:
             url,
             resource_type=effective_resource_type,
         )
-        matches = [rule for rule in candidates if self._rule_matches(rule, context)]
+        matches = [matcher for matcher in candidates if matcher.matches(context)]
         decision = _decision_for_matches(matches)
         self._put_cached(cache_key, decision)
         return decision
@@ -446,6 +695,7 @@ class AdblockDecisionEngine:
             third_party = bool(third_party_hint)
         return _RequestContext(
             url=url,
+            url_lower=url.lower(),
             method=_normalize_method(method),
             resource_type=resource_type,
             request_host=request_host,
@@ -454,162 +704,3 @@ class AdblockDecisionEngine:
             source_suffixes=_host_suffix_set(source_host),
             third_party=third_party,
         )
-
-    def _rule_matches(self, rule: dict[str, Any], context: _RequestContext) -> bool:
-        if not self._options_match(rule, context):
-            return False
-
-        url = context.url
-        kind = str(rule.get("pattern_kind") or "")
-        pattern = str(rule.get("pattern") or "")
-        case_sensitive = "match-case" in set(rule.get("behavior_options") or [])
-        if kind == "option_only":
-            return True
-        if kind == "domain_only":
-            return _domain_matches(
-                context.request_host,
-                context.request_suffixes,
-                str(rule.get("host") or ""),
-            )
-        if kind == "absolute_url":
-            compiled_regex = str(rule.get("compiled_regex") or _abp_to_regex(pattern))
-            compiled = _compile_regex(compiled_regex, ignore_case=not case_sensitive)
-            return bool(compiled and compiled.search(url))
-        if kind == "host_anchored":
-            if not _domain_matches(
-                context.request_host,
-                context.request_suffixes,
-                str(rule.get("host") or ""),
-            ):
-                return False
-            compiled_regex = str(
-                rule.get("compiled_regex")
-                or _abp_host_anchored_to_regex(
-                    str(rule.get("host") or ""),
-                    str(rule.get("suffix") or ""),
-                )
-            )
-            compiled = _compile_regex(compiled_regex, ignore_case=not case_sensitive)
-            return bool(compiled and compiled.search(url))
-        if kind in {"host_anchored_pattern", "absolute_url_pattern"}:
-            compiled_regex = str(rule.get("compiled_regex") or "")
-            compiled = _compile_regex(compiled_regex, ignore_case=not case_sensitive)
-            return bool(compiled and compiled.search(url))
-        if kind in {"left_anchored", "right_anchored", "wildcard"}:
-            compiled_regex = str(rule.get("compiled_regex") or _abp_to_regex(pattern))
-            compiled = _compile_regex(compiled_regex, ignore_case=not case_sensitive)
-            return bool(compiled and compiled.search(url))
-        if kind == "regex":
-            compiled = _compile_regex(
-                str(rule.get("regex") or pattern),
-                ignore_case=not case_sensitive,
-            )
-            return bool(compiled and compiled.search(url))
-        if kind == "substring":
-            needle = _unescape_abp_literal(pattern)
-            haystack = url or ""
-            if not case_sensitive:
-                needle = needle.lower()
-                haystack = haystack.lower()
-            return needle in haystack
-        return False
-
-    def _options_match(self, rule: dict[str, Any], context: _RequestContext) -> bool:
-        if rule.get("misc_options"):
-            # Like ABP and uBlock Origin, discard a filter carrying an option
-            # this engine does not understand rather than enforcing it without
-            # the restriction (or non-blocking meaning) that option adds.
-            return False
-        value_options = rule.get("value_options") or {}
-        if not isinstance(value_options, dict):
-            return False
-        if "method" in value_options:
-            method_values = value_options["method"]
-            # An explicitly present but malformed method= must not become an
-            # unrestricted rule merely because it has no usable values.
-            if not isinstance(method_values, list) or not method_values:
-                return False
-            included_methods: set[str] = set()
-            excluded_methods: set[str] = set()
-            for item in method_values:
-                option_value = str(item or "").strip().upper()
-                excluded = option_value.startswith("~")
-                option_method = option_value[1:] if excluded else option_value
-                if option_method not in SUPPORTED_REQUEST_METHODS:
-                    return False
-                target = excluded_methods if excluded else included_methods
-                target.add(option_method)
-
-            request_method = context.method
-            if request_method not in SUPPORTED_REQUEST_METHODS:
-                return False
-            if included_methods and request_method not in included_methods:
-                return False
-            if request_method in excluded_methods:
-                return False
-
-        resource_types = {str(item) for item in rule.get("resource_types") or []}
-        excluded_resource_types = {
-            str(item) for item in rule.get("excluded_resource_types") or []
-        }
-        if resource_types and context.resource_type not in resource_types:
-            return False
-        if excluded_resource_types and context.resource_type in excluded_resource_types:
-            return False
-
-        third_party = str(rule.get("third_party") or "any")
-        if third_party == "only" and context.third_party is not True:
-            return False
-        if third_party == "exclude" and context.third_party is not False:
-            return False
-
-        if not self._domain_scope_matches(rule, context):
-            return False
-
-        denyallow = (rule.get("value_options") or {}).get("denyallow") or []
-        if denyallow and any(
-            _domain_matches(context.request_host, context.request_suffixes, str(item))
-            for item in denyallow
-        ):
-            return False
-
-        behavior_options = set(rule.get("behavior_options") or [])
-        value_options = set((rule.get("value_options") or {}).keys())
-        if "badfilter" in behavior_options:
-            return False
-        return not bool(
-            (behavior_options | value_options) & _NON_BLOCKING_MODIFIER_OPTIONS
-        )
-
-    def _domain_scope_matches(
-        self,
-        rule: dict[str, Any],
-        context: _RequestContext,
-    ) -> bool:
-        includes = rule.get("domain_includes") or []
-        include_patterns = [
-            _normalized_rule_host(str(item))
-            for item in rule.get("domain_include_patterns") or []
-        ]
-        excludes = rule.get("domain_excludes") or []
-        exclude_patterns = [
-            _normalized_rule_host(str(item))
-            for item in rule.get("domain_exclude_patterns") or []
-        ]
-        if not (includes or include_patterns or excludes or exclude_patterns):
-            return True
-        source_host = context.source_host
-        if not source_host:
-            return False
-        suffixes = context.source_suffixes
-        if any(_domain_matches(source_host, suffixes, str(item)) for item in excludes):
-            return False
-        if any(fnmatch.fnmatchcase(source_host, item) for item in exclude_patterns):
-            return False
-        if includes or include_patterns:
-            return any(
-                _domain_matches(source_host, suffixes, str(item)) for item in includes
-            ) or any(
-                fnmatch.fnmatchcase(source_host, item) for item in include_patterns
-            )
-        return True

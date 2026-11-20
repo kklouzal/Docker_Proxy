@@ -911,6 +911,9 @@ exitcodes=0
 startsecs=1
 startretries=2
 priority=10
+# ADBLOCK_ICAP_PROCESSES>1 forks workers: stop and kill them with the helper.
+stopasgroup=true
+killasgroup=true
 stderr_logfile=/dev/stderr
 stdout_logfile=/dev/stdout
 stderr_logfile_maxbytes=0

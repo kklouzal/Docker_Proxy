@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import gc
 import os
+import signal
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
@@ -373,7 +376,7 @@ def test_adblock_decision_enforces_method_contract_without_cache_leakage(
 
     negated_url = "https://negated-method.example/collect"
     [hydrated_rule] = engine.lookup.candidate_rules(negated_url)
-    assert hydrated_rule["value_options"]["method"] == ["~GET"]
+    assert hydrated_rule.rule["value_options"]["method"] == ["~GET"]
     assert engine.decide(negated_url, method="GET").blocked is False
     post_decision = engine.decide(negated_url, method=" post ")
     assert post_decision.blocked is True
@@ -485,7 +488,7 @@ def test_adblock_decision_preserves_absolute_and_host_authority_boundaries(
         ],
     )
 
-    from services.adblock_decision import AdblockDecisionEngine
+    from services.adblock_decision import AdblockDecisionEngine, _RuleMatcher
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
 
@@ -507,13 +510,12 @@ def test_adblock_decision_preserves_absolute_and_host_authority_boundaries(
     [compiled_host_rule] = [
         rule
         for rule in engine.lookup.candidate_rules("https://host.example/ads.js")
-        if rule["raw"] == "||host.example/ads.js|"
+        if rule.rule["raw"] == "||host.example/ads.js|"
     ]
-    fallback_host_rule = dict(compiled_host_rule)
+    fallback_host_rule = dict(compiled_host_rule.rule)
     fallback_host_rule.pop("compiled_regex")
     assert (
-        engine._rule_matches(
-            fallback_host_rule,
+        _RuleMatcher(fallback_host_rule).matches(
             engine._request_context(
                 "https://host.example:8443/ads.js",
                 method="GET",
@@ -696,6 +698,55 @@ class _ChunkedSocket:
             return chunk
         self._chunks.insert(0, chunk[n:])
         return chunk[:n]
+
+
+def _drive(reader: Any, sock: _ChunkedSocket) -> Any:
+    """Run a sans-IO ICAP reader generator over a blocking (fake) socket."""
+    try:
+        wanted = next(reader)
+        while True:
+            try:
+                chunk: bytes | None = sock.recv(wanted)
+            except TimeoutError, OSError:
+                chunk = None
+            wanted = reader.send(chunk)
+    except StopIteration as done:
+        return done.value
+
+
+def _read_icap_message(
+    sock: _ChunkedSocket,
+    *,
+    max_bytes: int,
+    max_body_drain_bytes: int,
+    timeout_seconds: float,
+    pending: bytes = b"",
+) -> tuple[bytes, bytes, bool]:
+    from tools import adblock_icap_server
+
+    del timeout_seconds  # the server's event loop owns read deadlines
+    return _drive(
+        adblock_icap_server._read_icap_message(
+            max_bytes=max_bytes,
+            max_body_drain_bytes=max_body_drain_bytes,
+            pending=pending,
+        ),
+        sock,
+    )
+
+
+def _drain_chunked_body(
+    sock: _ChunkedSocket,
+    body: bytes,
+    *,
+    max_drain_bytes: int,
+) -> bool:
+    from tools import adblock_icap_server
+
+    return _drive(
+        adblock_icap_server._drain_chunked_body(body, max_drain_bytes=max_drain_bytes),
+        sock,
+    )
 
 
 def test_adblock_icap_parse_http_request_normalizes_connect_authority() -> None:
@@ -915,8 +966,6 @@ def test_adblock_icap_rejects_out_of_order_encapsulated_offsets() -> None:
 
 
 def test_adblock_icap_rejects_req_hdr_without_body_boundary() -> None:
-    from tools.adblock_icap_server import _read_icap_message
-
     http = b"GET http://ads.example/banner.js HTTP/1.1\r\nHost: ads.example\r\n\r\n"
     next_req = (
         b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
@@ -942,8 +991,6 @@ def test_adblock_icap_rejects_req_hdr_without_body_boundary() -> None:
 
 
 def test_adblock_icap_rejects_duplicate_encapsulated_header_fields() -> None:
-    from tools.adblock_icap_server import _read_icap_message
-
     http = b"GET http://ads.example/banner.js HTTP/1.1\r\nHost: ads.example\r\n\r\n"
     next_req = (
         b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
@@ -986,8 +1033,6 @@ def test_adblock_icap_rejects_duplicate_encapsulated_header_fields() -> None:
 def test_adblock_icap_rejects_malformed_general_header_before_pipeline(
     malformed_header: bytes,
 ) -> None:
-    from tools.adblock_icap_server import _read_icap_message
-
     http = b"GET http://allowed.example/page HTTP/1.1\r\nHost: allowed.example\r\n\r\n"
     next_req = (
         b"OPTIONS icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
@@ -1047,8 +1092,6 @@ def test_adblock_icap_extracts_request_headers_without_buffering_body() -> None:
 
 
 def test_adblock_icap_reads_preview_zero_chunk_before_responding() -> None:
-    from tools.adblock_icap_server import _read_icap_message
-
     http = (
         b"POST http://ads.example/collect HTTP/1.1\r\n"
         b"Host: ads.example\r\n"
@@ -1079,8 +1122,6 @@ def test_adblock_icap_reads_preview_zero_chunk_before_responding() -> None:
 
 
 def test_adblock_icap_reads_preview_zero_ieof_chunk_before_responding() -> None:
-    from tools.adblock_icap_server import _read_icap_message
-
     http = (
         b"POST http://ads.example/collect HTTP/1.1\r\n"
         b"Host: ads.example\r\n"
@@ -1109,8 +1150,6 @@ def test_adblock_icap_reads_preview_zero_ieof_chunk_before_responding() -> None:
 
 
 def test_adblock_icap_preserves_pipelined_request_after_valid_preview_zero() -> None:
-    from tools.adblock_icap_server import _read_icap_message
-
     http = (
         b"POST http://ads.example/collect HTTP/1.1\r\n"
         b"Host: ads.example\r\n"
@@ -1144,8 +1183,6 @@ def test_adblock_icap_preserves_pipelined_request_after_valid_preview_zero() -> 
 
 
 def test_adblock_icap_allows_duplicate_equal_preview_zero_before_pipeline() -> None:
-    from tools.adblock_icap_server import _read_icap_message
-
     http = (
         b"POST http://ads.example/collect HTTP/1.1\r\n"
         b"Host: ads.example\r\n"
@@ -1192,8 +1229,6 @@ def test_adblock_icap_allows_duplicate_equal_preview_zero_before_pipeline() -> N
 def test_adblock_icap_rejects_malformed_or_conflicting_preview_before_pipeline(
     preview_headers: list[bytes],
 ) -> None:
-    from tools.adblock_icap_server import _read_icap_message
-
     http = (
         b"POST http://allowed.example/collect HTTP/1.1\r\n"
         b"Host: allowed.example\r\n"
@@ -1230,8 +1265,6 @@ def test_adblock_icap_rejects_malformed_or_conflicting_preview_before_pipeline(
 def test_adblock_icap_rejects_empty_or_signed_preview_chunk_size(
     chunk_line: bytes,
 ) -> None:
-    from tools.adblock_icap_server import _read_icap_message
-
     http = (
         b"POST http://allowed.example/collect HTTP/1.1\r\n"
         b"Host: allowed.example\r\n"
@@ -1266,8 +1299,6 @@ def test_adblock_icap_rejects_empty_or_signed_preview_chunk_size(
 
 
 def test_adblock_icap_rejects_malformed_zero_preview_before_pipeline() -> None:
-    from tools.adblock_icap_server import _read_icap_message
-
     http = (
         b"POST http://allowed.example/collect HTTP/1.1\r\n"
         b"Host: allowed.example\r\n"
@@ -1381,7 +1412,7 @@ def test_adblock_icap_server_bind_failure_preserves_original_error() -> None:
         listener.close()
 
 
-def test_adblock_icap_request_thread_closes_its_sqlite_connection(
+def test_adblock_icap_server_shares_one_sqlite_connection_and_closes_it(
     tmp_path: Path,
 ) -> None:
     if not Path("/proc/self/fd").is_dir():
@@ -1390,7 +1421,6 @@ def test_adblock_icap_request_thread_closes_its_sqlite_connection(
     db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
     log_path = tmp_path / "cicap-access.log"
     db_stat = db_path.stat()
-    request_done = threading.Event()
 
     def open_db_descriptors() -> list[int]:
         descriptors: list[int] = []
@@ -1409,18 +1439,7 @@ def test_adblock_icap_request_thread_closes_its_sqlite_connection(
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
 
-    class _TrackedAdblockIcapServer(_AdblockIcapServer):
-        def process_request_thread(
-            self,
-            request: socket.socket,
-            client_address: tuple[str, int],
-        ) -> None:
-            try:
-                super().process_request_thread(request, client_address)
-            finally:
-                request_done.set()
-
-    server = _TrackedAdblockIcapServer(
+    server = _AdblockIcapServer(
         ("127.0.0.1", 0),
         engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
         access_log_path=str(log_path),
@@ -1432,21 +1451,23 @@ def test_adblock_icap_request_thread_closes_its_sqlite_connection(
     gc_was_enabled = gc.isenabled()
     gc.disable()
     try:
-        http = b"GET http://ads.example/banner.js HTTP/1.1\r\nHost: ads.example\r\n\r\n"
-        request = (
-            b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
-            b"Host: 127.0.0.1\r\n"
-            b"Connection: close\r\n"
-            b"Encapsulated: req-hdr=0, null-body="
-            + str(len(http)).encode("ascii")
-            + b"\r\n\r\n"
-            + http
-        )
-        response = _send_icap(port, request)
-
-        assert response.startswith(b"ICAP/1.0 200")
-        assert request_done.wait(timeout=2.0)
-        assert open_db_descriptors() == []
+        for index in range(3):
+            http = (
+                f"GET http://ads.example/banner{index}.js HTTP/1.1\r\n"
+                "Host: ads.example\r\n\r\n"
+            ).encode("ascii")
+            request = (
+                b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"Connection: close\r\n"
+                b"Encapsulated: req-hdr=0, null-body="
+                + str(len(http)).encode("ascii")
+                + b"\r\n\r\n"
+                + http
+            )
+            assert _send_icap(port, request).startswith(b"ICAP/1.0 200")
+            # Every ICAP connection is served from the same SQLite connection.
+            assert len(open_db_descriptors()) == 1
     finally:
         server.shutdown()
         server.server_close()
@@ -1454,6 +1475,7 @@ def test_adblock_icap_request_thread_closes_its_sqlite_connection(
         if gc_was_enabled:
             gc.enable()
         gc.collect()
+    assert open_db_descriptors() == []
 
 
 def test_adblock_icap_server_allows_connect_authority_requests(tmp_path: Path) -> None:
@@ -1591,7 +1613,6 @@ def test_adblock_icap_server_blocks_post_requests_with_preview_zero(
 ) -> None:
     db_path = _build_lookup_db(tmp_path, ["||ads.example^$method=post"])
     log_path = tmp_path / "cicap-access.log"
-    recorded_blocks: list[str] = []
 
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
@@ -1601,7 +1622,6 @@ def test_adblock_icap_server_blocks_post_requests_with_preview_zero(
         engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
         access_log_path=str(log_path),
         max_request_bytes=65536,
-        block_recorder=recorded_blocks.append,
     )
     port = int(server.server_address[1])
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1629,7 +1649,6 @@ def test_adblock_icap_server_blocks_post_requests_with_preview_zero(
         assert b"HTTP/1.1 403 Forbidden" in response
         log_text = log_path.read_text(encoding="utf-8")
         assert "POST http://ads.example/collect HTTP/1.1" in log_text
-        assert recorded_blocks == ["sample"]
     finally:
         server.shutdown()
         server.server_close()
@@ -1640,7 +1659,6 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
 ) -> None:
     db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
     log_path = tmp_path / "cicap-access.log"
-    recorded_blocks: list[str] = []
 
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
@@ -1652,7 +1670,6 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
         engine=engine,
         access_log_path=str(log_path),
         max_request_bytes=65536,
-        block_recorder=recorded_blocks.append,
     )
     port = int(server.server_address[1])
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1691,7 +1708,6 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
         assert "ads.example/banner.js" in log_text
         assert "\tsample\t" in log_text
         assert "\tblock\trule-match\n" in log_text
-        assert recorded_blocks == ["sample"]
     finally:
         server.shutdown()
         server.server_close()
@@ -2000,8 +2016,6 @@ def test_adblock_icap_unpreviewed_body_drain_rejects_malformed_framing(
     body: bytes,
 ) -> None:
     del case
-    from tools.adblock_icap_server import _drain_chunked_body
-
     assert (
         _drain_chunked_body(
             _ChunkedSocket([]),
@@ -2013,8 +2027,6 @@ def test_adblock_icap_unpreviewed_body_drain_rejects_malformed_framing(
 
 
 def test_adblock_icap_unpreviewed_body_drain_accepts_valid_framing() -> None:
-    from tools.adblock_icap_server import _drain_chunked_body
-
     assert (
         _drain_chunked_body(
             _ChunkedSocket([]),
@@ -2223,14 +2235,22 @@ if str(Path(__file__).resolve().parents[1]) not in sys.path:
 
 
 def test_domain_option_matches_bracketed_ipv6_source_literally() -> None:
-    from services.adblock_decision import _domain_matches, _host_suffix_set
+    from services.adblock_decision import (
+        _any_domain_matches,
+        _compiled_domain_test,
+        _host_suffix_set,
+    )
 
-    host = "[2001:db8::1]"
-    suffixes = _host_suffix_set(host)
+    def domain_matches(host: str, domain: str) -> bool:
+        test = _compiled_domain_test(domain)
+        return test is not None and _any_domain_matches(
+            host, _host_suffix_set(host), (test,)
+        )
+
     # fnmatch would read "[2001:db8::1]" as a one-character class.
-    assert _domain_matches(host, suffixes, "[2001:db8::1]") is True
-    assert _domain_matches("1", _host_suffix_set("1"), "[2001:db8::1]") is False
-    assert _domain_matches("ads.example", _host_suffix_set("ads.example"), "*.example")
+    assert domain_matches("[2001:db8::1]", "[2001:db8::1]") is True
+    assert domain_matches("1", "[2001:db8::1]") is False
+    assert domain_matches("ads.example", "*.example") is True
 
 
 def test_ubo_option_aliases_apply_and_unknown_options_discard_rules(
@@ -2312,7 +2332,7 @@ def test_icap_decision_cache_uses_artifact_admin_settings(
     # No published settings: built-in defaults.
     assert _decision_cache_settings(_parse_args(["--db", str(db_path)])) == (
         3600,
-        200000,
+        50000,
     )
 
     (tmp_path / "settings.json").write_text(
@@ -2339,7 +2359,7 @@ def test_icap_decision_cache_uses_artifact_admin_settings(
     monkeypatch.delenv("ADBLOCK_CACHE_TTL")
     assert _decision_cache_settings(_parse_args(["--db", str(db_path)])) == (
         3600,
-        200000,
+        50000,
     )
 
 
@@ -2389,3 +2409,296 @@ def test_icap_server_refuses_unsupported_lookup_schema_before_listening(
 
     with pytest.raises(AdblockLookupSchemaError, match="schema version 3"):
         adblock_icap_server.main(["--db", str(db_path), "--port", "0"])
+
+
+def test_rule_matcher_unmatchable_domain_include_still_restricts_scope() -> None:
+    from services.adblock_decision import AdblockDecisionEngine, _RuleMatcher
+
+    context = AdblockDecisionEngine._request_context(
+        "https://ads.example/x.js",
+        method="GET",
+        resource_type="script",
+        source_host="news.example",
+        third_party_hint=None,
+    )
+    assert context is not None
+    base = {"rule_id": "r1", "action": "block", "pattern_kind": "option_only"}
+
+    assert _RuleMatcher(base).matches(context) is True
+    # "." normalizes to nothing: the include can never match, so the rule is
+    # scoped to no source domain rather than to every source domain.
+    assert _RuleMatcher({**base, "domain_includes": ["."]}).matches(context) is False
+    assert (
+        _RuleMatcher({**base, "domain_includes": [".", "news.example"]}).matches(
+            context
+        )
+        is True
+    )
+    assert _RuleMatcher({**base, "domain_excludes": ["."]}).matches(context) is True
+    assert (
+        _RuleMatcher({**base, "domain_include_patterns": ["news.*"]}).matches(context)
+        is True
+    )
+    # Discarded and non-blocking options never match.
+    for extra in (
+        {"misc_options": ["unknown"]},
+        {"value_options": ["not", "a", "dict"]},
+        {"value_options": {"csp": "x"}},
+        {"behavior_options": ["badfilter"]},
+        {"value_options": {"method": []}},
+        {"value_options": {"method": ["trace"]}},
+    ):
+        assert _RuleMatcher({**base, **extra}).matches(context) is False
+
+
+@pytest.mark.parametrize(
+    "char",
+    ["\x00", "\x1f", " ", "\t", "\x7f", "\\", "\x85", "\xa0", "\u2028", "\u3000"],
+)
+def test_adblock_url_split_rejects_whitespace_controls_and_backslash(
+    char: str,
+) -> None:
+    from services.adblock_hosts import safe_adblock_urlsplit
+
+    assert safe_adblock_urlsplit(f"https://ads.example/a{char}b") is None
+    assert safe_adblock_urlsplit("https://ads.example/a\u00e9b") is not None
+
+
+def test_adblock_block_log_follows_truncation_removal_and_replacement(
+    tmp_path: Path,
+) -> None:
+    from tools.adblock_icap_server import _AppendLog
+
+    path = tmp_path / "logs" / "cicap-access.log"
+    log = _AppendLog(str(path))
+    try:
+        log.append(b"one\n")
+        log.append(b"two\n")
+        assert path.read_bytes() == b"one\ntwo\n"
+
+        # copytruncate rotation keeps the file: appends continue at its end.
+        path.write_bytes(b"")
+        log.append(b"three\n")
+        assert path.read_bytes() == b"three\n"
+
+        # A replaced file is reopened instead of writing to the old inode.
+        rotated = tmp_path / "logs" / "cicap-access.log.1"
+        path.rename(rotated)
+        path.write_bytes(b"")
+        log.append(b"four\n")
+        assert path.read_bytes() == b"four\n"
+        assert rotated.read_bytes() == b"three\n"
+
+        # A removed log (and directory) is recreated.
+        path.unlink()
+        rotated.unlink()
+        path.parent.rmdir()
+        log.append(b"five\n")
+        assert path.read_bytes() == b"five\n"
+    finally:
+        log.close()
+
+
+def _reqmod(url: str) -> bytes:
+    host = urlsplit(url).hostname or ""
+    http = f"GET {url} HTTP/1.1\r\nHost: {host}\r\n\r\n".encode("ascii")
+    return (
+        b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Encapsulated: req-hdr=0, null-body="
+        + str(len(http)).encode("ascii")
+        + b"\r\n\r\n"
+        + http
+    )
+
+
+def _recv_icap_head(sock: socket.socket) -> bytes:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def test_adblock_icap_server_serves_connection_bursts_and_stalled_peers(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools.adblock_icap_server import _AdblockIcapServer
+
+    server = _AdblockIcapServer(
+        ("127.0.0.1", 0),
+        engine=AdblockDecisionEngine(db_path),
+        access_log_path=str(tmp_path / "cicap-access.log"),
+        max_request_bytes=65536,
+        request_timeout_seconds=1.0,
+    )
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    sockets: list[socket.socket] = []
+    try:
+        # A peer that stops mid-message must not hold up anyone else.
+        stalled = socket.create_connection(("127.0.0.1", port), timeout=5.0)
+        sockets.append(stalled)
+        stalled_request = _reqmod("http://ads.example/stalled.js")
+        stalled.sendall(stalled_request[:40])
+
+        # A page-load burst: many connections opened and used at once (more
+        # than socketserver's default listen backlog of 5).
+        started = time.monotonic()
+        burst = [
+            socket.create_connection(("127.0.0.1", port), timeout=5.0)
+            for _ in range(64)
+        ]
+        sockets.extend(burst)
+        for index, sock in enumerate(burst):
+            sock.sendall(_reqmod(f"http://cdn{index}.example/app.js"))
+        for sock in burst:
+            assert _recv_icap_head(sock).startswith(b"ICAP/1.0 204")
+        assert time.monotonic() - started < 0.9
+
+        # Persistent connections keep working after the burst.
+        burst[0].sendall(_reqmod("http://ads.example/banner.js"))
+        assert _recv_icap_head(burst[0]).startswith(b"ICAP/1.0 200")
+
+        stalled.sendall(stalled_request[40:])
+        assert _recv_icap_head(stalled).startswith(b"ICAP/1.0 200")
+
+        # Idle persistent connections are Squid's to close: one idle well past
+        # the request timeout is still served (no reuse race).
+        time.sleep(1.5)
+        idle = burst[1]
+        idle.sendall(_reqmod("http://ads.example/after-idle.js"))
+        assert _recv_icap_head(idle).startswith(b"ICAP/1.0 200")
+
+        # A started message that stalls is still bounded by the timeout.
+        slow = socket.create_connection(("127.0.0.1", port), timeout=5.0)
+        sockets.append(slow)
+        slow.sendall(_reqmod("http://ads.example/slow.js")[:30])
+        started = time.monotonic()
+        while slow.recv(65536):
+            pass
+        assert time.monotonic() - started < 3.0
+    finally:
+        for sock in sockets:
+            sock.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2.0)
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def _start_helper_processes(
+    tmp_path: Path, db_path: Path, processes: int
+) -> tuple[subprocess.Popen[str], int, Path]:
+    port = _free_port()
+    log_path = tmp_path / "cicap-access.log"
+    script = Path(__file__).resolve().parents[1] / "tools" / "adblock_icap_server.py"
+    helper = subprocess.Popen(
+        [
+            sys.executable,
+            str(script),
+            "--port",
+            str(port),
+            "--db",
+            str(db_path),
+            "--access-log",
+            str(log_path),
+            "--processes",
+            str(processes),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    assert helper.stdout is not None
+    for _ in range(processes):
+        assert "listening on" in helper.stdout.readline()
+    return helper, port, log_path
+
+
+def _process_exits(pid: int, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+        except OSError:
+            return True
+        if "zombie" in status:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _worker_pids(parent_pid: int) -> list[int]:
+    children = Path(f"/proc/{parent_pid}/task/{parent_pid}/children")
+    return [int(pid) for pid in children.read_text(encoding="utf-8").split()]
+
+
+@pytest.mark.skipif(
+    not Path("/proc/self/task").is_dir(), reason="worker supervision proof needs procfs"
+)
+def test_adblock_icap_worker_processes_share_the_port_and_live_with_the_helper(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+    helper, port, log_path = _start_helper_processes(tmp_path, db_path, 3)
+    try:
+        workers = _worker_pids(helper.pid)
+        assert len(workers) == 2
+
+        # Connections spread over the workers; every one answers, and every
+        # blocked request leaves exactly one whole line in the shared log.
+        sockets = [
+            socket.create_connection(("127.0.0.1", port), timeout=5.0)
+            for _ in range(48)
+        ]
+        try:
+            for index, sock in enumerate(sockets):
+                sock.sendall(_reqmod(f"http://ads.example/{index}.js"))
+            for sock in sockets:
+                assert _recv_icap_head(sock).startswith(b"ICAP/1.0 200")
+        finally:
+            for sock in sockets:
+                sock.close()
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        assert sorted(line.split("\t")[7] for line in lines) == sorted(
+            f"http://ads.example/{index}.js" for index in range(48)
+        )
+
+        # A dead worker takes the helper down so supervisor restarts the set.
+        os.kill(workers[0], signal.SIGKILL)
+        assert helper.wait(timeout=5.0) == 1
+        # Its remaining worker follows its parent out.
+        assert _process_exits(workers[1])
+    finally:
+        if helper.poll() is None:
+            helper.kill()
+            helper.wait(timeout=5.0)
+
+
+@pytest.mark.skipif(
+    not Path("/proc/self/task").is_dir(), reason="worker supervision proof needs procfs"
+)
+def test_adblock_icap_workers_exit_when_the_helper_is_killed(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+    helper, _port, _log_path = _start_helper_processes(tmp_path, db_path, 2)
+    try:
+        [worker] = _worker_pids(helper.pid)
+        os.kill(helper.pid, signal.SIGKILL)
+        helper.wait(timeout=5.0)
+        assert _process_exits(worker)
+    finally:
+        if helper.poll() is None:
+            helper.kill()
+            helper.wait(timeout=5.0)
