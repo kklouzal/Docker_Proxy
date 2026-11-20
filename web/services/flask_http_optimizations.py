@@ -84,7 +84,6 @@ def install_http_optimizations(
     app: Any,
     *,
     static_max_age_seconds: int = 31536000,
-    default_dynamic_max_age_seconds: int = 0,
     compress_min_size: int = 1024,
     compresslevel: int = 5,
 ) -> None:
@@ -108,21 +107,15 @@ def install_http_optimizations(
         elif endpoint == "static":
             # A missing asset must not be pinned in caches for a year.
             response.headers["Cache-Control"] = "no-store"
-        elif default_dynamic_max_age_seconds <= 0:
-            if (
-                request.method in {"GET", "HEAD"}
-                and (request.headers.get("X-Requested-With") or "").lower() == "spa"
-            ):
-                response.headers.setdefault("Cache-Control", "no-store, private")
-            else:
-                response.headers.setdefault(
-                    "Cache-Control",
-                    "no-store" if request.method not in {"GET", "HEAD"} else "no-cache",
-                )
+        elif (
+            request.method in {"GET", "HEAD"}
+            and (request.headers.get("X-Requested-With") or "").lower() == "spa"
+        ):
+            response.headers.setdefault("Cache-Control", "no-store, private")
         else:
             response.headers.setdefault(
                 "Cache-Control",
-                f"private, max-age={int(default_dynamic_max_age_seconds)}",
+                "no-store" if request.method not in {"GET", "HEAD"} else "no-cache",
             )
 
         if compression_enabled:
