@@ -328,6 +328,7 @@ can lower, but never raise, that scheduled-housekeeping bound.
 
 - Template-backed Squid configuration editor with structured controls and raw config access.
 - Tunable caching baseline using Squid `rock` storage, bounded memory/disk cache settings, conservative refresh semantics, explicit timeout/network/DNS knobs, and SMP-aware worker sizing.
+- Cookie-bearing requests use the shared cache only for static asset URLs (the file extension must end the URL path, not the query), and a reply to such a request is stored only when the origin marks it `public`, `immutable` or `s-maxage>0` and it sets no cookie, is not `private`/`no-store`/`no-cache`, and is not an HTML/JSON/XML document; refresh_pattern overrides do not relax these reply checks. `Authorization`-bearing requests are never cached. Objects stored from cookieless requests are served to cookie-bearing requests for the same static URL. Revisions that still carry the old blanket `cache deny has_cookie` line are migrated to these rules on apply; write `cache deny has_cookie all` to keep cookie-bearing traffic out of the cache.
 - Config revisions stored in MySQL with audit trails.
 - Proxy-side validation, apply, reload, and last-known-good rollback.
 - Cache clear and manual synchronization actions scoped to the selected proxy.

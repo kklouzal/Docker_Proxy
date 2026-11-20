@@ -104,6 +104,7 @@ def test_cookie_static_url_set_excludes_documents_and_api_types() -> None:
         "/a.woff2",
         "/b.css",
         "/c.js?v=3",
+        "/c.js?u=a.b",
         "/d.mjs",
         "/e.wasm",
         "/f.SVG",
@@ -121,6 +122,9 @@ def test_cookie_static_url_set_excludes_documents_and_api_types() -> None:
         "/statement.pdf",
         "/report.xlsx",
         "/x.js/more",
+        # Only the path names the asset: query values are the script's input.
+        "/download.php?file=report.zip",
+        "/api/user?callback=x.js",
     ):
         assert not regex.search(path), path
 

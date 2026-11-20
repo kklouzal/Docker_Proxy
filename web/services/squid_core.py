@@ -60,8 +60,9 @@ _TLS_SESSION_CACHE_SIZE_RE = re.compile(
 _ADBLOCK_ICAP_METHODS = "GET HEAD POST OPTIONS PUT PATCH DELETE"
 
 
-# Cookie-bearing requests may use the shared cache only for static asset URLs,
-# and their replies are stored only when the origin marked them shareable.
+# Cookie-bearing requests may use the shared cache only for static asset URLs
+# (the extension must end the path: urlpath_regex also sees the query, and
+# scripts such as `download.php?file=a.zip` serve per-user files), and their replies are stored only when the origin marked them shareable.
 # Requires `acl has_cookie` to be defined first. Squid checks `cache` before the
 # reply exists, so the reply conditions go to `store_miss` (fast ACLs with the
 # reply). A denied reply also becomes unshareable for collapsed requests, which
@@ -72,7 +73,7 @@ _ADBLOCK_ICAP_METHODS = "GET HEAD POST OPTIONS PUT PATCH DELETE"
 # ignore-no-store. "cookie" logs a request-level bypass; "cookie-reply" logs a
 # static miss whose reply was refused (not hits from the existing cache).
 COOKIE_STATIC_CACHE_RULES = r"""# Cache cookie-bearing requests only for static assets the origin marked shareable.
-acl cookie_static_url urlpath_regex -i \.(woff2?|ttf|otf|eot|css|js|mjs|map|wasm|avif|jxl|heic|heif|png|jpe?g|gif|webp|bmp|ico|svgz?|tiff?|mp4|m4v|mkv|flv|mov|avi|mpeg|mpg|webm|mp3|m4a|wav|ogg|oga|opus|flac|aac|iso|img|dmg|bin|exe|msi|msu|msp|cab|deb|rpm|apk|appx|appxbundle|msix|msixbundle|ipa|pkg|run|rar|jar|war|ear|gz|tgz|tar|bz2|tbz2|xz|txz|zst|zip|7z)(\?.*)?$
+acl cookie_static_url urlpath_regex -i ^[^?]*\.(woff2?|ttf|otf|eot|css|js|mjs|map|wasm|avif|jxl|heic|heif|png|jpe?g|gif|webp|bmp|ico|svgz?|tiff?|mp4|m4v|mkv|flv|mov|avi|mpeg|mpg|webm|mp3|m4a|wav|ogg|oga|opus|flac|aac|iso|img|dmg|bin|exe|msi|msu|msp|cab|deb|rpm|apk|appx|appxbundle|msix|msixbundle|ipa|pkg|run|rar|jar|war|ear|gz|tgz|tar|bz2|tbz2|xz|txz|zst|zip|7z)(\?.*)?$
 acl cookie_reply_sets_cookie rep_header Set-Cookie .
 acl cookie_reply_private rep_header Cache-Control -i (^|[,[:space:]])(private|no-store|no-cache)([=,[:space:]]|$)
 acl cookie_reply_shared rep_header Cache-Control -i (^|[,[:space:]])(public|immutable|s-maxage=0*[1-9][0-9]*)([,[:space:]]|$)

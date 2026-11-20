@@ -1147,7 +1147,12 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         ),
         _posted_multiline_reader("cache_policy_rules_text"),
         rows=14,
-        help_text="Multi-line ACL block for cache, send_hit, and store_miss policy.",
+        help_text=(
+            "Multi-line ACL block for cache, send_hit, and store_miss policy. "
+            "A bare `cache deny has_cookie` line is the pre-2026-11 default and is "
+            "replaced by the static-asset cookie rules on apply; to keep every "
+            "cookie-bearing request out of the cache, write `cache deny has_cookie all`."
+        ),
     ),
     _field(
         "refresh_patterns_text",
