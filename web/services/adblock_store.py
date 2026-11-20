@@ -901,16 +901,11 @@ class AdblockStore:
         return data if isinstance(data, dict) else {}
 
     def get_cache_flush_requested(self) -> int:
+        # Read failures propagate so the sync retries later instead of
+        # treating a pending operator flush request as absent.
         with self._connect() as conn:
-            try:
-                raw_requested = self._get_proxy_meta(
-                    conn,
-                    "cache_flush_requested",
-                    "0",
-                )
-                return int(raw_requested or 0)
-            except Exception:
-                return 0
+            raw_requested = self._get_proxy_meta(conn, "cache_flush_requested", "0")
+        return int(raw_requested or 0)
 
     def list_statuses(self) -> list[ListStatus]:
         with self._connect() as conn:

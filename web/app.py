@@ -186,12 +186,17 @@ from services.saml_auth import (
     build_sp_info,
     build_sp_metadata,
     get_saml_auth_store,
+    metadata_usable_until,
     profile_metadata_cache_ready,
     profile_metadata_ready,
     resolve_saml_login,
     saml_assertion_use,
     saml_policy_fingerprint,
     saml_response_authenticated,
+)
+from services.saml_metadata_refresh import (
+    start_saml_metadata_refresh,
+    stop_saml_metadata_refresh,
 )
 from services.schema_lifecycle import ensure_startup_schema_if_configured
 from services.short_lived_cache import KeyedSingleFlight
@@ -4165,13 +4170,23 @@ def _stop_webfilter_background() -> bool:
     return get_webfilter_store().stop_background()
 
 
+def _start_saml_metadata_refresh_background() -> None:
+    start_saml_metadata_refresh(lambda: _saml_auth_store)
+
+
 _background_coordinator = BackgroundServiceCoordinator(
     (
         _start_adblock_background,
         _start_webfilter_background,
         _start_housekeeping_background,
+        _start_saml_metadata_refresh_background,
     ),
-    (_stop_adblock_background, _stop_webfilter_background, stop_housekeeping),
+    (
+        _stop_adblock_background,
+        _stop_webfilter_background,
+        stop_housekeeping,
+        stop_saml_metadata_refresh,
+    ),
 )
 atexit.register(_background_coordinator.stop)
 
@@ -6488,6 +6503,15 @@ def _saml_admin_status() -> dict[str, Any]:
         "profile": profile,
         "ready": ready,
         "metadata_ready": profile_metadata_cache_ready(profile),
+        "metadata_usable_until_ts": (
+            metadata_usable_until(
+                fetched_ts=profile.fetched_ts,
+                cache_expires_ts=profile.cache_expires_ts,
+                valid_until_ts=profile.valid_until_ts,
+            )
+            if profile.has_metadata
+            else 0
+        ),
         "sp": sp_info,
         "idp_entity_id": profile.entity_id,
         "signing_certs": metadata.get("signing_certs") or [],

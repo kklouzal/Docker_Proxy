@@ -31,7 +31,7 @@ from services.sql_identifiers import (
     quote_mysql_identifier,
 )
 
-_SCHEMA_VERSION = 37
+_SCHEMA_VERSION = 38
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _CONTROL_PLANE_ID_RE = re.compile(
@@ -1005,7 +1005,9 @@ def _init_saml_auth_schema(conn: Any) -> None:
                         username_attribute VARCHAR(255) NOT NULL DEFAULT 'NameID',
                         groups_attribute VARCHAR(255) NOT NULL DEFAULT 'groups',
                         required_group TEXT NOT NULL,
-                        updated_ts BIGINT NOT NULL
+                        updated_ts BIGINT NOT NULL,
+                        refresh_failures INT NOT NULL DEFAULT 0,
+                        next_refresh_ts BIGINT NOT NULL DEFAULT 0
                     )
                     """,
                 ),
@@ -1836,6 +1838,22 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                     "saml_assertion_replay",
                     "idx_saml_assertion_replay_expires",
                     "ALTER TABLE saml_assertion_replay ADD INDEX idx_saml_assertion_replay_expires (expires_ts)",
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=38,
+            name="saml_metadata_refresh_schedule",
+            columns=(
+                SchemaColumnSpec(
+                    "saml_auth_profiles",
+                    "refresh_failures",
+                    "ALTER TABLE saml_auth_profiles ADD COLUMN refresh_failures INT NOT NULL DEFAULT 0 AFTER updated_ts",
+                ),
+                SchemaColumnSpec(
+                    "saml_auth_profiles",
+                    "next_refresh_ts",
+                    "ALTER TABLE saml_auth_profiles ADD COLUMN next_refresh_ts BIGINT NOT NULL DEFAULT 0 AFTER refresh_failures",
                 ),
             ),
         ),

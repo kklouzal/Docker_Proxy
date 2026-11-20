@@ -673,14 +673,12 @@ class WebFilterStoreBase:
             )
 
         lines: list[str] = []
-        exceptions = []
-        if get_policy_request_store is not None:
-            try:
-                exceptions = get_policy_request_store().active_webfilter_exceptions(
-                    proxy_id=get_proxy_id(),
-                )
-            except Exception:
-                exceptions = []
+        # A failed exception read propagates: rendering without exceptions would
+        # silently revoke approved access, so the apply fails and the proxy keeps
+        # its last-known-good policy instead.
+        exceptions = get_policy_request_store().active_webfilter_exceptions(
+            proxy_id=get_proxy_id(),
+        )
         selected_categories = set(selected)
         enforced_exceptions = []
         for exception in exceptions:
