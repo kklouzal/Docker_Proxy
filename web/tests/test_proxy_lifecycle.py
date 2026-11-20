@@ -404,3 +404,37 @@ def test_bounded_lifecycle_probes_for_rows_before_reporting_truncation(
     assert exact_remove.truncated is False
     assert over_limit_remove.affected_rows == 2
     assert over_limit_remove.truncated is True
+
+
+def test_leftover_scan_inside_rename_transaction_issues_no_index_ddl(
+    monkeypatch,
+) -> None:
+    lifecycle = _proxy_lifecycle()
+
+    class _LeftoverConn(_LifecycleConn):
+        def execute(self, sql, params=()):
+            text = " ".join(str(sql).split())
+            if text.startswith("SELECT 1 FROM "):
+                self.statements.append(text)
+                rows = [(1,)] if "`proxy_leftover_rows`" in text else []
+                return _Result(rows)
+            return super().execute(sql, params)
+
+    conn = _LeftoverConn(("proxy_leftover_rows", "proxy_unprepared_rows"))
+    monkeypatch.setattr(
+        lifecycle,
+        "_table_exists",
+        lambda _conn, name: name in {"proxy_leftover_rows", "proxy_unprepared_rows"},
+    )
+    # Even with an index missing, the scan runs after the rename row locks and
+    # must not issue DDL (MySQL would implicitly commit the transaction).
+    monkeypatch.setattr(
+        lifecycle, "_index_with_leftmost_column_exists", lambda *_args: False
+    )
+
+    leftover = lifecycle.proxy_scoped_tables_with_rows(conn, proxy_id="edge-old")
+
+    assert leftover == ("proxy_leftover_rows",)
+    assert not any(
+        statement.startswith("ALTER TABLE ") for statement in conn.statements
+    )

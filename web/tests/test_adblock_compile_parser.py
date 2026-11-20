@@ -4,7 +4,6 @@ import json
 import re
 import sqlite3
 import sys
-from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -17,47 +16,6 @@ def _compile_sample(tmp_path: Path, lines: list[str]) -> Path:
     out = tmp_path / "compiled"
     out.mkdir()
 
-    class Writers:
-        pass
-
-    paths = {
-        "network_jsonl": out / "network_rules.jsonl",
-        "cosmetic_jsonl": out / "cosmetic_rules.jsonl",
-        "network_no_options_jsonl": out / "network_no_options.jsonl",
-        "network_with_options_jsonl": out / "network_with_options.jsonl",
-        "network_option_domain_jsonl": out / "network_option_domain.jsonl",
-        "network_option_third_party_jsonl": out / "network_option_third_party.jsonl",
-        "network_option_type_jsonl": out / "network_option_type.jsonl",
-        "network_option_misc_jsonl": out / "network_option_misc.jsonl",
-        "network_kind_domain_only_jsonl": out / "network_kind_domain_only.jsonl",
-        "network_kind_host_anchored_jsonl": out / "network_kind_host_anchored.jsonl",
-        "network_kind_left_anchored_jsonl": out / "network_kind_left_anchored.jsonl",
-        "network_kind_substring_jsonl": out / "network_kind_substring.jsonl",
-        "network_kind_wildcard_jsonl": out / "network_kind_wildcard.jsonl",
-        "network_kind_regex_jsonl": out / "network_kind_regex.jsonl",
-        "network_block_jsonl": out / "network_block.jsonl",
-        "network_exception_jsonl": out / "network_exception.jsonl",
-        "request_index_domain_jsonl": out / "request_index_domain.jsonl",
-        "request_index_host_jsonl": out / "request_index_host.jsonl",
-        "request_index_regex_jsonl": out / "request_index_regex.jsonl",
-        "request_index_generic_jsonl": out / "request_index_generic.jsonl",
-        "cosmetic_elemhide_jsonl": out / "cosmetic_elemhide.jsonl",
-        "cosmetic_elemhide_exception_jsonl": out / "cosmetic_elemhide_exception.jsonl",
-        "cosmetic_extended_css_jsonl": out / "cosmetic_extended_css.jsonl",
-        "cosmetic_extended_css_exception_jsonl": out
-        / "cosmetic_extended_css_exception.jsonl",
-        "cosmetic_html_filter_jsonl": out / "cosmetic_html_filter.jsonl",
-        "cosmetic_html_filter_exception_jsonl": out
-        / "cosmetic_html_filter_exception.jsonl",
-        "cosmetic_scriptlet_jsonl": out / "cosmetic_scriptlet.jsonl",
-        "cosmetic_scriptlet_exception_jsonl": out
-        / "cosmetic_scriptlet_exception.jsonl",
-        "cosmetic_scoped_jsonl": out / "cosmetic_scoped.jsonl",
-        "cosmetic_global_jsonl": out / "cosmetic_global.jsonl",
-        "cosmetic_exception_jsonl": out / "cosmetic_exception.jsonl",
-        "cosmetic_non_exception_jsonl": out / "cosmetic_non_exception.jsonl",
-    }
-
     agg = ac._Aggregate(
         network_rules_total=0,
         network_rules_by_kind={},
@@ -69,43 +27,42 @@ def _compile_sample(tmp_path: Path, lines: list[str]) -> Path:
         option_group_counts={},
     )
 
-    with ExitStack() as stack:
-        writers = Writers()
-        for name, path in paths.items():
-            setattr(
-                writers,
-                name,
-                stack.enter_context(path.open("w", encoding="utf-8", newline="\n")),
-            )
-        writers.network_type_pos_jsonl = {
-            item: stack.enter_context(
-                (out / f"network_type_{item}.jsonl").open(
-                    "w",
-                    encoding="utf-8",
-                    newline="\n",
-                ),
-            )
-            for item in ac._KNOWN_TYPES
-        }
-        writers.network_type_neg_jsonl = {
-            item: stack.enter_context(
-                (out / f"network_type_not_{item}.jsonl").open(
-                    "w",
-                    encoding="utf-8",
-                    newline="\n",
-                ),
-            )
-            for item in ac._KNOWN_TYPES
-        }
-
+    with (out / "network_rules.jsonl").open(
+        "w", encoding="utf-8", newline="\n"
+    ) as network_jsonl:
         ac._compile_and_extract_all(
             lines=lines,
             list_key="sample",
             agg=agg,
-            writers=writers,
+            network_jsonl=network_jsonl,
         )
 
     return out
+
+
+_HOST_KINDS = (
+    "absolute_url",
+    "absolute_url_pattern",
+    "host_anchored",
+    "host_anchored_pattern",
+)
+
+
+def _rules_of_kind(out: Path, *kinds: str) -> list[dict[str, Any]]:
+    return [
+        rule
+        for rule in _read_jsonl(out / "network_rules.jsonl")
+        if rule["pattern_kind"] in kinds
+    ]
+
+
+def _generic_rules(out: Path) -> list[dict[str, Any]]:
+    indexed = {"domain_only", "regex", "empty", *_HOST_KINDS}
+    return [
+        rule
+        for rule in _read_jsonl(out / "network_rules.jsonl")
+        if rule["pattern_kind"] not in indexed
+    ]
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -143,10 +100,8 @@ def test_main_compiles_explicit_enabled_lists_without_database_state(
     assert rc == 0
     report = json.loads((out / "report.json").read_text(encoding="utf-8"))
     assert report["enabled_lists"] == ["easylist"]
-    assert "ads.example" in (out / "request_index_domain.jsonl").read_text(
-        encoding="utf-8"
-    )
-    assert "disabled.example" not in (out / "request_index_domain.jsonl").read_text(
+    assert "ads.example" in (out / "network_rules.jsonl").read_text(encoding="utf-8")
+    assert "disabled.example" not in (out / "network_rules.jsonl").read_text(
         encoding="utf-8"
     )
 
@@ -179,7 +134,7 @@ def test_script_entrypoint_compiles_explicit_enabled_lists_without_pythonpath(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "script-entry.example" in (out / "request_index_domain.jsonl").read_text(
+    assert "script-entry.example" in (out / "network_rules.jsonl").read_text(
         encoding="utf-8"
     )
 
@@ -262,7 +217,7 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
         ],
     )
 
-    regex_rules = _read_jsonl(out / "request_index_regex.jsonl")
+    regex_rules = _rules_of_kind(out, "regex")
     assert len(regex_rules) == 1
     regex_rule = regex_rules[0]
     assert regex_rule["pattern_kind"] == "regex"
@@ -271,7 +226,7 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
     assert regex_rule["domain_excludes"] == ["amazon.com"]
     assert "/$script" not in regex_rule["options"]
 
-    host_rules = _read_jsonl(out / "request_index_host.jsonl")
+    host_rules = _rules_of_kind(out, *_HOST_KINDS)
     by_host = {rule["host"]: rule for rule in host_rules}
     assert by_host["example.com"]["suffix"] == "/ad/path|"
     assert by_host["example.com"]["suffix_right_anchored"] is True
@@ -302,13 +257,13 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
     assert absolute_patterns[0]["resource_types"] == ["websocket"]
     assert absolute_patterns[0]["third_party"] == "only"
 
-    domain_rules = _read_jsonl(out / "request_index_domain.jsonl")
+    domain_rules = _rules_of_kind(out, "domain_only")
     assert any(
         rule["host"] == "ads.example" and rule["third_party"] == "only"
         for rule in domain_rules
     )
 
-    generic_rules = _read_jsonl(out / "request_index_generic.jsonl")
+    generic_rules = _generic_rules(out)
     assert {rule["pattern_kind"] for rule in generic_rules} == {
         "right_anchored",
         "substring",
@@ -403,7 +358,9 @@ def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> 
         conn.close()
 
 
-def test_request_indexes_skip_rules_disabled_by_badfilter(tmp_path: Path) -> None:
+def test_request_lookup_skips_rules_disabled_by_badfilter(tmp_path: Path) -> None:
+    from tools import adblock_compile as ac  # type: ignore
+
     out = _compile_sample(
         tmp_path,
         [
@@ -415,10 +372,6 @@ def test_request_indexes_skip_rules_disabled_by_badfilter(tmp_path: Path) -> Non
         ],
     )
 
-    assert _read_jsonl(out / "request_index_generic.jsonl") == []
-    domain_rules = _read_jsonl(out / "request_index_domain.jsonl")
-    assert [rule["raw"] for rule in domain_rules] == ["||kept.example^"]
-
     network_rules = _read_jsonl(out / "network_rules.jsonl")
     assert {rule["raw"] for rule in network_rules} == {
         "badfilter-target",
@@ -427,6 +380,15 @@ def test_request_indexes_skip_rules_disabled_by_badfilter(tmp_path: Path) -> Non
         "@@||allow.example^$badfilter",
         "||kept.example^",
     }
+
+    db_path = out / "request_lookup.sqlite"
+    ac._write_request_lookup_index(str(db_path), str(out / "network_rules.jsonl"))
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute("SELECT raw FROM rules").fetchall()
+    finally:
+        conn.close()
+    assert [row[0] for row in rows] == ["||kept.example^"]
 
 
 def test_parser_preserves_option_only_and_csp_rules(tmp_path: Path) -> None:
@@ -438,7 +400,7 @@ def test_parser_preserves_option_only_and_csp_rules(tmp_path: Path) -> None:
         ],
     )
 
-    generic_rules = _read_jsonl(out / "request_index_generic.jsonl")
+    generic_rules = _generic_rules(out)
     by_option = {rule["options_raw"].split("=", 1)[0]: rule for rule in generic_rules}
 
     popup_rule = by_option["popup,third-party,domain"]
@@ -454,7 +416,6 @@ def test_parser_preserves_option_only_and_csp_rules(tmp_path: Path) -> None:
     assert csp_rule["options"]["csp"].endswith("'unsafe-eval'")
     assert csp_rule["domain_includes"] == ["thumbs.pro"]
     assert csp_rule["misc_options"] == {}
-    assert _read_jsonl(out / "network_option_misc.jsonl") == []
 
 
 def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
@@ -473,7 +434,7 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
         ],
     )
 
-    host_rules = _read_jsonl(out / "request_index_host.jsonl")
+    host_rules = _rules_of_kind(out, *_HOST_KINDS)
     by_raw = {rule["raw"]: rule for rule in host_rules}
 
     wildcard = by_raw["||google.*/pagead/lvz?$script"]
@@ -498,7 +459,7 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
     assert exception["host_pattern"] == "sourcepointcmp.bloomberg.*"
     assert exception["domain_includes"] == ["bloomberg.co.jp", "bloomberg.com"]
 
-    domain_rules = _read_jsonl(out / "request_index_domain.jsonl")
+    domain_rules = _rules_of_kind(out, "domain_only")
     domain_by_raw = {rule["raw"]: rule for rule in domain_rules}
 
     unspecified_ipv6 = domain_by_raw["||[::]^$third-party,domain=~[::1]|~localhost"]
@@ -537,43 +498,55 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
     assert duplicated_domain["domain_includes"] == ["fortune.com", "hsl.fi"]
 
 
-def test_cosmetic_parser_splits_scriptlets_and_html_filters(tmp_path: Path) -> None:
-    out = _compile_sample(
-        tmp_path,
+def test_cosmetic_rules_are_counted_by_marker_without_network_rules(
+    tmp_path: Path,
+) -> None:
+    from tools import adblock_compile as ac  # type: ignore
+
+    lists = tmp_path / "lists"
+    out = tmp_path / "compiled"
+    lists.mkdir()
+    lines = [
+        "madewell.com##+js(cookie-remover, dns_cookie)",
+        "example.com#@#+js(set, foo, noopFunc)",
+        'history.com#?#[data-sentry-component="Box"]:has-text(Privacy)',
+        "example.com#@?#.notice:has-text(Privacy)",
+        "podleze-piekielko.pl#$#abort-on-property-read cookieman",
+        "example.com#@$#abort-on-property-read cookieman",
+        "plain.example##.ad-unit",
+        "||ads.example^",
+    ]
+    (lists / "easylist.txt").write_text(
+        "".join(f"{line}\n" for line in lines),
+        encoding="utf-8",
+    )
+
+    rc = ac.main(
         [
-            "madewell.com##+js(cookie-remover, dns_cookie)",
-            "example.com#@#+js(set, foo, noopFunc)",
-            'history.com#?#[data-sentry-component="Box"]:has-text(Privacy)',
-            "example.com#@?#.notice:has-text(Privacy)",
-            "podleze-piekielko.pl#$#abort-on-property-read cookieman",
-            "example.com#@$#abort-on-property-read cookieman",
-            "plain.example##.ad-unit",
+            "--lists-dir",
+            str(lists),
+            "--out-dir",
+            str(out),
+            "--enabled-list",
+            "easylist",
         ],
     )
 
-    scriptlets = _read_jsonl(out / "cosmetic_scriptlet.jsonl")
-    assert scriptlets[0]["kind"] == "scriptlet"
-    assert scriptlets[0]["marker"] == "##"
-    assert scriptlets[0]["selector"].startswith("+js(")
-
-    scriptlet_exceptions = _read_jsonl(out / "cosmetic_scriptlet_exception.jsonl")
-    assert scriptlet_exceptions[0]["kind"] == "scriptlet_exception"
-    assert scriptlet_exceptions[0]["exception"] is True
-
-    extended_css = _read_jsonl(out / "cosmetic_extended_css.jsonl")
-    assert extended_css[0]["kind"] == "extended_css"
-    extended_css_exceptions = _read_jsonl(out / "cosmetic_extended_css_exception.jsonl")
-    assert extended_css_exceptions[0]["kind"] == "extended_css_exception"
-    assert extended_css_exceptions[0]["exception"] is True
-
-    html_filters = _read_jsonl(out / "cosmetic_html_filter.jsonl")
-    assert html_filters[0]["kind"] == "html_filter"
-    html_filter_exceptions = _read_jsonl(out / "cosmetic_html_filter_exception.jsonl")
-    assert html_filter_exceptions[0]["kind"] == "html_filter_exception"
-    assert html_filter_exceptions[0]["exception"] is True
-
-    elemhide = _read_jsonl(out / "cosmetic_elemhide.jsonl")
-    assert elemhide[0]["kind"] == "elemhide"
+    assert rc == 0
+    report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+    assert report["counts"]["cosmetic_rules_total"] == 7
+    assert report["breakdowns"]["cosmetic_by_marker"] == {
+        "##": 2,
+        "#$#": 1,
+        "#?#": 1,
+        "#@#": 1,
+        "#@$#": 1,
+        "#@?#": 1,
+    }
+    assert report["files"] == {"request_lookup_sqlite": "request_lookup.sqlite"}
+    assert [rule["raw"] for rule in _read_jsonl(out / "network_rules.jsonl")] == [
+        "||ads.example^",
+    ]
 
 
 def test_identical_inputs_compile_to_identical_artifact_digest(tmp_path: Path) -> None:

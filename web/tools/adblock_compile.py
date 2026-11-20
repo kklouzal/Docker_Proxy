@@ -9,7 +9,7 @@ import pathlib
 import re
 import sqlite3
 import sys
-from contextlib import ExitStack, suppress
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -46,58 +46,6 @@ if TYPE_CHECKING:
 
 
 _COSMETIC_MARKERS = ("#@?#", "#@$#", "#@%#", "#@#", "#?#", "#$#", "#%#", "##")
-
-
-@dataclass
-class _RuleWriters:
-    network_jsonl: Any
-    cosmetic_jsonl: Any
-
-    # Network buckets
-    network_no_options_jsonl: Any
-    network_with_options_jsonl: Any
-    network_option_domain_jsonl: Any
-    network_option_third_party_jsonl: Any
-    network_option_type_jsonl: Any
-    network_option_misc_jsonl: Any
-
-    network_kind_domain_only_jsonl: Any
-    network_kind_host_anchored_jsonl: Any
-    network_kind_left_anchored_jsonl: Any
-    network_kind_substring_jsonl: Any
-    network_kind_wildcard_jsonl: Any
-    network_kind_regex_jsonl: Any
-
-    # Network split by exception flag
-    network_block_jsonl: Any
-    network_exception_jsonl: Any
-
-    # Request-time index families. These are still line-oriented artifacts so
-    # downstream runtimes can load only the index families they need.
-    request_index_domain_jsonl: Any
-    request_index_host_jsonl: Any
-    request_index_regex_jsonl: Any
-    request_index_generic_jsonl: Any
-
-    # Network split by resource-type options (e.g., $script / $~script)
-    network_type_pos_jsonl: dict[str, Any]
-    network_type_neg_jsonl: dict[str, Any]
-
-    # Cosmetic sub-buckets
-    cosmetic_elemhide_jsonl: Any
-    cosmetic_elemhide_exception_jsonl: Any
-    cosmetic_extended_css_jsonl: Any
-    cosmetic_extended_css_exception_jsonl: Any
-    cosmetic_html_filter_jsonl: Any
-    cosmetic_html_filter_exception_jsonl: Any
-    cosmetic_scriptlet_jsonl: Any
-    cosmetic_scriptlet_exception_jsonl: Any
-
-    # Cosmetic splits
-    cosmetic_scoped_jsonl: Any
-    cosmetic_global_jsonl: Any
-    cosmetic_exception_jsonl: Any
-    cosmetic_non_exception_jsonl: Any
 
 
 @dataclass
@@ -670,96 +618,22 @@ def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
     return "substring", {"substring": p}
 
 
-def _parse_cosmetic(rule: str) -> dict[str, Any] | None:
-    s = (rule or "").strip()
-    if not s:
-        return None
-    for marker in _COSMETIC_MARKERS:
-        if marker not in s:
-            continue
-        left, right = s.split(marker, 1)
-        left = left.strip()
-        right = right.strip()
-
-        # Domain prefix can be empty or comma-separated.
-        domains: list[str] = []
-        if left:
-            domains = [
-                d.strip().lower().lstrip(".") for d in left.split(",") if d.strip()
-            ]
-
-        kind = "cosmetic"
-        if marker == "##":
-            kind = "scriptlet" if right.startswith("+js(") else "elemhide"
-        elif marker == "#@#":
-            kind = (
-                "scriptlet_exception"
-                if right.startswith("+js(")
-                else "elemhide_exception"
-            )
-        elif marker == "#?#":
-            kind = "extended_css"
-        elif marker == "#@?#":
-            kind = "extended_css_exception"
-        elif marker == "#$#":
-            kind = "html_filter"
-        elif marker == "#@$#":
-            kind = "html_filter_exception"
-        elif marker == "#%#":
-            kind = "scriptlet"
-        elif marker == "#@%#":
-            kind = "scriptlet_exception"
-
-        return {
-            "kind": kind,
-            "marker": marker,
-            "domains": domains,
-            "selector": right,
-        }
-    return None
-
-
 def _compile_and_extract_all(
     *,
     lines: Iterable[str],
     list_key: str,
     agg: _Aggregate,
-    writers: _RuleWriters,
+    network_jsonl: Any,
 ) -> dict[str, int]:
-    # Single pass over a list file that:
-    #  - extracts every parsed rule into JSONL buckets
-    #  - feeds the SQLite request lookup used by the runtime ICAP helper
-    # We build counts manually to avoid re-reading.
+    # Single pass over a list file that counts every rule for the report and
+    # writes each normalized network rule to the JSONL stream that feeds the
+    # SQLite request lookup used by the runtime ICAP helper.
     cosmetic = comments = empty = network_other = 0
     total = 0
     network_total = 0
     network_with_opts = 0
 
-    source_lines = list(lines)
-    disabled_by_badfilter: set[tuple[str, str, str]] = set()
-    for raw in source_lines:
-        s = (raw or "").strip()
-        if not s or _is_comment_or_header(s) or _is_cosmetic(s):
-            continue
-        is_exception = False
-        if s.startswith("@@"):
-            is_exception = True
-            s = s[2:].strip()
-        pattern, opts = _split_options(s)
-        _, opt_parsed = _parse_options(opts)
-        if "badfilter" not in opt_parsed:
-            continue
-        disabled_by_badfilter.add(
-            _badfilter_disable_key(
-                {
-                    "action": "allow" if is_exception else "block",
-                    "pattern": pattern,
-                    "options": opt_parsed,
-                },
-            ),
-        )
-
-    for raw in source_lines:
+    for raw in lines:
         total += 1
         s = (raw or "").strip()
         if not s:
@@ -769,78 +643,15 @@ def _compile_and_extract_all(
             comments += 1
             continue
 
-        # Cosmetic rules (keep the old counter behavior).
+        # Cosmetic rules are counted for the report; the request-time
+        # lookup only consumes network rules.
         if _is_cosmetic(s):
             cosmetic += 1
-            parsed = _parse_cosmetic(s)
-            if parsed is not None:
-                is_cosmetic_exception = parsed.get("kind") in {
-                    "elemhide_exception",
-                    "extended_css_exception",
-                    "html_filter_exception",
-                    "scriptlet_exception",
-                }
-                parsed["exception"] = bool(is_cosmetic_exception)
-                parsed["id"] = _rule_id(
-                    list_key,
-                    s,
-                    exception=bool(is_cosmetic_exception),
-                )
-                parsed["list_key"] = list_key
-                parsed["raw"] = s
-                _write_jsonl_rule(writers.cosmetic_jsonl, parsed)
-
-                # Cosmetic sub-buckets
-                k = parsed.get("kind") or "cosmetic"
-                if k == "elemhide":
-                    _write_jsonl_rule(writers.cosmetic_elemhide_jsonl, parsed)
-                elif k == "elemhide_exception":
-                    _write_jsonl_rule(
-                        writers.cosmetic_elemhide_exception_jsonl,
-                        parsed,
-                    )
-                elif k == "extended_css":
-                    _write_jsonl_rule(writers.cosmetic_extended_css_jsonl, parsed)
-                elif k == "extended_css_exception":
-                    _write_jsonl_rule(
-                        writers.cosmetic_extended_css_exception_jsonl,
-                        parsed,
-                    )
-                elif k == "html_filter":
-                    _write_jsonl_rule(writers.cosmetic_html_filter_jsonl, parsed)
-                elif k == "html_filter_exception":
-                    _write_jsonl_rule(
-                        writers.cosmetic_html_filter_exception_jsonl,
-                        parsed,
-                    )
-                elif k == "scriptlet":
-                    _write_jsonl_rule(writers.cosmetic_scriptlet_jsonl, parsed)
-                elif k == "scriptlet_exception":
-                    _write_jsonl_rule(
-                        writers.cosmetic_scriptlet_exception_jsonl,
-                        parsed,
-                    )
-
-                # Cosmetic scope and exception splits
-                domains = parsed.get("domains") or []
-                if domains:
-                    _write_jsonl_rule(writers.cosmetic_scoped_jsonl, parsed)
-                else:
-                    _write_jsonl_rule(writers.cosmetic_global_jsonl, parsed)
-
-                if is_cosmetic_exception:
-                    _write_jsonl_rule(writers.cosmetic_exception_jsonl, parsed)
-                else:
-                    _write_jsonl_rule(writers.cosmetic_non_exception_jsonl, parsed)
-
-                agg.cosmetic_rules_total += 1
-                agg.cosmetic_rules_by_marker[parsed.get("marker") or "?"] = (
-                    agg.cosmetic_rules_by_marker.get(
-                        parsed.get("marker") or "?",
-                        0,
-                    )
-                    + 1
-                )
+            marker = next(m for m in _COSMETIC_MARKERS if m in s)
+            agg.cosmetic_rules_total += 1
+            agg.cosmetic_rules_by_marker[marker] = (
+                agg.cosmetic_rules_by_marker.get(marker, 0) + 1
+            )
             continue
 
         # Network rules.
@@ -904,72 +715,7 @@ def _compile_and_extract_all(
         rec.update(_option_semantics(opt_tokens, opt_parsed))
         if extra:
             rec.update(extra)
-        _write_jsonl_rule(writers.network_jsonl, rec)
-
-        # Network exception split
-        if is_exception:
-            _write_jsonl_rule(writers.network_exception_jsonl, rec)
-        else:
-            _write_jsonl_rule(writers.network_block_jsonl, rec)
-
-        # Options buckets
-        if opts:
-            _write_jsonl_rule(writers.network_with_options_jsonl, rec)
-        else:
-            _write_jsonl_rule(writers.network_no_options_jsonl, rec)
-
-        groups = _option_groups(opt_parsed)
-        if "domain" in groups:
-            _write_jsonl_rule(writers.network_option_domain_jsonl, rec)
-        if "third_party" in groups:
-            _write_jsonl_rule(writers.network_option_third_party_jsonl, rec)
-        if "type" in groups:
-            _write_jsonl_rule(writers.network_option_type_jsonl, rec)
-        if "misc" in groups:
-            _write_jsonl_rule(writers.network_option_misc_jsonl, rec)
-
-        # Pattern-kind buckets
-        if pattern_kind == "domain_only":
-            _write_jsonl_rule(writers.network_kind_domain_only_jsonl, rec)
-        elif pattern_kind in {
-            "absolute_url",
-            "absolute_url_pattern",
-            "host_anchored",
-            "host_anchored_pattern",
-        }:
-            _write_jsonl_rule(writers.network_kind_host_anchored_jsonl, rec)
-        elif pattern_kind == "left_anchored":
-            _write_jsonl_rule(writers.network_kind_left_anchored_jsonl, rec)
-        elif pattern_kind == "regex":
-            _write_jsonl_rule(writers.network_kind_regex_jsonl, rec)
-        elif pattern_kind == "wildcard":
-            _write_jsonl_rule(writers.network_kind_wildcard_jsonl, rec)
-        else:
-            _write_jsonl_rule(writers.network_kind_substring_jsonl, rec)
-
-        if not _request_index_disabled_by_badfilter(rec, disabled_by_badfilter):
-            if pattern_kind == "domain_only":
-                _write_jsonl_rule(writers.request_index_domain_jsonl, rec)
-            elif pattern_kind in {
-                "absolute_url",
-                "absolute_url_pattern",
-                "host_anchored",
-                "host_anchored_pattern",
-            }:
-                _write_jsonl_rule(writers.request_index_host_jsonl, rec)
-            elif pattern_kind == "regex":
-                _write_jsonl_rule(writers.request_index_regex_jsonl, rec)
-            elif pattern_kind != "empty":
-                _write_jsonl_rule(writers.request_index_generic_jsonl, rec)
-
-        # Resource-type buckets
-        if opt_parsed:
-            for t in _KNOWN_TYPES:
-                if t in opt_parsed and t in writers.network_type_pos_jsonl:
-                    _write_jsonl_rule(writers.network_type_pos_jsonl[t], rec)
-                neg = f"~{t}"
-                if neg in opt_parsed and t in writers.network_type_neg_jsonl:
-                    _write_jsonl_rule(writers.network_type_neg_jsonl[t], rec)
+        _write_jsonl_rule(network_jsonl, rec)
 
     return {
         "total": total,
@@ -1025,16 +771,6 @@ def _badfilter_disable_key(rec: dict[str, Any]) -> tuple[str, str, str]:
         str(rec.get("action") or ""),
         str(rec.get("pattern") or ""),
         _json_compact(options),
-    )
-
-
-def _request_index_disabled_by_badfilter(
-    rec: dict[str, Any],
-    disabled_by_badfilter: set[tuple[str, str, str]],
-) -> bool:
-    return (
-        "badfilter" in set(rec.get("behavior_options") or [])
-        or _badfilter_disable_key(rec) in disabled_by_badfilter
     )
 
 
@@ -1484,106 +1220,10 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = str(ns.out_dir)
     pathlib.Path(out_dir).mkdir(exist_ok=True, parents=True)
 
-    # Writers for full-rule extraction (JSONL keeps memory low).
+    # The normalized network-rule stream is the build-time input of the
+    # request lookup database; only that database ships in the artifact.
     network_jsonl_path = os.path.join(out_dir, "network_rules.jsonl")
-    cosmetic_jsonl_path = os.path.join(out_dir, "cosmetic_rules.jsonl")
-
-    network_no_options_jsonl_path = os.path.join(out_dir, "network_no_options.jsonl")
-    network_with_options_jsonl_path = os.path.join(
-        out_dir,
-        "network_with_options.jsonl",
-    )
-    network_option_domain_jsonl_path = os.path.join(
-        out_dir,
-        "network_option_domain.jsonl",
-    )
-    network_option_third_party_jsonl_path = os.path.join(
-        out_dir,
-        "network_option_third_party.jsonl",
-    )
-    network_option_type_jsonl_path = os.path.join(out_dir, "network_option_type.jsonl")
-    network_option_misc_jsonl_path = os.path.join(out_dir, "network_option_misc.jsonl")
-
-    network_kind_domain_only_jsonl_path = os.path.join(
-        out_dir,
-        "network_kind_domain_only.jsonl",
-    )
-    network_kind_host_anchored_jsonl_path = os.path.join(
-        out_dir,
-        "network_kind_host_anchored.jsonl",
-    )
-    network_kind_left_anchored_jsonl_path = os.path.join(
-        out_dir,
-        "network_kind_left_anchored.jsonl",
-    )
-    network_kind_substring_jsonl_path = os.path.join(
-        out_dir,
-        "network_kind_substring.jsonl",
-    )
-    network_kind_wildcard_jsonl_path = os.path.join(
-        out_dir,
-        "network_kind_wildcard.jsonl",
-    )
-    network_kind_regex_jsonl_path = os.path.join(out_dir, "network_kind_regex.jsonl")
-
-    network_block_jsonl_path = os.path.join(out_dir, "network_block.jsonl")
-    network_exception_jsonl_path = os.path.join(out_dir, "network_exception.jsonl")
-
-    request_index_domain_jsonl_path = os.path.join(
-        out_dir,
-        "request_index_domain.jsonl",
-    )
-    request_index_host_jsonl_path = os.path.join(out_dir, "request_index_host.jsonl")
-    request_index_regex_jsonl_path = os.path.join(out_dir, "request_index_regex.jsonl")
-    request_index_generic_jsonl_path = os.path.join(
-        out_dir,
-        "request_index_generic.jsonl",
-    )
     request_lookup_sqlite_path = os.path.join(out_dir, "request_lookup.sqlite")
-
-    # Per-resource-type option buckets
-    network_type_pos_paths: dict[str, str] = {
-        t: os.path.join(out_dir, f"network_type_{t}.jsonl")
-        for t in sorted(_KNOWN_TYPES)
-    }
-    network_type_neg_paths: dict[str, str] = {
-        t: os.path.join(out_dir, f"network_type_not_{t}.jsonl")
-        for t in sorted(_KNOWN_TYPES)
-    }
-
-    cosmetic_elemhide_jsonl_path = os.path.join(out_dir, "cosmetic_elemhide.jsonl")
-    cosmetic_elemhide_exception_jsonl_path = os.path.join(
-        out_dir,
-        "cosmetic_elemhide_exception.jsonl",
-    )
-    cosmetic_extended_css_jsonl_path = os.path.join(
-        out_dir,
-        "cosmetic_extended_css.jsonl",
-    )
-    cosmetic_extended_css_exception_jsonl_path = os.path.join(
-        out_dir,
-        "cosmetic_extended_css_exception.jsonl",
-    )
-    cosmetic_html_filter_jsonl_path = os.path.join(
-        out_dir, "cosmetic_html_filter.jsonl"
-    )
-    cosmetic_html_filter_exception_jsonl_path = os.path.join(
-        out_dir,
-        "cosmetic_html_filter_exception.jsonl",
-    )
-    cosmetic_scriptlet_jsonl_path = os.path.join(out_dir, "cosmetic_scriptlet.jsonl")
-    cosmetic_scriptlet_exception_jsonl_path = os.path.join(
-        out_dir,
-        "cosmetic_scriptlet_exception.jsonl",
-    )
-
-    cosmetic_scoped_jsonl_path = os.path.join(out_dir, "cosmetic_scoped.jsonl")
-    cosmetic_global_jsonl_path = os.path.join(out_dir, "cosmetic_global.jsonl")
-    cosmetic_exception_jsonl_path = os.path.join(out_dir, "cosmetic_exception.jsonl")
-    cosmetic_non_exception_jsonl_path = os.path.join(
-        out_dir,
-        "cosmetic_non_exception.jsonl",
-    )
 
     agg = _Aggregate(
         network_rules_total=0,
@@ -1598,279 +1238,11 @@ def main(argv: list[str] | None = None) -> int:
 
     per_list_counts: dict[str, dict[str, int]] = {}
 
-    with ExitStack() as stack:
-        net_f = stack.enter_context(
-            pathlib.Path(network_jsonl_path).open("w", encoding="utf-8", newline="\n"),
-        )
-        cos_f = stack.enter_context(
-            pathlib.Path(cosmetic_jsonl_path).open("w", encoding="utf-8", newline="\n"),
-        )
-        net_no_opts_f = stack.enter_context(
-            pathlib.Path(network_no_options_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        net_with_opts_f = stack.enter_context(
-            pathlib.Path(network_with_options_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        net_opt_domain_f = stack.enter_context(
-            pathlib.Path(network_option_domain_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        net_opt_third_party_f = stack.enter_context(
-            pathlib.Path(network_option_third_party_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        net_opt_type_f = stack.enter_context(
-            pathlib.Path(network_option_type_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        net_opt_misc_f = stack.enter_context(
-            pathlib.Path(network_option_misc_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-
-        net_kind_domain_only_f = stack.enter_context(
-            pathlib.Path(network_kind_domain_only_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        net_kind_host_anchored_f = stack.enter_context(
-            pathlib.Path(network_kind_host_anchored_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        net_kind_left_anchored_f = stack.enter_context(
-            pathlib.Path(network_kind_left_anchored_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        net_kind_substring_f = stack.enter_context(
-            pathlib.Path(network_kind_substring_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        net_kind_wildcard_f = stack.enter_context(
-            pathlib.Path(network_kind_wildcard_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        net_kind_regex_f = stack.enter_context(
-            pathlib.Path(network_kind_regex_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-
-        net_block_f = stack.enter_context(
-            pathlib.Path(network_block_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        net_exception_f = stack.enter_context(
-            pathlib.Path(network_exception_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-
-        request_index_domain_f = stack.enter_context(
-            pathlib.Path(request_index_domain_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        request_index_host_f = stack.enter_context(
-            pathlib.Path(request_index_host_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        request_index_regex_f = stack.enter_context(
-            pathlib.Path(request_index_regex_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        request_index_generic_f = stack.enter_context(
-            pathlib.Path(request_index_generic_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-
-        net_type_pos_fs: dict[str, Any] = {
-            t: stack.enter_context(
-                pathlib.Path(p).open("w", encoding="utf-8", newline="\n"),
-            )
-            for t, p in network_type_pos_paths.items()
-        }
-        net_type_neg_fs: dict[str, Any] = {
-            t: stack.enter_context(
-                pathlib.Path(p).open("w", encoding="utf-8", newline="\n"),
-            )
-            for t, p in network_type_neg_paths.items()
-        }
-
-        cos_elemhide_f = stack.enter_context(
-            pathlib.Path(cosmetic_elemhide_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        cos_elemhide_exception_f = stack.enter_context(
-            pathlib.Path(cosmetic_elemhide_exception_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        cos_extended_css_f = stack.enter_context(
-            pathlib.Path(cosmetic_extended_css_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        cos_extended_css_exception_f = stack.enter_context(
-            pathlib.Path(cosmetic_extended_css_exception_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        cos_html_filter_f = stack.enter_context(
-            pathlib.Path(cosmetic_html_filter_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        cos_html_filter_exception_f = stack.enter_context(
-            pathlib.Path(cosmetic_html_filter_exception_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        cos_scriptlet_f = stack.enter_context(
-            pathlib.Path(cosmetic_scriptlet_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        cos_scriptlet_exception_f = stack.enter_context(
-            pathlib.Path(cosmetic_scriptlet_exception_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-
-        cos_scoped_f = stack.enter_context(
-            pathlib.Path(cosmetic_scoped_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        cos_global_f = stack.enter_context(
-            pathlib.Path(cosmetic_global_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        cos_exception_f = stack.enter_context(
-            pathlib.Path(cosmetic_exception_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-        cos_non_exception_f = stack.enter_context(
-            pathlib.Path(cosmetic_non_exception_jsonl_path).open(
-                "w",
-                encoding="utf-8",
-                newline="\n",
-            ),
-        )
-
-        writers = _RuleWriters(
-            network_jsonl=net_f,
-            cosmetic_jsonl=cos_f,
-            network_no_options_jsonl=net_no_opts_f,
-            network_with_options_jsonl=net_with_opts_f,
-            network_option_domain_jsonl=net_opt_domain_f,
-            network_option_third_party_jsonl=net_opt_third_party_f,
-            network_option_type_jsonl=net_opt_type_f,
-            network_option_misc_jsonl=net_opt_misc_f,
-            network_kind_domain_only_jsonl=net_kind_domain_only_f,
-            network_kind_host_anchored_jsonl=net_kind_host_anchored_f,
-            network_kind_left_anchored_jsonl=net_kind_left_anchored_f,
-            network_kind_substring_jsonl=net_kind_substring_f,
-            network_kind_wildcard_jsonl=net_kind_wildcard_f,
-            network_kind_regex_jsonl=net_kind_regex_f,
-            network_block_jsonl=net_block_f,
-            network_exception_jsonl=net_exception_f,
-            request_index_domain_jsonl=request_index_domain_f,
-            request_index_host_jsonl=request_index_host_f,
-            request_index_regex_jsonl=request_index_regex_f,
-            request_index_generic_jsonl=request_index_generic_f,
-            network_type_pos_jsonl=net_type_pos_fs,
-            network_type_neg_jsonl=net_type_neg_fs,
-            cosmetic_elemhide_jsonl=cos_elemhide_f,
-            cosmetic_elemhide_exception_jsonl=cos_elemhide_exception_f,
-            cosmetic_extended_css_jsonl=cos_extended_css_f,
-            cosmetic_extended_css_exception_jsonl=cos_extended_css_exception_f,
-            cosmetic_html_filter_jsonl=cos_html_filter_f,
-            cosmetic_html_filter_exception_jsonl=cos_html_filter_exception_f,
-            cosmetic_scriptlet_jsonl=cos_scriptlet_f,
-            cosmetic_scriptlet_exception_jsonl=cos_scriptlet_exception_f,
-            cosmetic_scoped_jsonl=cos_scoped_f,
-            cosmetic_global_jsonl=cos_global_f,
-            cosmetic_exception_jsonl=cos_exception_f,
-            cosmetic_non_exception_jsonl=cos_non_exception_f,
-        )
-
+    with pathlib.Path(network_jsonl_path).open(
+        "w",
+        encoding="utf-8",
+        newline="\n",
+    ) as network_jsonl:
         for key, path in enabled_paths:
             try:
                 with pathlib.Path(path).open(encoding="utf-8", errors="replace") as f:
@@ -1884,7 +1256,7 @@ def main(argv: list[str] | None = None) -> int:
                 lines=lines,
                 list_key=key,
                 agg=agg,
-                writers=writers,
+                network_jsonl=network_jsonl,
             )
 
     lookup_index_counts = _write_request_lookup_index(
@@ -1924,129 +1296,8 @@ def main(argv: list[str] | None = None) -> int:
             "lookup_index_counts": lookup_index_counts,
         },
         "per_list": per_list_counts,
-        "files": {
-            "network_rules_jsonl": network_jsonl_path,
-            "cosmetic_rules_jsonl": cosmetic_jsonl_path,
-            "network_no_options_jsonl": os.path.join(
-                out_dir,
-                "network_no_options.jsonl",
-            ),
-            "network_with_options_jsonl": os.path.join(
-                out_dir,
-                "network_with_options.jsonl",
-            ),
-            "network_option_domain_jsonl": os.path.join(
-                out_dir,
-                "network_option_domain.jsonl",
-            ),
-            "network_option_third_party_jsonl": os.path.join(
-                out_dir,
-                "network_option_third_party.jsonl",
-            ),
-            "network_option_type_jsonl": os.path.join(
-                out_dir,
-                "network_option_type.jsonl",
-            ),
-            "network_option_misc_jsonl": os.path.join(
-                out_dir,
-                "network_option_misc.jsonl",
-            ),
-            "network_kind_domain_only_jsonl": os.path.join(
-                out_dir,
-                "network_kind_domain_only.jsonl",
-            ),
-            "network_kind_host_anchored_jsonl": os.path.join(
-                out_dir,
-                "network_kind_host_anchored.jsonl",
-            ),
-            "network_kind_left_anchored_jsonl": os.path.join(
-                out_dir,
-                "network_kind_left_anchored.jsonl",
-            ),
-            "network_kind_substring_jsonl": os.path.join(
-                out_dir,
-                "network_kind_substring.jsonl",
-            ),
-            "network_kind_wildcard_jsonl": os.path.join(
-                out_dir,
-                "network_kind_wildcard.jsonl",
-            ),
-            "network_kind_regex_jsonl": os.path.join(
-                out_dir,
-                "network_kind_regex.jsonl",
-            ),
-            "network_block_jsonl": os.path.join(out_dir, "network_block.jsonl"),
-            "network_exception_jsonl": os.path.join(out_dir, "network_exception.jsonl"),
-            "request_index_domain_jsonl": os.path.join(
-                out_dir,
-                "request_index_domain.jsonl",
-            ),
-            "request_index_host_jsonl": os.path.join(
-                out_dir,
-                "request_index_host.jsonl",
-            ),
-            "request_index_regex_jsonl": os.path.join(
-                out_dir,
-                "request_index_regex.jsonl",
-            ),
-            "request_index_generic_jsonl": os.path.join(
-                out_dir,
-                "request_index_generic.jsonl",
-            ),
-            "request_lookup_sqlite": request_lookup_sqlite_path,
-            "cosmetic_elemhide_jsonl": os.path.join(out_dir, "cosmetic_elemhide.jsonl"),
-            "cosmetic_elemhide_exception_jsonl": os.path.join(
-                out_dir,
-                "cosmetic_elemhide_exception.jsonl",
-            ),
-            "cosmetic_extended_css_jsonl": os.path.join(
-                out_dir,
-                "cosmetic_extended_css.jsonl",
-            ),
-            "cosmetic_extended_css_exception_jsonl": os.path.join(
-                out_dir,
-                "cosmetic_extended_css_exception.jsonl",
-            ),
-            "cosmetic_html_filter_jsonl": os.path.join(
-                out_dir,
-                "cosmetic_html_filter.jsonl",
-            ),
-            "cosmetic_html_filter_exception_jsonl": os.path.join(
-                out_dir,
-                "cosmetic_html_filter_exception.jsonl",
-            ),
-            "cosmetic_scriptlet_jsonl": os.path.join(
-                out_dir,
-                "cosmetic_scriptlet.jsonl",
-            ),
-            "cosmetic_scriptlet_exception_jsonl": os.path.join(
-                out_dir,
-                "cosmetic_scriptlet_exception.jsonl",
-            ),
-            "cosmetic_scoped_jsonl": os.path.join(out_dir, "cosmetic_scoped.jsonl"),
-            "cosmetic_global_jsonl": os.path.join(out_dir, "cosmetic_global.jsonl"),
-            "cosmetic_exception_jsonl": os.path.join(
-                out_dir,
-                "cosmetic_exception.jsonl",
-            ),
-            "cosmetic_non_exception_jsonl": os.path.join(
-                out_dir,
-                "cosmetic_non_exception.jsonl",
-            ),
-            "network_type": {
-                "pos": {
-                    t: os.path.join(out_dir, f"network_type_{t}.jsonl")
-                    for t in sorted(_KNOWN_TYPES)
-                },
-                "neg": {
-                    t: os.path.join(out_dir, f"network_type_not_{t}.jsonl")
-                    for t in sorted(_KNOWN_TYPES)
-                },
-            },
-        },
+        "files": {"request_lookup_sqlite": request_lookup_sqlite_path},
         "notes": {
-            "full_extraction": "All parsed network rules and cosmetic rules are emitted to JSONL buckets for inspection and future expansion.",
-            "request_indexes": "request_index_*.jsonl contains normalized request-time ABP fields for domain, host/path, regex, and generic buckets.",
             "request_lookup_sqlite": "request_lookup.sqlite is the fast lookup substrate: indexed domain suffix, exact host, host-pattern, regex, generic literal-key, option, resource-type, and domain-scope tables joined to full rule payloads by rule_id.",
         },
     }
