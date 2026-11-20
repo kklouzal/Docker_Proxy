@@ -2230,3 +2230,45 @@ def test_domain_option_matches_bracketed_ipv6_source_literally() -> None:
     assert _domain_matches(host, suffixes, "[2001:db8::1]") is True
     assert _domain_matches("1", _host_suffix_set("1"), "[2001:db8::1]") is False
     assert _domain_matches("ads.example", _host_suffix_set("ads.example"), "*.example")
+
+
+def test_ubo_option_aliases_apply_and_unknown_options_discard_rules(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "||alias-xhr.example^$xhr",
+            "||alias-3p.example^$3p",
+            "||alias-1p.example^$1p",
+            "||alias-from.example^$from=source.example",
+            "||unknown-option.example^$webrtc",
+            "@@||unknown-allow.example^$specifichide",
+            "||unknown-allow.example^",
+        ],
+    )
+
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+    xhr = {"sec-fetch-mode": "cors", "sec-fetch-dest": "empty"}
+    image = {"accept": "image/webp"}
+
+    assert engine.decide("https://alias-xhr.example/a", headers=xhr).blocked is True
+    assert engine.decide("https://alias-xhr.example/a", headers=image).blocked is False
+
+    cross = {"referer": "https://other.example/"}
+    same = {"referer": "https://www.alias-3p.example/"}
+    assert engine.decide("https://alias-3p.example/a", headers=cross).blocked is True
+    assert engine.decide("https://alias-3p.example/a", headers=same).blocked is False
+    same_1p = {"referer": "https://www.alias-1p.example/"}
+    assert engine.decide("https://alias-1p.example/a", headers=same_1p).blocked
+    assert engine.decide("https://alias-1p.example/a", headers=cross).blocked is False
+
+    scoped = {"referer": "https://source.example/"}
+    assert engine.decide("https://alias-from.example/a", headers=scoped).blocked
+    assert engine.decide("https://alias-from.example/a", headers=cross).blocked is False
+
+    # Unsupported options must not turn into unrestricted block or allow rules.
+    assert engine.decide("https://unknown-option.example/a").blocked is False
+    assert engine.decide("https://unknown-allow.example/a").blocked is True

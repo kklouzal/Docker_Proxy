@@ -493,6 +493,11 @@ class AdblockDecisionEngine:
         return False
 
     def _options_match(self, rule: dict[str, Any], context: _RequestContext) -> bool:
+        if rule.get("misc_options"):
+            # Like ABP and uBlock Origin, discard a filter carrying an option
+            # this engine does not understand rather than enforcing it without
+            # the restriction (or non-blocking meaning) that option adds.
+            return False
         value_options = rule.get("value_options") or {}
         if not isinstance(value_options, dict):
             return False
