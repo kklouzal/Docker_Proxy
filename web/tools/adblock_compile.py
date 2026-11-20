@@ -194,6 +194,20 @@ def _canonical_option_key(key: str) -> str:
 
 
 _DOMAIN_ONLY_RE = re.compile(r"^\|\|(?P<host>[a-z0-9.-]+)\^?$", re.IGNORECASE)
+LOOKUP_SCHEMA_VERSION = "4"
+LOOKUP_INDEX_COUNT_TABLES = (
+    "rules",
+    "domain_index",
+    "host_index",
+    "host_pattern_index",
+    "host_pattern_token_index",
+    "regex_index",
+    "regex_token_index",
+    "generic_index",
+    "option_index",
+    "resource_type_index",
+    "domain_scope_index",
+)
 LOOKUP_STRATEGY = (
     "domain suffix candidates -> domain_index; exact and host-suffix "
     "candidates -> host_index; host-pattern/regex token prefilters before "
@@ -1186,24 +1200,12 @@ def _write_request_lookup_index(
     with suppress(FileNotFoundError):
         path.unlink()
     conn = sqlite3.connect(str(path))
-    counts: dict[str, int] = {
-        "rules": 0,
-        "domain_index": 0,
-        "host_index": 0,
-        "host_pattern_index": 0,
-        "host_pattern_token_index": 0,
-        "regex_index": 0,
-        "regex_token_index": 0,
-        "generic_index": 0,
-        "option_index": 0,
-        "resource_type_index": 0,
-        "domain_scope_index": 0,
-    }
+    counts: dict[str, int] = dict.fromkeys(LOOKUP_INDEX_COUNT_TABLES, 0)
     try:
         _create_lookup_schema(conn)
         conn.execute(
             "INSERT INTO metadata(key, value) VALUES(?, ?)",
-            ("schema_version", "4"),
+            ("schema_version", LOOKUP_SCHEMA_VERSION),
         )
         conn.execute(
             "INSERT INTO metadata(key, value) VALUES(?, ?)",
