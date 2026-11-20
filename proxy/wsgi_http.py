@@ -19,6 +19,7 @@ import re
 from email.utils import format_datetime
 from typing import TYPE_CHECKING, Any
 
+from gunicorn.http.errors import ParseException
 from services.http_optimizations import (
     TRANSFORMATION_INVALIDATED_HEADERS,
     client_accepts_gzip,
@@ -235,6 +236,31 @@ def declared_content_length(environ: dict[str, Any]) -> int | None:
         message = f"invalid Content-Length {raw_length!r}"
         raise ValueError(message)
     return int(value)
+
+
+class BodyReadError(Exception):
+    """The client's body framing or connection failed while it was read."""
+
+
+def read_body(stream: Any, limit: int) -> bytes:
+    """Read at most ``limit`` bytes from a WSGI input stream.
+
+    Fewer bytes come back when the stream ends first. A disconnect or invalid
+    chunked framing (gunicorn ``ParseException``, ``NoMoreData``) raises
+    ``BodyReadError``: it is the client's bad request, not a server error.
+    """
+    chunks: list[bytes] = []
+    received = 0
+    try:
+        while received < limit:
+            chunk = stream.read(limit - received)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            received += len(chunk)
+    except (OSError, ValueError, ParseException) as exc:
+        raise BodyReadError from exc
+    return b"".join(chunks)
 
 
 def request_path(environ: dict[str, Any]) -> str:

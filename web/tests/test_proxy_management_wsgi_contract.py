@@ -1334,6 +1334,47 @@ def test_static_paths_are_unknown_like_any_other_path(
     assert static == unknown
 
 
+class _FailingInput:
+    """A gunicorn input stream whose chunked framing or connection fails."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def read(self, _size: int = -1) -> bytes:
+        raise self.error
+
+
+def _body_read_errors() -> list[Exception]:
+    from gunicorn.http.errors import (
+        ChunkMissingTerminator,
+        InvalidChunkSize,
+        NoMoreData,
+    )
+
+    return [ChunkMissingTerminator(b"n="), InvalidChunkSize(b"zz"), NoMoreData()]
+
+
+@pytest.mark.parametrize("error", _body_read_errors(), ids=type)
+def test_malformed_chunked_json_is_a_bad_request_not_a_server_error(
+    error, monkeypatch, tmp_path
+) -> None:
+    # gunicorn's chunked parser raises ParseException subclasses from
+    # wsgi.input.read; Flask let them surface as a logged 500.
+    record = _scenario_record(
+        _s(
+            "malformed_chunked",
+            "POST",
+            "/api/manage/sync",
+            headers=[_AUTH, ("Content-Type", _JSON)],
+            environ={"wsgi.input": _FailingInput(error)},
+        ),
+        monkeypatch,
+        tmp_path,
+    )
+    assert record["response"]["status"] == "400 BAD REQUEST"
+    assert record["runtime_calls"] == []
+
+
 def test_management_requests_load_no_flask_stack(tmp_path) -> None:
 
     probe = """

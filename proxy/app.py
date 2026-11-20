@@ -10,9 +10,9 @@ cache/gzip policy) except for deliberate fixes: a non-ASCII management token
 is rejected with 403 instead of failing with 500, a JSON body of unknown
 length over the limit is rejected with 413 instead of being truncated at the
 limit, a Content-Length that is not a decimal byte count is rejected with
-400 instead of being read as an empty body, and ``/static/...`` is an
-unknown path (404) instead of Flask's default static route for a folder the
-proxy never had.
+400 instead of being read as an empty body, invalid chunked framing is a
+400 instead of a logged 500, and ``/static/...`` is an unknown path (404)
+instead of Flask's default static route for a folder the proxy never had.
 ``web/tests/golden/proxy_management_responses.json`` records that contract.
 """
 
@@ -49,11 +49,13 @@ from proxy.wsgi_http import (
     MANAGEMENT_NOT_FOUND_BODY,
     METHOD_NOT_ALLOWED_PAGE,
     NOT_FOUND_PAGE,
+    BodyReadError,
     RequestHeaders,
     Response,
     apply_http_optimizations,
     declared_content_length,
     json_response,
+    read_body,
     request_path,
     send,
 )
@@ -166,32 +168,24 @@ class _Request:
         A server that terminates the input stream (gunicorn) is read up to the
         limit, plus one byte that proves an unknown-length body is over it.
         Without termination only a declared Content-Length may be read, and
-        must arrive in full. Read failures are a bad request (Werkzeug
-        ``ClientDisconnected``).
+        must arrive in full. Read failures (disconnects, invalid chunked
+        framing) are a bad request, as Werkzeug's ``ClientDisconnected``.
         """
         if self._data is None:
-            stream = self.environ["wsgi.input"]
             terminated = "wsgi.input_terminated" in self.environ
             limit = max_content_length + 1 if terminated else self.content_length or 0
-            chunks: list[bytes] = []
-            received = 0
             try:
-                while received < limit:
-                    chunk = stream.read(limit - received)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    received += len(chunk)
-            except (OSError, ValueError) as exc:
+                data = read_body(self.environ["wsgi.input"], limit)
+            except BodyReadError as exc:
                 raise _HTTPError(Response(400, HTML, BAD_REQUEST_PAGE)) from exc
-            if not terminated and received < limit:
+            if not terminated and len(data) < limit:
                 raise _HTTPError(Response(400, HTML, BAD_REQUEST_PAGE))
-            if received > max_content_length:
+            if len(data) > max_content_length:
                 _abort_management_json_payload(
                     _management_payload_too_large_detail(max_content_length),
                     status_code=413,
                 )
-            self._data = b"".join(chunks)
+            self._data = data
         return self._data
 
 

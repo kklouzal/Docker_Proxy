@@ -1129,3 +1129,45 @@ def test_pac_preconditions_follow_rfc_9110(
     # The PAC validator is a strong ETag.
     if status != "304 NOT MODIFIED":
         assert _header(record, "ETag").startswith('"')
+
+
+class _FailingInput:
+    """A gunicorn input stream whose chunked framing or connection fails."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def read(self, _size: int = -1) -> bytes:
+        raise self.error
+
+
+def _body_read_errors() -> list[Exception]:
+    from gunicorn.http.errors import (
+        ChunkMissingTerminator,
+        InvalidChunkSize,
+        NoMoreData,
+    )
+
+    return [ChunkMissingTerminator(b"n="), InvalidChunkSize(b"zz"), NoMoreData()]
+
+
+@pytest.mark.parametrize("error", _body_read_errors(), ids=type)
+def test_malformed_chunked_policy_post_is_a_bad_request_not_a_server_error(
+    error, monkeypatch, tmp_path
+) -> None:
+    record, recorded = _run(
+        _s(
+            "malformed_chunked",
+            "POST",
+            "/policy-request",
+            store="ok",
+            headers=[("Content-Type", _FORM)],
+            environ={"wsgi.input": _FailingInput(error)},
+        ),
+        monkeypatch,
+        tmp_path,
+    )
+
+    assert record["status"] == "400 BAD REQUEST"
+    assert "could not be parsed" in record["body"]
+    assert recorded == {}

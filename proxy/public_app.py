@@ -52,14 +52,16 @@ from proxy.wsgi_http import INTERNAL_ERROR_PAGE as _INTERNAL_ERROR_PAGE
 from proxy.wsgi_http import MANAGEMENT_NOT_FOUND_BODY as _MANAGEMENT_NOT_FOUND_BODY
 from proxy.wsgi_http import METHOD_NOT_ALLOWED_PAGE as _METHOD_NOT_ALLOWED_PAGE
 from proxy.wsgi_http import NOT_FOUND_PAGE as _NOT_FOUND_PAGE
-from proxy.wsgi_http import RequestHeaders as _RequestHeaders
-from proxy.wsgi_http import Response as _Response
 from proxy.wsgi_http import (
+    BodyReadError,
     apply_http_optimizations,
     declared_content_length,
+    read_body,
     request_path,
     send,
 )
+from proxy.wsgi_http import RequestHeaders as _RequestHeaders
+from proxy.wsgi_http import Response as _Response
 from proxy.wsgi_http import json_body as _json_body
 
 if TYPE_CHECKING:
@@ -249,7 +251,6 @@ def _read_policy_body(
     limit; anything beyond it is rejected rather than truncated. Without either,
     WSGI allows no body to be read.
     """
-    stream = environ["wsgi.input"]
     try:
         length = declared_content_length(environ)
     except ValueError:
@@ -262,18 +263,13 @@ def _read_policy_body(
         limit = max_content_length + 1
     else:
         return b""
-    chunks: list[bytes] = []
-    received = 0
-    while received < limit:
-        chunk = stream.read(limit - received)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        received += len(chunk)
-    body = b"".join(chunks)
-    if length is not None and received < length:
+    try:
+        body = read_body(environ["wsgi.input"], limit)
+    except BodyReadError:
         return _unparsable()
-    if received > max_content_length:
+    if length is not None and len(body) < length:
+        return _unparsable()
+    if len(body) > max_content_length:
         return _too_large(max_content_length)
     return body
 
