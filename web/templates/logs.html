@@ -29,7 +29,7 @@
         <h2 class="card-title">Raw log file</h2>
         <span class="badge" id="log-size-badge">{{ log_payload.size_bytes or 0 }} bytes</span>
     </div>
-    <div class="card-body stack-list" data-log-viewer>
+    <div class="card-body stack-list">
         <form class="filter-bar" id="log-viewer-form" action="{{ url_for('logs_status') }}" method="get" data-api-url="{{ url_for('api_logs_status') }}">
             <label for="log-key">Log file</label>
             <select id="log-key" name="log">

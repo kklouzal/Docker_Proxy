@@ -76,7 +76,7 @@
         Fail-open keeps browsing available when AV ICAP or clamd is unavailable. Fail-closed changes both Squid's AV ICAP <span class="mono">bypass</span> behavior and c-icap <span class="mono">virus_scan.PassOnError</span> so affected transfers fail instead of passing unscanned.
       </div>
       {% for section in clamav_sections %}
-        <section class="config-safe-section" data-config-section="{{ section.key }}">
+        <section class="config-safe-section">
           <div class="config-safe-section-heading">
             <div>
               <h3>{{ section.label }}</h3>
@@ -85,7 +85,7 @@
             <span class="badge">{{ section.apply_note }}</span>
           </div>
           {% for group in section.groups %}
-            <div class="config-field-group" data-config-group="{{ group.key }}">
+            <div class="config-field-group">
               <div class="config-field-group-heading">
                 <h4>{{ group.title }}</h4>
                 <p class="small">{{ group.description }}</p>
