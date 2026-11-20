@@ -51,12 +51,39 @@ def test_resume_offset_inside_a_line_aligns_to_next_boundary(tmp_path) -> None:
     assert _drain(follower) == ["cccc"]
 
 
-def test_resume_offset_for_another_file_identity_falls_back_to_end(tmp_path) -> None:
+def test_resume_offset_for_another_file_identity_reads_from_start(tmp_path) -> None:
     path = tmp_path / "access.log"
     path.write_bytes(b"aaaa\nbbbb\n")
-    follower = LogFollower(str(path), resume_identity=(0, 0), resume_offset=0)
+    follower = LogFollower(str(path), resume_identity=(0, 0), resume_offset=4)
     follower.ensure_open()
-    assert _drain(follower) == []
+    assert _drain(follower) == ["aaaa", "bbbb"]
+
+
+def test_at_current_end_follows_a_file_replaced_before_open_from_start(
+    tmp_path,
+) -> None:
+    path = tmp_path / "access.log"
+    path.write_bytes(b"seeded\n")
+    follower = LogFollower.at_current_end(str(path))
+    replacement = tmp_path / "access.log.new"
+    replacement.write_bytes(b"after rotation\n")
+    replacement.replace(path)
+    follower.ensure_open()
+    assert _drain(follower) == ["after rotation"]
+
+
+def test_at_current_end_reads_a_log_truncated_before_open_from_start(
+    tmp_path,
+) -> None:
+    path = tmp_path / "access.log"
+    path.write_bytes(b"seeded line one\nseeded line two\n")
+    follower = LogFollower.at_current_end(str(path))
+    with path.open("r+b") as handle:
+        handle.truncate(0)
+    with path.open("ab") as handle:
+        handle.write(b"new\n")
+    follower.ensure_open()
+    assert _drain(follower) == ["new"]
 
 
 def test_at_current_end_tails_lines_appended_after_capture(tmp_path) -> None:

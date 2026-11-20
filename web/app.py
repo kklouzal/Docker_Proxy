@@ -6849,7 +6849,14 @@ def api_operations():
             },
         ), 200
     except Exception as exc:
-        app.logger.exception("Operation ledger API read failed")
+        # Every open tab polls this every few seconds; one traceback per minute
+        # is enough to diagnose an outage without flooding the log.
+        log_exception_throttled(
+            app.logger,
+            "web.app.api_operations.read",
+            interval_seconds=60.0,
+            message="Operation ledger API read failed",
+        )
         return jsonify(
             {
                 "ok": False,

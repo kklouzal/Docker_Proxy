@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
-import errno
 import fcntl
 import ipaddress
 import json
@@ -60,19 +59,13 @@ from services.public_endpoint import (
 from services.public_endpoint import (
     normalize_public_scheme as _normalize_pac_scheme,
 )
+from services.runtime_helpers import fsync_dir as _fsync_dir
 from services.runtime_helpers import fsync_parent_dir as _fsync_parent_dir
 from services.sslfilter_store import get_sslfilter_store
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-_UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = {
-    errno.EBADF,
-    errno.EINVAL,
-    errno.ENOSYS,
-    getattr(errno, "ENOTSUP", errno.EINVAL),
-    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
-}
 _PAC_MATERIALIZATION_TARGET_LOCKS = KeyedLockRegistry[str]()
 _LOGGER = logging.getLogger(__name__)
 
@@ -125,26 +118,6 @@ def _exchange_directories(first: Path, second: Path) -> None:
     ):  # AT_FDCWD, RENAME_EXCHANGE
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), str(first), str(second))
-
-
-def _fsync_dir(path: str | os.PathLike[str]) -> None:
-    """Best-effort fsync for a directory's own metadata entries."""
-    directory = Path(path)
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
-    fd: int | None = None
-    try:
-        fd = os.open(directory, flags)
-        os.fsync(fd)
-    except OSError as exc:
-        if exc.errno is None or exc.errno in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
-            return
-        raise
-    finally:
-        if fd is not None:
-            with contextlib.suppress(OSError):
-                os.close(fd)
 
 
 def _write_pac_text_file(path: Path, content: str) -> None:

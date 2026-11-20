@@ -619,13 +619,18 @@ def rename_proxy_scoped_rows(
 
 
 def proxy_scoped_tables_with_rows(conn: Any, *, proxy_id: str) -> tuple[str, ...]:
+    """List rename-scoped tables still holding ``proxy_id`` rows (read-only).
+
+    Runs inside the rename transaction after its row locks, so it must not
+    issue index DDL (implicit commit); ``prepare_proxy_lifecycle`` already
+    prepared the same tables' indexes before the transaction.
+    """
     tables: list[str] = []
     for table in lifecycle_inventory(conn):
         if table.is_indirect_child:
             continue
         if not table.rename or not _table_exists(conn, table.table):
             continue
-        ensure_proxy_lifecycle_index(conn, table)
         safe_table = quote_mysql_identifier(table.table)
         proxy_col = quote_mysql_identifier(table.proxy_column)
         row = conn.execute(
