@@ -386,6 +386,22 @@ can lower, but never raise, that scheduled-housekeeping bound.
   withheld until clamd's verdict (at least 256 KiB, or
   `CLAMAV_RESPMOD_STREAM_HOLD_BYTES`, and at least 1% of a declared length).
   - A clean response completes normally once the verdict arrives.
+  - Content a browser renders or runs while it arrives is held whole and
+    delivered only after a clean verdict, so an infected one gets the 403
+    page (or the fail-closed answer) like a small file: `Content-Type`
+    `text/html`, `application/xhtml+xml`, `image/svg+xml`,
+    `application/pdf` and the JavaScript types of the WHATWG MIME Sniffing
+    list (`text/javascript`, `application/javascript`,
+    `application/x-javascript`, `application/ecmascript`, ...), compared
+    case-insensitively without parameters. A response without a usable
+    `Content-Type` (missing, empty, malformed or repeated) is held too,
+    because browsers sniff such responses and may render them as HTML.
+    Video, audio and other downloads keep streaming with the tail hold.
+    Held bytes stay in memory up to 1 MiB per response and then in an
+    unlinked temporary file under the container's `/tmp`, so one held
+    response can use up to `CLAMAV_STREAM_MAX_BYTES` of disk there until its
+    verdict. Over that limit the scan-limit rules below apply (fail-open
+    then streams the rest unscanned).
   - A response no larger than the withheld amount is answered whole, so a
     small infected file still gets the "Blocked by Docker_Proxy ClamAV" 403
     page.

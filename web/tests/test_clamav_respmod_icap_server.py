@@ -5149,7 +5149,7 @@ def test_streamed_clean_body_is_forwarded_before_the_body_ends() -> None:
     server = _load_server()
     scanner = MarkerScanner()
     parts = [b"A" * 20, b"B" * 20, b"C" * 5]
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 45\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 45\r\n\r\n"
     with _streaming_server(server, scanner) as icap_server:
         seen, response, _ending = _run_stream(icap_server, http_header, parts)
 
@@ -5183,7 +5183,7 @@ def test_streamed_infected_body_is_aborted_without_the_held_tail(
     server = _load_server()
     scanner = MarkerScanner()
     payload = b"".join(parts)
-    http_header = f"HTTP/1.1 200 OK\r\nContent-Length: {len(payload)}\r\n\r\n".encode()
+    http_header = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {len(payload)}\r\n\r\n".encode()
     with _streaming_server(server, scanner, fail_open=fail_open) as icap_server:
         _seen, response, ending = _run_stream(icap_server, http_header, parts)
 
@@ -5199,7 +5199,7 @@ def test_streamed_infected_body_is_aborted_without_the_held_tail(
 def test_small_infected_body_still_gets_the_block_page() -> None:
     server = _load_server()
     scanner = MarkerScanner()
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 17\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 17\r\n\r\n"
     with _streaming_server(server, scanner, stream_hold_bytes=64) as icap_server:
         _seen, response, _ending = _run_stream(icap_server, http_header, [MARKER])
 
@@ -5222,7 +5222,7 @@ def test_hold_covers_at_least_one_percent_of_a_declared_length() -> None:
 def test_streamed_unknown_length_over_limit_fail_closed_aborts() -> None:
     server = _load_server()
     scanner = MarkerScanner()
-    http_header = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n"
     parts = [b"A" * 20, b"B" * 20]
     with _streaming_server(
         server, scanner, fail_open=False, max_scan_bytes=30
@@ -5252,7 +5252,7 @@ def test_streamed_body_with_clamd_down(fail_open: bool) -> None:
     server = _load_server()
     unavailable = RuntimeError("clamd INSTREAM scan failed: connection refused")
     parts = [b"A" * 20, b"B" * 20]
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 40\r\n\r\n"
     with _streaming_server(server, unavailable, fail_open=fail_open) as icap_server:
         seen, response, _ending = _run_stream(icap_server, http_header, parts)
 
@@ -5277,7 +5277,7 @@ def test_streamed_body_clamd_failure_mid_stream(fail_open: bool) -> None:
     server = _load_server()
     scanner = FailingSendAfterPreviewScanner()
     parts = [b"A" * 20, b"B" * 20, b"C" * 20]
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 60\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 60\r\n\r\n"
     # A clamd outage while the body keeps flowing (gaps below the clamd
     # timeout); a stalled body is covered by the ScanStalledError tests.
     with _streaming_server(
@@ -5300,7 +5300,7 @@ def test_streamed_body_clamd_failure_mid_stream(fail_open: bool) -> None:
 def test_streamed_slow_verdict_fail_open_completes_unscanned() -> None:
     server = _load_server()
     parts = [b"A" * 20, b"B" * 20]
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 40\r\n\r\n"
     with _streaming_server(server, SlowScanner(), clamd_timeout=5) as icap_server:
         _seen, response, _ending = _run_stream(icap_server, http_header, parts)
 
@@ -5315,7 +5315,7 @@ def test_streamed_content_length_mismatch_aborts_instead_of_completing() -> None
     server = _load_server()
     scanner = MarkerScanner()
     parts = [b"A" * 20, b"B" * 20]
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 50\r\n\r\n"
     with _streaming_server(server, scanner) as icap_server:
         _seen, response, ending = _run_stream(icap_server, http_header, parts)
 
@@ -5329,7 +5329,7 @@ def test_streamed_content_length_mismatch_aborts_instead_of_completing() -> None
 def test_squid_abort_mid_stream_releases_the_scan() -> None:
     server = _load_server()
     scanner = MarkerScanner()
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 1000\r\n\r\n"
     with _streaming_server(server, scanner) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
@@ -5352,7 +5352,7 @@ def test_squid_abort_mid_stream_releases_the_scan() -> None:
 def test_streamed_body_tolerates_origin_gaps_longer_than_client_timeout() -> None:
     server = _load_server()
     scanner = MarkerScanner()
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 40\r\n\r\n"
     with _streaming_server(
         server, scanner, client_timeout=0.1, body_timeout=2
     ) as icap_server:
@@ -5426,7 +5426,7 @@ def test_streamed_scan_lost_after_a_stall_never_bypasses(
     scanner = FailAfterStallScanner(idle_limit=0.2)
     parts = [b"A" * 20, b"B" * 20 + MARKER]
     payload = b"".join(parts)
-    http_header = f"HTTP/1.1 200 OK\r\nContent-Length: {len(payload)}\r\n\r\n".encode()
+    http_header = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {len(payload)}\r\n\r\n".encode()
     with _streaming_server(
         server, scanner, fail_open=fail_open, clamd_timeout=0.2
     ) as icap_server:
@@ -5450,7 +5450,7 @@ def test_small_body_scan_lost_after_a_stall_gets_the_error_page(
     server = _load_server()
     scanner = FailAfterStallScanner(idle_limit=0.2)
     parts = [b"A" * 4, b"B" * 4]
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 8\r\n\r\n"
     with _streaming_server(
         server, scanner, fail_open=fail_open, clamd_timeout=0.2
     ) as icap_server:
@@ -5538,7 +5538,7 @@ def test_clamd_size_limit_is_handled_like_the_helper_scan_limit(
     server = _load_server()
     scanner = SizeLimitScanner(scanner_limit=25, server=server)
     parts = [b"A" * 20, b"B" * 20, b"C" * 20]
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 60\r\n\r\n"
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 60\r\n\r\n"
     caplog.set_level(logging.WARNING, logger="clamav-respmod")
     with _streaming_server(
         server,
@@ -5574,3 +5574,140 @@ def test_clamd_size_limit_is_handled_like_the_helper_scan_limit(
         assert b"A" * 20 not in response
         assert counters["oversize_blocks"] == 1
         assert "action=block_unverified" in caplog.text
+
+
+# --- Whole-body hold for content rendered while it arrives -------------------
+
+
+@pytest.mark.parametrize(
+    ("content_type", "whole"),
+    [
+        (b"Content-Type: text/html; charset=utf-8\r\n", True),
+        (b"Content-Type: TEXT/HTML\r\n", True),
+        (b"Content-Type: application/xhtml+xml\r\n", True),
+        (b"Content-Type: text/javascript\r\n", True),
+        (b"Content-Type: application/x-javascript\r\n", True),
+        (b"Content-Type: text/jscript\r\n", True),
+        (b"Content-Type: image/svg+xml\r\n", True),
+        (b"Content-Type: application/pdf\r\n", True),
+        (b"", True),  # missing: browsers sniff it
+        (b"Content-Type: \r\n", True),
+        (b"Content-Type: html\r\n", True),
+        (b"Content-Type: video/mp4\r\nContent-Type: text/html\r\n", True),
+        (b"Content-Type: video/mp4\r\n", False),
+        (b"Content-Type: audio/mpeg\r\n", False),
+        (b"Content-Type: application/octet-stream\r\n", False),
+        (b"Content-Type: application/zip\r\n", False),
+        (b"Content-Type: text/plain\r\n", False),
+    ],
+)
+def test_whole_body_hold_classification(content_type: bytes, whole: bool) -> None:
+    server = _load_server()
+    http_header = b"HTTP/1.1 200 OK\r\n" + content_type + b"Content-Length: 9\r\n\r\n"
+    assert server._http_response_held_whole(http_header) is whole
+
+
+def test_held_body_spools_beyond_its_memory_limit_in_order() -> None:
+    server = _load_server()
+    stream = server._BodyStream(hold_bytes=1 << 20, memory_limit=8)
+    pieces = [b"a" * 5, b"b" * 5, b"c" * 5, b"d" * 3]
+    for piece in pieces:
+        stream.retain(piece)
+    assert stream._file is not None  # beyond 8 bytes in memory
+    assert stream.held_length == 18
+    taken = stream.take(7) + stream.take(4)
+    stream.retain(b"e" * 2)
+    taken += stream.take(stream.held_length)
+    assert taken == b"".join(pieces) + b"e" * 2
+    assert stream.held_length == 0
+    stream.close()
+    assert stream._file is None
+
+
+_HTML_PARTS = [b"<html>" + b"A" * 20, b"B" * 20, b"C" * 20 + b"</html>"]
+
+
+@pytest.mark.parametrize("fail_open", [True, False])
+def test_html_is_held_whole_and_delivered_after_a_clean_verdict(
+    fail_open: bool,
+) -> None:
+    server = _load_server()
+    scanner = MarkerScanner()
+    payload = b"".join(_HTML_PARTS)
+    http_header = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+        + f"Content-Length: {len(payload)}\r\n\r\n".encode()
+    )
+    with _streaming_server(server, scanner, fail_open=fail_open) as icap_server:
+        seen, response, _ending = _run_stream(icap_server, http_header, _HTML_PARTS)
+
+    # Far beyond the 8-byte tail hold, yet nothing reaches Squid early.
+    assert seen == [b"", b"", b""]
+    adapted_header, body, terminated = _decode_icap_response_body(response)
+    assert f"Content-Length: {len(payload)}\r\n".encode() in adapted_header
+    assert body == payload
+    assert terminated is True
+    assert icap_server.stats.counters == {"clean": 1}
+
+
+@pytest.mark.parametrize("fail_open", [True, False])
+def test_infected_held_html_gets_the_block_page(fail_open: bool) -> None:
+    server = _load_server()
+    scanner = MarkerScanner()
+    parts = [*_HTML_PARTS[:2], MARKER + _HTML_PARTS[2]]
+    payload = b"".join(parts)
+    http_header = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+        + f"Content-Length: {len(payload)}\r\n\r\n".encode()
+    )
+    with _streaming_server(server, scanner, fail_open=fail_open) as icap_server:
+        seen, response, _ending = _run_stream(icap_server, http_header, parts)
+
+    assert seen == [b"", b"", b""]
+    assert b"HTTP/1.1 403 Forbidden" in response
+    assert b"Detection: Marker" in response
+    assert b"AAAA" not in response
+    assert icap_server.stats.counters == {"infected": 1}
+
+
+def test_large_held_body_waits_for_the_scan_timeout() -> None:
+    server = _load_server()
+    scanner = MarkerScanner()
+    parts = [b"%PDF" + b"A" * 30, b"B" * 30]
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\n\r\n"
+    with _streaming_server(
+        server, scanner, stream_hold_bytes=16, max_scan_bytes=1 << 20
+    ) as icap_server:
+        seen, response, _ending = _run_stream(icap_server, http_header, parts)
+
+    assert seen == [b"", b""]
+    _header, body, terminated = _decode_icap_response_body(response)
+    assert body == b"".join(parts)
+    assert terminated is True
+    # Larger than the tail hold: a big PDF must not time out into fail-open.
+    assert scanner.verdict_timeouts == [icap_server.scan_timeout]
+
+
+@pytest.mark.parametrize("fail_open", [True, False])
+def test_held_html_over_the_scan_limit_keeps_the_over_limit_policy(
+    fail_open: bool,
+) -> None:
+    server = _load_server()
+    scanner = RecordingScanner()
+    parts = [b"<html>" + b"A" * 20, b"B" * 20]
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
+    with _streaming_server(
+        server, scanner, fail_open=fail_open, max_scan_bytes=30
+    ) as icap_server:
+        _seen, response, _ending = _run_stream(icap_server, http_header, parts)
+
+    if fail_open:
+        _header, body, terminated = _decode_icap_response_body(response)
+        assert body == b"".join(parts)
+        assert terminated is True
+        assert icap_server.stats.counters["oversize_bypasses"] == 1
+    else:
+        # Nothing was delivered yet, so the policy page instead of an abort.
+        assert b"exceeded an antivirus scan limit" in response
+        assert b"AAAA" not in response
+        assert icap_server.stats.counters["oversize_blocks"] == 1

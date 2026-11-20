@@ -265,7 +265,7 @@
         Download scanning covers complete GET/HEAD response bodies. Range requests, <span class="mono">206</span> partial responses, and Server-Sent Events (request <span class="mono">Accept</span> names <span class="mono">text/event-stream</span> <em>and</em> the reply is <span class="mono">text/event-stream</span>) are not sent to RESPMOD because they are partial or unbounded; URL-extension file-security blocks still apply to them. Responses larger than <span class="mono">CLAMAV_STREAM_MAX_BYTES</span> (256 MiB by default) are never labelled clean: fail-open delivers them unscanned, fail-closed blocks them.
       </div>
       <div class="surface-note small">
-        Downloads are delivered while they are scanned: only the newest part of a response (at least 256 KiB and at least 1% of its length) is held back until ClamAV's verdict. Small infected files get the 403 block page; a larger infected download is cut off before that held-back part, so the browser reports the download as failed and the file is never complete. Squid does not cache the aborted response.
+        Downloads are delivered while they are scanned (HTML, JavaScript, SVG, PDF and responses without a usable Content-Type are held whole until the verdict instead): only the newest part of a response (at least 256 KiB and at least 1% of its length) is held back until ClamAV's verdict. Small infected files get the 403 block page; a larger infected download is cut off before that held-back part, so the browser reports the download as failed and the file is never complete. Squid does not cache the aborted response.
       </div>
     </div>
   </section>

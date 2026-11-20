@@ -18,6 +18,7 @@ import socket
 import socketserver
 import struct
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -62,6 +63,39 @@ DEFAULT_BODY_TIMEOUT = 300.0
 # fail-open mode. Kept below Squid's icap_io_timeout (300 s). Held (small)
 # bodies keep the short clamd timeout so a hung clamd cannot stall browsing.
 DEFAULT_SCAN_TIMEOUT = 120.0
+# Held body bytes kept in memory per response before spilling to a temp file.
+DEFAULT_HELD_MEMORY_BYTES = 1024 * 1024
+# Largest piece of a held body written to Squid at once.
+HELD_WRITE_BYTES = 1024 * 1024
+# Media types a browser renders or executes while they arrive (HTML, the
+# WHATWG JavaScript MIME type essence list, SVG, PDF): delivered whole after a
+# clean verdict, never progressively. Video, audio and downloads keep the
+# rolling tail hold.
+FULL_HOLD_MEDIA_TYPES = frozenset(
+    {
+        "text/html",
+        "application/xhtml+xml",
+        "image/svg+xml",
+        "application/pdf",
+        # https://mimesniff.spec.whatwg.org/#javascript-mime-type
+        "application/ecmascript",
+        "application/javascript",
+        "application/x-ecmascript",
+        "application/x-javascript",
+        "text/ecmascript",
+        "text/javascript",
+        "text/javascript1.0",
+        "text/javascript1.1",
+        "text/javascript1.2",
+        "text/javascript1.3",
+        "text/javascript1.4",
+        "text/javascript1.5",
+        "text/jscript",
+        "text/livescript",
+        "text/x-ecmascript",
+        "text/x-javascript",
+    }
+)
 DEFAULT_CLAMD_UNAVAILABLE_RETRY_SECONDS = 2.0
 DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 DEFAULT_SQUID_204_BACKUP_LIMIT = 64 * 1024
@@ -148,44 +182,96 @@ class _BodyStream:
 
     Bytes are forwarded as soon as more than ``hold_bytes`` are retained, so
     the client receives the response while it downloads.  The newest
-    ``hold_bytes`` stay in ``held`` until clamd returns a verdict: an infected
-    or unverifiable fail-closed response is aborted before that tail is sent.
+    ``hold_bytes`` stay held until clamd returns a verdict: an infected or
+    unverifiable fail-closed response is aborted before that tail is sent.
     A body that never exceeds ``hold_bytes`` is answered as a whole, which
     keeps the 403 block page and the fail-open 204 for small responses.
+
+    Held bytes stay in memory up to ``memory_limit`` and then go to an
+    unlinked temporary file, so a body held whole until its verdict (HTML,
+    scripts, SVG, PDF: up to the scan limit) does not live in RAM.
     """
 
     hold_bytes: int
-    held: collections.deque[bytes] = field(default_factory=collections.deque)
+    # Held whole until the verdict (content rendered while it arrives).
+    whole: bool = False
+    memory_limit: int = DEFAULT_HELD_MEMORY_BYTES
     held_length: int = 0
     length: int = 0
     headers_sent: bool = False
     discarding: bool = False
+    _memory: collections.deque[bytes] = field(default_factory=collections.deque)
+    _memory_length: int = 0
+    _file: BinaryIO | None = None
+    _file_read: int = 0
+    _file_write: int = 0
 
     def retain(self, data: bytes) -> None:
-        if self.discarding:
+        if self.discarding or not data:
             return
-        self.held.append(data)
+        if (
+            self._file_write > self._file_read
+            or self._memory_length + len(data) > self.memory_limit
+        ):
+            if self._file is None:
+                self._file = tempfile.TemporaryFile()
+            self._file.seek(self._file_write)
+            self._file.write(data)
+            self._file_write += len(data)
+        else:
+            self._memory.append(data)
+            self._memory_length += len(data)
         self.held_length += len(data)
 
     def take(self, size: int) -> bytes:
+        """Remove and return up to ``size`` of the oldest held bytes."""
         parts: list[bytes] = []
+        size = min(size, self.held_length)
         while size > 0:
-            head = self.held[0]
+            if not self._memory:
+                self._refill_from_file(size)
+            head = self._memory[0]
             if len(head) <= size:
-                parts.append(self.held.popleft())
-                size -= len(head)
+                parts.append(self._memory.popleft())
             else:
                 parts.append(head[:size])
-                self.held[0] = head[size:]
-                size = 0
+                self._memory[0] = head[size:]
+            taken = len(parts[-1])
+            self._memory_length -= taken
+            size -= taken
         data = b"".join(parts)
         self.held_length -= len(data)
         return data
 
+    def _refill_from_file(self, size: int) -> None:
+        if self._file is None:  # pragma: no cover - held_length accounting
+            message = "held RESPMOD body accounting is inconsistent"
+            raise RuntimeError(message)
+        self._file.seek(self._file_read)
+        block = self._file.read(min(size, self._file_write - self._file_read))
+        if not block:
+            message = "held RESPMOD body spool was truncated"
+            raise OSError(message)
+        self._file_read += len(block)
+        if self._file_read == self._file_write:
+            self._file.seek(0)
+            self._file.truncate()
+            self._file_read = self._file_write = 0
+        self._memory.append(block)
+        self._memory_length += len(block)
+
     def discard(self) -> None:
-        self.held.clear()
-        self.held_length = 0
+        self.close()
         self.discarding = True
+
+    def close(self) -> None:
+        self._memory.clear()
+        self._memory_length = 0
+        self.held_length = 0
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+        self._file_read = self._file_write = 0
 
 
 logger = logging.getLogger("clamav-respmod")
@@ -1051,6 +1137,27 @@ def _http_header_for_body_replay(http_header: bytes, body_length: int | None) ->
     return CRLF.join(replay_lines) + HEADER_END
 
 
+def _http_response_held_whole(http_header: bytes) -> bool:
+    """Whether the response is delivered only after a clean verdict.
+
+    True for FULL_HOLD_MEDIA_TYPES (case-insensitive essence, parameters
+    ignored). A missing, empty, malformed or repeated Content-Type is held
+    too: browsers sniff such responses and may render them as HTML, so they
+    must not reach the client before the verdict.
+    """
+    values = [
+        line.split(b":", 1)[1]
+        for line in _http_header_lines(http_header)[1:]
+        if b":" in line and line.split(b":", 1)[0].strip().lower() == b"content-type"
+    ]
+    if len(values) != 1:
+        return True
+    essence = values[0].split(b";", 1)[0].strip().lower()
+    if not essence or b"/" not in essence:
+        return True
+    return essence.decode("ascii", errors="replace") in FULL_HOLD_MEDIA_TYPES
+
+
 def blocked_response(signature: str | None) -> bytes:
     reason = signature or "malware"
     payload = (
@@ -1153,9 +1260,19 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 b"".join((f"{len(data):X}\r\n".encode("ascii"), data, CRLF))
             )
 
-    def _write_replay_response(self, *, http_header: bytes, body: bytes) -> None:
-        self._write_adapted_head(http_header, len(body))
-        self._write_body_chunk(body)
+    def _write_held(self, stream: _BodyStream, size: int) -> None:
+        """Write ``size`` of the oldest held bytes as bounded ICAP chunks."""
+        while size > 0:
+            piece = stream.take(min(size, HELD_WRITE_BYTES))
+            if not piece:
+                return
+            size -= len(piece)
+            self._write_body_chunk(piece)
+
+    def _write_held_response(self, *, http_header: bytes, stream: _BodyStream) -> None:
+        """Answer with the whole held (never streamed) body and its length."""
+        self._write_adapted_head(http_header, stream.held_length)
+        self._write_held(stream, stream.held_length)
         self._write_response(b"0\r\n\r\n")
 
     def _forward_beyond_hold(self, stream: _BodyStream, http_header: bytes) -> None:
@@ -1171,10 +1288,10 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 http_header, None if declared is None else int(declared)
             )
             stream.headers_sent = True
-        self._write_body_chunk(stream.take(excess))
+        self._write_held(stream, excess)
 
     def _finish_stream(self, stream: _BodyStream) -> None:
-        self._write_body_chunk(stream.take(stream.held_length))
+        self._write_held(stream, stream.held_length)
         self._write_response(b"0\r\n\r\n")
 
     def _abort_stream(self) -> None:
@@ -1317,6 +1434,10 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 # Release the clamd connection and scan slot immediately.
                 stack.close()
                 if server.fail_open and not isinstance(reason, ScanStalledError):
+                    # Delivered unscanned anyway: a whole-body hold falls back
+                    # to the ordinary tail hold instead of spooling the rest.
+                    if stream.whole:
+                        stream.hold_bytes = server.stream_hold_bytes_for(declared)
                     return
                 if stream.headers_sent:
                     raise reason
@@ -1375,6 +1496,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     result = scanner.finish(
                         verdict_timeout=server.scan_timeout
                         if stream.headers_sent
+                        or stream.length > server.stream_hold_bytes
                         else None
                     )
                 except Exception as exc:
@@ -1406,9 +1528,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 # A scan-limit bypass is explicitly unscanned: deliver the
                 # retained response rather than relying on Squid's late-204
                 # backup.
-                self._write_replay_response(
-                    http_header=http_header, body=stream.take(stream.held_length)
-                )
+                self._write_held_response(http_header=http_header, stream=stream)
             return
         server.record("clean")
         if stream.headers_sent:
@@ -1416,9 +1536,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
         else:
             # Clean verdicts replay the drained response conservatively to
             # avoid Squid's late-204 backup edge cases.
-            self._write_replay_response(
-                http_header=http_header, body=stream.take(stream.held_length)
-            )
+            self._write_held_response(http_header=http_header, stream=stream)
 
     def handle(self) -> None:
         allow_204 = False
@@ -1518,10 +1636,13 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                     # The body may legitimately idle for longer than the
                     # header-phase client timeout (slow origin, slow client).
                     self.request.settimeout(self.server.body_timeout)
+                    whole = _http_response_held_whole(http_header)
                     stream = _BodyStream(
                         hold_bytes=self.server.stream_hold_bytes_for(
-                            _http_declared_content_length(http_header)
-                        )
+                            _http_declared_content_length(http_header),
+                            whole=whole,
+                        ),
+                        whole=whole,
                     )
                     try:
                         self._stream_respmod_body(
@@ -1577,6 +1698,9 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 body_complete=body_complete,
                 null_body=null_body,
             )
+        finally:
+            if stream is not None:
+                stream.close()  # drops a held-body spool file
 
     def _handle_failure(
         self,
@@ -1705,18 +1829,24 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.stats.increment(counter)
         self.stats.emit_if_due()
 
-    def stream_hold_bytes_for(self, declared_length: bytes | None) -> int:
+    def stream_hold_bytes_for(
+        self, declared_length: bytes | None, *, whole: bool = False
+    ) -> int:
         """Return the bytes withheld from Squid until the clamd verdict.
 
         That is at least ``stream_hold_bytes`` and at least
-        STREAM_HOLD_PERCENT of a declared length. A declared length over the
-        scan limit is never verified, so nothing is held for it.
+        STREAM_HOLD_PERCENT of a declared length, or the whole body up to the
+        scan limit when ``whole`` (content rendered while it arrives). A
+        declared length over the scan limit is never verified, so nothing is
+        held for it.
         """
+        if declared_length is not None and int(declared_length) > self.max_scan_bytes:
+            return 0
+        if whole:
+            return self.max_scan_bytes
         if declared_length is None:
             return self.stream_hold_bytes
         length = int(declared_length)
-        if length > self.max_scan_bytes:
-            return 0
         return max(self.stream_hold_bytes, -(-length * STREAM_HOLD_PERCENT // 100))
 
     def server_close(self) -> None:
