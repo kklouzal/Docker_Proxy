@@ -163,6 +163,11 @@ def _site_key(host: str) -> str:
     return ".".join(labels[registrable_domain_start(labels) :])
 
 
+def _source_host(source_url: str) -> str:
+    parsed = _safe_urlsplit(source_url)
+    return _normalize_host(parsed.hostname if parsed is not None else "")
+
+
 def _is_third_party(request_host: str, source_host: str) -> bool | None:
     request_site = _site_key(request_host)
     source_site = _site_key(source_host)
@@ -358,11 +363,14 @@ class AdblockDecisionEngine:
         )
         effective_source_url = source_url or source_url_from_headers(headers)
         effective_third_party_hint = third_party_hint_from_headers(headers)
+        # Rules only see the source page through its host, so key the cache on
+        # that rather than on every distinct Referer path/query.
+        source_host = _source_host(effective_source_url)
         cache_key = (
             _normalize_method(method),
             url or "",
             effective_resource_type,
-            effective_source_url,
+            source_host,
             str(effective_third_party_hint),
         )
         cached = self._get_cached(cache_key)
@@ -373,7 +381,7 @@ class AdblockDecisionEngine:
             url,
             method=method,
             resource_type=effective_resource_type,
-            source_url=effective_source_url,
+            source_host=source_host,
             third_party_hint=effective_third_party_hint,
         )
         if context is None:
@@ -426,17 +434,13 @@ class AdblockDecisionEngine:
         *,
         method: str,
         resource_type: str,
-        source_url: str,
+        source_host: str,
         third_party_hint: bool | None,
     ) -> _RequestContext | None:
         parsed = _safe_urlsplit(url)
         if parsed is None:
             return None
         request_host = _normalize_host(parsed.hostname or "")
-        source_parsed = _safe_urlsplit(source_url)
-        source_host = _normalize_host(
-            source_parsed.hostname if source_parsed is not None else "",
-        )
         third_party = _is_third_party(request_host, source_host)
         if third_party is None and third_party_hint is not None:
             third_party = bool(third_party_hint)

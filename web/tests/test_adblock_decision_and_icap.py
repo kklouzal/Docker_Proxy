@@ -518,7 +518,7 @@ def test_adblock_decision_preserves_absolute_and_host_authority_boundaries(
                 "https://host.example:8443/ads.js",
                 method="GET",
                 resource_type="other",
-                source_url="",
+                source_host="",
                 third_party_hint=None,
             ),
         )
@@ -2341,3 +2341,26 @@ def test_icap_decision_cache_uses_artifact_admin_settings(
         3600,
         200000,
     )
+
+
+def test_decision_cache_keys_on_source_host_not_referer_path(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^$domain=source.example"])
+
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=60, cache_max=10)
+    for page in ("a", "b?x=1", "c#frag"):
+        decision = engine.decide(
+            "https://ads.example/x.js",
+            headers={"referer": f"https://source.example/{page}"},
+        )
+        assert decision.blocked is True
+    assert len(engine._cache) == 1
+    assert (
+        engine.decide(
+            "https://ads.example/x.js",
+            headers={"referer": "https://other.example/a"},
+        ).blocked
+        is False
+    )
+    assert len(engine._cache) == 2
