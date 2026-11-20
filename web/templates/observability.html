@@ -707,7 +707,7 @@
       <div class="stat compact-stat"><div class="stat-k">Cache savings</div><div class="stat-v">{{ payload.cache_savings.estimated_saved_bytes }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Blocked categories</div><div class="stat-v">{{ payload.top_blocked_categories|length }}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Malware/phishing attempts</div><div class="stat-v">{{ payload.top_malware_attempts|length }}</div></div>
-      <div class="stat compact-stat"><div class="stat-k">Audit events</div><div class="stat-v">{{ payload.audit.summary.events if payload.audit else 0 }}</div></div>
+      <div class="stat compact-stat"><div class="stat-k">Audit events</div><div class="stat-v">{% if payload.audit and payload.audit.error %}unavailable{% else %}{{ payload.audit.summary.events if payload.audit else 0 }}{% endif %}</div></div>
       <div class="stat compact-stat"><div class="stat-k">Rollup points</div><div class="stat-v">{{ payload.time_series.rollup_points if payload.time_series else 0 }}</div></div>
     </div>
 </section>
@@ -873,7 +873,11 @@
           {% for row in payload.audit.top_kinds %}
             <tr><td>{{ row.kind }}</td><td class="num">{{ row.events }}</td><td class="num"><span class="small">{{ fmt_ts(row.last_seen) }}</span></td></tr>
           {% else %}
+            {% if payload.audit.error %}
+            <tr><td colspan="3" class="muted">Audit activity unavailable: {{ payload.audit.error }}</td></tr>
+            {% else %}
             <tr><td colspan="3" class="muted">No audit events matched this window.</td></tr>
+            {% endif %}
           {% endfor %}
           </tbody>
         </table></div>

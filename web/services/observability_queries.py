@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import Counter
@@ -11,6 +12,8 @@ if TYPE_CHECKING:
 from services.client_identity_cache import get_client_identity_cache
 from services.db import connect
 from services.diagnostic_store import get_diagnostic_store
+from services.errors import public_error_message
+from services.logutil import log_exception_throttled
 from services.privacy_labels import pseudonymize
 from services.proxy_context import get_proxy_id
 from services.proxy_write_guard import guarded_proxy_write
@@ -30,6 +33,8 @@ from services.ui_support import (
     present_top_value_rows,
     present_transaction_rows,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _pct(part: int, whole: int) -> float:
@@ -1419,13 +1424,23 @@ class ObservabilityQueries:
                     """,
                     (proxy_id, int(since), lim),
                 ).fetchall()
-        except Exception:
+        except Exception as exc:
+            # The report must not read as "no activity" when the audit table is
+            # unreadable; the template shows the error instead of zero counts.
+            log_exception_throttled(
+                logger,
+                "observability_queries.audit_activity",
+                interval_seconds=300.0,
+                message="Observability report could not read audit activity",
+            )
             return {
                 "summary": {"events": 0, "failed_events": 0, "last_seen": 0},
                 "top_kinds": [],
                 "recent": [],
+                "error": public_error_message(exc),
             }
         return {
+            "error": "",
             "summary": {
                 "events": int(summary[0] or 0) if summary else 0,
                 "failed_events": int(summary[1] or 0) if summary else 0,

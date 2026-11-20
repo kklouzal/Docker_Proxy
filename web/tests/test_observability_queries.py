@@ -2528,3 +2528,23 @@ def test_windowed_request_aggregates_pin_the_proxy_ts_range(monkeypatch) -> None
     statements.clear()
     queries.summary(since=100)
     assert hint in statements[0]
+
+
+def test_audit_activity_reports_unavailable_instead_of_no_activity(
+    monkeypatch, caplog
+) -> None:
+    from services import observability_queries  # type: ignore
+
+    def unavailable():
+        msg = "audit table unreadable"
+        raise RuntimeError(msg)
+
+    queries = observability_queries.ObservabilityQueries()
+    monkeypatch.setattr(queries, "_connect", unavailable)
+
+    with caplog.at_level("ERROR"):
+        payload = queries.audit_activity(since=0)
+
+    assert payload["error"]
+    assert payload["top_kinds"] == []
+    assert "could not read audit activity" in caplog.text
