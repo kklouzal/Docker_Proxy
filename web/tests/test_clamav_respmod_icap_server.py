@@ -103,6 +103,12 @@ class ResetMidStreamSocket(FakeSocket):
         super().sendall(data)
 
 
+def _scan_stream_with_clamd(server, body: bytes, **kwargs):
+    with server.ClamdInstreamSession(**kwargs) as session:
+        session.send_chunk(body)
+        return session.finish()
+
+
 def test_clamd_instream_scan_sends_body_chunks(monkeypatch) -> None:
     server = _load_server()
     fake = FakeSocket()
@@ -111,7 +117,8 @@ def test_clamd_instream_scan_sends_body_chunks(monkeypatch) -> None:
         server.socket, "create_connection", lambda address, timeout: fake
     )
 
-    result = server.scan_stream_with_clamd(
+    result = _scan_stream_with_clamd(
+        server,
         b"abcdef",
         host="192.168.1.10",
         port=3310,
@@ -226,7 +233,7 @@ def test_clamd_instream_scan_reports_found(monkeypatch) -> None:
         server.socket, "create_connection", lambda address, timeout: fake
     )
 
-    result = server.scan_stream_with_clamd(b"eicar", host="192.168.1.10", port=3310)
+    result = _scan_stream_with_clamd(server, b"eicar", host="192.168.1.10", port=3310)
 
     assert result.clean is False
     assert result.infected is True
@@ -277,7 +284,7 @@ def test_clamd_instream_uses_explicit_z_framing_not_legacy_command(
         server.socket, "create_connection", lambda address, timeout: accepted
     )
 
-    result = server.scan_stream_with_clamd(b"x", host="192.168.1.10", port=3310)
+    result = _scan_stream_with_clamd(server, b"x", host="192.168.1.10", port=3310)
 
     assert result.clean is True
     assert accepted.sent == (
@@ -787,21 +794,6 @@ def test_respmod_rejects_malformed_chunk_size_without_clean_replay() -> None:
     assert b"HTTP/1.1 502 Bad Gateway" in response
     assert b"invalid ICAP chunk size" in response
     assert b"5\r\nhello\r\n0\r\n\r\n" not in response
-
-
-def test_clean_icap_response_replays_body_even_when_204_allowed() -> None:
-    server = _load_server()
-
-    response = server.clean_response(
-        allow_204=True,
-        http_header=b"HTTP/1.1 200 OK\r\n\r\n",
-        body=b"clean",
-    )
-
-    assert response.startswith(b"ICAP/1.0 200 OK\r\n")
-    assert b"HTTP/1.1 200 OK" in response
-    assert b"Content-Length: 5\r\n" in response
-    assert b"5\r\nclean\r\n0\r\n\r\n" in response
 
 
 def test_unknown_length_clean_respmod_replays_body_instead_of_late_204() -> None:
@@ -2762,11 +2754,11 @@ def test_clean_icap_responses_close_connections_to_prevent_reuse_races() -> None
     server = _load_server()
 
     options = server.options_response()
-    clean = server.clean_response(
-        allow_204=True, http_header=b"HTTP/1.1 200 OK\r\n\r\n", body=b"clean"
+    clean = server.clean_no_body_response(
+        allow_204=True, http_header=b"HTTP/1.1 204 No Content\r\n\r\n"
     )
-    replay = server.clean_response(
-        allow_204=False, http_header=b"HTTP/1.1 200 OK\r\n\r\n", body=b"clean"
+    replay = server.clean_no_body_response(
+        allow_204=False, http_header=b"HTTP/1.1 204 No Content\r\n\r\n"
     )
 
     assert b"Connection: close\r\n" in options

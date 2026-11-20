@@ -1612,9 +1612,6 @@ stdout_logfile_maxbytes=0
             ports.append(int(item.get("port") or 3128))
         return tuple(ports)
 
-    def _http_listener_port(self, config_text: str | None = None) -> int:
-        return self._http_listener_ports(config_text)[0]
-
     def _tcp_listener_accepts(self, port: int) -> bool:
         try:
             with socket.create_connection(("127.0.0.1", int(port)), timeout=0.5):
@@ -3035,16 +3032,6 @@ stdout_logfile_maxbytes=0
                     Path(new_path).unlink()
             except OSError:
                 pass
-
-    def reload_squid(self):
-        try:
-            ok, detail = self.reconfigure_squid(timeout=15, listener_timeout=20.0)
-            encoded = str(detail or "").encode("utf-8", errors="replace")
-            return (encoded, b"") if ok else (b"", encoded)
-        except FileNotFoundError:
-            return b"", b"squid binary not found"
-        except Exception as exc:
-            return b"", str(exc).encode("utf-8", errors="replace")
 
     def get_status(self):
         try:

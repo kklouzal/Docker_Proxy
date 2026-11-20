@@ -4517,7 +4517,6 @@ http_port 3130 tproxy
         {"port": 3130, "mode": "tproxy"},
     )
     assert controller._http_listener_ports() == (3128, 3129, 3130)
-    assert controller._http_listener_port() == 3128
 
 
 def test_squid_controller_removes_stale_pidfile_before_restart(
@@ -6993,10 +6992,10 @@ def test_squid_reload_treats_successful_stderr_warnings_as_detail(tmp_path) -> N
     )
     controller._wait_for_http_listener = lambda **_kwargs: True
 
-    stdout, stderr = controller.reload_squid()
+    ok, detail = controller.reconfigure_squid(timeout=15, listener_timeout=20.0)
 
-    assert stderr == b""
-    assert b"WARNING: benign squid warning" in stdout
+    assert ok is True
+    assert "WARNING: benign squid warning" in detail
 
 
 def test_squid_reload_preserves_nonzero_reconfigure_failure(tmp_path) -> None:
@@ -7010,10 +7009,10 @@ def test_squid_reload_preserves_nonzero_reconfigure_failure(tmp_path) -> None:
     )
     controller._wait_for_http_listener = lambda **_kwargs: True
 
-    stdout, stderr = controller.reload_squid()
+    ok, detail = controller.reconfigure_squid(timeout=15, listener_timeout=20.0)
 
-    assert stdout == b""
-    assert b"fatal squid error" in stderr
+    assert ok is False
+    assert "fatal squid error" in detail
 
 
 def test_squid_controller_matches_socket_inode_symlink_targets(
@@ -9646,14 +9645,14 @@ def test_operation_config_force_is_limited_to_config_affecting_requests() -> Non
         target_kind="pac_state",
     )
     assert not runtime_module._operations_request_config_force([pac_operation])
-    assert runtime_module._operations_request_force([pac_operation])
+    assert runtime_module._operation_requests_force(pac_operation)
     assert runtime_module._operations_request_reconciliation_force([pac_operation])
     cache_operation = SimpleNamespace(
         force=True,
         operation_type="cache_clear",
         target_kind="",
     )
-    assert runtime_module._operations_request_force([cache_operation])
+    assert runtime_module._operation_requests_force(cache_operation)
     assert not runtime_module._operations_request_reconciliation_force(
         [cache_operation]
     )

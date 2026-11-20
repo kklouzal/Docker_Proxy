@@ -570,11 +570,6 @@ def _parse_chunk_line(line: bytes) -> tuple[int, set[bytes]]:
     return size, extensions
 
 
-def _parse_chunk_size(line: bytes) -> int:
-    size, _extensions = _parse_chunk_line(line)
-    return size
-
-
 def _validate_chunk_trailer(line: bytes) -> None:
     if b":" not in line:
         message = "invalid ICAP chunk trailer"
@@ -1347,10 +1342,6 @@ def run_unavailable_placeholder(
     with _FailOpenAvServer((listen_host, listen_port), _FailOpenAvHandler) as server:
         server.fail_open = fail_open
         server.serve_forever()
-
-
-def run_fail_open_placeholder(conf_path: str, *, host: str, port: int) -> None:
-    run_unavailable_placeholder(conf_path, host=host, port=port, fail_open=True)
 
 
 def main(argv: list[str]) -> int:

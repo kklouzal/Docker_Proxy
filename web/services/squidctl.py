@@ -9,7 +9,6 @@ import pathlib
 import re
 from typing import Any
 
-from services.logutil import log_exception_throttled
 from services.squid_config_forms import (
     DEFAULT_CACHE_POLICY_RULES,
     DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES,
@@ -17,7 +16,6 @@ from services.squid_config_forms import (
     coerce_config_bool,
 )
 from services.squid_core import SquidController as _CoreSquidController
-from services.squid_core import _exclusive_squid_lifecycle_lock
 
 logger = logging.getLogger(__name__)
 
@@ -2610,59 +2608,3 @@ class SquidController(_CoreSquidController):
         )
         managed_block = self._render_managed_settings(options)
         return self._replace_managed_settings_block(rendered, managed_block)
-
-    def start_squid(self):
-        with _exclusive_squid_lifecycle_lock():
-            return self._start_squid_locked()
-
-    def _start_squid_locked(self):
-        try:
-            proc = self._run(
-                ["supervisorctl", "-c", "/etc/supervisord.conf", "start", "squid"],
-                capture_output=True,
-                timeout=12,
-            )
-            if proc.returncode == 0:
-                return proc.stdout or b"", proc.stderr or b""
-        except FileNotFoundError:
-            pass
-        except Exception:
-            log_exception_throttled(
-                logger,
-                "squidctl.start_squid.supervisor",
-                interval_seconds=300.0,
-                message="supervisorctl start squid failed",
-            )
-
-        try:
-            proc = self._run(
-                ["squid", "-f", self.squid_conf_path],
-                capture_output=True,
-                timeout=12,
-            )
-            return proc.stdout or b"", proc.stderr or b""
-        except FileNotFoundError:
-            return b"", b"squid binary not found"
-        except Exception as exc:
-            return b"", str(exc).encode("utf-8", errors="replace")
-
-    def stop_squid(self):
-        with _exclusive_squid_lifecycle_lock():
-            return self._stop_squid_locked()
-
-    def _stop_squid_locked(self):
-        try:
-            proc = self._run(
-                ["squid", "-k", "shutdown"],
-                capture_output=True,
-                timeout=12,
-            )
-            stdout = proc.stdout or b""
-            stderr = proc.stderr or b""
-            if proc.returncode != 0 and not stderr:
-                stderr = f"squid shutdown failed rc={proc.returncode}".encode()
-            return stdout, stderr
-        except FileNotFoundError:
-            return b"", b"squid binary not found"
-        except Exception as exc:
-            return b"", str(exc).encode("utf-8", errors="replace")

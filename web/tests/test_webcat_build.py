@@ -527,7 +527,7 @@ def test_download_rejects_oversized_content_length(
 
     with tempfile.TemporaryDirectory(prefix="webcat_download_") as td:
         with pytest.raises(ValueError, match="Content-Length=11"):
-            webcat_build._download(
+            webcat_build._download_if_changed(
                 "https://example.com/feed.csv", Path(td) / "feed.csv"
             )
 
@@ -569,7 +569,7 @@ def test_download_removes_partial_tmp_when_stream_exceeds_limit(
         tmp = dest.with_suffix(dest.suffix + ".tmp")
 
         with pytest.raises(ValueError, match="Download exceeded limit"):
-            webcat_build._download("https://public.example/feed.csv", dest)
+            webcat_build._download_if_changed("https://public.example/feed.csv", dest)
 
         assert not dest.exists()
         assert not tmp.exists()
@@ -614,53 +614,10 @@ def test_download_invalid_or_nonpositive_limit_falls_back_to_default(
             ValueError,
             match=f"Content-Length={webcat_build._DEFAULT_MAX_DOWNLOAD_BYTES + 1}",
         ):
-            webcat_build._download(
+            webcat_build._download_if_changed(
                 "https://public.example/feed.csv",
                 Path(td) / "feed.csv",
             )
-
-
-def test_download_if_changed_invalid_limit_falls_back_to_default(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    webcat_build = _import_webcat_build()
-    _allow_public_example_dns(webcat_build, monkeypatch)
-
-    class _Headers:
-        def get(self, name: str) -> str | None:
-            if name == "Content-Length":
-                return str(webcat_build._DEFAULT_MAX_DOWNLOAD_BYTES + 1)
-            return None
-
-    class _Response:
-        headers = _Headers()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-        def read(self, _size: int) -> bytes:
-            msg = "body should not be read after oversized default Content-Length"
-            raise AssertionError(msg)
-
-    monkeypatch.setenv("WEBCAT_MAX_DOWNLOAD_BYTES", "not-an-int")
-    monkeypatch.setattr(
-        webcat_build,
-        "_open_download_url",
-        lambda *_args, **_kwargs: _Response(),
-    )
-
-    with tempfile.TemporaryDirectory(prefix="webcat_conditional_limit_fallback_") as td:
-        dest = Path(td) / "feed.csv"
-        with pytest.raises(
-            ValueError,
-            match=f"Content-Length={webcat_build._DEFAULT_MAX_DOWNLOAD_BYTES + 1}",
-        ):
-            webcat_build._download_if_changed("https://public.example/feed.csv", dest)
-        assert not dest.exists()
-        assert not dest.with_suffix(dest.suffix + ".tmp").exists()
 
 
 def test_tar_extraction_blocks_traversal_and_enforces_size_limit(
@@ -864,7 +821,7 @@ def test_download_rejects_hostname_resolving_private(
 
     with tempfile.TemporaryDirectory(prefix="webcat_ssrf_") as td:
         with pytest.raises(ValueError, match="internal/localhost"):
-            webcat_build._download(
+            webcat_build._download_if_changed(
                 "https://public.example/feed.csv", Path(td) / "feed.csv"
             )
 
@@ -891,7 +848,7 @@ def test_download_rejects_hostname_when_dns_cannot_be_verified(
 
     with tempfile.TemporaryDirectory(prefix="webcat_dns_fail_") as td:
         with pytest.raises(ValueError, match="internal/localhost"):
-            webcat_build._download(
+            webcat_build._download_if_changed(
                 "https://public.example/feed.csv", Path(td) / "feed.csv"
             )
 

@@ -173,10 +173,6 @@ def _operation_requests_force(operation: Any) -> bool:
     return bool(value)
 
 
-def _operations_request_force(operations: list[Any] | None) -> bool:
-    return any(_operation_requests_force(operation) for operation in operations or [])
-
-
 def _operation_requests_reconciliation_force(operation: Any) -> bool:
     if not _operation_requests_force(operation):
         return False
