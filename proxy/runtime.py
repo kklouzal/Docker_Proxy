@@ -92,6 +92,8 @@ from services.stats import get_stats
 from services.timeseries_store import get_timeseries_store
 from services.version_status import current_component_metadata
 
+from proxy.process_memory import cgroup_memory, supervisor_program_memory
+
 logger = logging.getLogger(__name__)
 
 
@@ -1727,6 +1729,11 @@ class ProxyRuntime:
             if detail_parts
             else "supervisor programs running",
             "programs": statuses,
+            # Diagnostics only: never part of the ok verdict.
+            "memory": {
+                "programs_kib": supervisor_program_memory(lines),
+                "cgroup_bytes": cgroup_memory(),
+            },
         }
 
     def _squid_transaction_health(self) -> dict[str, Any]:
