@@ -374,6 +374,60 @@ def test_sync_applies_overlay_once_and_then_reconciles_without_reapply(
     assert second["detail"] == "Proxy is already using the active config revision."
 
 
+def test_normalize_releases_tls_session_cache_no_listener_can_use(
+    monkeypatch,
+) -> None:
+    from services.squid_core import SquidController
+
+    monkeypatch.delenv(OVERRIDES_ENV, raising=False)
+    controller = SquidController()
+    stored = FLEET_REVISION + "sslproxy_session_cache_size 32 MB\n"
+
+    normalized = controller.normalize_config_text(stored)
+
+    assert "sslproxy_session_cache_size 0 MB" in normalized
+    assert "32 MB" not in normalized
+    assert controller.normalize_config_text(normalized) == normalized
+    static = stored + "https_port 0.0.0.0:8443 tls-cert=/etc/squid/static.pem\n"
+    assert "sslproxy_session_cache_size 32 MB" in controller.normalize_config_text(
+        static
+    )
+
+
+def test_sync_applies_released_tls_session_cache_once(monkeypatch) -> None:
+    from services.squid_core import SquidController
+
+    monkeypatch.delenv(OVERRIDES_ENV, raising=False)
+    # The stored production revision predates the 0 MB default; the proxy keeps
+    # running its persisted copy until the first reconcile.
+    revision = FLEET_REVISION + "sslproxy_session_cache_size 32 MB\n"
+    monkeypatch.setenv(OVERRIDES_ENV, encode_overrides(RB5009))
+    controller = SquidController()
+    effective = controller.normalize_config_text(revision)
+    current = {"text": apply_host_overrides(revision, RB5009)}
+    runtime, applied, _marked = _sync_runtime(controller, revision, current)
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.setattr(
+        runtime_module,
+        "get_operation_ledger",
+        lambda: SimpleNamespace(
+            requeue_stale_applying=lambda *_args, **_kwargs: 0,
+            claim_pending=lambda *_args, **_kwargs: [],
+        ),
+    )
+
+    first = runtime.sync_from_db(force=False)
+    second = runtime.sync_from_db(force=False)
+
+    assert "sslproxy_session_cache_size 0 MB" in effective
+    assert applied == [effective]
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert second["config_changed"] is False
+    assert second["detail"] == "Proxy is already using the active config revision."
+
+
 def test_health_reports_effective_sha_and_host_overrides_without_drift(
     monkeypatch,
 ) -> None:

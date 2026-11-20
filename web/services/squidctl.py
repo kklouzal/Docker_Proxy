@@ -669,7 +669,7 @@ class SquidController(_CoreSquidController):
         )
         sslproxy_session_cache_size_mb = int_value(
             "sslproxy_session_cache_size_mb",
-            32,
+            0,
             minimum=0,
         )
         sslproxy_foreign_intermediate_certs = self._validate_single_token_value(

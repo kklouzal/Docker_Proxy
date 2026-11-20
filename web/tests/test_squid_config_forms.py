@@ -132,7 +132,7 @@ def test_build_template_options_defaults_match_perf_baseline() -> None:
     assert options["dynamic_cert_mem_cache_size_mb"] == 128
     assert options["tls_outgoing_options_line"] == "min-version=1.2 options=NO_SSLv3"
     assert options["sslproxy_session_ttl_seconds"] == 600
-    assert options["sslproxy_session_cache_size_mb"] == 32
+    assert options["sslproxy_session_cache_size_mb"] == 0
     assert options["sslproxy_cert_sign_hash"] == "sha256"
     assert options["via_on"] is True
     assert options["strip_query_terms_on"] is True

@@ -1993,7 +1993,7 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         _posted_int_reader("sslproxy_session_ttl_seconds"),
         minimum=0,
         step=1,
-        help_text="Origin TLS session cache entry lifetime.",
+        help_text="Lifetime of TLS sessions Squid issues to clients of static-certificate listeners.",
     ),
     _field(
         "sslproxy_session_cache_size_mb",
@@ -2002,11 +2002,16 @@ CONFIG_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "sslproxy_session_cache_size (MB)",
         "sslproxy_session_cache_size",
         "number",
-        _tunable_or_default_if_none("sslproxy_session_cache_size_mb", 32),
+        _tunable_or_default_if_none("sslproxy_session_cache_size_mb", 0),
         _posted_int_reader("sslproxy_session_cache_size_mb"),
         minimum=0,
         step=1,
-        help_text="Origin TLS session cache size.",
+        help_text=(
+            "Shared memory for resuming client TLS sessions on listeners that serve a "
+            "static certificate. SSL-bumped clients use generated per-connection "
+            "certificates and never resume through it, so the proxy applies 0 while "
+            "no static-certificate listener exists."
+        ),
     ),
     _field(
         "sslproxy_foreign_intermediate_certs",

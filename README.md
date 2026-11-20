@@ -349,6 +349,12 @@ can lower, but never raise, that scheduled-housekeeping bound.
 - Dedicated HTTPS NAT intercept listener controls, including an optional splice-only mode for redirected TCP/443 traffic that should be tunneled without decryption.
 - Source-backed compatibility presets for common SaaS, identity, update, collaboration, and device ecosystems that are poor candidates for TLS break-and-inspect.
 - SSL/TLS error aggregation, export, and exclusion workflows.
+- `sslproxy_session_cache_size` defaults to 0: Squid 7.8 attaches that shared
+  session cache only to listeners serving a static certificate, and bumped
+  clients get per-connection generated contexts that never resume through it.
+  While every TLS listener is a certificate-generating `ssl-bump` listener, the
+  proxy normalizes any stored value to `0 MB`, releasing the otherwise
+  committed shared memory (32 MiB at the old default) at the next Squid restart.
 
 ### Web filtering
 
