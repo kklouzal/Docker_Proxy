@@ -6,10 +6,12 @@ body bytes against ``golden/proxy_management_responses.json``, together with
 the runtime calls the request made. The golden file was recorded from the
 Flask implementation (Flask 3.1.3 / Werkzeug 3.1.9) and is the independent
 oracle for any replacement implementation, except for the entries of
-deliberate behaviour fixes made afterwards (``auth_non_ascii_token``: 403
-instead of 500), which the dedicated tests at the end of this file pin
-independently together with the other fix (unknown-length bodies over the
-limit get 413 instead of being truncated).
+deliberate behaviour fixes made afterwards, which the dedicated tests at the
+end of this file pin independently: ``auth_non_ascii_token`` (403 instead of
+500), ``payload_bad_content_length`` and ``payload_negative_content_length``
+(400 instead of reading the body as empty) and the ``static_*`` entries (an
+unknown path instead of Flask's default static route). Unknown-length bodies
+over the limit (413 instead of truncation) have no golden entry.
 
 Normalizations, each for a value that is not stable between runs:
 - ``Date`` values (wall clock) become ``<http-date>`` after a format check;
@@ -1179,8 +1181,14 @@ def _forbidden_detail() -> dict[str, Any]:
         [("Authorization", "Bearer s\xe9cret")],
         [("X-Proxy-Token", "☃")],
         [("Authorization", "Bearer \udcff")],
+        [("Authorization", "Bearer " + chr(0xD800))],
     ],
-    ids=["latin1_bearer", "non_latin1_x_proxy_token", "lone_surrogate"],
+    ids=[
+        "latin1_bearer",
+        "non_latin1_x_proxy_token",
+        "escaped_surrogate",
+        "lone_surrogate",
+    ],
 )
 def test_non_ascii_management_token_is_forbidden_not_a_server_error(
     headers, monkeypatch, tmp_path
@@ -1242,6 +1250,88 @@ def test_unknown_length_json_over_the_limit_is_rejected_not_truncated(
         "detail": "Management JSON payload is limited to 20 bytes.",
     }
     assert record["runtime_calls"] == []
+
+
+@pytest.mark.parametrize(
+    "content_length", ["abc", "-5", "+2", "1e3", "0x2", "2 2", "\uff12"]
+)
+@pytest.mark.parametrize("terminated", [True, None])
+def test_invalid_content_length_is_a_bad_request_not_an_empty_body(
+    content_length, terminated, monkeypatch, tmp_path
+) -> None:
+    # Flask read a non-decimal Content-Length as 0: the body was ignored and
+    # the sync ran with defaults.
+    record = _scenario_record(
+        _s(
+            "invalid_length",
+            "POST",
+            "/api/manage/sync",
+            headers=[
+                _AUTH,
+                ("Content-Type", _JSON),
+                ("Content-Length", content_length),
+            ],
+            body=b'{"force": true}',
+            environ={"wsgi.input_terminated": terminated},
+        ),
+        monkeypatch,
+        tmp_path,
+    )
+    assert record["response"]["status"] == "400 BAD REQUEST"
+    assert json.loads(record["response"]["body"]) == {
+        "ok": False,
+        "detail": "Management request Content-Length must be a decimal byte count.",
+    }
+    assert record["runtime_calls"] == []
+
+
+@pytest.mark.parametrize(
+    ("content_length", "force"), [(" 15\t", True), ("", False), ("0", False)]
+)
+def test_decimal_or_empty_content_length_frames_the_body(
+    content_length, force, monkeypatch, tmp_path
+) -> None:
+    # Optional whitespace around a decimal length is allowed; an empty value
+    # is PEP 3333's "not declared" (a terminated stream is then read).
+    body = b'{"force": true}' if force else b""
+    record = _scenario_record(
+        _s(
+            "decimal_length",
+            "POST",
+            "/api/manage/sync",
+            headers=[
+                _AUTH,
+                ("Content-Type", _JSON),
+                ("Content-Length", content_length),
+            ],
+            body=body,
+        ),
+        monkeypatch,
+        tmp_path,
+    )
+    assert record["response"]["status"] == "200 OK"
+    assert record["runtime_calls"] == [
+        ["sync_from_db", {"force": force, "operation_id": None}]
+    ]
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD", "POST", "OPTIONS"])
+@pytest.mark.parametrize(
+    "target", ["/static/app.js", "/static/a//b/", "//static/x.css", "/static//x.css"]
+)
+def test_static_paths_are_unknown_like_any_other_path(
+    method, target, monkeypatch, tmp_path
+) -> None:
+    # Flask's default static route answered OPTIONS 200 with a one-year
+    # immutable Cache-Control, POST 405 and inner "//" with a 308 redirect.
+    static = _scenario_record(
+        _s("static", method, target, headers=[]), monkeypatch, tmp_path
+    )
+    unknown = _scenario_record(
+        _s("unknown", method, "/nope/app.js", headers=[]), monkeypatch, tmp_path
+    )
+    assert static["response"]["status"] == "404 NOT FOUND"
+    assert static == unknown
 
 
 def test_management_requests_load_no_flask_stack(tmp_path) -> None:

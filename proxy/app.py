@@ -4,12 +4,15 @@ A plain WSGI callable rather than a Flask app: the listener has a fixed set
 of routes, and Flask/Werkzeug/Jinja were the largest import cost of the
 container's biggest Python worker. Responses match the former Flask
 implementation (routing, automatic HEAD/OPTIONS, 405 ``Allow``, Werkzeug's
-merge-slashes 308 redirects and error pages, the JSON 403/404 handlers, the
-cache headers of Flask's default ``/static`` route, ``request.args``
-decoding, ``request.get_json`` admission and the shared cache/gzip policy)
-except for deliberate fixes: a non-ASCII management token is rejected with
-403 instead of failing with 500, and a JSON body of unknown length over the
-limit is rejected with 413 instead of being truncated at the limit.
+merge-slashes 308 redirects and error pages, the JSON 403/404 handlers,
+``request.args`` decoding, ``request.get_json`` admission and the shared
+cache/gzip policy) except for deliberate fixes: a non-ASCII management token
+is rejected with 403 instead of failing with 500, a JSON body of unknown
+length over the limit is rejected with 413 instead of being truncated at the
+limit, a Content-Length that is not a decimal byte count is rejected with
+400 instead of being read as an empty body, and ``/static/...`` is an
+unknown path (404) instead of Flask's default static route for a folder the
+proxy never had.
 ``web/tests/golden/proxy_management_responses.json`` records that contract.
 """
 
@@ -49,6 +52,7 @@ from proxy.wsgi_http import (
     RequestHeaders,
     Response,
     apply_http_optimizations,
+    declared_content_length,
     json_response,
     request_path,
     send,
@@ -63,7 +67,6 @@ _GZIP_ENABLED = gzip_responses_enabled()
 _MANAGEMENT_JSON_DEFAULT_MAX_CONTENT_LENGTH = 1024 * 1024
 _GET = ("GET", "HEAD", "OPTIONS")
 _POST = ("OPTIONS", "POST")
-_STATIC_CACHE_CONTROL = "public, max-age=31536000, immutable"
 _FORBIDDEN_BODY = {
     "ok": False,
     "status": "forbidden",
@@ -84,7 +87,6 @@ _LISTENER_HEALTH_BODY = {
 }
 # Werkzeug rule converters: the default ``[^/]+`` segment and ``path``.
 _SUPERVISOR_RULE = re.compile(r"/api/manage/test/supervisor/([^/]+)/([^/]+)")
-_STATIC_RULE = re.compile(r"/static/[^/].*")
 _MERGED_SLASHES = re.compile(r"/{2,}")
 # Werkzeug ``sansio.utils._host_re``: a Host with other characters is treated
 # as empty when building redirect URLs.
@@ -92,7 +94,6 @@ _HOST_PATTERN = re.compile(
     r"([a-z0-9.-]+|\[[a-f0-9]*:[a-f0-9.:]+])(?::([1-9][0-9]{,4}))?",
     flags=re.ASCII | re.IGNORECASE,
 )
-_PLAIN_INT = re.compile(r"-?[0-9]+", re.ASCII)
 _HTML_ESCAPES = str.maketrans(
     {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&#34;", "'": "&#39;"}
 )
@@ -143,17 +144,13 @@ class _Request:
 
     @property
     def content_length(self) -> int | None:
-        """Werkzeug ``get_content_length``: None when chunked or absent."""
-        transfer_encoding = self.environ.get("HTTP_TRANSFER_ENCODING")
-        raw_length = self.environ.get("CONTENT_LENGTH")
-        if raw_length is None or (
-            transfer_encoding is not None
-            and "chunked"
-            in {token.strip().lower() for token in transfer_encoding.split(",")}
-        ):
-            return None
-        value = raw_length.strip(" \t")
-        return max(0, int(value)) if _PLAIN_INT.fullmatch(value) else 0
+        """The declared body length; None when chunked or not declared."""
+        try:
+            return declared_content_length(self.environ)
+        except ValueError:
+            _abort_management_json_payload(
+                "Management request Content-Length must be a decimal byte count."
+            )
 
     @property
     def is_json(self) -> bool:
@@ -252,8 +249,8 @@ def _authorized(request: _Request) -> bool:
     provided = _provided_token(request)
     # Bytes: compare_digest raises TypeError for non-ASCII str operands.
     return bool(provided) and hmac.compare_digest(
-        provided.encode("utf-8", errors="surrogateescape"),
-        expected.encode("utf-8", errors="surrogateescape"),
+        provided.encode("utf-8", errors="surrogatepass"),
+        expected.encode("utf-8", errors="surrogatepass"),
     )
 
 
@@ -518,14 +515,6 @@ def manage_test_supervisor(
     return json_response(result, 200 if result.get("ok") else 409)
 
 
-def _static_file(_request: _Request) -> Response:
-    # Flask registered its default static route; the proxy ships no static
-    # folder, so every match is a 404 with the static error cache policy.
-    response = Response(404, HTML, NOT_FOUND_PAGE)
-    response.headers.append(("Cache-Control", "no-store"))
-    return response
-
-
 type _View = Callable[..., Response]
 # path -> (methods, view, requires the management token, mutates the control plane)
 _ROUTES: dict[str, tuple[tuple[str, ...], _View, bool, bool]] = {
@@ -552,8 +541,6 @@ def _rule(
     match = _SUPERVISOR_RULE.fullmatch(path)
     if match is not None:
         return _POST, manage_test_supervisor, True, False, match.groups()
-    if _STATIC_RULE.fullmatch(path):
-        return _GET, _static_file, False, False, ()
     return None
 
 
@@ -669,10 +656,7 @@ def _route(environ: dict[str, Any], request: _Request) -> Response:
         if candidate != request.path:
             return _merge_slashes_redirect(environ, server_name, candidate)
         if method == "OPTIONS":
-            response = Response(200, HTML, b"", allow=methods)
-            if view is _static_file:
-                response.headers.append(("Cache-Control", _STATIC_CACHE_CONTROL))
-            return response
+            return Response(200, HTML, b"", allow=methods)
         if needs_token and not _authorized(request):
             return json_response(_FORBIDDEN_BODY, 403)
         if mutates and not control_plane_ready():
@@ -703,7 +687,6 @@ def app(environ: dict[str, Any], start_response: Callable[..., Any]) -> Iterable
 
 # proxy_api runs under gunicorn, which only configures its own gunicorn.* loggers.
 configure_process_logging()
-application = app
 
 if (os.environ.get("DISABLE_PROXY_AGENT") or "").strip() != "1":
     start_agent()

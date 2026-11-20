@@ -15,6 +15,7 @@ import dataclasses
 import datetime as dt
 import gzip
 import json
+import re
 from email.utils import format_datetime
 from typing import TYPE_CHECKING, Any
 
@@ -207,6 +208,33 @@ class RequestHeaders:
         if key not in {"CONTENT_TYPE", "CONTENT_LENGTH"}:
             key = f"HTTP_{key}"
         return self._environ.get(key, default)
+
+
+_DECIMAL_LENGTH = re.compile(r"[0-9]+", re.ASCII)
+
+
+def declared_content_length(environ: dict[str, Any]) -> int | None:
+    """The request body length declared by ``Content-Length``.
+
+    None when no length is declared: the header is absent or empty (PEP 3333)
+    or a chunked Transfer-Encoding frames the body instead (RFC 9112 section
+    6.3). Any other value that is not ``1*DIGIT`` (RFC 9110 section 8.6),
+    optional whitespace aside, raises ``ValueError``: it frames no body, so
+    the request is a bad request rather than one without a body.
+    """
+    raw_length = environ.get("CONTENT_LENGTH")
+    if not raw_length:
+        return None
+    transfer_encoding = environ.get("HTTP_TRANSFER_ENCODING")
+    if transfer_encoding is not None and "chunked" in {
+        token.strip().lower() for token in transfer_encoding.split(",")
+    }:
+        return None
+    value = raw_length.strip(" \t")
+    if not _DECIMAL_LENGTH.fullmatch(value):
+        message = f"invalid Content-Length {raw_length!r}"
+        raise ValueError(message)
+    return int(value)
 
 
 def request_path(environ: dict[str, Any]) -> str:

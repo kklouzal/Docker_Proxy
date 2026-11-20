@@ -1129,7 +1129,7 @@ mv -f "${HEALTHCHECK_ENV_FILE}.tmp" "$HEALTHCHECK_ENV_FILE"
 # earlier container run (proxy.control_plane_state).
 rm -f "${PROXY_CONTROL_PLANE_READY_FILE:-/run/squid-flask-proxy/control-plane-ready}"
 
-# Start Supervisor to manage Squid and Flask
+# Start Supervisor to manage Squid and the proxy services
 python3 /app/services/squid_transaction.py startup-complete \
     --active /etc/squid/squid.conf \
     --persisted "$PERSISTED_SQUID_CONF_PATH"

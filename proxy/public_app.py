@@ -54,7 +54,12 @@ from proxy.wsgi_http import METHOD_NOT_ALLOWED_PAGE as _METHOD_NOT_ALLOWED_PAGE
 from proxy.wsgi_http import NOT_FOUND_PAGE as _NOT_FOUND_PAGE
 from proxy.wsgi_http import RequestHeaders as _RequestHeaders
 from proxy.wsgi_http import Response as _Response
-from proxy.wsgi_http import apply_http_optimizations, request_path, send
+from proxy.wsgi_http import (
+    apply_http_optimizations,
+    declared_content_length,
+    request_path,
+    send,
+)
 from proxy.wsgi_http import json_body as _json_body
 
 if TYPE_CHECKING:
@@ -245,16 +250,15 @@ def _read_policy_body(
     WSGI allows no body to be read.
     """
     stream = environ["wsgi.input"]
-    raw_length = environ.get("CONTENT_LENGTH") or ""
-    if raw_length:
-        if not (raw_length.isascii() and raw_length.isdigit()):
-            return _unparsable()
-        length = int(raw_length)
+    try:
+        length = declared_content_length(environ)
+    except ValueError:
+        return _unparsable()
+    if length is not None:
         if length > max_content_length:
             return _too_large(max_content_length)
         limit = length
     elif environ.get("wsgi.input_terminated"):
-        length = None
         limit = max_content_length + 1
     else:
         return b""

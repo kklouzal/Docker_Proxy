@@ -3324,7 +3324,7 @@
  },
  "payload_bad_content_length": {
   "response": {
-   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "body": "{\"detail\":\"Management request Content-Length must be a decimal byte count.\",\"ok\":false}\n",
    "headers": [
     [
      "Content-Type",
@@ -3332,24 +3332,16 @@
     ],
     [
      "Content-Length",
-     "33"
+     "88"
     ],
     [
      "Cache-Control",
      "no-store"
     ]
    ],
-   "status": "200 OK"
+   "status": "400 BAD REQUEST"
   },
-  "runtime_calls": [
-   [
-    "sync_from_db",
-    {
-     "force": false,
-     "operation_id": null
-    }
-   ]
-  ]
+  "runtime_calls": []
  },
  "payload_bad_utf8": {
   "response": {
@@ -3772,7 +3764,7 @@
  },
  "payload_negative_content_length": {
   "response": {
-   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "body": "{\"detail\":\"Management request Content-Length must be a decimal byte count.\",\"ok\":false}\n",
    "headers": [
     [
      "Content-Type",
@@ -3780,24 +3772,16 @@
     ],
     [
      "Content-Length",
-     "33"
+     "88"
     ],
     [
      "Cache-Control",
      "no-store"
     ]
    ],
-   "status": "200 OK"
+   "status": "400 BAD REQUEST"
   },
-  "runtime_calls": [
-   [
-    "sync_from_db",
-    {
-     "force": false,
-     "operation_id": null
-    }
-   ]
-  ]
+  "runtime_calls": []
  },
  "payload_no_content_type": {
   "response": {
@@ -4730,7 +4714,7 @@
     ],
     [
      "Cache-Control",
-     "no-store"
+     "no-cache"
     ]
    ],
    "status": "404 NOT FOUND"
@@ -4739,7 +4723,7 @@
  },
  "static_inner_double_slash": {
   "response": {
-   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example:5000/static/x.css\">http://proxy.example:5000/static/x.css</a>. If not, click the link.\n",
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
    "headers": [
     [
      "Content-Type",
@@ -4747,18 +4731,14 @@
     ],
     [
      "Content-Length",
-     "263"
-    ],
-    [
-     "Location",
-     "http://proxy.example:5000/static/x.css"
+     "207"
     ],
     [
      "Cache-Control",
      "no-cache"
     ]
    ],
-   "status": "308 PERMANENT REDIRECT"
+   "status": "404 NOT FOUND"
   },
   "runtime_calls": []
  },
@@ -4776,7 +4756,7 @@
     ],
     [
      "Cache-Control",
-     "no-store"
+     "no-cache"
     ]
    ],
    "status": "404 NOT FOUND"
@@ -4797,7 +4777,7 @@
     ],
     [
      "Cache-Control",
-     "no-store"
+     "no-cache"
     ]
    ],
    "status": "404 NOT FOUND"
@@ -4806,51 +4786,43 @@
  },
  "static_missing_options": {
   "response": {
-   "body": "",
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
    "headers": [
     [
      "Content-Type",
      "text/html; charset=utf-8"
     ],
     [
-     "Allow",
-     "GET, HEAD, OPTIONS"
-    ],
-    [
-     "Cache-Control",
-     "public, max-age=31536000, immutable"
-    ],
-    [
      "Content-Length",
-     "0"
-    ]
-   ],
-   "status": "200 OK"
-  },
-  "runtime_calls": []
- },
- "static_missing_post": {
-  "response": {
-   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
-   "headers": [
-    [
-     "Content-Type",
-     "text/html; charset=utf-8"
-    ],
-    [
-     "Allow",
-     "GET, HEAD, OPTIONS"
-    ],
-    [
-     "Content-Length",
-     "153"
+     "207"
     ],
     [
      "Cache-Control",
      "no-store"
     ]
    ],
-   "status": "405 METHOD NOT ALLOWED"
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "static_missing_post": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
   },
   "runtime_calls": []
  },
@@ -4868,7 +4840,7 @@
     ],
     [
      "Cache-Control",
-     "no-store"
+     "no-cache"
     ]
    ],
    "status": "404 NOT FOUND"
@@ -4910,7 +4882,7 @@
     ],
     [
      "Cache-Control",
-     "no-store"
+     "no-cache"
     ]
    ],
    "status": "404 NOT FOUND"

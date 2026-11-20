@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Healthcheck script for the Squid and Flask services.
+# Healthcheck script for the Squid and proxy web services.
 #
 # Docker runs this with the container's configured environment, not the
 # entrypoint's: values loaded from /config/app.env and the entrypoint's
@@ -96,8 +96,8 @@ pac_host = os.environ["PAC_HTTP_HOST"]
 if pac_host in {"0.0.0.0", "::"}:
     pac_host = "127.0.0.1"
 targets = (
-    ("Flask management health endpoint", "127.0.0.1", 5000),
-    ("Flask public proxy health endpoint", pac_host, int(os.environ["PAC_HTTP_PORT"])),
+    ("Management health endpoint", "127.0.0.1", 5000),
+    ("Public proxy health endpoint", pac_host, int(os.environ["PAC_HTTP_PORT"])),
 )
 for label, host, port in targets:
     try:
@@ -245,12 +245,12 @@ if ! has_listen_socket "$FORWARDING_CANARY_PORT"; then
 fi
 
 if ! has_listen_socket "$PAC_HTTP_PORT"; then
-    echo "Flask public PAC/WPAD listener is not accepting connections"
+    echo "Public PAC/WPAD listener is not accepting connections"
     exit 1
 fi
 
 if ! http_detail="$(check_http_health_endpoints 2>&1)"; then
-    echo "${http_detail:-Flask health endpoint failed}"
+    echo "${http_detail:-HTTP health endpoint failed}"
     exit 1
 fi
 

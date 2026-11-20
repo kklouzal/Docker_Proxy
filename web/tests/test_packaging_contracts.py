@@ -37,11 +37,10 @@ def _assert_staged_wsgi_import(
 ) -> None:
     script = f"""
 import importlib
-from flask import Flask
 
 entrypoint = importlib.import_module({entrypoint_module!r})
 application_module = importlib.import_module({application_module!r})
-assert isinstance(entrypoint.app, Flask)
+assert callable(entrypoint.app)
 assert entrypoint.app is application_module.app
 assert entrypoint.application is entrypoint.app
 """
@@ -414,7 +413,7 @@ def test_proxy_wsgi_imports_packaged_proxy_application(tmp_path) -> None:
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "app.py").write_text(
-        'from flask import Flask\napp = Flask("packaged-proxy-app")\n',
+        "def app(environ, start_response):\n    return []\n",
         encoding="utf-8",
     )
     (package / "wsgi.py").write_text(_read("proxy/wsgi.py"), encoding="utf-8")
