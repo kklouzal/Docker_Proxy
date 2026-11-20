@@ -57,6 +57,11 @@ _LEGACY_DEFAULT_BLOCKED_CATEGORIES: list[str] = [
 _LEGACY_DEFAULT_BLOCKED_CATEGORIES_CSV = ",".join(_LEGACY_DEFAULT_BLOCKED_CATEGORIES)
 _CATEGORY_UNSAFE_RE = re.compile(r"[^a-z0-9_\-]+")
 
+# Per-proxy whitelist size limit, enforced when entries are added. It matches
+# the webfilter_whitelist row bound of proxy recovery bundles
+# (services.proxy_recovery_restore), so every stored entry stays restorable.
+WHITELIST_MAX_ENTRIES = 10_000
+
 _DEFAULTS: dict[str, str] = {
     "enabled": "0",
     "source_url": _DEFAULT_SOURCE_URL,
@@ -327,17 +332,19 @@ class WebFilterStoreBase:
     def _init_extra_schema(self, conn) -> None:
         return None
 
-    def _list_whitelist(self, conn, limit: int) -> list[tuple[str, int]]:
+    def _list_whitelist(self, conn) -> list[tuple[str, int]]:
+        # Bounded by WHITELIST_MAX_ENTRIES, which add_whitelist enforces under
+        # the per-proxy lifecycle lock, so every stored entry is rendered.
         rows = conn.execute(
-            f"SELECT pattern, added_ts FROM {self._table('whitelist')} WHERE proxy_id=%s ORDER BY added_ts DESC, pattern ASC LIMIT %s",
-            (get_proxy_id(), int(limit)),
+            f"SELECT pattern, added_ts FROM {self._table('whitelist')} WHERE proxy_id=%s ORDER BY added_ts DESC, pattern ASC",
+            (get_proxy_id(),),
         ).fetchall()
         return [(str(row[0]), int(row[1]) if row[1] is not None else 0) for row in rows]
 
-    def list_whitelist(self, limit: int = 5000) -> list[tuple[str, int]]:
+    def list_whitelist(self) -> list[tuple[str, int]]:
         self.init_db()
         with self._connect() as conn:
-            return self._list_whitelist(conn, limit=int(limit))
+            return self._list_whitelist(conn)
 
     def add_whitelist(self, entry: str) -> tuple[bool, str, str]:
         self.init_db()
@@ -345,10 +352,27 @@ class WebFilterStoreBase:
         if not patterns:
             return False, "Enter a domain like example.com or *.example.com", ""
         pattern = patterns[0]
+        table = self._table("whitelist")
         with self._connect() as conn:
             with guarded_proxy_write(conn, get_proxy_id()) as guard:
+                exists = conn.execute(
+                    f"SELECT 1 FROM {table} WHERE proxy_id=%s AND pattern=%s",
+                    (guard.proxy_id, pattern),
+                ).fetchone()
+                if exists:
+                    return True, "", pattern
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE proxy_id=%s",
+                    (guard.proxy_id,),
+                ).fetchone()
+                if int(row[0] or 0) >= WHITELIST_MAX_ENTRIES:
+                    detail = (
+                        f"The whitelist is full ({WHITELIST_MAX_ENTRIES:,} entries). "
+                        "Remove entries or use a wildcard such as *.example.com."
+                    )
+                    return False, detail, ""
                 conn.execute(
-                    f"INSERT IGNORE INTO {self._table('whitelist')}(proxy_id, pattern, added_ts) VALUES(%s,%s,%s)",
+                    f"INSERT IGNORE INTO {table}(proxy_id, pattern, added_ts) VALUES(%s,%s,%s)",
                     (guard.proxy_id, pattern, int(_now())),
                 )
         return True, "", pattern
@@ -367,7 +391,7 @@ class WebFilterStoreBase:
                 )
 
     def _get_whitelist_patterns(self, conn) -> list[str]:
-        rows = self._list_whitelist(conn, limit=10000)
+        rows = self._list_whitelist(conn)
         patterns = [pattern for pattern, _ts in rows if pattern]
         exact = [pattern for pattern in patterns if not pattern.startswith("*.")]
         wild = [pattern for pattern in patterns if pattern.startswith("*.")]

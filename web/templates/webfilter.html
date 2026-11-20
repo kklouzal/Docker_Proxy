@@ -84,7 +84,7 @@
           <input id="whitelist_domain" class="input inline-fill" type="text" name="whitelist_domain" placeholder="example.com or *.example.com">
           <button class="btn" type="submit">Add</button>
         </div>
-        <div class="help">Supports exact domains (example.com) and wildcard suffixes (*.example.com). Whitelisted domains are allowed before category blocking.</div>
+        <div class="help">Supports exact domains (example.com) and wildcard suffixes (*.example.com). Whitelisted domains are allowed before category blocking. Each proxy holds up to {{ "{:,}".format(whitelist_max_entries) }} entries.</div>
       </form>
 
       <div class="stack-sm">
@@ -116,6 +116,11 @@
                 {% endfor %}
               </tbody>
             </table>
+          </div>
+        {% elif whitelist_error %}
+          <div class="banner error">
+            <span class="badge danger">Error</span>
+            <div class="banner-copy"><span class="small">Whitelist unavailable: {{ whitelist_error }}</span></div>
           </div>
         {% else %}
           <div class="help">No whitelist entries yet.</div>
