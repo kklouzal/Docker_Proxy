@@ -616,3 +616,27 @@ def test_adblock_lookup_chunks_large_sqlite_in_queries(
 
     assert "sharedtoken/path3" in _raws(rules)
     assert len(rules) == 8
+
+
+@pytest.mark.parametrize(
+    "corrupt_payload",
+    ["{not json", "[1, 2]", '{"id": "some-other-rule", "host": "x.example"}'],
+)
+def test_lookup_fails_closed_on_corrupt_embedded_payload(
+    tmp_path: Path, corrupt_payload: str
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^$script"])
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("UPDATE rules SET payload_json=?", (corrupt_payload,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from services.adblock_lookup import AdblockArtifactCorruptError, AdblockLookupIndex
+
+    lookup = AdblockLookupIndex(db_path)
+    # Neither the legacy JSONL payload nor the bare index columns may stand in
+    # for a corrupt payload: either would drop constraints and over-match.
+    with pytest.raises(AdblockArtifactCorruptError):
+        lookup.candidate_rules("https://ads.example/banner.js", resource_type="script")

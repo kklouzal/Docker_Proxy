@@ -27,6 +27,39 @@ _SQLITE_IN_CHUNK_SIZE = 500
 _DEFAULT_CLOSE_TIMEOUT_SECONDS = 5.0
 
 
+class AdblockArtifactCorruptError(RuntimeError):
+    """A compiled rule's stored payload is unreadable or belongs to another rule.
+
+    Evaluating such a rule from its index columns alone would drop payload
+    constraints and over-match, so the lookup fails instead (the ICAP service
+    failure policy then applies) rather than answering from corrupt data.
+    """
+
+
+def _verified_row_payload(raw_payload: str, rule_id: str) -> dict[str, Any] | None:
+    """Return the embedded payload, None for a legacy id-less one, or raise.
+
+    An id-less object (legacy artifacts stored ``{}``) is not corrupt: the
+    caller resolves it through the legacy JSONL payloads. Unreadable JSON, a
+    non-object, or a payload naming another rule is corrupt.
+    """
+    try:
+        payload = json.loads(raw_payload)
+    except ValueError as exc:
+        msg = f"Adblock rule {rule_id!r} has an unreadable payload_json."
+        raise AdblockArtifactCorruptError(msg) from exc
+    if not isinstance(payload, dict):
+        msg = f"Adblock rule {rule_id!r} payload_json is not an object."
+        raise AdblockArtifactCorruptError(msg)
+    payload_id = str(payload.get("id") or payload.get("rule_id") or "")
+    if not payload_id:
+        return None
+    if payload_id != rule_id:
+        msg = f"Adblock rule {rule_id!r} payload_json describes rule {payload_id!r}."
+        raise AdblockArtifactCorruptError(msg)
+    return payload
+
+
 class AdblockLookupClosedError(RuntimeError):
     def __init__(self) -> None:
         super().__init__("adblock lookup index is closed")
@@ -297,18 +330,9 @@ class AdblockLookupIndex:
         ):
             payload: dict[str, Any] | None = None
             rule_id = str(row["rule_id"] or "")
-            try:
-                parsed_payload = json.loads(_row_payload_json(row))
-                if (
-                    isinstance(parsed_payload, dict)
-                    and str(
-                        parsed_payload.get("id") or parsed_payload.get("rule_id") or "",
-                    )
-                    == rule_id
-                ):
-                    payload = parsed_payload
-            except Exception:
-                pass
+            raw_payload = _row_payload_json(row)
+            if raw_payload:
+                payload = _verified_row_payload(raw_payload, rule_id)
             if payload is None:
                 payload = self._payload_by_id().get(rule_id)
             rule = _row_to_rule(row, payload=payload)
