@@ -241,10 +241,6 @@ def test_config_restore_previous_is_compare_and_swap(monkeypatch) -> None:
     conn = _ConfigRestoreConn(current_id=7)
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "_connect", lambda: conn)
-    monkeypatch.setattr(
-        "services.proxy_write_guard._ensure_metadata_tables",
-        lambda _conn: None,
-    )
 
     assert store.restore_previous_if_current("edge-a", 7, 3) is True
     assert any(
@@ -262,10 +258,6 @@ def test_config_restore_previous_respects_proxy_lifecycle_guard(monkeypatch) -> 
     conn = _ConfigRestoreConn(current_id=7)
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "_connect", lambda: conn)
-    monkeypatch.setattr(
-        "services.proxy_write_guard._ensure_metadata_tables",
-        lambda _conn: None,
-    )
 
     conn.tombstone = ("removed", "")
 
@@ -280,10 +272,6 @@ def test_config_restore_does_not_stomp_newer_active(monkeypatch) -> None:
     conn = _ConfigRestoreConn(current_id=9)
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "_connect", lambda: conn)
-    monkeypatch.setattr(
-        "services.proxy_write_guard._ensure_metadata_tables",
-        lambda _conn: None,
-    )
 
     assert store.restore_previous_if_current("edge-a", 7, 3) is False
     assert conn.updates == []

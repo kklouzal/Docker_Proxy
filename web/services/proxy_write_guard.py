@@ -11,14 +11,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.db import (
-    DATABASE_ERRORS,
     acquire_mysql_named_lock,
     mysql_error_code,
     release_mysql_named_lock,
-    table_exists,
 )
 from services.proxy_context import normalize_proxy_id
-from services.proxy_lifecycle import ensure_lifecycle_schema
 from services.row_access import row_value
 
 _BLOCKING_ACTIONS = {"removing", "removed", "renaming"}
@@ -91,8 +88,6 @@ def proxy_lifecycle_lock_name(proxy_id: object | None) -> str:
 
 
 def clear_proxy_write_guard_cache(proxy_id: object | None = None) -> None:
-    if proxy_id is None:
-        _reset_metadata_schema_flag()
     with _cache_lock:
         if proxy_id is None:
             _decision_cache.clear()
@@ -142,9 +137,6 @@ def _metadata_error(
     return ProxyLifecycleWriteError(f"{message}: {exc}")
 
 
-_schema_lock = threading.Lock()
-_tombstone_schema_ensured = False
-
 # One round trip returns every lifecycle fact the guard needs for one proxy id.
 # Each subquery is a primary-key lookup; every selected column is NOT NULL, so a
 # NULL value means "no row".  A missing table raises (fail closed) instead of
@@ -177,38 +169,6 @@ class _LifecycleState:
     registry_status: str | None
 
 
-def _ensure_metadata_tables(conn: Any) -> None:
-    """Ensure the tombstone table exists, checking once per process.
-
-    Schema migrations own the lifecycle tables; this keeps the historical
-    self-healing CREATE for an unmigrated database without issuing DDL on
-    guarded writes. The guard runs inside callers' transactions and every
-    CREATE TABLE (even IF NOT EXISTS on an existing table) implicitly commits,
-    so the DDL is issued only when the table is really missing. A later
-    "table missing" error resets the flag so the next write re-checks.
-    """
-    global _tombstone_schema_ensured
-    if _tombstone_schema_ensured:
-        return
-    with _schema_lock:
-        if _tombstone_schema_ensured:
-            return
-        try:
-            if not table_exists(conn, "proxy_lifecycle_tombstones"):
-                ensure_lifecycle_schema(conn)
-        except Exception as exc:
-            raise _metadata_error(
-                "Proxy lifecycle metadata is unavailable", exc
-            ) from exc
-        _tombstone_schema_ensured = True
-
-
-def _reset_metadata_schema_flag() -> None:
-    global _tombstone_schema_ensured
-    with _schema_lock:
-        _tombstone_schema_ensured = False
-
-
 def _lookup_lifecycle_state(
     conn: Any,
     proxy_key: str,
@@ -221,11 +181,10 @@ def _lookup_lifecycle_state(
             allow_alias=allow_alias, require_registered=require_registered
         )
         row = conn.execute(sql, (proxy_key,) * sql.count("%s")).fetchone()
-    except DATABASE_ERRORS as exc:
-        if mysql_error_code(exc) == 1146:
-            _reset_metadata_schema_flag()
-        raise _metadata_error("Proxy lifecycle metadata is unavailable", exc) from exc
     except Exception as exc:
+        # Includes a missing table (1146): schema migrations own the lifecycle
+        # tables, and the guard runs inside callers' transactions where any
+        # DDL would implicitly commit their work, so it never self-heals.
         raise _metadata_error("Proxy lifecycle metadata is unavailable", exc) from exc
     if row is None:
         raise _metadata_error("Proxy lifecycle metadata is unavailable")
@@ -310,7 +269,6 @@ def resolve_proxy_write_id(
         if cached is not None:
             return cached
 
-    _ensure_metadata_tables(conn)
     current = requested
     resolved_alias = False
     alias_action = ""

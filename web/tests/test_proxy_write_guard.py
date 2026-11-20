@@ -147,6 +147,34 @@ def test_proxy_write_guard_fails_closed_for_metadata_errors(monkeypatch) -> None
         guard.resolve_proxy_write_id(conn, "edge-a")
 
 
+def test_proxy_write_guard_fails_closed_without_ddl_when_tables_are_missing(
+    monkeypatch,
+) -> None:
+    import pymysql
+
+    guard = _guard_module(monkeypatch)
+
+    class MissingTablesConn(_GuardConn):
+        def execute(self, sql, params=()):
+            text = " ".join(str(sql).split())
+            if is_lifecycle_state_query(text):
+                self.calls.append(text)
+                raise pymysql.err.ProgrammingError(
+                    1146, "Table 'proxy_lifecycle_tombstones' doesn't exist"
+                )
+            return super().execute(sql, params)
+
+    conn = MissingTablesConn()
+    conn.native = object()
+
+    for _attempt in range(2):
+        with pytest.raises(guard.ProxyLifecycleWriteError, match="unavailable"):
+            with guard.guarded_proxy_write(conn, "edge-a"):
+                pytest.fail("write must not run without lifecycle metadata")
+
+    assert not any(call.startswith(("CREATE", "ALTER")) for call in conn.calls)
+
+
 def test_proxy_lifecycle_write_error_marker_survives_module_reload(monkeypatch) -> None:
     guard = _guard_module(monkeypatch)
     old_classifier = guard.is_proxy_lifecycle_write_error
@@ -348,9 +376,9 @@ def test_guarded_proxy_write_uses_one_metadata_round_trip_per_check(
             for call in calls
         ]
 
-    # The tombstone table is probed once per process; no DDL (which would
-    # implicitly commit the caller's transaction) runs when it exists.
-    assert kinds(first_calls) == ["probe", "state", "SELECT GET_LOCK", "state", "DO"]
+    # No schema probe and never DDL (which would implicitly commit the
+    # caller's transaction): one state read before and one after the lock.
+    assert kinds(first_calls) == ["state", "SELECT GET_LOCK", "state", "DO"]
     # Later writes: cached pre-lock decision, then lock + one recheck + release.
     assert kinds(conn.calls) == ["SELECT GET_LOCK", "state", "DO"]
 
