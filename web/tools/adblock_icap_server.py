@@ -4,19 +4,23 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import errno
+import gc
 import html
 import io
 import math
 import os
 import re
 import selectors
+import signal
 import socket
 import socketserver
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -689,8 +693,15 @@ class _AdblockIcapServer(socketserver.TCPServer):
         request_timeout_seconds: float = 5.0,
         max_keepalive_requests: int = 1000,
         stats: HelperStats | None = None,
+        reuse_port: bool = False,
+        parent_pid: int | None = None,
     ) -> None:
         self.engine = engine
+        # Only a multi-process helper shares its port; a single helper keeps
+        # failing to bind if a stray instance still holds it.
+        self.allow_reuse_port = reuse_port
+        # A worker stops serving once its parent helper process is gone.
+        self._parent_pid = parent_pid
         # Set before binding: a bind failure calls server_close().
         self._selector = selectors.DefaultSelector()
         self._access_log = _AppendLog(access_log_path)
@@ -725,14 +736,22 @@ class _AdblockIcapServer(socketserver.TCPServer):
                 if now >= next_sweep:
                     next_sweep = now + self._deadline_sweep_seconds
                     self._expire(now)
+                    if self._parent_pid is not None and (
+                        os.getppid() != self._parent_pid
+                    ):
+                        break
         finally:
             for conn in list(self._connections.values()):
                 self._close(conn)
             selector.unregister(self.socket)
             self._stopped.set()
 
-    def shutdown(self) -> None:
+    def request_stop(self) -> None:
+        """Ask serve_forever to return; safe from a signal handler."""
         self._shutdown_requested = True
+
+    def shutdown(self) -> None:
+        self.request_stop()
         self._stopped.wait()
 
     def server_close(self) -> None:
@@ -1078,6 +1097,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--processes",
+        type=int,
+        default=env_int("ADBLOCK_ICAP_PROCESSES", 1),
+        help="Worker processes sharing the port (SO_REUSEPORT); default 1.",
+    )
+    parser.add_argument(
         "--max-keepalive-requests",
         type=int,
         default=env_int("ADBLOCK_ICAP_MAX_KEEPALIVE_REQUESTS", 1000),
@@ -1085,28 +1110,22 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv)
-
-    cache_ttl, cache_max = _decision_cache_settings(args)
-    engine = AdblockDecisionEngine(
-        args.db,
-        cache_ttl_seconds=cache_ttl,
-        cache_max=cache_max,
-        rule_cache_max=args.rule_cache_max,
-    )
-    # Refuse to serve an unsupported lookup database: the runtime retries the
-    # helper and keeps its last applied artifact instead of matching against
-    # tables this reader does not know.
-    engine.lookup.check_schema()
-    # Load the in-memory candidate indexes before listening, not on the first
-    # request Squid sends.
-    engine.lookup.load_indexes()
+def _serve_process(
+    args: argparse.Namespace,
+    engine: AdblockDecisionEngine,
+    *,
+    worker: int,
+    reuse_port: bool,
+    parent_pid: int | None,
+    on_server: Any = None,
+) -> None:
     stats = HelperStats("adblock_icap")
     stats.started(
         host=args.host,
         port=int(args.port),
         db=args.db,
+        worker=worker,
+        processes=max(1, int(args.processes)),
         max_request_bytes=max(8192, int(args.max_request_bytes)),
         max_body_drain_bytes=max(8192, int(args.max_body_drain_bytes)),
         request_timeout_seconds=max(0.1, float(args.request_timeout)),
@@ -1122,15 +1141,107 @@ def main(argv: list[str] | None = None) -> int:
             request_timeout_seconds=max(0.1, float(args.request_timeout)),
             max_keepalive_requests=max(1, int(args.max_keepalive_requests)),
             stats=stats,
+            reuse_port=reuse_port,
+            parent_pid=parent_pid,
         ) as server:
+            if on_server is not None:
+                on_server(server)
             sys.stdout.write(
-                f"adblock sqlite ICAP listening on {args.host}:{args.port} using {args.db}\n",
+                f"adblock sqlite ICAP worker {worker} listening on "
+                f"{args.host}:{args.port} using {args.db}\n",
             )
             sys.stdout.flush()
             server.serve_forever()
     finally:
         stats.close()
-    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    processes = max(1, int(args.processes))
+
+    cache_ttl, cache_max = _decision_cache_settings(args)
+    engine = AdblockDecisionEngine(
+        args.db,
+        cache_ttl_seconds=cache_ttl,
+        cache_max=cache_max,
+        rule_cache_max=args.rule_cache_max,
+    )
+    # Refuse to serve an unsupported lookup database: the runtime retries the
+    # helper and keeps its last applied artifact instead of matching against
+    # tables this reader does not know.
+    engine.lookup.check_schema()
+    # Load the in-memory candidate indexes before listening, not on the first
+    # request Squid sends.
+    engine.lookup.load_indexes()
+    if processes == 1:
+        _serve_process(args, engine, worker=1, reuse_port=False, parent_pid=None)
+        return 0
+
+    # Several workers share the port through SO_REUSEPORT (the kernel spreads
+    # Squid's connections across them). They fork after the indexes are loaded
+    # so those pages stay shared; SQLite connections must not cross a fork.
+    # Supervisor manages this process: stopasgroup reaches every worker, a
+    # worker exits when this process is gone, and this process exits non-zero
+    # when a worker dies so supervisor restarts the whole set.
+    engine.lookup.close_thread_connection()
+    gc.freeze()
+    parent_pid = os.getpid()
+    children: list[int] = []
+    for worker in range(2, processes + 1):
+        pid = os.fork()
+        if pid == 0:
+            code = 0
+            try:
+                _serve_process(
+                    args,
+                    engine,
+                    worker=worker,
+                    reuse_port=True,
+                    parent_pid=parent_pid,
+                )
+            except BaseException:
+                traceback.print_exc()
+                code = 1
+            finally:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os._exit(code)
+        children.append(pid)
+
+    worker_died = False
+
+    def stop_on_worker_exit(server: _AdblockIcapServer) -> None:
+        def handler(_signum: int, _frame: Any) -> None:
+            nonlocal worker_died
+            worker_died = True
+            server.request_stop()
+
+        signal.signal(signal.SIGCHLD, handler)
+        # A worker that exited before the handler was installed.
+        for pid in children:
+            with contextlib.suppress(ChildProcessError):
+                if os.waitpid(pid, os.WNOHANG)[0]:
+                    handler(signal.SIGCHLD, None)
+
+    try:
+        _serve_process(
+            args,
+            engine,
+            worker=1,
+            reuse_port=True,
+            parent_pid=None,
+            on_server=stop_on_worker_exit,
+        )
+    finally:
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        for pid in children:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGTERM)
+        for pid in children:
+            with contextlib.suppress(ChildProcessError):
+                os.waitpid(pid, 0)
+    return 1 if worker_died else 0
 
 
 if __name__ == "__main__":

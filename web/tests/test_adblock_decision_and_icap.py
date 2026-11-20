@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import gc
 import os
+import signal
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -2588,3 +2590,115 @@ def test_adblock_icap_server_serves_connection_bursts_and_stalled_peers(
         server.shutdown()
         server.server_close()
         thread.join(timeout=2.0)
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def _start_helper_processes(
+    tmp_path: Path, db_path: Path, processes: int
+) -> tuple[subprocess.Popen[str], int, Path]:
+    port = _free_port()
+    log_path = tmp_path / "cicap-access.log"
+    script = Path(__file__).resolve().parents[1] / "tools" / "adblock_icap_server.py"
+    helper = subprocess.Popen(
+        [
+            sys.executable,
+            str(script),
+            "--port",
+            str(port),
+            "--db",
+            str(db_path),
+            "--access-log",
+            str(log_path),
+            "--processes",
+            str(processes),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    assert helper.stdout is not None
+    for _ in range(processes):
+        assert "listening on" in helper.stdout.readline()
+    return helper, port, log_path
+
+
+def _process_exits(pid: int, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+        except OSError:
+            return True
+        if "zombie" in status:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _worker_pids(parent_pid: int) -> list[int]:
+    children = Path(f"/proc/{parent_pid}/task/{parent_pid}/children")
+    return [int(pid) for pid in children.read_text(encoding="utf-8").split()]
+
+
+@pytest.mark.skipif(
+    not Path("/proc/self/task").is_dir(), reason="worker supervision proof needs procfs"
+)
+def test_adblock_icap_worker_processes_share_the_port_and_live_with_the_helper(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+    helper, port, log_path = _start_helper_processes(tmp_path, db_path, 3)
+    try:
+        workers = _worker_pids(helper.pid)
+        assert len(workers) == 2
+
+        # Connections spread over the workers; every one answers, and every
+        # blocked request leaves exactly one whole line in the shared log.
+        sockets = [
+            socket.create_connection(("127.0.0.1", port), timeout=5.0)
+            for _ in range(48)
+        ]
+        try:
+            for index, sock in enumerate(sockets):
+                sock.sendall(_reqmod(f"http://ads.example/{index}.js"))
+            for sock in sockets:
+                assert _recv_icap_head(sock).startswith(b"ICAP/1.0 200")
+        finally:
+            for sock in sockets:
+                sock.close()
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        assert sorted(line.split("\t")[7] for line in lines) == sorted(
+            f"http://ads.example/{index}.js" for index in range(48)
+        )
+
+        # A dead worker takes the helper down so supervisor restarts the set.
+        os.kill(workers[0], signal.SIGKILL)
+        assert helper.wait(timeout=5.0) == 1
+        # Its remaining worker follows its parent out.
+        assert _process_exits(workers[1])
+    finally:
+        if helper.poll() is None:
+            helper.kill()
+            helper.wait(timeout=5.0)
+
+
+@pytest.mark.skipif(
+    not Path("/proc/self/task").is_dir(), reason="worker supervision proof needs procfs"
+)
+def test_adblock_icap_workers_exit_when_the_helper_is_killed(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+    helper, _port, _log_path = _start_helper_processes(tmp_path, db_path, 2)
+    try:
+        [worker] = _worker_pids(helper.pid)
+        os.kill(helper.pid, signal.SIGKILL)
+        helper.wait(timeout=5.0)
+        assert _process_exits(worker)
+    finally:
+        if helper.poll() is None:
+            helper.kill()
+            helper.wait(timeout=5.0)
