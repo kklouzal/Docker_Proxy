@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from werkzeug.test import Client
+from werkzeug.wrappers import Request
 
 from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
 from .mysql_test_utils import (
@@ -972,9 +974,10 @@ def test_proxy_public_policy_request_route_records(monkeypatch) -> None:
             )
 
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
-    res = proxy_app.app.test_client().post(
+    res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
         data={
             "request_url": "https://bad.example/",
             "client_ip": "192.168.1.55",
@@ -1011,7 +1014,7 @@ def test_proxy_public_policy_request_rejects_oversized_form_before_store(
         return Store()
 
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", get_store)
-    res = proxy_app.app.test_client().post(
+    res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
         data={
@@ -1043,7 +1046,7 @@ def test_proxy_public_policy_request_capacity_response_is_429(monkeypatch) -> No
             raise PolicyRequestAdmissionError.proxy_capacity()
 
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
-    res = proxy_app.app.test_client().post(
+    res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
         data={"domain": "bad.example"},
@@ -1074,7 +1077,7 @@ def test_proxy_public_policy_request_database_unavailable_is_sanitized_503(
             )
 
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
-    res = proxy_app.app.test_client().post(
+    res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
         data={"domain": "bad.example"},
@@ -1110,7 +1113,7 @@ def test_proxy_public_policy_request_control_plane_database_failure_is_503(
                 raise ProxyLifecycleWriteError(message) from exc
 
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
-    res = proxy_app.app.test_client().post(
+    res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
         data={"domain": "bad.example"},
@@ -1140,7 +1143,7 @@ def test_proxy_public_policy_request_unexpected_store_failure_is_sanitized_500(
             raise RuntimeError(message)
 
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
-    res = proxy_app.app.test_client().post(
+    res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
         data={"domain": "bad.example"},
@@ -1181,9 +1184,9 @@ def test_proxy_public_policy_request_rejects_parser_enforced_oversize(
 
         return Store()
 
-    monkeypatch.setattr(proxy_app.app.request_class, "form", property(raise_too_large))
+    monkeypatch.setattr(Request, "form", property(raise_too_large))
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", get_store)
-    res = proxy_app.app.test_client().post(
+    res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
         data=b"request_url=https%3A%2F%2Fbad.example%2F&domain=bad.example",
@@ -1224,11 +1227,9 @@ def test_proxy_public_policy_request_rejects_malformed_form_parse(
 
         return Store()
 
-    monkeypatch.setattr(
-        proxy_app.app.request_class, "form", property(raise_bad_request)
-    )
+    monkeypatch.setattr(Request, "form", property(raise_bad_request))
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", get_store)
-    res = proxy_app.app.test_client().post(
+    res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
         data=b"request_url=%",
@@ -1281,7 +1282,7 @@ def test_proxy_public_policy_request_invalid_size_limit_env_falls_back(
             )
 
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
-    res = proxy_app.app.test_client().post(
+    res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
         data={
@@ -1305,7 +1306,7 @@ def test_proxy_public_policy_request_get_does_not_fall_through_to_pac(
 
     proxy_app = importlib.reload(proxy_app)
 
-    res = proxy_app.app.test_client().get(
+    res = Client(proxy_app.app).get(
         "/policy-request",
         base_url="http://localhost:80",
     )
@@ -2399,7 +2400,7 @@ def test_proxy_policy_request_route_is_public_listener_only_and_ignores_spoofed_
         data={"request_url": "https://bad.example/", "domain": "bad.example"},
     )
     assert management.status_code == 404
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     public = client.post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -2452,7 +2453,7 @@ def test_proxy_policy_request_route_uses_trusted_forwarded_client_ip(
             )
 
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
-    res = proxy_app.app.test_client().post(
+    res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
         environ_base={"REMOTE_ADDR": "192.0.2.10"},
@@ -2501,7 +2502,7 @@ def test_proxy_policy_request_route_uses_form_client_ip_from_trusted_proxy(
             )
 
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
-    res = proxy_app.app.test_client().post(
+    res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
         environ_base={"REMOTE_ADDR": "192.0.2.10"},

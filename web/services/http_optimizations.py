@@ -5,8 +5,6 @@ import os
 import re
 from typing import Any
 
-from flask import request
-
 from services.runtime_helpers import normalize_config_bool
 
 _COMPRESSIBLE_MIMETYPES = frozenset(
@@ -24,7 +22,7 @@ _COMPRESSIBLE_MIMETYPES = frozenset(
     },
 )
 _QVALUE_PATTERN = re.compile(r"(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)\Z")
-_TRANSFORMATION_INVALIDATED_HEADERS = (
+TRANSFORMATION_INVALIDATED_HEADERS = (
     "ETag",
     "Content-Digest",
     "Repr-Digest",
@@ -33,8 +31,21 @@ _TRANSFORMATION_INVALIDATED_HEADERS = (
 )
 
 
-def _client_accepts_gzip() -> bool:
-    header = request.headers.get("Accept-Encoding", "")
+def gzip_responses_enabled(config_value: object | None = None) -> bool:
+    """Whether opportunistic gzip is on (``ENABLE_GZIP_RESPONSES``, default on)."""
+    return normalize_config_bool(
+        os.environ.get("ENABLE_GZIP_RESPONSES") or config_value,
+        default=True,
+    )
+
+
+def compressible_mimetype(content_type: str | None) -> bool:
+    mimetype = (content_type or "").split(";", 1)[0].strip().lower()
+    return mimetype in _COMPRESSIBLE_MIMETYPES or mimetype.endswith("+json")
+
+
+def client_accepts_gzip(header: str) -> bool:
+    """Parse an ``Accept-Encoding`` value; explicit gzip wins over ``*``."""
     gzip_seen = False
     gzip_accepted = True
     wildcard_seen = False
@@ -74,7 +85,9 @@ def _ensure_accept_encoding_vary(response: Any) -> None:
         response.vary.add("Accept-Encoding")
 
 
-def _compressed_body_candidate(response: Any, *, min_size: int) -> bytes | None:
+def _compressed_body_candidate(
+    response: Any, *, min_size: int, accept_encoding: str
+) -> bytes | None:
     if response.status_code != 304 and not 200 <= response.status_code < 300:
         return None
     if response.status_code in {204, 205, 206} or response.headers.get("Content-Range"):
@@ -85,8 +98,7 @@ def _compressed_body_candidate(response: Any, *, min_size: int) -> bytes | None:
         return None
     if "no-transform" in (response.headers.get("Cache-Control") or "").lower():
         return None
-    mimetype = (response.mimetype or "").split(";", 1)[0].strip().lower()
-    if mimetype not in _COMPRESSIBLE_MIMETYPES and not mimetype.endswith("+json"):
+    if not compressible_mimetype(response.mimetype):
         return None
     try:
         data = response.get_data()
@@ -97,13 +109,17 @@ def _compressed_body_candidate(response: Any, *, min_size: int) -> bytes | None:
     _ensure_accept_encoding_vary(response)
     if response.status_code == 304:
         return None
-    if not _client_accepts_gzip():
+    if not client_accepts_gzip(accept_encoding):
         return None
     return data
 
 
-def _compress_response(response: Any, *, min_size: int, compresslevel: int) -> Any:
-    data = _compressed_body_candidate(response, min_size=min_size)
+def _compress_response(
+    response: Any, *, min_size: int, compresslevel: int, accept_encoding: str
+) -> Any:
+    data = _compressed_body_candidate(
+        response, min_size=min_size, accept_encoding=accept_encoding
+    )
     if data is None:
         return response
     compressed = gzip.compress(data, compresslevel=max(1, min(9, int(compresslevel))))
@@ -113,7 +129,7 @@ def _compress_response(response: Any, *, min_size: int, compresslevel: int) -> A
     response.headers["Content-Encoding"] = "gzip"
     response.headers["Content-Length"] = str(len(compressed))
     # Validators and integrity values for the identity bytes no longer apply.
-    for header in _TRANSFORMATION_INVALIDATED_HEADERS:
+    for header in TRANSFORMATION_INVALIDATED_HEADERS:
         response.headers.pop(header, None)
     return response
 
@@ -132,10 +148,10 @@ def install_http_optimizations(
     in-memory buffers. It only adds cache headers and opportunistic gzip for
     already-buffered text-like responses.
     """
-    compression_enabled = normalize_config_bool(
-        os.environ.get("ENABLE_GZIP_RESPONSES")
-        or getattr(app, "config", {}).get("ENABLE_GZIP_RESPONSES"),
-        default=True,
+    from flask import request
+
+    compression_enabled = gzip_responses_enabled(
+        getattr(app, "config", {}).get("ENABLE_GZIP_RESPONSES"),
     )
 
     @app.after_request
@@ -170,5 +186,6 @@ def install_http_optimizations(
                 response,
                 min_size=compress_min_size,
                 compresslevel=compresslevel,
+                accept_encoding=request.headers.get("Accept-Encoding", ""),
             )
         return response

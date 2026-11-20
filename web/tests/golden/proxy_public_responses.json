@@ -1,0 +1,4216 @@
+{
+ "cond_if_match_options": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Content-Length",
+     "0"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "cond_if_match_other": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "412 PRECONDITION FAILED"
+  },
+  "store_kwargs": {}
+ },
+ "cond_if_match_post_health": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "store_kwargs": {}
+ },
+ "cond_if_match_same": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "cond_if_match_star": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "412 PRECONDITION FAILED"
+  },
+  "store_kwargs": {}
+ },
+ "cond_if_match_weak_same": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "412 PRECONDITION FAILED"
+  },
+  "store_kwargs": {}
+ },
+ "cond_ims": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "cond_inm_and_if_match_other": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "412 PRECONDITION FAILED"
+  },
+  "store_kwargs": {}
+ },
+ "cond_inm_and_if_match_same": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "cond_inm_garbage": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "304 NOT MODIFIED"
+  },
+  "store_kwargs": {}
+ },
+ "cond_inm_list": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "304 NOT MODIFIED"
+  },
+  "store_kwargs": {}
+ },
+ "cond_inm_match": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "304 NOT MODIFIED"
+  },
+  "store_kwargs": {}
+ },
+ "cond_inm_match_head": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "304 NOT MODIFIED"
+  },
+  "store_kwargs": {}
+ },
+ "cond_inm_match_health": {
+  "response": {
+   "body": "{\"components\":{\"forwarding\":\"not_checked\",\"pac\":\"ok\",\"proxy_api\":\"ok\"},\"detail\":\"Public PAC/WPAD listener is serving. This lightweight endpoint does not assert Squid forwarding readiness; use authenticated /api/manage/health?full=1 for deep proxy health.\",\"forwarding_checked\":false,\"health_scope\":\"public-listener\",\"ok\":true,\"service\":\"proxy\",\"status\":\"serving_public_pac\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "375"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "cond_inm_other": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "cond_inm_star": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "304 NOT MODIFIED"
+  },
+  "store_kwargs": {}
+ },
+ "cond_inm_unquoted": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "304 NOT MODIFIED"
+  },
+  "store_kwargs": {}
+ },
+ "cond_inm_weak": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "304 NOT MODIFIED"
+  },
+  "store_kwargs": {}
+ },
+ "cond_ius": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "delete_wpad": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "store_kwargs": {}
+ },
+ "emergency_304": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "no-store, private"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "ETag",
+     "\"2b0b5ba830aaeb525a39edd3d73e9a73d926a83e3bf2dda9281d1065c46dd88e\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "304 NOT MODIFIED"
+  },
+  "store_kwargs": {}
+ },
+ "emergency_configured_path": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "emergency_pac": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) {\n  // emergency\n  // padding line 000 keeps this above the gzip floor\n  // padding line 001 keeps this above the gzip floor\n  // padding line 002 keeps this above the gzip floor\n  // padding line 003 keeps this above the gzip floor\n  // padding line 004 keeps this above the gzip floor\n  // padding line 005 keeps this above the gzip floor\n  // padding line 006 keeps this above the gzip floor\n  // padding line 007 keeps this above the gzip floor\n  // padding line 008 keeps this above the gzip floor\n  // padding line 009 keeps this above the gzip floor\n  // padding line 010 keeps this above the gzip floor\n  // padding line 011 keeps this above the gzip floor\n  // padding line 012 keeps this above the gzip floor\n  // padding line 013 keeps this above the gzip floor\n  // padding line 014 keeps this above the gzip floor\n  // padding line 015 keeps this above the gzip floor\n  // padding line 016 keeps this above the gzip floor\n  // padding line 017 keeps this above the gzip floor\n  // padding line 018 keeps this above the gzip floor\n  // padding line 019 keeps this above the gzip floor\n  // padding line 020 keeps this above the gzip floor\n  // padding line 021 keeps this above the gzip floor\n  // padding line 022 keeps this above the gzip floor\n  // padding line 023 keeps this above the gzip floor\n  // padding line 024 keeps this above the gzip floor\n  // padding line 025 keeps this above the gzip floor\n  // padding line 026 keeps this above the gzip floor\n  // padding line 027 keeps this above the gzip floor\n  // padding line 028 keeps this above the gzip floor\n  // padding line 029 keeps this above the gzip floor\n  return \"PROXY proxy.example:3128; DIRECT\";\n}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "1720"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "no-store, private"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "ETag",
+     "\"2b0b5ba830aaeb525a39edd3d73e9a73d926a83e3bf2dda9281d1065c46dd88e\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "emergency_wpad_gzip": {
+  "response": {
+   "body_b64": "H4sIAAAAAAAA/53VS2vCUBCG4X1+xeBKQWpm1HpbegGhUAkttMtoxngwnnM4ScQL/nctbl2Ubzff4t09MNvabirjLC2MzVbBnc4LF76Tj2YdijbtXFm16BoRdTqkBw252s35OX2aZcbmVBirFMcx7VV9SdXOlJSu3VEfp1J+MZ62hXPhZcVQJVDVhaoeVPWh6h2qBlA1hKoRUjFkgyEbDNlgyAZDNhiywZANhmwwZIMhGwLZEMiGQDYEsiGQDYFsCGRDIBsC2ZD/2Aha1cFSY5V8/vyS//tFb3pKD77QcZdlOKHZMplPvxqT6BbdAfw5R9u4BgAA",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "246"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"wpad.dat\""
+    ],
+    [
+     "Cache-Control",
+     "no-store, private"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ],
+    [
+     "Content-Encoding",
+     "gzip"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "encoded_bad_utf8_path": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "encoded_utf8_path": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"6720296dc703d2a715eb0208c917e86bf601602d4affe56289fde148c1d8b505\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "encoded_utf8_path_raw": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"6720296dc703d2a715eb0208c917e86bf601602d4affe56289fde148c1d8b505\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_api_manage_bare": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_api_manage_health": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_api_manage_slash": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_bad_percent": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_configured_path": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"wpad.dat\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_configured_path_encoded_char": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"wpad.dat\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_configured_path_encoded_sep": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_configured_path_no_query": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_configured_path_wrong_query": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_dot_segment": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_dotdot_encoded": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_dotdot_health_raw_unsafe": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_double_slash_pac": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_health": {
+  "response": {
+   "body": "{\"components\":{\"forwarding\":\"not_checked\",\"pac\":\"ok\",\"proxy_api\":\"ok\"},\"detail\":\"Public PAC/WPAD listener is serving. This lightweight endpoint does not assert Squid forwarding readiness; use authenticated /api/manage/health?full=1 for deep proxy health.\",\"forwarding_checked\":false,\"health_scope\":\"public-listener\",\"ok\":true,\"service\":\"proxy\",\"status\":\"serving_public_pac\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "375"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_health_gzip": {
+  "response": {
+   "body": "{\"components\":{\"forwarding\":\"not_checked\",\"pac\":\"ok\",\"proxy_api\":\"ok\"},\"detail\":\"Public PAC/WPAD listener is serving. This lightweight endpoint does not assert Squid forwarding readiness; use authenticated /api/manage/health?full=1 for deep proxy health.\",\"forwarding_checked\":false,\"health_scope\":\"public-listener\",\"ok\":true,\"service\":\"proxy\",\"status\":\"serving_public_pac\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "375"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_health_query": {
+  "response": {
+   "body": "{\"components\":{\"forwarding\":\"not_checked\",\"pac\":\"ok\",\"proxy_api\":\"ok\"},\"detail\":\"Public PAC/WPAD listener is serving. This lightweight endpoint does not assert Squid forwarding readiness; use authenticated /api/manage/health?full=1 for deep proxy health.\",\"forwarding_checked\":false,\"health_scope\":\"public-listener\",\"ok\":true,\"service\":\"proxy\",\"status\":\"serving_public_pac\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "375"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_health_raw_uri_unsafe": {
+  "response": {
+   "body": "{\"components\":{\"forwarding\":\"not_checked\",\"pac\":\"ok\",\"proxy_api\":\"ok\"},\"detail\":\"Public PAC/WPAD listener is serving. This lightweight endpoint does not assert Squid forwarding readiness; use authenticated /api/manage/health?full=1 for deep proxy health.\",\"forwarding_checked\":false,\"health_scope\":\"public-listener\",\"ok\":true,\"service\":\"proxy\",\"status\":\"serving_public_pac\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "375"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_health_spa": {
+  "response": {
+   "body": "{\"components\":{\"forwarding\":\"not_checked\",\"pac\":\"ok\",\"proxy_api\":\"ok\"},\"detail\":\"Public PAC/WPAD listener is serving. This lightweight endpoint does not assert Squid forwarding readiness; use authenticated /api/manage/health?full=1 for deep proxy health.\",\"forwarding_checked\":false,\"health_scope\":\"public-listener\",\"ok\":true,\"service\":\"proxy\",\"status\":\"serving_public_pac\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "375"
+    ],
+    [
+     "Cache-Control",
+     "no-store, private"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_health_trailing_slash": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_nope": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_pac_absolute_form": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_pac_backslash": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_pac_ctrl_char": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_pac_no_raw_uri": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_pac_raw_uri_unsafe": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_pac_request_uri_safe": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_pac_request_uri_unsafe": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_pac_spa": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_pac_trailing_slash": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_policy_request": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "store_kwargs": {}
+ },
+ "get_policy_request_slash": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_proxy_pac": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_proxy_pac_query": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_root": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"wpad.dat\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "get_unconfigured_path": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "get_wpad": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"wpad.dat\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "head_api_manage": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "head_health": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "375"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "head_nope": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "head_policy_request": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "store_kwargs": {}
+ },
+ "head_proxy_pac": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "head_root": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"wpad.dat\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "host_forwarded_trusted": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY fwd.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "73"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"c723cc6548d3b2da9e9fda5bb629f1a238b855ebc095ee2e5ed367a927303968\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "host_forwarded_untrusted": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "host_invalid": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY 127.0.0.1:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "71"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"924882d21cceaf5ef1b857986d7534458d9689c4a0ebcbf0701980ed753ba741\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "host_ipv6": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY [2001:db8::1]:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"f8fc5c7b2fcf77becf7fa5af6350e8f08ed6711edb3e417f2a4c3c48dde5ab64\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "host_missing": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY 127.0.0.1:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "71"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"924882d21cceaf5ef1b857986d7534458d9689c4a0ebcbf0701980ed753ba741\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "host_single_label": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY 127.0.0.1:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "71"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"924882d21cceaf5ef1b857986d7534458d9689c4a0ebcbf0701980ed753ba741\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "host_with_port": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "large_dup_gzip": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) {\n  if (shExpMatch(host, \"*.site0.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site1.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site2.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site3.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site4.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site5.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site6.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site7.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site8.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site9.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site10.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site11.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site12.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site13.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site14.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site15.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site16.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site17.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site18.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site19.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site20.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site21.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site22.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site23.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site24.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site25.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site26.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site27.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site28.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site29.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site30.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site31.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site32.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site33.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site34.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site35.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site36.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site37.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site38.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site39.example\")) return \"PROXY proxy.example:3128\";\n  return \"DIRECT\";\n}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "3209"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "ETag",
+     "\"e69f662dbc513e248b827429e2691f76d2ebe5b53b40ca0c13c9d37fd9d7beae\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "large_gzip": {
+  "response": {
+   "body_b64": "H4sIAAAAAAAA/63TTUvDUBBG4X1/xZBVIqV0ZvyoddkPKCiWoKDLUlMSqEm4uYEU8b9rF12LcLbzDmf3HPp6H6umlnVVf2xDM5zWTXjNH9M+HMdSNl3M5GskUh0k7crV0D7t4r5Mz8NYkqtJV8ViOimG3Wd7LJIsk1DEPtSSbPPnt3dpz8XLPHe1WfLwR03RmqE1R2vXaO0Grd2itTu0NkNr92hNYQysBmU5KOtBWRDKilCWhLImlEWhrApjVRirwlgVxqowVoWxKoxVYawKY1UYq8JZFc6qcFaFsyqcVeGsCmdVOKvCWRX+fxWXp+UmXy1efk/fox9jWpUtiQwAAA==",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "256"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ],
+    [
+     "Content-Encoding",
+     "gzip"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "large_gzip_304": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "ETag",
+     "\"e69f662dbc513e248b827429e2691f76d2ebe5b53b40ca0c13c9d37fd9d7beae\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "304 NOT MODIFIED"
+  },
+  "store_kwargs": {}
+ },
+ "large_gzip_412": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) {\n  if (shExpMatch(host, \"*.site0.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site1.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site2.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site3.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site4.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site5.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site6.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site7.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site8.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site9.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site10.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site11.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site12.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site13.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site14.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site15.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site16.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site17.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site18.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site19.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site20.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site21.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site22.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site23.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site24.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site25.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site26.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site27.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site28.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site29.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site30.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site31.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site32.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site33.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site34.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site35.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site36.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site37.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site38.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site39.example\")) return \"PROXY proxy.example:3128\";\n  return \"DIRECT\";\n}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "3209"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"e69f662dbc513e248b827429e2691f76d2ebe5b53b40ca0c13c9d37fd9d7beae\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "412 PRECONDITION FAILED"
+  },
+  "store_kwargs": {}
+ },
+ "large_gzip_disabled": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) {\n  if (shExpMatch(host, \"*.site0.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site1.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site2.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site3.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site4.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site5.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site6.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site7.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site8.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site9.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site10.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site11.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site12.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site13.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site14.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site15.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site16.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site17.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site18.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site19.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site20.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site21.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site22.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site23.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site24.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site25.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site26.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site27.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site28.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site29.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site30.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site31.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site32.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site33.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site34.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site35.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site36.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site37.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site38.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site39.example\")) return \"PROXY proxy.example:3128\";\n  return \"DIRECT\";\n}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "3209"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"e69f662dbc513e248b827429e2691f76d2ebe5b53b40ca0c13c9d37fd9d7beae\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "large_gzip_head": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "256"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ],
+    [
+     "Content-Encoding",
+     "gzip"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "large_gzip_q0": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) {\n  if (shExpMatch(host, \"*.site0.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site1.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site2.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site3.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site4.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site5.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site6.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site7.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site8.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site9.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site10.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site11.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site12.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site13.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site14.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site15.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site16.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site17.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site18.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site19.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site20.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site21.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site22.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site23.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site24.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site25.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site26.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site27.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site28.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site29.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site30.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site31.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site32.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site33.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site34.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site35.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site36.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site37.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site38.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site39.example\")) return \"PROXY proxy.example:3128\";\n  return \"DIRECT\";\n}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "3209"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "ETag",
+     "\"e69f662dbc513e248b827429e2691f76d2ebe5b53b40ca0c13c9d37fd9d7beae\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "large_gzip_q_low": {
+  "response": {
+   "body_b64": "H4sIAAAAAAAA/63TTUvDUBBG4X1/xZBVIqV0ZvyoddkPKCiWoKDLUlMSqEm4uYEU8b9rF12LcLbzDmf3HPp6H6umlnVVf2xDM5zWTXjNH9M+HMdSNl3M5GskUh0k7crV0D7t4r5Mz8NYkqtJV8ViOimG3Wd7LJIsk1DEPtSSbPPnt3dpz8XLPHe1WfLwR03RmqE1R2vXaO0Grd2itTu0NkNr92hNYQysBmU5KOtBWRDKilCWhLImlEWhrApjVRirwlgVxqowVoWxKoxVYawKY1UYq8JZFc6qcFaFsyqcVeGsCmdVOKvCWRX+fxWXp+UmXy1efk/fox9jWpUtiQwAAA==",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "256"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ],
+    [
+     "Content-Encoding",
+     "gzip"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "large_gzip_qbad": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) {\n  if (shExpMatch(host, \"*.site0.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site1.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site2.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site3.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site4.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site5.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site6.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site7.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site8.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site9.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site10.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site11.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site12.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site13.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site14.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site15.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site16.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site17.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site18.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site19.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site20.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site21.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site22.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site23.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site24.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site25.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site26.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site27.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site28.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site29.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site30.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site31.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site32.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site33.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site34.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site35.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site36.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site37.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site38.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site39.example\")) return \"PROXY proxy.example:3128\";\n  return \"DIRECT\";\n}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "3209"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "ETag",
+     "\"e69f662dbc513e248b827429e2691f76d2ebe5b53b40ca0c13c9d37fd9d7beae\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "large_identity": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) {\n  if (shExpMatch(host, \"*.site0.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site1.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site2.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site3.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site4.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site5.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site6.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site7.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site8.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site9.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site10.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site11.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site12.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site13.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site14.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site15.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site16.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site17.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site18.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site19.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site20.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site21.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site22.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site23.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site24.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site25.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site26.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site27.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site28.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site29.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site30.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site31.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site32.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site33.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site34.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site35.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site36.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site37.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site38.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site39.example\")) return \"PROXY proxy.example:3128\";\n  return \"DIRECT\";\n}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "3209"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "ETag",
+     "\"e69f662dbc513e248b827429e2691f76d2ebe5b53b40ca0c13c9d37fd9d7beae\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "large_plain": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) {\n  if (shExpMatch(host, \"*.site0.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site1.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site2.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site3.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site4.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site5.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site6.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site7.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site8.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site9.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site10.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site11.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site12.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site13.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site14.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site15.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site16.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site17.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site18.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site19.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site20.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site21.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site22.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site23.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site24.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site25.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site26.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site27.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site28.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site29.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site30.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site31.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site32.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site33.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site34.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site35.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site36.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site37.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site38.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site39.example\")) return \"PROXY proxy.example:3128\";\n  return \"DIRECT\";\n}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "3209"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "ETag",
+     "\"e69f662dbc513e248b827429e2691f76d2ebe5b53b40ca0c13c9d37fd9d7beae\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "large_range_gzip": {
+  "response": {
+   "body_b64": "H4sIAAAAAAAA/63TTUvDUBBG4X1/xZBVIqV0ZvyoddkPKCiWoKDLUlMSqEm4uYEU8b9rF12LcLbzDmf3HPp6H6umlnVVf2xDM5zWTXjNH9M+HMdSNl3M5GskUh0k7crV0D7t4r5Mz8NYkqtJV8ViOimG3Wd7LJIsk1DEPtSSbPPnt3dpz8XLPHe1WfLwR03RmqE1R2vXaO0Grd2itTu0NkNr92hNYQysBmU5KOtBWRDKilCWhLImlEWhrApjVRirwlgVxqowVoWxKoxVYawKY1UYq8JZFc6qcFaFsyqcVeGsCmdVOKvCWRX+fxWXp+UmXy1efk/fox9jWpUtiQwAAA==",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "256"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ],
+    [
+     "Content-Encoding",
+     "gzip"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "large_star": {
+  "response": {
+   "body_b64": "H4sIAAAAAAAA/63TTUvDUBBG4X1/xZBVIqV0ZvyoddkPKCiWoKDLUlMSqEm4uYEU8b9rF12LcLbzDmf3HPp6H6umlnVVf2xDM5zWTXjNH9M+HMdSNl3M5GskUh0k7crV0D7t4r5Mz8NYkqtJV8ViOimG3Wd7LJIsk1DEPtSSbPPnt3dpz8XLPHe1WfLwR03RmqE1R2vXaO0Grd2itTu0NkNr92hNYQysBmU5KOtBWRDKilCWhLImlEWhrApjVRirwlgVxqowVoWxKoxVYawKY1UYq8JZFc6qcFaFsyqcVeGsCmdVOKvCWRX+fxWXp+UmXy1efk/fox9jWpUtiQwAAA==",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "256"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ],
+    [
+     "Content-Encoding",
+     "gzip"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "large_star_q0": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) {\n  if (shExpMatch(host, \"*.site0.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site1.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site2.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site3.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site4.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site5.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site6.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site7.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site8.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site9.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site10.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site11.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site12.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site13.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site14.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site15.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site16.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site17.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site18.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site19.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site20.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site21.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site22.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site23.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site24.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site25.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site26.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site27.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site28.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site29.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site30.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site31.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site32.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site33.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site34.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site35.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site36.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site37.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site38.example\")) return \"PROXY proxy.example:3128\";\n  if (shExpMatch(host, \"*.site39.example\")) return \"PROXY proxy.example:3128\";\n  return \"DIRECT\";\n}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "3209"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP, Accept-Encoding"
+    ],
+    [
+     "ETag",
+     "\"e69f662dbc513e248b827429e2691f76d2ebe5b53b40ca0c13c9d37fd9d7beae\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "odd_double_slash": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"ebbf314e7beac314ef6de7d9608b023046a5d14fa4e95604005acc30a5c87d02\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "odd_double_slash_merged": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "odd_trailing_slash": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"ebbf314e7beac314ef6de7d9608b023046a5d14fa4e95604005acc30a5c87d02\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "odd_trailing_slash_missing": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "options_configured": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Content-Length",
+     "0"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "options_health": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Content-Length",
+     "0"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "options_nope": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "options_policy_request": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS, POST"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Content-Length",
+     "0"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "options_proxy_pac": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Content-Length",
+     "0"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "options_root": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Content-Length",
+     "0"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "pac_raises_500": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>500 Internal Server Error</title>\n<h1>Internal Server Error</h1>\n<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "265"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "store_kwargs": {}
+ },
+ "pac_raises_500_head": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "265"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "store_kwargs": {}
+ },
+ "policy_admission_429": {
+  "response": {
+   "body": "<!doctype html><title>Request not accepted</title><h1>Request not accepted</h1><p>Policy request capacity is currently full. Please contact your administrator.</p>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "163"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "429 TOO MANY REQUESTS"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "x.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_bad_content_length": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>x.example</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "675"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "x.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_bad_percent": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>%zz</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "669"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "%zz",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "%",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_control_plane_503": {
+  "response": {
+   "body": "<!doctype html><title>Request failed</title><h1>Request failed</h1><p>The request service is temporarily unavailable. Please try again later.</p>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "145"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "503 SERVICE UNAVAILABLE"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "x.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_env_limit_exact": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>abcdefghijklm</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "679"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "abcdefghijklm",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_env_limit_invalid": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>x.example</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "675"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "x.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_env_limit_zero": {
+  "response": {
+   "body": "<!doctype html><title>Request too large</title><h1>Request too large</h1><p>Policy request submissions are limited to 16384 bytes.</p>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "134"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "413 REQUEST ENTITY TOO LARGE"
+  },
+  "store_kwargs": {}
+ },
+ "policy_generic_500": {
+  "response": {
+   "body": "<!doctype html><title>Request failed</title><h1>Request failed</h1><p>The request could not be recorded due to an internal error.</p>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "133"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "x.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_invalid_utf8": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code></code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "666"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_long_domain_gzip": {
+  "response": {
+   "body_b64": "H4sIAAAAAAAA/5VU246bMBD9FZe8dKUlXDbJpgTy1A9Y9a2Pgz0k1hrbtU0ARfmuvvfLaofdbSUqoR6Ji+1zjsczA+UnpqgbNZKza8WxDHciQJ6qCGXkxwjsWLbogNAzGIuuijrXxPvobVZCi1V04dhrZVxEqJIOpWf1nLlzxfDCKcb3wSOX3HEQsaUgsMq8heNO4PEb/ujQOmK7uuXOISuTaaG0bvSPWrHx2njjuIGWi7Gwo3XYxh0/tGBOXBbpoQb6ejKqk6xYpXWW5+mBKqFMsUJsNk1za4HLawvDFEvxvEv18C7f7PVAoHPqoIExLk9FvtHDbU3BsGutDENTZJ5ileCMmFMNn/Pt9vH9Wme7h8NEiw0w3tki845/zMLgrwDnBun+4UYVw6u6oGmE6uPegC5Ajv0ZDd7KZMpEmUwFCRnxBfBH8jlC6riShAqwtopCzD6z+vhV0Vc05MWoYSS/fpIXHzwdiZmSXSbaVzf7V+79rJd/V50hwFpfNOsMOGUIBUmk6r1FqDdxZ25JLcI2jDBvwiWESNZ3b/1hvXrKs4KU4XxHv006/DfWXpYtkeYIsnyJNEeQPS2R5giyzRJpjiDbLpHmCLLdEmmOIHteIs0RZPsl0hxB9mWJNMcaB2i1wDK598y9nZK3NvdvU9sn0zeQ3P9bvwEdThrexwQAAA==",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "514"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ],
+    [
+     "Content-Encoding",
+     "gzip"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "sub0xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub2xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub3xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub5xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub6xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub7xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub8xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub9xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_long_domain_plain": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>sub0xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub2xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub3xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub5xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub6xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub7xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub8xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub9xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.example</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "1223"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "sub0xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub2xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub3xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub5xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub6xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub7xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub8xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.sub9xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_multipart_broken": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code></code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "666"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_multipart_no_boundary": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code></code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "666"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_multipart_too_many_parts": {
+  "response": {
+   "body": "<!doctype html><title>Request too large</title><h1>Request too large</h1><p>Policy request submissions are limited to 400000 bytes.</p>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "135"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "413 REQUEST ENTITY TOO LARGE"
+  },
+  "store_kwargs": {}
+ },
+ "policy_no_content_type": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code></code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "666"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_ok": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>bad.example</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "677"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "bad.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "https://bad.example/",
+   "squid_error": "",
+   "user_note": "need"
+  }
+ },
+ "policy_ok_escaped": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>&lt;b&gt;&amp;&#34;&#39;x.example</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "699"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "sslfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "<b>&\"'x.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "e",
+   "user_note": ""
+  }
+ },
+ "policy_ok_multipart": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>multi.example</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "679"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "multi.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "https://multi.example/x",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_ok_query": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>bad.example</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "677"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "bad.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "https://bad.example/",
+   "squid_error": "",
+   "user_note": "need"
+  }
+ },
+ "policy_oversized_chunked": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "17043"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_oversized_declared": {
+  "response": {
+   "body": "<!doctype html><title>Request too large</title><h1>Request too large</h1><p>Policy request submissions are limited to 16384 bytes.</p>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "134"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "413 REQUEST ENTITY TOO LARGE"
+  },
+  "store_kwargs": {}
+ },
+ "policy_oversized_env_limit": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "787"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_text_plain": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code></code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "666"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_transient_503": {
+  "response": {
+   "body": "<!doctype html><title>Request failed</title><h1>Request failed</h1><p>The request service is temporarily unavailable. Please try again later.</p>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "145"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "503 SERVICE UNAVAILABLE"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "x.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_truncated_body": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>x.example</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "675"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "x.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_trusted_form_ip": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>form.example</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "678"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "10.11.12.14",
+   "domain": "form.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_trusted_forwarded": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>fwd.example</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "677"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "10.11.12.13",
+   "domain": "fwd.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_unsafe_raw_uri": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>x.example</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "675"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "x.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "policy_uppercase_mimetype": {
+  "response": {
+   "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Request submitted</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}main{max-width:760px;margin:48px auto;padding:24px}.card{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}code{overflow-wrap:anywhere}</style></head><body><main><section class=\"card\"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #321: <code>upper.example</code></p></section></main></body></html>",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "679"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {
+   "block_type": "webfilter",
+   "category": "",
+   "client_ip": "192.168.1.20",
+   "domain": "upper.example",
+   "method": "",
+   "proxy_id": "default",
+   "request_url": "",
+   "squid_error": "",
+   "user_note": ""
+  }
+ },
+ "post_api_manage": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "post_configured": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "store_kwargs": {}
+ },
+ "post_health": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "store_kwargs": {}
+ },
+ "post_nope": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "store_kwargs": {}
+ },
+ "post_proxy_pac": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "store_kwargs": {}
+ },
+ "put_health": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "store_kwargs": {}
+ },
+ "put_policy_request": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS, POST"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "store_kwargs": {}
+ },
+ "range_bytes": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "range_if_range": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "range_invalid": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ },
+ "small_gzip": {
+  "response": {
+   "body": "function FindProxyForURL(url, host) { return \"PROXY proxy.example:3128\"; }\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/x-ns-proxy-autoconfig"
+    ],
+    [
+     "Content-Length",
+     "75"
+    ],
+    [
+     "Content-Disposition",
+     "inline; filename=\"proxy.pac\""
+    ],
+    [
+     "Cache-Control",
+     "private, max-age=30"
+    ],
+    [
+     "Vary",
+     "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
+    ],
+    [
+     "ETag",
+     "\"2e631d0ad2a1f419d4909e2f1312cb63c1a5c3f682d7291bc07d513685f45cb9\""
+    ],
+    [
+     "Date",
+     "<http-date>"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "store_kwargs": {}
+ }
+}

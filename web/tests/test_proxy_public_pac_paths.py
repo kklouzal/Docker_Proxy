@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from werkzeug.test import Client
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -54,7 +55,7 @@ def public_pac_client(monkeypatch):
         monkeypatch.setenv("PAC_HTTP_PORT", "80")
         pac_http.pac_render_dir.cache_clear()
         pac_http._CACHES.clear()
-        return proxy_app.app.test_client()
+        return Client(proxy_app.app)
 
     return build_client
 

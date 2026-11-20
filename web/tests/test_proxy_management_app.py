@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import NoReturn
 
 import pytest
+from werkzeug.test import Client
 
 
 @pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] -- isolation guard for every test here
@@ -1098,7 +1099,7 @@ def test_proxy_management_test_supervisor_route_requires_test_mode_and_uses_allo
 
 
 def test_proxy_public_listener_serves_health_pac_wpad_and_root(monkeypatch) -> None:
-    client = _load_public_app(monkeypatch).app.test_client()
+    client = Client(_load_public_app(monkeypatch).app)
 
     health = _public_get(client, "/health")
     pac = _public_get(client, "/proxy.pac")
@@ -1125,7 +1126,7 @@ def test_proxy_public_listener_rejects_management_and_management_listener_reject
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _Runtime()
     client = proxy_app.app.test_client()
-    public_client = _load_public_app(monkeypatch).app.test_client()
+    public_client = Client(_load_public_app(monkeypatch).app)
 
     health = _public_get(
         public_client, "/api/manage/health", headers={"Authorization": "Bearer secret"}
@@ -1196,7 +1197,7 @@ def test_public_health_declares_lightweight_non_forwarding_scope(monkeypatch) ->
     proxy_app.runtime = _Runtime()
     client = proxy_app.app.test_client()
 
-    public = _public_get(_load_public_app(monkeypatch).app.test_client(), "/health")
+    public = _public_get(Client(_load_public_app(monkeypatch).app), "/health")
     management = _management_get(client, "/health")
 
     assert public.status_code == 200

@@ -8,6 +8,7 @@ import sys
 
 import pytest
 from flask import Flask, Response
+from werkzeug.test import Client
 
 from .admin_route_test_utils import csrf_token, load_admin_app, login_client
 
@@ -889,7 +890,7 @@ def test_proxy_pac_emergency_responses_are_private_no_store_and_conditional_etag
     import proxy.public_app as proxy_app  # type: ignore
 
     proxy_app = importlib.reload(proxy_app)
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
 
     first = client.get("/proxy.pac", base_url="http://proxy")
     etag = first.headers.get("ETag")
