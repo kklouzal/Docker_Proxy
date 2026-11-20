@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Self
 
+import pymysql
 import pytest
 from services import observability_maintenance as maintenance
 
@@ -33,8 +34,7 @@ class FakeConnection:
         if "information_schema.tables" in sql:
             self.table_exists_calls += 1
             if self.fail_first_table_exists and self.table_exists_calls == 1:
-                msg = "InterfaceError: (0, '')"
-                raise RuntimeError(msg)
+                raise pymysql.err.InterfaceError(0, "")
             return FakeResult(1)
         return FakeResult(0)
 
@@ -257,8 +257,8 @@ def test_observability_advisory_lock_uses_unpooled_connection(monkeypatch) -> No
 
     assert pooled_calls == []
     assert unpooled_calls == [
-        "SELECT GET_LOCK(%s, 0)",
-        "SELECT RELEASE_LOCK(%s)",
+        "SELECT GET_LOCK(%s, %s) AS acquired",
+        "DO RELEASE_LOCK(%s)",
         "close",
     ]
 
@@ -278,8 +278,9 @@ def test_clear_observability_logs_does_not_replay_commit_unknown_truncate(
 
         def execute(self, sql, _params=None):
             statements.append(sql)
-            msg = "Lost connection to MySQL server password=secret"
-            raise RuntimeError(msg)
+            raise pymysql.err.OperationalError(
+                2013, "Lost connection to MySQL server password=secret"
+            )
 
     monkeypatch.setattr(
         maintenance,
@@ -345,39 +346,6 @@ def test_clear_observability_logs_accepts_successful_truncate_before_commit_erro
     assert result["tables"][0]["maintenance"] == "truncated"
     assert statements == ["TRUNCATE TABLE `diagnostic_requests`"]
     assert fallback_calls == []
-
-
-def test_truncate_retries_only_connection_acquisition_before_issuing_sql(
-    monkeypatch,
-) -> None:
-    calls = 0
-    statements: list[str] = []
-
-    class Connection:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def execute(self, sql, _params=None):
-            statements.append(sql)
-            return FakeResult()
-
-    def connect():
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            msg = "InterfaceError: (0, '')"
-            raise RuntimeError(msg)
-        return Connection()
-
-    monkeypatch.setattr(maintenance, "connect", connect)
-
-    maintenance._truncate_table("diagnostic_requests")
-
-    assert calls == 2
-    assert statements == ["TRUNCATE TABLE `diagnostic_requests`"]
 
 
 def test_clear_observability_logs_reports_partial_bounded_delete_fallback(

@@ -311,6 +311,27 @@ def resolve_local_proxy_management_url(
     return normalize_management_url(f"{scheme}://{host}:{port}")
 
 
+def local_proxy_registration_fields(proxy_id: str) -> dict[str, Any]:
+    """Registry fields this proxy reports for itself, from its environment."""
+    public_fields = resolve_local_proxy_public_fields()
+    return {
+        "display_name": (os.environ.get("PROXY_DISPLAY_NAME") or proxy_id).strip()
+        or proxy_id,
+        "hostname": (os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip(),
+        "management_url": resolve_local_proxy_management_url(
+            proxy_id,
+            public_fields.get("public_host"),
+        ),
+        "public_host": str(public_fields.get("public_host") or ""),
+        "public_pac_scheme": str(public_fields.get("public_pac_scheme") or "http"),
+        "public_pac_port": int(public_fields.get("public_pac_port") or 80),
+        "public_pac_path": str(public_fields.get("public_pac_path") or "/proxy.pac"),
+        "public_http_proxy_port": int(
+            public_fields.get("public_http_proxy_port") or 3128
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class ProxyInstance:
     proxy_id: str
@@ -520,10 +541,19 @@ class ProxyRegistry:
         public_http_proxy_port: int | None = None,
         status: str | None = None,
         detail: str | None = None,
+        record_heartbeat: bool = False,
+        current_config_sha: str | None = None,
     ) -> ProxyInstance:
+        """Create or update a registry row in one transaction.
+
+        ``record_heartbeat`` also stamps ``last_heartbeat`` with the write time,
+        and a non-empty ``current_config_sha`` replaces the stored one.
+        """
         self.init_db()
         proxy_key = normalize_proxy_id(proxy_id)
         now = int(time.time())
+        heartbeat_ts = now if record_heartbeat else 0
+        config_sha = (current_config_sha or "").strip()
         with self._connect() as conn:
             self._ensure_not_tombstoned(conn, proxy_key)
             row = conn.execute(
@@ -556,10 +586,10 @@ class ProxyRegistry:
                         normalize_public_pac_path(public_pac_path),
                         _coerce_port(public_http_proxy_port, 3128),
                         (status or "unknown").strip() or "unknown",
+                        heartbeat_ts,
                         0,
                         0,
-                        0,
-                        "",
+                        config_sha,
                         (detail or "").strip(),
                         now,
                         now,
@@ -583,10 +613,10 @@ class ProxyRegistry:
                         3128,
                     ),
                     "status": (status or "unknown").strip() or "unknown",
-                    "last_heartbeat": 0,
+                    "last_heartbeat": heartbeat_ts,
                     "last_apply_ts": 0,
                     "last_apply_ok": 0,
-                    "current_config_sha": "",
+                    "current_config_sha": config_sha,
                     "detail": (detail or "").strip(),
                     "created_ts": now,
                     "updated_ts": now,
@@ -634,12 +664,15 @@ class ProxyRegistry:
                 next_detail = (
                     detail if detail is not None else row["detail"] or ""
                 ).strip()
+                next_heartbeat = heartbeat_ts or int(row["last_heartbeat"] or 0)
+                next_config_sha = config_sha or str(row["current_config_sha"] or "")
                 conn.execute(
                     """
                     UPDATE proxy_instances
                     SET display_name=%s, hostname=%s, management_url=%s,
                         public_host=%s, public_pac_scheme=%s, public_pac_port=%s,
-                        public_pac_path=%s, public_http_proxy_port=%s, status=%s, detail=%s, updated_ts=%s
+                        public_pac_path=%s, public_http_proxy_port=%s, status=%s, detail=%s,
+                        last_heartbeat=%s, current_config_sha=%s, updated_ts=%s
                     WHERE proxy_id=%s
                     """,
                     (
@@ -653,6 +686,8 @@ class ProxyRegistry:
                         next_public_http_proxy_port,
                         next_status,
                         next_detail,
+                        next_heartbeat,
+                        next_config_sha,
                         now,
                         proxy_key,
                     ),
@@ -668,10 +703,10 @@ class ProxyRegistry:
                     "public_pac_path": next_public_pac_path,
                     "public_http_proxy_port": next_public_http_proxy_port,
                     "status": next_status,
-                    "last_heartbeat": int(row["last_heartbeat"] or 0),
+                    "last_heartbeat": next_heartbeat,
                     "last_apply_ts": int(row["last_apply_ts"] or 0),
                     "last_apply_ok": int(row["last_apply_ok"] or 0),
-                    "current_config_sha": str(row["current_config_sha"] or ""),
+                    "current_config_sha": next_config_sha,
                     "detail": next_detail,
                     "created_ts": int(row["created_ts"] or 0),
                     "updated_ts": now,
@@ -844,7 +879,9 @@ class ProxyRegistry:
         *,
         allowed_actions: set[str] | None = None,
     ) -> None:
-        ensure_lifecycle_schema(conn)
+        # No ensure_lifecycle_schema() here: init_db() owns the table, and this
+        # check runs inside lifecycle transactions where any CREATE TABLE would
+        # implicitly commit and release the row locks already taken.
         row = conn.execute(
             "SELECT action, target_proxy_id FROM proxy_lifecycle_tombstones WHERE proxy_id=%s LIMIT 1",
             (proxy_key,),
@@ -1515,7 +1552,7 @@ class ProxyRegistry:
         current_config_sha: str | None = None,
         detail: str | None = None,
     ) -> ProxyInstance:
-        instance = self.ensure_proxy(
+        return self.ensure_proxy(
             proxy_id,
             display_name=None,
             hostname=hostname,
@@ -1527,62 +1564,9 @@ class ProxyRegistry:
             public_http_proxy_port=public_http_proxy_port,
             status=status,
             detail=detail,
+            record_heartbeat=True,
+            current_config_sha=current_config_sha,
         )
-        now = int(time.time())
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE proxy_instances
-                SET status=%s, hostname=%s, management_url=%s,
-                    public_host=%s, public_pac_scheme=%s, public_pac_port=%s,
-                    public_pac_path=%s, public_http_proxy_port=%s, last_heartbeat=%s,
-                    current_config_sha=%s, detail=%s, updated_ts=%s
-                WHERE proxy_id=%s
-                """,
-                (
-                    (status or instance.status).strip() or "unknown",
-                    (hostname or instance.hostname).strip(),
-                    normalize_management_url(
-                        management_url or instance.management_url,
-                    ),
-                    _normalize_public_host(
-                        public_host
-                        if public_host is not None
-                        else instance.public_host,
-                        allow_single_label=True,
-                    ),
-                    _normalize_public_scheme(
-                        public_pac_scheme
-                        if public_pac_scheme is not None
-                        else instance.public_pac_scheme,
-                    ),
-                    _coerce_port(
-                        public_pac_port
-                        if public_pac_port is not None
-                        else instance.public_pac_port,
-                        80,
-                    ),
-                    normalize_public_pac_path(
-                        public_pac_path
-                        if public_pac_path is not None
-                        else instance.public_pac_path,
-                    ),
-                    _coerce_port(
-                        public_http_proxy_port
-                        if public_http_proxy_port is not None
-                        else instance.public_http_proxy_port,
-                        3128,
-                    ),
-                    now,
-                    (current_config_sha or instance.current_config_sha).strip(),
-                    (detail if detail is not None else instance.detail).strip(),
-                    now,
-                    instance.proxy_id,
-                ),
-            )
-        refreshed = self.get_proxy(instance.proxy_id)
-        assert refreshed is not None
-        return refreshed
 
     def mark_apply_result(
         self,
@@ -1620,39 +1604,24 @@ class ProxyRegistry:
             or os.environ.get("PROXY_ID")
             or get_env_default_proxy_id(),
         )
-        display_name = (
-            os.environ.get("PROXY_DISPLAY_NAME") or proxy_id
-        ).strip() or proxy_id
-        hostname = (os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip()
-        public_fields = resolve_local_proxy_public_fields()
-        management_url = resolve_local_proxy_management_url(
-            proxy_id,
-            public_fields.get("public_host"),
-        )
+        fields = local_proxy_registration_fields(proxy_id)
         existing = self.get_proxy(proxy_id)
         if existing is None:
             candidate = self.find_reconcile_candidate(
                 proxy_id,
-                management_url=management_url,
-                public_host=str(public_fields["public_host"] or ""),
+                management_url=fields["management_url"],
+                public_host=fields["public_host"],
             )
             if candidate is not None:
                 existing = self.rename_proxy(
                     candidate.proxy_id,
                     proxy_id,
-                    display_name=display_name,
+                    display_name=fields["display_name"],
                     reconcile_local_identity=True,
                 )
         return self.ensure_proxy(
             proxy_id,
-            display_name=display_name,
-            hostname=hostname,
-            management_url=management_url,
-            public_host=str(public_fields["public_host"] or ""),
-            public_pac_scheme=str(public_fields["public_pac_scheme"] or "http"),
-            public_pac_port=int(public_fields["public_pac_port"] or 80),
-            public_pac_path=str(public_fields.get("public_pac_path") or "/proxy.pac"),
-            public_http_proxy_port=int(public_fields["public_http_proxy_port"] or 3128),
+            **fields,
             status="starting" if existing is None else None,
         )
 

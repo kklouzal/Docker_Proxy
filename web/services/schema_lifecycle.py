@@ -23,6 +23,7 @@ from services.db import (
     mysql_error_code,
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
+    table_exists,
 )
 from services.row_access import row_value as _row_value
 from services.sql_identifiers import (
@@ -36,12 +37,9 @@ if False:  # pragma: no cover - type checkers only
 _SCHEMA_VERSION = 33
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
-_RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
 _CONTROL_PLANE_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
 )
-_HOT_PATH_ENSURE_LOCK = threading.Lock()
-_HOT_PATH_ENSURED = False
 _MIGRATION_CONTEXT = threading.local()
 
 
@@ -202,20 +200,6 @@ def runtime_schema_current_applied(conn: Any) -> bool:
 
 def runtime_schema_ready_for_lazy_store(conn: Any) -> bool:
     return (not schema_migration_in_progress()) and runtime_schema_current_applied(conn)
-
-
-def table_exists(conn: Any, table_name: str) -> bool:
-    row = conn.execute(
-        """
-        SELECT 1
-        FROM information_schema.tables
-        WHERE table_schema = DATABASE()
-          AND table_name = %s
-        LIMIT 1
-        """,
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 def column_exists(conn: Any, table_name: str, column_name: str) -> bool:
@@ -1897,68 +1881,3 @@ def latest_schema_version() -> int:
 
 def latest_schema_checksum() -> str:
     return _default_spec().checksum
-
-
-def assert_schema_current(conn: Any | None = None) -> None:
-    owns_connection = conn is None
-    active_conn = connect() if owns_connection else conn
-    try:
-        history_error = schema_history_error(active_conn)
-        if history_error is not None:
-            msg = (
-                f"{history_error}. Run startup schema migrations with a DDL-capable "
-                "account before normal runtime."
-            )
-            raise RuntimeError(msg)
-    finally:
-        if owns_connection:
-            active_conn.close()
-
-
-def ensure_runtime_schema_current_once() -> None:
-    global _HOT_PATH_ENSURED
-    if _HOT_PATH_ENSURED:
-        return
-    with _HOT_PATH_ENSURE_LOCK:
-        if _HOT_PATH_ENSURED:
-            return
-        with connect() as conn:
-            assert_schema_current(conn)
-        _HOT_PATH_ENSURED = True
-
-
-def ensure_hot_path_schema_once() -> None:
-    # Backward-compatible name for callers that used to allow runtime DDL.
-    # Hot paths now perform only a one-time migration assertion; startup owns DDL.
-    ensure_runtime_schema_current_once()
-
-
-def schema_migration_status() -> list[dict[str, Any]]:
-    with connect() as conn:
-        if not table_exists(conn, "schema_migrations"):
-            return []
-        rows = conn.execute(
-            """
-            SELECT version, name, checksum, status, started_ts, finished_ts, error
-            FROM schema_migrations
-            ORDER BY version ASC
-            """,
-        ).fetchall()
-    return [
-        {
-            "version": int(_row_value(row, "version", 0) or 0),
-            "name": str(_row_value(row, "name", 1) or ""),
-            "checksum": str(_row_value(row, "checksum", 2) or ""),
-            "status": str(_row_value(row, "status", 3) or ""),
-            "started_ts": int(_row_value(row, "started_ts", 4) or 0),
-            "finished_ts": int(_row_value(row, "finished_ts", 5) or 0),
-            "error": str(_row_value(row, "error", 6) or ""),
-        }
-        for row in rows
-    ]
-
-
-def reset_schema_lifecycle_for_tests() -> None:
-    global _HOT_PATH_ENSURED
-    with _HOT_PATH_ENSURE_LOCK:
-        _HOT_PATH_ENSURED = False

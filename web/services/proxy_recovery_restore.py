@@ -9,7 +9,12 @@ from typing import Any, Final, Literal
 
 from services import adblock_artifacts, proxy_recovery
 from services.certificate_digest import certificate_bundle_sha256
-from services.db import connect, staged_blob_parameter
+from services.db import (
+    acquire_mysql_named_lock,
+    connect,
+    release_mysql_named_lock,
+    staged_blob_parameter,
+)
 from services.pac_profiles_store import _normalize_proxy_host_port
 from services.proxy_recovery_db import recovery_export_query_plans
 from services.proxy_write_guard import (
@@ -435,11 +440,13 @@ def restore_recovery_bundle(
         )
 
     lock_name = proxy_lifecycle_lock_name(plan.proxy_id)
-    acquired = False
+    if not acquire_mysql_named_lock(conn, lock_name, lock_timeout_seconds):
+        raise ProxyLifecycleWriteError(
+            "timed out acquiring proxy lifecycle recovery lock"
+        )
     in_transaction = False
     restored_identity = target_identity
     try:
-        acquired = _acquire_lifecycle_lock(conn, lock_name, lock_timeout_seconds)
         second_decision = resolve_proxy_write_id(
             conn,
             plan.proxy_id,
@@ -486,15 +493,10 @@ def restore_recovery_bundle(
                 rollback()
         raise
     finally:
-        if acquired:
-            try:
-                _release_lifecycle_lock(conn, lock_name)
-            except Exception:
-                # The restore transaction has already committed or rolled back.
-                # Do not mask that authoritative outcome with a best-effort
-                # connection/lock-release failure; MySQL releases named locks
-                # when the session closes.
-                pass
+        # The restore transaction has already committed or rolled back; a
+        # failed release must not mask that outcome, and the helper discards
+        # the session so the lock cannot survive in the pool.
+        release_mysql_named_lock(conn, lock_name)
     return _restore_result(
         _RESTORE_STATUS_ADOPTED,
         plan,
@@ -1304,26 +1306,6 @@ def _project_row(row: Any, columns: tuple[str, ...]) -> dict[str, Any]:
             value = str(value)
         projected[column] = value
     return projected
-
-
-def _acquire_lifecycle_lock(conn: Any, lock_name: str, timeout_seconds: int) -> bool:
-    row = conn.execute(
-        "SELECT GET_LOCK(%s, %s) AS acquired",
-        (lock_name, int(timeout_seconds)),
-    ).fetchone()
-    try:
-        acquired = int(_row_value(row, "acquired", 0) or 0) == 1
-    except Exception:
-        acquired = False
-    if not acquired:
-        raise ProxyLifecycleWriteError(
-            "timed out acquiring proxy lifecycle recovery lock"
-        )
-    return True
-
-
-def _release_lifecycle_lock(conn: Any, lock_name: str) -> None:
-    conn.execute("DO RELEASE_LOCK(%s)", (lock_name,))
 
 
 def _apply_restore_plan(conn: Any, plan: RestorePlan, target_identity: str) -> None:

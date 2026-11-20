@@ -12,7 +12,14 @@ from services.bounded_delete import (
     delete_where_in_chunks,
     env_int,
 )
-from services.db import DATABASE_ERRORS, connect, connect_unpooled, table_exists
+from services.db import (
+    DATABASE_ERRORS,
+    acquire_mysql_named_lock,
+    connect,
+    connect_unpooled,
+    release_mysql_named_lock,
+    table_exists,
+)
 from services.errors import redact_sensitive_text
 from services.mysql_table_maintenance import (
     looks_like_stale_connection,
@@ -80,21 +87,22 @@ class ObservabilityClearOutcomeUncertainError(RuntimeError):
     """Raised when a non-transactional clear may have reached the server."""
 
 
-def _looks_like_stale_connection(exc: BaseException) -> bool:
-    return looks_like_stale_connection(exc)
-
-
 T = TypeVar("T")
 
 
 def _retry_stale_connection[T](operation: Callable[[], T]) -> T:
+    """Replay an idempotent operation once after MySQL reports a lost session.
+
+    Only for reads and convergent DDL/upserts: a lost session can hide a
+    committed outcome, so non-idempotent writes must not use this.
+    """
     last_exc: BaseException | None = None
     for attempt in range(2):
         try:
             return operation()
         except Exception as exc:
             last_exc = exc
-            if attempt == 0 and _looks_like_stale_connection(exc):
+            if attempt == 0 and looks_like_stale_connection(exc):
                 continue
             raise
     assert last_exc is not None
@@ -111,10 +119,10 @@ def _table_exists(table: str) -> bool:
 
 def _truncate_table(table: str) -> None:
     quoted = quote_mysql_identifier(table)
-    # Retrying connection acquisition is safe because no table operation has
-    # started. Do not replay TRUNCATE after execute begins: MySQL commits this
-    # DDL implicitly, so a lost acknowledgement can mean it already succeeded.
-    conn = _retry_stale_connection(connect)
+    # connect() already retries safe connection establishment. Do not replay
+    # TRUNCATE after execute begins: MySQL commits this DDL implicitly, so a
+    # lost acknowledgement can mean it already succeeded.
+    conn = connect()
     truncate_succeeded = False
     try:
         with conn:
@@ -131,7 +139,7 @@ def _truncate_table(table: str) -> None:
             # implicitly committed; a later context-manager COMMIT failure cannot
             # change that table outcome and must not trigger a destructive replay.
             return
-        if _looks_like_stale_connection(exc):
+        if looks_like_stale_connection(exc):
             msg = f"TRUNCATE outcome is uncertain for {table}: {exc}"
             raise ObservabilityClearOutcomeUncertainError(msg) from exc
         raise
@@ -436,17 +444,15 @@ def record_observability_maintenance_run(
                 ),
             )
 
-    _retry_stale_connection(save)
+    # A lost session during INSERT/COMMIT may still have recorded the run, so
+    # this history append is not replayed.
+    save()
 
 
 def acquire_observability_maintenance_lock():
     conn = connect_unpooled()
     try:
-        row = conn.execute(
-            "SELECT GET_LOCK(%s, 0)",
-            (_OBSERVABILITY_MAINTENANCE_LOCK_NAME,),
-        ).fetchone()
-        if not row or int(row[0] or 0) != 1:
+        if not acquire_mysql_named_lock(conn, _OBSERVABILITY_MAINTENANCE_LOCK_NAME, 0):
             conn.close()
             return None
         return conn
@@ -459,13 +465,9 @@ def acquire_observability_maintenance_lock():
 def release_observability_maintenance_lock(conn: Any) -> None:
     if conn is None:
         return
-    try:
-        conn.execute(
-            "SELECT RELEASE_LOCK(%s)",
-            (_OBSERVABILITY_MAINTENANCE_LOCK_NAME,),
-        )
-    finally:
-        conn.close()
+    # Closing the dedicated session releases the lock even if RELEASE_LOCK fails.
+    release_mysql_named_lock(conn, _OBSERVABILITY_MAINTENANCE_LOCK_NAME)
+    conn.close()
 
 
 def maintain_observability_tables(

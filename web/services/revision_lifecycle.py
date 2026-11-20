@@ -8,6 +8,7 @@ from typing import Any
 from services import schema_lifecycle as _schema_lifecycle
 from services.db import (
     acquire_mysql_named_lock,
+    release_mysql_named_lock,
     run_mysql_lock_contention_with_retry,
 )
 
@@ -49,14 +50,6 @@ def run_revision_store_transaction(
         operation_name=operation_name,
         sleep_fn=sleep_fn,
     )
-
-
-def column_exists(conn: Any, table_name: str, column_name: str) -> bool:
-    return _schema_lifecycle.column_exists(conn, table_name, column_name)
-
-
-def index_exists(conn: Any, table_name: str, index_name: str) -> bool:
-    return _schema_lifecycle.index_exists(conn, table_name, index_name)
 
 
 def repair_duplicate_active_rows(
@@ -145,10 +138,4 @@ def mysql_advisory_lock(
                     conn.rollback()
                 raise
     finally:
-        try:
-            conn.execute("DO RELEASE_LOCK(%s)", (name,))
-        except Exception:
-            # Advisory locks are connection-scoped and survive transaction rollback.
-            # If release is uncertain, do not let a pooled session retain the lock.
-            if hasattr(conn, "_discard_on_close"):
-                conn._discard_on_close = True
+        release_mysql_named_lock(conn, name)

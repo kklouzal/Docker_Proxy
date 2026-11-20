@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from services.db import connect_unpooled, resolve_database_config
+from services.db import (
+    connect_unpooled,
+    mysql_error_classification,
+    resolve_database_config,
+)
 from services.runtime_helpers import env_int
 from services.sql_identifiers import quote_mysql_identifier
 
@@ -18,17 +22,8 @@ if TYPE_CHECKING:
 
 
 def looks_like_stale_connection(exc: BaseException) -> bool:
-    name = exc.__class__.__name__.lower()
-    text = str(exc).lower()
-    return (
-        "interfaceerror" in name
-        or "server has gone away" in text
-        or "lost connection" in text
-        or "connection already closed" in text
-        or "(0, '')" in text
-        or "2006" in text
-        or "2013" in text
-    )
+    """Whether ``exc`` is MySQL reporting the session as gone (2006/2013/IF 0)."""
+    return mysql_error_classification(exc) == "connection_lost"
 
 
 def maintenance_connect() -> Any:
@@ -45,16 +40,6 @@ def maintenance_connect() -> Any:
     )
 
 
-def connect_with_stale_retry(connect_factory: Callable[[], Any]) -> Any:
-    """Retry only connection acquisition, before any statement can reach MySQL."""
-    try:
-        return connect_factory()
-    except Exception as exc:
-        if not looks_like_stale_connection(exc):
-            raise
-    return connect_factory()
-
-
 def run_mysql_table_maintenance(
     connect_factory: Callable[[], Any],
     table: str,
@@ -64,13 +49,13 @@ def run_mysql_table_maintenance(
 ) -> str:
     """Run requested implicit-commit maintenance without replaying a statement.
 
-    A stale pooled connection may be replaced only while acquiring the connection.
-    Once execution starts, replay is unsafe: ANALYZE and OPTIMIZE may have completed
+    The connect factory owns bounded retries of connection acquisition. Once
+    execution starts, replay is unsafe: ANALYZE and OPTIMIZE may have completed
     on the server even when the client did not receive the acknowledgement.
     """
     quoted = quote_mysql_identifier(table)
     actions: list[str] = []
-    conn = connect_with_stale_retry(connect_factory)
+    conn = connect_factory()
     try:
         with conn:
             if analyze:

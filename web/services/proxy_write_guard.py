@@ -6,11 +6,17 @@ import os
 import threading
 import time
 from collections.abc import Callable, Generator, Iterable, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from services.db import DATABASE_ERRORS, mysql_error_code
+from services.db import (
+    DATABASE_ERRORS,
+    acquire_mysql_named_lock,
+    mysql_error_code,
+    release_mysql_named_lock,
+    table_exists,
+)
 from services.proxy_context import normalize_proxy_id
 from services.proxy_lifecycle import ensure_lifecycle_schema
 from services.row_access import row_value
@@ -136,10 +142,6 @@ def _metadata_error(
     return ProxyLifecycleWriteError(f"{message}: {exc}")
 
 
-def _row_value(row: object, key: str, default: object = "") -> object:
-    return row_value(row, key, default=default)
-
-
 _schema_lock = threading.Lock()
 _tombstone_schema_ensured = False
 
@@ -176,12 +178,14 @@ class _LifecycleState:
 
 
 def _ensure_metadata_tables(conn: Any) -> None:
-    """Create the tombstone table once per process instead of once per write.
+    """Ensure the tombstone table exists, checking once per process.
 
     Schema migrations own the lifecycle tables; this keeps the historical
-    self-healing CREATE for the tombstone table without issuing DDL on every
-    guarded write.  A later "table missing" error resets the flag so the next
-    write re-ensures it.
+    self-healing CREATE for an unmigrated database without issuing DDL on
+    guarded writes. The guard runs inside callers' transactions and every
+    CREATE TABLE (even IF NOT EXISTS on an existing table) implicitly commits,
+    so the DDL is issued only when the table is really missing. A later
+    "table missing" error resets the flag so the next write re-checks.
     """
     global _tombstone_schema_ensured
     if _tombstone_schema_ensured:
@@ -190,11 +194,8 @@ def _ensure_metadata_tables(conn: Any) -> None:
         if _tombstone_schema_ensured:
             return
         try:
-            ensure_lifecycle_schema(conn)
-        except DATABASE_ERRORS as exc:
-            raise _metadata_error(
-                "Proxy lifecycle metadata is unavailable", exc
-            ) from exc
+            if not table_exists(conn, "proxy_lifecycle_tombstones"):
+                ensure_lifecycle_schema(conn)
         except Exception as exc:
             raise _metadata_error(
                 "Proxy lifecycle metadata is unavailable", exc
@@ -389,20 +390,11 @@ def guarded_proxy_write(
         use_cache=True,
     )
     lock_name = proxy_lifecycle_lock_name(first.proxy_id)
-    acquired = False
+    if not acquire_mysql_named_lock(conn, lock_name, timeout_seconds):
+        raise ProxyLifecycleWriteError(
+            f"Timed out acquiring lifecycle write lock for proxy {first.proxy_id!r}.",
+        )
     try:
-        row = conn.execute(
-            "SELECT GET_LOCK(%s, %s) AS acquired",
-            (lock_name, int(timeout_seconds)),
-        ).fetchone()
-        try:
-            acquired = int(_row_value(row, "acquired", 0) or 0) == 1
-        except Exception:
-            acquired = False
-        if not acquired:
-            raise ProxyLifecycleWriteError(
-                f"Timed out acquiring lifecycle write lock for proxy {first.proxy_id!r}.",
-            )
         decision = resolve_proxy_write_id(
             conn,
             proxy_id,
@@ -416,9 +408,7 @@ def guarded_proxy_write(
             )
         yield decision
     finally:
-        if acquired:
-            with suppress(Exception):
-                conn.execute("DO RELEASE_LOCK(%s)", (lock_name,))
+        release_mysql_named_lock(conn, lock_name)
 
 
 def resolve_proxy_write_id_cached(
