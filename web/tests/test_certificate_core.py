@@ -981,3 +981,30 @@ def test_materialize_removes_temp_file_when_staging_write_fails(
         certificate_core.materialize_certificate_bundle(tmp_path, bundle)
 
     assert sorted(path.name for path in tmp_path.iterdir()) == []
+
+
+def test_certificate_sha256_fingerprint_matches_openssl_der_fingerprint(
+    tmp_path: Path,
+) -> None:
+    import subprocess
+
+    bundle = _valid_ca_bundle()
+    openssl = shutil.which("openssl")
+    if openssl is None:
+        pytest.skip("openssl CLI is not available as an independent oracle")
+    cert_path = tmp_path / "ca.crt"
+    cert_path.write_text(bundle.cert_pem, encoding="utf-8")
+    output = subprocess.run(
+        [openssl, "x509", "-in", str(cert_path), "-noout", "-fingerprint", "-sha256"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    expected = output.split("=", 1)[1]
+
+    fingerprint = certificate_core.certificate_sha256_fingerprint(bundle.cert_pem)
+
+    assert fingerprint == expected
+    # The stored identity digest keeps its PEM-text meaning and differs.
+    assert bundle.cert_sha256 != fingerprint.replace(":", "").lower()
+    assert certificate_core.certificate_sha256_fingerprint(CERT_A) == ""

@@ -51,6 +51,7 @@ from services.certificate_bundles import (
 from services.certificate_core import (
     admin_ui_certificate_material_transaction,
     ca_strict_verification_issues,
+    certificate_sha256_fingerprint,
     load_certificate_sans,
     materialize_admin_ui_server_certificate,
     normalize_admin_ui_certificate_san_token,
@@ -9852,6 +9853,9 @@ def _render_certs_page(
         bundle=bundle,
         ca_profile_issues=(
             ca_strict_verification_issues(active_ca_pem) if active_ca_pem else ()
+        ),
+        ca_sha256_fingerprint=(
+            certificate_sha256_fingerprint(active_ca_pem) if active_ca_pem else ""
         ),
         proxy_cert_statuses=proxy_cert_statuses,
         admin_ui_https=admin_ui_https,

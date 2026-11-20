@@ -1060,6 +1060,21 @@ def _openssl_style_time(value: datetime) -> str:
     return f"{value:%b} {value.day:2d} {value:%H:%M:%S %Y} GMT"
 
 
+def certificate_sha256_fingerprint(cert_pem: str) -> str:
+    """Return the standard X.509 SHA-256 fingerprint (colon hex of the DER).
+
+    This is the value ``openssl x509 -fingerprint -sha256`` and browsers show.
+    It is display-only: the stored ``cert_sha256`` identity digest is the
+    SHA-256 of the normalized PEM text and keeps that meaning. Returns ``""``
+    when the PEM does not hold a parsable certificate.
+    """
+    try:
+        cert = _load_pem_certificate(_normalize_pem_text(cert_pem).encode("utf-8"))
+    except Exception:
+        return ""
+    return cert.fingerprint(hashes.SHA256()).hex(":").upper()
+
+
 def _extract_certificate_metadata(cert_pem: str) -> tuple[str, str, str]:
     try:
         cert = _load_pem_certificate(_normalize_pem_text(cert_pem).encode("utf-8"))

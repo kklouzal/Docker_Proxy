@@ -3143,3 +3143,37 @@ def test_certs_page_has_no_profile_warning_for_compliant_ca(
     )
 
     assert "data-ca-profile-issues" not in html
+
+
+def test_certs_page_shows_der_sha256_fingerprint_not_pem_digest(
+    monkeypatch, tmp_path
+) -> None:
+    from services import certificate_core  # type: ignore
+
+    from .test_certificate_core import _valid_ca_bundle
+
+    ca = _valid_ca_bundle()
+    bundle = SimpleNamespace(
+        revision_id=10,
+        bundle_sha256=ca.bundle_sha256,
+        source_kind="generated",
+        cert_sha256=ca.cert_sha256,
+        cert_pem=ca.cert_pem,
+        created_ts=10,
+    )
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        certificate_bundles=FakeCertificateBundles(bundle=bundle),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    html = client.get("/certs").get_data(as_text=True)
+
+    fingerprint = certificate_core.certificate_sha256_fingerprint(ca.cert_pem)
+    assert len(fingerprint) == 95
+    assert (
+        f'SHA-256 fingerprint:</strong> <code class="mono">{fingerprint}</code>' in html
+    )
+    assert ca.cert_sha256 not in html

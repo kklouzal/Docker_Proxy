@@ -115,7 +115,7 @@
                 {% if bundle.not_before or bundle.not_after %}
                     <div><strong>Validity:</strong> {{ bundle.not_before or 'unknown' }} → {{ bundle.not_after or 'unknown' }}</div>
                 {% endif %}
-                {% if bundle.cert_sha256 %}<div><strong>Fingerprint:</strong> <code class="mono">{{ bundle.cert_sha256 }}</code></div>{% endif %}
+                {% if ca_sha256_fingerprint %}<div><strong>SHA-256 fingerprint:</strong> <code class="mono">{{ ca_sha256_fingerprint }}</code></div>{% endif %}
                 {% if bundle.created_ts %}<div><strong>Published:</strong> {{ fmt_ts(bundle.created_ts) }}</div>{% endif %}
             </div>
             {% endif %}
