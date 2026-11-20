@@ -21,16 +21,18 @@ WORKDIR /tmp/deps
 
 COPY web/requirements.txt /tmp/deps/requirements.txt
 
-# The proxy runtime imports only these distributions. The Admin UI's SSO/LDAP
-# stack (python3-saml with lxml/xmlsec, ldap3, defusedxml) stays out of the
-# router image; versions still come from the single requirements.txt pin list.
+# The proxy runtime imports only these distributions. Flask and the Admin UI's
+# SSO/LDAP stack (python3-saml with lxml/xmlsec, ldap3, defusedxml) stay out of
+# the router image: the proxy's WSGI listeners are plain callables, and
+# Werkzeug is kept only for block-page policy form parsing. Versions still come
+# from the single requirements.txt pin list.
 # Bytecode is compiled here: otherwise every fresh container compiled it at
 # first import in each of the proxy's Python programs, costing seconds of
 # router CPU at startup and ~6 MiB of retained heap per program.
 RUN --mount=type=cache,target=/root/.cache/pip \
     set -eu; \
-    grep -iE '^(flask|werkzeug|gunicorn|pymysql|cryptography)==' requirements.txt > proxy-requirements.txt; \
-    test "$(wc -l < proxy-requirements.txt)" -eq 5; \
+    grep -iE '^(werkzeug|gunicorn|pymysql|cryptography)==' requirements.txt > proxy-requirements.txt; \
+    test "$(wc -l < proxy-requirements.txt)" -eq 4; \
     python3 -m pip install --target /python-deps -r proxy-requirements.txt
 
 FROM alpine:${ALPINE_VERSION} AS cicap_builder

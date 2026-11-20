@@ -1,0 +1,6227 @@
+{
+ "auth_bad_bearer_with_x_proxy_token": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and this proxy runtime.\",\"ok\":false,\"status\":\"forbidden\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "172"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "403 FORBIDDEN"
+  },
+  "runtime_calls": []
+ },
+ "auth_basic_with_x_proxy_token": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "auth_bearer_empty": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "auth_bearer_spaces": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "auth_expected_token_whitespace": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "auth_lowercase_bearer": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "auth_missing": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and this proxy runtime.\",\"ok\":false,\"status\":\"forbidden\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "172"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "403 FORBIDDEN"
+  },
+  "runtime_calls": []
+ },
+ "auth_missing_head": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "172"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "403 FORBIDDEN"
+  },
+  "runtime_calls": []
+ },
+ "auth_missing_not_ready": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and this proxy runtime.\",\"ok\":false,\"status\":\"forbidden\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "172"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "403 FORBIDDEN"
+  },
+  "runtime_calls": []
+ },
+ "auth_missing_post_sync": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and this proxy runtime.\",\"ok\":false,\"status\":\"forbidden\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "172"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "403 FORBIDDEN"
+  },
+  "runtime_calls": []
+ },
+ "auth_missing_supervisor": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and this proxy runtime.\",\"ok\":false,\"status\":\"forbidden\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "172"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "403 FORBIDDEN"
+  },
+  "runtime_calls": []
+ },
+ "auth_no_expected_token": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and this proxy runtime.\",\"ok\":false,\"status\":\"forbidden\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "172"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "403 FORBIDDEN"
+  },
+  "runtime_calls": []
+ },
+ "auth_no_expected_token_empty_provided": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and this proxy runtime.\",\"ok\":false,\"status\":\"forbidden\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "172"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "403 FORBIDDEN"
+  },
+  "runtime_calls": []
+ },
+ "auth_non_ascii_token": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and this proxy runtime.\",\"ok\":false,\"status\":\"forbidden\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "172"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "403 FORBIDDEN"
+  },
+  "runtime_calls": []
+ },
+ "auth_wrong": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and this proxy runtime.\",\"ok\":false,\"status\":\"forbidden\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "172"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "403 FORBIDDEN"
+  },
+  "runtime_calls": []
+ },
+ "auth_x_proxy_token": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "bad_host_empty_label": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>400 Bad Request</title>\n<h1>Bad Request</h1>\n<p>The browser (or proxy) sent a request that this server could not understand.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "167"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "bad_host_leading_dot": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>400 Bad Request</title>\n<h1>Bad Request</h1>\n<p>The browser (or proxy) sent a request that this server could not understand.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "167"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "bad_host_long_label": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>400 Bad Request</title>\n<h1>Bad Request</h1>\n<p>The browser (or proxy) sent a request that this server could not understand.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "167"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "cache_clear_bad_payload": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload must be an object.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "67"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "cache_clear_fail": {
+  "response": {
+   "body": "{\"detail\":\"cache_clear failed\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "43"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": [
+   [
+    "clear_cache",
+    {}
+   ]
+  ]
+ },
+ "cache_clear_not_ready": {
+  "response": {
+   "body": "{\"detail\":\"Proxy control-plane startup (recovery adoption, schema, registration) has not completed yet; retry shortly.\",\"ok\":false,\"retryable\":true,\"status\":\"control_plane_starting\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "183"
+    ],
+    [
+     "Retry-After",
+     "5"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "503 SERVICE UNAVAILABLE"
+  },
+  "runtime_calls": []
+ },
+ "cache_clear_ok": {
+  "response": {
+   "body": "{\"detail\":\"cache_clear done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "40"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "clear_cache",
+    {}
+   ]
+  ]
+ },
+ "cache_clear_raises": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>500 Internal Server Error</title>\n<h1>Internal Server Error</h1>\n<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "265"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": [
+   [
+    "clear_cache",
+    {}
+   ]
+  ]
+ },
+ "clamav_health": {
+  "response": {
+   "body": "{\"ok\":true,\"services\":{\"clamd\":{\"ok\":true}},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "64"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_clamav_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "clamav_health_force": {
+  "response": {
+   "body": "{\"ok\":true,\"services\":{\"clamd\":{\"ok\":true}},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "64"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_clamav_health",
+    {
+     "force": true
+    }
+   ]
+  ]
+ },
+ "clamav_health_get_runtime_raises": {
+  "response": {
+   "body": "{\"ok\":false,\"proxy_id\":\"\",\"proxy_status\":\"Proxy ClamAV health collection failed.\",\"services\":{},\"state_errors\":[\"Proxy ClamAV health collection failed.\"],\"status\":\"degraded\",\"timestamp\":1700000000}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "198"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "get_runtime",
+    {}
+   ]
+  ]
+ },
+ "clamav_health_raises": {
+  "response": {
+   "body": "{\"ok\":false,\"proxy_id\":\"edge-a\",\"proxy_status\":\"Proxy ClamAV health collection failed.\",\"services\":{},\"state_errors\":[\"Proxy ClamAV health collection failed.\"],\"status\":\"degraded\",\"timestamp\":1700000000}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "204"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_clamav_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "config_current": {
+  "response": {
+   "body": "{\"config_sha256\":\"d4d3d0892840bcda94250651a6e8d2fbb1a17f95ce299ca697cdf46135072c03\",\"config_text\":\"http_port 3128\\n\",\"detail\":\"Running Squid config returned.\",\"ok\":true,\"proxy_id\":\"edge-a\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "190"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "get_current_config_text",
+    {}
+   ]
+  ]
+ },
+ "config_current_blank": {
+  "response": {
+   "body": "{\"config_sha256\":\"8855c6119660c614d285554e51769066e94fcb75ff215ccc2fa6b4838b18756b\",\"config_text\":\"  \\n\",\"detail\":\"Running Squid config is empty or unavailable.\",\"ok\":false,\"proxy_id\":\"edge-a\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "194"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "get_current_config_text",
+    {}
+   ]
+  ]
+ },
+ "config_current_empty": {
+  "response": {
+   "body": "{\"config_sha256\":\"\",\"config_text\":\"\",\"detail\":\"Running Squid config is empty or unavailable.\",\"ok\":false,\"proxy_id\":\"edge-a\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "126"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "get_current_config_text",
+    {}
+   ]
+  ]
+ },
+ "config_current_get_runtime_raises": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>500 Internal Server Error</title>\n<h1>Internal Server Error</h1>\n<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "265"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": [
+   [
+    "get_runtime",
+    {}
+   ]
+  ]
+ },
+ "config_current_large_gzip": {
+  "response": {
+   "body": "{\"config_sha256\":\"888343d5e66d4417a80bc041f05cf34cc97895fbe55d328b4237a60a4374fc24\",\"config_text\":\"acl net0 src 10.0.0.0/16\\nacl net1 src 10.1.0.0/16\\nacl net2 src 10.2.0.0/16\\nacl net3 src 10.3.0.0/16\\nacl net4 src 10.4.0.0/16\\nacl net5 src 10.5.0.0/16\\nacl net6 src 10.6.0.0/16\\nacl net7 src 10.7.0.0/16\\nacl net8 src 10.8.0.0/16\\nacl net9 src 10.9.0.0/16\\nacl net10 src 10.10.0.0/16\\nacl net11 src 10.11.0.0/16\\nacl net12 src 10.12.0.0/16\\nacl net13 src 10.13.0.0/16\\nacl net14 src 10.14.0.0/16\\nacl net15 src 10.15.0.0/16\\nacl net16 src 10.16.0.0/16\\nacl net17 src 10.17.0.0/16\\nacl net18 src 10.18.0.0/16\\nacl net19 src 10.19.0.0/16\\nacl net20 src 10.20.0.0/16\\nacl net21 src 10.21.0.0/16\\nacl net22 src 10.22.0.0/16\\nacl net23 src 10.23.0.0/16\\nacl net24 src 10.24.0.0/16\\nacl net25 src 10.25.0.0/16\\nacl net26 src 10.26.0.0/16\\nacl net27 src 10.27.0.0/16\\nacl net28 src 10.28.0.0/16\\nacl net29 src 10.29.0.0/16\\nacl net30 src 10.30.0.0/16\\nacl net31 src 10.31.0.0/16\\nacl net32 src 10.32.0.0/16\\nacl net33 src 10.33.0.0/16\\nacl net34 src 10.34.0.0/16\\nacl net35 src 10.35.0.0/16\\nacl net36 src 10.36.0.0/16\\nacl net37 src 10.37.0.0/16\\nacl net38 src 10.38.0.0/16\\nacl net39 src 10.39.0.0/16\\nacl net40 src 10.40.0.0/16\\nacl net41 src 10.41.0.0/16\\nacl net42 src 10.42.0.0/16\\nacl net43 src 10.43.0.0/16\\nacl net44 src 10.44.0.0/16\\nacl net45 src 10.45.0.0/16\\nacl net46 src 10.46.0.0/16\\nacl net47 src 10.47.0.0/16\\nacl net48 src 10.48.0.0/16\\nacl net49 src 10.49.0.0/16\\nacl net50 src 10.50.0.0/16\\nacl net51 src 10.51.0.0/16\\nacl net52 src 10.52.0.0/16\\nacl net53 src 10.53.0.0/16\\nacl net54 src 10.54.0.0/16\\nacl net55 src 10.55.0.0/16\\nacl net56 src 10.56.0.0/16\\nacl net57 src 10.57.0.0/16\\nacl net58 src 10.58.0.0/16\\nacl net59 src 10.59.0.0/16\\nacl net60 src 10.60.0.0/16\\nacl net61 src 10.61.0.0/16\\nacl net62 src 10.62.0.0/16\\nacl net63 src 10.63.0.0/16\\nacl net64 src 10.64.0.0/16\\nacl net65 src 10.65.0.0/16\\nacl net66 src 10.66.0.0/16\\nacl net67 src 10.67.0.0/16\\nacl net68 src 10.68.0.0/16\\nacl net69 src 10.69.0.0/16\\nacl net70 src 10.70.0.0/16\\nacl net71 src 10.71.0.0/16\\nacl net72 src 10.72.0.0/16\\nacl net73 src 10.73.0.0/16\\nacl net74 src 10.74.0.0/16\\nacl net75 src 10.75.0.0/16\\nacl net76 src 10.76.0.0/16\\nacl net77 src 10.77.0.0/16\\nacl net78 src 10.78.0.0/16\\nacl net79 src 10.79.0.0/16\\n\",\"detail\":\"Running Squid config returned.\",\"ok\":true,\"proxy_id\":\"edge-a\"}\n",
+   "gzip": true,
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "528"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ],
+    [
+     "Content-Encoding",
+     "gzip"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "get_current_config_text",
+    {}
+   ]
+  ]
+ },
+ "config_current_large_gzip_refused": {
+  "response": {
+   "body": "{\"config_sha256\":\"888343d5e66d4417a80bc041f05cf34cc97895fbe55d328b4237a60a4374fc24\",\"config_text\":\"acl net0 src 10.0.0.0/16\\nacl net1 src 10.1.0.0/16\\nacl net2 src 10.2.0.0/16\\nacl net3 src 10.3.0.0/16\\nacl net4 src 10.4.0.0/16\\nacl net5 src 10.5.0.0/16\\nacl net6 src 10.6.0.0/16\\nacl net7 src 10.7.0.0/16\\nacl net8 src 10.8.0.0/16\\nacl net9 src 10.9.0.0/16\\nacl net10 src 10.10.0.0/16\\nacl net11 src 10.11.0.0/16\\nacl net12 src 10.12.0.0/16\\nacl net13 src 10.13.0.0/16\\nacl net14 src 10.14.0.0/16\\nacl net15 src 10.15.0.0/16\\nacl net16 src 10.16.0.0/16\\nacl net17 src 10.17.0.0/16\\nacl net18 src 10.18.0.0/16\\nacl net19 src 10.19.0.0/16\\nacl net20 src 10.20.0.0/16\\nacl net21 src 10.21.0.0/16\\nacl net22 src 10.22.0.0/16\\nacl net23 src 10.23.0.0/16\\nacl net24 src 10.24.0.0/16\\nacl net25 src 10.25.0.0/16\\nacl net26 src 10.26.0.0/16\\nacl net27 src 10.27.0.0/16\\nacl net28 src 10.28.0.0/16\\nacl net29 src 10.29.0.0/16\\nacl net30 src 10.30.0.0/16\\nacl net31 src 10.31.0.0/16\\nacl net32 src 10.32.0.0/16\\nacl net33 src 10.33.0.0/16\\nacl net34 src 10.34.0.0/16\\nacl net35 src 10.35.0.0/16\\nacl net36 src 10.36.0.0/16\\nacl net37 src 10.37.0.0/16\\nacl net38 src 10.38.0.0/16\\nacl net39 src 10.39.0.0/16\\nacl net40 src 10.40.0.0/16\\nacl net41 src 10.41.0.0/16\\nacl net42 src 10.42.0.0/16\\nacl net43 src 10.43.0.0/16\\nacl net44 src 10.44.0.0/16\\nacl net45 src 10.45.0.0/16\\nacl net46 src 10.46.0.0/16\\nacl net47 src 10.47.0.0/16\\nacl net48 src 10.48.0.0/16\\nacl net49 src 10.49.0.0/16\\nacl net50 src 10.50.0.0/16\\nacl net51 src 10.51.0.0/16\\nacl net52 src 10.52.0.0/16\\nacl net53 src 10.53.0.0/16\\nacl net54 src 10.54.0.0/16\\nacl net55 src 10.55.0.0/16\\nacl net56 src 10.56.0.0/16\\nacl net57 src 10.57.0.0/16\\nacl net58 src 10.58.0.0/16\\nacl net59 src 10.59.0.0/16\\nacl net60 src 10.60.0.0/16\\nacl net61 src 10.61.0.0/16\\nacl net62 src 10.62.0.0/16\\nacl net63 src 10.63.0.0/16\\nacl net64 src 10.64.0.0/16\\nacl net65 src 10.65.0.0/16\\nacl net66 src 10.66.0.0/16\\nacl net67 src 10.67.0.0/16\\nacl net68 src 10.68.0.0/16\\nacl net69 src 10.69.0.0/16\\nacl net70 src 10.70.0.0/16\\nacl net71 src 10.71.0.0/16\\nacl net72 src 10.72.0.0/16\\nacl net73 src 10.73.0.0/16\\nacl net74 src 10.74.0.0/16\\nacl net75 src 10.75.0.0/16\\nacl net76 src 10.76.0.0/16\\nacl net77 src 10.77.0.0/16\\nacl net78 src 10.78.0.0/16\\nacl net79 src 10.79.0.0/16\\n\",\"detail\":\"Running Squid config returned.\",\"ok\":true,\"proxy_id\":\"edge-a\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "2394"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "get_current_config_text",
+    {}
+   ]
+  ]
+ },
+ "config_current_large_plain": {
+  "response": {
+   "body": "{\"config_sha256\":\"888343d5e66d4417a80bc041f05cf34cc97895fbe55d328b4237a60a4374fc24\",\"config_text\":\"acl net0 src 10.0.0.0/16\\nacl net1 src 10.1.0.0/16\\nacl net2 src 10.2.0.0/16\\nacl net3 src 10.3.0.0/16\\nacl net4 src 10.4.0.0/16\\nacl net5 src 10.5.0.0/16\\nacl net6 src 10.6.0.0/16\\nacl net7 src 10.7.0.0/16\\nacl net8 src 10.8.0.0/16\\nacl net9 src 10.9.0.0/16\\nacl net10 src 10.10.0.0/16\\nacl net11 src 10.11.0.0/16\\nacl net12 src 10.12.0.0/16\\nacl net13 src 10.13.0.0/16\\nacl net14 src 10.14.0.0/16\\nacl net15 src 10.15.0.0/16\\nacl net16 src 10.16.0.0/16\\nacl net17 src 10.17.0.0/16\\nacl net18 src 10.18.0.0/16\\nacl net19 src 10.19.0.0/16\\nacl net20 src 10.20.0.0/16\\nacl net21 src 10.21.0.0/16\\nacl net22 src 10.22.0.0/16\\nacl net23 src 10.23.0.0/16\\nacl net24 src 10.24.0.0/16\\nacl net25 src 10.25.0.0/16\\nacl net26 src 10.26.0.0/16\\nacl net27 src 10.27.0.0/16\\nacl net28 src 10.28.0.0/16\\nacl net29 src 10.29.0.0/16\\nacl net30 src 10.30.0.0/16\\nacl net31 src 10.31.0.0/16\\nacl net32 src 10.32.0.0/16\\nacl net33 src 10.33.0.0/16\\nacl net34 src 10.34.0.0/16\\nacl net35 src 10.35.0.0/16\\nacl net36 src 10.36.0.0/16\\nacl net37 src 10.37.0.0/16\\nacl net38 src 10.38.0.0/16\\nacl net39 src 10.39.0.0/16\\nacl net40 src 10.40.0.0/16\\nacl net41 src 10.41.0.0/16\\nacl net42 src 10.42.0.0/16\\nacl net43 src 10.43.0.0/16\\nacl net44 src 10.44.0.0/16\\nacl net45 src 10.45.0.0/16\\nacl net46 src 10.46.0.0/16\\nacl net47 src 10.47.0.0/16\\nacl net48 src 10.48.0.0/16\\nacl net49 src 10.49.0.0/16\\nacl net50 src 10.50.0.0/16\\nacl net51 src 10.51.0.0/16\\nacl net52 src 10.52.0.0/16\\nacl net53 src 10.53.0.0/16\\nacl net54 src 10.54.0.0/16\\nacl net55 src 10.55.0.0/16\\nacl net56 src 10.56.0.0/16\\nacl net57 src 10.57.0.0/16\\nacl net58 src 10.58.0.0/16\\nacl net59 src 10.59.0.0/16\\nacl net60 src 10.60.0.0/16\\nacl net61 src 10.61.0.0/16\\nacl net62 src 10.62.0.0/16\\nacl net63 src 10.63.0.0/16\\nacl net64 src 10.64.0.0/16\\nacl net65 src 10.65.0.0/16\\nacl net66 src 10.66.0.0/16\\nacl net67 src 10.67.0.0/16\\nacl net68 src 10.68.0.0/16\\nacl net69 src 10.69.0.0/16\\nacl net70 src 10.70.0.0/16\\nacl net71 src 10.71.0.0/16\\nacl net72 src 10.72.0.0/16\\nacl net73 src 10.73.0.0/16\\nacl net74 src 10.74.0.0/16\\nacl net75 src 10.75.0.0/16\\nacl net76 src 10.76.0.0/16\\nacl net77 src 10.77.0.0/16\\nacl net78 src 10.78.0.0/16\\nacl net79 src 10.79.0.0/16\\n\",\"detail\":\"Running Squid config returned.\",\"ok\":true,\"proxy_id\":\"edge-a\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "2394"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "get_current_config_text",
+    {}
+   ]
+  ]
+ },
+ "config_current_none": {
+  "response": {
+   "body": "{\"config_sha256\":\"\",\"config_text\":\"\",\"detail\":\"Running Squid config is empty or unavailable.\",\"ok\":false,\"proxy_id\":\"edge-a\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "126"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "get_current_config_text",
+    {}
+   ]
+  ]
+ },
+ "config_current_not_ready": {
+  "response": {
+   "body": "{\"config_sha256\":\"d4d3d0892840bcda94250651a6e8d2fbb1a17f95ce299ca697cdf46135072c03\",\"config_text\":\"http_port 3128\\n\",\"detail\":\"Running Squid config returned.\",\"ok\":true,\"proxy_id\":\"edge-a\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "190"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "get_current_config_text",
+    {}
+   ]
+  ]
+ },
+ "config_current_raises": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>500 Internal Server Error</title>\n<h1>Internal Server Error</h1>\n<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "265"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": [
+   [
+    "get_current_config_text",
+    {}
+   ]
+  ]
+ },
+ "config_current_raises_gzip": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>500 Internal Server Error</title>\n<h1>Internal Server Error</h1>\n<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "265"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": [
+   [
+    "get_current_config_text",
+    {}
+   ]
+  ]
+ },
+ "config_current_raises_head": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "265"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": [
+   [
+    "get_current_config_text",
+    {}
+   ]
+  ]
+ },
+ "config_current_unicode": {
+  "response": {
+   "body": "{\"config_sha256\":\"143d31c1159ea21d79677eaa845f0f9d3d5ad6d98e5d817a58444adc2b753b11\",\"config_text\":\"visible_hostname caf\\u00e9\\n\",\"detail\":\"Running Squid config returned.\",\"ok\":true,\"proxy_id\":\"edge-a\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "202"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "get_current_config_text",
+    {}
+   ]
+  ]
+ },
+ "config_rollback": {
+  "response": {
+   "body": "{\"detail\":\"rollback done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "37"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "rollback_last_known_good_config",
+    {
+     "reason": "operator"
+    }
+   ]
+  ]
+ },
+ "config_rollback_default_reason": {
+  "response": {
+   "body": "{\"detail\":\"rollback done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "37"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "rollback_last_known_good_config",
+    {
+     "reason": "Rollback requested by management API."
+    }
+   ]
+  ]
+ },
+ "config_rollback_fail": {
+  "response": {
+   "body": "{\"detail\":\"rollback failed\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "40"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "409 CONFLICT"
+  },
+  "runtime_calls": [
+   [
+    "rollback_last_known_good_config",
+    {
+     "reason": "Rollback requested by management API."
+    }
+   ]
+  ]
+ },
+ "config_rollback_list_reason": {
+  "response": {
+   "body": "{\"detail\":\"rollback done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "37"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "rollback_last_known_good_config",
+    {
+     "reason": "[1, 'a']"
+    }
+   ]
+  ]
+ },
+ "config_rollback_not_ready": {
+  "response": {
+   "body": "{\"detail\":\"Proxy control-plane startup (recovery adoption, schema, registration) has not completed yet; retry shortly.\",\"ok\":false,\"retryable\":true,\"status\":\"control_plane_starting\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "183"
+    ],
+    [
+     "Retry-After",
+     "5"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "503 SERVICE UNAVAILABLE"
+  },
+  "runtime_calls": []
+ },
+ "config_rollback_ok": {
+  "response": {
+   "body": "{\"detail\":\"rollback done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "37"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "rollback_last_known_good_config",
+    {
+     "reason": "Rollback requested by management API."
+    }
+   ]
+  ]
+ },
+ "config_rollback_raises": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>500 Internal Server Error</title>\n<h1>Internal Server Error</h1>\n<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "265"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": [
+   [
+    "rollback_last_known_good_config",
+    {
+     "reason": "Rollback requested by management API."
+    }
+   ]
+  ]
+ },
+ "config_rollback_zero_reason": {
+  "response": {
+   "body": "{\"detail\":\"rollback done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "37"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "rollback_last_known_good_config",
+    {
+     "reason": "Rollback requested by management API."
+    }
+   ]
+  ]
+ },
+ "config_validate": {
+  "response": {
+   "body": "{\"detail\":\"validate done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "37"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "validate_config_text",
+    {
+     "config_text": "http_port 3128\n"
+    }
+   ]
+  ]
+ },
+ "config_validate_int_text": {
+  "response": {
+   "body": "{\"detail\":\"config_text must be a string.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "54"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "config_validate_missing_text": {
+  "response": {
+   "body": "{\"detail\":\"validate done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "37"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "validate_config_text",
+    {
+     "config_text": ""
+    }
+   ]
+  ]
+ },
+ "config_validate_no_body": {
+  "response": {
+   "body": "{\"detail\":\"validate done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "37"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "validate_config_text",
+    {
+     "config_text": ""
+    }
+   ]
+  ]
+ },
+ "config_validate_not_ready": {
+  "response": {
+   "body": "{\"detail\":\"validate done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "37"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "validate_config_text",
+    {
+     "config_text": ""
+    }
+   ]
+  ]
+ },
+ "config_validate_null_text": {
+  "response": {
+   "body": "{\"detail\":\"config_text must be a string.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "54"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "config_validate_raises": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>500 Internal Server Error</title>\n<h1>Internal Server Error</h1>\n<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "265"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": [
+   [
+    "validate_config_text",
+    {
+     "config_text": ""
+    }
+   ]
+  ]
+ },
+ "eicar_bad_payload": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload must be an object.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "67"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "eicar_fail": {
+  "response": {
+   "body": "{\"detail\":\"eicar failed\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "37"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "503 SERVICE UNAVAILABLE"
+  },
+  "runtime_calls": [
+   [
+    "test_clamav_eicar",
+    {}
+   ]
+  ]
+ },
+ "eicar_not_ready": {
+  "response": {
+   "body": "{\"detail\":\"eicar done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "34"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "test_clamav_eicar",
+    {}
+   ]
+  ]
+ },
+ "eicar_ok": {
+  "response": {
+   "body": "{\"detail\":\"eicar done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "34"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "test_clamav_eicar",
+    {}
+   ]
+  ]
+ },
+ "health_delete": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "health_double_slash": {
+  "response": {
+   "body": "{\"forwarding_checked\":false,\"health_scope\":\"management-listener\",\"ok\":true,\"service\":\"proxy-management\",\"status\":\"serving_management_api\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "139"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "health_double_slash_host_port": {
+  "response": {
+   "body": "{\"forwarding_checked\":false,\"health_scope\":\"management-listener\",\"ok\":true,\"service\":\"proxy-management\",\"status\":\"serving_management_api\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "139"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "health_double_slash_no_host": {
+  "response": {
+   "body": "{\"forwarding_checked\":false,\"health_scope\":\"management-listener\",\"ok\":true,\"service\":\"proxy-management\",\"status\":\"serving_management_api\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "139"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "health_double_slash_post": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "health_double_slash_query": {
+  "response": {
+   "body": "{\"forwarding_checked\":false,\"health_scope\":\"management-listener\",\"ok\":true,\"service\":\"proxy-management\",\"status\":\"serving_management_api\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "139"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "health_get": {
+  "response": {
+   "body": "{\"forwarding_checked\":false,\"health_scope\":\"management-listener\",\"ok\":true,\"service\":\"proxy-management\",\"status\":\"serving_management_api\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "139"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "health_gzip_small": {
+  "response": {
+   "body": "{\"forwarding_checked\":false,\"health_scope\":\"management-listener\",\"ok\":true,\"service\":\"proxy-management\",\"status\":\"serving_management_api\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "139"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "health_head": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "139"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "health_options": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Content-Length",
+     "0"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "health_post": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "health_query": {
+  "response": {
+   "body": "{\"forwarding_checked\":false,\"health_scope\":\"management-listener\",\"ok\":true,\"service\":\"proxy-management\",\"status\":\"serving_management_api\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "139"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "health_spa": {
+  "response": {
+   "body": "{\"forwarding_checked\":false,\"health_scope\":\"management-listener\",\"ok\":true,\"service\":\"proxy-management\",\"status\":\"serving_management_api\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "139"
+    ],
+    [
+     "Cache-Control",
+     "no-store, private"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "health_trailing_slash": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "health_websocket": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>400 Bad Request</title>\n<h1>Bad Request</h1>\n<p>The browser (or proxy) sent a request that this server could not understand.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "167"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "icap_fail": {
+  "response": {
+   "body": "{\"detail\":\"icap failed\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "36"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "503 SERVICE UNAVAILABLE"
+  },
+  "runtime_calls": [
+   [
+    "test_clamav_icap",
+    {}
+   ]
+  ]
+ },
+ "icap_get": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "OPTIONS, POST"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "icap_ok": {
+  "response": {
+   "body": "{\"detail\":\"icap done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "test_clamav_icap",
+    {}
+   ]
+  ]
+ },
+ "logs_access": {
+  "response": {
+   "body": "{\"content\":\"1700000000.000 12 10.0.0.0 TCP_MISS/200 512 GET http://site0.example/ - HIER_DIRECT\\n1700000000.001 12 10.0.0.1 TCP_MISS/200 512 GET http://site1.example/ - HIER_DIRECT\\n1700000000.002 12 10.0.0.2 TCP_MISS/200 512 GET http://site2.example/ - HIER_DIRECT\\n1700000000.003 12 10.0.0.3 TCP_MISS/200 512 GET http://site3.example/ - HIER_DIRECT\\n1700000000.004 12 10.0.0.4 TCP_MISS/200 512 GET http://site4.example/ - HIER_DIRECT\\n1700000000.005 12 10.0.0.5 TCP_MISS/200 512 GET http://site5.example/ - HIER_DIRECT\\n1700000000.006 12 10.0.0.6 TCP_MISS/200 512 GET http://site6.example/ - HIER_DIRECT\\n1700000000.007 12 10.0.0.7 TCP_MISS/200 512 GET http://site7.example/ - HIER_DIRECT\\n1700000000.008 12 10.0.0.8 TCP_MISS/200 512 GET http://site8.example/ - HIER_DIRECT\\n1700000000.009 12 10.0.0.9 TCP_MISS/200 512 GET http://site9.example/ - HIER_DIRECT\\n1700000000.010 12 10.0.0.10 TCP_MISS/200 512 GET http://site10.example/ - HIER_DIRECT\\n1700000000.011 12 10.0.0.11 TCP_MISS/200 512 GET http://site11.example/ - HIER_DIRECT\\n1700000000.012 12 10.0.0.12 TCP_MISS/200 512 GET http://site12.example/ - HIER_DIRECT\\n1700000000.013 12 10.0.0.13 TCP_MISS/200 512 GET http://site13.example/ - HIER_DIRECT\\n1700000000.014 12 10.0.0.14 TCP_MISS/200 512 GET http://site14.example/ - HIER_DIRECT\\n1700000000.015 12 10.0.0.15 TCP_MISS/200 512 GET http://site15.example/ - HIER_DIRECT\\n1700000000.016 12 10.0.0.16 TCP_MISS/200 512 GET http://site16.example/ - HIER_DIRECT\\n1700000000.017 12 10.0.0.17 TCP_MISS/200 512 GET http://site17.example/ - HIER_DIRECT\\n1700000000.018 12 10.0.0.18 TCP_MISS/200 512 GET http://site18.example/ - HIER_DIRECT\\n1700000000.019 12 10.0.0.19 TCP_MISS/200 512 GET http://site19.example/ - HIER_DIRECT\\n1700000000.020 12 10.0.0.20 TCP_MISS/200 512 GET http://site20.example/ - HIER_DIRECT\\n1700000000.021 12 10.0.0.21 TCP_MISS/200 512 GET http://site21.example/ - HIER_DIRECT\\n1700000000.022 12 10.0.0.22 TCP_MISS/200 512 GET http://site22.example/ - HIER_DIRECT\\n1700000000.023 12 10.0.0.23 TCP_MISS/200 512 GET http://site23.example/ - HIER_DIRECT\\n1700000000.024 12 10.0.0.24 TCP_MISS/200 512 GET http://site24.example/ - HIER_DIRECT\\n1700000000.025 12 10.0.0.25 TCP_MISS/200 512 GET http://site25.example/ - HIER_DIRECT\\n1700000000.026 12 10.0.0.26 TCP_MISS/200 512 GET http://site26.example/ - HIER_DIRECT\\n1700000000.027 12 10.0.0.27 TCP_MISS/200 512 GET http://site27.example/ - HIER_DIRECT\\n1700000000.028 12 10.0.0.28 TCP_MISS/200 512 GET http://site28.example/ - HIER_DIRECT\\n1700000000.029 12 10.0.0.29 TCP_MISS/200 512 GET http://site29.example/ - HIER_DIRECT\\n1700000000.030 12 10.0.0.30 TCP_MISS/200 512 GET http://site30.example/ - HIER_DIRECT\\n1700000000.031 12 10.0.0.31 TCP_MISS/200 512 GET http://site31.example/ - HIER_DIRECT\\n1700000000.032 12 10.0.0.32 TCP_MISS/200 512 GET http://site32.example/ - HIER_DIRECT\\n1700000000.033 12 10.0.0.33 TCP_MISS/200 512 GET http://site33.example/ - HIER_DIRECT\\n1700000000.034 12 10.0.0.34 TCP_MISS/200 512 GET http://site34.example/ - HIER_DIRECT\\n1700000000.035 12 10.0.0.35 TCP_MISS/200 512 GET http://site35.example/ - HIER_DIRECT\\n1700000000.036 12 10.0.0.36 TCP_MISS/200 512 GET http://site36.example/ - HIER_DIRECT\\n1700000000.037 12 10.0.0.37 TCP_MISS/200 512 GET http://site37.example/ - HIER_DIRECT\\n1700000000.038 12 10.0.0.38 TCP_MISS/200 512 GET http://site38.example/ - HIER_DIRECT\\n1700000000.039 12 10.0.0.39 TCP_MISS/200 512 GET http://site39.example/ - HIER_DIRECT\\n\",\"key\":\"access\",\"max_bytes\":262144,\"ok\":true,\"status\":\"ok\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "3533"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": "access"
+    }
+   ]
+  ]
+ },
+ "logs_access_gzip": {
+  "response": {
+   "body": "{\"content\":\"1700000000.000 12 10.0.0.0 TCP_MISS/200 512 GET http://site0.example/ - HIER_DIRECT\\n1700000000.001 12 10.0.0.1 TCP_MISS/200 512 GET http://site1.example/ - HIER_DIRECT\\n1700000000.002 12 10.0.0.2 TCP_MISS/200 512 GET http://site2.example/ - HIER_DIRECT\\n1700000000.003 12 10.0.0.3 TCP_MISS/200 512 GET http://site3.example/ - HIER_DIRECT\\n1700000000.004 12 10.0.0.4 TCP_MISS/200 512 GET http://site4.example/ - HIER_DIRECT\\n1700000000.005 12 10.0.0.5 TCP_MISS/200 512 GET http://site5.example/ - HIER_DIRECT\\n1700000000.006 12 10.0.0.6 TCP_MISS/200 512 GET http://site6.example/ - HIER_DIRECT\\n1700000000.007 12 10.0.0.7 TCP_MISS/200 512 GET http://site7.example/ - HIER_DIRECT\\n1700000000.008 12 10.0.0.8 TCP_MISS/200 512 GET http://site8.example/ - HIER_DIRECT\\n1700000000.009 12 10.0.0.9 TCP_MISS/200 512 GET http://site9.example/ - HIER_DIRECT\\n1700000000.010 12 10.0.0.10 TCP_MISS/200 512 GET http://site10.example/ - HIER_DIRECT\\n1700000000.011 12 10.0.0.11 TCP_MISS/200 512 GET http://site11.example/ - HIER_DIRECT\\n1700000000.012 12 10.0.0.12 TCP_MISS/200 512 GET http://site12.example/ - HIER_DIRECT\\n1700000000.013 12 10.0.0.13 TCP_MISS/200 512 GET http://site13.example/ - HIER_DIRECT\\n1700000000.014 12 10.0.0.14 TCP_MISS/200 512 GET http://site14.example/ - HIER_DIRECT\\n1700000000.015 12 10.0.0.15 TCP_MISS/200 512 GET http://site15.example/ - HIER_DIRECT\\n1700000000.016 12 10.0.0.16 TCP_MISS/200 512 GET http://site16.example/ - HIER_DIRECT\\n1700000000.017 12 10.0.0.17 TCP_MISS/200 512 GET http://site17.example/ - HIER_DIRECT\\n1700000000.018 12 10.0.0.18 TCP_MISS/200 512 GET http://site18.example/ - HIER_DIRECT\\n1700000000.019 12 10.0.0.19 TCP_MISS/200 512 GET http://site19.example/ - HIER_DIRECT\\n1700000000.020 12 10.0.0.20 TCP_MISS/200 512 GET http://site20.example/ - HIER_DIRECT\\n1700000000.021 12 10.0.0.21 TCP_MISS/200 512 GET http://site21.example/ - HIER_DIRECT\\n1700000000.022 12 10.0.0.22 TCP_MISS/200 512 GET http://site22.example/ - HIER_DIRECT\\n1700000000.023 12 10.0.0.23 TCP_MISS/200 512 GET http://site23.example/ - HIER_DIRECT\\n1700000000.024 12 10.0.0.24 TCP_MISS/200 512 GET http://site24.example/ - HIER_DIRECT\\n1700000000.025 12 10.0.0.25 TCP_MISS/200 512 GET http://site25.example/ - HIER_DIRECT\\n1700000000.026 12 10.0.0.26 TCP_MISS/200 512 GET http://site26.example/ - HIER_DIRECT\\n1700000000.027 12 10.0.0.27 TCP_MISS/200 512 GET http://site27.example/ - HIER_DIRECT\\n1700000000.028 12 10.0.0.28 TCP_MISS/200 512 GET http://site28.example/ - HIER_DIRECT\\n1700000000.029 12 10.0.0.29 TCP_MISS/200 512 GET http://site29.example/ - HIER_DIRECT\\n1700000000.030 12 10.0.0.30 TCP_MISS/200 512 GET http://site30.example/ - HIER_DIRECT\\n1700000000.031 12 10.0.0.31 TCP_MISS/200 512 GET http://site31.example/ - HIER_DIRECT\\n1700000000.032 12 10.0.0.32 TCP_MISS/200 512 GET http://site32.example/ - HIER_DIRECT\\n1700000000.033 12 10.0.0.33 TCP_MISS/200 512 GET http://site33.example/ - HIER_DIRECT\\n1700000000.034 12 10.0.0.34 TCP_MISS/200 512 GET http://site34.example/ - HIER_DIRECT\\n1700000000.035 12 10.0.0.35 TCP_MISS/200 512 GET http://site35.example/ - HIER_DIRECT\\n1700000000.036 12 10.0.0.36 TCP_MISS/200 512 GET http://site36.example/ - HIER_DIRECT\\n1700000000.037 12 10.0.0.37 TCP_MISS/200 512 GET http://site37.example/ - HIER_DIRECT\\n1700000000.038 12 10.0.0.38 TCP_MISS/200 512 GET http://site38.example/ - HIER_DIRECT\\n1700000000.039 12 10.0.0.39 TCP_MISS/200 512 GET http://site39.example/ - HIER_DIRECT\\n\",\"key\":\"access\",\"max_bytes\":262144,\"ok\":true,\"status\":\"ok\"}\n",
+   "gzip": true,
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "456"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ],
+    [
+     "Content-Encoding",
+     "gzip"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": "access"
+    }
+   ]
+  ]
+ },
+ "logs_access_tail": {
+  "response": {
+   "body": "{\"content\":\"- HIER_DIRECT\\n1700000000.039 12 10.0.0.39 TCP_MISS/200 512 GET http://site39.example/ - HIER_DIRECT\\n\",\"key\":\"access\",\"max_bytes\":100,\"ok\":true,\"status\":\"ok\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "172"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": "access",
+     "max_bytes": 100
+    }
+   ]
+  ]
+ },
+ "logs_bad_utf8": {
+  "response": {
+   "body": "{\"detail\":\"not allowlisted\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "61"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": "%FF"
+    }
+   ]
+  ]
+ },
+ "logs_head": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "3533"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": "access"
+    }
+   ]
+  ]
+ },
+ "logs_max_bytes_blank": {
+  "response": {
+   "body": "{\"content\":\"1700000000.000 12 10.0.0.0 TCP_MISS/200 512 GET http://site0.example/ - HIER_DIRECT\\n1700000000.001 12 10.0.0.1 TCP_MISS/200 512 GET http://site1.example/ - HIER_DIRECT\\n1700000000.002 12 10.0.0.2 TCP_MISS/200 512 GET http://site2.example/ - HIER_DIRECT\\n1700000000.003 12 10.0.0.3 TCP_MISS/200 512 GET http://site3.example/ - HIER_DIRECT\\n1700000000.004 12 10.0.0.4 TCP_MISS/200 512 GET http://site4.example/ - HIER_DIRECT\\n1700000000.005 12 10.0.0.5 TCP_MISS/200 512 GET http://site5.example/ - HIER_DIRECT\\n1700000000.006 12 10.0.0.6 TCP_MISS/200 512 GET http://site6.example/ - HIER_DIRECT\\n1700000000.007 12 10.0.0.7 TCP_MISS/200 512 GET http://site7.example/ - HIER_DIRECT\\n1700000000.008 12 10.0.0.8 TCP_MISS/200 512 GET http://site8.example/ - HIER_DIRECT\\n1700000000.009 12 10.0.0.9 TCP_MISS/200 512 GET http://site9.example/ - HIER_DIRECT\\n1700000000.010 12 10.0.0.10 TCP_MISS/200 512 GET http://site10.example/ - HIER_DIRECT\\n1700000000.011 12 10.0.0.11 TCP_MISS/200 512 GET http://site11.example/ - HIER_DIRECT\\n1700000000.012 12 10.0.0.12 TCP_MISS/200 512 GET http://site12.example/ - HIER_DIRECT\\n1700000000.013 12 10.0.0.13 TCP_MISS/200 512 GET http://site13.example/ - HIER_DIRECT\\n1700000000.014 12 10.0.0.14 TCP_MISS/200 512 GET http://site14.example/ - HIER_DIRECT\\n1700000000.015 12 10.0.0.15 TCP_MISS/200 512 GET http://site15.example/ - HIER_DIRECT\\n1700000000.016 12 10.0.0.16 TCP_MISS/200 512 GET http://site16.example/ - HIER_DIRECT\\n1700000000.017 12 10.0.0.17 TCP_MISS/200 512 GET http://site17.example/ - HIER_DIRECT\\n1700000000.018 12 10.0.0.18 TCP_MISS/200 512 GET http://site18.example/ - HIER_DIRECT\\n1700000000.019 12 10.0.0.19 TCP_MISS/200 512 GET http://site19.example/ - HIER_DIRECT\\n1700000000.020 12 10.0.0.20 TCP_MISS/200 512 GET http://site20.example/ - HIER_DIRECT\\n1700000000.021 12 10.0.0.21 TCP_MISS/200 512 GET http://site21.example/ - HIER_DIRECT\\n1700000000.022 12 10.0.0.22 TCP_MISS/200 512 GET http://site22.example/ - HIER_DIRECT\\n1700000000.023 12 10.0.0.23 TCP_MISS/200 512 GET http://site23.example/ - HIER_DIRECT\\n1700000000.024 12 10.0.0.24 TCP_MISS/200 512 GET http://site24.example/ - HIER_DIRECT\\n1700000000.025 12 10.0.0.25 TCP_MISS/200 512 GET http://site25.example/ - HIER_DIRECT\\n1700000000.026 12 10.0.0.26 TCP_MISS/200 512 GET http://site26.example/ - HIER_DIRECT\\n1700000000.027 12 10.0.0.27 TCP_MISS/200 512 GET http://site27.example/ - HIER_DIRECT\\n1700000000.028 12 10.0.0.28 TCP_MISS/200 512 GET http://site28.example/ - HIER_DIRECT\\n1700000000.029 12 10.0.0.29 TCP_MISS/200 512 GET http://site29.example/ - HIER_DIRECT\\n1700000000.030 12 10.0.0.30 TCP_MISS/200 512 GET http://site30.example/ - HIER_DIRECT\\n1700000000.031 12 10.0.0.31 TCP_MISS/200 512 GET http://site31.example/ - HIER_DIRECT\\n1700000000.032 12 10.0.0.32 TCP_MISS/200 512 GET http://site32.example/ - HIER_DIRECT\\n1700000000.033 12 10.0.0.33 TCP_MISS/200 512 GET http://site33.example/ - HIER_DIRECT\\n1700000000.034 12 10.0.0.34 TCP_MISS/200 512 GET http://site34.example/ - HIER_DIRECT\\n1700000000.035 12 10.0.0.35 TCP_MISS/200 512 GET http://site35.example/ - HIER_DIRECT\\n1700000000.036 12 10.0.0.36 TCP_MISS/200 512 GET http://site36.example/ - HIER_DIRECT\\n1700000000.037 12 10.0.0.37 TCP_MISS/200 512 GET http://site37.example/ - HIER_DIRECT\\n1700000000.038 12 10.0.0.38 TCP_MISS/200 512 GET http://site38.example/ - HIER_DIRECT\\n1700000000.039 12 10.0.0.39 TCP_MISS/200 512 GET http://site39.example/ - HIER_DIRECT\\n\",\"key\":\"access\",\"max_bytes\":262144,\"ok\":true,\"status\":\"ok\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "3533"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": "access"
+    }
+   ]
+  ]
+ },
+ "logs_max_bytes_huge": {
+  "response": {
+   "body": "{\"content\":\"1700000000.000 12 10.0.0.0 TCP_MISS/200 512 GET http://site0.example/ - HIER_DIRECT\\n1700000000.001 12 10.0.0.1 TCP_MISS/200 512 GET http://site1.example/ - HIER_DIRECT\\n1700000000.002 12 10.0.0.2 TCP_MISS/200 512 GET http://site2.example/ - HIER_DIRECT\\n1700000000.003 12 10.0.0.3 TCP_MISS/200 512 GET http://site3.example/ - HIER_DIRECT\\n1700000000.004 12 10.0.0.4 TCP_MISS/200 512 GET http://site4.example/ - HIER_DIRECT\\n1700000000.005 12 10.0.0.5 TCP_MISS/200 512 GET http://site5.example/ - HIER_DIRECT\\n1700000000.006 12 10.0.0.6 TCP_MISS/200 512 GET http://site6.example/ - HIER_DIRECT\\n1700000000.007 12 10.0.0.7 TCP_MISS/200 512 GET http://site7.example/ - HIER_DIRECT\\n1700000000.008 12 10.0.0.8 TCP_MISS/200 512 GET http://site8.example/ - HIER_DIRECT\\n1700000000.009 12 10.0.0.9 TCP_MISS/200 512 GET http://site9.example/ - HIER_DIRECT\\n1700000000.010 12 10.0.0.10 TCP_MISS/200 512 GET http://site10.example/ - HIER_DIRECT\\n1700000000.011 12 10.0.0.11 TCP_MISS/200 512 GET http://site11.example/ - HIER_DIRECT\\n1700000000.012 12 10.0.0.12 TCP_MISS/200 512 GET http://site12.example/ - HIER_DIRECT\\n1700000000.013 12 10.0.0.13 TCP_MISS/200 512 GET http://site13.example/ - HIER_DIRECT\\n1700000000.014 12 10.0.0.14 TCP_MISS/200 512 GET http://site14.example/ - HIER_DIRECT\\n1700000000.015 12 10.0.0.15 TCP_MISS/200 512 GET http://site15.example/ - HIER_DIRECT\\n1700000000.016 12 10.0.0.16 TCP_MISS/200 512 GET http://site16.example/ - HIER_DIRECT\\n1700000000.017 12 10.0.0.17 TCP_MISS/200 512 GET http://site17.example/ - HIER_DIRECT\\n1700000000.018 12 10.0.0.18 TCP_MISS/200 512 GET http://site18.example/ - HIER_DIRECT\\n1700000000.019 12 10.0.0.19 TCP_MISS/200 512 GET http://site19.example/ - HIER_DIRECT\\n1700000000.020 12 10.0.0.20 TCP_MISS/200 512 GET http://site20.example/ - HIER_DIRECT\\n1700000000.021 12 10.0.0.21 TCP_MISS/200 512 GET http://site21.example/ - HIER_DIRECT\\n1700000000.022 12 10.0.0.22 TCP_MISS/200 512 GET http://site22.example/ - HIER_DIRECT\\n1700000000.023 12 10.0.0.23 TCP_MISS/200 512 GET http://site23.example/ - HIER_DIRECT\\n1700000000.024 12 10.0.0.24 TCP_MISS/200 512 GET http://site24.example/ - HIER_DIRECT\\n1700000000.025 12 10.0.0.25 TCP_MISS/200 512 GET http://site25.example/ - HIER_DIRECT\\n1700000000.026 12 10.0.0.26 TCP_MISS/200 512 GET http://site26.example/ - HIER_DIRECT\\n1700000000.027 12 10.0.0.27 TCP_MISS/200 512 GET http://site27.example/ - HIER_DIRECT\\n1700000000.028 12 10.0.0.28 TCP_MISS/200 512 GET http://site28.example/ - HIER_DIRECT\\n1700000000.029 12 10.0.0.29 TCP_MISS/200 512 GET http://site29.example/ - HIER_DIRECT\\n1700000000.030 12 10.0.0.30 TCP_MISS/200 512 GET http://site30.example/ - HIER_DIRECT\\n1700000000.031 12 10.0.0.31 TCP_MISS/200 512 GET http://site31.example/ - HIER_DIRECT\\n1700000000.032 12 10.0.0.32 TCP_MISS/200 512 GET http://site32.example/ - HIER_DIRECT\\n1700000000.033 12 10.0.0.33 TCP_MISS/200 512 GET http://site33.example/ - HIER_DIRECT\\n1700000000.034 12 10.0.0.34 TCP_MISS/200 512 GET http://site34.example/ - HIER_DIRECT\\n1700000000.035 12 10.0.0.35 TCP_MISS/200 512 GET http://site35.example/ - HIER_DIRECT\\n1700000000.036 12 10.0.0.36 TCP_MISS/200 512 GET http://site36.example/ - HIER_DIRECT\\n1700000000.037 12 10.0.0.37 TCP_MISS/200 512 GET http://site37.example/ - HIER_DIRECT\\n1700000000.038 12 10.0.0.38 TCP_MISS/200 512 GET http://site38.example/ - HIER_DIRECT\\n1700000000.039 12 10.0.0.39 TCP_MISS/200 512 GET http://site39.example/ - HIER_DIRECT\\n\",\"key\":\"access\",\"max_bytes\":262144,\"ok\":true,\"status\":\"ok\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "3533"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": "access",
+     "max_bytes": 262144
+    }
+   ]
+  ]
+ },
+ "logs_max_bytes_invalid": {
+  "response": {
+   "body": "{\"content\":\"1700000000.000 12 10.0.0.0 TCP_MISS/200 512 GET http://site0.example/ - HIER_DIRECT\\n1700000000.001 12 10.0.0.1 TCP_MISS/200 512 GET http://site1.example/ - HIER_DIRECT\\n1700000000.002 12 10.0.0.2 TCP_MISS/200 512 GET http://site2.example/ - HIER_DIRECT\\n1700000000.003 12 10.0.0.3 TCP_MISS/200 512 GET http://site3.example/ - HIER_DIRECT\\n1700000000.004 12 10.0.0.4 TCP_MISS/200 512 GET http://site4.example/ - HIER_DIRECT\\n1700000000.005 12 10.0.0.5 TCP_MISS/200 512 GET http://site5.example/ - HIER_DIRECT\\n1700000000.006 12 10.0.0.6 TCP_MISS/200 512 GET http://site6.example/ - HIER_DIRECT\\n1700000000.007 12 10.0.0.7 TCP_MISS/200 512 GET http://site7.example/ - HIER_DIRECT\\n1700000000.008 12 10.0.0.8 TCP_MISS/200 512 GET http://site8.example/ - HIER_DIRECT\\n1700000000.009 12 10.0.0.9 TCP_MISS/200 512 GET http://site9.example/ - HIER_DIRECT\\n1700000000.010 12 10.0.0.10 TCP_MISS/200 512 GET http://site10.example/ - HIER_DIRECT\\n1700000000.011 12 10.0.0.11 TCP_MISS/200 512 GET http://site11.example/ - HIER_DIRECT\\n1700000000.012 12 10.0.0.12 TCP_MISS/200 512 GET http://site12.example/ - HIER_DIRECT\\n1700000000.013 12 10.0.0.13 TCP_MISS/200 512 GET http://site13.example/ - HIER_DIRECT\\n1700000000.014 12 10.0.0.14 TCP_MISS/200 512 GET http://site14.example/ - HIER_DIRECT\\n1700000000.015 12 10.0.0.15 TCP_MISS/200 512 GET http://site15.example/ - HIER_DIRECT\\n1700000000.016 12 10.0.0.16 TCP_MISS/200 512 GET http://site16.example/ - HIER_DIRECT\\n1700000000.017 12 10.0.0.17 TCP_MISS/200 512 GET http://site17.example/ - HIER_DIRECT\\n1700000000.018 12 10.0.0.18 TCP_MISS/200 512 GET http://site18.example/ - HIER_DIRECT\\n1700000000.019 12 10.0.0.19 TCP_MISS/200 512 GET http://site19.example/ - HIER_DIRECT\\n1700000000.020 12 10.0.0.20 TCP_MISS/200 512 GET http://site20.example/ - HIER_DIRECT\\n1700000000.021 12 10.0.0.21 TCP_MISS/200 512 GET http://site21.example/ - HIER_DIRECT\\n1700000000.022 12 10.0.0.22 TCP_MISS/200 512 GET http://site22.example/ - HIER_DIRECT\\n1700000000.023 12 10.0.0.23 TCP_MISS/200 512 GET http://site23.example/ - HIER_DIRECT\\n1700000000.024 12 10.0.0.24 TCP_MISS/200 512 GET http://site24.example/ - HIER_DIRECT\\n1700000000.025 12 10.0.0.25 TCP_MISS/200 512 GET http://site25.example/ - HIER_DIRECT\\n1700000000.026 12 10.0.0.26 TCP_MISS/200 512 GET http://site26.example/ - HIER_DIRECT\\n1700000000.027 12 10.0.0.27 TCP_MISS/200 512 GET http://site27.example/ - HIER_DIRECT\\n1700000000.028 12 10.0.0.28 TCP_MISS/200 512 GET http://site28.example/ - HIER_DIRECT\\n1700000000.029 12 10.0.0.29 TCP_MISS/200 512 GET http://site29.example/ - HIER_DIRECT\\n1700000000.030 12 10.0.0.30 TCP_MISS/200 512 GET http://site30.example/ - HIER_DIRECT\\n1700000000.031 12 10.0.0.31 TCP_MISS/200 512 GET http://site31.example/ - HIER_DIRECT\\n1700000000.032 12 10.0.0.32 TCP_MISS/200 512 GET http://site32.example/ - HIER_DIRECT\\n1700000000.033 12 10.0.0.33 TCP_MISS/200 512 GET http://site33.example/ - HIER_DIRECT\\n1700000000.034 12 10.0.0.34 TCP_MISS/200 512 GET http://site34.example/ - HIER_DIRECT\\n1700000000.035 12 10.0.0.35 TCP_MISS/200 512 GET http://site35.example/ - HIER_DIRECT\\n1700000000.036 12 10.0.0.36 TCP_MISS/200 512 GET http://site36.example/ - HIER_DIRECT\\n1700000000.037 12 10.0.0.37 TCP_MISS/200 512 GET http://site37.example/ - HIER_DIRECT\\n1700000000.038 12 10.0.0.38 TCP_MISS/200 512 GET http://site38.example/ - HIER_DIRECT\\n1700000000.039 12 10.0.0.39 TCP_MISS/200 512 GET http://site39.example/ - HIER_DIRECT\\n\",\"key\":\"access\",\"max_bytes\":262144,\"ok\":true,\"status\":\"ok\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "3533"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": "access",
+     "max_bytes": 262144
+    }
+   ]
+  ]
+ },
+ "logs_max_bytes_zero": {
+  "response": {
+   "body": "{\"content\":\"\\n\",\"key\":\"access\",\"max_bytes\":1,\"ok\":true,\"status\":\"ok\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "70"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": "access",
+     "max_bytes": 1
+    }
+   ]
+  ]
+ },
+ "logs_missing_file": {
+  "response": {
+   "body": "{\"content\":\"\",\"key\":\"cache\",\"ok\":false,\"status\":\"missing\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "59"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": "cache"
+    }
+   ]
+  ]
+ },
+ "logs_no_param": {
+  "response": {
+   "body": "{\"detail\":\"not allowlisted\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "61"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": null
+    }
+   ]
+  ]
+ },
+ "logs_padded_key": {
+  "response": {
+   "body": "{\"content\":\"icap line\\n\",\"key\":\"icap\",\"max_bytes\":262144,\"ok\":true,\"status\":\"ok\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "82"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": " icap "
+    }
+   ]
+  ]
+ },
+ "logs_post": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "logs_unavailable": {
+  "response": {
+   "body": "{\"detail\":\"read failed\",\"ok\":false,\"status\":\"unavailable\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "59"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": "boom"
+    }
+   ]
+  ]
+ },
+ "logs_unknown": {
+  "response": {
+   "body": "{\"detail\":\"not allowlisted\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "61"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": [
+   [
+    "read_proxy_log",
+    {
+     "key": "passwd"
+    }
+   ]
+  ]
+ },
+ "manage_health": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_bad_percent": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_blank_key": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_double_slash": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example:5000/api/manage/health?full=1\">http://proxy.example:5000/api/manage/health?full=1</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "287"
+    ],
+    [
+     "Location",
+     "http://proxy.example:5000/api/manage/health?full=1"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "manage_health_force_full_word": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_full": {
+  "response": {
+   "body": "{\"health_scope\":\"full\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{\"squid\":{\"ok\":true}},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "117"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_full_plus": {
+  "response": {
+   "body": "{\"health_scope\":\"full\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{\"squid\":{\"ok\":true}},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "117"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_full_raises": {
+  "response": {
+   "body": "{\"ok\":false,\"proxy_id\":\"edge-a\",\"proxy_status\":\"Proxy health collection failed.\",\"services\":{},\"state_errors\":[\"Proxy health collection failed.\"],\"stats\":{},\"status\":\"degraded\",\"timestamp\":1700000000,\"version\":{\"built_at\":\"2026-01-02T03:04:05Z\",\"component\":\"proxy\",\"image\":\"proxy\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"revision_short\":\"0123456789ab\",\"source_ref\":\"main\",\"version\":\"1.2.3\"}}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "407"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_full_repeated": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_full_rich_gzip": {
+  "response": {
+   "body": "{\"checked_at\":\"Fri, 02 Jan 2026 03:04:05 GMT\",\"day\":\"Fri, 02 Jan 2026 00:00:00 GMT\",\"floats\":[0.1,1e+20,-0.0],\"id\":\"12345678-1234-5678-1234-567812345678\",\"label\":\"caf\\u00e9 \\u2615 \\u2028 </script>\",\"naive\":\"Fri, 02 Jan 2026 03:04:05 GMT\",\"nested\":{\"a\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"b\":[1,2,{\"a\":true,\"z\":null}]},\"ok\":true,\"proxy_id\":\"edge-a\",\"ratio\":\"1.50\",\"status\":\"healthy\",\"tuple\":[1,\"two\"]}\n",
+   "gzip": true,
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "269"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ],
+    [
+     "Content-Encoding",
+     "gzip"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_full_rich_gzip_disabled": {
+  "response": {
+   "body": "{\"checked_at\":\"Fri, 02 Jan 2026 03:04:05 GMT\",\"day\":\"Fri, 02 Jan 2026 00:00:00 GMT\",\"floats\":[0.1,1e+20,-0.0],\"id\":\"12345678-1234-5678-1234-567812345678\",\"label\":\"caf\\u00e9 \\u2615 \\u2028 </script>\",\"naive\":\"Fri, 02 Jan 2026 03:04:05 GMT\",\"nested\":{\"a\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"b\":[1,2,{\"a\":true,\"z\":null}]},\"ok\":true,\"proxy_id\":\"edge-a\",\"ratio\":\"1.50\",\"status\":\"healthy\",\"tuple\":[1,\"two\"]}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "1569"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_full_rich_head_gzip": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "269"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ],
+    [
+     "Content-Encoding",
+     "gzip"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_full_rich_plain": {
+  "response": {
+   "body": "{\"checked_at\":\"Fri, 02 Jan 2026 03:04:05 GMT\",\"day\":\"Fri, 02 Jan 2026 00:00:00 GMT\",\"floats\":[0.1,1e+20,-0.0],\"id\":\"12345678-1234-5678-1234-567812345678\",\"label\":\"caf\\u00e9 \\u2615 \\u2028 </script>\",\"naive\":\"Fri, 02 Jan 2026 03:04:05 GMT\",\"nested\":{\"a\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"b\":[1,2,{\"a\":true,\"z\":null}]},\"ok\":true,\"proxy_id\":\"edge-a\",\"ratio\":\"1.50\",\"status\":\"healthy\",\"tuple\":[1,\"two\"]}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "1569"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ],
+    [
+     "Vary",
+     "Accept-Encoding"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_full_word": {
+  "response": {
+   "body": "{\"health_scope\":\"full\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{\"squid\":{\"ok\":true}},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "117"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_full_yes_force": {
+  "response": {
+   "body": "{\"health_scope\":\"full\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{\"squid\":{\"ok\":true}},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "117"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_health",
+    {
+     "force": true
+    }
+   ]
+  ]
+ },
+ "manage_health_full_zero": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": true
+    }
+   ]
+  ]
+ },
+ "manage_health_get_runtime_raises": {
+  "response": {
+   "body": "{\"ok\":false,\"proxy_id\":\"\",\"proxy_status\":\"Proxy health collection failed.\",\"services\":{},\"state_errors\":[\"Proxy health collection failed.\"],\"stats\":{},\"status\":\"degraded\",\"timestamp\":1700000000,\"version\":{\"built_at\":\"2026-01-02T03:04:05Z\",\"component\":\"proxy\",\"image\":\"proxy\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"revision_short\":\"0123456789ab\",\"source_ref\":\"main\",\"version\":\"1.2.3\"}}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "401"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "get_runtime",
+    {}
+   ]
+  ]
+ },
+ "manage_health_head": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_lazy_runtime": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "get_runtime",
+    {}
+   ],
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ],
+   [
+    "runtime_cached",
+    true
+   ]
+  ]
+ },
+ "manage_health_options": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Content-Length",
+     "0"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "manage_health_post": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "manage_health_raises": {
+  "response": {
+   "body": "{\"ok\":false,\"proxy_id\":\"edge-a\",\"proxy_status\":\"Proxy health collection failed.\",\"services\":{},\"state_errors\":[\"Proxy health collection failed.\"],\"stats\":{},\"status\":\"degraded\",\"timestamp\":1700000000,\"version\":{\"built_at\":\"2026-01-02T03:04:05Z\",\"component\":\"proxy\",\"image\":\"proxy\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"revision_short\":\"0123456789ab\",\"source_ref\":\"main\",\"version\":\"1.2.3\"}}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "407"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_raises_exposed": {
+  "response": {
+   "body": "{\"ok\":false,\"proxy_id\":\"edge-a\",\"proxy_status\":\"RuntimeError: runtime failure password=[redacted]\",\"services\":{},\"state_errors\":[\"RuntimeError: runtime failure password=[redacted]\"],\"stats\":{},\"status\":\"degraded\",\"timestamp\":1700000000,\"version\":{\"built_at\":\"2026-01-02T03:04:05Z\",\"component\":\"proxy\",\"image\":\"proxy\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"revision_short\":\"0123456789ab\",\"source_ref\":\"main\",\"version\":\"1.2.3\"}}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "443"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_raises_value": {
+  "response": {
+   "body": "{\"ok\":false,\"proxy_id\":\"edge-a\",\"proxy_status\":\"invalid input token=[redacted]\",\"services\":{},\"state_errors\":[\"invalid input token=[redacted]\"],\"stats\":{},\"status\":\"degraded\",\"timestamp\":1700000000,\"version\":{\"built_at\":\"2026-01-02T03:04:05Z\",\"component\":\"proxy\",\"image\":\"proxy\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"revision_short\":\"0123456789ab\",\"source_ref\":\"main\",\"version\":\"1.2.3\"}}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "405"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_semicolon": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_spa": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-store, private"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "manage_health_trailing_slash": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "method_lowercase": {
+  "response": {
+   "body": "{\"health_scope\":\"navigation\",\"ok\":true,\"proxy_id\":\"edge-a\",\"services\":{},\"stats\":{},\"status\":\"healthy\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "104"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "collect_navigation_health",
+    {
+     "force": false
+    }
+   ]
+  ]
+ },
+ "method_unknown": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "path_newline_health": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "path_newline_static": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "path_newline_supervisor": {
+  "response": {
+   "body": "{\"action\":\"b\",\"ok\":false,\"program\":\"a\\n\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "42"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "409 CONFLICT"
+  },
+  "runtime_calls": [
+   [
+    "test_control_supervisor_program",
+    {
+     "action": "b",
+     "program_name": "a\n"
+    }
+   ]
+  ]
+ },
+ "path_trailing_newline_static": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "payload_array": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload must be an object.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "67"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "payload_bad_content_length": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_bad_utf8": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload is malformed.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "62"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "payload_chunked_at_limit": {
+  "response": {
+   "body": "{\"detail\":\"validate done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "37"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "validate_config_text",
+    {
+     "config_text": "ab"
+    }
+   ]
+  ]
+ },
+ "payload_chunked_empty_text_plain": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_chunked_ok": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": true,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_chunked_text_plain": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload must use Content-Type application/json.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "88"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "payload_chunked_with_length": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": true,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_declared_at_limit": {
+  "response": {
+   "body": "{\"detail\":\"validate done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "37"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "validate_config_text",
+    {
+     "config_text": "ab"
+    }
+   ]
+  ]
+ },
+ "payload_declared_over_env_limit": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload is limited to 19 bytes.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "72"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "413 REQUEST ENTITY TOO LARGE"
+  },
+  "runtime_calls": []
+ },
+ "payload_declared_too_large": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload is limited to 1048576 bytes.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "77"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "413 REQUEST ENTITY TOO LARGE"
+  },
+  "runtime_calls": []
+ },
+ "payload_duplicate_keys": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": true,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_env_limit_capped": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload is limited to 16777216 bytes.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "78"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "413 REQUEST ENTITY TOO LARGE"
+  },
+  "runtime_calls": []
+ },
+ "payload_env_limit_invalid": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload is limited to 1048576 bytes.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "77"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "413 REQUEST ENTITY TOO LARGE"
+  },
+  "runtime_calls": []
+ },
+ "payload_env_limit_zero": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload is limited to 1048576 bytes.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "77"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "413 REQUEST ENTITY TOO LARGE"
+  },
+  "runtime_calls": []
+ },
+ "payload_json_charset": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_long_body": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload is malformed.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "62"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "payload_malformed": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload is malformed.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "62"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "payload_nan": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_negative_content_length": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_no_content_type": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload must use Content-Type application/json.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "88"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "payload_not_terminated_chunked": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_not_terminated_length": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": true,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_null": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_short_body": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": true,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_string": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload must be an object.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "67"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "payload_text_json_suffix": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload must use Content-Type application/json.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "88"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "payload_text_plain": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload must use Content-Type application/json.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "88"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "payload_utf16": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": true,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_utf8_bom": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": true,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_vendor_json": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "payload_whitespace": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload is malformed.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "62"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "payload_zero_length_text_plain": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "query_non_utf8_health": {
+  "response": {
+   "body": "{\"ok\":false,\"proxy_id\":\"edge-a\",\"proxy_status\":\"'utf-8' codec can't decode byte 0xe9 in position 8: unexpected end of data\",\"services\":{},\"state_errors\":[\"'utf-8' codec can't decode byte 0xe9 in position 8: unexpected end of data\"],\"stats\":{},\"status\":\"degraded\",\"timestamp\":1700000000,\"version\":{\"built_at\":\"2026-01-02T03:04:05Z\",\"component\":\"proxy\",\"image\":\"proxy\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"revision_short\":\"0123456789ab\",\"source_ref\":\"main\",\"version\":\"1.2.3\"}}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "493"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "query_non_utf8_logs": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>500 Internal Server Error</title>\n<h1>Internal Server Error</h1>\n<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "265"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": []
+ },
+ "redirect_encoded_args": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example:5000/api/manage/test/supervisor/caf%C3%A9/a%25b%20c%3F\">http://proxy.example:5000/api/manage/test/supervisor/caf%C3%A9/a%25b%20c%3F</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "337"
+    ],
+    [
+     "Location",
+     "http://proxy.example:5000/api/manage/test/supervisor/caf%C3%A9/a%25b%20c%3F"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_escaped_chars": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example:5000/api/manage/test/supervisor/a%22%3C&#39;&amp;%25/b%3Fc\">http://proxy.example:5000/api/manage/test/supervisor/a%22%3C&#39;&amp;%25/b%3Fc</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "345"
+    ],
+    [
+     "Location",
+     "http://proxy.example:5000/api/manage/test/supervisor/a%22%3C'&%25/b%3Fc"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_head": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "303"
+    ],
+    [
+     "Location",
+     "http://proxy.example:5000/api/manage/health/clamav?force=1"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_host_bad_port": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http:///api/manage/health\">http:///api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "237"
+    ],
+    [
+     "Location",
+     "http:///api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_host_empty": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http:///api/manage/health\">http:///api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "237"
+    ],
+    [
+     "Location",
+     "http:///api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_host_invalid": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http:///api/manage/health\">http:///api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "237"
+    ],
+    [
+     "Location",
+     "http:///api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_host_ipv6": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://[2001:db8::1]:5000/api/manage/health\">http://[2001:db8::1]:5000/api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "273"
+    ],
+    [
+     "Location",
+     "http://[2001:db8::1]:5000/api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_host_ipv6_invalid": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http:///api/manage/health\">http:///api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "237"
+    ],
+    [
+     "Location",
+     "http:///api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_host_port80": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example/api/manage/health\">http://proxy.example/api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "263"
+    ],
+    [
+     "Location",
+     "http://proxy.example/api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_host_port_leading_zero": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http:///api/manage/health\">http:///api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "237"
+    ],
+    [
+     "Location",
+     "http:///api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_host_trailing_dot": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://example./api/manage/health\">http://example./api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "253"
+    ],
+    [
+     "Location",
+     "http://example./api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_https": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"https://proxy.example/api/manage/health\">https://proxy.example/api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "265"
+    ],
+    [
+     "Location",
+     "https://proxy.example/api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_no_host": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://0.0.0.0:5000/api/manage/health\">http://0.0.0.0:5000/api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "261"
+    ],
+    [
+     "Location",
+     "http://0.0.0.0:5000/api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_options": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example:5000/api/manage/sync\">http://proxy.example:5000/api/manage/sync</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "269"
+    ],
+    [
+     "Location",
+     "http://proxy.example:5000/api/manage/sync"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_query_raw": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example:5000/api/manage/logs?log=acc%65ss&amp;x=%zz&amp;caf�\">http://proxy.example:5000/api/manage/logs?log=acc%65ss&amp;x=%zz&amp;caf�</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "337"
+    ],
+    [
+     "Location",
+     "http://proxy.example:5000/api/manage/logs?log=acc%65ss&x=%zz&caf%EF%BF%BD"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_script_name": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example:5000/pre/api/manage/health\">http://proxy.example:5000/pre/api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "281"
+    ],
+    [
+     "Location",
+     "http://proxy.example:5000/pre/api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_server_name_ipv6": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://[::1]:5000/api/manage/health\">http://[::1]:5000/api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "257"
+    ],
+    [
+     "Location",
+     "http://[::1]:5000/api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_server_port_invalid": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http:///api/manage/health\">http:///api/manage/health</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "237"
+    ],
+    [
+     "Location",
+     "http:///api/manage/health"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "redirect_unknown_manage": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "redirect_websocket": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>400 Bad Request</title>\n<h1>Bad Request</h1>\n<p>The browser (or proxy) sent a request that this server could not understand.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "167"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "redirect_wrong_method": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "OPTIONS, POST"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "static_bare": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "static_double_slash": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "static_inner_double_slash": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example:5000/static/x.css\">http://proxy.example:5000/static/x.css</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "263"
+    ],
+    [
+     "Location",
+     "http://proxy.example:5000/static/x.css"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "static_missing": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "static_missing_head": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "static_missing_options": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Cache-Control",
+     "public, max-age=31536000, immutable"
+    ],
+    [
+     "Content-Length",
+     "0"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "static_missing_post": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "static_nested": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "static_root": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "static_traversal": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "supervisor_bad_payload": {
+  "response": {
+   "body": "{\"detail\":\"Management JSON payload must be an object.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "67"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "supervisor_empty_action": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "supervisor_encoded_name": {
+  "response": {
+   "body": "{\"action\":\"st op\",\"ok\":false,\"program\":\"caf\\u00e9\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "52"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "409 CONFLICT"
+  },
+  "runtime_calls": [
+   [
+    "test_control_supervisor_program",
+    {
+     "action": "st op",
+     "program_name": "café"
+    }
+   ]
+  ]
+ },
+ "supervisor_encoded_slash": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "supervisor_get": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "OPTIONS, POST"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "supervisor_missing_action": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "supervisor_not_allowlisted": {
+  "response": {
+   "body": "{\"action\":\"stop\",\"ok\":false,\"program\":\"squid\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "47"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "409 CONFLICT"
+  },
+  "runtime_calls": [
+   [
+    "test_control_supervisor_program",
+    {
+     "action": "stop",
+     "program_name": "squid"
+    }
+   ]
+  ]
+ },
+ "supervisor_not_ready": {
+  "response": {
+   "body": "{\"action\":\"restart\",\"ok\":true,\"program\":\"cicap_adblock\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "57"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "test_control_supervisor_program",
+    {
+     "action": "restart",
+     "program_name": "cicap_adblock"
+    }
+   ]
+  ]
+ },
+ "supervisor_ok": {
+  "response": {
+   "body": "{\"action\":\"restart\",\"ok\":true,\"program\":\"cicap_adblock\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "57"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "test_control_supervisor_program",
+    {
+     "action": "restart",
+     "program_name": "cicap_adblock"
+    }
+   ]
+  ]
+ },
+ "supervisor_options": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "OPTIONS, POST"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Content-Length",
+     "0"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "supervisor_test_mode_bad_value": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "supervisor_test_mode_off": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "supervisor_trailing_slash": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "sync_double_slash": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to the target URL: <a href=\"http://proxy.example:5000/api/manage/sync\">http://proxy.example:5000/api/manage/sync</a>. If not, click the link.\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "269"
+    ],
+    [
+     "Location",
+     "http://proxy.example:5000/api/manage/sync"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "308 PERMANENT REDIRECT"
+  },
+  "runtime_calls": []
+ },
+ "sync_empty_object": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "sync_fail_409": {
+  "response": {
+   "body": "{\"detail\":\"sync failed\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "36"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "409 CONFLICT"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "sync_force_int": {
+  "response": {
+   "body": "{\"detail\":\"force must be a boolean.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "49"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "sync_force_null": {
+  "response": {
+   "body": "{\"detail\":\"force must be a boolean.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "49"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "sync_force_string_bad": {
+  "response": {
+   "body": "{\"detail\":\"force must be a boolean.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "49"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "sync_force_string_off": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "sync_force_string_yes": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": true,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "sync_get": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "OPTIONS, POST"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "sync_head": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "OPTIONS, POST"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "sync_no_body": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "sync_not_ready": {
+  "response": {
+   "body": "{\"detail\":\"Proxy control-plane startup (recovery adoption, schema, registration) has not completed yet; retry shortly.\",\"ok\":false,\"retryable\":true,\"status\":\"control_plane_starting\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "183"
+    ],
+    [
+     "Retry-After",
+     "5"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "503 SERVICE UNAVAILABLE"
+  },
+  "runtime_calls": []
+ },
+ "sync_not_ready_bad_body": {
+  "response": {
+   "body": "{\"detail\":\"Proxy control-plane startup (recovery adoption, schema, registration) has not completed yet; retry shortly.\",\"ok\":false,\"retryable\":true,\"status\":\"control_plane_starting\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "183"
+    ],
+    [
+     "Retry-After",
+     "5"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "503 SERVICE UNAVAILABLE"
+  },
+  "runtime_calls": []
+ },
+ "sync_ok": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "sync_operation_id": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": true,
+     "operation_id": 7
+    }
+   ]
+  ]
+ },
+ "sync_operation_id_bool": {
+  "response": {
+   "body": "{\"detail\":\"operation_id must be an integer.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "57"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "sync_operation_id_float": {
+  "response": {
+   "body": "{\"detail\":\"operation_id must be an integer.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "57"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "sync_operation_id_negative": {
+  "response": {
+   "body": "{\"detail\":\"operation_id must be a positive integer.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "65"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "sync_operation_id_null": {
+  "response": {
+   "body": "{\"detail\":\"sync done\",\"ok\":true}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "33"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "sync_operation_id_string": {
+  "response": {
+   "body": "{\"detail\":\"operation_id must be an integer.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "57"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "sync_operation_id_zero": {
+  "response": {
+   "body": "{\"detail\":\"operation_id must be a positive integer.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "65"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "sync_options": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "OPTIONS, POST"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ],
+    [
+     "Content-Length",
+     "0"
+    ]
+   ],
+   "status": "200 OK"
+  },
+  "runtime_calls": []
+ },
+ "sync_put": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "OPTIONS, POST"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ },
+ "sync_raises": {
+  "response": {
+   "body": "{\"detail\":\"Proxy reconciliation failed.\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "53"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "sync_raises_value": {
+  "response": {
+   "body": "{\"detail\":\"invalid input token=[redacted]\",\"ok\":false}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "55"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "500 INTERNAL SERVER ERROR"
+  },
+  "runtime_calls": [
+   [
+    "sync_from_db",
+    {
+     "force": false,
+     "operation_id": null
+    }
+   ]
+  ]
+ },
+ "unknown_api_double_slash": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_bad_utf8_manage": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_double_slash_manage": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_encoded_manage": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_manage": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_manage_bare": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_manage_case": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_manage_head": {
+  "response": {
+   "body": "",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_manage_no_auth": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_manage_options": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_manage_post": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_manage_slash": {
+  "response": {
+   "body": "{\"detail\":\"Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.\",\"ok\":false,\"status\":\"not_found\"}\n",
+   "headers": [
+    [
+     "Content-Type",
+     "application/json"
+    ],
+    [
+     "Content-Length",
+     "203"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_pac": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "unknown_root": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "websocket_manage": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>400 Bad Request</title>\n<h1>Bad Request</h1>\n<p>The browser (or proxy) sent a request that this server could not understand.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "167"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "400 BAD REQUEST"
+  },
+  "runtime_calls": []
+ },
+ "websocket_unknown": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Content-Length",
+     "207"
+    ],
+    [
+     "Cache-Control",
+     "no-cache"
+    ]
+   ],
+   "status": "404 NOT FOUND"
+  },
+  "runtime_calls": []
+ },
+ "websocket_wrong_method": {
+  "response": {
+   "body": "<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n",
+   "headers": [
+    [
+     "Content-Type",
+     "text/html; charset=utf-8"
+    ],
+    [
+     "Allow",
+     "GET, HEAD, OPTIONS"
+    ],
+    [
+     "Content-Length",
+     "153"
+    ],
+    [
+     "Cache-Control",
+     "no-store"
+    ]
+   ],
+   "status": "405 METHOD NOT ALLOWED"
+  },
+  "runtime_calls": []
+ }
+}

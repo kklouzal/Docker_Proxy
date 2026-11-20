@@ -421,7 +421,7 @@ def test_admin_html_responses_respect_wildcard_quality_zero(
 def test_gzip_negotiation_varies_identity_and_encoded_representations() -> None:
     app = Flask(__name__)
 
-    from web.services.http_optimizations import install_http_optimizations
+    from web.services.flask_http_optimizations import install_http_optimizations
 
     install_http_optimizations(app, compress_min_size=1)
 
@@ -456,7 +456,7 @@ def test_gzip_negotiation_varies_identity_and_encoded_representations() -> None:
 def test_gzip_transformation_drops_stale_representation_integrity_fields() -> None:
     app = Flask(__name__)
 
-    from web.services.http_optimizations import install_http_optimizations
+    from web.services.flask_http_optimizations import install_http_optimizations
 
     install_http_optimizations(app, compress_min_size=1)
     body = b"a" * 1000
@@ -498,7 +498,7 @@ def test_gzip_transformation_drops_stale_representation_integrity_fields() -> No
 def test_gzip_negotiation_rejects_invalid_and_duplicate_refusal_quality() -> None:
     app = Flask(__name__)
 
-    from web.services.http_optimizations import install_http_optimizations
+    from web.services.flask_http_optimizations import install_http_optimizations
 
     install_http_optimizations(app, compress_min_size=1)
 
@@ -534,7 +534,7 @@ def test_gzip_negotiation_rejects_invalid_and_duplicate_refusal_quality() -> Non
 def test_head_reports_selected_gzip_representation_metadata_without_body() -> None:
     app = Flask(__name__)
 
-    from web.services.http_optimizations import install_http_optimizations
+    from web.services.flask_http_optimizations import install_http_optimizations
 
     install_http_optimizations(app, compress_min_size=1)
 
@@ -566,7 +566,7 @@ def test_conditional_identity_response_keeps_encoding_vary_metadata() -> None:
 
     from flask import request
 
-    from web.services.http_optimizations import install_http_optimizations
+    from web.services.flask_http_optimizations import install_http_optimizations
 
     install_http_optimizations(app, compress_min_size=1)
 
@@ -594,7 +594,7 @@ def test_conditional_identity_response_keeps_encoding_vary_metadata() -> None:
 def test_partial_content_responses_are_not_gzip_transformed() -> None:
     app = Flask(__name__)
 
-    from web.services.http_optimizations import install_http_optimizations
+    from web.services.flask_http_optimizations import install_http_optimizations
 
     install_http_optimizations(app, compress_min_size=1)
 

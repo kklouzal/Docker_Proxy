@@ -553,7 +553,7 @@ GitHub Actions runs the release gate on `main`: Ruff lint -> deterministic tests
 ```text
 .github/workflows/          CI, live tests, and GHCR publication
 docker/                     Dockerfiles, entrypoints, health checks, supervisord, c-icap config
-proxy/                      Proxy-runtime Flask management API
+proxy/                      Proxy-runtime management API, PAC/WPAD listener and sync agent
 scripts/                    Certificate and sslcrtd helpers
 squid/                      Squid template, MIME data, and custom error pages
 web/app.py                  Admin UI routes and workflows

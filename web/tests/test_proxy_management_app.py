@@ -149,7 +149,7 @@ def test_proxy_management_api_requires_token_for_all_management_endpoints(
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
 
     assert _management_get(client, "/health").status_code == 200
 
@@ -179,7 +179,7 @@ def test_proxy_management_api_fails_closed_when_token_is_unset(monkeypatch) -> N
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.delenv("PROXY_MANAGEMENT_TOKEN", raising=False)
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
 
     response = _management_get(client, "/api/manage/health")
 
@@ -193,7 +193,7 @@ def test_proxy_management_api_accepts_bearer_and_x_proxy_token(monkeypatch) -> N
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
 
     bearer = _management_get(
         client, "/api/manage/health", headers={"Authorization": "Bearer secret"}
@@ -215,7 +215,7 @@ def test_proxy_management_config_current_returns_running_config(monkeypatch) -> 
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
 
     response = _management_get(
         client,
@@ -235,10 +235,10 @@ def test_proxy_management_auth_uses_constant_time_compare(monkeypatch) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
-    comparisons: list[tuple[str, str]] = []
+    client = Client(proxy_app.app)
+    comparisons: list[tuple[bytes, bytes]] = []
 
-    def observed_compare(provided: str, expected: str) -> bool:
+    def observed_compare(provided: bytes, expected: bytes) -> bool:
         comparisons.append((provided, expected))
         return provided == expected
 
@@ -253,7 +253,7 @@ def test_proxy_management_auth_uses_constant_time_compare(monkeypatch) -> None:
 
     assert bearer.status_code == 200
     assert bad.status_code == 403
-    assert comparisons == [("secret", "secret"), ("wrong", "secret")]
+    assert comparisons == [(b"secret", b"secret"), (b"wrong", b"secret")]
 
 
 def test_proxy_management_sync_parses_string_force_false(monkeypatch) -> None:
@@ -261,7 +261,7 @@ def test_proxy_management_sync_parses_string_force_false(monkeypatch) -> None:
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     runtime = _Runtime()
     proxy_app.runtime = runtime
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
 
     response = _management_post(
         client,
@@ -281,7 +281,7 @@ def test_proxy_management_sync_accepts_boolean_and_string_force_true(
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     runtime = _Runtime()
     proxy_app.runtime = runtime
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
 
     boolean_response = _management_post(
@@ -301,7 +301,7 @@ def test_proxy_management_sync_rejects_invalid_force_string(monkeypatch) -> None
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     runtime = _Runtime()
     proxy_app.runtime = runtime
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
 
     response = _management_post(
         client,
@@ -320,7 +320,7 @@ def test_proxy_management_json_payloads_reject_non_objects(monkeypatch) -> None:
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     runtime = _Runtime()
     proxy_app.runtime = runtime
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
 
     cases = [
@@ -350,7 +350,7 @@ def test_proxy_management_json_payloads_reject_malformed_json_without_runtime_ca
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     runtime = _Runtime()
     proxy_app.runtime = runtime
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret", "Content-Type": "application/json"}
 
     monkeypatch.setenv("ENABLE_TEST_MODE", "1")
@@ -395,7 +395,7 @@ def test_proxy_management_json_payloads_reject_oversized_bodies_without_runtime_
     monkeypatch.setenv("PROXY_MANAGEMENT_JSON_MAX_CONTENT_LENGTH", "8")
     runtime = _Runtime()
     proxy_app.runtime = runtime
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret", "Content-Type": "application/json"}
 
     response = _management_post(
@@ -421,7 +421,7 @@ def test_proxy_management_json_payloads_reject_non_json_bodies_without_runtime_c
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     runtime = _Runtime()
     proxy_app.runtime = runtime
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret", "Content-Type": "text/plain"}
 
     cases = [
@@ -454,7 +454,7 @@ def test_proxy_management_json_payloads_preserve_missing_body_defaults(
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     runtime = _Runtime()
     proxy_app.runtime = runtime
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
 
     sync = _management_post(client, "/api/manage/sync", headers=headers)
@@ -477,7 +477,7 @@ def test_proxy_management_config_validate_defaults_missing_config_text(
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     runtime = _Runtime()
     proxy_app.runtime = runtime
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
 
     response = _management_post(
         client,
@@ -498,7 +498,7 @@ def test_proxy_management_config_validate_rejects_non_string_config_text(
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     runtime = _Runtime()
     proxy_app.runtime = runtime
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
     cases = [
         ["workers", "1"],
@@ -531,7 +531,7 @@ def test_proxy_management_api_status_codes_and_payload_mapping(monkeypatch) -> N
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     runtime = _Runtime()
     proxy_app.runtime = runtime
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
 
     sync = _management_post(
@@ -699,7 +699,7 @@ def test_proxy_management_sync_operation_id_records_current_config_apply(
     proxy_app.runtime = runtime
 
     response = _management_post(
-        proxy_app.app.test_client(),
+        Client(proxy_app.app),
         "/api/manage/sync",
         json={"operation_id": 42},
         headers={"Authorization": "Bearer secret"},
@@ -752,7 +752,7 @@ def test_proxy_management_targeted_sync_reports_concurrent_operation_owner(
     proxy_app.runtime = runtime
 
     response = _management_post(
-        proxy_app.app.test_client(),
+        Client(proxy_app.app),
         "/api/manage/sync",
         json={"force": True, "operation_id": 42},
         headers={"Authorization": "Bearer secret"},
@@ -785,7 +785,7 @@ def test_proxy_management_sync_exception_returns_sanitized_json(monkeypatch) -> 
     proxy_app.runtime = Runtime()
 
     response = _management_post(
-        proxy_app.app.test_client(),
+        Client(proxy_app.app),
         "/api/manage/sync",
         json={"operation_id": 42},
         headers={"Authorization": "Bearer secret"},
@@ -885,7 +885,7 @@ def test_proxy_runtime_clamav_icap_preserves_degraded_transport_detail(
 def test_proxy_management_sync_rejects_non_integer_operation_ids(monkeypatch) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
 
     for operation_id in (True, False, 1.0, 1.5, "1", "not-an-int"):
@@ -913,7 +913,7 @@ def test_proxy_management_sync_preserves_optional_and_positive_operation_ids(
 ) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
 
     for payload, expected_operation_id in (
@@ -943,7 +943,7 @@ def test_proxy_management_logs_endpoint_reads_allowlisted_log_tail(
     (log_dir / "access-observe.log").write_text("alpha\nbeta\n", encoding="utf-8")
     monkeypatch.setenv("LOG_DIR", str(log_dir))
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
 
     allowed = _management_get(client, "/api/manage/logs?log=access", headers=headers)
@@ -971,7 +971,7 @@ def test_proxy_management_logs_endpoint_accepts_bounded_max_bytes(
     (log_dir / "access-observe.log").write_text("alpha\nbeta\n", encoding="utf-8")
     monkeypatch.setenv("LOG_DIR", str(log_dir))
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
 
     response = _management_get(
@@ -998,7 +998,7 @@ def test_proxy_management_logs_endpoint_clamps_unsafe_max_bytes(
     (log_dir / "access.log").write_text("alpha\n", encoding="utf-8")
     monkeypatch.setenv("LOG_DIR", str(log_dir))
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
 
     tiny = _management_get(
@@ -1036,7 +1036,7 @@ def test_proxy_management_logs_endpoint_reports_unreadable_log_as_server_error(
             "logs": [],
         },
     )
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
 
     response = _management_get(
         client,
@@ -1054,7 +1054,7 @@ def test_proxy_management_health_degrades_without_leaking_traceback(
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _BrokenHealthRuntime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
 
     response = _management_get(
         client, "/api/manage/health", headers={"Authorization": "Bearer secret"}
@@ -1075,7 +1075,7 @@ def test_proxy_management_test_supervisor_route_requires_test_mode_and_uses_allo
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     monkeypatch.delenv("ENABLE_TEST_MODE", raising=False)
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
 
     disabled = _management_post(
@@ -1125,7 +1125,7 @@ def test_proxy_public_listener_rejects_management_and_management_listener_reject
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     public_client = Client(_load_public_app(monkeypatch).app)
 
     health = _public_get(
@@ -1147,7 +1147,7 @@ def test_management_listener_ignores_spoofed_public_host_port(monkeypatch) -> No
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
 
     pac = client.get("/proxy.pac", base_url="http://localhost:5000")
     spoofed_pac = client.get(
@@ -1172,7 +1172,7 @@ def test_proxy_management_health_defaults_to_navigation_scope_and_full_is_opt_in
     proxy_app = _load_proxy_app(monkeypatch)
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
 
     navigation = _management_get(client, "/api/manage/health", headers=headers)
@@ -1195,7 +1195,7 @@ def test_proxy_management_health_defaults_to_navigation_scope_and_full_is_opt_in
 def test_public_health_declares_lightweight_non_forwarding_scope(monkeypatch) -> None:
     proxy_app = _load_proxy_app(monkeypatch)
     proxy_app.runtime = _Runtime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
 
     public = _public_get(Client(_load_public_app(monkeypatch).app), "/health")
     management = _management_get(client, "/health")
@@ -1237,7 +1237,7 @@ def test_management_mutations_wait_for_agent_control_plane_startup(
             pytest.fail("no control-plane mutation before startup completes")
 
     proxy_app.runtime = _NoMutationRuntime()
-    client = proxy_app.app.test_client()
+    client = Client(proxy_app.app)
     headers = {"Authorization": "Bearer secret"}
 
     clear_control_plane_ready()

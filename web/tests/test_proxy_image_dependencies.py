@@ -12,13 +12,12 @@ DOCKERFILE = REPO_ROOT / "docker" / "Dockerfile.proxy"
 
 # Import name -> requirements.txt distribution name.
 _DISTRIBUTION_FOR_IMPORT = {
-    "flask": "flask",
     "werkzeug": "werkzeug",
     "gunicorn": "gunicorn",
     "pymysql": "pymysql",
     "cryptography": "cryptography",
-    # Flask's own dependency, always present when Flask is installed.
-    "markupsafe": "flask",
+    # Werkzeug's own dependency, always present when Werkzeug is installed.
+    "markupsafe": "werkzeug",
 }
 
 

@@ -2404,7 +2404,7 @@ def test_proxy_policy_request_route_is_public_listener_only_and_ignores_spoofed_
     import proxy.app as management_app
 
     management_app = importlib.reload(management_app)
-    management = management_app.app.test_client().post(
+    management = Client(management_app.app).post(
         "/policy-request",
         base_url="http://localhost:5000",
         data={"request_url": "https://bad.example/", "domain": "bad.example"},

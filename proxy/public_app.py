@@ -20,10 +20,8 @@ Werkzeug is imported only to parse policy-request form bodies.
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import io
-import json
 import logging
 import os
 import re
@@ -31,12 +29,7 @@ from email.utils import formatdate
 from typing import TYPE_CHECKING, Any
 
 from services.errors import public_error_message
-from services.http_optimizations import (
-    TRANSFORMATION_INVALIDATED_HEADERS,
-    client_accepts_gzip,
-    compressible_mimetype,
-    gzip_responses_enabled,
-)
+from services.http_optimizations import gzip_responses_enabled
 from services.logutil import (
     configure_process_logging,
     log_database_unavailable,
@@ -54,6 +47,16 @@ from services.pac_http import (
     resolve_pac,
 )
 
+from proxy.wsgi_http import HTML as _HTML
+from proxy.wsgi_http import INTERNAL_ERROR_PAGE as _INTERNAL_ERROR_PAGE
+from proxy.wsgi_http import MANAGEMENT_NOT_FOUND_BODY as _MANAGEMENT_NOT_FOUND_BODY
+from proxy.wsgi_http import METHOD_NOT_ALLOWED_PAGE as _METHOD_NOT_ALLOWED_PAGE
+from proxy.wsgi_http import NOT_FOUND_PAGE as _NOT_FOUND_PAGE
+from proxy.wsgi_http import RequestHeaders as _RequestHeaders
+from proxy.wsgi_http import Response as _Response
+from proxy.wsgi_http import apply_http_optimizations, request_path, send
+from proxy.wsgi_http import json_body as _json_body
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
@@ -63,70 +66,11 @@ _POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH = 16 * 1024
 # Flask's MAX_FORM_MEMORY_SIZE / MAX_FORM_PARTS defaults, kept for multipart.
 _POLICY_REQUEST_MAX_FORM_MEMORY_SIZE = 500_000
 _POLICY_REQUEST_MAX_FORM_PARTS = 1000
-_GZIP_MIN_SIZE = 1024
-_GZIP_LEVEL = 5
 _GZIP_ENABLED = gzip_responses_enabled()
 
-_STATUS_LINES = {
-    200: "200 OK",
-    304: "304 NOT MODIFIED",
-    400: "400 BAD REQUEST",
-    404: "404 NOT FOUND",
-    405: "405 METHOD NOT ALLOWED",
-    412: "412 PRECONDITION FAILED",
-    413: "413 REQUEST ENTITY TOO LARGE",
-    429: "429 TOO MANY REQUESTS",
-    500: "500 INTERNAL SERVER ERROR",
-    503: "503 SERVICE UNAVAILABLE",
-}
-_HTML = "text/html; charset=utf-8"
 _PAC_VARY = "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
 _GET_METHODS = ("GET", "HEAD", "OPTIONS")
 _POLICY_METHODS = ("GET", "HEAD", "OPTIONS", "POST")
-# Entity headers Werkzeug strips from a 304 (``remove_entity_headers``).
-_NOT_MODIFIED_DROPPED_HEADERS = frozenset(
-    {
-        "allow",
-        "content-encoding",
-        "content-language",
-        "content-length",
-        "content-md5",
-        "content-range",
-        "content-type",
-        "last-modified",
-    },
-)
-
-
-def _error_page(code: int, name: str, description: str) -> bytes:
-    """Werkzeug's default ``HTTPException`` body."""
-    return (
-        "<!doctype html>\n<html lang=en>\n"
-        f"<title>{code} {name}</title>\n<h1>{name}</h1>\n<p>{description}</p>\n"
-    ).encode()
-
-
-_NOT_FOUND_PAGE = _error_page(
-    404,
-    "Not Found",
-    "The requested URL was not found on the server. If you entered the URL"
-    " manually please check your spelling and try again.",
-)
-_METHOD_NOT_ALLOWED_PAGE = _error_page(
-    405, "Method Not Allowed", "The method is not allowed for the requested URL."
-)
-_INTERNAL_ERROR_PAGE = _error_page(
-    500,
-    "Internal Server Error",
-    "The server encountered an internal error and was unable to complete your"
-    " request. Either the server is overloaded or there is an error in the"
-    " application.",
-)
-
-
-def _json_body(payload: dict[str, Any]) -> bytes:
-    """Flask ``jsonify`` bytes: sorted keys, compact, ASCII, trailing newline."""
-    return (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
 _HEALTH_BODY = _json_body(
@@ -144,14 +88,6 @@ _HEALTH_BODY = _json_body(
         },
     },
 )
-_MANAGEMENT_NOT_FOUND_BODY = _json_body(
-    {
-        "ok": False,
-        "status": "not_found",
-        "detail": "Proxy management endpoint was not found. Check that the registered management URL points to the proxy management listener, not the public PAC/proxy listener.",
-    },
-)
-
 # Werkzeug's ``parse_etags`` grammar, including its lenient invalid forms.
 _ETAG_PATTERN = re.compile(
     r"""
@@ -167,72 +103,6 @@ _ETAG_PATTERN = re.compile(
     """,
     flags=re.ASCII | re.VERBOSE,
 )
-
-
-class _Response:
-    """A fully buffered response whose header list keeps Werkzeug's order.
-
-    ``Allow`` precedes ``Content-Length`` (Werkzeug error/OPTIONS responses);
-    headers added afterwards follow it.
-    """
-
-    __slots__ = ("body", "headers", "status")
-
-    def __init__(
-        self,
-        status: int,
-        content_type: str,
-        body: bytes,
-        *,
-        allow: tuple[str, ...] = (),
-    ) -> None:
-        self.status = status
-        self.headers = [("Content-Type", content_type)]
-        if allow:
-            self.headers.append(("Allow", ", ".join(allow)))
-        if body:
-            self.headers.append(("Content-Length", str(len(body))))
-        self.body = body
-
-    def get(self, name: str) -> str | None:
-        lowered = name.lower()
-        for key, value in self.headers:
-            if key.lower() == lowered:
-                return value
-        return None
-
-    def set(self, name: str, value: str) -> None:
-        """Replace the first ``name`` header in place, like Werkzeug ``Headers.set``."""
-        lowered = name.lower()
-        for index, (key, _old) in enumerate(self.headers):
-            if key.lower() == lowered:
-                self.headers[index] = (key, value)
-                self.headers[index + 1 :] = [
-                    item
-                    for item in self.headers[index + 1 :]
-                    if item[0].lower() != lowered
-                ]
-                return
-        self.headers.append((name, value))
-
-    def remove(self, name: str) -> None:
-        lowered = name.lower()
-        self.headers = [item for item in self.headers if item[0].lower() != lowered]
-
-
-class _RequestHeaders:
-    """Header lookup over a WSGI environ, like Werkzeug ``EnvironHeaders.get``."""
-
-    __slots__ = ("_environ",)
-
-    def __init__(self, environ: dict[str, Any]) -> None:
-        self._environ = environ
-
-    def get(self, name: str, default: str | None = None) -> str | None:
-        key = name.upper().replace("-", "_")
-        if key not in {"CONTENT_TYPE", "CONTENT_LENGTH"}:
-            key = f"HTTP_{key}"
-        return self._environ.get(key, default)
 
 
 def _policy_request_max_content_length() -> int:
@@ -543,83 +413,17 @@ def _dispatch(
     return _public_pac(environ, path)
 
 
-def _apply_http_optimizations(
-    response: _Response, environ: dict[str, Any], method: str
-) -> None:
-    """The ``install_http_optimizations`` policy with dynamic max-age 0.
-
-    Only fixed, fully buffered bodies reach this point: none carries a
-    Content-Encoding, Content-Range or ``no-transform`` directive.
-    """
-    if response.get("Cache-Control") is None:
-        if method not in {"GET", "HEAD"}:
-            cache_control = "no-store"
-        elif (environ.get("HTTP_X_REQUESTED_WITH") or "").lower() == "spa":
-            cache_control = "no-store, private"
-        else:
-            cache_control = "no-cache"
-        response.headers.append(("Cache-Control", cache_control))
-    status = response.status
-    if (
-        not _GZIP_ENABLED
-        or (status != 304 and not 200 <= status < 300)
-        or not compressible_mimetype(response.get("Content-Type"))
-        or len(response.body) < _GZIP_MIN_SIZE
-    ):
-        return
-    vary_tokens = {
-        token.strip().lower()
-        for key, value in response.headers
-        if key.lower() == "vary"
-        for token in value.split(",")
-        if token.strip()
-    }
-    if "*" not in vary_tokens and "accept-encoding" not in vary_tokens:
-        vary = response.get("Vary")
-        response.set("Vary", f"{vary}, Accept-Encoding" if vary else "Accept-Encoding")
-    if status == 304 or not client_accepts_gzip(
-        environ.get("HTTP_ACCEPT_ENCODING", "")
-    ):
-        return
-    compressed = gzip.compress(response.body, compresslevel=_GZIP_LEVEL)
-    if len(compressed) >= len(response.body):
-        return
-    response.body = compressed
-    response.set("Content-Length", str(len(compressed)))
-    response.headers.append(("Content-Encoding", "gzip"))
-    # Validators and integrity values for the identity bytes no longer apply.
-    for header in TRANSFORMATION_INVALIDATED_HEADERS:
-        response.remove(header)
-
-
 def app(environ: dict[str, Any], start_response: Callable[..., Any]) -> Iterable[bytes]:
-    raw_method = environ.get("REQUEST_METHOD", "GET")
-    method = raw_method.upper()
-    raw_path = environ.get("PATH_INFO") or ""
-    path = "/" + raw_path.encode("latin-1").decode(errors="replace").lstrip("/")
+    method = environ.get("REQUEST_METHOD", "GET").upper()
+    path = request_path(environ)
     query_string = environ.get("QUERY_STRING", "").encode("latin-1")
     try:
         response = _dispatch(environ, method, path, query_string)
     except Exception:
         _LOGGER.exception("Exception on %s [%s]", path, method)
         response = _Response(500, _HTML, _INTERNAL_ERROR_PAGE)
-    _apply_http_optimizations(response, environ, method)
-    headers = response.headers
-    body = response.body
-    if response.status == 304:
-        headers = [
-            item
-            for item in headers
-            if item[0].lower() not in _NOT_MODIFIED_DROPPED_HEADERS
-        ]
-        body = b""
-    else:
-        if response.get("Content-Length") is None:
-            headers.append(("Content-Length", str(len(body))))
-        if raw_method == "HEAD":
-            body = b""
-    start_response(_STATUS_LINES[response.status], headers)
-    return [body] if body else []
+    apply_http_optimizations(response, environ, method, gzip_enabled=_GZIP_ENABLED)
+    return send(response, environ, start_response)
 
 
 configure_process_logging()
