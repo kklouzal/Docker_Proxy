@@ -1299,6 +1299,7 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 except Exception as exc:
                     unverified = ScanUnverifiedError(str(exc))
                     unverified.__cause__ = exc
+                last_scan_send = time.monotonic()
             if unverified is not None and not server.fail_open:
                 # Fail-closed and unverifiable from the start: drain without
                 # retaining or forwarding anything, then answer with the
