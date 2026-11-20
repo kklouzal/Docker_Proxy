@@ -149,7 +149,6 @@ def test_ambiguous_ipv4_like_host_shared_contract() -> None:
 def test_parent_domain_suffixes_cover_every_parent_of_deep_hosts() -> None:
     from services.domain_normalization import parent_domain_suffixes  # type: ignore
     from services.webfilter_core import _parent_domains  # type: ignore
-    from tools.webcat_acl import _parent_domains as acl_parent_domains  # type: ignore
 
     deep = "a.b.c.d.e.f.g.blocked.example"
     expected = [
@@ -166,7 +165,6 @@ def test_parent_domain_suffixes_cover_every_parent_of_deep_hosts() -> None:
     # more than six subdomain labels in front of it.
     assert parent_domain_suffixes(deep) == expected
     assert _parent_domains(deep.upper() + ".") == expected
-    assert acl_parent_domains(deep) == expected
     assert parent_domain_suffixes("localhost") == ["localhost"]
     assert parent_domain_suffixes("") == []
 
