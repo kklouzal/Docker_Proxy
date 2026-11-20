@@ -71,7 +71,11 @@ def security_env_bool(name: str, *, default: bool) -> bool:
 
 def fsync_parent_dir(path: str | os.PathLike[str]) -> None:
     """Best-effort fsync of the directory containing path."""
-    directory = Path(path).parent or Path()
+    fsync_dir(Path(path).parent or Path())
+
+
+def fsync_dir(directory: str | os.PathLike[str]) -> None:
+    """Fsync a directory's own entries; only unsupported-fsync errnos are ignored."""
     flags = os.O_RDONLY
     if hasattr(os, "O_DIRECTORY"):
         flags |= os.O_DIRECTORY
