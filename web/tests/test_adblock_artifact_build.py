@@ -2703,6 +2703,58 @@ def test_prune_revisions_strips_referenced_mysql_archives(
     )
 
 
+@pytest.mark.mysql
+def test_create_revision_stages_archive_in_bounded_mysql_statements(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _store_module, artifacts_module = _import_artifact_modules(tmp_path)
+    db_module = sys.modules[artifacts_module.staged_blob_parameter.__module__]
+    revision_store = artifacts_module.AdblockArtifactStore()
+    revision_store.init_db()
+    # Several uneven chunks exercise ordering and the final partial chunk.
+    monkeypatch.setattr(db_module, "STAGED_BLOB_CHUNK_BYTES", 1000)
+    archive_blob = bytes(range(256)) * 15 + b"\x00'\\\"\x1a tail"
+    statements: list[str] = []
+    original_execute = db_module.CompatConnection.execute
+
+    def recording_execute(self, sql, params=None):
+        statements.append(" ".join(sql.split()))
+        assert all(
+            len(value) <= 1000 for value in params or () if isinstance(value, bytes)
+        )
+        return original_execute(self, sql, params)
+
+    monkeypatch.setattr(db_module.CompatConnection, "execute", recording_execute)
+
+    revision = revision_store.create_revision(
+        artifact_sha256="c" * 64,
+        archive_blob=archive_blob,
+        report_json="{}",
+        settings_version=1,
+        enabled_lists=["easylist"],
+        created_by="pytest",
+    )
+
+    appends = [sql for sql in statements if "CONCAT(@docker_proxy_staged_blob" in sql]
+    assert len(appends) == 4
+    assert "SET @docker_proxy_staged_blob = NULL" in statements
+    assert revision.archive_blob == archive_blob
+    assert revision_store.get_active_artifact().archive_blob == archive_blob
+    # Unchanged deterministic artifacts are reused without restaging.
+    statements.clear()
+    reused = revision_store.create_revision(
+        artifact_sha256="c" * 64,
+        archive_blob=archive_blob,
+        report_json="{}",
+        settings_version=1,
+        enabled_lists=["easylist"],
+        created_by="pytest",
+    )
+    assert reused.revision_id == revision.revision_id
+    assert not any("@docker_proxy_staged_blob" in sql for sql in statements)
+
+
 def test_prune_revisions_commits_each_bounded_batch(monkeypatch) -> None:
     artifacts_module = _import_adblock_artifacts_module()
     revision_store = artifacts_module.AdblockArtifactStore()
@@ -2815,6 +2867,8 @@ def test_create_revision_retries_transient_mysql_lock_wait(
                 )
             if text.startswith("INSERT"):
                 return FakeResult()
+            if text.startswith("SELECT LENGTH(@docker_proxy_staged_blob)"):
+                return FakeResult({"staged_length": len(b"archive")})
             if text.startswith("SELECT * FROM adblock_artifact_revisions"):
                 return FakeResult(
                     {

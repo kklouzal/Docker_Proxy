@@ -306,6 +306,71 @@ DATABASE_ERRORS: tuple[type[BaseException], ...] = (pymysql.MySQLError,)  # type
 INTEGRITY_ERRORS: tuple[type[BaseException], ...] = (pymysql.IntegrityError,)  # type: ignore[attr-defined]
 OPERATIONAL_ERRORS: tuple[type[BaseException], ...] = (pymysql.OperationalError,)  # type: ignore[attr-defined]
 
+# 4 MiB keeps each append statement near 0.2 s server-side for a ~59 MB
+# adblock archive on MySQL 8.4 (measured), well under long_query_time=1 and
+# far below max_allowed_packet even after PyMySQL literal escaping.
+STAGED_BLOB_CHUNK_BYTES = 4 * 1024 * 1024
+_STAGED_BLOB_VARIABLE = "@docker_proxy_staged_blob"
+
+
+@contextlib.contextmanager
+def staged_blob_parameter(
+    conn: Any,
+    payload: bytes,
+    *,
+    chunk_bytes: int | None = None,
+) -> Iterator[str]:
+    """Stage a large binary value server-side; yield the SQL expression for it.
+
+    PyMySQL interpolates parameters client-side, so a multi-MB blob otherwise
+    becomes one literal that the server lexes inside a single statement (a
+    59 MB archive took ~1.5 s and wrote a ~60 MB slow-log entry).  Appending
+    bounded chunks to a session user variable keeps every statement short; the
+    caller's single INSERT then references the variable, so InnoDB still
+    writes the row (and its redo) exactly once and the row is never stored
+    with a partial value.  The staged length is verified before use because
+    CONCAT yields NULL past max_allowed_packet.  The variable is cleared
+    afterwards so pooled sessions do not retain the payload.
+
+    Yields:
+        The session variable expression to use in place of a ``%s`` parameter.
+
+    """
+    data = bytes(payload or b"")
+    step = max(1, int(STAGED_BLOB_CHUNK_BYTES if chunk_bytes is None else chunk_bytes))
+    variable = _STAGED_BLOB_VARIABLE
+    completed = False
+    conn.execute(f"SET {variable} = %s", (b"",))
+    try:
+        for offset in range(0, len(data), step):
+            conn.execute(
+                f"SET {variable} = CONCAT({variable}, %s)",
+                (data[offset : offset + step],),
+            )
+        row = conn.execute(f"SELECT LENGTH({variable}) AS staged_length").fetchone()
+        staged_length = None if row is None else row["staged_length"]
+        if staged_length is None or int(staged_length) != len(data):
+            msg = (
+                f"Staged blob length {staged_length!r} does not match the "
+                f"{len(data)}-byte payload (max_allowed_packet too small?)."
+            )
+            raise pymysql.err.DataError(msg)  # type: ignore[attr-defined]
+        yield variable
+        completed = True
+    finally:
+        if completed:
+            conn.execute(f"SET {variable} = NULL")
+        else:
+            # Preserve the primary failure; a failed reset leaves only session
+            # memory behind, which the next staging overwrites.
+            try:
+                conn.execute(f"SET {variable} = NULL")
+            except Exception:
+                logger.warning(
+                    "Could not clear the staged blob session variable after a failure.",
+                    exc_info=True,
+                )
+
 
 @dataclass
 class _PoolState:

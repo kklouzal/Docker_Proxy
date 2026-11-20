@@ -1526,3 +1526,85 @@ def test_mysql_database_creation_ready_cache_is_scoped_per_database(
 
     assert sum("CREATE DATABASE IF NOT EXISTS `proxy_a`" in sql for sql in created) == 1
     assert sum("CREATE DATABASE IF NOT EXISTS `proxy_b`" in sql for sql in created) == 1
+
+
+class _StagedBlobConn:
+    """Emulates the MySQL session variable used for staged blob parameters."""
+
+    def __init__(self) -> None:
+        self.statements: list[tuple[str, tuple[object, ...]]] = []
+        self.staged: bytes | None = None
+
+    def execute(self, sql: str, params=()):
+        params = tuple(params or ())
+        self.statements.append((sql, params))
+        result_rows: list[dict[str, object]] = []
+        if "CONCAT(" in sql:
+            assert self.staged is not None
+            self.staged += params[0]
+        elif sql.endswith("= NULL"):
+            self.staged = None
+        elif sql.startswith("SET "):
+            self.staged = params[0]
+        elif sql.startswith("SELECT LENGTH("):
+            length = None if self.staged is None else len(self.staged)
+            result_rows = [{"staged_length": length}]
+
+        class _Result:
+            def fetchone(self):
+                return result_rows[0] if result_rows else None
+
+        return _Result()
+
+
+def test_staged_blob_parameter_appends_bounded_chunks_and_clears_session() -> None:
+    from services import db  # type: ignore
+
+    conn = _StagedBlobConn()
+    payload = b"abcdefghij"
+
+    with db.staged_blob_parameter(conn, payload, chunk_bytes=4) as expression:
+        assert expression == "@docker_proxy_staged_blob"
+        assert conn.staged == payload
+
+    appended = [params[0] for sql, params in conn.statements if "CONCAT(" in sql]
+    assert appended == [b"abcd", b"efgh", b"ij"]
+    assert conn.staged is None
+
+
+def test_staged_blob_parameter_rejects_truncated_staging_and_clears_session() -> None:
+    from services import db  # type: ignore
+
+    used = False
+
+    class _NullLengthConn(_StagedBlobConn):
+        # CONCAT returns NULL once the value would exceed max_allowed_packet.
+        def execute(self, sql: str, params=()):
+            if sql.startswith("SELECT LENGTH("):
+                self.staged = None
+            return super().execute(sql, params)
+
+    conn = _NullLengthConn()
+    with (
+        pytest.raises(db.pymysql.err.DataError, match="does not match"),
+        db.staged_blob_parameter(conn, b"payload", chunk_bytes=3),
+    ):
+        used = True
+
+    assert used is False
+    assert conn.staged is None
+    assert conn.statements[-1][0].endswith("= NULL")
+
+
+def test_staged_blob_parameter_clears_session_when_caller_statement_fails() -> None:
+    from services import db  # type: ignore
+
+    conn = _StagedBlobConn()
+    with (
+        pytest.raises(RuntimeError, match="insert failed"),
+        db.staged_blob_parameter(conn, b"payload"),
+    ):
+        msg = "insert failed"
+        raise RuntimeError(msg)
+
+    assert conn.staged is None

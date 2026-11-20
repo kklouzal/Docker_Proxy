@@ -28,6 +28,7 @@ from services.application_ledgers import (
 from services.db import (
     DATABASE_ERRORS,
     connect,
+    staged_blob_parameter,
 )
 from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
@@ -580,26 +581,26 @@ class AdblockArtifactStore:
                         conn.execute(
                             "UPDATE adblock_artifact_revisions SET is_active=0 WHERE is_active=1",
                         )
-                    cur = conn.execute(
-                        """
-                        INSERT INTO adblock_artifact_revisions(
-                            artifact_sha256, archive_blob, report_json, settings_version,
-                            source_kind, enabled_lists_json, created_by, created_ts, is_active
+                    with staged_blob_parameter(conn, archive_blob) as archive_sql:
+                        cur = conn.execute(
+                            f"""
+                            INSERT INTO adblock_artifact_revisions(
+                                artifact_sha256, archive_blob, report_json, settings_version,
+                                source_kind, enabled_lists_json, created_by, created_ts, is_active
+                            )
+                            VALUES(%s,{archive_sql},%s,%s,%s,%s,%s,%s,%s)
+                            """,
+                            (
+                                (artifact_sha256 or "")[:64],
+                                report_json or "{}",
+                                int(settings_version),
+                                (source_kind or "compile")[:64],
+                                enabled_lists_json,
+                                (created_by or "")[:255],
+                                now,
+                                1 if activate else 0,
+                            ),
                         )
-                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        """,
-                        (
-                            (artifact_sha256 or "")[:64],
-                            bytes(archive_blob or b""),
-                            report_json or "{}",
-                            int(settings_version),
-                            (source_kind or "compile")[:64],
-                            enabled_lists_json,
-                            (created_by or "")[:255],
-                            now,
-                            1 if activate else 0,
-                        ),
-                    )
                     return conn.execute(
                         "SELECT * FROM adblock_artifact_revisions WHERE id=%s LIMIT 1",
                         (int(cur.lastrowid or 0),),

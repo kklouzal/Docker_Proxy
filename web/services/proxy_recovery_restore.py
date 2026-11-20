@@ -9,7 +9,7 @@ from typing import Any, Final, Literal
 
 from services import adblock_artifacts, proxy_recovery
 from services.certificate_digest import certificate_bundle_sha256
-from services.db import connect
+from services.db import connect, staged_blob_parameter
 from services.pac_profiles_store import _normalize_proxy_host_port
 from services.proxy_recovery_db import recovery_export_query_plans
 from services.proxy_write_guard import (
@@ -1416,22 +1416,22 @@ def _insert_adblock_artifact_revision(
         settings_version,
         enabled_lists_json,
     ) in rows:
-        conn.execute(
-            """
-            INSERT INTO adblock_artifact_revisions(
-                artifact_sha256, archive_blob, report_json, settings_version, source_kind,
-                enabled_lists_json, created_by, created_ts, is_active
-            ) VALUES(%s,%s,%s,%s,'recovery',%s,'proxy-recovery',%s,1)
-            """,
-            (
-                artifact_sha256,
-                archive_blob,
-                report_json,
-                settings_version,
-                enabled_lists_json,
-                now_ts,
-            ),
-        )
+        with staged_blob_parameter(conn, archive_blob) as archive_sql:
+            conn.execute(
+                f"""
+                INSERT INTO adblock_artifact_revisions(
+                    artifact_sha256, archive_blob, report_json, settings_version, source_kind,
+                    enabled_lists_json, created_by, created_ts, is_active
+                ) VALUES(%s,{archive_sql},%s,%s,'recovery',%s,'proxy-recovery',%s,1)
+                """,
+                (
+                    artifact_sha256,
+                    report_json,
+                    settings_version,
+                    enabled_lists_json,
+                    now_ts,
+                ),
+            )
 
 
 def _insert_certificate_bundle_revision(

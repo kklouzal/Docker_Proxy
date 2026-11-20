@@ -81,6 +81,8 @@ class _StrictRestoreConn:
         self.commits = 0
         self.rollbacks = 0
         self._next_id = 100
+        self.staged_blob: bytes | None = None
+        self.inserted_archives: list[bytes | None] = []
 
     def execute(self, sql: str, params=()):
         text = _sql(sql)
@@ -89,6 +91,23 @@ class _StrictRestoreConn:
         if self.fail_on_sql and self.fail_on_sql in text:
             msg = f"simulated failure for {self.fail_on_sql}"
             raise RuntimeError(msg)
+        if text.startswith("SET @docker_proxy_staged_blob = CONCAT("):
+            assert self.staged_blob is not None
+            self.staged_blob += params[0]
+            return _Result()
+        if text == "SET @docker_proxy_staged_blob = NULL":
+            self.staged_blob = None
+            return _Result()
+        if text.startswith("SET @docker_proxy_staged_blob = "):
+            self.staged_blob = params[0]
+            return _Result()
+        if text.startswith("SELECT LENGTH(@docker_proxy_staged_blob)"):
+            staged = None if self.staged_blob is None else len(self.staged_blob)
+            return _Result([{"staged_length": staged}])
+        if text.startswith("INSERT INTO adblock_artifact_revisions"):
+            assert "@docker_proxy_staged_blob" in text
+            self.inserted_archives.append(self.staged_blob)
+            return _Result()
         if text.startswith("CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones"):
             return _Result()
         if text.startswith("SELECT control_plane_id FROM control_plane_identity"):
@@ -784,7 +803,8 @@ def test_successful_full_restore_order_remaps_pac_preserves_bytes_and_marks_adop
         params and params[0] == 101 and params[1] == "direct.example"
         for _sql_text, params in conn.ops
     )
-    assert any(expected_archive_blob in params for _sql_text, params in conn.ops)
+    assert conn.inserted_archives == [expected_archive_blob]
+    assert conn.staged_blob is None
     assert not any("UPDATE control_plane_identity" in sql for sql in sqls)
     assert sqls[-1].startswith("DO RELEASE_LOCK")
 
@@ -1160,7 +1180,6 @@ def test_adblock_artifact_revision_restore_recomputes_declared_digest_before_wri
         and params
         == (
             artifact_sha,
-            archive_blob,
             '{"rules": 42}',
             2,
             '["easylist"]',
@@ -1168,6 +1187,7 @@ def test_adblock_artifact_revision_restore_recomputes_declared_digest_before_wri
         )
         for sql, params in conn.ops
     )
+    assert conn.inserted_archives == [archive_blob]
 
 
 @pytest.mark.parametrize("reload_artifact_module", [False, True])
