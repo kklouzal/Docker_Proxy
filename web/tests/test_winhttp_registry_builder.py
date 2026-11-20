@@ -49,9 +49,9 @@ def test_default_static_output_maps_http_and_https_destinations() -> None:
     )
 
     assert result.proxy_string == "http=192.168.5.45:3128;https=192.168.5.45:3128"
-    assert result.decoded is not None
-    assert result.decoded.proxy_string == result.proxy_string
-    assert result.decoded.bypass_string == "<local>"
+    decoded = decode_basic_winhttp_settings_hex(result.normalized_hex)
+    assert decoded.proxy_string == result.proxy_string
+    assert decoded.bypass_string == "<local>"
     assert '"AutoDetect": false' in result.advproxy_json
 
 
@@ -156,8 +156,8 @@ def test_generated_proxy_outputs_bracket_ipv6_literals(proxy_host: str) -> None:
 
     expected = "http=[2001:db8::10]:3128;https=[2001:db8::10]:3128"
     assert result.proxy_string == expected
-    assert result.decoded is not None
-    assert result.decoded.proxy_string == expected
+    decoded = decode_basic_winhttp_settings_hex(result.normalized_hex)
+    assert decoded.proxy_string == expected
     assert json.loads(result.advproxy_json)["Proxy"] == expected
     assert f'proxy-server="{expected}"' in result.legacy_set_proxy_command
 
@@ -315,8 +315,8 @@ def test_contract_output_uses_validated_bypass_list_in_generated_outputs() -> No
 
     expected = "localhost;*.example.com;192.168.*;<local>"
     assert result.bypass_string == expected
-    assert result.decoded is not None
-    assert result.decoded.bypass_string == expected
+    decoded = decode_basic_winhttp_settings_hex(result.normalized_hex)
+    assert decoded.bypass_string == expected
     assert f'bypass-list="{expected}"' in result.legacy_set_proxy_command
     assert json.loads(result.advproxy_json)["ProxyBypass"] == expected
 
@@ -640,8 +640,8 @@ def test_contract_output_treats_explicit_false_strings_as_false(
     assert parsed["AutoDetect"] is False
     assert result.static_registry_available is True
     assert result.bypass_string == ""
-    assert result.decoded is not None
-    assert result.decoded.bypass_string == ""
+    decoded = decode_basic_winhttp_settings_hex(result.normalized_hex)
+    assert decoded.bypass_string == ""
 
 
 @pytest.mark.parametrize("true_value", ["1", "true", "on"])
@@ -940,8 +940,8 @@ def test_custom_proxy_map_allows_bracketed_ipv6_targets() -> None:
 
     expected = "http=[2001:db8::10]:3128;https=[2001:db8::10]:3128"
     assert result.proxy_string == expected
-    assert result.decoded is not None
-    assert result.decoded.proxy_string == expected
+    decoded = decode_basic_winhttp_settings_hex(result.normalized_hex)
+    assert decoded.proxy_string == expected
 
 
 @pytest.mark.parametrize(
