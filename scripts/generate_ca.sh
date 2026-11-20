@@ -64,7 +64,10 @@ if ca_pair_is_valid; then
 else
     rm -f "$CA_KEY.tmp" "$CA_CERT.tmp"
     openssl genrsa -out "$CA_KEY.tmp" 2048
-    openssl req -x509 -new -nodes -key "$CA_KEY.tmp" -sha256 -days "$DAYS_VALID" -out "$CA_CERT.tmp" -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=Squid Proxy CA"
+    # RFC 5280 requires keyUsage on CA certificates; strict verifiers (for
+    # example Python 3.13+ default contexts) reject bumped leaves otherwise.
+    openssl req -x509 -new -nodes -key "$CA_KEY.tmp" -sha256 -days "$DAYS_VALID" -out "$CA_CERT.tmp" -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=Squid Proxy CA" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign"
     mv -f "$CA_KEY.tmp" "$CA_KEY"
     mv -f "$CA_CERT.tmp" "$CA_CERT"
     echo "Self-signed CA certificate generated: $CA_CERT"

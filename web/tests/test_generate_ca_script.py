@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from cryptography import x509
 
 from .subprocess_test_utils import run_test_process
 
@@ -188,3 +189,31 @@ def test_generate_ca_installs_squid_readable_permissions_when_account_exists(
     assert "CA files available" in result.stdout
     assert (ca_dir / "ca.key").stat().st_mode & 0o777 == 0o640
     assert (ca_dir / "ca.crt").stat().st_mode & 0o777 == 0o644
+
+
+def _assert_strict_ca_key_usage(cert_pem: bytes) -> None:
+    cert = x509.load_pem_x509_certificate(cert_pem)
+    basic_constraints = cert.extensions.get_extension_for_class(x509.BasicConstraints)
+    assert basic_constraints.critical
+    assert basic_constraints.value.ca
+    key_usage = cert.extensions.get_extension_for_class(x509.KeyUsage)
+    assert key_usage.critical
+    assert key_usage.value.key_cert_sign
+    assert key_usage.value.crl_sign
+    assert not key_usage.value.digital_signature
+
+
+def test_generate_ca_script_emits_rfc5280_ca_key_usage(tmp_path) -> None:
+    ca_dir = tmp_path / "certs"
+    result = _run_ca_script(ca_dir, _install_command_shims(tmp_path / "bin"))
+
+    assert result.returncode == 0, result.stderr
+    _assert_strict_ca_key_usage((ca_dir / "ca.crt").read_bytes())
+
+
+def test_admin_generated_ca_bundle_emits_rfc5280_ca_key_usage() -> None:
+    from services.cert_manager import generate_self_signed_ca_bundle
+
+    bundle = generate_self_signed_ca_bundle(days_valid=30)
+
+    _assert_strict_ca_key_usage(bundle.cert_pem.encode("utf-8"))

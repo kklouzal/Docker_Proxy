@@ -498,6 +498,11 @@ def generate_self_signed_ca_bundle(
                 cert_path,
                 "-subj",
                 subject,
+                # RFC 5280 requires keyUsage on CA certificates; strict
+                # verifiers (e.g. Python 3.13+ default contexts) reject
+                # bumped leaves issued by a CA without it.
+                "-addext",
+                "keyUsage=critical,keyCertSign,cRLSign",
             ],
             timeout=60,
         )
