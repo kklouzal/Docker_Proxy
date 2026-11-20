@@ -12,6 +12,7 @@ import re
 import threading
 import time
 from typing import Any
+from urllib.parse import unquote
 
 from services.bounded_delete import BoundedDeleteResult, delete_older_than_in_chunks
 from services.db import (
@@ -170,6 +171,16 @@ def _is_internal_diagnostic_row(row: dict[str, Any]) -> bool:
     return False
 
 
+# Column order consumed by _normalize_request_row.
+_REQUEST_SELECT_COLUMNS = (
+    "ts, duration_ms, client_ip, method, url, domain, result_code, http_status, "
+    "bytes, master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, "
+    "tls_server_cipher, tls_client_version, tls_client_cipher, host, user_agent, "
+    "referer, exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, "
+    "file_security_policy, response_content_type, response_server, "
+    "response_cf_mitigated, response_alt_svc"
+)
+
 _REQUEST_DIMENSIONS: dict[str, str] = {
     "client_ip": "client_ip",
     "user_agent": "user_agent",
@@ -234,6 +245,25 @@ def _split_tsv(line: str) -> list[str]:
     return [item.strip() for item in row]
 
 
+def _split_squid_fields(line: str) -> list[str]:
+    """Split a Squid log row, mapping Squid's ``-`` absent marker to ``""``.
+
+    Storing the marker would surface ``-`` as a real user agent, bump mode,
+    SNI or transaction id (absent transaction ids would then correlate with
+    each other).
+    """
+    return ["" if value == "-" else value for value in _split_tsv(line)]
+
+
+def _header_text(value: str, *, max_len: int) -> str:
+    """Decode a Squid ``%>h``/``%<h`` header field.
+
+    Squid URL-escapes logged header values by default (``%20``, ``%22``, and
+    ``%25`` for a literal percent), so decoding restores the sent value.
+    """
+    return _safe_text(unquote(value, errors="replace"), max_len=max_len)
+
+
 def _parse_status(result_code: str) -> int:
     raw = _safe_text(result_code, max_len=96)
     if "/" not in raw:
@@ -243,7 +273,10 @@ def _parse_status(result_code: str) -> int:
 
 
 def _event_key(*parts: object) -> str:
-    normalized = "|".join(str(part or "") for part in parts)
+    # Empty text parts hash as Squid's "-" marker, which the parser maps to ""
+    # since the keys were introduced, so replayed lines keep deduplicating
+    # against rows stored before that normalization.
+    normalized = "|".join("-" if part == "" else str(part or "") for part in parts)
     return hashlib.sha1(normalized.encode("utf-8", errors="replace")).hexdigest()
 
 
@@ -344,7 +377,7 @@ def _request_tls_summary(row: dict[str, Any]) -> str:
     if client_version:
         cipher_text = f"/{client_cipher}" if client_cipher else ""
         parts.append(f"client={client_version}{cipher_text}")
-    return " Â· ".join(parts)
+    return " · ".join(parts)
 
 
 def _normalize_request_row(row: Any) -> dict[str, Any]:
@@ -1037,7 +1070,7 @@ class DiagnosticStore:
         )
 
     def _parse_request_log_line(self, line: str) -> dict[str, Any] | None:
-        row = _split_tsv(line)
+        row = _split_squid_fields(line)
         if len(row) < 18:
             return None
 
@@ -1056,17 +1089,19 @@ class DiagnosticStore:
         tls_server_cipher = _safe_text(row[12], max_len=128)
         tls_client_version = _safe_text(row[13], max_len=64)
         tls_client_cipher = _safe_text(row[14], max_len=128)
-        host = _safe_text(row[15], max_len=255)
-        user_agent = _safe_text(row[16], max_len=512)
-        referer = _safe_text(row[17], max_len=512)
+        host = _header_text(row[15], max_len=255)
+        user_agent = _header_text(row[16], max_len=512)
+        referer = _header_text(row[17], max_len=512)
         policy_fields = _policy_fields_from_row(row, 18)
         file_security_policy = _policy_text(row[22] if len(row) > 22 else "")
-        response_content_type = _safe_text(
+        response_content_type = _header_text(
             row[23] if len(row) > 23 else "", max_len=255
         )
-        response_server = _safe_text(row[24] if len(row) > 24 else "", max_len=255)
-        response_cf_mitigated = _safe_text(row[25] if len(row) > 25 else "", max_len=64)
-        response_alt_svc = _safe_text(row[26] if len(row) > 26 else "", max_len=512)
+        response_server = _header_text(row[24] if len(row) > 24 else "", max_len=255)
+        response_cf_mitigated = _header_text(
+            row[25] if len(row) > 25 else "", max_len=64
+        )
+        response_alt_svc = _header_text(row[26] if len(row) > 26 else "", max_len=512)
         domain = _extract_domain(url, host=host, sni=sni)
         http_status = _parse_status(result_code)
 
@@ -1151,7 +1186,7 @@ class DiagnosticStore:
         )
 
     def _parse_icap_log_line(self, line: str) -> dict[str, Any] | None:
-        row = _split_tsv(line)
+        row = _split_squid_fields(line)
         if len(row) < 11:
             return None
 
@@ -1187,8 +1222,8 @@ class DiagnosticStore:
         icap_time_ms = _safe_int(row[time_index], 0)
         adapt_summary = _safe_text(row[6 + fields_offset], max_len=1024)
         adapt_details = _safe_text(row[7 + fields_offset])
-        host = _safe_text(row[8 + fields_offset], max_len=255)
-        user_agent = _safe_text(row[9 + fields_offset], max_len=512)
+        host = _header_text(row[8 + fields_offset], max_len=255)
+        user_agent = _header_text(row[9 + fields_offset], max_len=512)
         sni = _safe_text(row[10 + fields_offset], max_len=255)
         policy_fields = _policy_fields_from_row(row, 11 + fields_offset)
         extended_start = 15 + fields_offset
@@ -1239,9 +1274,8 @@ class DiagnosticStore:
         if icap_bytes_received:
             icap_metadata_parts.append(f"bytes_received={icap_bytes_received}")
         if icap_metadata_parts:
-            base_details = "" if adapt_details == "-" else adapt_details
             adapt_details = " ".join(
-                part for part in (base_details, ";".join(icap_metadata_parts)) if part
+                part for part in (adapt_details, ";".join(icap_metadata_parts)) if part
             )
 
         domain = _extract_domain(url, host=host, sni=sni)
@@ -1392,82 +1426,37 @@ class DiagnosticStore:
             batch.rows,
         )
 
-    def _ingest_request_line_with_conn(self, conn, line: str) -> bool:
-        params = self._build_request_insert_params(line)
-        if params is None:
-            return False
-        self._flush_request_rows(conn, [params])
-        return True
-
-    def _ingest_icap_line_with_conn(self, conn, line: str) -> bool:
-        params = self._build_icap_insert_params(line)
-        if params is None:
-            return False
-        self._flush_icap_rows(conn, [params])
-        return True
-
-    def list_recent_requests(
+    def batch_find_requests_by_master_xactions(
         self,
-        *,
-        since: int | None = None,
-        search: str = "",
-        client_ip: str = "",
-        domain: str = "",
-        master_xaction: str = "",
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        where = ["proxy_id = %s"]
-        params: list[Any] = [get_proxy_id()]
-        if since is not None:
-            where.append("ts >= %s")
-            params.append(int(since))
-        if client_ip:
-            where.append("client_ip = %s")
-            params.append(client_ip.strip())
-        if domain:
-            where.append("domain = %s")
-            params.append(_normalize_hostish(domain))
-        if master_xaction:
-            where.append("master_xaction = %s")
-            params.append(master_xaction.strip())
-        if search:
-            like = f"%{_escape_like(search.strip().lower())}%"
-            where.append(
-                "("
-                "LOWER(domain) LIKE %s ESCAPE '\\\\' OR LOWER(url) LIKE %s ESCAPE '\\\\' OR LOWER(host) LIKE %s ESCAPE '\\\\' OR LOWER(sni) LIKE %s ESCAPE '\\\\' OR LOWER(master_xaction) LIKE %s ESCAPE '\\\\' OR LOWER(client_ip) LIKE %s ESCAPE '\\\\' OR LOWER(user_agent) LIKE %s ESCAPE '\\\\'"
-                ")",
-            )
-            params.extend([like] * 7)
-        where_sql = "WHERE " + " AND ".join(where)
-        lim = max(1, min(200, int(limit)))
-
+        master_xactions: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Return the newest request row per master transaction, in one query."""
+        txs = list(dict.fromkeys(tx.strip() for tx in master_xactions if tx.strip()))
+        if not txs:
+            return {}
+        placeholders = ", ".join(["%s"] * len(txs))
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT
-                    ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
-                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
-                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
-                    response_cf_mitigated, response_alt_svc
-                FROM diagnostic_requests
-                {where_sql}
-                ORDER BY ts DESC, id DESC
-                LIMIT %s
+                SELECT {_REQUEST_SELECT_COLUMNS}
+                FROM (
+                    SELECT
+                        {_REQUEST_SELECT_COLUMNS},
+                        ROW_NUMBER() OVER (
+                            PARTITION BY master_xaction ORDER BY ts DESC, id DESC
+                        ) AS tx_rank
+                    FROM diagnostic_requests
+                    WHERE proxy_id = %s AND master_xaction IN ({placeholders})
+                ) ranked
+                WHERE tx_rank = 1
                 """,
-                (*params, lim),
+                (get_proxy_id(), *txs),
             ).fetchall()
-        return [_normalize_request_row(row) for row in rows]
-
-    def find_request_by_master_xaction(
-        self,
-        master_xaction: str,
-    ) -> dict[str, Any] | None:
-        tx = (master_xaction or "").strip()
-        if not tx:
-            return None
-        rows = self.list_recent_requests(master_xaction=tx, limit=1)
-        return rows[0] if rows else None
+        found: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            normalized = _normalize_request_row(row)
+            found[normalized["master_xaction"]] = normalized
+        return found
 
     def list_recent_icap(
         self,
@@ -1586,131 +1575,6 @@ class DiagnosticStore:
             bucket.append(normalized)
         return grouped
 
-    def list_recent_transactions(
-        self,
-        *,
-        since: int | None = None,
-        search: str = "",
-        client_ip: str = "",
-        domain: str = "",
-        master_xaction: str = "",
-        service: str = "",
-        limit: int = 50,
-        icap_limit_per_transaction: int = 5,
-    ) -> list[dict[str, Any]]:
-        rows = self.list_recent_requests(
-            since=since,
-            search=search,
-            client_ip=client_ip,
-            domain=domain,
-            master_xaction=master_xaction,
-            limit=limit,
-        )
-        icap_map = self._batch_list_icap_by_master_xactions(
-            [str(row.get("master_xaction") or "") for row in rows],
-            service=service,
-            limit_per_transaction=icap_limit_per_transaction,
-        )
-
-        transactions: list[dict[str, Any]] = []
-        for row in rows:
-            related_icap = icap_map.get(
-                str(row.get("master_xaction") or "").strip(),
-                [],
-            )
-            if (service or "").strip() and not related_icap:
-                continue
-            enriched = dict(row)
-            enriched["related_icap"] = related_icap
-            enriched["service_families"] = sorted(
-                {
-                    str(event.get("service_family") or "")
-                    for event in related_icap
-                    if event.get("service_family")
-                },
-            )
-            enriched["icap_event_count"] = len(related_icap)
-            transactions.append(enriched)
-        return transactions
-
-    def list_request_candidates_for_domain_near_ts(
-        self,
-        *,
-        domain: str,
-        around_ts: int,
-        window_seconds: int = 300,
-        limit: int = 5,
-        service: str = "",
-        icap_limit_per_transaction: int = 5,
-    ) -> list[dict[str, Any]]:
-        normalized_domain = _normalize_hostish(domain)
-        if not normalized_domain:
-            return []
-
-        center = int(around_ts or _now())
-        window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
-        lim = max(1, min(20, int(limit)))
-        branch_lim = min(200, max(lim * 4, lim))
-        self.init_db()
-
-        select_sql = """
-                SELECT
-                    ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
-                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
-                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
-                    response_cf_mitigated, response_alt_svc, id
-                FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_domain_ts_id)
-                WHERE proxy_id = %s
-                  AND domain = %s
-                  AND {window_predicate}
-                ORDER BY {order_by}
-                LIMIT %s
-                """
-        proxy_id = get_proxy_id()
-        with self._connect() as conn:
-            before_rows = conn.execute(
-                select_sql.format(
-                    window_predicate="ts BETWEEN %s AND %s",
-                    order_by="ts DESC, id DESC",
-                ),
-                (proxy_id, normalized_domain, center - window_i, center, branch_lim),
-            ).fetchall()
-            after_rows = conn.execute(
-                select_sql.format(
-                    window_predicate="ts > %s AND ts <= %s",
-                    order_by="ts ASC, id ASC",
-                ),
-                (proxy_id, normalized_domain, center, center + window_i, branch_lim),
-            ).fetchall()
-
-        normalized_rows = [
-            _normalize_request_row(row)
-            for row in _nearest_rows(
-                list(before_rows) + list(after_rows),
-                center=center,
-                limit=lim,
-                id_index=29,
-            )
-        ]
-        icap_map = self._batch_list_icap_by_master_xactions(
-            [str(row.get("master_xaction") or "") for row in normalized_rows],
-            service=service,
-            limit_per_transaction=icap_limit_per_transaction,
-        )
-
-        out: list[dict[str, Any]] = []
-        for row in normalized_rows:
-            enriched = dict(row)
-            enriched["related_icap"] = icap_map.get(
-                str(row.get("master_xaction") or "").strip(),
-                [],
-            )
-            enriched["time_delta_seconds"] = abs(int(row.get("ts") or 0) - center)
-            enriched["correlation_kind"] = "domain_time"
-            out.append(enriched)
-        return out
-
     def list_request_candidates_for_policy_event(
         self,
         *,
@@ -1755,11 +1619,7 @@ class DiagnosticStore:
         base_where_sql = " AND ".join(base_where)
         select_sql = f"""
                 SELECT
-                    ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
-                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
-                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
-                    response_cf_mitigated, response_alt_svc, id
+                    {_REQUEST_SELECT_COLUMNS}, id
                 FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_ts)
                 WHERE {base_where_sql}
                   AND {{window_predicate}}
@@ -1808,77 +1668,6 @@ class DiagnosticStore:
             enriched["time_delta_seconds"] = abs(int(row.get("ts") or 0) - center)
             enriched["correlation_kind"] = "domain_time"
             out.append(enriched)
-        return out
-
-    def list_icap_candidates_for_domain_near_ts(
-        self,
-        *,
-        domain: str,
-        around_ts: int,
-        window_seconds: int = 300,
-        service: str = "",
-        limit: int = 5,
-    ) -> list[dict[str, Any]]:
-        normalized_domain = _normalize_hostish(domain)
-        if not normalized_domain:
-            return []
-
-        center = int(around_ts or _now())
-        window_i = max(30, min(24 * 3600, int(window_seconds or 300)))
-        lim = max(1, min(20, int(limit)))
-        branch_lim = min(200, max(lim * 4, lim))
-        normalized_service = (service or "").strip().lower()
-        self.init_db()
-
-        base_where = ["proxy_id = %s", "domain = %s"]
-        base_params: list[Any] = [get_proxy_id(), normalized_domain]
-        if normalized_service:
-            base_where.append("service_family = %s")
-            base_params.append(normalized_service)
-        base_where_sql = " AND ".join(base_where)
-        select_sql = f"""
-                SELECT
-                    ts, master_xaction, client_ip, method, url, domain, icap_time_ms,
-                    adapt_summary, adapt_details, host, user_agent, sni,
-                    exclusion_rule, ssl_exception, webfilter_allow, cache_bypass, service_family,
-                    icap_service, icap_outcome, icap_status, icap_response_time_ms,
-                    icap_io_time_ms, icap_bytes_sent, icap_bytes_received, id
-                FROM diagnostic_icap_events FORCE INDEX (idx_diagnostic_icap_proxy_domain_service_ts_id)
-                WHERE {base_where_sql}
-                  AND {{window_predicate}}
-                ORDER BY {{order_by}}
-                LIMIT %s
-                """
-
-        with self._connect() as conn:
-            before_rows = conn.execute(
-                select_sql.format(
-                    window_predicate="ts BETWEEN %s AND %s",
-                    order_by="ts DESC, id DESC",
-                ),
-                (*base_params, center - window_i, center, branch_lim),
-            ).fetchall()
-            after_rows = conn.execute(
-                select_sql.format(
-                    window_predicate="ts > %s AND ts <= %s",
-                    order_by="ts ASC, id ASC",
-                ),
-                (*base_params, center, center + window_i, branch_lim),
-            ).fetchall()
-
-        out: list[dict[str, Any]] = []
-        for row in _nearest_rows(
-            list(before_rows) + list(after_rows),
-            center=center,
-            limit=lim,
-            id_index=24,
-        ):
-            normalized = _normalize_icap_row(row)
-            normalized["time_delta_seconds"] = abs(
-                int(normalized.get("ts") or 0) - center,
-            )
-            normalized["correlation_kind"] = "domain_time"
-            out.append(normalized)
         return out
 
     def activity_summary(self, *, since: int | None = None) -> dict[str, int]:
@@ -2083,11 +1872,7 @@ class DiagnosticStore:
             rows = conn.execute(
                 f"""
                 SELECT
-                    ts, duration_ms, client_ip, method, url, domain, result_code, http_status, bytes,
-                    master_xaction, hierarchy_status, bump_mode, sni, tls_server_version, tls_server_cipher,
-                    tls_client_version, tls_client_cipher, host, user_agent, referer, exclusion_rule,
-                    ssl_exception, webfilter_allow, cache_bypass, file_security_policy, response_content_type, response_server,
-                    response_cf_mitigated, response_alt_svc
+                    {_REQUEST_SELECT_COLUMNS}
                 FROM diagnostic_requests
                 {where_sql}
                 ORDER BY duration_ms DESC, ts DESC, id DESC
@@ -2166,17 +1951,6 @@ class DiagnosticStore:
                 (*params, lim),
             ).fetchall()
         return [_normalize_icap_row(row) for row in rows]
-
-    def list_icap_by_master_xaction(
-        self,
-        master_xaction: str,
-        *,
-        limit: int = 20,
-    ) -> list[dict[str, Any]]:
-        tx = (master_xaction or "").strip()
-        if not tx:
-            return []
-        return self.list_recent_icap(master_xaction=tx, limit=limit)
 
 
 _store: DiagnosticStore | None = None

@@ -88,14 +88,7 @@ def _correlate_icap_events_with_requests(
     icap_limit: int = 0,
 ) -> list[dict[str, Any]]:
     txs = [str(row.get("master_xaction") or "").strip() for row in rows]
-    if hasattr(diagnostic_store, "batch_find_requests_by_master_xactions"):
-        request_rows = diagnostic_store.batch_find_requests_by_master_xactions(txs)
-    else:
-        request_rows = {
-            tx: diagnostic_store.find_request_by_master_xaction(tx)
-            for tx in dict.fromkeys(txs)
-            if tx
-        }
+    request_rows = diagnostic_store.batch_find_requests_by_master_xactions(txs)
     for row in rows:
         row["correlated_request"] = None
         tx = str(row.get("master_xaction") or "").strip()
