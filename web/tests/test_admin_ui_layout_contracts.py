@@ -512,3 +512,17 @@ def test_page_behaviour_is_bound_by_the_spa_shell_not_inline_scripts() -> None:
     assert 'id="log-viewer-form"' in logs
     assert "data-no-spa" in logs
     assert 'data-default-max-bytes="{{ max_log_tail_bytes }}"' in logs
+
+
+def test_irreversible_admin_actions_ask_for_confirmation() -> None:
+    expected = {
+        "fleet.html": 'data-confirm-message="Clear proxy caches on {{ proxy.display_name }}?',
+        "administration.html": 'data-confirm-message="Remove Admin UI user {{ u.username }}?"',
+        "pac.html": 'data-confirm-message="Delete PAC profile {{ p.name }} and its rules?"',
+        "certs.html": 'data-confirm-message="Regenerate the Admin UI HTTPS certificate',
+    }
+    for name, marker in expected.items():
+        assert marker in (TEMPLATES / name).read_text(encoding="utf-8"), name
+    administration = (TEMPLATES / "administration.html").read_text(encoding="utf-8")
+    assert 'value="disable_saml_provider" data-confirm-message=' in administration
+    assert 'value="disable_auth_provider" data-confirm-message=' in administration

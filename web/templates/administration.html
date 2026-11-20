@@ -156,7 +156,7 @@
                                     {% if u.username|lower == current_user|lower %}
                                         <span class="small">Current user</span>
                                     {% else %}
-                                        <button class="btn" type="submit" aria-label="Remove user {{ u.username }}">Remove</button>
+                                        <button class="btn" type="submit" aria-label="Remove user {{ u.username }}" data-confirm-message="Remove Admin UI user {{ u.username }}?">Remove</button>
                                     {% endif %}
                                 </form>
                             </div>
@@ -278,7 +278,7 @@
             <input type="hidden" name="provider" value="saml">
             <button class="btn" type="submit" name="action" value="refresh_saml_metadata">Refresh metadata</button>
             {% if profile.enabled %}
-            <button class="btn" type="submit" name="action" value="disable_saml_provider">Disable provider</button>
+            <button class="btn" type="submit" name="action" value="disable_saml_provider" data-confirm-message="Disable SAML sign-in? Users who sign in only through SAML will be unable to log in.">Disable provider</button>
             {% endif %}
         </form>
         <div class="surface-note small">
@@ -463,7 +463,7 @@
             <button class="btn" type="submit" form="{{ current_tab }}-auth-provider-form" name="action" value="scan_auth_provider">Scan directory</button>
             <button class="btn" type="submit" form="{{ current_tab }}-auth-provider-form" name="action" value="test_auth_provider">Test connection</button>
             {% if profile.enabled %}
-            <button class="btn" type="submit" name="action" value="disable_auth_provider">Disable provider</button>
+            <button class="btn" type="submit" name="action" value="disable_auth_provider" data-confirm-message="Disable this directory sign-in provider? Directory users will be unable to log in.">Disable provider</button>
             {% endif %}
         </form>
         <div class="surface-note small">

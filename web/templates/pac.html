@@ -264,7 +264,7 @@
               {{ csrf_field() }}
               <input type="hidden" name="action" value="delete" />
               <input type="hidden" name="profile_id" value="{{ p.id }}" />
-              <button class="btn" type="submit">Delete</button>
+              <button class="btn" type="submit" data-confirm-message="Delete PAC profile {{ p.name }} and its rules?">Delete</button>
               <span class="small">Deletes this PAC profile and its rules.</span>
             </form>
           </div>
