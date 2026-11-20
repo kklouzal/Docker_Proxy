@@ -20,10 +20,12 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from services.adblock_artifacts import (
+    AdblockArtifactArchiveError,
     get_adblock_artifacts,
     materialize_archive_to_directory,
     read_materialized_artifact_sha,
 )
+from services.adblock_lookup import lookup_schema_error
 from services.adblock_store import get_adblock_store
 from services.certificate_bundles import get_certificate_bundles
 from services.certificate_core import (
@@ -1434,6 +1436,7 @@ class ProxyRuntime:
         try:
             conn = sqlite3.connect(str(lookup_path))
             try:
+                schema_error = lookup_schema_error(conn)
                 row = conn.execute(
                     "SELECT value FROM metadata WHERE key='count_rules'",
                 ).fetchone()
@@ -1445,6 +1448,8 @@ class ProxyRuntime:
                 default="adblock request lookup database could not be inspected.",
             )
             return False, detail
+        if schema_error:
+            return False, schema_error
 
         expected_rules = self._active_adblock_lookup_rule_count()
         if expected_rules is None:
@@ -3501,7 +3506,8 @@ class ProxyRuntime:
                         "Materialized adblock artifact failed validation: "
                         f"{post_apply_detail}"
                     )
-                    raise RuntimeError(msg)
+                    # A ValueError subclass: the apply record shows the reason.
+                    raise AdblockArtifactArchiveError(msg)
             except Exception as exc:
                 detail = public_error_message(
                     exc,

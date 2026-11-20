@@ -884,6 +884,10 @@ def main(argv: list[str] | None = None) -> int:
         cache_max=cache_max,
         rule_cache_max=args.rule_cache_max,
     )
+    # Refuse to serve an unsupported lookup database: the runtime retries the
+    # helper and keeps its last applied artifact instead of matching against
+    # tables this reader does not know.
+    engine.lookup.check_schema()
     block_recorder = None
     try:
         from services.adblock_store import get_adblock_store  # type: ignore

@@ -14,11 +14,13 @@ materialization enforce the same limits. Raising these values is an explicit
 capacity decision for a verified authoritative artifact; it does not disable
 member/path, streamed-byte, truncation, or digest validation.
 
-Newly built adblock archives losslessly deduplicate a small allowlisted set of
-byte-identical JSONL compatibility/diagnostic views. A versioned manifest maps
-each omitted view to its authoritative member; proxy materialization restores
-the historical filenames as hard links (or copies when hard links are
-unavailable). Older manifest-free archives remain readable. Recovery keeps the
+Adblock archives carry only the runtime members (`settings.json`, `report.json`,
+`request_lookup.sqlite`). Archives built before 2026-11 also contain the
+compiler's diagnostic JSONL views and an alias manifest; they still validate
+and hash over every member, but materialization writes only the runtime
+members. Proxies reject a request lookup whose `schema_version` is not the one
+they read (the apply is rolled back), and the Admin UI rebuilds an active
+artifact whose report names another lookup schema. Recovery keeps the
 same signed JSON/base64 envelope for backward compatibility; because the
 embedded adblock archive is already compressed, adding another recovery-layer
 compression format would add migration and bounded-decompression complexity

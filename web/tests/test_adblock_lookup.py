@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
-from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -17,94 +15,8 @@ def _build_lookup_db(tmp_path: Path, lines: list[str]) -> Path:
 
     out = tmp_path / "compiled"
     out.mkdir()
-
-    class Writers:
-        pass
-
-    paths = {
-        "network_jsonl": out / "network_rules.jsonl",
-        "cosmetic_jsonl": out / "cosmetic_rules.jsonl",
-        "network_no_options_jsonl": out / "network_no_options.jsonl",
-        "network_with_options_jsonl": out / "network_with_options.jsonl",
-        "network_option_domain_jsonl": out / "network_option_domain.jsonl",
-        "network_option_third_party_jsonl": out / "network_option_third_party.jsonl",
-        "network_option_type_jsonl": out / "network_option_type.jsonl",
-        "network_option_misc_jsonl": out / "network_option_misc.jsonl",
-        "network_kind_domain_only_jsonl": out / "network_kind_domain_only.jsonl",
-        "network_kind_host_anchored_jsonl": out / "network_kind_host_anchored.jsonl",
-        "network_kind_left_anchored_jsonl": out / "network_kind_left_anchored.jsonl",
-        "network_kind_substring_jsonl": out / "network_kind_substring.jsonl",
-        "network_kind_wildcard_jsonl": out / "network_kind_wildcard.jsonl",
-        "network_kind_regex_jsonl": out / "network_kind_regex.jsonl",
-        "network_block_jsonl": out / "network_block.jsonl",
-        "network_exception_jsonl": out / "network_exception.jsonl",
-        "request_index_domain_jsonl": out / "request_index_domain.jsonl",
-        "request_index_host_jsonl": out / "request_index_host.jsonl",
-        "request_index_regex_jsonl": out / "request_index_regex.jsonl",
-        "request_index_generic_jsonl": out / "request_index_generic.jsonl",
-        "cosmetic_elemhide_jsonl": out / "cosmetic_elemhide.jsonl",
-        "cosmetic_elemhide_exception_jsonl": out / "cosmetic_elemhide_exception.jsonl",
-        "cosmetic_extended_css_jsonl": out / "cosmetic_extended_css.jsonl",
-        "cosmetic_extended_css_exception_jsonl": out
-        / "cosmetic_extended_css_exception.jsonl",
-        "cosmetic_html_filter_jsonl": out / "cosmetic_html_filter.jsonl",
-        "cosmetic_html_filter_exception_jsonl": out
-        / "cosmetic_html_filter_exception.jsonl",
-        "cosmetic_scriptlet_jsonl": out / "cosmetic_scriptlet.jsonl",
-        "cosmetic_scriptlet_exception_jsonl": out
-        / "cosmetic_scriptlet_exception.jsonl",
-        "cosmetic_scoped_jsonl": out / "cosmetic_scoped.jsonl",
-        "cosmetic_global_jsonl": out / "cosmetic_global.jsonl",
-        "cosmetic_exception_jsonl": out / "cosmetic_exception.jsonl",
-        "cosmetic_non_exception_jsonl": out / "cosmetic_non_exception.jsonl",
-    }
-    agg = ac._Aggregate(
-        network_rules_total=0,
-        network_rules_by_kind={},
-        network_rules_with_options=0,
-        network_rules_with_domain_opt=0,
-        cosmetic_rules_total=0,
-        cosmetic_rules_by_marker={},
-        option_key_counts={},
-        option_group_counts={},
-    )
-    with ExitStack() as stack:
-        writers = Writers()
-        for name, path in paths.items():
-            setattr(
-                writers,
-                name,
-                stack.enter_context(path.open("w", encoding="utf-8", newline="\n")),
-            )
-        writers.network_type_pos_jsonl = {
-            item: stack.enter_context(
-                (out / f"network_type_{item}.jsonl").open(
-                    "w",
-                    encoding="utf-8",
-                    newline="\n",
-                ),
-            )
-            for item in ac._KNOWN_TYPES
-        }
-        writers.network_type_neg_jsonl = {
-            item: stack.enter_context(
-                (out / f"network_type_not_{item}.jsonl").open(
-                    "w",
-                    encoding="utf-8",
-                    newline="\n",
-                ),
-            )
-            for item in ac._KNOWN_TYPES
-        }
-        ac._compile_and_extract_all(
-            lines=lines,
-            list_key="sample",
-            agg=agg,
-            writers=writers,
-        )
-
     db_path = out / "request_lookup.sqlite"
-    ac._write_request_lookup_index(str(db_path), str(out / "network_rules.jsonl"))
+    ac._write_request_lookup_index(str(db_path), [("sample", lines)], ac._Aggregate())
     return db_path
 
 
@@ -396,24 +308,9 @@ def test_token_prefilters_preserve_host_pattern_and_regex_candidate_superset(
         url: _raws(missing_rows_lookup.candidate_rules(url)) for url in urls
     }
 
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.executescript(
-            """
-            DROP TABLE host_pattern_token_index;
-            DROP TABLE regex_token_index;
-            """,
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    unfiltered_lookup = AdblockLookupIndex(db_path)
-    unfiltered_candidates = {
-        url: _raws(unfiltered_lookup.candidate_rules(url)) for url in urls
-    }
-
-    assert indexed_candidates == missing_rows_candidates == unfiltered_candidates
+    # Without token rows every pattern is a fallback candidate (a full scan),
+    # so the prefiltered result must equal it.
+    assert indexed_candidates == missing_rows_candidates
     assert "||ad*server.example^" in indexed_candidates[urls[0]]
     assert "/tracker*/" in indexed_candidates[urls[1]]
     assert "/tracker.*/" in indexed_candidates[urls[2]]
@@ -459,209 +356,34 @@ def test_adblock_lookup_rejects_malformed_authority_candidates(
     )
 
 
-def test_lookup_hydrates_payload_from_jsonl_for_legacy_sqlite_schema(
-    tmp_path: Path,
+@pytest.mark.parametrize("version", [None, "1", "5"])
+def test_lookup_rejects_unsupported_schema_version(
+    tmp_path: Path, version: str | None
 ) -> None:
-    db_path = tmp_path / "request_lookup.sqlite"
+    from services.adblock_lookup import (
+        LOOKUP_SCHEMA_VERSION,
+        AdblockLookupIndex,
+        AdblockLookupSchemaError,
+    )
+
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+    AdblockLookupIndex(db_path).check_schema()
+    assert version != LOOKUP_SCHEMA_VERSION
+
     conn = sqlite3.connect(str(db_path))
     try:
-        conn.executescript(
-            """
-            CREATE TABLE rules(
-                rule_id TEXT PRIMARY KEY,
-                list_key TEXT NOT NULL,
-                action TEXT NOT NULL,
-                exception INTEGER NOT NULL,
-                pattern_kind TEXT NOT NULL,
-                raw TEXT NOT NULL,
-                pattern TEXT NOT NULL,
-                options_json TEXT NOT NULL,
-                resource_types_json TEXT NOT NULL,
-                excluded_resource_types_json TEXT NOT NULL,
-                third_party TEXT NOT NULL,
-                behavior_options_json TEXT NOT NULL,
-                value_options_json TEXT NOT NULL
-            ) WITHOUT ROWID;
-            CREATE TABLE domain_index(
-                host TEXT NOT NULL,
-                action TEXT NOT NULL,
-                rule_id TEXT NOT NULL,
-                PRIMARY KEY(host, action, rule_id)
-            ) WITHOUT ROWID;
-            CREATE TABLE host_index(host TEXT, action TEXT, rule_id TEXT);
-            CREATE TABLE host_pattern_index(host_pattern TEXT, action TEXT, rule_id TEXT);
-            CREATE TABLE regex_index(action TEXT, rule_id TEXT, regex TEXT);
-            CREATE TABLE generic_index(literal_key TEXT, pattern_kind TEXT, action TEXT, rule_id TEXT);
-            """
-        )
-        assert not conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='resource_type_index'"
-        ).fetchone()
-        conn.execute(
-            "INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                "r1",
-                "sample",
-                "block",
-                0,
-                "domain_only",
-                "||ads.example^",
-                "||ads.example^",
-                "{}",
-                "[]",
-                "[]",
-                "any",
-                "[]",
-                "{}",
-            ),
-        )
-        conn.execute(
-            "INSERT INTO domain_index VALUES(?,?,?)", ("ads.example", "block", "r1")
-        )
-        for rule_id, pattern_kind, raw in (
-            ("r2", "host_anchored", "||cdn.example/assets^"),
-            ("r3", "host_anchored_pattern", "||google.*/pagead^"),
-        ):
+        if version is None:
+            conn.execute("DELETE FROM metadata WHERE key='schema_version'")
+        else:
             conn.execute(
-                "INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    rule_id,
-                    "sample",
-                    "block",
-                    0,
-                    pattern_kind,
-                    raw,
-                    raw,
-                    "{}",
-                    "[]",
-                    "[]",
-                    "any",
-                    "[]",
-                    "{}",
-                ),
+                "UPDATE metadata SET value=? WHERE key='schema_version'", (version,)
             )
-        conn.execute(
-            "INSERT INTO host_index VALUES(?,?,?)",
-            ("cdn.example", "block", "r2"),
-        )
-        conn.execute(
-            "INSERT INTO host_pattern_index VALUES(?,?,?)",
-            ("google.*", "block", "r3"),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    (tmp_path / "network_rules.jsonl").write_text(
-        json.dumps(
-            {
-                "id": "r1",
-                "list_key": "sample",
-                "action": "block",
-                "exception": False,
-                "raw": "||ads.example^",
-                "pattern": "||ads.example^",
-                "pattern_kind": "domain_only",
-                "host": "ads.example",
-            },
-        )
-        + "\n"
-        + json.dumps(
-            {
-                "id": "r2",
-                "list_key": "sample",
-                "action": "block",
-                "exception": False,
-                "raw": "||cdn.example/assets^",
-                "pattern": "||cdn.example/assets^",
-                "pattern_kind": "host_anchored",
-                "host": "cdn.example",
-            },
-        )
-        + "\n"
-        + json.dumps(
-            {
-                "id": "r3",
-                "list_key": "sample",
-                "action": "block",
-                "exception": False,
-                "raw": "||google.*/pagead^",
-                "pattern": "||google.*/pagead^",
-                "pattern_kind": "host_anchored_pattern",
-                "host_pattern": "google.*",
-            },
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    from services.adblock_lookup import AdblockLookupIndex
-
-    lookup = AdblockLookupIndex(db_path)
-
-    rules = lookup.candidate_rules(
-        "https://sub.ads.example/banner.js",
-        resource_type="script",
-    )
-
-    assert rules[0]["host"] == "ads.example"
-    assert rules[0]["raw"] == "||ads.example^"
-    assert "||cdn.example/assets^" in _raws(
-        lookup.candidate_rules("https://sub.cdn.example/assets/banner.js"),
-    )
-    assert "||google.*/pagead^" in _raws(
-        lookup.candidate_rules("https://www.google.com/pagead/banner.js"),
-    )
-
-
-def test_lookup_uses_jsonl_payload_when_embedded_payload_is_incomplete(
-    tmp_path: Path,
-) -> None:
-    db_path = _build_lookup_db(tmp_path, ["||ads.example^$script"])
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("UPDATE rules SET payload_json='{}'")
         conn.commit()
     finally:
         conn.close()
 
-    from services.adblock_lookup import AdblockLookupIndex
-
-    lookup = AdblockLookupIndex(db_path)
-    [rule] = lookup.candidate_rules(
-        "https://ads.example/banner.js",
-        resource_type="script",
-    )
-
-    assert rule["host"] == "ads.example"
-    assert rule["raw"] == "||ads.example^$script"
-
-
-def test_lookup_ignores_malformed_resource_type_prefilter_schema(
-    tmp_path: Path,
-) -> None:
-    db_path = _build_lookup_db(tmp_path, ["resource-token$script"])
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.executescript(
-            """
-            DROP TABLE resource_type_index;
-            CREATE TABLE resource_type_index(rule_id TEXT);
-            """,
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    from services.adblock_lookup import AdblockLookupIndex
-
-    lookup = AdblockLookupIndex(db_path)
-
-    assert "resource-token$script" in _raws(
-        lookup.candidate_rules(
-            "https://static.example/resource-token.png",
-            resource_type="image",
-        ),
-    )
+    with pytest.raises(AdblockLookupSchemaError, match="rebuild the adblock artifact"):
+        AdblockLookupIndex(db_path).check_schema()
 
 
 def test_adblock_lookup_chunks_large_sqlite_in_queries(

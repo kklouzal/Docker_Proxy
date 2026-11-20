@@ -401,9 +401,8 @@ def test_materialize_archive_to_directory_replaces_target_and_writes_marker(
     assert (target / "settings.json").read_text(encoding="utf-8") == (
         '{"enabled": true}'
     )
-    assert (target / "nested" / "rules.jsonl").read_text(encoding="utf-8") == (
-        '{"rule": "||ads.example^"}\n'
-    )
+    # Only runtime members are materialized.
+    assert not (target / "nested").exists()
     assert artifacts_module.read_materialized_artifact_sha(target) == "abc123"
 
 
@@ -563,95 +562,36 @@ def test_create_revision_from_directory_archives_only_runtime_members(
     )
 
 
-def test_materialize_restores_aliases_from_legacy_archives(tmp_path: Path) -> None:
+def test_materialize_skips_diagnostic_members_of_legacy_archives(
+    tmp_path: Path,
+) -> None:
     artifacts_module = _import_adblock_artifacts_module()
     duplicate = '{"id":"same-rule"}\n'
     archive_blob = _zip_blob(
         {
             "artifact-aliases.json": _LEGACY_ALIAS_MANIFEST,
+            "network_rules.jsonl": duplicate,
             "request_index_domain.jsonl": duplicate,
-            "request_index_host.jsonl": duplicate,
-            "request_index_regex.jsonl": duplicate,
-            "cosmetic_exception.jsonl": duplicate,
+            "report.json": "{}",
             "request_lookup.sqlite": "sqlite-substrate",
         }
     )
+    # The legacy archive still validates and hashes over every member.
+    artifacts_module.adblock_archive_artifact_sha256(archive_blob)
 
     target = tmp_path / "compiled"
     artifacts_module.materialize_archive_to_directory(
         target,
         archive_blob=archive_blob,
+        artifact_sha256="legacy",
     )
 
-    aliases = json.loads(_LEGACY_ALIAS_MANIFEST)["aliases"]
-    for alias, source in aliases.items():
-        assert (target / alias).read_bytes() == (target / source).read_bytes()
+    assert sorted(path.name for path in target.iterdir()) == [
+        ".artifact-sha256",
+        "report.json",
+        "request_lookup.sqlite",
+    ]
     assert (target / "request_lookup.sqlite").read_bytes() == b"sqlite-substrate"
-
-
-def test_materialize_archive_rejects_unsafe_alias_manifest_without_replace(
-    tmp_path: Path,
-) -> None:
-    artifacts_module = _import_adblock_artifacts_module()
-    target = tmp_path / "compiled"
-    target.mkdir()
-    (target / "settings.json").write_text("existing", encoding="utf-8")
-    manifest = json.dumps(
-        {
-            "aliases": {"network_kind_domain_only.jsonl": "../escape.jsonl"},
-            "format_version": 1,
-        }
-    )
-
-    with pytest.raises(ValueError, match="unsafe archive member"):
-        artifacts_module.materialize_archive_to_directory(
-            target,
-            archive_blob=_zip_blob(
-                {
-                    "artifact-aliases.json": manifest,
-                    "request_index_domain.jsonl": "data",
-                }
-            ),
-        )
-
-    assert (target / "settings.json").read_text(encoding="utf-8") == "existing"
-    assert not (tmp_path / "escape.jsonl").exists()
-
-
-def test_alias_expansion_counts_toward_extract_budget_without_replace(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    artifacts_module = _import_adblock_artifacts_module()
-    target = tmp_path / "compiled"
-    target.mkdir()
-    (target / "settings.json").write_text("existing", encoding="utf-8")
-    manifest = json.dumps(
-        {
-            "aliases": {
-                "network_kind_domain_only.jsonl": "request_index_domain.jsonl",
-            },
-            "format_version": 1,
-        }
-    )
-    archive_blob = _zip_blob(
-        {"artifact-aliases.json": manifest, "request_index_domain.jsonl": "12345678"}
-    )
-    archived_size = sum(
-        info.file_size for info in zipfile.ZipFile(io.BytesIO(archive_blob)).infolist()
-    )
-    monkeypatch.setenv(
-        "ADBLOCK_ARTIFACT_EXTRACT_MAX_BYTES",
-        str(archived_size + len("12345678") - 1),
-    )
-
-    with pytest.raises(ValueError, match="extract limit"):
-        artifacts_module.materialize_archive_to_directory(
-            target,
-            archive_blob=archive_blob,
-        )
-
-    assert (target / "settings.json").read_text(encoding="utf-8") == "existing"
 
 
 def test_materialize_archive_to_directory_rejects_unsafe_member_without_replace(
@@ -1197,12 +1137,13 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
     )
     monkeypatch.setattr(
         artifact_store,
-        "get_active_artifact_metadata",
+        "get_active_artifact_summary",
         lambda: SimpleNamespace(
             revision_id=4,
             settings_version=7,
             enabled_lists=["easylist"],
             source_kind="background",
+            report={"lookup_schema_version": artifacts_module.LOOKUP_SCHEMA_VERSION},
         ),
     )
     monkeypatch.setattr(
@@ -1756,12 +1697,13 @@ def _run_background_loop_due_check(
     )
     monkeypatch.setattr(
         artifact_store,
-        "get_active_artifact_metadata",
+        "get_active_artifact_summary",
         lambda: SimpleNamespace(
             revision_id=4,
             settings_version=7,
             enabled_lists=["easylist"],
             source_kind="background",
+            report={"lookup_schema_version": artifacts_module.LOOKUP_SCHEMA_VERSION},
         ),
     )
 
@@ -1855,12 +1797,13 @@ def test_background_loop_skips_rebuild_while_missing_list_download_backs_off(
     )
     monkeypatch.setattr(
         artifact_store,
-        "get_active_artifact_metadata",
+        "get_active_artifact_summary",
         lambda: SimpleNamespace(
             revision_id=4,
             settings_version=7,
             enabled_lists=["easylist"],
             source_kind="background",
+            report={"lookup_schema_version": artifacts_module.LOOKUP_SCHEMA_VERSION},
         ),
     )
     monkeypatch.setattr(
@@ -3024,3 +2967,98 @@ def test_active_lists_drift_accepts_builder_poll_metadata(tmp_path: Path) -> Non
         )
         is True
     )
+
+
+@pytest.mark.parametrize(
+    ("report", "expected_builds"),
+    [
+        ({}, 1),  # written before reports named their lookup schema
+        ({"lookup_schema_version": "3"}, 1),
+        ({"lookup_schema_version": "current"}, 0),
+    ],
+)
+def test_background_loop_rebuilds_other_lookup_schema_once_per_revision(
+    tmp_path, monkeypatch, report, expected_builds
+) -> None:
+    from services import adblock_store as store_module  # type: ignore
+
+    artifacts_module = _import_adblock_artifacts_module()
+    if report.get("lookup_schema_version") == "current":
+        report = {"lookup_schema_version": artifacts_module.LOOKUP_SCHEMA_VERSION}
+    lists_dir = tmp_path / "lists"
+    lists_dir.mkdir()
+    (lists_dir / "easylist.txt").write_text("||cached.example^\n", encoding="utf-8")
+    build_calls: list[dict[str, object]] = []
+    real_store = store_module.AdblockStore(lists_dir=str(lists_dir))
+
+    class FakeStore:
+        def init_db(self) -> None:
+            return None
+
+        def list_statuses(self):
+            return [
+                store_module.ListStatus(
+                    key="easylist",
+                    url="https://example.invalid/easylist.txt",
+                    enabled=True,
+                    last_success=9_000,
+                    last_attempt=9_000,
+                    last_error="",
+                    bytes=0,
+                    rules=0,
+                )
+            ]
+
+        def get_refresh_requested(self) -> int:
+            return 0
+
+        def get_settings_version(self) -> int:
+            return 7
+
+        def list_path(self, key: str) -> str:
+            return str(lists_dir / f"{key}.txt")
+
+        def clear_refresh_requested(self) -> None:
+            return None
+
+        should_update = real_store.should_update
+        download_retry_backoff = real_store.download_retry_backoff
+
+    class StopLoopError(Exception):
+        pass
+
+    monkeypatch.setattr(store_module, "get_adblock_store", FakeStore)
+    monkeypatch.setattr(artifacts_module, "_now", lambda: 10_000)
+    artifact_store = artifacts_module.AdblockArtifactStore(
+        compiled_dir=str(tmp_path / "compiled"),
+    )
+    monkeypatch.setattr(
+        artifact_store._stop_event,
+        "wait",
+        lambda _seconds: (_ for _ in ()).throw(StopLoopError()),
+    )
+    monkeypatch.setattr(artifact_store, "init_db", lambda: None)
+    monkeypatch.setattr(
+        artifact_store,
+        "get_active_artifact_summary",
+        lambda: SimpleNamespace(
+            revision_id=4,
+            settings_version=7,
+            enabled_lists=["easylist"],
+            source_kind="background",
+            report=report,
+        ),
+    )
+    # A build that preserves the revision (for example no request rules) must
+    # not be retried on every poll.
+    monkeypatch.setattr(
+        artifact_store,
+        "build_active_artifact",
+        lambda **kwargs: build_calls.append(kwargs) or {"ok": False},
+    )
+
+    for _ in range(2):
+        with pytest.raises(StopLoopError):
+            artifact_store._loop()
+
+    assert len(build_calls) == expected_builds
