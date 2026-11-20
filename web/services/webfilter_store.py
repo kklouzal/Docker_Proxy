@@ -8,7 +8,7 @@ from subprocess import run
 from typing import ClassVar
 
 from services.db import DATABASE_ERRORS
-from services.errors import clean_text, public_error_message, redact_url_for_display
+from services.errors import public_error_message
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.proxy_context import get_proxy_id
 from services.safe_browsing_v5 import (
@@ -33,10 +33,6 @@ from services.webfilter_core import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _sanitize_blocked_log_url(value: object) -> str:
-    return redact_url_for_display(value, max_len=2000)
 
 
 class WebFilterStore(WebFilterStoreBase):
@@ -103,32 +99,6 @@ class WebFilterStore(WebFilterStoreBase):
     @staticmethod
     def _ensure_index(conn, table_name: str, index_name: str, ddl: str) -> None:
         ensure_index(conn, table_name=table_name, index_name=index_name, ddl=ddl)
-
-    def list_blocked_log(self, limit: int = 200) -> list[dict[str, object]]:
-        try:
-            self.init_db()
-        except Exception:
-            return []
-
-        try:
-            row_limit = max(1, min(1000, int(limit or 200)))
-            with self._connect() as conn:
-                rows = conn.execute(
-                    f"SELECT ts, src_ip, url, category FROM {self._table('blocked_log')} WHERE proxy_id=%s ORDER BY ts DESC, id DESC LIMIT %s",
-                    (get_proxy_id(), row_limit),
-                ).fetchall()
-                out: list[dict[str, object]] = [
-                    {
-                        "ts": int(row[0]) if row[0] is not None else 0,
-                        "src_ip": clean_text(str(row[1] or ""), max_len=64),
-                        "url": _sanitize_blocked_log_url(row[2]),
-                        "category": clean_text(str(row[3] or ""), max_len=128),
-                    }
-                    for row in rows
-                ]
-                return out
-        except Exception:
-            return []
 
     def set_settings(
         self,
@@ -270,19 +240,16 @@ class WebFilterStore(WebFilterStoreBase):
         if not _looks_like_host(domain):
             return set()
 
-        try:
-            with self._connect_webcat() as conn:
-                for candidate in _parent_domains(domain):
-                    row = conn.execute(
-                        "SELECT categories FROM webcat_domains WHERE domain=%s",
-                        (candidate,),
-                    ).fetchone()
-                    if row and row[0]:
-                        return {
-                            category for category in str(row[0]).split("|") if category
-                        }
-        except Exception:
-            return set()
+        # Lookup errors propagate: the domain test must report a database
+        # failure, not "allowed / uncategorized".
+        with self._connect_webcat() as conn:
+            for candidate in _parent_domains(domain):
+                row = conn.execute(
+                    "SELECT categories FROM webcat_domains WHERE domain=%s",
+                    (candidate,),
+                ).fetchone()
+                if row and row[0]:
+                    return {category for category in str(row[0]).split("|") if category}
         return set()
 
     def _test_safe_browsing_domain(self, domain: str, settings) -> dict[str, str]:

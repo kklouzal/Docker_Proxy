@@ -1273,52 +1273,6 @@ def test_webcat_helper_closes_blocked_log_writer_at_eof(monkeypatch) -> None:
     assert outputs == ["OK message=category=adult\n"]
 
 
-def test_webfilter_store_list_blocked_log_clamps_orders_and_redacts(
-    monkeypatch,
-) -> None:
-    from services import webfilter_store  # type: ignore
-
-    class Result:
-        def fetchall(self):
-            return [
-                (
-                    123,
-                    "192.0.2.10",
-                    "https://user:secret@example.test/path?access_token=&token#fragment",
-                    "adult",
-                ),
-            ]
-
-    class FakeConn:
-        def __init__(self) -> None:
-            self.calls = []
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-        def execute(self, sql, params=None):
-            self.calls.append((" ".join(str(sql).split()), tuple(params or ())))
-            return Result()
-
-    conn = FakeConn()
-    store = webfilter_store.WebFilterStore()
-    monkeypatch.setattr(store, "init_db", lambda: None)
-    monkeypatch.setattr(store, "_connect", lambda: conn)
-    monkeypatch.setattr(webfilter_store, "get_proxy_id", lambda: "edge-a")
-
-    rows = store.list_blocked_log(limit=999999)
-
-    assert "ORDER BY ts DESC, id DESC LIMIT" in conn.calls[0][0]
-    assert conn.calls[0][1] == ("edge-a", 1000)
-    assert (
-        rows[0]["url"]
-        == "https://example.test/path?access_token=[redacted]&token=[redacted]"
-    )
-
-
 def test_webcat_acl_throttles_only_failed_mysql_opens(monkeypatch) -> None:
     webcat_acl = _webcat_acl_module()
     opened: list[object] = []
