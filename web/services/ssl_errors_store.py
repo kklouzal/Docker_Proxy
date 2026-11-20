@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import pathlib
 import re
 import threading
 import time
@@ -624,16 +623,20 @@ class SslErrorsStore:
                 exc,
             )
 
-    def _read_last_lines(self, max_lines: int) -> list[str]:
+    def _read_last_lines(
+        self, max_lines: int, *, end_offset: int | None = None
+    ) -> list[str]:
         return read_bounded_complete_lines(
             self.cache_log_path,
             max_lines=max_lines,
             max_bytes=max_lines * 260,
+            end_offset=end_offset,
         )
 
-    def seed_from_recent_log(self) -> None:
+    def seed_from_recent_log(self, *, end_offset: int | None = None) -> None:
+        """Ingest recent unseen errors; ``end_offset`` is where tailing resumes."""
         self.init_db()
-        lines = self._read_last_lines(self.seed_max_lines)
+        lines = self._read_last_lines(self.seed_max_lines, end_offset=end_offset)
         if not lines:
             return
         with self._connect() as conn:
@@ -817,12 +820,12 @@ class SslErrorsStore:
             minimum=0.1,
             maximum=5.0,
         )
-        # Capture the tail position before the startup seed so errors logged
-        # while the runtime restarted (seed) or while seeding (tail) are kept.
+        # Seed errors logged while the runtime restarted up to the captured
+        # tail position, then tail from there: each record is counted once.
         follower = LogFollower.at_current_end(self.cache_log_path)
-        if pathlib.Path(self.cache_log_path).exists():
+        if follower.resume_offset is not None:
             try:
-                self.seed_from_recent_log()
+                self.seed_from_recent_log(end_offset=follower.resume_offset)
             except DATABASE_ERRORS as exc:
                 log_database_unavailable(
                     logger,

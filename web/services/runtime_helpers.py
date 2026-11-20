@@ -106,17 +106,24 @@ def read_bounded_complete_lines(
     *,
     max_lines: int,
     max_bytes: int,
+    end_offset: int | None = None,
 ) -> list[str]:
-    """Read complete records from a bounded byte window at the end of a file."""
+    """Read complete records from a bounded byte window at the end of a file.
+
+    ``end_offset`` ends the window early (records at or after it are left for
+    a tailer that resumes there).
+    """
     if max_lines <= 0 or max_bytes <= 0:
         return []
     try:
         with Path(path).open("rb") as handle:
             handle.seek(0, os.SEEK_END)
             size = handle.tell()
+            if end_offset is not None:
+                size = max(0, min(size, int(end_offset)))
             start = max(0, size - max_bytes)
             handle.seek(start)
-            chunk = handle.read(max_bytes)
+            chunk = handle.read(size - start)
             if start > 0:
                 handle.seek(start - 1)
                 previous = handle.read(1)

@@ -524,17 +524,20 @@ def test_ssl_errors_tailer_does_not_initialize_db_when_log_missing(
 def test_ssl_errors_tailer_seeds_restart_gap_then_tails_from_capture(
     monkeypatch, tmp_path, ssl_errors_store
 ) -> None:
-    """Errors logged while the runtime restarted, or while seeding, are kept."""
+    """Startup seed and tail partition cache.log: each record counted once."""
     log_path = tmp_path / "cache.log"
-    log_path.write_text("2026/05/20 12:00:00 kid1| before restart\n", encoding="utf-8")
+    before = "2026/05/20 12:00:00 kid1| before restart\n"
+    log_path.write_text(
+        before + "2026/05/20 12:00:01 kid1| being wri", encoding="utf-8"
+    )
     store = ssl_errors_store.SslErrorsStore(cache_log_path=str(log_path))
-    seeded: list[int] = []
+    seeded: list[list[str]] = []
     tailed: list[str] = []
 
-    def seed() -> None:
-        seeded.append(1)
+    def seed(*, end_offset: int | None = None) -> None:
+        seeded.append(store._read_last_lines(10, end_offset=end_offset))
         with log_path.open("a", encoding="utf-8") as handle:
-            handle.write("2026/05/20 12:00:01 kid1| during seed\n")
+            handle.write("tten\n2026/05/20 12:00:02 kid1| during seed\n")
 
     def ingest(_conn, line: str) -> bool:
         tailed.append(line)
@@ -550,8 +553,12 @@ def test_ssl_errors_tailer_seeds_restart_gap_then_tails_from_capture(
     with pytest.raises(StopLoop):
         store._tail_loop()
 
-    assert seeded == [1]
-    assert tailed == ["2026/05/20 12:00:01 kid1| during seed"]
+    assert seeded == [["2026/05/20 12:00:00 kid1| before restart"]]
+    # The record being written at capture is tailed whole, not skipped.
+    assert tailed == [
+        "2026/05/20 12:00:01 kid1| being written",
+        "2026/05/20 12:00:02 kid1| during seed",
+    ]
 
 
 def test_ssl_errors_tailer_ignores_irrelevant_lines_without_database(

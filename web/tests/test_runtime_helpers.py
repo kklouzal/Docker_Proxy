@@ -408,3 +408,16 @@ def test_fsync_parent_dir_propagates_actionable_error_and_ignores_close_error(
 
     with pytest.raises(OSError, match="fsync failed"):
         fsync_parent_dir("value.json")
+
+
+def test_read_bounded_complete_lines_stops_at_end_offset(tmp_path) -> None:
+    from services.runtime_helpers import read_bounded_complete_lines
+
+    path = tmp_path / "cache.log"
+    path.write_bytes(b"one\ntwo\nthree\n")
+    assert read_bounded_complete_lines(
+        path, max_lines=10, max_bytes=100, end_offset=len(b"one\ntwo\n")
+    ) == ["one", "two"]
+    assert read_bounded_complete_lines(
+        path, max_lines=10, max_bytes=100, end_offset=len(b"one\ntw")
+    ) == ["one"]

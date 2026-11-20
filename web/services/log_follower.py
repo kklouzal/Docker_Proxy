@@ -67,22 +67,37 @@ class LogFollower:
     def at_current_end(
         cls, path: str, *, max_line_bytes: int = DEFAULT_MAX_LINE_BYTES
     ) -> LogFollower:
-        """Return a follower that resumes at the path's current end.
+        """Return a follower that resumes at the path's last complete line.
 
-        Capture this before reading a startup seed window so lines appended
-        while seeding are still tailed. A missing path tails from its end once
-        it appears: everything in it was written after this call.
+        Capture this before reading a startup seed window that ends at
+        ``resume_offset``: the seed and the tail then partition the file
+        exactly, and a record still being written when captured is tailed
+        whole. A missing path is read from its start once it appears:
+        everything in it was written after this call.
         """
         try:
-            st = os.stat(path)
+            with pathlib.Path(path).open("rb") as handle:
+                st = os.fstat(handle.fileno())
+                size = int(st.st_size)
+                window = min(size, max_line_bytes)
+                handle.seek(size - window, os.SEEK_SET)
+                newline = handle.read(window).rfind(b"\n")
         except OSError:
             return cls(path, from_start=True, max_line_bytes=max_line_bytes)
+        # No newline within one max-size record: the tail is oversized and is
+        # skipped by the follower's alignment instead.
+        offset = size if newline < 0 else size - window + newline + 1
         return cls(
             path,
             resume_identity=(int(st.st_dev), int(st.st_ino)),
-            resume_offset=int(st.st_size),
+            resume_offset=offset,
             max_line_bytes=max_line_bytes,
         )
+
+    @property
+    def resume_offset(self) -> int | None:
+        """Offset the first open resumes at, if it is still pending."""
+        return self._resume_offset
 
     @property
     def offset(self) -> int:

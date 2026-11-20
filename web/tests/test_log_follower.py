@@ -245,3 +245,14 @@ def test_runner_pauses_reading_at_capacity_until_flush_succeeds(tmp_path) -> Non
 
     assert flushed[0] == ["a", "b"]
     assert buffered == ["c"]
+
+
+def test_at_current_end_resumes_at_last_complete_line(tmp_path) -> None:
+    path = tmp_path / "access.log"
+    path.write_bytes(b"done\nhalf")
+    follower = LogFollower.at_current_end(str(path))
+    assert follower.resume_offset == len(b"done\n")
+    follower.ensure_open()
+    with path.open("ab") as handle:
+        handle.write(b"-written\n")
+    assert _drain(follower) == ["half-written"]
