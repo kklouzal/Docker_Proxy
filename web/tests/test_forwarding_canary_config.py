@@ -24,6 +24,9 @@ from services.forwarding_canary_config import (
         ("/custom\x00path", DEFAULT_FORWARDING_CANARY_PATH),
         ("/custom\x7fpath", DEFAULT_FORWARDING_CANARY_PATH),
         ("/custom\x80path", DEFAULT_FORWARDING_CANARY_PATH),
+        (" /custom-canary", DEFAULT_FORWARDING_CANARY_PATH),
+        ("/custom\tcanary", DEFAULT_FORWARDING_CANARY_PATH),
+        ("http://example.test/proxy", DEFAULT_FORWARDING_CANARY_PATH),
     ],
     ids=[
         "default",
@@ -37,6 +40,9 @@ from services.forwarding_canary_config import (
         "c0-control",
         "del-control",
         "c1-control",
+        "leading-space",
+        "tab",
+        "absolute-url",
     ],
 )
 def test_forwarding_canary_path_contract(value: object, expected: str) -> None:
@@ -51,29 +57,22 @@ def test_forwarding_canary_environment_contract_is_shared(monkeypatch) -> None:
     from services import health_checks, proxy_health
     from services.squid_core import SquidController
 
-    from proxy import forwarding_canary
-
-    assert (
-        forwarding_canary_listener_host()
-        == forwarding_canary._canary_host()
-        == "127.0.0.2"
-    )
-    assert forwarding_canary_port() == forwarding_canary._canary_port() == 18081
-    assert (
-        forwarding_canary_path() == forwarding_canary._canary_path() == "/custom-canary"
-    )
+    assert forwarding_canary_listener_host() == "127.0.0.2"
+    assert forwarding_canary_port() == 18081
+    assert forwarding_canary_path() == "/custom-canary"
     assert health_checks._forwarding_canary_path() == "/custom-canary"
     assert (
         proxy_health._forwarding_canary_target_url()
         == "http://127.0.0.2:18081/custom-canary"
     )
-    assert SquidController._forwarding_canary_path(None) == "/custom-canary"
-    assert SquidController._forwarding_canary_port(None) == 18081
+    canary_block = SquidController._forwarding_canary_access_block(None)
+    assert "acl docker_proxy_forwarding_canary_port port 18081" in canary_block
+    assert "urlpath_regex -i ^/custom\\-canary([?].*)?$" in canary_block
 
 
 @pytest.mark.parametrize(
     "host",
-    ["0.0.0.0", "::1", "127.0.0.1.evil.test"],  # ruff: ignore[hardcoded-bind-all-interfaces] - unsafe inputs must fail safe.
+    ["0.0.0.0", "::1", "127.0.0.1.evil.test", "127.evil.test"],  # ruff: ignore[hardcoded-bind-all-interfaces] - unsafe inputs must fail safe.
 )
 @pytest.mark.parametrize("port", ["0", "65536", "not-a-port"])
 def test_forwarding_canary_listener_and_client_fail_safe(

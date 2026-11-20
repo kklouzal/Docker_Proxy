@@ -164,7 +164,6 @@ _ALL_KNOWN_OPTIONS = (
 )
 
 
-_DOMAIN_ONLY_RE = re.compile(r"^\|\|(?P<host>[a-z0-9.-]+)\^?$", re.IGNORECASE)
 LOOKUP_STRATEGY = (
     "domain suffix candidates -> domain_index; exact and host-suffix "
     "candidates -> host_index; host-pattern/regex token prefilters before "
@@ -675,27 +674,6 @@ def _parse_cosmetic(rule: str) -> dict[str, Any] | None:
             "selector": right,
         }
     return None
-
-
-def _extract_domain_only(pattern: str) -> str | None:
-    # Accept only the simplest, safest class: ||host^ (or ||host)
-    # Reject anything with wildcards/path/query.
-    s = (pattern or "").strip()
-    m = _DOMAIN_ONLY_RE.match(s)
-    if not m:
-        return None
-    host = (m.group("host") or "").strip().lower().rstrip(".")
-    if not host:
-        return None
-    if ".." in host or host.startswith("-") or host.endswith("-"):
-        return None
-    if "." not in host:
-        return None
-    # Require at least one alpha in the TLD-ish part to avoid numeric junk.
-    last = host.rsplit(".", 1)[-1]
-    if not any(c.isalpha() for c in last):
-        return None
-    return host
 
 
 def _compile_and_extract_all(

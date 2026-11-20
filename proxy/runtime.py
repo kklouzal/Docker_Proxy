@@ -28,7 +28,6 @@ from services.adblock_store import get_adblock_store
 from services.certificate_bundles import get_certificate_bundles
 from services.certificate_core import (
     CertManager,
-    certificate_material_paths,
     materialize_certificate_bundle,
     restore_certificate_material_snapshot,
     snapshot_certificate_material,
@@ -1332,9 +1331,6 @@ class ProxyRuntime:
             return ""
         except Exception:
             return ""
-
-    def _certificate_material_paths(self) -> tuple[str, ...]:
-        return certificate_material_paths(self.cert_manager.ca_dir)
 
     def _snapshot_certificate_material(self) -> dict[str, bytes | None]:
         return snapshot_certificate_material(self.cert_manager.ca_dir)

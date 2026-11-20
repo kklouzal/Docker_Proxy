@@ -481,10 +481,6 @@ def _drain_chunked_body(
     return remainder
 
 
-def _valid_chunk_token(value: bytes) -> bool:
-    return bool(value) and all(ch in _CHUNK_TCHARS for ch in value)
-
-
 def _skip_chunk_ows(line: bytes, index: int) -> int:
     while index < len(line) and line[index] in _CHUNK_OWS:
         index += 1

@@ -12,9 +12,6 @@ from services.forwarding_canary_config import (
     forwarding_canary_port,
 )
 
-DEFAULT_CANARY_HOST = "127.0.0.1"
-DEFAULT_CANARY_PORT = 18080
-DEFAULT_CANARY_PATH = "/__docker_proxy_forwarding_canary"
 CANARY_SERVICE = "docker-proxy-forwarding-canary"
 MAX_PROBE_HEADER_VALUE_LEN = 128
 
@@ -25,18 +22,6 @@ def _probe_header_value(probe: str) -> str:
         char if 0x20 <= ord(char) <= 0xFF and ord(char) != 0x7F else "?"
         for char in bounded
     )
-
-
-def _canary_host() -> str:
-    return forwarding_canary_listener_host()
-
-
-def _canary_port() -> int:
-    return forwarding_canary_port()
-
-
-def _canary_path() -> str:
-    return forwarding_canary_path()
 
 
 class ForwardingCanaryHandler(BaseHTTPRequestHandler):
@@ -54,7 +39,7 @@ class ForwardingCanaryHandler(BaseHTTPRequestHandler):
 
     def _handle_canary(self, *, include_body: bool) -> None:
         parsed = urlsplit(self.path)
-        if parsed.path != _canary_path():
+        if parsed.path != forwarding_canary_path():
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         query = parse_qs(parsed.query, keep_blank_values=True)
@@ -84,7 +69,8 @@ class ForwardingCanaryHandler(BaseHTTPRequestHandler):
 
 def main() -> int:
     server = ThreadingHTTPServer(
-        (_canary_host(), _canary_port()), ForwardingCanaryHandler
+        (forwarding_canary_listener_host(), forwarding_canary_port()),
+        ForwardingCanaryHandler,
     )
     server.daemon_threads = True
     try:

@@ -40,47 +40,6 @@ def test_forwarding_canary_listener_serves_only_static_loopback_canary() -> None
         thread.join(timeout=2)
 
 
-def test_forwarding_canary_env_hardening_keeps_listener_loopback_only(
-    monkeypatch,
-) -> None:
-    from proxy import forwarding_canary
-
-    monkeypatch.setenv("FORWARDING_CANARY_HOST", "0.0.0.0")  # ruff: ignore[hardcoded-bind-all-interfaces] - verifies unsafe bind env is coerced.
-    monkeypatch.setenv("FORWARDING_CANARY_PORT", "not-a-port")
-    monkeypatch.setenv("FORWARDING_CANARY_PATH", "http://example.test/proxy")
-
-    assert forwarding_canary._canary_host() == "127.0.0.1"
-    assert forwarding_canary._canary_port() == 18080
-    assert forwarding_canary._canary_path() == "/__docker_proxy_forwarding_canary"
-
-
-@pytest.mark.parametrize(
-    "unsafe_path",
-    [" /custom-canary", "/custom canary", "/custom\tcanary", "/custom\x7fcanary"],
-    ids=["leading-space", "embedded-space", "tab", "delete-control"],
-)
-def test_forwarding_canary_path_rejects_whitespace_and_control_characters(
-    monkeypatch,
-    unsafe_path: str,
-) -> None:
-    from proxy import forwarding_canary
-
-    monkeypatch.setenv("FORWARDING_CANARY_PATH", unsafe_path)
-
-    assert forwarding_canary._canary_path() == "/__docker_proxy_forwarding_canary"
-
-
-def test_forwarding_canary_rejects_dns_names_that_look_like_loopback(
-    monkeypatch,
-) -> None:
-    from proxy import forwarding_canary
-
-    for host in ("127.evil.test", "127.0.0.1.evil.test"):
-        monkeypatch.setenv("FORWARDING_CANARY_HOST", host)
-
-        assert forwarding_canary._canary_host() == "127.0.0.1"
-
-
 def test_forwarding_canary_probe_header_cannot_inject_response_headers() -> None:
     from http.server import ThreadingHTTPServer
 

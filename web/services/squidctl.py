@@ -1182,33 +1182,6 @@ class SquidController(_CoreSquidController):
         with pathlib.Path(path).open(encoding="utf-8") as handle:
             return handle.read()
 
-    def _replace_or_append_line(self, text: str, key: str, new_line: str) -> str:
-        pattern = re.compile(rf"^(\s*{re.escape(key)}\s+).*$", re.MULTILINE)
-        if pattern.search(text):
-            return pattern.sub(new_line, text, count=1)
-        return text.rstrip() + "\n" + new_line + "\n"
-
-    def _replace_cache_dir_line(self, text: str, new_line: str) -> str:
-        pattern = re.compile(r"^\s*cache_dir\s+\w+\s+\S+.*$", re.MULTILINE)
-        if pattern.search(text):
-            return pattern.sub(new_line, text, count=1)
-        return text.rstrip() + "\n" + new_line + "\n"
-
-    def _replace_http_port_option(
-        self,
-        text: str,
-        option_name: str,
-        option_value: str,
-    ) -> str:
-        pattern = re.compile(rf"({re.escape(option_name)}=)(\S+)", re.IGNORECASE)
-        if pattern.search(text):
-            return pattern.sub(
-                lambda match: f"{match.group(1)}{option_value}",
-                text,
-                count=1,
-            )
-        return text
-
     def _coerce_port(self, value: Any, default: int) -> int:
         try:
             parsed = int(str(value or "").strip() or str(default))
@@ -2693,6 +2666,3 @@ class SquidController(_CoreSquidController):
             return b"", b"squid binary not found"
         except Exception as exc:
             return b"", str(exc).encode("utf-8", errors="replace")
-
-    def update_config(self, config_text: str) -> None:
-        self.apply_config_text(config_text)

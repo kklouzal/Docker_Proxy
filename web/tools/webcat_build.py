@@ -38,7 +38,6 @@ from services.domain_normalization import (  # ruff: ignore[module-import-not-at
 )
 from services.domain_normalization import normalize_domain as _norm_domain  # ruff: ignore[module-import-not-at-top-of-file]
 from services.download_safety import (  # ruff: ignore[module-import-not-at-top-of-file]
-    is_internal_host,
     open_download_url,
     validate_download_url,
 )
@@ -211,10 +210,6 @@ def _pairs_from_csv_row(
         c = _norm_category(ct)
         if c:
             yield d, c
-
-
-def _is_internal_host(hostname: str) -> bool:
-    return is_internal_host(hostname)
 
 
 def _validate_download_url(url: str):
@@ -707,13 +702,6 @@ def _init_db(conn) -> None:
             canonical VARCHAR(128) NOT NULL
         )
         """,
-    )
-
-
-def _upsert_meta(conn, k: str, v: str) -> None:
-    conn.execute(
-        "INSERT INTO webcat_meta(k,v) VALUES(%s,%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
-        (k, v),
     )
 
 
