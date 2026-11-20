@@ -57,6 +57,39 @@ def emit_helper_failure(helper: str, event: str, exc: Exception) -> None:
         sys.stderr.flush()
 
 
+def publish_safe_include(helper: str, path: str, content: str) -> None:
+    """Best-effort fail-safe include; a failed write is reported, not raised."""
+    try:
+        write_safe_include(path, content)
+    except Exception as exc:
+        emit_helper_failure(helper, "safe_include_publish_failed", exc)
+
+
+def restore_last_known_good(helper: str, path: str) -> bool:
+    """Serve the last policy this proxy applied when the control plane is unavailable."""
+    try:
+        from services.policy_materializer import (  # type: ignore
+            restore_last_known_good_policy_file,
+        )
+
+        return restore_last_known_good_policy_file(path)
+    except Exception as exc:
+        emit_helper_failure(helper, "last_known_good_restore_failed", exc)
+        return False
+
+
+def remember_last_known_good(helper: str, path: str) -> None:
+    try:
+        from services.policy_materializer import (  # type: ignore
+            remember_last_known_good_policy_files,
+        )
+
+        with Path(path).open(encoding="utf-8") as handle:
+            remember_last_known_good_policy_files(((path, handle.read()),))
+    except Exception as exc:
+        emit_helper_failure(helper, "last_known_good_save_failed", exc)
+
+
 def _fsync_parent_dir(path: Path) -> None:
     """Fsync a parent directory using the runtime contract when available."""
     if _runtime_fsync_parent_dir is not None:
