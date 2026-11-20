@@ -159,12 +159,7 @@ from services.proxy_context import (
 from services.proxy_health import (
     build_remote_clamav_view,
     build_unavailable_runtime_health,
-    check_adblock_icap_health,
-    check_av_icap_health,
-    check_clamd_health,
 )
-from services.proxy_health import send_sample_av_icap as _shared_send_sample_av_icap
-from services.proxy_health import test_eicar as _shared_test_eicar
 from services.proxy_logs import (
     DEFAULT_LOG_TAIL_BYTES,
     parse_proxy_log_max_bytes,
@@ -516,26 +511,6 @@ _OBSERVABILITY_EMPTY_EXPORT_HEADERS = {
 }
 
 
-def _default_check_icap_adblock() -> dict[str, Any]:
-    return check_adblock_icap_health(timeout=0.8, error_formatter=public_error_message)
-
-
-def _default_check_icap_av() -> dict[str, Any]:
-    return check_av_icap_health(timeout=0.8, error_formatter=public_error_message)
-
-
-def _default_check_clamd() -> dict[str, Any]:
-    return check_clamd_health(timeout=0.8, error_formatter=public_error_message)
-
-
-def _default_send_sample_av_icap() -> dict[str, Any]:
-    return _shared_send_sample_av_icap(error_formatter=public_error_message)
-
-
-def _default_test_eicar() -> dict[str, Any]:
-    return _shared_test_eicar(error_formatter=public_error_message)
-
-
 @dataclass(frozen=True)
 class AppRuntimeServices:
     controller: Any
@@ -557,11 +532,6 @@ class AppRuntimeServices:
     get_observability_maintenance_status: Any
     get_observability_retention_settings: Any
     set_observability_retention_settings: Any
-    check_icap_adblock: Any
-    check_icap_av: Any
-    check_clamd: Any
-    send_sample_av_icap: Any
-    test_eicar: Any
     get_policy_request_store: Any = _default_get_policy_request_store
 
 
@@ -586,19 +556,7 @@ _default_app_runtime_services = AppRuntimeServices(
     get_observability_maintenance_status=_default_get_observability_maintenance_status,
     get_observability_retention_settings=_default_get_observability_retention_settings,
     set_observability_retention_settings=_default_set_observability_retention_settings,
-    check_icap_adblock=_default_check_icap_adblock,
-    check_icap_av=_default_check_icap_av,
-    check_clamd=_default_check_clamd,
-    send_sample_av_icap=_default_send_sample_av_icap,
-    test_eicar=_default_test_eicar,
 )
-
-
-# Admin-initiated proxy sync can legitimately take longer than the generic
-# ProxyClient default: config, policy, adblock, cache, and certificate changes
-# may perform controlled Squid/c-icap restarts. Keep the UI request bounded, but
-# do not report a failed apply while the proxy is still safely restarting.
-_ADMIN_PROXY_SYNC_TIMEOUT_SECONDS = 120.0
 
 
 def _app_runtime_services() -> AppRuntimeServices:
@@ -2512,13 +2470,6 @@ def _audit_safe_detail(value: Any, *, limit: int = 500) -> str:
     return " ".join(redact_sensitive_text(value).split())[:limit]
 
 
-def _recipient_count_for_audit(value: object) -> int:
-    text = str(value or "").strip()
-    if not text:
-        return 0
-    return len([token for token in re.split(r"[,; ]+", text) if token.strip()])
-
-
 def _normalize_choice(
     value: str | None,
     allowed: tuple[str, ...] | list[str] | set[str],
@@ -3180,10 +3131,6 @@ def _active_proxy_management_url() -> str:
     if proxy is None:
         return ""
     return str(proxy.management_url or "").strip()
-
-
-def _uses_remote_proxy_runtime() -> bool:
-    return bool(_active_proxy_management_url())
 
 
 _MYSQL_SIGNED_BIGINT_MAX = 9_223_372_036_854_775_807
@@ -4800,10 +4747,6 @@ def _queue_pac_runtime_refresh(
         else ""
     )
     return True, f"PAC runtime refresh queued{op_suffix}."
-
-
-def _best_effort_refresh_pac_runtime() -> None:
-    _queue_pac_runtime_refresh()
 
 
 def _adblock_runtime_refresh_target(*, store: Any | None = None) -> dict[str, str]:
@@ -9192,14 +9135,6 @@ def sslfilter():
     )
 
 
-def _check_icap_adblock() -> dict[str, Any]:
-    return _app_runtime_services().check_icap_adblock()
-
-
-def _check_icap_av() -> dict[str, Any]:
-    return _app_runtime_services().check_icap_av()
-
-
 def _clamav_remote_health_unlocked(proxy_id: str) -> dict[str, Any]:
     timeout_seconds = _proxy_clamav_health_timeout_seconds()
     key = (str(proxy_id or ""), "clamav", float(timeout_seconds))
@@ -9266,18 +9201,6 @@ def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
         key,
         lambda: _clamav_remote_health_unlocked(proxy_id),
     )
-
-
-def _send_sample_av_icap() -> dict[str, Any]:
-    return _app_runtime_services().send_sample_av_icap()
-
-
-def _check_clamd() -> dict[str, Any]:
-    return _app_runtime_services().check_clamd()
-
-
-def _test_eicar() -> dict[str, Any]:
-    return _app_runtime_services().test_eicar()
 
 
 @app.route("/error-pages", methods=["GET"])

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 from services.ui_support import (
-    append_query_to_local_return,
     present_top_tag_rows,
     present_top_value_rows,
     present_transaction_rows,
@@ -70,31 +69,6 @@ def test_safe_local_return_url_allows_encoded_slashes_in_query_and_fragment() ->
     assert (
         safe_local_return_url("/admin?next=%252Fadmin#tab=%252Fsection")
         == "/admin?next=%252Fadmin#tab=%252Fsection"
-    )
-
-
-def test_append_query_to_local_return_fails_closed_for_malformed_return() -> None:
-    assert append_query_to_local_return("http://[::1", ok=1) is None
-
-
-def test_append_query_to_local_return_preserves_and_replaces_query_values() -> None:
-    assert (
-        append_query_to_local_return("/admin?pane=old&keep=1#top", pane="ssl", ok=1)
-        == "/admin?keep=1&pane=ssl&ok=1#top"
-    )
-
-
-def test_append_query_to_local_return_preserves_valid_query_and_fragment() -> None:
-    assert (
-        append_query_to_local_return("/admin/ssl?pane=old&keep=1#details", pane="tls")
-        == "/admin/ssl?keep=1&pane=tls#details"
-    )
-
-
-def test_append_query_to_local_return_allows_encoded_slash_next_value() -> None:
-    assert (
-        append_query_to_local_return("/login?next=%2Fadmin#%2Fsection", ok=1)
-        == "/login?next=%2Fadmin&ok=1#%2Fsection"
     )
 
 

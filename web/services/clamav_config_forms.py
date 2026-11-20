@@ -12,8 +12,6 @@ LEGACY_RISKY_EXTENSIONS_WITH_WEB_ASSETS = (
     "exe dll msi bat cmd com scr ps1 vbs js jar apk"
 )
 AMBIGUOUS_PATH_EXTENSION = "com"
-LOCAL_CLAMD_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
-
 DEFAULTS: dict[str, Any] = {
     "clamav_fail_mode": "open",
     "file_security_preset": "balanced",

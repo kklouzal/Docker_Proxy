@@ -146,7 +146,6 @@ def test_publish_config_saves_revision_but_reports_remote_sync_failure(
     monkeypatch.setattr(
         admin_app, "_validate_config_for_current_mode", lambda _text: (True, "ok")
     )
-    monkeypatch.setattr(admin_app, "_uses_remote_proxy_runtime", lambda: True)
     monkeypatch.setattr(
         admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile
     )
@@ -191,7 +190,6 @@ def test_publish_config_queues_operation_without_local_apply_fallback(
     monkeypatch.setattr(
         admin_app, "_validate_config_for_current_mode", lambda _text: (True, "ok")
     )
-    monkeypatch.setattr(admin_app, "_uses_remote_proxy_runtime", lambda: False)
     monkeypatch.setattr(admin_app.shutil, "which", lambda _name: "squid")
     monkeypatch.setattr(
         admin_app, "request_proxy_reconcile", fake_request_proxy_reconcile

@@ -163,18 +163,3 @@ def coerce_public_port(value: object | None, default: int) -> int:
     if parsed < 1 or parsed > 65535:
         return int(default)
     return parsed
-
-
-def coerce_public_bool(value: object | None, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return bool(default)
-    candidate = str(value).strip().lower()
-    if not candidate:
-        return bool(default)
-    if candidate in {"1", "true", "yes", "on"}:
-        return True
-    if candidate in {"0", "false", "no", "off"}:
-        return False
-    return bool(default)
