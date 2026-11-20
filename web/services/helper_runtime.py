@@ -123,7 +123,7 @@ def _json_safe_event_value(value: object, *, depth: int = 0) -> object:
             sort_keys=True,
             separators=(",", ":"),
         )
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         pass
     else:
         return value

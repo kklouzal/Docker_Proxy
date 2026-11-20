@@ -599,7 +599,7 @@ def test_backup_proxy_rejects_unroutable_ip_literals() -> None:
     import services.pac_profiles_store as mod
 
     for host in (
-        "0.0.0.0",  # noqa: S104 - Validation fixture, not a bind address.
+        "0.0.0.0",  # ruff: ignore[hardcoded-bind-all-interfaces] - Validation fixture, not a bind address.
         "http://0.0.0.0:8080",
         "::",
         "[::]:3128",

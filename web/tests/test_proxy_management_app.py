@@ -7,7 +7,7 @@ from typing import NoReturn
 import pytest
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] -- isolation guard for every test here
 def _control_plane_ready():
     """Most tests exercise a proxy whose agent finished control-plane startup."""
     from proxy.control_plane_state import mark_control_plane_ready  # type: ignore

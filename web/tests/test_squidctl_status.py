@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] -- isolation guard for every test here
 def _isolated_squid_transaction_paths(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv(
         "SQUID_TRANSACTION_JOURNAL_PATH",

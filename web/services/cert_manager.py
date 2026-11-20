@@ -207,7 +207,7 @@ def _verify_certificate_signature(
             public_key.verify(child.signature, child.tbs_certificate_bytes)
         else:
             return False
-    except (InvalidSignature, TypeError, ValueError, UnsupportedAlgorithm):
+    except InvalidSignature, TypeError, ValueError, UnsupportedAlgorithm:
         return False
     return True
 

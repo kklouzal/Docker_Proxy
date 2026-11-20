@@ -14,7 +14,7 @@ for _import_root in (_REPO_ROOT / "web", _REPO_ROOT / "docker"):
 pytest_plugins = ("web.tests.live_test_helpers",)
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] -- isolation guard for every test here
 def _reset_mysql_connect_circuits():
     """Keep the process-wide MySQL connect circuit from leaking across tests."""
     yield
@@ -24,7 +24,7 @@ def _reset_mysql_connect_circuits():
         reset()
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] -- isolation guard for every test here
 def _isolated_policy_last_known_good_dir(tmp_path_factory, monkeypatch):
     """Keep proxy policy mirrors out of the real durable volume path."""
     monkeypatch.setenv(
@@ -33,7 +33,7 @@ def _isolated_policy_last_known_good_dir(tmp_path_factory, monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] -- isolation guard for every test here
 def _isolated_control_plane_ready_file(tmp_path_factory, monkeypatch):
     """Keep the agent readiness marker out of the real /run path."""
     monkeypatch.setenv(
@@ -42,7 +42,7 @@ def _isolated_control_plane_ready_file(tmp_path_factory, monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] -- isolation guard for every test here
 def _isolate_mysql_test_configuration():
     """Undo ``configure_test_mysql_env`` side effects after each test.
 

@@ -921,7 +921,7 @@ def test_keep_n_retention_matches_count_oracle_on_mysql(tmp_path, monkeypatch) -
 
     configure_test_mysql_env(tmp_path)
     live = importlib.import_module("services.control_plane_maintenance")
-    rng = random.Random(20261118)  # noqa: S311 - deterministic test data
+    rng = random.Random(20261118)  # ruff: ignore[suspicious-non-cryptographic-random-usage] - deterministic test data
     rows = [
         (
             row_id,

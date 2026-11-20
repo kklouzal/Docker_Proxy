@@ -117,7 +117,7 @@ def _build_lock_in_use(conn, suffix: str) -> bool:
     else:
         try:
             owner = row["owner"]
-        except (KeyError, IndexError, TypeError):
+        except KeyError, IndexError, TypeError:
             owner = row[0]
     return owner is not None
 

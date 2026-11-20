@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# ruff: noqa: S608
+# ruff: file-ignore[hardcoded-sql-expression]
 import logging
 from dataclasses import dataclass
 from typing import Any, Protocol

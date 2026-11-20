@@ -26,7 +26,7 @@ GUNICORN_NUMERIC_DEFAULTS = {
     "WEB_GRACEFUL_TIMEOUT": "30",
     "WEB_KEEPALIVE": "5",
 }
-BIND_ALL_IPV4 = "0.0.0.0"  # noqa: S104 - intentional container listener wildcard
+BIND_ALL_IPV4 = "0.0.0.0"  # ruff: ignore[hardcoded-bind-all-interfaces] - intentional container listener wildcard
 DATABASE_ENV_NAMES = ("DATABASE_URL", "MYSQL_HOST", "MYSQL_DATABASE", "MYSQL_USER")
 # Startup waits only on MySQL failures that a starting, restarting, or not yet
 # routable server produces. Anything else (credentials, privileges, schema
@@ -177,7 +177,7 @@ def run_when_mysql_ready[T](
     probe: Callable[[], None] = _probe_mysql_server,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
-    uniform: Callable[[float, float], float] = random.uniform,  # noqa: S311 - retry jitter
+    uniform: Callable[[float, float], float] = random.uniform,  # ruff: ignore[suspicious-non-cryptographic-random-usage] - retry jitter
 ) -> T:
     """Run ``operation`` once MySQL is reachable, waiting without a deadline.
 
@@ -454,7 +454,7 @@ def build_gunicorn_argv(
         "--keep-alive",
         numeric["WEB_KEEPALIVE"],
         "--worker-tmp-dir",
-        "/dev/shm",  # noqa: S108
+        "/dev/shm",  # ruff: ignore[hardcoded-temp-file]
         "--error-logfile",
         "-",
     ]
@@ -544,7 +544,7 @@ def main() -> int:
         os.environ["ADMIN_UI_EFFECTIVE_HTTPS_ERROR"] = config.error
     else:
         os.environ.pop("ADMIN_UI_EFFECTIVE_HTTPS_ERROR", None)
-    os.execvp("python3", build_gunicorn_argv(os.environ, config))  # noqa: S606
+    os.execvp("python3", build_gunicorn_argv(os.environ, config))  # ruff: ignore[start-process-with-no-shell]
     return 1
 
 

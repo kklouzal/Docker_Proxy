@@ -114,7 +114,7 @@ def _run_reverse_dns_subprocess(
 
     try:
         payload = json.loads(completed.stdout)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         raise _ReverseDNSLookupTimeoutError from None
     if completed.returncode != 0 or payload.get("status") not in {"ok", "dns_error"}:
         raise _ReverseDNSLookupTimeoutError
@@ -212,7 +212,7 @@ class ClientIdentityCache:
                 ip,
                 timeout_seconds=self.lookup_timeout_seconds,
             )
-        except (socket.herror, socket.gaierror, TimeoutError, OSError):
+        except socket.herror, socket.gaierror, TimeoutError, OSError:
             return "", "", "unresolved"
         if lookup_result is None:
             raise _ReverseDNSLookupTimeoutError

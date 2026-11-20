@@ -1,5 +1,5 @@
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 88
 extend-exclude = [
     ".venv",
@@ -11,186 +11,186 @@ preview = true
 select = ["ALL"]
 ignore = [
     # Ownership/legal boilerplate is not a useful proxy quality gate.
-    "CPY001",
+    "missing-copyright-notice",
 
     # Enforce behavior and maintainability, not boilerplate documentation churn.
-    "D100",
-    "D101",
-    "D102",
-    "D103",
-    "D104",
-    "D105",
-    "D107",
-    "D401",
-    "DOC201",
-    "DOC501",
+    "undocumented-public-module",
+    "undocumented-public-class",
+    "undocumented-public-method",
+    "undocumented-public-function",
+    "undocumented-public-package",
+    "undocumented-magic-method",
+    "undocumented-public-init",
+    "non-imperative-mood",
+    "docstring-missing-returns",
+    "docstring-missing-exception",
 
     # Duplicate pydocstyle opinions; keep the compatible counterparts enabled.
-    "D203",
-    "D213",
+    "incorrect-blank-line-before-class",
+    "multi-line-summary-second-line",
 
     # Annotation-presence rules cause broad retrofits without proving runtime
     # correctness. Keep real type errors for type checkers, not Ruff ceremony.
-    "ANN001",
-    "ANN002",
-    "ANN003",
-    "ANN201",
-    "ANN202",
-    "ANN204",
-    "ANN401",
+    "missing-type-function-argument",
+    "missing-type-args",
+    "missing-type-kwargs",
+    "missing-return-type-public-function",
+    "missing-return-type-private-function",
+    "missing-return-type-special-method",
+    "any-type",
 
     # Existing route/service complexity should be refactored deliberately, not
     # because a lint gate picked an arbitrary threshold.
-    "C901",
-    "PLR0904",
-    "PLR0911",
-    "PLR0912",
-    "PLR0913",
-    "PLR0914",
-    "PLR0915",
-    "PLR0916",
-    "PLR0917",
-    "PLR1702",
-    "PLW0717",
+    "complex-structure",
+    "too-many-public-methods",
+    "too-many-return-statements",
+    "too-many-branches",
+    "too-many-arguments",
+    "too-many-locals",
+    "too-many-statements",
+    "too-many-boolean-expressions",
+    "too-many-positional-arguments",
+    "too-many-nested-blocks",
+    "too-many-statements-in-try-clause",
 
     # This proxy intentionally degrades around many external systems. Keep rules
     # for exception chaining and bad raise structure enabled.
-    "BLE001",
-    "S110",
-    "S112",
+    "blind-except",
+    "try-except-pass",
+    "try-except-continue",
 
     # Ruff format owns wrapping; residual long lines are usually literals,
     # command snippets, generated messages, URLs, or SQL fragments.
-    "E501",
+    "line-too-long",
 
     # Boolean argument/call and magic-value style checks are too noisy for
     # compact policy/config data and HTTP/status-code heavy code.
-    "FBT001",
-    "FBT002",
-    "FBT003",
-    "PLR2004",
+    "boolean-type-hint-positional-argument",
+    "boolean-default-value-positional-argument",
+    "boolean-positional-value-in-call",
+    "magic-value-comparison",
 
     # Existing Flask and service modules use intentional lazy imports/globals for
     # environment-sensitive initialization and monkeypatchable operational state.
-    "PLC0415",
-    "PLW0603",
+    "import-outside-top-level",
+    "global-statement",
 
     # Internal modules intentionally share private helpers/state.
-    "PLC2701",
-    "SLF001",
+    "import-private-name",
+    "private-member-access",
 
     # Blanket type ignores are mostly compatibility/import shims here.
-    "PGH003",
+    "blanket-type-ignore",
 
     # Subprocess usage is against fixed appliance tools with shell=False; the
     # code commonly inspects return codes instead of raising immediately.
-    "PLW1510",
-    "S404",
-    "S603",
-    "S607",
+    "subprocess-run-without-check",
+    "suspicious-subprocess-import",
+    "subprocess-without-shell-equals-true",
+    "start-process-with-partial-path",
 
     # Explicit empty-string comparisons often document None-vs-empty intent.
-    "PLC1901",
+    "compare-to-empty-string",
 
     # Avoid churning cohesive service APIs into staticmethod-heavy classes.
-    "PLR6301",
+    "no-self-use",
 
     # Pathlib/file-read modernization is not a material proxy quality gate.
-    "FURB101",
-    "PTH116",
-    "PTH118",
-    "PTH122",
-    "PTH208",
+    "read-whole-file",
+    "os-stat",
+    "os-path-join",
+    "os-path-splitext",
+    "os-listdir",
 
     # Legacy package layout and __init__ behavior are intentional.
-    "INP001",
-    "RUF067",
+    "implicit-namespace-package",
+    "non-empty-init-module",
 
     # Style-only simplifications are not worth broad churn here.
-    "A002",
-    "ARG001",
-    "ARG002",
-    "B023",
-    "B903",
-    "ERA001",
-    "PT011",
-    "PT012",
-    "PT017",
-    "PT019",
-    "PT028",
-    "SIM102",
-    "SIM105",
-    "SIM115",
-    "SIM117",
-    "TRY004",
-    "TRY300",
-    "TRY301",
+    "builtin-argument-shadowing",
+    "unused-function-argument",
+    "unused-method-argument",
+    "function-uses-loop-variable",
+    "class-as-data-structure",
+    "commented-out-code",
+    "pytest-raises-too-broad",
+    "pytest-raises-with-multiple-statements",
+    "pytest-assert-in-except",
+    "pytest-fixture-param-without-value",
+    "pytest-parameter-with-default-argument",
+    "collapsible-if",
+    "suppressible-exception",
+    "open-file-with-context-handler",
+    "multiple-with-statements",
+    "type-check-without-type-error",
+    "try-consider-else",
+    "raise-within-try",
 
     # Keep formatter-only style out of the blocking lint gate.
-    "COM812",
-    "ISC001",
-    "Q000",
-    "Q001",
-    "Q002",
-    "Q003",
-    "Q004",
+    "missing-trailing-comma",
+    "single-line-implicit-string-concatenation",
+    "bad-quotes-inline-string",
+    "bad-quotes-multiline-string",
+    "bad-quotes-docstring",
+    "avoidable-escaped-quote",
+    "unnecessary-escaped-quote",
 ]
 
 [tool.ruff.lint.per-file-ignores]
 # Pytest asserts and fixture secrets are idiomatic test scaffolding.
 "web/tests/**/*.py" = [
-    "ARG001",
-    "ARG002",
-    "ARG005",
-    "PLC0415",
-    "S101",
-    "S105",
-    "S106",
-    "S107",
-    "S108",
-    "S310",
+    "unused-function-argument",
+    "unused-method-argument",
+    "unused-lambda-argument",
+    "import-outside-top-level",
+    "assert",
+    "hardcoded-password-string",
+    "hardcoded-password-func-arg",
+    "hardcoded-password-default",
+    "hardcoded-temp-file",
+    "suspicious-url-open-usage",
 ]
 
 
 # Post-insert invariants use asserts for narrowing after immediate fetches.
-"web/services/adblock_artifacts.py" = ["S101", "S608"]
-"web/services/certificate_bundles.py" = ["S101"]
-"web/services/config_revisions.py" = ["S101", "S608"]
-"web/services/observability_maintenance.py" = ["S101", "S608"]
-"web/services/proxy_registry.py" = ["S101", "S608"]
-"web/services/schema_lifecycle.py" = ["S608"]
+"web/services/adblock_artifacts.py" = ["assert", "hardcoded-sql-expression"]
+"web/services/certificate_bundles.py" = ["assert"]
+"web/services/config_revisions.py" = ["assert", "hardcoded-sql-expression"]
+"web/services/observability_maintenance.py" = ["assert", "hardcoded-sql-expression"]
+"web/services/proxy_registry.py" = ["assert", "hardcoded-sql-expression"]
+"web/services/schema_lifecycle.py" = ["hardcoded-sql-expression"]
 
 # SHA-1 is used only for non-security fingerprints/cache keys in these files.
-"web/services/adblock_store.py" = ["S310", "S324", "S608"]
-"web/services/blocked_log_runtime.py" = ["S608"]
-"web/services/diagnostic_store.py" = ["S324", "S608"]
-"web/services/live_stats.py" = ["S324", "S608"]
-"web/services/ssl_errors_store.py" = ["S324", "S608"]
-"web/tests/mysql_test_utils.py" = ["S324"]
-"web/tools/adblock_compile.py" = ["S324"]
+"web/services/adblock_store.py" = ["suspicious-url-open-usage", "hashlib-insecure-hash-function", "hardcoded-sql-expression"]
+"web/services/blocked_log_runtime.py" = ["hardcoded-sql-expression"]
+"web/services/diagnostic_store.py" = ["hashlib-insecure-hash-function", "hardcoded-sql-expression"]
+"web/services/live_stats.py" = ["hashlib-insecure-hash-function", "hardcoded-sql-expression"]
+"web/services/ssl_errors_store.py" = ["hashlib-insecure-hash-function", "hardcoded-sql-expression"]
+"web/tests/mysql_test_utils.py" = ["hashlib-insecure-hash-function"]
+"web/tools/adblock_compile.py" = ["hashlib-insecure-hash-function"]
 
 # These modules compose SQL from fixed templates, validated table-name helpers,
 # and bound parameters; Ruff cannot see those guards.
-"web/services/observability_queries.py" = ["S608"]
-"web/services/operation_ledger.py" = ["S608"]
-"web/services/pac_profiles_store.py" = ["S608"]
-"web/services/policy_requests.py" = ["S608"]
-"web/services/safe_browsing_v5.py" = ["S310", "S608"]
-"web/services/sslfilter_store.py" = ["S608"]
-"web/services/timeseries_store.py" = ["S608"]
-"web/services/webfilter_core.py" = ["S608"]
-"web/services/webfilter_store.py" = ["S608"]
-"web/tools/webcat_acl.py" = ["S608"]
+"web/services/observability_queries.py" = ["hardcoded-sql-expression"]
+"web/services/operation_ledger.py" = ["hardcoded-sql-expression"]
+"web/services/pac_profiles_store.py" = ["hardcoded-sql-expression"]
+"web/services/policy_requests.py" = ["hardcoded-sql-expression"]
+"web/services/safe_browsing_v5.py" = ["suspicious-url-open-usage", "hardcoded-sql-expression"]
+"web/services/sslfilter_store.py" = ["hardcoded-sql-expression"]
+"web/services/timeseries_store.py" = ["hardcoded-sql-expression"]
+"web/services/webfilter_core.py" = ["hardcoded-sql-expression"]
+"web/services/webfilter_store.py" = ["hardcoded-sql-expression"]
+"web/tools/webcat_acl.py" = ["hardcoded-sql-expression"]
 
 # Docker/web services intentionally bind to all interfaces inside containers.
-"web/app.py" = ["S104", "S704"]
-"web/services/health_checks.py" = ["S104"]
-"web/tests/live_fixture_server.py" = ["S104"]
+"web/app.py" = ["hardcoded-bind-all-interfaces", "unsafe-markup-use"]
+"web/services/health_checks.py" = ["hardcoded-bind-all-interfaces"]
+"web/tests/live_fixture_server.py" = ["hardcoded-bind-all-interfaces"]
 
 # "secret" appears in path names here, not embedded credential material.
-"web/services/auth_store.py" = ["S105"]
+"web/services/auth_store.py" = ["hardcoded-password-string"]
 
 # Fixed cache/runtime locations and controlled URL openers are intentional here.
-"proxy/runtime.py" = ["S108"]
-"web/services/proxy_client.py" = ["S310"]
-"web/tools/webcat_build.py" = ["S310"]
+"proxy/runtime.py" = ["hardcoded-temp-file"]
+"web/services/proxy_client.py" = ["suspicious-url-open-usage"]
+"web/tools/webcat_build.py" = ["suspicious-url-open-usage"]

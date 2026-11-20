@@ -258,7 +258,7 @@ def _exclusive_squid_lifecycle_lock():
 
                 fcntl_mod.flock(handle.fileno(), fcntl_mod.LOCK_EX)
             except Exception:
-                logger.error(  # noqa: TRY400 - traceback could expose lock errors
+                logger.error(  # ruff: ignore[error-instead-of-exception] - traceback could expose lock errors
                     "Unable to establish the Squid lifecycle file lock; "
                     "refusing to mutate Squid",
                 )
@@ -1950,7 +1950,7 @@ stdout_logfile_maxbytes=0
     ) -> str:
         pid_path = "/var/run/squid.pid"
         try:
-            if not os.path.exists(pid_path):  # noqa: PTH110
+            if not os.path.exists(pid_path):  # ruff: ignore[os-path-exists]
                 return ""
             raw = Path(pid_path).read_text(encoding="utf-8", errors="replace").strip()
             pid = int(raw or "0")
@@ -1964,7 +1964,7 @@ stdout_logfile_maxbytes=0
                             return ""
                 except Exception:
                     return ""
-            os.unlink(pid_path)  # noqa: PTH108
+            os.unlink(pid_path)  # ruff: ignore[os-unlink]
             return f"Removed stale Squid PID file {pid_path}."
         except Exception as exc:
             return f"Failed to remove stale Squid PID file: {exc}"
@@ -2478,7 +2478,7 @@ stdout_logfile_maxbytes=0
                 "/run",
                 "/sbin",
                 "/sys",
-                "/tmp",  # noqa: S108 - forbidden cache root, not a temp file use
+                "/tmp",  # ruff: ignore[hardcoded-temp-file] - forbidden cache root, not a temp file use
                 "/usr",
                 "/var",
                 "/var/cache",

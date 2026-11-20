@@ -48,7 +48,7 @@ def _bounded_env_int(
         return default
     try:
         value = int(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
     if value < minimum:
         return default

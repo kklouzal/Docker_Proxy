@@ -29,7 +29,7 @@ class DatabaseWriteBackoff:
     jitter_ratio: float = 0.2
     _failures: int = 0
     _next_attempt_at: float = 0.0
-    _rand: object = field(default=random.random, repr=False)  # noqa: S311
+    _rand: object = field(default=random.random, repr=False)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
 
     def __post_init__(self) -> None:
         with _LIVE_BACKOFFS_LOCK:
@@ -121,7 +121,7 @@ def stagger_delay_from_env(
     if span <= 0.0:
         return 0.0
     try:
-        delay = float(random.uniform(0.0, span))  # noqa: S311
+        delay = float(random.uniform(0.0, span))  # ruff: ignore[suspicious-non-cryptographic-random-usage]
     except Exception:
         return 0.0
     if not math.isfinite(delay) or not 0.0 <= delay <= span:

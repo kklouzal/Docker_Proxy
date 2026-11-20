@@ -11,8 +11,8 @@ WEB_ROOT = Path(__file__).resolve().parents[1]
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
-from services import proxy_recovery_startup as startup  # type: ignore  # noqa: E402
-from services.proxy_recovery_db import RecoveryBundleWrite  # type: ignore  # noqa: E402
+from services import proxy_recovery_startup as startup  # type: ignore  # ruff: ignore[module-import-not-at-top-of-file]
+from services.proxy_recovery_db import RecoveryBundleWrite  # type: ignore  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 class _Registry:

@@ -25,25 +25,25 @@ APP_ROOT = HERE.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from dataclasses import replace  # noqa: E402
+from dataclasses import replace  # ruff: ignore[module-import-not-at-top-of-file]
 
-from services import webcat_hygiene  # noqa: E402
-from services.db import (  # noqa: E402
+from services import webcat_hygiene  # ruff: ignore[module-import-not-at-top-of-file]
+from services.db import (  # ruff: ignore[module-import-not-at-top-of-file]
     connect,
     mysql_advisory_lock,
     resolve_database_config,
 )
-from services.domain_normalization import (  # noqa: E402
+from services.domain_normalization import (  # ruff: ignore[module-import-not-at-top-of-file]
     looks_like_domain as _looks_like_host,
 )
-from services.domain_normalization import normalize_domain as _norm_domain  # noqa: E402
-from services.download_safety import (  # noqa: E402
+from services.domain_normalization import normalize_domain as _norm_domain  # ruff: ignore[module-import-not-at-top-of-file]
+from services.download_safety import (  # ruff: ignore[module-import-not-at-top-of-file]
     is_internal_host,
     open_download_url,
     validate_download_url,
 )
-from services.runtime_helpers import env_int  # noqa: E402
-from services.runtime_helpers import now_ts as _now  # noqa: E402
+from services.runtime_helpers import env_int  # ruff: ignore[module-import-not-at-top-of-file]
+from services.runtime_helpers import now_ts as _now  # ruff: ignore[module-import-not-at-top-of-file]
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -301,7 +301,7 @@ def _download(url: str, dest: Path, *, timeout: int = 60) -> None:
             if cl is not None:
                 try:
                     content_length = int(cl)
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     content_length = None
                 if content_length is not None and content_length > max_bytes:
                     msg = f"Download too large (Content-Length={cl})."
@@ -358,7 +358,7 @@ def _download_if_changed(
             if cl is not None:
                 try:
                     content_length = int(cl)
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     content_length = None
                 if content_length is not None and content_length > max_bytes:
                     msg = f"Download too large (Content-Length={cl})."

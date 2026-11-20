@@ -122,7 +122,7 @@ def _set_live_webcat_category(domain: str, category: str | None) -> None:
                 if row and row[0] is not None and str(row[0]).strip()
                 else 0
             )
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             previous_built_ts = 0
         # Proxy helpers refresh their local webcat snapshot only when MySQL's
         # built_ts increases. Earlier live tests can leave a newer timestamp

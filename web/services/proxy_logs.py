@@ -103,7 +103,7 @@ def parse_proxy_log_max_bytes(value: object | None) -> int | None:
         return None
     try:
         requested = int(text)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return DEFAULT_LOG_TAIL_BYTES
     return max(1, min(requested, DEFAULT_LOG_TAIL_BYTES))
 

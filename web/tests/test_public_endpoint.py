@@ -84,7 +84,7 @@ def test_normalize_public_host_allows_explicit_single_label_dns_names(
         "::1",
         "[::1]:8080",
         "169.254.1.1",
-        "0.0.0.0",  # noqa: S104 - verifies wildcard public endpoint is rejected.
+        "0.0.0.0",  # ruff: ignore[hardcoded-bind-all-interfaces] - verifies wildcard public endpoint is rejected.
         "224.0.0.1",
         "http://10.0.0.1/proxy.pac",
     ],

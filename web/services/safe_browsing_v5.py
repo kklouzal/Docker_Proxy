@@ -1491,7 +1491,7 @@ class SafeBrowsingLocalChecker:
                     if bytes(row[0]) in full_hashes:
                         try:
                             remaining_ttl = max(0, int(row[3]) - now)
-                        except (IndexError, KeyError, TypeError, ValueError):
+                        except IndexError, KeyError, TypeError, ValueError:
                             remaining_ttl = 0
                         return SafeBrowsingVerdict(
                             "unsafe",

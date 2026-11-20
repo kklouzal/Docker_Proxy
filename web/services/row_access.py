@@ -9,8 +9,8 @@ def row_value(row: Any, key: str, index: int = 0, default: Any = None) -> Any:
         return default
     try:
         return row[key]
-    except (KeyError, IndexError, TypeError):
+    except KeyError, IndexError, TypeError:
         try:
             return row[index]
-        except (KeyError, IndexError, TypeError):
+        except KeyError, IndexError, TypeError:
             return default

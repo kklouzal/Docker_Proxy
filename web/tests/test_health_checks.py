@@ -1326,7 +1326,7 @@ def test_forwarding_path_health_is_local_bounded_and_attributed(monkeypatch) -> 
     captured: dict[str, object] = {}
 
     monkeypatch.setenv("SQUID_HTTP_PORT", "3128")
-    monkeypatch.setenv("FORWARDING_CANARY_HOST", "0.0.0.0")  # noqa: S104 - wildcard bind env is normalized to loopback.
+    monkeypatch.setenv("FORWARDING_CANARY_HOST", "0.0.0.0")  # ruff: ignore[hardcoded-bind-all-interfaces] - wildcard bind env is normalized to loopback.
     monkeypatch.setenv("FORWARDING_CANARY_PORT", "18080")
     monkeypatch.delenv("CLAMAV_REQUIRED", raising=False)
 

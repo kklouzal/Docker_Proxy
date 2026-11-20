@@ -14,20 +14,20 @@ from services.keyed_locks import KeyedLockRegistry
 from services.runtime_helpers import fsync_parent_dir as _fsync_parent_dir
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
 _RUNTIME_FILE_MODE = 0o644
 _MANAGED_PATH_LOCKS = KeyedLockRegistry[str]()
 
 
 def _managed_path_key(path: str) -> str:
-    return os.path.abspath(path)  # noqa: PTH100 -- preserve symlink identity
+    return os.path.abspath(path)  # ruff: ignore[os-path-abspath] -- preserve symlink identity
 
 
 def _validate_managed_path(path: str) -> None:
     """Reject links and non-directory ancestors, and non-regular targets."""
     target = pathlib.Path(
-        os.path.abspath(path)  # noqa: PTH100 -- inspect rather than resolve links
+        os.path.abspath(path)  # ruff: ignore[os-path-abspath] -- inspect rather than resolve links
     )
     for parent in reversed(target.parents):
         try:
@@ -53,7 +53,7 @@ def _interprocess_lock_path(path_key: str) -> pathlib.Path:
 
 
 @contextlib.contextmanager
-def _locked_materialized_paths(paths: list[str]) -> Iterator[None]:
+def _locked_materialized_paths(paths: list[str]) -> Generator[None]:
     path_keys = sorted({_managed_path_key(path) for path in paths})
     lock_files: list[int] = []
     with _MANAGED_PATH_LOCKS.locked(path_keys):
@@ -219,7 +219,7 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
                     materialized_files, temp_paths, strict=False
                 ):
                     _validate_managed_path(path)
-                    os.replace(temp_path, path)  # noqa: PTH105
+                    os.replace(temp_path, path)  # ruff: ignore[os-replace]
                     replaced_paths.append((target_key, path))
                     _fsync_parent_dir(path)
             except Exception as publish_error:
@@ -235,7 +235,7 @@ def write_managed_text_files(*files: tuple[str, str]) -> None:
                                 owner=backup.owner,
                             )
                             temp_paths.append(temp_path)
-                            os.replace(temp_path, path)  # noqa: PTH105
+                            os.replace(temp_path, path)  # ruff: ignore[os-replace]
                             _fsync_parent_dir(path)
                         else:
                             unlinked = False

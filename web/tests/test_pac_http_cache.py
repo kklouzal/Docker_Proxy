@@ -299,7 +299,7 @@ def test_request_host_rejects_reserved_internal_dns_authorities(
         "127.0.0.1:3128, later-public.example:8080",
         "bad host.example, later-public.example:8080",
         "user@bad.example, later-public.example:8080",
-        "public.example:１２８０, later-public.example:8080",  # noqa: RUF001
+        "public.example:１２８０, later-public.example:8080",  # ruff: ignore[ambiguous-unicode-character-string]
     ],
 )
 def test_request_host_falls_back_to_host_when_original_trusted_forwarded_host_is_invalid(
@@ -385,7 +385,7 @@ def test_request_host_rejects_unsafe_ip_literal_authorities(
     "forwarded_host",
     [
         "127.0.0.1:3128",
-        "0.0.0.0",  # noqa: S104 - verifies wildcard authorities are rejected.
+        "0.0.0.0",  # ruff: ignore[hardcoded-bind-all-interfaces] - verifies wildcard authorities are rejected.
         "169.254.10.20:8080",
         "239.1.2.3",
         "[::1]:8080",
@@ -474,9 +474,9 @@ def test_request_host_rejects_malformed_host_header_values(pac_http) -> None:
         "//proxy.example:8080",
         "proxy.example:bad",
         "proxy.example:",
-        "proxy.example:１２８０",  # noqa: RUF001 - reject non-ASCII port digits.
+        "proxy.example:１２８０",  # ruff: ignore[ambiguous-unicode-character-string] - reject non-ASCII port digits.
         "[2001:db8::20]:",
-        "[2001:db8::20]:１２８０",  # noqa: RUF001 - reject non-ASCII port digits.
+        "[2001:db8::20]:１２８０",  # ruff: ignore[ambiguous-unicode-character-string] - reject non-ASCII port digits.
         "proxy.example:0",
         "proxy.example:65536",
         "2130706433",

@@ -17,7 +17,7 @@ _PACKAGED_APP_ROOT = Path("/app")
 if _PACKAGED_APP_ROOT.is_dir() and str(_PACKAGED_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGED_APP_ROOT))
 
-from services.clamd_protocol import (  # noqa: E402
+from services.clamd_protocol import (  # ruff: ignore[module-import-not-at-top-of-file]
     CLAMD_PING_MAX_REPLY_BYTES,
     CLAMD_PING_REQUEST,
     ping_reply_is_pong,
@@ -124,7 +124,7 @@ def clamd_ready(host: str, port: int, timeout: float = 1.0) -> bool:
             sock.settimeout(timeout)
             sock.sendall(CLAMD_PING_REQUEST)
             return ping_reply_is_pong(_recv_clamd_ping_reply(sock))
-    except (OSError, OverflowError, ValueError):
+    except OSError, OverflowError, ValueError:
         return False
 
 
@@ -1371,7 +1371,7 @@ def main(argv: list[str]) -> int:
 
     if clamd_ready(host, port):
         try:
-            os.execv(  # noqa: S606 - replace runner with c-icap in the container.
+            os.execv(  # ruff: ignore[start-process-with-no-shell] - replace runner with c-icap in the container.
                 "/usr/bin/c-icap",
                 ["/usr/bin/c-icap", "-N", "-f", conf_path],
             )

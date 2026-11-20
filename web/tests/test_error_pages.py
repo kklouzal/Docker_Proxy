@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 add_web_to_path()
 
-from services import error_pages  # type: ignore  # noqa: E402
+from services import error_pages  # type: ignore  # ruff: ignore[module-import-not-at-top-of-file]
 
 BLOCK_REASON_TEMPLATE_NAMES = {
     "ERR_ACCESS_DENIED",

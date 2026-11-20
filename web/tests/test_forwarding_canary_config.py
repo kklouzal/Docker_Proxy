@@ -73,7 +73,7 @@ def test_forwarding_canary_environment_contract_is_shared(monkeypatch) -> None:
 
 @pytest.mark.parametrize(
     "host",
-    ["0.0.0.0", "::1", "127.0.0.1.evil.test"],  # noqa: S104 - unsafe inputs must fail safe.
+    ["0.0.0.0", "::1", "127.0.0.1.evil.test"],  # ruff: ignore[hardcoded-bind-all-interfaces] - unsafe inputs must fail safe.
 )
 @pytest.mark.parametrize("port", ["0", "65536", "not-a-port"])
 def test_forwarding_canary_listener_and_client_fail_safe(

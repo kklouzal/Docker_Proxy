@@ -88,7 +88,7 @@ def listening_endpoints(
                 address_hex, port_hex = parts[1].rsplit(":", 1)
                 try:
                     endpoints.add((str(_proc_address(address_hex)), int(port_hex, 16)))
-                except (ValueError, IndexError):
+                except ValueError, IndexError:
                     continue
     return endpoints
 

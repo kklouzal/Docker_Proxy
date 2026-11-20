@@ -7,7 +7,7 @@ WEB_DIR = Path(__file__).resolve().parents[1]
 if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
 
-from services import proxy_context  # type: ignore  # noqa: E402
+from services import proxy_context  # type: ignore  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 def test_normalize_proxy_id_sanitizes_defaults_and_truncates() -> None:

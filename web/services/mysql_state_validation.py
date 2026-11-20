@@ -791,7 +791,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     result = validate_mysql_state(phase=args.phase)
-    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))  # noqa: T201
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))  # ruff: ignore[print]
     return 0 if result.ok else 1
 
 

@@ -53,7 +53,7 @@ class LiveFixtureHandler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(payload)
-        except (BrokenPipeError, ConnectionResetError):
+        except BrokenPipeError, ConnectionResetError:
             return
 
     def do_GET(self) -> None:

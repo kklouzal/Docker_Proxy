@@ -23,7 +23,7 @@ _THROTTLE_KEY_PRUNE_INTERVAL_SECONDS = 300.0
 def _normalize_interval_seconds(interval_seconds: float) -> float:
     try:
         interval = float(interval_seconds)
-    except (TypeError, ValueError, OverflowError):
+    except TypeError, ValueError, OverflowError:
         return 0.0
     if not math.isfinite(interval) or interval < 0.0:
         return 0.0
@@ -87,7 +87,7 @@ def log_exception_throttled(
     """
     try:
         if should_log(key, interval_seconds=interval_seconds):
-            logger.exception(message, *args)  # noqa: LOG004
+            logger.exception(message, *args)  # ruff: ignore[log-exception-outside-except-handler]
     except Exception:
         # Never let logging break the worker loop.
         pass

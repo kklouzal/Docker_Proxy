@@ -145,7 +145,7 @@ def _bounded_duration_seconds(value: object) -> int:
 def _bounded_env_int(name: str, *, default: int, maximum: int) -> int:
     try:
         value = int((os.environ.get(name) or "").strip())
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
     return value if 1 <= value <= maximum else default
 

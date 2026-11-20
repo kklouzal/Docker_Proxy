@@ -18,7 +18,7 @@ import pytest
 from .subprocess_test_utils import run_test_process
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] -- isolation guard for every test here
 def _isolated_runtime_environment(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv(
         "SQUID_TRANSACTION_JOURNAL_PATH",

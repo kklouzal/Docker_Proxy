@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
     from pathlib import Path
 
 from services import proxy_recovery
@@ -458,7 +458,7 @@ def capture_recovery_state(
 def _recovery_capture_lock(
     proxy_id: str,
     recovery_dir: Path | str | None,
-) -> Iterator[None]:
+) -> Generator[None]:
     """Serialize snapshot-and-publish across all local proxy processes."""
     bundle_path = proxy_recovery.bundle_path_for_proxy(proxy_id, recovery_dir)
     root = proxy_recovery._ensure_private_dir(bundle_path.parent)

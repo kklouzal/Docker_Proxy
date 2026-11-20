@@ -666,7 +666,7 @@ def _resolve_proxy_pac_target_for_state(
 ) -> ProxyPacTarget:
     try:
         signature = inspect.signature(resolve_proxy_pac_target)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         signature = None
     parameters = signature.parameters if signature is not None else {}
     accepts_runtime_stores = any(

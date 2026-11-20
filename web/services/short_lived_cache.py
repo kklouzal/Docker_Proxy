@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, MutableMapping
+    from collections.abc import Callable, Generator, MutableMapping
 
 K = TypeVar("K")
 V = TypeVar("V")
@@ -34,7 +34,7 @@ class KeyedSingleFlight:
         self._generation = 0
 
     @contextmanager
-    def _lock_for(self, key: Any) -> Iterator[None]:
+    def _lock_for(self, key: Any) -> Generator[None]:
         with self._state_lock:
             key_lock = self._key_locks.get(key)
             if key_lock is None:

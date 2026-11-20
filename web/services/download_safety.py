@@ -133,7 +133,7 @@ def is_internal_host(hostname: str) -> bool:
 
     try:
         infos = socket.getaddrinfo(h, None, type=socket.SOCK_STREAM)
-    except (socket.gaierror, OSError):
+    except socket.gaierror, OSError:
         return True
 
     resolved = {info[4][0] for info in infos if info and info[4]}
@@ -148,7 +148,7 @@ def _resolve_download_addresses(
 ) -> tuple[_ResolvedDownloadAddress, ...]:
     try:
         infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
-    except (socket.gaierror, OSError):
+    except socket.gaierror, OSError:
         return ()
 
     addresses: list[_ResolvedDownloadAddress] = []
@@ -326,7 +326,7 @@ def _build_download_request(
     *,
     headers: dict[str, str],
 ) -> urllib.request.Request:
-    return urllib.request.Request(url, headers=headers, method="GET")  # noqa: S310
+    return urllib.request.Request(url, headers=headers, method="GET")  # ruff: ignore[suspicious-url-open-usage]
 
 
 def _validate_download_redirect_location(location: str) -> None:

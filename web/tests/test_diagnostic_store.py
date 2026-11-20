@@ -15,7 +15,7 @@ from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
 
 class _LifecycleThread:
-    created: ClassVar[list["_LifecycleThread"]] = []
+    created: ClassVar[list[_LifecycleThread]] = []
 
     def __init__(self, *, target, name=None, args=(), daemon=None):
         self.target = target

@@ -9,7 +9,7 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] -- isolation guard for every test here
 def _isolated_squid_transaction_journal(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv(
         "SQUID_TRANSACTION_JOURNAL_PATH",

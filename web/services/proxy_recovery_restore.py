@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# ruff: noqa: EM101, EM102, TRY003
+# ruff: file-ignore[raw-string-in-exception, f-string-in-exception, raise-vanilla-args]
 import hashlib
 import time
 from dataclasses import dataclass

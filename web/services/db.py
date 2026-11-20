@@ -20,7 +20,7 @@ from services.runtime_helpers import env_int as _env_int
 from services.sql_identifiers import quote_mysql_identifier
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Sequence
+    from collections.abc import Generator, Iterable, Iterator, Sequence
 
 MYSQL_DEFAULT_DB = "squid_proxy"
 _MYSQL_CHARSET_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -319,7 +319,7 @@ def staged_blob_parameter(
     payload: bytes,
     *,
     chunk_bytes: int | None = None,
-) -> Iterator[str]:
+) -> Generator[str]:
     """Stage a large binary value server-side; yield the SQL expression for it.
 
     PyMySQL interpolates parameters client-side, so a multi-MB blob otherwise
@@ -496,7 +496,7 @@ def mysql_error_code(exc: BaseException) -> int | None:
         return None
     try:
         return int(args[0])
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -558,7 +558,7 @@ def _retry_delay_seconds(attempt: int, base_delay: float) -> float:
     delay = min(5.0, float(base_delay) * (2 ** int(attempt)))
     jitter = _mysql_retry_jitter_seconds()
     if jitter > 0:
-        delay = min(5.0, delay + random.uniform(0.0, jitter))  # noqa: S311
+        delay = min(5.0, delay + random.uniform(0.0, jitter))  # ruff: ignore[suspicious-non-cryptographic-random-usage]
     return delay
 
 
@@ -682,7 +682,7 @@ def _named_lock_wait_slice_seconds(conn: Any, timeout_seconds: int) -> int:
     read_timeout = getattr(getattr(conn, "native", None), "_read_timeout", None)
     try:
         read_timeout_seconds = int(read_timeout or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         read_timeout_seconds = 0
     if read_timeout_seconds <= 0:
         return timeout_seconds
@@ -701,14 +701,14 @@ def _lock_row_acquired(row: Any) -> int | None:
         return None
     try:
         value = row["acquired"]
-    except (IndexError, KeyError, TypeError):
+    except IndexError, KeyError, TypeError:
         try:
             value = row[0]
-        except (IndexError, KeyError, TypeError):
+        except IndexError, KeyError, TypeError:
             return None
     try:
         return None if value is None else int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -1308,7 +1308,7 @@ class _ConnectCircuit:
         base = _circuit_backoff_initial_seconds()
         cap = max(base, _circuit_backoff_max_seconds())
         delay = min(cap, base * (2 ** max(0, min(self.failures - 1, 30))))
-        return max(0.05, delay * random.uniform(0.8, 1.2))  # noqa: S311
+        return max(0.05, delay * random.uniform(0.8, 1.2))  # ruff: ignore[suspicious-non-cryptographic-random-usage]
 
     def _probe_once(self) -> bool:
         try:

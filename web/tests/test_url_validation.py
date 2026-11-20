@@ -35,8 +35,8 @@ def test_percent_encoding_primitive_accepts_complete_ascii_hex_octets(
         "%2g",
         "%g2",
         "ok%20then%",
-        "%２F",  # noqa: RUF001 - fullwidth digit is intentionally not ASCII hex.
-        "%2Ｆ",  # noqa: RUF001 - fullwidth letter is intentionally not ASCII hex.
+        "%２F",  # ruff: ignore[ambiguous-unicode-character-string] - fullwidth digit is intentionally not ASCII hex.
+        "%2Ｆ",  # ruff: ignore[ambiguous-unicode-character-string] - fullwidth letter is intentionally not ASCII hex.
         "%é0",
     ],
 )

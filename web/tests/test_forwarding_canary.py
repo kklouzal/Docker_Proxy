@@ -45,7 +45,7 @@ def test_forwarding_canary_env_hardening_keeps_listener_loopback_only(
 ) -> None:
     from proxy import forwarding_canary
 
-    monkeypatch.setenv("FORWARDING_CANARY_HOST", "0.0.0.0")  # noqa: S104 - verifies unsafe bind env is coerced.
+    monkeypatch.setenv("FORWARDING_CANARY_HOST", "0.0.0.0")  # ruff: ignore[hardcoded-bind-all-interfaces] - verifies unsafe bind env is coerced.
     monkeypatch.setenv("FORWARDING_CANARY_PORT", "not-a-port")
     monkeypatch.setenv("FORWARDING_CANARY_PATH", "http://example.test/proxy")
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# ruff: noqa: I001
+# ruff: file-ignore[unsorted-imports]
 
 import sys
 import threading
@@ -14,8 +14,8 @@ WEB_ROOT = Path(__file__).resolve().parents[1]
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
-from services import proxy_recovery  # type: ignore  # noqa: E402
-from services import proxy_recovery_db as recovery_db  # type: ignore  # noqa: E402
+from services import proxy_recovery  # type: ignore  # ruff: ignore[module-import-not-at-top-of-file]
+from services import proxy_recovery_db as recovery_db  # type: ignore  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 _SOURCE_CONTROL_PLANE_ID = "123e4567-e89b-42d3-a456-426614174000"

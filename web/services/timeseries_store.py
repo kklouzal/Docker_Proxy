@@ -71,7 +71,7 @@ def _get_metric(stats: dict[str, Any], path: str) -> float | None:
         return None
     try:
         return float(cur)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 

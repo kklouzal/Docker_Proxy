@@ -40,7 +40,7 @@ def _cfg(**overrides) -> db.DatabaseConfig:
     return db.DatabaseConfig(**values)
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] -- isolation guard for every test here
 def _fast_circuit(monkeypatch):
     monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "1")
     monkeypatch.setenv("MYSQL_CONNECT_CIRCUIT_BACKOFF_INITIAL_SECONDS", "0.1")

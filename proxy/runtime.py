@@ -405,7 +405,7 @@ def _mark_claimed_operation_status(
         supports_claim_guard = "expected_status" in parameters or any(
             param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
         )
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         supports_claim_guard = True
     if not supports_claim_guard:
         mark_status(operation_id, status=status, detail=detail)
@@ -425,7 +425,7 @@ def _call_sync_with_operations(func: Any, *, force: bool, operations: list[Any] 
         supports_operations = "operations" in parameters or any(
             param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
         )
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         supports_operations = True
     if supports_operations:
         return func(force=force, operations=operations)

@@ -8,7 +8,7 @@ web_dir = Path(__file__).resolve().parents[1]
 if str(web_dir) not in sys.path:
     sys.path.insert(0, str(web_dir))
 
-from services import background_guard  # type: ignore  # noqa: E402
+from services import background_guard  # type: ignore  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 def test_coordinator_retries_contention_and_partial_start(monkeypatch) -> None:

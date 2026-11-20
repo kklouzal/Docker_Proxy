@@ -8,12 +8,12 @@ WEB_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
 
-from services.adblock_store import AdblockStore  # noqa: E402
-from services.blocked_log_runtime import BlockedLogDb  # noqa: E402
-from services.diagnostic_store import DiagnosticStore  # noqa: E402
-from services.live_stats import LiveStatsStore  # noqa: E402
-from services.safe_browsing_v5 import SafeBrowsingStore  # noqa: E402
-from services.webfilter_store import WebFilterStore  # noqa: E402
+from services.adblock_store import AdblockStore  # ruff: ignore[module-import-not-at-top-of-file]
+from services.blocked_log_runtime import BlockedLogDb  # ruff: ignore[module-import-not-at-top-of-file]
+from services.diagnostic_store import DiagnosticStore  # ruff: ignore[module-import-not-at-top-of-file]
+from services.live_stats import LiveStatsStore  # ruff: ignore[module-import-not-at-top-of-file]
+from services.safe_browsing_v5 import SafeBrowsingStore  # ruff: ignore[module-import-not-at-top-of-file]
+from services.webfilter_store import WebFilterStore  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 class _Result:

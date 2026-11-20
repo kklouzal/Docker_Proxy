@@ -19,19 +19,19 @@ APP_ROOT_STR = str(APP_ROOT)
 if APP_ROOT_STR not in sys.path:
     sys.path.insert(0, APP_ROOT_STR)
 
-from services.adblock_hosts import (  # noqa: E402
+from services.adblock_hosts import (  # ruff: ignore[module-import-not-at-top-of-file]
     looks_like_adblock_host as _looks_like_host,
 )
-from services.adblock_hosts import (  # noqa: E402
+from services.adblock_hosts import (  # ruff: ignore[module-import-not-at-top-of-file]
     normalize_adblock_host as _normalize_host,
 )
-from services.adblock_patterns import (  # noqa: E402
+from services.adblock_patterns import (  # ruff: ignore[module-import-not-at-top-of-file]
     abp_host_anchored_to_regex as _abp_host_anchored_to_regex,
 )
-from services.adblock_patterns import (  # noqa: E402
+from services.adblock_patterns import (  # ruff: ignore[module-import-not-at-top-of-file]
     abp_suffix_to_regex as _abp_suffix_to_regex,
 )
-from services.adblock_patterns import abp_to_regex as _abp_to_regex  # noqa: E402
+from services.adblock_patterns import abp_to_regex as _abp_to_regex  # ruff: ignore[module-import-not-at-top-of-file]
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

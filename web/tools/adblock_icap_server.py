@@ -26,19 +26,19 @@ app_root = Path(os.path.join(here, "..")).resolve()
 if str(app_root) not in sys.path:
     sys.path.insert(0, str(app_root))
 
-from services.adblock_decision import (  # noqa: E402
+from services.adblock_decision import (  # ruff: ignore[module-import-not-at-top-of-file]
     SUPPORTED_REQUEST_METHODS,
     AdblockDecision,
     AdblockDecisionEngine,
 )
-from services.helper_runtime import HelperStats  # noqa: E402
-from services.icap_protocol import (  # noqa: E402
+from services.helper_runtime import HelperStats  # ruff: ignore[module-import-not-at-top-of-file]
+from services.icap_protocol import (  # ruff: ignore[module-import-not-at-top-of-file]
     IcapWireSyntaxError,
     parse_chunk_header,
     parse_encapsulated_sections,
     validate_chunk_trailer,
 )
-from services.runtime_helpers import env_float, env_int  # noqa: E402
+from services.runtime_helpers import env_float, env_int  # ruff: ignore[module-import-not-at-top-of-file]
 
 _CRLF = b"\r\n"
 
@@ -416,7 +416,7 @@ def _drain_chunked_body(
         while len(data) < size and len(data) < max_drain_bytes:
             try:
                 chunk = sock.recv(min(8192, max_drain_bytes - len(data)))
-            except (TimeoutError, OSError):
+            except TimeoutError, OSError:
                 return False
             if not chunk:
                 return False
@@ -465,7 +465,7 @@ def _read_icap_message(
     while b"\r\n\r\n" not in data and len(data) < max_bytes:
         try:
             chunk = sock.recv(min(8192, max_bytes - len(data)))
-        except (TimeoutError, OSError):
+        except TimeoutError, OSError:
             return bytes(data), b"", True
         if not chunk:
             break
@@ -501,7 +501,7 @@ def _read_icap_message(
     while len(rest) < required_rest_bytes and len(data) < max_bytes:
         try:
             chunk = sock.recv(min(8192, max_bytes - len(data)))
-        except (TimeoutError, OSError):
+        except TimeoutError, OSError:
             force_close = True
             break
         if not chunk:
@@ -511,7 +511,7 @@ def _read_icap_message(
     while not end_candidates and b"\r\n\r\n" not in rest and len(data) < max_bytes:
         try:
             chunk = sock.recv(min(8192, max_bytes - len(data)))
-        except (TimeoutError, OSError):
+        except TimeoutError, OSError:
             force_close = True
             break
         if not chunk:
@@ -525,7 +525,7 @@ def _read_icap_message(
         while body_end is None and not invalid_preview and len(data) < max_bytes:
             try:
                 chunk = sock.recv(min(8192, max_bytes - len(data)))
-            except (TimeoutError, OSError):
+            except TimeoutError, OSError:
                 force_close = True
                 break
             if not chunk:
@@ -568,7 +568,7 @@ def _send_icap_response(sock: socket.socket, response: bytes) -> bool:
     try:
         sock.sendall(response)
         return True
-    except (BrokenPipeError, ConnectionResetError, TimeoutError):
+    except BrokenPipeError, ConnectionResetError, TimeoutError:
         return False
     except OSError as exc:
         if exc.errno in {errno.ECONNRESET, errno.EPIPE, errno.ETIMEDOUT}:

@@ -41,7 +41,7 @@ def _policy_request_max_content_length() -> int:
     raw = (os.environ.get("POLICY_REQUEST_MAX_CONTENT_LENGTH") or "").strip()
     try:
         value = int(raw) if raw else _POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return _POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH
     return value if value >= 1 else _POLICY_REQUEST_DEFAULT_MAX_CONTENT_LENGTH
 

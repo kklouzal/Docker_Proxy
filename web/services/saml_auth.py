@@ -25,7 +25,7 @@ try:
 
     _DEFUSEDXML_AVAILABLE = True
 except ImportError:  # pragma: no cover - production image installs defusedxml.
-    from xml.etree import ElementTree  # noqa: ICN001, S405
+    from xml.etree import ElementTree  # ruff: ignore[unconventional-import-alias, suspicious-xml-etree-import]
 
     DefusedXmlException = ()  # type: ignore[assignment]
     _DEFUSEDXML_AVAILABLE = False
@@ -153,7 +153,7 @@ def _tighten_saml_response_timeout(response, timeout: float) -> None:
     if callable(set_timeout):
         try:
             set_timeout(timeout)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             pass
 
 
@@ -552,7 +552,7 @@ class SamlAuthStore:
         if not profile.verify_tls:
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
-        request = Request(  # noqa: S310 - scheme is validated before fetch.
+        request = Request(  # ruff: ignore[suspicious-url-open-usage] - scheme is validated before fetch.
             metadata_url,
             headers=_SAML_METADATA_REQUEST_HEADERS,
         )
@@ -801,9 +801,9 @@ def parse_saml_metadata(raw_xml: str) -> dict[str, Any]:
 
     try:
         if _DEFUSEDXML_AVAILABLE:
-            root = ElementTree.fromstring(raw_xml, forbid_dtd=True)  # noqa: S314
+            root = ElementTree.fromstring(raw_xml, forbid_dtd=True)  # ruff: ignore[suspicious-xml-element-tree-usage]
         else:  # pragma: no cover - production image installs defusedxml.
-            root = ElementTree.fromstring(raw_xml)  # noqa: S314
+            root = ElementTree.fromstring(raw_xml)  # ruff: ignore[suspicious-xml-element-tree-usage]
     except DefusedXmlException as exc:
         msg = "SAML metadata XML contains disallowed DTD or entity declarations."
         raise ValueError(msg) from exc

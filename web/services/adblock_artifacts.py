@@ -688,7 +688,7 @@ class AdblockArtifactStore:
             return False
         try:
             return int(row["acquired"] or 0) == 1
-        except (IndexError, KeyError, TypeError, ValueError):
+        except IndexError, KeyError, TypeError, ValueError:
             with contextlib.suppress(IndexError, TypeError, ValueError):
                 return int(row[0] or 0) == 1
             return False

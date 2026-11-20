@@ -29,14 +29,14 @@ app_root = Path(__file__).resolve().parent.parent
 if str(app_root) not in sys.path:
     sys.path.insert(0, str(app_root))
 
-from services.helper_runtime import HelperStats  # noqa: E402
-from services.icap_protocol import (  # noqa: E402
+from services.helper_runtime import HelperStats  # ruff: ignore[module-import-not-at-top-of-file]
+from services.icap_protocol import (  # ruff: ignore[module-import-not-at-top-of-file]
     IcapWireSyntaxError,
     parse_chunk_header,
     parse_encapsulated_sections,
     validate_chunk_trailer,
 )
-from services.runtime_helpers import env_float, env_int, security_env_bool  # noqa: E402
+from services.runtime_helpers import env_float, env_int, security_env_bool  # ruff: ignore[module-import-not-at-top-of-file]
 
 if TYPE_CHECKING:
     from collections.abc import Callable

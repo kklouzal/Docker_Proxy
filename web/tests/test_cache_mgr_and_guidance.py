@@ -8,12 +8,12 @@ WEB = ROOT / "web"
 if str(WEB) not in sys.path:
     sys.path.insert(0, str(WEB))
 
-from services.squid_config_forms import (  # type: ignore  # noqa: E402
+from services.squid_config_forms import (  # type: ignore  # ruff: ignore[module-import-not-at-top-of-file]
     build_template_options,
     build_template_options_from_form,
     get_config_ui_field_map,
 )
-from services.squidctl import SquidController  # type: ignore  # noqa: E402
+from services.squidctl import SquidController  # type: ignore  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 def test_cache_mgr_default_metadata_and_rendered_config() -> None:

@@ -111,7 +111,7 @@ def redact_url_for_display(value: object, *, max_len: int = 2000) -> str:
     try:
         parsed = urlsplit(raw)
         host = parsed.hostname or ""
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return clean_text(fallback, max_len=max_len)
     if not (parsed.scheme and parsed.netloc and host):
         return clean_text(fallback, max_len=max_len)

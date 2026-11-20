@@ -13,7 +13,7 @@ WEB_ROOT = Path(__file__).resolve().parents[1]
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
-from services import db, schema_lifecycle  # type: ignore  # noqa: E402
+from services import db, schema_lifecycle  # type: ignore  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 class _DdlRaceConn:

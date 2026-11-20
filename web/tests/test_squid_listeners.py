@@ -13,7 +13,7 @@ https_port 0.0.0.0:3130 intercept ssl-bump
     ] == [
         ("127.0.0.1", 3128, "explicit", True),
         ("::1", 3129, "tproxy", False),
-        ("0.0.0.0", 3130, "https-intercept", False),  # noqa: S104 - parsed listener fixture.
+        ("0.0.0.0", 3130, "https-intercept", False),  # ruff: ignore[hardcoded-bind-all-interfaces] - parsed listener fixture.
     ]
 
 
@@ -22,7 +22,7 @@ def test_bound_address_contract_does_not_accept_wrong_same_port_listener():
     assert not listener_is_present(listener, {("127.0.0.1", 3128)})
     assert listener_is_present(
         listener,
-        {("0.0.0.0", 3128)},  # noqa: S104 - listening endpoint fixture.
+        {("0.0.0.0", 3128)},  # ruff: ignore[hardcoded-bind-all-interfaces] - listening endpoint fixture.
     )
     assert listener_is_present(listener, {("127.0.0.2", 3128)})
 

@@ -12,20 +12,20 @@ APP_ROOT = pathlib.Path(os.path.join(HERE, "..")).resolve()
 if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
-import contextlib  # noqa: E402
+import contextlib  # ruff: ignore[module-import-not-at-top-of-file]
 
-from services.helper_runtime import (  # noqa: E402
+from services.helper_runtime import (  # ruff: ignore[module-import-not-at-top-of-file]
     HelperStats,
     split_acl_channel,
     write_acl_response,
 )
-from services.runtime_helpers import env_int as _env_int  # noqa: E402
-from services.safe_browsing_v5 import SafeBrowsingLocalChecker  # noqa: E402
+from services.runtime_helpers import env_int as _env_int  # ruff: ignore[module-import-not-at-top-of-file]
+from services.safe_browsing_v5 import SafeBrowsingLocalChecker  # ruff: ignore[module-import-not-at-top-of-file]
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-from services.blocked_log_runtime import BlockedLogDb  # noqa: E402
+from services.blocked_log_runtime import BlockedLogDb  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 def _parse_line(line: str) -> tuple[str | None, str, str]:

@@ -15,11 +15,10 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from flask import (
@@ -251,6 +250,9 @@ from services.winhttp_registry_builder import (
     normalize_reg_binary_export,
 )
 from werkzeug.exceptions import HTTPException, ServiceUnavailable
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Sequence
 
 _ADMIN_UI_WEB_RESTART_LOCK_PATH = "/run/docker-proxy-admin-ui-web-restart.lock"
 _ADMIN_UI_WEB_RESTART_LOG_PATH = "/run/docker-proxy-admin-ui-web-restart.log"
@@ -680,7 +682,7 @@ def run_observability_maintenance(
     runner = _app_runtime_services().run_observability_maintenance
     try:
         runner_signature = inspect.signature(runner)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         runner_signature = None
     if runner_signature is not None and "run_type" not in runner_signature.parameters:
         return runner(analyze=analyze, optimize=optimize)
@@ -994,7 +996,7 @@ def _restore_certificate_active_revision(
 def _set_operation_row_attr(row: Any, key: str, value: Any) -> None:
     try:
         setattr(row, key, value)
-    except (AttributeError, TypeError):
+    except AttributeError, TypeError:
         pass
 
 
@@ -3147,7 +3149,7 @@ def _listener_adjustment_detail(
         try:
             requested_port = int(options.get(port_key))
             effective_port = int(effective.get(port_key))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if requested_port != effective_port:
             adjustments.append(
@@ -3201,7 +3203,7 @@ def _pac_profile_id_from_form() -> tuple[int | None, str]:
     raw = (request.form.get("profile_id") or "").strip()
     try:
         profile_id = int(raw)
-    except (TypeError, ValueError, OverflowError):
+    except TypeError, ValueError, OverflowError:
         return None, "Invalid PAC profile id."
     if profile_id < 1 or profile_id > _MYSQL_SIGNED_BIGINT_MAX:
         return None, "Invalid PAC profile id."
@@ -4692,7 +4694,7 @@ def _build_desired_proxy_pac_state(
     """Build desired PAC state using the same stores as the just-saved form flow."""
     try:
         signature = inspect.signature(build_proxy_pac_state)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         signature = None
     parameters = signature.parameters if signature is not None else {}
     accepts_runtime_stores = any(
@@ -5444,7 +5446,7 @@ def _webfilter_set_settings(store: Any, **kwargs: Any) -> None:
     }
     try:
         parameters = inspect.signature(store.set_settings).parameters
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         accepted_settings = optional_names
     else:
         if any(
@@ -8383,7 +8385,7 @@ def _prom_label(value: object) -> str:
 def _prom_value(value: object) -> str:
     try:
         number = float(value or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         number = 0.0
     if not math.isfinite(number) or number < 0:
         number = 0.0
@@ -8395,7 +8397,7 @@ def _prom_value(value: object) -> str:
 def _ratio_from_percent(value: object) -> float:
     try:
         number = float(value or 0.0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
     if not math.isfinite(number) or number <= 0:
         return 0.0
@@ -9292,7 +9294,7 @@ def error_pages():
             token_summary[page.name] = ", ".join(
                 template_tokens(read_template(page.name))
             )
-        except (OSError, UnicodeError):
+        except OSError, UnicodeError:
             unavailable_templates[page.name] = unavailable_message
             token_summary[page.name] = "Unavailable"
     return render_template(
@@ -9307,7 +9309,7 @@ def error_pages():
 def error_page_preview(name: str):
     try:
         html = render_preview(name)
-    except (KeyError, OSError, UnicodeError):
+    except KeyError, OSError, UnicodeError:
         abort(404)
     response = Response(html, mimetype="text/html")
     response.headers["X-Robots-Tag"] = "noindex, nofollow"

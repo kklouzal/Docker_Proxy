@@ -125,7 +125,7 @@ def _proxied_request(proxy_url: str, url: str, *, timeout_seconds: float = 15.0)
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}),
         # Live proxy HTTPS traffic is intentionally ssl-bumped by Squid's test CA.
-        urllib.request.HTTPSHandler(context=ssl._create_unverified_context()),  # noqa: S323
+        urllib.request.HTTPSHandler(context=ssl._create_unverified_context()),  # ruff: ignore[suspicious-unverified-context-usage]
     )
     request = urllib.request.Request(
         url,

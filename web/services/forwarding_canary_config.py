@@ -32,7 +32,7 @@ def forwarding_canary_path() -> str:
 def normalize_forwarding_canary_port(value: object) -> int:
     try:
         port = int(str(value or DEFAULT_FORWARDING_CANARY_PORT).strip())
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return DEFAULT_FORWARDING_CANARY_PORT
     return port if 1 <= port <= 65535 else DEFAULT_FORWARDING_CANARY_PORT
 

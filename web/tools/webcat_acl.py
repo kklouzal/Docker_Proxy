@@ -15,21 +15,21 @@ APP_ROOT = Path(os.path.join(HERE, "..")).resolve()
 if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
-import contextlib  # noqa: E402
-import fcntl  # noqa: E402
+import contextlib  # ruff: ignore[module-import-not-at-top-of-file]
+import fcntl  # ruff: ignore[module-import-not-at-top-of-file]
 
-from services.blocked_log_runtime import BlockedLogDb as _BlockedLogDb  # noqa: E402
-from services.db import connect  # noqa: E402
-from services.domain_normalization import normalize_domain as _norm_domain  # noqa: E402
-from services.helper_runtime import (  # noqa: E402
+from services.blocked_log_runtime import BlockedLogDb as _BlockedLogDb  # ruff: ignore[module-import-not-at-top-of-file]
+from services.db import connect  # ruff: ignore[module-import-not-at-top-of-file]
+from services.domain_normalization import normalize_domain as _norm_domain  # ruff: ignore[module-import-not-at-top-of-file]
+from services.helper_runtime import (  # ruff: ignore[module-import-not-at-top-of-file]
     HelperStats,
     TtlLruCache,
     split_acl_channel,
     write_acl_response,
 )
-from services.runtime_helpers import env_float as _env_float  # noqa: E402
-from services.runtime_helpers import env_int as _env_int  # noqa: E402
-from services.runtime_helpers import now_ts as _now  # noqa: E402
+from services.runtime_helpers import env_float as _env_float  # ruff: ignore[module-import-not-at-top-of-file]
+from services.runtime_helpers import env_int as _env_int  # ruff: ignore[module-import-not-at-top-of-file]
+from services.runtime_helpers import now_ts as _now  # ruff: ignore[module-import-not-at-top-of-file]
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence

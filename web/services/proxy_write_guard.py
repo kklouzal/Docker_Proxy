@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-# ruff: noqa: EM101,EM102,TRY003,TC003,DOC402
+# ruff: file-ignore[raw-string-in-exception, f-string-in-exception, raise-vanilla-args, typing-only-standard-library-import, docstring-missing-yields]
 import hashlib
 import os
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
@@ -373,7 +373,7 @@ def guarded_proxy_write(
     allow_alias: bool = True,
     require_registered: bool = True,
     timeout_seconds: int = _LIFECYCLE_LOCK_TIMEOUT_SECONDS,
-) -> Iterator[ProxyWriteDecision]:
+) -> Generator[ProxyWriteDecision]:
     """Hold the proxy lifecycle lock while validating and performing a write."""
     if not hasattr(conn, "native"):
         yield ProxyWriteDecision(

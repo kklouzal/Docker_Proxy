@@ -14,8 +14,8 @@ WEB_DIR = Path(__file__).resolve().parents[1]
 if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
 
-from services import audit_store, schema_lifecycle  # type: ignore  # noqa: E402
-from services.audit_store import AuditStore  # type: ignore  # noqa: E402
+from services import audit_store, schema_lifecycle  # type: ignore  # ruff: ignore[module-import-not-at-top-of-file]
+from services.audit_store import AuditStore  # type: ignore  # ruff: ignore[module-import-not-at-top-of-file]
 
 
 class _FakeResult:

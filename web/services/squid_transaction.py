@@ -414,7 +414,7 @@ class SquidTransactionJournal:
                 try:
                     # Avoid Path.unlink here: callers may instrument config-path
                     # unlink operations independently from journal temp cleanup.
-                    os.remove(tmp_path)  # noqa: PTH107
+                    os.remove(tmp_path)  # ruff: ignore[os-remove]
                 except FileNotFoundError:
                     pass
 
@@ -430,8 +430,8 @@ def lifecycle_lock_path() -> Path:
     lock_dir = (
         os.environ.get("SQUID_LIFECYCLE_LOCK_DIR")
         or os.environ.get("PROXY_RUNTIME_LOCK_DIR")
-        or "/tmp/docker-proxy-runtime"  # noqa: S108 - private validated directory
-    ).strip() or "/tmp/docker-proxy-runtime"  # noqa: S108
+        or "/tmp/docker-proxy-runtime"  # ruff: ignore[hardcoded-temp-file] - private validated directory
+    ).strip() or "/tmp/docker-proxy-runtime"  # ruff: ignore[hardcoded-temp-file]
     path = Path(lock_dir)
     if not path.is_absolute():
         msg = "Squid lifecycle lock directory must be an absolute path."
@@ -663,7 +663,7 @@ def _release_inherited_startup_lock() -> None:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
         os.environ.pop("SQUID_ENTRYPOINT_LOCK_FD", None)
-    except (OSError, TypeError, ValueError):
+    except OSError, TypeError, ValueError:
         return
 
 
@@ -680,7 +680,7 @@ def _lock_exec(command: list[str]) -> int:
     env = dict(os.environ)
     env["SQUID_ENTRYPOINT_LOCK_HELD"] = "1"
     env["SQUID_ENTRYPOINT_LOCK_FD"] = "9"
-    os.execvpe(command[0], command, env)  # noqa: S606 -- intentional lock-holder exec
+    os.execvpe(command[0], command, env)  # ruff: ignore[start-process-with-no-shell] -- intentional lock-holder exec
     return 127
 
 
@@ -723,7 +723,7 @@ def _file_evidence(role: str, path: Path) -> dict[str, Any]:
             while chunk := handle.read(1024 * 1024):
                 digest.update(chunk)
                 size += len(chunk)
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError, OSError:
         return item
     item.update(
         {

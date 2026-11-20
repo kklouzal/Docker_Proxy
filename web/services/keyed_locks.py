@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
 
 @dataclass
@@ -23,7 +23,7 @@ class KeyedLockRegistry[Key]:
         self._entries: dict[Key, _LockEntry] = {}
 
     @contextlib.contextmanager
-    def locked(self, keys: list[Key]) -> Iterator[None]:
+    def locked(self, keys: list[Key]) -> Generator[None]:
         ordered_keys = sorted(set(keys))
         with self._guard:
             entries: list[tuple[Key, _LockEntry]] = []

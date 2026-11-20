@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.ssl_errors_store import (  # noqa: E402
+from services.ssl_errors_store import (  # ruff: ignore[module-import-not-at-top-of-file]
     SslErrorsStore,  # type: ignore
     _extract_domain,  # type: ignore
 )
