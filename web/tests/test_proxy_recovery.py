@@ -155,11 +155,9 @@ def test_canonical_json_round_trip_includes_bytes_base64_and_hmac(
 
     raw = bundle_path.read_bytes()
     assert raw.endswith(b"\n")
-    assert raw == recovery.serialize_recovery_bundle(
-        recovery.read_recovery_bundle("edge-01", recovery_dir=tmp_path)
-    )
-
     envelope = json.loads(raw)
+    # The file is the canonical encoding of its own envelope.
+    assert raw == recovery.serialize_envelope(envelope)
     assert list(envelope) == sorted(envelope)
     assert envelope["format_version"] == 2
     assert envelope["source_control_plane_id"] == _SOURCE_CONTROL_PLANE_ID
@@ -178,6 +176,9 @@ def test_canonical_json_round_trip_includes_bytes_base64_and_hmac(
     assert bundle.tables[0].rows[0]["marker"] == b"\x00proxy-bytes\xff"
     assert bundle.tables[0].rows[0]["nested"] == {"payload": b"nested"}
     assert bundle.source_control_plane_id == _SOURCE_CONTROL_PLANE_ID
+    assert bundle.integrity.content_sha256 == envelope["integrity"]["content_sha256"]
+    assert bundle.integrity.mac == envelope["integrity"]["mac"]
+    assert bundle.created_ts == envelope["created_ts"]
 
     with pytest.raises(recovery.ProxyRecoveryError, match="control plane identity"):
         recovery.read_recovery_bundle(

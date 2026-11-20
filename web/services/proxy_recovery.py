@@ -408,23 +408,6 @@ def read_recovery_bundle(
     )
 
 
-def serialize_recovery_bundle(bundle: RecoveryBundle) -> bytes:
-    envelope = {
-        "format_version": bundle.format_version,
-        "proxy_id": bundle.proxy_id,
-        "source_control_plane_id": bundle.source_control_plane_id,
-        "created_ts": bundle.created_ts,
-        "schema_version": bundle.schema_version,
-        "tables": [_table_to_encoded_json(table) for table in bundle.tables],
-        "integrity": {
-            "content_sha256": bundle.integrity.content_sha256,
-            "mac_alg": bundle.integrity.mac_alg,
-            "mac": bundle.integrity.mac,
-        },
-    }
-    return serialize_envelope(envelope)
-
-
 def parse_recovery_bundle(
     raw: bytes,
     *,

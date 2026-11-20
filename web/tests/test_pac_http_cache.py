@@ -532,9 +532,9 @@ def test_local_pac_cache_exposes_configured_public_pac_path(tmp_path, pac_http) 
 
     cache = pac_http.LocalPacCache(str(pac_dir))
 
-    assert cache.public_paths() == frozenset(
-        {"/proxy.pac", "/wpad.dat", "/download/wpad.dat?site=lab"}
-    )
+    assert cache.public_request_allowed("/proxy.pac") is True
+    assert cache.public_request_allowed("/wpad.dat") is True
+    assert cache.public_request_allowed("/download/wpad.dat") is False
     assert cache.public_request_allowed("/download/wpad.dat", "site=lab") is True
     assert cache.public_request_allowed("/download/wpad.dat") is False
 
@@ -556,8 +556,7 @@ def test_local_pac_cache_matches_percent_encoded_public_pac_path(
 
     cache = pac_http.LocalPacCache(str(pac_dir))
 
-    assert "/download/wpad.dat?site=lab" in cache.public_paths()
-    assert "/download/wpad.dat" not in cache.public_paths()
+    assert cache.public_request_allowed("/download/wpad.dat") is False
     assert cache.public_request_allowed("/download/wpad.dat", "site=lab") is True
 
 
@@ -579,8 +578,7 @@ def test_local_pac_cache_exposes_configured_public_pac_url_target(
 
     cache = pac_http.LocalPacCache(str(pac_dir))
 
-    assert "/download/wpad.dat?site=lab" in cache.public_paths()
-    assert "/download/wpad.dat" not in cache.public_paths()
+    assert cache.public_request_allowed("/download/wpad.dat") is False
     assert cache.public_request_allowed("/download/wpad.dat", "site=lab") is True
 
 
@@ -601,7 +599,6 @@ def test_local_pac_cache_rejects_public_pac_path_with_encoded_separator(
     cache = pac_http.LocalPacCache(str(pac_dir))
 
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == b"PAC"
-    assert "/download/wpad.dat" not in cache.public_paths()
     assert cache.public_request_allowed("/download/wpad.dat") is False
 
 
@@ -622,7 +619,7 @@ def test_local_pac_cache_rejects_credentialed_public_pac_url(
     cache = pac_http.LocalPacCache(str(pac_dir))
 
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == b"PAC"
-    assert "/download/wpad.dat" not in cache.public_paths()
+    assert cache.public_request_allowed("/download/wpad.dat") is False
     assert cache.public_request_allowed("/download/wpad.dat", "site=lab") is False
 
 
@@ -645,7 +642,6 @@ def test_local_pac_cache_rejects_missing_authority_public_pac_url(
     cache = pac_http.LocalPacCache(str(pac_dir))
 
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") == b"PAC"
-    assert "/download/wpad.dat" not in cache.public_paths()
     assert cache.public_request_allowed("/download/wpad.dat") is False
 
 
@@ -877,7 +873,8 @@ def test_local_pac_cache_rejects_marker_manifest_sha_mismatch(
     cache = pac_http.LocalPacCache(str(pac_dir))
 
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
-    assert cache.public_paths() == frozenset({"/proxy.pac", "/wpad.dat"})
+    assert cache.public_request_allowed("/proxy.pac") is True
+    assert cache.public_request_allowed("/wpad.dat") is True
 
 
 def test_local_pac_cache_rejects_tampered_pac_file_with_valid_state_sha(
@@ -917,7 +914,8 @@ def test_local_pac_cache_rejects_tampered_pac_file_with_valid_state_sha(
     )
 
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
-    assert cache.public_paths() == frozenset({"/proxy.pac", "/wpad.dat"})
+    assert cache.public_request_allowed("/proxy.pac") is True
+    assert cache.public_request_allowed("/wpad.dat") is True
 
 
 def test_local_pac_cache_rejects_manifest_without_state_marker(
@@ -937,7 +935,8 @@ def test_local_pac_cache_rejects_manifest_without_state_marker(
     cache = pac_http.LocalPacCache(str(pac_dir))
 
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
-    assert cache.public_paths() == frozenset({"/proxy.pac", "/wpad.dat"})
+    assert cache.public_request_allowed("/proxy.pac") is True
+    assert cache.public_request_allowed("/wpad.dat") is True
 
 
 def test_pac_content_disposition_uses_requested_filename(pac_http) -> None:
@@ -1268,4 +1267,5 @@ def test_local_pac_cache_rejects_marker_that_is_not_a_rendered_state_sha(
     cache = pac_http.LocalPacCache(str(pac_dir))
 
     assert cache.resolve(client_ip="192.0.2.10", request_host="proxy.example") is None
-    assert cache.public_paths() == frozenset({"/proxy.pac", "/wpad.dat"})
+    assert cache.public_request_allowed("/proxy.pac") is True
+    assert cache.public_request_allowed("/wpad.dat") is True
