@@ -315,6 +315,31 @@ def test_latest_apply_resolves_proxy_alias_before_read(monkeypatch) -> None:
     )
 
 
+def test_cache_flush_read_failure_is_not_reported_as_no_request(monkeypatch) -> None:
+    store_module = _import_adblock_store_module()
+    store = store_module.AdblockStore()
+
+    class _FailingConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, *args, **kwargs):
+            raise RuntimeError("adblock meta read failed")
+
+    monkeypatch.setattr(store, "_connect", _FailingConn)
+    monkeypatch.setattr(
+        store_module,
+        "resolve_proxy_read_id_cached",
+        lambda conn, proxy_id: SimpleNamespace(proxy_id="edge-a"),
+    )
+
+    with pytest.raises(RuntimeError, match="adblock meta read failed"):
+        store.get_cache_flush_requested()
+
+
 def test_cache_flush_read_resolves_proxy_alias(monkeypatch) -> None:
     store_module = _import_adblock_store_module()
     conn = _AdblockProxyMetaAliasConn()
