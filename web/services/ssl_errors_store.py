@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from services.bounded_delete import BoundedDeleteIncompleteError, delete_where_in_chunks
 from services.db import DATABASE_ERRORS, connect, connect_unpooled
 from services.logutil import (
     log_database_unavailable,
@@ -42,7 +43,7 @@ class SslErrorRow:
 
 _TS_PREFIX = re.compile(
     r"^(?P<date>\d{4}/\d{2}/\d{2})\s+"
-    r"(?P<time>\d{2}:\d{2}:\d{2})"
+    r"(?P<time>\d{2}:\d{2}:\d{2})(?:\.\d{1,6})?"
     r"(?:\|\s*|\s+[^|]+\|\s*)?"
     r"(?P<msg>.*)$",
 )
@@ -252,22 +253,12 @@ class SslErrorsStore:
             )
 
     def _context_lookup_window_seconds(self) -> int:
-        try:
-            return max(
-                1,
-                min(
-                    300,
-                    int(
-                        (
-                            os.environ.get("SSL_ERRORS_CONTEXT_LOOKUP_WINDOW_SECONDS")
-                            or "20"
-                        ).strip()
-                        or "20",
-                    ),
-                ),
-            )
-        except Exception:
-            return 20
+        return _env_int(
+            "SSL_ERRORS_CONTEXT_LOOKUP_WINDOW_SECONDS",
+            20,
+            minimum=1,
+            maximum=300,
+        )
 
     def _context_lookup_windows_seconds(self) -> list[int]:
         max_window = self._context_lookup_window_seconds()
@@ -512,40 +503,6 @@ class SslErrorsStore:
             self._db_initialized = True
             self._run_startup_cleanup()
 
-    def _cleanup_chunk_size(self) -> int:
-        try:
-            return max(
-                1,
-                min(
-                    5000,
-                    int(
-                        (
-                            os.environ.get("SSL_ERRORS_CLEANUP_CHUNK_SIZE") or "500"
-                        ).strip()
-                        or "500",
-                    ),
-                ),
-            )
-        except Exception:
-            return 500
-
-    def _cleanup_max_rows(self) -> int:
-        try:
-            return max(
-                0,
-                min(
-                    1_000_000,
-                    int(
-                        (
-                            os.environ.get("SSL_ERRORS_CLEANUP_MAX_ROWS") or "50000"
-                        ).strip()
-                        or "50000",
-                    ),
-                ),
-            )
-        except Exception:
-            return 50_000
-
     def _delete_in_chunks(
         self,
         where_sql: str,
@@ -553,31 +510,20 @@ class SslErrorsStore:
         *,
         log_key: str,
     ) -> int:
-        chunk_size = self._cleanup_chunk_size()
-        max_rows = self._cleanup_max_rows()
-        if max_rows <= 0:
-            return 0
-        total = 0
-        while total < max_rows:
-            limit = min(chunk_size, max_rows - total)
-            with self._connect() as conn:
-                result = conn.execute(
-                    f"DELETE FROM ssl_errors WHERE {where_sql} LIMIT %s",
-                    (*tuple(params), limit),
-                )
-                deleted = max(0, int(getattr(result, "rowcount", 0) or 0))
-            total += deleted
-            if deleted < limit:
-                break
-        if total >= max_rows and should_log(
-            log_key + ".truncated",
-            interval_seconds=300.0,
-        ):
-            logger.warning(
-                "SSL errors cleanup reached max_rows=%s; remaining rows will be cleaned up later.",
-                max_rows,
-            )
-        return total
+        return delete_where_in_chunks(
+            self._connect,
+            table="ssl_errors",
+            where_sql=where_sql,
+            params=params,
+            chunk_size=_env_int(
+                "SSL_ERRORS_CLEANUP_CHUNK_SIZE", 500, minimum=1, maximum=5000
+            ),
+            max_rows=_env_int(
+                "SSL_ERRORS_CLEANUP_MAX_ROWS", 50_000, minimum=0, maximum=1_000_000
+            ),
+            log_key=log_key,
+            log_label="SSL errors cleanup",
+        ).deleted_rows
 
     def _run_startup_cleanup(self) -> None:
         # Cleanup is opportunistic.  It should never be a prerequisite for
@@ -586,7 +532,7 @@ class SslErrorsStore:
         # let session lock_wait_timeout abort quickly if another actor is stuck.
         try:
             self._cleanup_known_false_positives()
-        except DATABASE_ERRORS:
+        except (*DATABASE_ERRORS, BoundedDeleteIncompleteError):
             if should_log(
                 "ssl_errors_store.cleanup.false_positives",
                 interval_seconds=300.0,
@@ -602,7 +548,7 @@ class SslErrorsStore:
                 (int(cutoff),),
                 log_key="ssl_errors_store.cleanup.retention",
             )
-        except DATABASE_ERRORS:
+        except (*DATABASE_ERRORS, BoundedDeleteIncompleteError):
             if should_log("ssl_errors_store.cleanup.retention", interval_seconds=300.0):
                 logger.warning(
                     "SSL errors retention cleanup skipped because the database is busy/unavailable.",
@@ -694,6 +640,11 @@ class SslErrorsStore:
         with self._connect() as conn:
             latest_seen_ts = self._latest_seen_ts(conn)
             for line in lines:
+                if not _TS_PREFIX.match(line) and not _extract_followup_context(line):
+                    # Without its own timestamp a replayed record cannot be
+                    # ordered against latest_seen_ts, so every reseed would
+                    # count it again under the current time.
+                    continue
                 ts, _msg = _parse_cache_log_ts(line)
                 if latest_seen_ts and ts <= latest_seen_ts:
                     continue
@@ -1089,30 +1040,6 @@ class SslErrorsStore:
                     message="SSL errors tailer loop failed",
                 )
                 self._stop_event.wait(max(1.0, poll_interval))
-
-    def list_errors(self, limit: int = 200) -> list[dict[str, Any]]:
-        self.init_db()
-        lim = max(10, min(1000, int(limit)))
-        proxy_id = get_proxy_id()
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT domain, category, reason, count, first_seen, last_seen, sample FROM ssl_errors WHERE proxy_id=%s ORDER BY last_seen DESC, count DESC LIMIT %s",
-                (proxy_id, lim),
-            ).fetchall()
-
-        out: list[dict[str, Any]] = [
-            {
-                "domain": str(r[0] or ""),
-                "category": str(r[1] or ""),
-                "reason": str(r[2] or ""),
-                "count": int(r[3] or 0),
-                "first_seen": int(r[4] or 0),
-                "last_seen": int(r[5] or 0),
-                "sample": str(r[6] or ""),
-            }
-            for r in rows
-        ]
-        return out
 
 
 _store: SslErrorsStore | None = None

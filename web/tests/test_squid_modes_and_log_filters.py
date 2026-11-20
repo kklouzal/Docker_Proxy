@@ -1,4 +1,5 @@
 import time
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,7 +38,7 @@ def test_ssl_errors_store_seed_from_recent_log_skips_already_counted_rows(
     store.seed_from_recent_log()
     store.seed_from_recent_log()
 
-    rows = store.list_errors(limit=10)
+    rows = [asdict(row) for row in store.list_recent(limit=10)]
 
     assert len(rows) == 1
     assert rows[0]["count"] == 1
@@ -91,7 +92,7 @@ def test_ssl_errors_store_ignores_startup_noise(tmp_path) -> None:
         "2026/04/18 04:04:40| error detail: SQUID_TLS_ERR_ACCEPT+TLS_LIB_ERR=A000119+TLS_IO_ERR=1"
     )
 
-    rows = store.list_errors(limit=10)
+    rows = [asdict(row) for row in store.list_recent(limit=10)]
 
     assert len(rows) == 1
     assert rows[0]["category"] == "TLS_CLIENT_ACCEPT"
@@ -115,7 +116,7 @@ def test_ssl_errors_store_merges_followup_connection_context_without_double_coun
         "    connection: conn23 local=10.0.0.5:3128 remote=192.0.2.10:54432 FD 12 flags=1"
     )
 
-    rows = store.list_errors(limit=10)
+    rows = [asdict(row) for row in store.list_recent(limit=10)]
 
     assert len(rows) == 1
     assert rows[0]["count"] == 1
@@ -141,7 +142,7 @@ def test_ssl_errors_store_merges_tls_accept_header_detail_and_context_into_one_b
         "    connection: conn23 local=10.0.0.5:3128 remote=192.0.2.10:54432 FD 12 flags=1"
     )
 
-    rows = store.list_errors(limit=10)
+    rows = [asdict(row) for row in store.list_recent(limit=10)]
 
     assert len(rows) == 1
     assert rows[0]["category"] == "TLS_CLIENT_ACCEPT"
@@ -201,7 +202,7 @@ def test_ssl_errors_store_enriches_tls_accept_domain_from_master_xaction(
     )
     store.ingest_line("    current master transaction: master55")
 
-    rows = store.list_errors(limit=10)
+    rows = [asdict(row) for row in store.list_recent(limit=10)]
 
     assert len(rows) == 1
     assert rows[0]["domain"] == "gateway.discord.gg"
