@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlparse
 
 import pymysql  # type: ignore
 
+from services.logutil import log_exception_throttled
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
 from services.sql_identifiers import quote_mysql_identifier
@@ -703,6 +704,12 @@ def release_mysql_named_lock(conn: Any, name: str) -> None:
     except Exception:
         if hasattr(conn, "_discard_on_close"):
             conn._discard_on_close = True
+        log_exception_throttled(
+            logger,
+            f"db.release_named_lock.{name}",
+            interval_seconds=300.0,
+            message="MySQL named lock release failed; discarding the session",
+        )
 
 
 @contextlib.contextmanager
