@@ -161,17 +161,17 @@ def _rows(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> list[Any]:
     return list(conn.execute(sql, params).fetchall())
 
 
+# information_schema column labels are upper-case in MySQL 8 unless aliased,
+# and CompatRow also answers positional lookups, so a lower-case key miss must
+# never fall back to the wrong column. Alias every column and read it by key
+# with its own position.
 def _table_names(conn: Any) -> set[str]:
     return {
-        str(
-            _row_value(row, "table_name")
-            or _row_value(row, "TABLE_NAME")
-            or _row_value(row, "table_name", 0)
-        )
+        str(_row_value(row, "table_name", 0))
         for row in _rows(
             conn,
             """
-            SELECT table_name
+            SELECT table_name AS table_name
             FROM information_schema.tables
             WHERE table_schema = DATABASE()
             """,
@@ -181,22 +181,11 @@ def _table_names(conn: Any) -> set[str]:
 
 def _column_names(conn: Any) -> set[tuple[str, str]]:
     return {
-        (
-            str(
-                _row_value(row, "table_name")
-                or _row_value(row, "TABLE_NAME")
-                or _row_value(row, "table_name", 0)
-            ),
-            str(
-                _row_value(row, "column_name")
-                or _row_value(row, "COLUMN_NAME")
-                or _row_value(row, "column_name", 1)
-            ),
-        )
+        (str(_row_value(row, "table_name", 0)), str(_row_value(row, "column_name", 1)))
         for row in _rows(
             conn,
             """
-            SELECT table_name, column_name
+            SELECT table_name AS table_name, column_name AS column_name
             FROM information_schema.columns
             WHERE table_schema = DATABASE()
             """,
@@ -206,22 +195,11 @@ def _column_names(conn: Any) -> set[tuple[str, str]]:
 
 def _index_names(conn: Any) -> set[tuple[str, str]]:
     return {
-        (
-            str(
-                _row_value(row, "table_name")
-                or _row_value(row, "TABLE_NAME")
-                or _row_value(row, "table_name", 0)
-            ),
-            str(
-                _row_value(row, "index_name")
-                or _row_value(row, "INDEX_NAME")
-                or _row_value(row, "index_name", 1)
-            ),
-        )
+        (str(_row_value(row, "table_name", 0)), str(_row_value(row, "index_name", 1)))
         for row in _rows(
             conn,
             """
-            SELECT table_name, index_name
+            SELECT table_name AS table_name, index_name AS index_name
             FROM information_schema.statistics
             WHERE table_schema = DATABASE()
             """,
