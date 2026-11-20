@@ -31,7 +31,10 @@ from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit
 
 from services.errors import public_error_message
 from services.http_optimizations import gzip_responses_enabled
-from services.logutil import configure_process_logging
+from services.logutil import (
+    configure_process_logging,
+    log_exception_redacted_throttled,
+)
 from services.proxy_logs import (
     parse_proxy_log_max_bytes,
     proxy_log_status_code,
@@ -122,20 +125,33 @@ class _HTTPError(Exception):
 class _Request:
     """The parts of a Werkzeug request the management routes read."""
 
-    __slots__ = ("_args", "_data", "environ", "headers", "method", "path")
+    __slots__ = ("_args", "_data", "environ", "headers", "method", "path", "route")
 
     def __init__(self, environ: dict[str, Any], method: str, path: str) -> None:
         self.environ = environ
         self.method = method
         self.path = path
         self.headers = RequestHeaders(environ)
+        # The matched route rule: the throttling key of logged failures.
+        self.route = "unrouted"
         self._args: dict[str, str] | None = None
         self._data: bytes | None = None
 
     def arg(self, name: str) -> str | None:
         """First value of a query argument, like ``request.args.get``."""
         if self._args is None:
-            query = self.environ.get("QUERY_STRING", "").encode("latin-1").decode()
+            try:
+                query = self.environ.get("QUERY_STRING", "").encode("latin-1").decode()
+            except UnicodeError as exc:
+                raise _HTTPError(
+                    json_response(
+                        {
+                            "ok": False,
+                            "detail": "Management request query string must be UTF-8.",
+                        },
+                        400,
+                    ),
+                ) from exc
             args: dict[str, str] = {}
             for key, value in parse_qsl(
                 query, keep_blank_values=True, errors=_QUERY_ERRORS
@@ -215,6 +231,17 @@ def _management_json_max_content_length() -> int:
         "PROXY_MANAGEMENT_JSON_MAX_CONTENT_LENGTH",
         default=_MANAGEMENT_JSON_DEFAULT_MAX_CONTENT_LENGTH,
         maximum=16 * 1024 * 1024,
+    )
+
+
+def _log_failure(request: _Request, exc: BaseException) -> None:
+    """Throttled, credential-redacted log of a failed management request."""
+    log_exception_redacted_throttled(
+        _LOGGER,
+        f"proxy_api.{request.method}.{request.route}",
+        exc,
+        interval_seconds=60.0,
+        message=f"Management request failed on {request.route} [{request.method}]",
     )
 
 
@@ -349,23 +376,20 @@ def health(_request: _Request) -> Response:
 
 
 def manage_health(request: _Request) -> Response:
+    full = str(request.arg("full") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "full",
+    }
+    force = str(request.arg("force") or "").strip().lower() in {"1", "true", "yes"}
     try:
         current_runtime = _runtime()
-        full = str(request.arg("full") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "full",
-        }
-        force = str(request.arg("force") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-        }
         if full:
             return json_response(current_runtime.collect_health(force=force))
         return json_response(current_runtime.collect_navigation_health(force=force))
     except Exception as exc:
+        _log_failure(request, exc)
         detail = public_error_message(exc, default="Proxy health collection failed.")
         return json_response(
             {
@@ -383,15 +407,11 @@ def manage_health(request: _Request) -> Response:
 
 
 def manage_clamav_health(request: _Request) -> Response:
+    force = str(request.arg("force") or "").strip().lower() in {"1", "true", "yes"}
     try:
-        current_runtime = _runtime()
-        force = str(request.arg("force") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-        }
-        return json_response(current_runtime.collect_clamav_health(force=force))
+        return json_response(_runtime().collect_clamav_health(force=force))
     except Exception as exc:
+        _log_failure(request, exc)
         detail = public_error_message(
             exc,
             default="Proxy ClamAV health collection failed.",
@@ -441,6 +461,7 @@ def manage_sync(request: _Request) -> Response:
             operation_id=operation_id,
         )
     except Exception as exc:
+        _log_failure(request, exc)
         detail = public_error_message(exc, default="Proxy reconciliation failed.")
         return json_response({"ok": False, "detail": detail}, 500)
     return json_response(result, 200 if result.get("ok") else 409)
@@ -655,6 +676,9 @@ def _route(environ: dict[str, Any], request: _Request) -> Response:
             return json_response(_FORBIDDEN_BODY, 403)
         if mutates and not control_plane_ready():
             return _control_plane_starting()
+        request.route = (
+            "/api/manage/test/supervisor/<program_name>/<action>" if args else candidate
+        )
         return view(request, *args)
     if allowed:
         return Response(
@@ -672,8 +696,8 @@ def app(environ: dict[str, Any], start_response: Callable[..., Any]) -> Iterable
         response = _route(environ, request)
     except _HTTPError as exc:
         response = exc.response
-    except Exception:
-        _LOGGER.exception("Exception on %s [%s]", request.path, method)
+    except Exception as exc:
+        _log_failure(request, exc)
         response = Response(500, HTML, INTERNAL_ERROR_PAGE)
     apply_http_optimizations(response, environ, method, gzip_enabled=_GZIP_ENABLED)
     return send(response, environ, start_response)

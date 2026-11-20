@@ -4122,7 +4122,7 @@
  },
  "query_non_utf8_health": {
   "response": {
-   "body": "{\"ok\":false,\"proxy_id\":\"edge-a\",\"proxy_status\":\"'utf-8' codec can't decode byte 0xe9 in position 8: unexpected end of data\",\"services\":{},\"state_errors\":[\"'utf-8' codec can't decode byte 0xe9 in position 8: unexpected end of data\"],\"stats\":{},\"status\":\"degraded\",\"timestamp\":1700000000,\"version\":{\"built_at\":\"2026-01-02T03:04:05Z\",\"component\":\"proxy\",\"image\":\"proxy\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"revision_short\":\"0123456789ab\",\"source_ref\":\"main\",\"version\":\"1.2.3\"}}\n",
+   "body": "{\"detail\":\"Management request query string must be UTF-8.\",\"ok\":false}\n",
    "headers": [
     [
      "Content-Type",
@@ -4130,35 +4130,35 @@
     ],
     [
      "Content-Length",
-     "493"
+     "71"
     ],
     [
      "Cache-Control",
      "no-cache"
     ]
    ],
-   "status": "200 OK"
+   "status": "400 BAD REQUEST"
   },
   "runtime_calls": []
  },
  "query_non_utf8_logs": {
   "response": {
-   "body": "<!doctype html>\n<html lang=en>\n<title>500 Internal Server Error</title>\n<h1>Internal Server Error</h1>\n<p>The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.</p>\n",
+   "body": "{\"detail\":\"Management request query string must be UTF-8.\",\"ok\":false}\n",
    "headers": [
     [
      "Content-Type",
-     "text/html; charset=utf-8"
+     "application/json"
     ],
     [
      "Content-Length",
-     "265"
+     "71"
     ],
     [
      "Cache-Control",
      "no-cache"
     ]
    ],
-   "status": "500 INTERNAL SERVER ERROR"
+   "status": "400 BAD REQUEST"
   },
   "runtime_calls": []
  },

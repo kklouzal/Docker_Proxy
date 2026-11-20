@@ -9,8 +9,10 @@ oracle for any replacement implementation, except for the entries of
 deliberate behaviour fixes made afterwards, which the dedicated tests at the
 end of this file pin independently: ``auth_non_ascii_token`` (403 instead of
 500), ``payload_bad_content_length`` and ``payload_negative_content_length``
-(400 instead of reading the body as empty) and the ``static_*`` entries (an
-unknown path instead of Flask's default static route). Unknown-length bodies
+(400 instead of reading the body as empty), ``query_non_utf8_health`` and
+``query_non_utf8_logs`` (400 instead of a degraded payload or a 500) and the
+``static_*`` entries (an unknown path instead of Flask's default static
+route). Unknown-length bodies
 over the limit (413 instead of truncation) have no golden entry.
 
 Normalizations, each for a value that is not stable between runs:
@@ -1373,6 +1375,65 @@ def test_malformed_chunked_json_is_a_bad_request_not_a_server_error(
     )
     assert record["response"]["status"] == "400 BAD REQUEST"
     assert record["runtime_calls"] == []
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/api/manage/health?full=caf\xe9",
+        "/api/manage/health/clamav?force=\xff",
+        "/api/manage/logs?log=caf\xe9",
+    ],
+)
+def test_non_utf8_query_is_a_bad_request_not_a_server_error(
+    target, monkeypatch, tmp_path
+) -> None:
+    # Flask raised UnicodeDecodeError: a logged 500 for logs, a degraded
+    # health payload for the health routes.
+    record = _scenario_record(_s("non_utf8", "GET", target), monkeypatch, tmp_path)
+    assert record["response"]["status"] == "400 BAD REQUEST"
+    assert json.loads(record["response"]["body"]) == {
+        "ok": False,
+        "detail": "Management request query string must be UTF-8.",
+    }
+    assert record["runtime_calls"] == []
+
+
+@pytest.mark.parametrize(
+    ("method", "target", "status", "route"),
+    [
+        ("GET", "/api/manage/config/current", "500", "/api/manage/config/current"),
+        ("GET", "/api/manage/health?full=1", "200", "/api/manage/health"),
+        ("POST", "/api/manage/sync", "500", "/api/manage/sync"),
+        (
+            "POST",
+            "/api/manage/test/supervisor/squid/restart",
+            "500",
+            "/api/manage/test/supervisor/<program_name>/<action>",
+        ),
+    ],
+)
+def test_view_failures_are_logged_redacted_and_throttled_per_route(
+    method, target, status, route, monkeypatch, tmp_path, caplog
+) -> None:
+    from services import logutil  # type: ignore
+
+    monkeypatch.setattr(logutil, "_last_log", {})
+    scenario = _s("raises", method, target, runtime="raises", test_mode="1")
+    with caplog.at_level("ERROR", logger="proxy.app"):
+        first = _scenario_record(scenario, monkeypatch, tmp_path)
+        second = _scenario_record(scenario, monkeypatch, tmp_path)
+
+    assert first == second
+    assert first["response"]["status"].startswith(status)
+    records = [r for r in caplog.records if r.name == "proxy.app"]
+    assert len(records) == 1, "a repeated failure within the interval is throttled"
+    logged = records[0].getMessage()
+    assert f"Management request failed on {route} [{method}]" in logged
+    assert "RuntimeError: runtime failure password=[redacted]" in logged
+    assert "Traceback" in logged
+    assert "hunter2" not in logged
+    assert records[0].exc_info is None
 
 
 def test_management_requests_load_no_flask_stack(tmp_path) -> None:

@@ -6,8 +6,9 @@ import os
 import sys
 import threading
 import time
+import traceback
 
-from services.errors import public_error_message
+from services.errors import public_error_message, redact_sensitive_text
 
 _lock = threading.Lock()
 _last_log: dict[str, float] = {}
@@ -90,6 +91,29 @@ def log_exception_throttled(
             logger.exception(message, *args)  # ruff: ignore[log-exception-outside-except-handler]
     except Exception:
         # Never let logging break the worker loop.
+        pass
+
+
+def log_exception_redacted_throttled(
+    logger: logging.Logger,
+    key: str,
+    exc: BaseException,
+    *,
+    interval_seconds: float,
+    message: str,
+) -> None:
+    """Log ``exc`` with its traceback at most once per interval per key.
+
+    For request handlers whose exception messages may carry credentials
+    (DSNs, tokens, ``password=`` pairs): the formatted traceback goes through
+    ``redact_sensitive_text`` before it is logged.
+    """
+    try:
+        if should_log(key, interval_seconds=interval_seconds):
+            details = redact_sensitive_text("".join(traceback.format_exception(exc)))
+            logger.error("%s\n%s", message, details.rstrip())
+    except Exception:
+        # Never let logging break the request.
         pass
 
 
