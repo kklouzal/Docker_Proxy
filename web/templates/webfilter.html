@@ -46,6 +46,10 @@
 
 {{ policy_runtime_card(policy_runtime_state, active_proxy) }}
 
+{% if err %}
+  <div class="banner error"><span class="badge danger">Not saved</span><div class="banner-copy"><span class="small">{{ err }}</span></div></div>
+{% endif %}
+
 {% if request.args.get('policy_error') %}
   <div class="banner error"><span class="badge danger">Sync not queued</span><div class="banner-copy"><span class="small">{{ request.args.get('policy_msg') or 'Policy changes were saved, but proxy reconciliation was not queued.' }}</span></div></div>
 {% elif request.args.get('policy_queue') %}

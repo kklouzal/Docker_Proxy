@@ -5189,12 +5189,7 @@ def _handle_adblock_post(store: Any):
             ):
                 return response
     elif action == "refresh":
-        any_enabled = False
-        try:
-            any_enabled = any(st.enabled for st in store.list_statuses())
-        except Exception:
-            any_enabled = False
-        if not any_enabled:
+        if not any(st.enabled for st in store.list_statuses()):
             return _redirect_to("adblock", refresh_no_lists="1")
         store.request_refresh_now()
         if response := _queue_adblock_or_error(action="manual refresh", store=store):
@@ -5212,13 +5207,6 @@ def _webfilter_setting(settings: Any, name: str, default: Any = None) -> Any:
     if isinstance(settings, dict):
         return settings.get(name, default)
     return getattr(settings, name, default)
-
-
-def _webfilter_current_settings(store: Any) -> Any:
-    try:
-        return store.get_settings()
-    except Exception:
-        return {}
 
 
 def _webfilter_setting_list(settings: Any, name: str) -> list[str]:
@@ -5666,7 +5654,7 @@ def _webfilter_set_settings(store: Any, **kwargs: Any) -> None:
 def _handle_webfilter_post(store: Any, tab: str):
     action = _form_action()
     if action == "save":
-        current_settings = _webfilter_current_settings(store)
+        current_settings = store.get_settings()
         enabled = request.form.get("enabled") == "on"
         source_url = (request.form.get("source_url") or "").strip()
         source_provider = (
@@ -5731,7 +5719,7 @@ def _handle_webfilter_post(store: Any, tab: str):
         )
 
     if action == "safe_browsing_save":
-        current_settings = _webfilter_current_settings(store)
+        current_settings = store.get_settings()
         safe_browsing_enabled = request.form.get("safe_browsing_enabled") == "on"
         safe_browsing_api_key = (
             request.form.get("safe_browsing_api_key") or ""
@@ -9137,28 +9125,42 @@ def adblock():
             )
             return _redirect_to("adblock", error="1", msg=public_error_message(exc))
 
-    try:
-        statuses = store.list_statuses()
-    except Exception:
-        log_exception_throttled(
-            app.logger,
-            "web.app.adblock.statuses",
-            interval_seconds=30.0,
-            message="Failed to load adblock list statuses; rendering empty state",
-        )
-        statuses = []
-    try:
-        settings = store.get_settings()
-    except Exception:
-        settings = {"enabled": True, "cache_ttl": 3600, "cache_max": 200000}
-    try:
-        stats = store.stats()
-    except Exception:
-        stats = {"total": 0, "last_24h": 0, "by_list": {}, "by_list_24h": {}}
-    try:
-        interval = store.get_update_interval_seconds()
-    except Exception:
-        interval = 6 * 60 * 60
+    unavailable: list[str] = []
+
+    def _read_or_unavailable(label: str, key: str, read: Any, placeholder: Any) -> Any:
+        try:
+            return read()
+        except Exception:
+            log_exception_throttled(
+                app.logger,
+                f"web.app.adblock.{key}",
+                interval_seconds=30.0,
+                message=f"Failed to load adblock {label}; rendering unavailable state",
+            )
+            unavailable.append(label)
+            return placeholder
+
+    statuses = _read_or_unavailable(
+        "list statuses", "statuses", store.list_statuses, []
+    )
+    settings = _read_or_unavailable(
+        "settings",
+        "settings",
+        store.get_settings,
+        {"enabled": True, "cache_ttl": 3600, "cache_max": 200000},
+    )
+    stats = _read_or_unavailable(
+        "block statistics",
+        "stats",
+        store.stats,
+        {"total": 0, "last_24h": 0, "by_list": {}, "by_list_24h": {}},
+    )
+    interval = _read_or_unavailable(
+        "update interval",
+        "interval",
+        store.get_update_interval_seconds,
+        6 * 60 * 60,
+    )
     window_i = _query_int_arg(
         "window",
         default=3600,
@@ -9233,6 +9235,7 @@ def adblock():
         update_interval_seconds=interval,
         refresh_requested=(request.args.get("refresh_requested") == "1"),
         refresh_no_lists=(request.args.get("refresh_no_lists") == "1"),
+        store_unavailable=unavailable,
         window=window_i,
         window_label=_window_label(window_i),
         adblock_icap_summary=adblock_icap_summary,
@@ -9330,6 +9333,7 @@ def webfilter():
         safe_browsing_status=safe_browsing_status,
         window=window_i,
         window_label=_window_label(window_i),
+        err=(request.args.get("err") or ""),
         err_source=(request.args.get("err_source") == "1"),
         err_safe_browsing_lists=(request.args.get("err_safe_browsing_lists") == "1"),
         err_safe_browsing_key=(request.args.get("err_safe_browsing_key") == "1"),
@@ -9840,19 +9844,16 @@ def apply_all_saved_config():
 def apply_safe_caching():
     form_kind = normalize_safe_form_kind(request.form.get("form_kind"))
     try:
+        # Unedited tunables come from the current config; publishing without them
+        # would silently reset every setting outside this form.
         current = _current_managed_config()
         tunables = squid_controller.get_tunable_options(current)
-    except Exception:
-        tunables = {}
-
-    options = build_template_options_from_form(
-        tunables,
-        request.form,
-        form_kind=form_kind,
-        max_workers=_max_workers(),
-    )
-
-    try:
+        options = build_template_options_from_form(
+            tunables,
+            request.form,
+            form_kind=form_kind,
+            max_workers=_max_workers(),
+        )
         ok, detail = _publish_template_config(
             options,
             source_kind="template",

@@ -30,6 +30,15 @@
 </ul>
 {% endcall %}
 
+{% if store_unavailable %}
+  <div class="banner error">
+    <span class="badge danger">Unavailable</span>
+    <div class="banner-copy">
+      <span class="small">Could not read adblock {{ store_unavailable|join(', ') }}; values shown for them are placeholders, not stored settings.</span>
+    </div>
+  </div>
+{% endif %}
+
 {% if request.args.get('error') %}
   <div class="banner error">
     <span class="badge danger">Refresh not queued</span>
