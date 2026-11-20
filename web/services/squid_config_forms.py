@@ -3235,13 +3235,6 @@ CACHE_OVERRIDE_FIELDS: tuple[str, ...] = (
 )
 
 
-_LEGACY_CACHE_OVERRIDE_FORM_FIELDS: Mapping[str, tuple[str, ...]] = {
-    "ignore_reload": ("override_client_no_cache", "override_origin_no_cache"),
-    "ignore_no_store": ("override_client_no_store", "override_origin_no_store"),
-    "ignore_private": ("override_origin_private",),
-}
-
-
 def get_config_ui_sections() -> tuple[UiSectionSpec, ...]:
     return CONFIG_UI_SECTIONS
 
@@ -3354,15 +3347,7 @@ def build_template_options_from_form(
 
 
 def parse_cache_override_form(form: FormMap) -> dict[str, bool]:
-    overrides: dict[str, bool] = {}
-    for field in CACHE_OVERRIDE_FIELDS:
-        modern_on = form.get(field) == "on"
-        legacy_on = any(
-            form.get(legacy_field) == "on"
-            for legacy_field in _LEGACY_CACHE_OVERRIDE_FORM_FIELDS.get(field, ())
-        )
-        overrides[field] = modern_on or legacy_on
-    return overrides
+    return {field: form.get(field) == "on" for field in CACHE_OVERRIDE_FIELDS}
 
 
 def newly_enabled_cache_overrides(

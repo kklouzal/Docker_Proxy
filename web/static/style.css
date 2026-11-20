@@ -163,10 +163,6 @@ a:hover{ color: white; }
   backdrop-filter: blur(8px);
 }
 
-.context-strip-local{
-  background: rgba(46,229,157,.06);
-}
-
 .context-strip-inner{
   display:flex;
   align-items:center;
@@ -350,8 +346,7 @@ a.brand:hover{
   border-color: rgba(122,162,255,.28);
 }
 
-.nav-pill,
-.nav-link-standalone{
+.nav-pill{
   padding: 10px 12px;
   border-radius: 12px;
   color: var(--muted);
@@ -359,15 +354,13 @@ a.brand:hover{
   background: rgba(255,255,255,.05);
 }
 
-.nav-pill:hover,
-.nav-link-standalone:hover{
+.nav-pill:hover{
   color: white;
   background: rgba(255,255,255,.10);
   border-color: rgba(255,255,255,.14);
 }
 
-.nav-pill.active,
-.nav-link-standalone.active{
+.nav-pill.active{
   color: white;
   border-color: rgba(122,162,255,.28);
   background: rgba(122,162,255,.14);
@@ -391,31 +384,6 @@ a.brand:hover{
   justify-self: stretch;
   min-width: 0;
   width: 100%;
-}
-
-.section-shell{
-  display:grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-content: start;
-  justify-items: stretch;
-  width: 100%;
-  overflow: visible;
-  background: none;
-  border: 0;
-  box-shadow: none;
-}
-
-.section-shell > *{
-  grid-column: 1 / -1;
-  justify-self: stretch;
-  width: 100%;
-  min-width: 0;
-}
-
-.section-shell .page-hero,
-.section-shell .page-heading,
-.section-shell .scope-notice{
-  margin: 0;
 }
 
 .page-hero,
@@ -1166,10 +1134,6 @@ a.brand:hover{
   color: rgba(255,255,255,.92);
 }
 
-.webfilter-whitelist{
-  min-height: 140px;
-}
-
 .webfilter-cat{
   appearance: none;
   border: 1px solid var(--border);
@@ -1567,18 +1531,6 @@ input.check{
   flex: 0 0 auto;
 }
 
-.stat-grid-5{
-  display:grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.card-stack{
-  display:grid;
-  gap: 14px;
-}
-
-.card-stack > *,
 .content-stack > *{
   justify-self: stretch;
   min-width: 0;
@@ -1595,10 +1547,6 @@ input.check{
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   align-items:end;
-}
-
-.full-span{
-  grid-column: 1 / -1;
 }
 
 .compact-stat{
@@ -1841,8 +1789,7 @@ pre{
   }
 
   .nav-trigger,
-  .nav-pill,
-  .nav-link-standalone{
+  .nav-pill{
     width: 100%;
   }
 
@@ -1890,10 +1837,6 @@ pre{
 
   .split-grid{
     grid-template-columns: 1fr;
-  }
-
-  .stat-grid-5{
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .form-grid-3{

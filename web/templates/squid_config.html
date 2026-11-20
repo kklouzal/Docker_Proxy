@@ -134,9 +134,9 @@
     </div>
 {% endif %}
 
-<div class="config-page" id="config-page-top" data-config-page="true" data-config-tab="{{ tab }}" {% if active_section %}data-config-section="{{ active_section.key }}"{% endif %}>
+<div class="config-page" id="config-page-top" data-config-page="true">
     {% if tab == 'config' %}
-        <section class="card config-editor-card" data-config-panel="raw">
+        <section class="card config-editor-card">
             <div class="card-header">
                 <div>
                     <h2 class="card-title">squid.conf</h2>
@@ -176,7 +176,6 @@
             </div>
         </section>
     {% elif active_section %}
-        {% set running_lines = line_map.get(active_section.key, []) %}
         {% set running_line_count = running_lines|length if running_lines else 0 %}
 
         <section class="card config-snapshot-card">
@@ -383,7 +382,7 @@
             </section>
 
             {% for group in active_section.groups %}
-                <section class="card config-group-card" id="group-{{ active_section.key }}-{{ group.key }}" data-config-group="{{ group.key }}">
+                <section class="card config-group-card" id="group-{{ active_section.key }}-{{ group.key }}">
                     <div class="card-header">
                         <h2 class="card-title">{{ group.title }}</h2>
                         <span class="badge ok">{{ group.field_keys|length }} setting{{ '' if group.field_keys|length == 1 else 's' }}</span>
@@ -399,8 +398,6 @@
                                 {% set textarea_class = 'compact-textarea' if field.rows <= 8 else '' %}
                                 <div
                                     class="config-field {% if field.input_type == 'textarea' %}config-field-wide{% endif %}"
-                                    data-field-key="{{ field.key }}"
-                                    data-field-group="{{ group.key }}"
                                     data-config-form-owner="safe-config-form"
                                     {% if field.depends_on %}data-depends-on="{{ field.depends_on | join(',') }}"{% endif %}
                                     {% if field.show_when %}data-show-when="{{ field.show_when | join(',') }}"{% endif %}

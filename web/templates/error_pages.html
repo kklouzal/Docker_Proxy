@@ -16,12 +16,12 @@
 <div class="grid cards-3">
   <section class="stat card">
     <span class="stat-label">Squid templates</span>
-    <span class="stat-value">42</span>
+    <span class="stat-value">{{ squid_template_count }}</span>
     <span class="small">Complete upstream `ERR_*` surface covered.</span>
   </section>
   <section class="stat card">
     <span class="stat-label">Docker Proxy custom</span>
-    <span class="stat-value">1</span>
+    <span class="stat-value">{{ custom_template_count }}</span>
     <span class="small">Web-filter block page for generated policy denies.</span>
   </section>
   <section class="stat card">
@@ -81,10 +81,16 @@
     <div>
       <h3>Safe defaults for users</h3>
       <p class="small">Use non-credential request context: error code, sanitized URL, method, destination, proxy node, client IP, and timestamp.</p>
+      <ul class="small">
+        {% for token, meaning in safe_user_tokens %}<li><code>{{ token }}</code> {{ meaning }}</li>{% endfor %}
+      </ul>
     </div>
     <div>
       <h3>Administrator diagnostics</h3>
       <p class="small">Details like full requests, helper messages, DNS/system errors, and password-bearing URLs can expose sensitive data. Keep them minimal and purposeful.</p>
+      <ul class="small">
+        {% for token, meaning in admin_diagnostic_tokens %}<li><code>{{ token }}</code> {{ meaning }}</li>{% endfor %}
+      </ul>
     </div>
   </div>
 </section>

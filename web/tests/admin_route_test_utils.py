@@ -1409,11 +1409,6 @@ def load_admin_app(monkeypatch: Any, tmp_path: Path, **overrides: Any) -> Any:
                 "updated_ts": 1,
             }
         ),
-        check_icap_adblock=lambda: {"ok": True, "detail": "ok"},
-        check_icap_av=lambda: {"ok": True, "detail": "ok"},
-        check_clamd=lambda: {"ok": True, "detail": "ok"},
-        send_sample_av_icap=lambda: {"ok": True, "detail": "204 No Content"},
-        test_eicar=lambda: {"ok": False, "detail": "EICAR unavailable"},
     )
 
     monkeypatch.setattr(admin_app, "_auth_store", fake_auth)

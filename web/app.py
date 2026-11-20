@@ -81,6 +81,8 @@ from services.directory_auth import (
     get_directory_auth_store,
 )
 from services.error_pages import (
+    ADMIN_DIAGNOSTIC_TOKENS,
+    SAFE_USER_TOKENS,
     list_error_pages,
     missing_template_names,
     read_template,
@@ -160,12 +162,7 @@ from services.proxy_context import (
 from services.proxy_health import (
     build_remote_clamav_view,
     build_unavailable_runtime_health,
-    check_adblock_icap_health,
-    check_av_icap_health,
-    check_clamd_health,
 )
-from services.proxy_health import send_sample_av_icap as _shared_send_sample_av_icap
-from services.proxy_health import test_eicar as _shared_test_eicar
 from services.proxy_logs import (
     DEFAULT_LOG_TAIL_BYTES,
     parse_proxy_log_max_bytes,
@@ -296,7 +293,24 @@ ADMIN_UI_CA_DIR = "/etc/squid/ssl/certs"
 
 app = Flask(__name__)
 install_http_optimizations(app)
-_asset_version = str(int(time.time()))
+
+
+def _static_asset_version(static_folder: str | None) -> str:
+    """Content digest for the ``?v=`` cache-buster on immutable static assets.
+
+    A digest (rather than process start time) keeps the version identical across
+    Gunicorn workers and restarts, so browsers only refetch the year-long cached
+    assets when their bytes actually change.
+    """
+    digest = hashlib.sha256()
+    root = pathlib.Path(static_folder or "")
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:16]
+
+
+_asset_version = _static_asset_version(app.static_folder)
 OBSERVABILITY_DEFAULT_WINDOW = 24 * 60 * 60
 _PROXY_HEALTH_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 _ADMIN_VERSION_STATUS_CACHE: tuple[float, dict[str, Any]] | None = None
@@ -517,26 +531,6 @@ _OBSERVABILITY_EMPTY_EXPORT_HEADERS = {
 }
 
 
-def _default_check_icap_adblock() -> dict[str, Any]:
-    return check_adblock_icap_health(timeout=0.8, error_formatter=public_error_message)
-
-
-def _default_check_icap_av() -> dict[str, Any]:
-    return check_av_icap_health(timeout=0.8, error_formatter=public_error_message)
-
-
-def _default_check_clamd() -> dict[str, Any]:
-    return check_clamd_health(timeout=0.8, error_formatter=public_error_message)
-
-
-def _default_send_sample_av_icap() -> dict[str, Any]:
-    return _shared_send_sample_av_icap(error_formatter=public_error_message)
-
-
-def _default_test_eicar() -> dict[str, Any]:
-    return _shared_test_eicar(error_formatter=public_error_message)
-
-
 @dataclass(frozen=True)
 class AppRuntimeServices:
     controller: Any
@@ -558,11 +552,6 @@ class AppRuntimeServices:
     get_observability_maintenance_status: Any
     get_observability_retention_settings: Any
     set_observability_retention_settings: Any
-    check_icap_adblock: Any
-    check_icap_av: Any
-    check_clamd: Any
-    send_sample_av_icap: Any
-    test_eicar: Any
     get_policy_request_store: Any = _default_get_policy_request_store
 
 
@@ -587,19 +576,7 @@ _default_app_runtime_services = AppRuntimeServices(
     get_observability_maintenance_status=_default_get_observability_maintenance_status,
     get_observability_retention_settings=_default_get_observability_retention_settings,
     set_observability_retention_settings=_default_set_observability_retention_settings,
-    check_icap_adblock=_default_check_icap_adblock,
-    check_icap_av=_default_check_icap_av,
-    check_clamd=_default_check_clamd,
-    send_sample_av_icap=_default_send_sample_av_icap,
-    test_eicar=_default_test_eicar,
 )
-
-
-# Admin-initiated proxy sync can legitimately take longer than the generic
-# ProxyClient default: config, policy, adblock, cache, and certificate changes
-# may perform controlled Squid/c-icap restarts. Keep the UI request bounded, but
-# do not report a failed apply while the proxy is still safely restarting.
-_ADMIN_PROXY_SYNC_TIMEOUT_SECONDS = 120.0
 
 
 def _app_runtime_services() -> AppRuntimeServices:
@@ -914,57 +891,74 @@ def _certificate_revision_sha(bundle_store: Any, revision_id: object) -> str:
     return str(getattr(revision, "bundle_sha256", "") or "").strip()
 
 
-def _certificate_global_revert_context(
-    operation: Any,
-    bundle_store: Any,
-) -> dict[str, Any]:
-    if str(getattr(operation, "rollback_kind", "") or "") != "certificate_revision":
-        return {"is_global_certificate_revert": False}
-    current_revision = None
-    try:
-        current_revision = bundle_store.get_active_bundle()
-    except Exception:
-        current_revision = None
-    rollback_sha = _certificate_revision_sha(
-        bundle_store,
-        getattr(operation, "rollback_ref", ""),
-    )
-    current_revision_id = _safe_revision_id(getattr(current_revision, "revision_id", 0))
-    current_sha = str(getattr(current_revision, "bundle_sha256", "") or "").strip()
-    target_ref = str(getattr(operation, "target_ref", "") or "").strip()
-    request_hash = str(getattr(operation, "request_hash", "") or "").strip()
-    target_matches_active = bool(
-        current_revision_id
-        and target_ref
-        and str(current_revision_id) == target_ref
-        and (not request_hash or (current_sha and request_hash == current_sha))
-    )
-    return {
-        "is_global_certificate_revert": True,
-        "global_revert_current_revision": current_revision_id,
-        "global_revert_current_sha": current_sha,
-        "global_revert_current_short_sha": _short_sha(current_sha),
-        "global_revert_target_revision": target_ref,
-        "global_revert_target_sha": request_hash,
-        "global_revert_target_short_sha": _short_sha(request_hash),
-        "global_revert_rollback_revision": str(
-            getattr(operation, "rollback_ref", "") or "",
-        ),
-        "global_revert_rollback_sha": rollback_sha,
-        "global_revert_rollback_short_sha": _short_sha(rollback_sha),
-        "global_revert_target_matches_active": target_matches_active,
-    }
+class _CertificateRevertContexts:
+    """Per-request global CA revert context for operation rows.
 
+    Every certificate-revision row compares against the same active bundle and
+    rows often share rollback revisions, so the lookups are made once per
+    rendered list instead of once per row (the ledger is polled every few
+    seconds from every open Admin UI tab).
+    """
 
-def _operation_global_certificate_context(
-    operation: Any,
-    bundle_store: Any | None = None,
-) -> dict[str, Any]:
-    if str(getattr(operation, "rollback_kind", "") or "") != "certificate_revision":
-        return {"is_global_certificate_revert": False}
-    if bundle_store is None:
-        bundle_store = get_certificate_bundles()
-    return _certificate_global_revert_context(operation, bundle_store)
+    _UNSET: Any = object()
+
+    def __init__(self) -> None:
+        self._bundle_store: Any | None = None
+        self._active_revision: Any = self._UNSET
+        self._rollback_sha: dict[str, str] = {}
+
+    def _store(self) -> Any:
+        if self._bundle_store is None:
+            self._bundle_store = get_certificate_bundles()
+        return self._bundle_store
+
+    def _active(self) -> Any | None:
+        if self._active_revision is self._UNSET:
+            try:
+                self._active_revision = self._store().get_active_bundle()
+            except Exception:
+                self._active_revision = None
+        return self._active_revision
+
+    def _sha_for(self, revision_id: object) -> str:
+        key = str(revision_id or "")
+        if key not in self._rollback_sha:
+            self._rollback_sha[key] = _certificate_revision_sha(
+                self._store(), revision_id
+            )
+        return self._rollback_sha[key]
+
+    def context(self, operation: Any) -> dict[str, Any]:
+        if str(getattr(operation, "rollback_kind", "") or "") != "certificate_revision":
+            return {"is_global_certificate_revert": False}
+        current_revision = self._active()
+        rollback_ref = getattr(operation, "rollback_ref", "")
+        rollback_sha = self._sha_for(rollback_ref)
+        current_revision_id = _safe_revision_id(
+            getattr(current_revision, "revision_id", 0)
+        )
+        current_sha = str(getattr(current_revision, "bundle_sha256", "") or "").strip()
+        target_ref = str(getattr(operation, "target_ref", "") or "").strip()
+        request_hash = str(getattr(operation, "request_hash", "") or "").strip()
+        target_matches_active = bool(
+            current_revision_id
+            and target_ref
+            and str(current_revision_id) == target_ref
+            and (not request_hash or (current_sha and request_hash == current_sha))
+        )
+        return {
+            "is_global_certificate_revert": True,
+            "global_revert_current_revision": current_revision_id,
+            "global_revert_current_sha": current_sha,
+            "global_revert_current_short_sha": _short_sha(current_sha),
+            "global_revert_target_revision": target_ref,
+            "global_revert_target_sha": request_hash,
+            "global_revert_target_short_sha": _short_sha(request_hash),
+            "global_revert_rollback_revision": str(rollback_ref or ""),
+            "global_revert_rollback_sha": rollback_sha,
+            "global_revert_rollback_short_sha": _short_sha(rollback_sha),
+            "global_revert_target_matches_active": target_matches_active,
+        }
 
 
 def _registered_certificate_operation_proxy_ids(proxies: Iterable[Any]) -> list[str]:
@@ -1002,21 +996,15 @@ def _set_operation_row_attr(row: Any, key: str, value: Any) -> None:
 
 
 def _operation_template_rows(operations: list[Any]) -> list[Any]:
-    bundle_store = None
+    contexts = _CertificateRevertContexts()
     rows = []
     for operation in operations:
         if callable(getattr(operation, "to_dict", None)):
             row = SimpleNamespace(**operation.to_dict())
         else:
             row = operation
-        if str(getattr(row, "rollback_kind", "") or "") == "certificate_revision":
-            if bundle_store is None:
-                bundle_store = get_certificate_bundles()
-            context = _operation_global_certificate_context(row, bundle_store)
-            for key, value in context.items():
-                _set_operation_row_attr(row, key, value)
-        else:
-            _set_operation_row_attr(row, "is_global_certificate_revert", False)
+        for key, value in contexts.context(row).items():
+            _set_operation_row_attr(row, key, value)
         _set_operation_row_attr(
             row,
             "detail",
@@ -1039,7 +1027,7 @@ _OPERATION_API_GLOBAL_CERTIFICATE_CONTEXT_FIELDS = {
 
 
 def _operation_api_rows(operations: list[Any]) -> list[dict[str, Any]]:
-    bundle_store = None
+    contexts = _CertificateRevertContexts()
     rows: list[dict[str, Any]] = []
     for operation in operations:
         if callable(getattr(operation, "to_dict", None)):
@@ -1052,12 +1040,7 @@ def _operation_api_rows(operations: list[Any]) -> list[dict[str, Any]]:
         if "detail" in row:
             row["detail"] = redact_sensitive_text(row.get("detail") or "")
         if str(row.get("rollback_kind") or "") == "certificate_revision":
-            if bundle_store is None:
-                bundle_store = get_certificate_bundles()
-            context = _operation_global_certificate_context(
-                SimpleNamespace(**row),
-                bundle_store,
-            )
+            context = contexts.context(SimpleNamespace(**row))
             row.update(
                 {
                     key: value
@@ -2067,10 +2050,7 @@ def _prune_observability_result_cache() -> None:
         _OBSERVABILITY_RESULT_CACHE.pop(first_key, None)
 
 
-def _observability_result_cache_key(
-    *parts: Any,
-    bucket_seconds: float = _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS,
-) -> tuple[Any, ...]:
+def _observability_result_cache_key(*parts: Any) -> tuple[Any, ...]:
     return tuple(parts)
 
 
@@ -2505,19 +2485,20 @@ def _record_audit_event(
     }
     if config_text is not None:
         payload["config_text"] = config_text
-    with contextlib.suppress(Exception):
+    # Auditing never fails the audited action, but a lost record is logged.
+    try:
         get_audit_store().record(**payload)
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            f"web.app.audit_record.{kind}",
+            interval_seconds=60.0,
+            message=f"Failed to record Admin UI audit event {kind!r}",
+        )
 
 
 def _audit_safe_detail(value: Any, *, limit: int = 500) -> str:
     return " ".join(redact_sensitive_text(value).split())[:limit]
-
-
-def _recipient_count_for_audit(value: object) -> int:
-    text = str(value or "").strip()
-    if not text:
-        return 0
-    return len([token for token in re.split(r"[,; ]+", text) if token.strip()])
 
 
 def _normalize_choice(
@@ -3183,10 +3164,6 @@ def _active_proxy_management_url() -> str:
     return str(proxy.management_url or "").strip()
 
 
-def _uses_remote_proxy_runtime() -> bool:
-    return bool(_active_proxy_management_url())
-
-
 _MYSQL_SIGNED_BIGINT_MAX = 9_223_372_036_854_775_807
 
 
@@ -3589,33 +3566,15 @@ def _inject_proxy_context():
             "active_proxy": None,
             "proxy_inventory": [],
         }
-    get_proxy_id()
     active_proxy = getattr(g, "_active_proxy", None)
     proxies = getattr(g, "_proxy_inventory", None)
-    if request.endpoint in _FLEET_MANAGEMENT_ENDPOINTS:
-        requested_form_proxy = request.form.get("proxy_id")
-        if requested_form_proxy is not None:
-            session["active_proxy_id"] = normalize_proxy_id(requested_form_proxy)
-        else:
-            requested_proxy = request.args.get("proxy_id")
-            if requested_proxy is not None:
-                session["active_proxy_id"] = normalize_route_proxy_id(requested_proxy)
-        registry = get_proxy_registry()
-        proxies = _proxy_inventory_or_default(registry)
-        preferred = normalize_proxy_id(
-            session.get("active_proxy_id") or _admin_default_proxy_id(registry),
-        )
-        active_proxy = _resolve_proxy_from_inventory(registry, proxies, preferred)
-        if active_proxy is None:
-            active_proxy = _default_or_first_proxy(registry, proxies)
-        if active_proxy is not None:
-            session["active_proxy_id"] = active_proxy.proxy_id
-        return {
-            "active_proxy_id": active_proxy.proxy_id if active_proxy else None,
-            "active_proxy": active_proxy,
-            "proxy_inventory": proxies,
-        }
-    if active_proxy is None or proxies is None:
+    # Fleet management routes are not bound before the request because they
+    # change the inventory; resolve the context afresh when they render.
+    if (
+        request.endpoint in _FLEET_MANAGEMENT_ENDPOINTS
+        or active_proxy is None
+        or proxies is None
+    ):
         _active_proxy_id, active_proxy, proxies = _resolve_selected_proxy_context()
     return {
         "active_proxy_id": active_proxy.proxy_id,
@@ -4801,10 +4760,6 @@ def _queue_pac_runtime_refresh(
         else ""
     )
     return True, f"PAC runtime refresh queued{op_suffix}."
-
-
-def _best_effort_refresh_pac_runtime() -> None:
-    _queue_pac_runtime_refresh()
 
 
 def _adblock_runtime_refresh_target(*, store: Any | None = None) -> dict[str, str]:
@@ -6347,7 +6302,6 @@ def index():
         "index.html",
         proxy_status=proxy_detail,
         proxy_ok=proxy_ok,
-        flask_status="OK",
         stats=stats,
         trends=trends,
         icap_health=icap_health,
@@ -6369,24 +6323,20 @@ def health():
 def api_version_status():
     admin_status = _cached_admin_version_status()
     proxy_status = _initial_version_header_status()["proxy"]
-    proxy_id = normalize_proxy_id(
-        request.args.get("proxy_id") or session.get("active_proxy_id") or ""
-    )
-    if proxy_id:
-        try:
-            health = _cached_proxy_health(
-                proxy_id,
-                timeout_seconds=_proxy_health_timeout_seconds(),
-            )
-            proxy_status = _proxy_version_status_from_health(health)
-        except Exception as exc:
-            proxy_status = {
-                **proxy_status,
-                "detail": public_error_message(
-                    exc,
-                    default="Selected proxy version metadata is unavailable.",
-                ),
-            }
+    try:
+        health = _cached_proxy_health(
+            get_proxy_id(),
+            timeout_seconds=_proxy_health_timeout_seconds(),
+        )
+        proxy_status = _proxy_version_status_from_health(health)
+    except Exception as exc:
+        proxy_status = {
+            **proxy_status,
+            "detail": public_error_message(
+                exc,
+                default="Selected proxy version metadata is unavailable.",
+            ),
+        }
     return jsonify({"ok": True, "admin": admin_status, "proxy": proxy_status})
 
 
@@ -6866,6 +6816,7 @@ def api_operations():
             },
         ), 200
     except Exception as exc:
+        app.logger.exception("Operation ledger API read failed")
         return jsonify(
             {
                 "ok": False,
@@ -6874,7 +6825,7 @@ def api_operations():
                 "counts": {},
                 "error": public_error_message(exc),
             },
-        ), 200
+        ), 503
 
 
 @app.route("/operations/<int:operation_id>/revert", methods=["POST"])
@@ -9193,14 +9144,6 @@ def sslfilter():
     )
 
 
-def _check_icap_adblock() -> dict[str, Any]:
-    return _app_runtime_services().check_icap_adblock()
-
-
-def _check_icap_av() -> dict[str, Any]:
-    return _app_runtime_services().check_icap_av()
-
-
 def _clamav_remote_health_unlocked(proxy_id: str) -> dict[str, Any]:
     timeout_seconds = _proxy_clamav_health_timeout_seconds()
     key = (str(proxy_id or ""), "clamav", float(timeout_seconds))
@@ -9269,18 +9212,6 @@ def _clamav_remote_health(proxy_id: str) -> dict[str, Any]:
     )
 
 
-def _send_sample_av_icap() -> dict[str, Any]:
-    return _app_runtime_services().send_sample_av_icap()
-
-
-def _check_clamd() -> dict[str, Any]:
-    return _app_runtime_services().check_clamd()
-
-
-def _test_eicar() -> dict[str, Any]:
-    return _app_runtime_services().test_eicar()
-
-
 @app.route("/error-pages", methods=["GET"])
 def error_pages():
     pages = list_error_pages()
@@ -9301,6 +9232,10 @@ def error_pages():
     return render_template(
         "error_pages.html",
         pages=pages,
+        squid_template_count=sum(1 for page in pages if not page.custom),
+        custom_template_count=sum(1 for page in pages if page.custom),
+        safe_user_tokens=SAFE_USER_TOKENS,
+        admin_diagnostic_tokens=ADMIN_DIAGNOSTIC_TOKENS,
         token_summary=token_summary,
         unavailable_templates=unavailable_templates,
     )
@@ -9403,37 +9338,38 @@ def clamav_settings():
     )
 
 
-@app.route("/clamav/test-eicar", methods=["POST"])
-def clamav_test_eicar():
+def _redirect_with_clamav_probe_result(
+    probe: Callable[[str], dict[str, Any]],
+    *,
+    result_param: str,
+    detail_param: str,
+):
     try:
-        res = get_proxy_client().test_clamav_eicar(get_proxy_id())
+        res = probe(get_proxy_id())
     except ProxyClientError as exc:
-        res = {
-            "ok": False,
-            "detail": clean_text(redact_sensitive_text(str(exc)), max_len=300),
-        }
+        res = {"ok": False, "detail": str(exc)}
     detail = clean_text(redact_sensitive_text(res.get("detail") or ""), max_len=300)
     return _redirect_to(
         "clamav",
-        eicar="ok" if res.get("ok") else "fail",
-        eicar_detail=detail,
+        **{result_param: "ok" if res.get("ok") else "fail", detail_param: detail},
+    )
+
+
+@app.route("/clamav/test-eicar", methods=["POST"])
+def clamav_test_eicar():
+    return _redirect_with_clamav_probe_result(
+        get_proxy_client().test_clamav_eicar,
+        result_param="eicar",
+        detail_param="eicar_detail",
     )
 
 
 @app.route("/clamav/test-icap", methods=["POST"])
 def clamav_test_icap():
-    try:
-        res = get_proxy_client().test_clamav_icap(get_proxy_id())
-    except ProxyClientError as exc:
-        res = {
-            "ok": False,
-            "detail": clean_text(redact_sensitive_text(str(exc)), max_len=300),
-        }
-    detail = clean_text(redact_sensitive_text(res.get("detail") or ""), max_len=300)
-    return _redirect_to(
-        "clamav",
-        icap_sample="ok" if res.get("ok") else "fail",
-        icap_detail=detail,
+    return _redirect_with_clamav_probe_result(
+        get_proxy_client().test_clamav_icap,
+        result_param="icap_sample",
+        detail_param="icap_detail",
     )
 
 
@@ -9553,32 +9489,24 @@ def squid_config():
     tunables = squid_controller.get_tunable_options(current_config)
     managed_options = build_template_options(tunables, max_workers=_max_workers())
     overrides = squid_controller.get_cache_override_options(current_config)
-    caching_lines = squid_controller.get_caching_lines(current_config)
-    timeout_lines = squid_controller.get_timeout_lines(current_config)
-    logging_lines = squid_controller.get_logging_lines(current_config)
-    network_lines = squid_controller.get_network_lines(current_config)
-    dns_lines = squid_controller.get_dns_lines(current_config)
-    ssl_lines = squid_controller.get_ssl_lines(current_config)
-    icap_lines = squid_controller.get_icap_lines(current_config)
-    privacy_lines = squid_controller.get_privacy_lines(current_config)
-    limits_lines = squid_controller.get_limits_lines(current_config)
-    performance_lines = squid_controller.get_performance_lines(current_config)
-    http_lines = squid_controller.get_http_lines(current_config)
-    line_map = {
-        "caching": caching_lines,
-        "timeouts": timeout_lines,
-        "logging": logging_lines,
-        "network": network_lines,
-        "dns": dns_lines,
-        "ssl": ssl_lines,
-        "icap": icap_lines,
-        "privacy": privacy_lines,
-        "limits": limits_lines,
-        "performance": performance_lines,
-        "http": http_lines,
-    }
     section_map = {section.key: section for section in config_sections}
     active_section = section_map.get(tab)
+    # Only the active section's snapshot is rendered, so only it is parsed.
+    section_line_readers = {
+        "caching": squid_controller.get_caching_lines,
+        "timeouts": squid_controller.get_timeout_lines,
+        "logging": squid_controller.get_logging_lines,
+        "network": squid_controller.get_network_lines,
+        "dns": squid_controller.get_dns_lines,
+        "ssl": squid_controller.get_ssl_lines,
+        "icap": squid_controller.get_icap_lines,
+        "privacy": squid_controller.get_privacy_lines,
+        "limits": squid_controller.get_limits_lines,
+        "performance": squid_controller.get_performance_lines,
+        "http": squid_controller.get_http_lines,
+    }
+    read_section_lines = section_line_readers.get(tab)
+    running_lines = read_section_lines(current_config) if read_section_lines else []
     sslfilter_rules = get_sslfilter_store().list_all()
     sslfilter_count = (
         len(getattr(sslfilter_rules, "no_bump_domains", []) or [])
@@ -9613,29 +9541,16 @@ def squid_config():
         "squid_config.html",
         tab=tab,
         config_text=config_text,
-        tunables=tunables,
         managed_options=managed_options,
         overrides=overrides,
         subtab=subtab,
         summary=summary,
         config_runtime_state=config_runtime_state,
         validation=validation,
-        sslfilter_rules=sslfilter_rules,
         config_sections=config_sections,
         config_field_map=get_config_ui_field_map(),
         active_section=active_section,
-        line_map=line_map,
-        caching_lines=caching_lines,
-        timeout_lines=timeout_lines,
-        logging_lines=logging_lines,
-        network_lines=network_lines,
-        dns_lines=dns_lines,
-        ssl_lines=ssl_lines,
-        icap_lines=icap_lines,
-        privacy_lines=privacy_lines,
-        limits_lines=limits_lines,
-        performance_lines=performance_lines,
-        http_lines=http_lines,
+        running_lines=running_lines,
     )
 
 

@@ -8,7 +8,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
 from typing import Any
 
 from services.errors import redact_sensitive_text
@@ -133,13 +132,6 @@ def _safe_decoded_management_path(path: str) -> bool:
         return False
     segments = [segment for segment in decoded_segments if segment]
     return not any(segment in {".", ".."} for segment in segments)
-
-
-@dataclass(frozen=True)
-class ProxyResponse:
-    ok: bool
-    status_code: int
-    data: dict[str, Any]
 
 
 class ProxyClient:
@@ -280,7 +272,7 @@ class ProxyClient:
         path: str,
         payload: dict[str, Any] | None = None,
         timeout_seconds: float | None = None,
-    ) -> ProxyResponse:
+    ) -> dict[str, Any]:
         base = self._proxy_base_url(proxy_id)
         url = self._management_url(base, path)
         body = None
@@ -325,11 +317,7 @@ class ProxyClient:
                     detail = self._non_object_json_detail()
                     msg = f"{detail} (proxy={normalize_proxy_id(proxy_id)}, url={error_url})"
                     raise ProxyClientError(msg)
-                return ProxyResponse(
-                    ok=bool(data.get("ok", True)),
-                    status_code=int(response.status),
-                    data=data,
-                )
+                return data
         except urllib.error.HTTPError as exc:
             raw = ""
             response_too_large = False
@@ -415,7 +403,7 @@ class ProxyClient:
             method="GET",
             path=path,
             timeout_seconds=timeout_seconds,
-        ).data
+        )
 
     def get_clamav_health(
         self,
@@ -428,7 +416,7 @@ class ProxyClient:
             method="GET",
             path="/api/manage/health/clamav",
             timeout_seconds=timeout_seconds,
-        ).data
+        )
 
     def get_logs(
         self,
@@ -449,7 +437,7 @@ class ProxyClient:
             method="GET",
             path=f"/api/manage/logs{query}",
             timeout_seconds=timeout_seconds,
-        ).data
+        )
 
     def get_current_config(
         self,
@@ -462,7 +450,7 @@ class ProxyClient:
             method="GET",
             path="/api/manage/config/current",
             timeout_seconds=timeout_seconds,
-        ).data
+        )
 
     def validate_config(
         self,
@@ -477,7 +465,7 @@ class ProxyClient:
             path="/api/manage/config/validate",
             payload={"config_text": config_text or ""},
             timeout_seconds=timeout_seconds,
-        ).data
+        )
 
     def test_clamav_eicar(
         self,
@@ -491,7 +479,7 @@ class ProxyClient:
             path="/api/manage/clamav/test-eicar",
             payload={},
             timeout_seconds=timeout_seconds,
-        ).data
+        )
 
     def test_clamav_icap(
         self,
@@ -505,7 +493,7 @@ class ProxyClient:
             path="/api/manage/clamav/test-icap",
             payload={},
             timeout_seconds=timeout_seconds,
-        ).data
+        )
 
 
 _store: ProxyClient | None = None

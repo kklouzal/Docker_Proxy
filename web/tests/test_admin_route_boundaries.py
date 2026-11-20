@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -701,8 +702,10 @@ def test_logs_page_exposes_and_preserves_tail_size_control(
     assert '<option value="65536" selected>64 KiB</option>' in body
     assert "Last 64 KiB" in body
     assert "Showing the last 64 KiB." in body
-    assert "new URLSearchParams(new FormData(form))" in body
-    assert "params.set('max_bytes', maxBytes.value" in body
+    assert 'data-default-max-bytes="' in body
+    spa_js = (Path(__file__).resolve().parents[1] / "static" / "spa.js").read_text()
+    assert "new URLSearchParams(new FormData(form))" in spa_js
+    assert "params.set('max_bytes', maxBytes.value || defaultMaxBytes)" in spa_js
 
 
 def test_logs_page_preserves_explicit_rejected_log_selection(

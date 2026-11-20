@@ -308,6 +308,30 @@ def test_login_and_static_requests_do_not_bind_proxy_context(
     assert "immutable" in static.headers.get("Cache-Control", "")
 
 
+def test_missing_static_asset_is_not_cached_as_immutable(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    response = loaded.module.app.test_client().get("/static/missing-asset.js")
+
+    assert response.status_code == 404
+    assert response.headers.get("Cache-Control") == "no-store"
+
+
+def test_static_asset_version_is_a_stable_content_digest(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    module = loaded.module
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    (static_root / "spa.js").write_text("one", encoding="utf-8")
+
+    first = module._static_asset_version(str(static_root))
+    assert first == module._static_asset_version(str(static_root))
+    (static_root / "spa.js").write_text("two", encoding="utf-8")
+    assert module._static_asset_version(str(static_root)) != first
+    assert module._asset_version == module._static_asset_version(
+        module.app.static_folder
+    )
+
+
 def test_rendered_page_reuses_request_proxy_context(monkeypatch, tmp_path) -> None:
     registry = CountingRegistry()
     loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)

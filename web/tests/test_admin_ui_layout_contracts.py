@@ -6,6 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STYLE = REPO_ROOT / "web" / "static" / "style.css"
 TEMPLATES = REPO_ROOT / "web" / "templates"
+STATIC = REPO_ROOT / "web" / "static"
 
 
 def test_card_split_widths_are_opt_in_layouts() -> None:
@@ -25,17 +26,12 @@ def test_shared_layout_wrappers_stretch_direct_children() -> None:
     css = STYLE.read_text(encoding="utf-8")
 
     assert ".page-shell > *{" in css
-    assert ".section-shell{" in css
-    assert "grid-template-columns: minmax(0, 1fr);" in css
-    assert ".section-shell > *{" in css
-    assert "grid-column: 1 / -1;" in css
     assert "justify-self: stretch;" in css
     assert ".grid > *," in css
     assert ".grid > .card{" in css
     card_rule = re.search(r"(?m)^\.card\{(?P<body>.*?)^\}", css, re.DOTALL)
     assert card_rule is not None
     assert "grid-column" not in card_rule.group("body")
-    assert ".card-stack > *," in css
     assert ".content-stack > *{" in css
     assert ".stack-sm > *," in css
     assert ".stack-md > *," in css
@@ -89,6 +85,10 @@ def test_clamav_page_explains_configurable_failure_behavior() -> None:
     assert "GET and HEAD response coverage" in html
     assert "POST, PUT, and PATCH request coverage" in html
     assert "Compact baseline for file policy behavior" in html
+    # The RESPMOD exemptions documented in the README are visible to operators.
+    assert "Server-Sent Events" in html
+    assert '<span class="mono">206</span> partial responses' in html
+    assert "CLAMAV_STREAM_MAX_BYTES" in html
 
 
 def test_ssl_policy_rule_cards_are_not_forced_into_sidebar_widths() -> None:
@@ -478,3 +478,51 @@ def test_static_templates_avoid_duplicate_literal_ids() -> None:
         ids = re.findall(r'id="([^"]+)"', html)
         duplicates = {value for value in ids if ids.count(value) > 1}
         assert duplicates <= allowed_dynamic_duplicates, template.name
+
+
+def test_operation_revert_confirmation_and_timing_match_spa_rows() -> None:
+    html = (TEMPLATES / "operations.html").read_text(encoding="utf-8")
+    js = (STATIC / "spa.js").read_text(encoding="utf-8")
+
+    assert (
+        'data-confirm-message="Revert failed operation #{{ op.operation_id }}?"' in html
+    )
+    assert (
+        'data-confirm-message="Revert global CA from failed operation '
+        '#{{ op.operation_id }} for all registered proxies?"' in html
+    )
+    assert "Created {{ op.created_ts|datetimeformat }}" in html
+    assert "formatUtcTimestamp(operation.created_ts)" in js
+    assert "formatUtcTimestamp(operation.completed_ts)" in js
+    assert "if (!data || data.ok === false) return;" in js
+
+
+def test_page_behaviour_is_bound_by_the_spa_shell_not_inline_scripts() -> None:
+    # SPA navigation swaps page HTML via innerHTML, which never executes inline
+    # <script> elements, so page behaviour must live in spa.js.
+    for template in sorted(TEMPLATES.glob("*.html")):
+        if template.name == "layout.html":
+            continue
+        assert "<script" not in template.read_text(encoding="utf-8"), template.name
+    js = (STATIC / "spa.js").read_text(encoding="utf-8")
+    logs = (TEMPLATES / "logs.html").read_text(encoding="utf-8")
+
+    assert "bindLogViewer(container);" in js
+    assert "scheduleAutoRedirect(container);" in js
+    assert 'id="log-viewer-form"' in logs
+    assert "data-no-spa" in logs
+    assert 'data-default-max-bytes="{{ max_log_tail_bytes }}"' in logs
+
+
+def test_irreversible_admin_actions_ask_for_confirmation() -> None:
+    expected = {
+        "fleet.html": 'data-confirm-message="Clear proxy caches on {{ proxy.display_name }}?',
+        "administration.html": 'data-confirm-message="Remove Admin UI user {{ u.username }}?"',
+        "pac.html": 'data-confirm-message="Delete PAC profile {{ p.name }} and its rules?"',
+        "certs.html": 'data-confirm-message="Regenerate the Admin UI HTTPS certificate',
+    }
+    for name, marker in expected.items():
+        assert marker in (TEMPLATES / name).read_text(encoding="utf-8"), name
+    administration = (TEMPLATES / "administration.html").read_text(encoding="utf-8")
+    assert 'value="disable_saml_provider" data-confirm-message=' in administration
+    assert 'value="disable_auth_provider" data-confirm-message=' in administration

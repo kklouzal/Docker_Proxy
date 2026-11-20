@@ -84,3 +84,30 @@ def test_page_exposes_server_enforced_acknowledgement(monkeypatch, tmp_path) -> 
     assert response.status_code == 200
     assert 'name="acknowledge_cache_override_risk"' in text
     assert "acknowledgement is enforced by the server" in text
+
+
+def test_config_section_page_parses_only_the_active_section_snapshot(
+    monkeypatch, tmp_path
+) -> None:
+    from .admin_route_test_utils import FakeController
+
+    parsed: list[str] = []
+
+    class RecordingController(FakeController):
+        def get_dns_lines(self, _text: str) -> list[str]:
+            parsed.append("dns")
+            return ["dns_nameservers 192.0.2.53"]
+
+        def get_caching_lines(self, _text: str) -> list[str]:
+            parsed.append("other")
+            return []
+
+    loaded = load_admin_app(monkeypatch, tmp_path, controller=RecordingController())
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/squid/config?tab=dns")
+
+    assert response.status_code == 200
+    assert "dns_nameservers 192.0.2.53" in response.get_data(as_text=True)
+    assert parsed == ["dns"]

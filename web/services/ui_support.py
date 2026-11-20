@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from services.runtime_helpers import normalize_hostish as _normalize_hostish
 
@@ -101,13 +101,6 @@ def ssl_error_category_meta(category: str | None) -> dict[str, str]:
         "tone": meta["tone"],
         "note": meta["note"],
     }
-
-
-def extract_ssl_master_transaction(sample: str | None) -> str:
-    match = _MASTER_TRANSACTION_PATTERN.search(sample or "")
-    if not match:
-        return ""
-    return str(match.group("tx") or "").strip()
 
 
 def _infer_ssl_category(category: str, *, reason: str, sample: str) -> str:
@@ -713,22 +706,3 @@ def safe_local_return_url(value: str | None) -> str | None:
         return None
 
     return urlunsplit(("", "", parsed.path, parsed.query, parsed.fragment))
-
-
-def append_query_to_local_return(return_to: str | None, **params: Any) -> str | None:
-    safe = safe_local_return_url(return_to)
-    if not safe:
-        return None
-    parsed = urlsplit(safe)
-    replace_keys = {k for k, v in params.items() if v is not None}
-    items = [
-        (k, v)
-        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
-        if k not in replace_keys
-    ]
-    for key, value in params.items():
-        if value is not None:
-            items.append((key, str(value)))
-    return urlunsplit(
-        ("", "", parsed.path, urlencode(items, doseq=True), parsed.fragment),
-    )

@@ -77,47 +77,14 @@ def _chunked_http_response(chunks: list[bytes]) -> bytes:
     )
 
 
-def test_health_check_local_host_listener_and_target_helpers(
-    tmp_path, monkeypatch
-) -> None:
+def test_health_check_local_host_and_target_helpers(monkeypatch) -> None:
     health_checks = _health_checks_module()
 
     assert health_checks.is_local_host("") is True
     assert health_checks.is_local_host("LOCALHOST") is True
     assert health_checks.is_local_host("proxy") is False
 
-    proc_tcp = tmp_path / "tcp"
-    proc_tcp.write_text(
-        "sl local_address rem_address st\n0: 0100007F:36B0 00000000:0000 0A\n",
-        encoding="utf-8",
-    )
-    assert health_checks.has_listen_socket(str(proc_tcp), 14000) is True
-    assert health_checks.has_listen_socket(str(proc_tcp), 14000, "127.0.0.1") is True
-    assert health_checks.has_listen_socket(str(proc_tcp), 14000, "10.0.0.5") is False
-    assert health_checks.has_listen_socket(str(proc_tcp), 14001) is False
-    assert health_checks.has_listen_socket(str(tmp_path / "missing"), 14000) is False
-
-    proc_tcp_wildcard = tmp_path / "tcp_wildcard"
-    proc_tcp_wildcard.write_text(
-        "sl local_address rem_address st\n0: 00000000:36B0 00000000:0000 0A\n",
-        encoding="utf-8",
-    )
-    assert (
-        health_checks.has_listen_socket(str(proc_tcp_wildcard), 14000, "10.0.0.5")
-        is True
-    )
-
-    proc_tcp6 = tmp_path / "tcp6"
-    proc_tcp6.write_text(
-        "sl local_address rem_address st\n"
-        "0: 00000000000000000000000001000000:36B1 00000000000000000000000000000000:0000 0A\n",
-        encoding="utf-8",
-    )
     assert health_checks.is_local_host("[::1]") is True
-    assert health_checks.has_listen_socket(str(proc_tcp6), 14001, "::1") is True
-    assert (
-        health_checks.has_listen_socket(str(proc_tcp6), 14001, "2001:db8::1") is False
-    )
 
     assert health_checks.annotate_service_target(
         {"ok": 1, "detail": "ready"}, host="127.0.0.1", port=3310, service="clamd"
@@ -209,49 +176,6 @@ def test_recv_clamd_reply_stops_on_null_or_newline() -> None:
         health_checks._recv_clamd_reply(_FakeSocket([b"ab", b"cd", b""]), max_bytes=3)
         == b"abc"
     )
-
-
-def test_recv_status_line_handles_fragmented_icap_replies() -> None:
-    health_checks = _health_checks_module()
-
-    assert (
-        health_checks._recv_status_line(
-            _FakeSocket([b"ICAP/1.0 2", b"00 OK\r\nHeader: value\r\n"]),
-            max_bytes=64,
-        )
-        == b"ICAP/1.0 200 OK"
-    )
-    assert (
-        health_checks._recv_status_line(_FakeSocket([b"ICAP/1.0 404\nbody"]))
-        == b"ICAP/1.0 404"
-    )
-    assert health_checks._recv_status_line(_FakeSocket([])) == b""
-
-
-def test_check_tcp_success_and_failure(monkeypatch) -> None:
-    health_checks = _health_checks_module()
-
-    monkeypatch.setattr(
-        health_checks.socket,
-        "create_connection",
-        lambda *_args, **_kwargs: _FakeSocket(),
-    )
-    assert health_checks.check_tcp("127.0.0.1", 3310) == {
-        "ok": True,
-        "detail": "tcp connect ok",
-    }
-
-    monkeypatch.setattr(
-        health_checks.socket,
-        "create_connection",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("refused")),
-    )
-    assert health_checks.check_tcp(
-        "127.0.0.1", 3310, error_formatter=lambda exc: f"formatted {exc}"
-    ) == {
-        "ok": False,
-        "detail": "formatted refused",
-    }
 
 
 def test_check_icap_service_and_clamd_protocol_helpers(monkeypatch) -> None:

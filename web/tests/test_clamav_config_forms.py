@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -710,3 +711,18 @@ def test_squid_controller_routes_remote_clamd_download_scan_to_stream_helper(
     assert "adaptation_access av_resp_set deny all" in include_text
     assert "download/RESPMOD AV scanning disabled" not in include_text
     assert "c-icap virus_scan passes local temporary file paths" not in include_text
+
+
+def test_size_field_browser_pattern_matches_server_validation() -> None:
+    from services import clamav_config_forms as forms  # type: ignore
+
+    browser_pattern = re.compile(rf"^(?:{forms._SIZE_INPUT_PATTERN})$")
+    samples = ("0", "64", "64M", "64m", "1G", "128k", "", "01", "-1", "1.5M", "1T")
+    for key in forms._SIZE_FIELD_KEYS:
+        spec = forms.CLAMAV_FIELD_MAP[key]
+        assert spec.pattern == forms._SIZE_INPUT_PATTERN
+        assert spec.pattern_hint
+    for sample in samples:
+        assert bool(browser_pattern.fullmatch(sample)) == bool(
+            forms._SIZE_RE.fullmatch(sample)
+        ), sample

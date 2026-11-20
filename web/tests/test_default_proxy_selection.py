@@ -462,3 +462,34 @@ def test_admin_installer_uses_registry_default_without_db_for_scoped_audit(
         assert loaded.audit_store.records[-1]["kind"] == "probe"
     finally:
         proxy_context.set_implicit_default_proxy_resolver(None)
+
+
+def test_fleet_page_render_skips_default_lookup_for_selected_session_proxy(
+    monkeypatch, tmp_path
+):
+    registry = FakeRegistry(proxy_ids=["default", "edge-2"])
+    loaded = load_admin_app(monkeypatch, tmp_path, registry=registry)
+    module = loaded.module
+    from services import proxy_context  # type: ignore
+
+    client = module.app.test_client()
+    login_client(client)
+    with client.session_transaction() as sess:
+        sess["active_proxy_id"] = "edge-2"
+    module.install_admin_default_proxy_resolver()
+    default_lookups: list[str] = []
+    original = registry.effective_default_proxy_id
+
+    def counting_default() -> str:
+        default_lookups.append("lookup")
+        return original()
+
+    monkeypatch.setattr(registry, "effective_default_proxy_id", counting_default)
+    try:
+        response = client.get("/proxies")
+    finally:
+        proxy_context.set_implicit_default_proxy_resolver(None)
+
+    assert response.status_code == 200
+    assert 'data-active-proxy-id="edge-2"' in response.get_data(as_text=True)
+    assert default_lookups == []
