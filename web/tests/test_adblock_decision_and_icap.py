@@ -2330,7 +2330,7 @@ def test_icap_decision_cache_uses_artifact_admin_settings(
     # No published settings: built-in defaults.
     assert _decision_cache_settings(_parse_args(["--db", str(db_path)])) == (
         3600,
-        200000,
+        50000,
     )
 
     (tmp_path / "settings.json").write_text(
@@ -2357,7 +2357,7 @@ def test_icap_decision_cache_uses_artifact_admin_settings(
     monkeypatch.delenv("ADBLOCK_CACHE_TTL")
     assert _decision_cache_settings(_parse_args(["--db", str(db_path)])) == (
         3600,
-        200000,
+        50000,
     )
 
 

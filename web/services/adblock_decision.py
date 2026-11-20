@@ -575,7 +575,7 @@ class AdblockDecisionEngine:
         db_path: str | Path,
         *,
         cache_ttl_seconds: int = 3600,
-        cache_max: int = 200000,
+        cache_max: int = 50000,
         rule_cache_max: int = 50000,
     ) -> None:
         self.lookup = AdblockLookupIndex(

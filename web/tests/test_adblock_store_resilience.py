@@ -95,7 +95,7 @@ def test_shared_cache_settings_bump_version_only_when_changed(tmp_path) -> None:
     store.init_db()
     version = store.get_settings_version()
 
-    assert store.set_shared_settings(cache_ttl=3600, cache_max=200000) is False
+    assert store.set_shared_settings(cache_ttl=3600, cache_max=50000) is False
     assert store.get_settings_version() == version
     assert store.set_shared_settings(cache_ttl=120, cache_max=4096) is True
     assert store.get_settings_version() == version + 1

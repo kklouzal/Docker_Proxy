@@ -1007,7 +1007,7 @@ def _decision_cache_settings(args: argparse.Namespace) -> tuple[int, int]:
         cache_ttl = artifact_ttl if artifact_ttl is not None else 3600
     cache_max = args.cache_max
     if cache_max is None:
-        cache_max = artifact_max if artifact_max is not None else 200000
+        cache_max = artifact_max if artifact_max is not None else 50000
     return cache_ttl, cache_max
 
 

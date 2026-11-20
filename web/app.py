@@ -9258,7 +9258,7 @@ def adblock():
         "settings",
         "settings",
         store.get_settings,
-        {"enabled": True, "cache_ttl": 3600, "cache_max": 200000},
+        {"enabled": True, "cache_ttl": 3600, "cache_max": 50000},
     )
     stats = _read_or_unavailable(
         "block statistics",

@@ -95,9 +95,10 @@ _DEFAULT_SETTINGS = {
     # Legacy fallback for deployments created before runtime enablement became
     # proxy-scoped. Migration 30 copies this value into adblock_proxy_meta.
     "enabled": "0",
-    # Cache URL allow/block decisions for performance.
+    # Cache URL allow/block decisions for performance. Each entry costs ~0.5 KB
+    # in the ICAP helper, so 50,000 bounds the cache near 25 MiB.
     "cache_ttl": "3600",
-    "cache_max": "200000",
+    "cache_max": "50000",
 }
 
 
