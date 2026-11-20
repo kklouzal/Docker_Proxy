@@ -711,7 +711,12 @@ def test_admin_ui_https_preference_uses_active_bundle_paths(
     assert response.status_code == 200
     assert "Opening the HTTPS Admin UI shortly" in html
     assert "https://admin-public.example.test/certs" in html
-    assert "window.location.assign" in html
+    # The SPA shell performs the delayed hand-off (inline scripts do not run
+    # after SPA swaps of a POST response).
+    assert (
+        '<a href="https://admin-public.example.test/certs?proxy_id=default" '
+        'data-auto-redirect-ms="2500">Continue now</a>'
+    ) in html
     assert bundles.admin_ui_https_settings.enabled is True
     assert bundles.admin_ui_https_settings.certfile == certfile
     assert bundles.admin_ui_https_settings.keyfile == keyfile

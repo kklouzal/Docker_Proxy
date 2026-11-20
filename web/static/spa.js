@@ -1071,6 +1071,79 @@
     }
   };
 
+  // Logs page: refresh the tail in place. Inline template scripts do not run
+  // after SPA swaps, so the behaviour is bound here for every render.
+  const bindLogViewer = (container) => {
+    const form = container.querySelector('#log-viewer-form');
+    if (!(form instanceof HTMLFormElement) || form.dataset.spaBound) return;
+    const select = form.querySelector('#log-key');
+    const maxBytes = form.querySelector('#log-max-bytes');
+    const button = form.querySelector('#log-refresh');
+    const content = container.querySelector('#log-content');
+    const detail = container.querySelector('#log-detail');
+    const badge = container.querySelector('#log-size-badge');
+    const tailBadge = container.querySelector('#log-tail-badge');
+    if (!select || !maxBytes || !button || !content || !detail || !badge || !tailBadge) return;
+    form.dataset.spaBound = '1';
+    const defaultMaxBytes = form.dataset.defaultMaxBytes || '';
+
+    const refresh = async () => {
+      button.disabled = true;
+      button.textContent = 'Refreshing...';
+      const params = new URLSearchParams(new FormData(form));
+      params.set('log', select.value || 'access');
+      params.set('max_bytes', maxBytes.value || defaultMaxBytes);
+      try {
+        const apiUrl = form.dataset.apiUrl || '/api/logs';
+        const separator = apiUrl.includes('?') ? '&' : '?';
+        const response = await fetch(`${apiUrl}${separator}${params.toString()}`, {
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+        });
+        const payload = await response.json();
+        content.value = payload.content || '';
+        badge.textContent = `${payload.size_bytes || 0} bytes`;
+        const returnedMaxBytes = String(payload.max_bytes || defaultMaxBytes);
+        if ([...maxBytes.options].some((option) => option.value === returnedMaxBytes)) {
+          maxBytes.value = returnedMaxBytes;
+        }
+        const cap = Math.floor((payload.max_bytes || 0) / 1024);
+        tailBadge.textContent = `Last ${cap} KiB`;
+        detail.textContent = `${payload.detail || 'Log unavailable.'}${payload.truncated ? ` Showing the last ${cap} KiB.` : ''}`;
+      } catch {
+        detail.textContent = 'Log refresh failed.';
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Refresh';
+      }
+    };
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void refresh();
+    });
+    select.addEventListener('change', () => { void refresh(); });
+    maxBytes.addEventListener('change', () => { void refresh(); });
+  };
+
+  // Delayed hand-off links (e.g. "Continue now" to the HTTPS Admin UI). A
+  // pending redirect is cancelled when the SPA swaps in another page.
+  let pendingAutoRedirect = null;
+  const scheduleAutoRedirect = (container) => {
+    if (pendingAutoRedirect) {
+      window.clearTimeout(pendingAutoRedirect);
+      pendingAutoRedirect = null;
+    }
+    const link = container.querySelector('a[data-auto-redirect-ms]');
+    if (!(link instanceof HTMLAnchorElement) || !link.href) return;
+    const delay = Number(link.dataset.autoRedirectMs);
+    pendingAutoRedirect = window.setTimeout(() => {
+      pendingAutoRedirect = null;
+      window.location.assign(link.href);
+    }, Number.isFinite(delay) && delay >= 0 ? delay : 0);
+  };
+
   const enhanceContainer = (container) => {
     if (!container) return;
 
@@ -1081,6 +1154,8 @@
 
     bindCopyTargets(container);
     enhanceConfigPage(container);
+    bindLogViewer(container);
+    scheduleAutoRedirect(container);
 
     // Squid Config: "Reload saved config" button.
     // This used to live as an inline <script> in the template, which won't execute after SPA swaps.

@@ -30,7 +30,7 @@
         <span class="badge" id="log-size-badge">{{ log_payload.size_bytes or 0 }} bytes</span>
     </div>
     <div class="card-body stack-list">
-        <form class="filter-bar" id="log-viewer-form" action="{{ url_for('logs_status') }}" method="get" data-api-url="{{ url_for('api_logs_status') }}">
+        <form class="filter-bar" id="log-viewer-form" action="{{ url_for('logs_status') }}" method="get" data-no-spa data-api-url="{{ url_for('api_logs_status') }}" data-default-max-bytes="{{ max_log_tail_bytes }}">
             <label for="log-key">Log file</label>
             <select id="log-key" name="log">
                 {% for log in logs %}
@@ -57,56 +57,4 @@
     </div>
 </section>
 
-<script>
-(() => {
-  const form = document.getElementById('log-viewer-form');
-  const select = document.getElementById('log-key');
-  const maxBytes = document.getElementById('log-max-bytes');
-  const button = document.getElementById('log-refresh');
-  const content = document.getElementById('log-content');
-  const detail = document.getElementById('log-detail');
-  const badge = document.getElementById('log-size-badge');
-  const tailBadge = document.getElementById('log-tail-badge');
-  if (!form || !select || !maxBytes || !button || !content || !detail || !badge || !tailBadge) return;
-
-  const refresh = async () => {
-    button.disabled = true;
-    button.textContent = 'Refreshing...';
-    const params = new URLSearchParams(new FormData(form));
-    params.set('log', select.value || 'access');
-    params.set('max_bytes', maxBytes.value || '{{ max_log_tail_bytes }}');
-    try {
-      const apiUrl = form.dataset.apiUrl || '/api/logs';
-      const separator = apiUrl.includes('?') ? '&' : '?';
-      const response = await fetch(`${apiUrl}${separator}${params.toString()}`, {
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: { 'Accept': 'application/json' },
-      });
-      const payload = await response.json();
-      content.value = payload.content || '';
-      badge.textContent = `${payload.size_bytes || 0} bytes`;
-      const returnedMaxBytes = String(payload.max_bytes || '{{ max_log_tail_bytes }}');
-      if ([...maxBytes.options].some((option) => option.value === returnedMaxBytes)) {
-        maxBytes.value = returnedMaxBytes;
-      }
-      const cap = Math.floor((payload.max_bytes || 0) / 1024);
-      tailBadge.textContent = `Last ${cap} KiB`;
-      detail.textContent = `${payload.detail || 'Log unavailable.'}${payload.truncated ? ` Showing the last ${cap} KiB.` : ''}`;
-    } catch {
-      detail.textContent = 'Log refresh failed.';
-    } finally {
-      button.disabled = false;
-      button.textContent = 'Refresh';
-    }
-  };
-
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    refresh();
-  });
-  select.addEventListener('change', refresh);
-  maxBytes.addEventListener('change', refresh);
-})();
-</script>
 {% endblock %}

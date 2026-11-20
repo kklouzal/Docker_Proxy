@@ -87,7 +87,7 @@ def test_clamav_page_explains_configurable_failure_behavior() -> None:
     assert "Compact baseline for file policy behavior" in html
     # The RESPMOD exemptions documented in the README are visible to operators.
     assert "Server-Sent Events" in html
-    assert "<span class=\"mono\">206</span> partial responses" in html
+    assert '<span class="mono">206</span> partial responses' in html
     assert "CLAMAV_STREAM_MAX_BYTES" in html
 
 
@@ -495,3 +495,20 @@ def test_operation_revert_confirmation_and_timing_match_spa_rows() -> None:
     assert "formatUtcTimestamp(operation.created_ts)" in js
     assert "formatUtcTimestamp(operation.completed_ts)" in js
     assert "if (!data || data.ok === false) return;" in js
+
+
+def test_page_behaviour_is_bound_by_the_spa_shell_not_inline_scripts() -> None:
+    # SPA navigation swaps page HTML via innerHTML, which never executes inline
+    # <script> elements, so page behaviour must live in spa.js.
+    for template in sorted(TEMPLATES.glob("*.html")):
+        if template.name == "layout.html":
+            continue
+        assert "<script" not in template.read_text(encoding="utf-8"), template.name
+    js = (STATIC / "spa.js").read_text(encoding="utf-8")
+    logs = (TEMPLATES / "logs.html").read_text(encoding="utf-8")
+
+    assert "bindLogViewer(container);" in js
+    assert "scheduleAutoRedirect(container);" in js
+    assert 'id="log-viewer-form"' in logs
+    assert "data-no-spa" in logs
+    assert 'data-default-max-bytes="{{ max_log_tail_bytes }}"' in logs

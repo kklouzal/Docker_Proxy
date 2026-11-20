@@ -31,7 +31,7 @@
         <strong>{{ 'Certificate state updated' if message_ok else 'Certificate action failed' }}</strong>
         <span class="small">{{ message }}</span>
         {% if admin_ui_https_next %}
-        <span class="small">Opening the HTTPS Admin UI shortly. <a href="{{ admin_ui_https_next }}">Continue now</a>.</span>
+        <span class="small">Opening the HTTPS Admin UI shortly. <a href="{{ admin_ui_https_next }}" data-auto-redirect-ms="2500">Continue now</a>.</span>
         {% endif %}
     </div>
 </div>
@@ -66,14 +66,6 @@
         </span>
     </div>
 </div>
-{% endif %}
-
-{% if admin_ui_https_next %}
-<script>
-window.setTimeout(function () {
-  window.location.assign({{ admin_ui_https_next|tojson }});
-}, 2500);
-</script>
 {% endif %}
 
 <section class="card">
