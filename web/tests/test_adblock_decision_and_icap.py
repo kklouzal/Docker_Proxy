@@ -1782,6 +1782,7 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
         req = (
             b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\n"
             b"Host: 127.0.0.1\r\n"
+            b"X-Client-IP: 192.0.2.7\r\n"
             b"Encapsulated: req-hdr=0, null-body="
             + str(len(http)).encode("ascii")
             + b"\r\n\r\n"
@@ -1794,9 +1795,30 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
         assert "ads.example/banner.js" in log_text
         assert "\tsample\t" in log_text
         assert "\tblock\trule-match\n" in log_text
+        # The blocked browser is the X-Client-IP Squid sends, not the local
+        # ICAP peer; the tailer stores it as the event's source address.
+        from services.adblock_store import AdblockStore
+
+        row = AdblockStore()._parse_cicap_access_line(log_text.splitlines()[-1])
+        assert row is not None
+        assert row["src_ip"] == "192.0.2.7"
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_adblock_icap_http_client_ip_requires_one_valid_address() -> None:
+    from tools.adblock_icap_server import _http_client_ip
+
+    head = b"REQMOD icap://127.0.0.1/adblockreq ICAP/1.0\r\nHost: 127.0.0.1\r\n"
+    assert _http_client_ip(head + b"X-Client-IP: 2001:db8::1") == "2001:db8::1"
+    assert _http_client_ip(head + b"x-client-ip:  192.0.2.9 ") == "192.0.2.9"
+    assert _http_client_ip(head) == ""
+    assert _http_client_ip(head + b"X-Client-IP: not-an-ip") == ""
+    assert (
+        _http_client_ip(head + b"X-Client-IP: 192.0.2.1\r\nX-Client-IP: 192.0.2.2")
+        == ""
+    )
 
 
 def test_adblock_icap_server_handles_persistent_transactions(tmp_path: Path) -> None:

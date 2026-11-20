@@ -844,6 +844,9 @@ class FakeAdblockStore:
     def get_update_interval_seconds(self) -> int:
         return 3600
 
+    def next_download_ts(self, status: Any, now_ts: int) -> int:
+        return max(int(status.last_success) + 3600, int(now_ts))
+
 
 class FakeWebfilterStore:
     def __init__(self) -> None:

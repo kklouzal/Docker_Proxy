@@ -9282,11 +9282,7 @@ def adblock():
     now_ts = int(time.time())
     status_rows = []
     for st in statuses:
-        next_refresh = (
-            now_ts
-            if not st.enabled
-            else (st.last_success + interval if st.last_success > 0 else now_ts)
-        )
+        next_refresh = store.next_download_ts(st, now_ts) if st.enabled else 0
         last_failure_ts = st.last_attempt if st.last_error else 0
         status_rows.append(
             {
