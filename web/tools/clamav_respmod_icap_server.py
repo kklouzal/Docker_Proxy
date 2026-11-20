@@ -557,6 +557,9 @@ class ClamdInstreamSession:
         self.concurrency_gate = concurrency_gate
         self._sock = None
         self._gate_acquired = False
+        # Set when a clamd operation fails, so callers can tell a backend
+        # failure from one of their own (e.g. the ICAP client timing out).
+        self.failed = False
 
     def __enter__(self) -> Self:
         if self.concurrency_gate is not None:
@@ -598,6 +601,7 @@ class ClamdInstreamSession:
                 self._sock.sendall(struct.pack("!I", len(chunk)))
                 self._sock.sendall(chunk)
         except OSError as exc:
+            self.failed = True
             message = f"clamd INSTREAM scan failed: {exc}"
             raise RuntimeError(message) from exc
 
@@ -605,6 +609,13 @@ class ClamdInstreamSession:
         if self._sock is None:
             message = "clamd INSTREAM session is not open"
             raise RuntimeError(message)
+        try:
+            return self._finish_open_session()
+        except Exception:
+            self.failed = True
+            raise
+
+    def _finish_open_session(self) -> ClamdResult:
         try:
             self._sock.sendall(struct.pack("!I", 0))
             response_bytes = bytearray()
@@ -1582,6 +1593,7 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             timeout=self.clamd_timeout,
             concurrency_gate=self._scan_slots,
         )
+        caller_failed = False
         try:
             with session as scanner:
                 if self.fail_open:
@@ -1594,9 +1606,17 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                     if probe_lock_acquired:
                         self._scan_probe_lock.release()
                         probe_lock_acquired = False
-                yield scanner
+                try:
+                    yield scanner
+                except Exception:
+                    # A failure outside clamd (e.g. Squid idling on a
+                    # long-lived stream past the client timeout) says nothing
+                    # about backend health and must not open a fail-open
+                    # bypass window for every other response.
+                    caller_failed = not scanner.failed
+                    raise
         except Exception:
-            if self.fail_open:
+            if self.fail_open and not caller_failed:
                 unavailable_until = (
                     time.monotonic() + DEFAULT_CLAMD_UNAVAILABLE_RETRY_SECONDS
                 )

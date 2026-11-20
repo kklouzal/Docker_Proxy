@@ -5048,3 +5048,52 @@ def test_respmod_shared_stats_classify_fail_open_scan_error(monkeypatch) -> None
         "scan_errors": 1,
         "fail_open_bypasses": 1,
     }
+
+
+def test_fail_open_icap_client_failure_does_not_mark_clamd_unavailable(
+    monkeypatch,
+) -> None:
+    """A Squid-side timeout on a long-lived stream must not bypass other scans."""
+    server = _load_server()
+
+    class FakeClamdSocket:
+        def __init__(self, *, fail_send: bool) -> None:
+            self.fail_send = fail_send
+
+        def settimeout(self, _timeout) -> None:
+            pass
+
+        def sendall(self, data: bytes) -> None:
+            if self.fail_send and data != server.CLAMD_INSTREAM_COMMAND:
+                message = "clamd reset"
+                raise ConnectionResetError(message)
+
+        def close(self) -> None:
+            pass
+
+    fail_send = False
+    monkeypatch.setattr(
+        server.socket,
+        "create_connection",
+        lambda _address, timeout: FakeClamdSocket(fail_send=fail_send),
+    )
+
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.5,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+    ) as icap_server:
+        message = "ICAP client idle"
+        with pytest.raises(TimeoutError), icap_server.open_scan():
+            raise TimeoutError(message)
+        assert not icap_server._scan_unavailable_until
+
+        fail_send = True
+        with pytest.raises(RuntimeError, match="clamd INSTREAM scan failed"):
+            icap_server.scan_body(b"payload")
+        assert icap_server._scan_unavailable_until > 0.0
