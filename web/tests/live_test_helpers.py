@@ -897,8 +897,11 @@ class LiveStackClient:
                 f"Expected successful login flow, got HTTP {response.status} @ {response.url}."
             )
             assert "Sign-in failed" not in response.text
-            if not self._csrf_token:
-                self._csrf_token = token
+            # Login rotates the CSRF token: never reuse the login page's one.
+            try:
+                self._csrf_token = extract_csrf_token(response.text)
+            except AssertionError:
+                self.refresh_csrf()
         else:
             assert response.status == 200, (
                 f"Expected failed login page render, got HTTP {response.status} @ {response.url}."

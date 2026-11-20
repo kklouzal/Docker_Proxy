@@ -99,7 +99,7 @@ def test_login_requires_csrf_and_accepts_form_or_header_token(
     assert header_response.status_code in {302, 303}
 
 
-def test_login_clears_session_fixation_data_but_preserves_csrf(
+def test_login_clears_session_fixation_data_and_rotates_csrf(
     monkeypatch, tmp_path
 ) -> None:
     loaded = load_admin_app(monkeypatch, tmp_path)
@@ -112,15 +112,32 @@ def test_login_clears_session_fixation_data_but_preserves_csrf(
 
     response = client.post(
         "/login",
-        data={"username": "admin", "password": "admin", "csrf_token": token},
+        data={
+            "username": "admin",
+            "password": "admin",
+            "csrf_token": token,
+            "next": "/squid/config",
+        },
         follow_redirects=False,
     )
     assert response.status_code in {302, 303}
+    assert response.headers["Location"].endswith("/squid/config")
     with client.session_transaction() as sess:
         assert sess.get("user") == "admin"
-        assert sess.get("_csrf_token") == token
+        rotated = sess.get("_csrf_token")
         assert "pre_auth_marker" not in sess
         assert sess.permanent is True
+    assert rotated
+    assert rotated != token
+
+    # A form from a tab opened before the login carries the old token and
+    # takes the normal CSRF failure path; the page rendered after the login
+    # carries the new one, which works.
+    stale = client.post("/logout", data={"csrf_token": token})
+    assert stale.status_code == 403
+    with client.session_transaction() as sess:
+        assert sess.get("user") == "admin"
+    assert csrf_token(client, "/") == rotated
 
 
 @pytest.mark.parametrize("revocation", ["password_change", "deletion"])
@@ -669,3 +686,25 @@ def test_login_stays_reachable_during_mysql_outage(monkeypatch, tmp_path) -> Non
     # The failed attempt neither signs in nor drops the existing session.
     with client.session_transaction() as sess:
         assert sess.get("user") == "admin"
+
+
+@pytest.mark.parametrize(
+    ("provider", "kwargs"),
+    [
+        ("local", {"local_auth_version": "v1"}),
+        ("ldap", {"external_state": {"directory_marker": 1}}),
+        ("saml", {"external_state": {"saml_marker": 1}}),
+    ],
+)
+def test_every_login_provider_rotates_the_csrf_token(
+    monkeypatch, tmp_path, provider: str, kwargs: dict
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    module = loaded.module
+
+    with module.app.test_request_context("/login", method="POST"):
+        module.session["_csrf_token"] = "pre-login-token"
+        module._establish_admin_session("admin", provider, **kwargs)
+
+        assert module.session["auth_provider"] == provider
+        assert module.session["_csrf_token"] not in {"", "pre-login-token"}

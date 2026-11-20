@@ -3944,17 +3944,14 @@ def _establish_admin_session(
     local_auth_version: str | None = None,
     external_state: dict[str, Any] | None = None,
 ) -> None:
-    # Prevent session fixation by clearing any existing session data.
-    prev_csrf = session.get("_csrf_token")
+    # Prevent session fixation: drop all pre-login session data, including
+    # the CSRF token, which a pre-login visitor (or an attacker who planted
+    # the session) already knows. Every login issues a fresh token; the
+    # post-login redirect renders it, and forms from tabs opened before the
+    # login take the normal CSRF-failure path.
     session.clear()
     _forget_admin_session_memo()
-    # Keep a CSRF token available immediately after login so that the
-    # next POST (often triggered by UI actions) can succeed even if the
-    # client does not perform an intermediate template-rendering GET.
-    if prev_csrf and isinstance(prev_csrf, str):
-        session["_csrf_token"] = prev_csrf
-    else:
-        session["_csrf_token"] = secrets.token_urlsafe(32)
+    session["_csrf_token"] = secrets.token_urlsafe(32)
     session["user"] = username
     session["auth_provider"] = provider
     if provider == "local":
