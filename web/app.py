@@ -95,6 +95,7 @@ from services.error_pages import (
     template_tokens,
 )
 from services.errors import clean_text, public_error_message, redact_sensitive_text
+from services.flask_http_optimizations import install_http_optimizations
 from services.housekeeping import (
     run_housekeeping_once as _default_run_housekeeping_once,
 )
@@ -102,7 +103,6 @@ from services.housekeeping import (
     start_housekeeping,
     stop_housekeeping,
 )
-from services.http_optimizations import install_http_optimizations
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.observability_maintenance import (
     ObservabilityMaintenanceAlreadyRunningError,
