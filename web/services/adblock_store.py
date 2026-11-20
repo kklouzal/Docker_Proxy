@@ -27,7 +27,9 @@ from services.db import (
     run_mysql_operation_with_retry,
 )
 from services.errors import public_error_message
+from services.log_follower import LogFollower, run_batched_tail_loop
 from services.logutil import log_database_unavailable, log_exception_throttled
+from services.observability_backoff import DatabaseWriteBackoff
 from services.proxy_context import get_proxy_id
 from services.proxy_write_guard import (
     guarded_proxy_rows,
@@ -36,7 +38,6 @@ from services.proxy_write_guard import (
 )
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
-from services.runtime_helpers import read_bounded_complete_lines
 from services.schema_lifecycle import ensure_column, ensure_index
 
 logger = logging.getLogger(__name__)
@@ -124,10 +125,9 @@ class AdblockStore:
         self._db_initialized = False
         self._db_init_lock = threading.Lock()
         self._last_events_prune_ts = 0
-        # (inode, byte offset) of the c-icap checkpoint this process last read
-        # or committed.  Only the tailer thread touches it; when the log's
-        # inode and size still equal it, the poll skips MySQL entirely.
-        self._cicap_checkpoint: tuple[int, int] | None = None
+        # c-icap checkpoint meta values as last read from or committed to
+        # MySQL. Only the tailer thread touches it.
+        self._cicap_persisted: dict[str, str] = {}
 
     def _connect(self):
         return connect()
@@ -384,27 +384,6 @@ class AdblockStore:
             if self._blocklog_started:
                 return
             self.init_db()
-
-            # Seed only if empty to avoid duplicating historical lines.
-            try:
-                with self._connect() as conn:
-                    n = int(
-                        conn.execute(
-                            "SELECT COUNT(*) FROM adblock_events WHERE proxy_id=%s",
-                            (get_proxy_id(),),
-                        ).fetchone()[0]
-                        or 0,
-                    )
-                    if n == 0:
-                        self._seed_from_recent_log(conn)
-            except Exception:
-                log_exception_throttled(
-                    logger,
-                    "adblock_store.blocklog.seed",
-                    interval_seconds=300.0,
-                    message="Adblock blocklog seed failed",
-                )
-
             t = threading.Thread(
                 target=self._blocklog_tail_loop,
                 name="adblock-cicap-tailer",
@@ -422,158 +401,72 @@ class AdblockStore:
             thread.join(max(0.0, timeout))
         return thread is None or not thread.is_alive()
 
-    def _seed_from_recent_log(self, conn, max_lines: int = 5000) -> None:
-        lines = self._read_last_lines(self.cicap_access_log_path, max_lines=max_lines)
-        if not lines:
-            return
-        for ln in lines:
-            row = self._parse_cicap_access_line(ln)
-            if row:
-                self._insert_event(conn, row)
-        self._prune_events(conn)
+    def _open_cicap_follower(self) -> LogFollower:
+        """Return a follower resuming at the persisted c-icap checkpoint.
 
-    def _read_last_lines(self, path: str, *, max_lines: int) -> list[str]:
-        lines = read_bounded_complete_lines(
-            path, max_lines=max_lines, max_bytes=1_000_000
-        )
-        return [line for line in lines if line.strip()]
-
-    def _blocklog_tail_loop(self) -> None:
-        while not self._blocklog_stop_event.is_set():
-            try:
-                path = self.cicap_access_log_path
-                if path and pathlib.Path(path).exists():
-                    if not self._cicap_log_unchanged(path):
-                        with self._connect() as conn:
-                            self._ingest_new_cicap_lines(conn)
-            except DATABASE_ERRORS as exc:
-                log_database_unavailable(
-                    logger,
-                    "adblock_store.blocklog.db_unavailable",
-                    "Adblock blocklog tailer deferred database work while MySQL is unavailable",
-                    exc,
-                )
-            except Exception:
-                log_exception_throttled(
-                    logger,
-                    "adblock_store.blocklog.loop",
-                    interval_seconds=300.0,
-                    message="Adblock blocklog tailer loop failed",
-                )
-            self._blocklog_stop_event.wait(1.0)
-
-    def _cicap_log_unchanged(self, path: str) -> bool:
-        checkpoint = self._cicap_checkpoint
-        if checkpoint is None:
-            return False
-        try:
-            st = os.stat(path)
-        except Exception:
-            return False
-        return (int(st.st_ino or 0), int(st.st_size or 0)) == checkpoint
-
-    def _ingest_new_cicap_lines(self, conn) -> None:
-        self._cicap_checkpoint = None
+        The checkpoint is committed with the events it covers, so a restart
+        neither skips nor (beyond ``INSERT IGNORE`` dedupe) re-counts lines.
+        Without a checkpoint, or when it no longer matches the file (rotated,
+        replaced or truncated), the whole current file is read: every line in
+        it is newer than the checkpoint. A failed read raises instead of being
+        taken as "offset 0".
+        """
+        with self._connect() as conn:
+            stored = self._get_proxy_meta_values(
+                conn, ("cicap_access_inode", "cicap_access_pos")
+            )
+        self._cicap_persisted = {
+            "cicap_access_inode": stored.get("cicap_access_inode", "0"),
+            "cicap_access_pos": stored.get("cicap_access_pos", "0"),
+        }
         path = self.cicap_access_log_path
-        if not path:
-            return
-
         try:
+            inode = int(self._cicap_persisted["cicap_access_inode"] or 0)
+            pos = int(self._cicap_persisted["cicap_access_pos"] or 0)
             st = os.stat(path)
-        except Exception:
-            return
-
-        inode = int(getattr(st, "st_ino", 0) or 0)
-        size = int(getattr(st, "st_size", 0) or 0)
-
-        # A failed checkpoint read must not be taken as "offset 0": that would
-        # re-ingest the whole log. The poll loop reports it and retries.
-        stored = self._get_proxy_meta_values(
-            conn, ("cicap_access_inode", "cicap_access_pos")
+        except ValueError, OSError:
+            inode = pos = 0
+        if inode <= 0 or pos < 0:
+            return LogFollower(path, from_start=True)
+        # Only the inode is persisted; the device is the one the path is on.
+        return LogFollower(
+            path,
+            resume_identity=(int(st.st_dev), inode),
+            resume_offset=pos,
+            resume_mismatch_from_start=True,
         )
-        stored_inode = stored.get("cicap_access_inode", "0")
-        stored_pos = stored.get("cicap_access_pos", "0")
-        try:
-            last_inode = int(stored_inode or 0)
-        except Exception:
-            last_inode = 0
-        try:
-            pos = int(stored_pos or 0)
-        except Exception:
-            pos = 0
 
-        def checkpoint_changes(checkpoint: int) -> dict[str, str]:
-            # Idle polls must not rewrite an unchanged checkpoint: every write
-            # costs a lifecycle-guarded transaction against the control plane.
-            wanted = {
-                "cicap_access_inode": str(inode),
-                "cicap_access_pos": str(checkpoint),
-            }
-            current = {
-                "cicap_access_inode": stored_inode,
-                "cicap_access_pos": stored_pos,
-            }
-            return {k: v for k, v in wanted.items() if current[k] != v}
+    def _cicap_checkpoint_changes(self, follower: LogFollower) -> dict[str, str]:
+        # Idle polls must not rewrite an unchanged checkpoint: every write
+        # costs a lifecycle-guarded transaction against the control plane.
+        identity = follower.identity
+        if identity is None:
+            return {}
+        wanted = {
+            "cicap_access_inode": str(identity[1]),
+            "cicap_access_pos": str(follower.offset),
+        }
+        return {k: v for k, v in wanted.items() if self._cicap_persisted.get(k) != v}
 
-        if inode != 0 and last_inode not in {0, inode}:
-            # Log rotated/recreated.
-            pos = 0
-        if size < pos:
-            # Truncated.
-            pos = 0
-
-        # Read incremental bytes from last pos. Keep a trailing partial line
-        # uncheckpointed so it can be parsed once the writer finishes it.
-        try:
-            with pathlib.Path(path).open("rb") as f:
-                f.seek(pos, os.SEEK_SET)
-                data = f.read()
-                new_pos = f.tell()
-        except Exception:
-            return
-
-        if not data:
-            # Still update inode if it changed (so we don't keep resetting).
-            changes = checkpoint_changes(pos)
-            if not changes:
-                self._cicap_checkpoint = (inode, pos)
-                return
-            try:
-                self._set_proxy_meta_values(conn, changes)
-                conn.commit()
-                self._cicap_checkpoint = (inode, pos)
-            except Exception:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-            return
-
-        complete_data = data
-        checkpoint_pos = new_pos
-        if data and not data.endswith(b"\n"):
-            last_newline = data.rfind(b"\n")
-            if last_newline < 0:
-                complete_data = b""
-                checkpoint_pos = pos
-            else:
-                complete_data = data[: last_newline + 1]
-                checkpoint_pos = pos + last_newline + 1
-
+    def _write_cicap_batch(
+        self,
+        conn,
+        parsed_rows: list[dict[str, Any]],
+        checkpoint_changes: dict[str, str],
+    ) -> None:
+        """Insert parsed block events and advance the checkpoint atomically."""
         created_ts = _now()
-        parsed_rows: list[dict[str, Any]] = []
-        text = complete_data.decode("utf-8", errors="replace")
-        for ln in text.splitlines():
-            row = self._parse_cicap_access_line(ln)
-            if row:
-                parsed_rows.append(row)
-
-        event_rows = guarded_proxy_rows(
-            conn,
-            get_proxy_id(),
-            parsed_rows,
-            lambda proxy_id, row: self._event_values(proxy_id, row, created_ts),
-        ).rows
-
         try:
+            event_rows = (
+                guarded_proxy_rows(
+                    conn,
+                    get_proxy_id(),
+                    parsed_rows,
+                    lambda proxy_id, row: self._event_values(proxy_id, row, created_ts),
+                ).rows
+                if parsed_rows
+                else []
+            )
             if event_rows:
                 conn.executemany(
                     """
@@ -583,19 +476,88 @@ class AdblockStore:
                     """,
                     event_rows,
                 )
-
-            self._set_proxy_meta_values(conn, checkpoint_changes(checkpoint_pos))
-
-            if event_rows:
-                if created_ts - int(self._last_events_prune_ts or 0) >= 60:
-                    self._prune_events(conn)
-                    self._last_events_prune_ts = created_ts
+            self._set_proxy_meta_values(conn, checkpoint_changes)
+            if event_rows and created_ts - int(self._last_events_prune_ts or 0) >= 60:
+                self._prune_events(conn)
+                self._last_events_prune_ts = created_ts
             conn.commit()
         except Exception:
             with contextlib.suppress(Exception):
                 conn.rollback()
             raise
-        self._cicap_checkpoint = (inode, checkpoint_pos)
+
+    def _blocklog_tail_loop(self) -> None:
+        stop = self._blocklog_stop_event
+        path = self.cicap_access_log_path
+        backoff = DatabaseWriteBackoff(base_seconds=1.0, max_seconds=60.0)
+        follower: LogFollower | None = None
+        while follower is None and not stop.is_set():
+            # No MySQL round trip until there is a log to resume.
+            if not path or not pathlib.Path(path).exists():
+                stop.wait(1.0)
+                continue
+            try:
+                follower = self._open_cicap_follower()
+            except DATABASE_ERRORS as exc:
+                delay = backoff.record_failure()
+                log_database_unavailable(
+                    logger,
+                    "adblock_store.blocklog.db_unavailable",
+                    "Adblock blocklog tailer deferred database work while MySQL is unavailable",
+                    exc,
+                )
+                stop.wait(delay)
+            except Exception:
+                log_exception_throttled(
+                    logger,
+                    "adblock_store.blocklog.checkpoint",
+                    interval_seconds=300.0,
+                    message="Adblock blocklog tailer failed to read its checkpoint",
+                )
+                stop.wait(1.0)
+        if follower is None:
+            return
+        backoff.record_success()
+        pending_rows: list[dict[str, Any]] = []
+
+        def accept_line(line: str) -> None:
+            row = self._parse_cicap_access_line(line)
+            if row:
+                pending_rows.append(row)
+
+        def pending() -> int:
+            # An advanced checkpoint counts as pending work so skipped lines
+            # are not re-read after a restart.
+            return len(pending_rows) + int(
+                bool(self._cicap_checkpoint_changes(follower))
+            )
+
+        def flush() -> None:
+            changes = self._cicap_checkpoint_changes(follower)
+            if not pending_rows and not changes:
+                return
+            with self._connect() as conn:
+                self._write_cicap_batch(conn, pending_rows, changes)
+            self._cicap_persisted.update(changes)
+            pending_rows.clear()
+
+        run_batched_tail_loop(
+            follower=follower,
+            stop_event=stop,
+            accept_line=accept_line,
+            pending=pending,
+            flush=flush,
+            backoff=backoff,
+            commit_batch=500,
+            commit_interval=1.0,
+            poll_interval=1.0,
+            logger=logger,
+            log_key="adblock_store.blocklog",
+            label="Adblock blocklog tailer",
+            # The checkpoint only advances with committed rows, so stop
+            # reading rather than drop rows while MySQL is unavailable.
+            pause_at_pending=2000,
+        )
 
     def _parse_cicap_access_line(self, line: str) -> dict[str, Any] | None:
         raw = (line or "").strip("\r\n")

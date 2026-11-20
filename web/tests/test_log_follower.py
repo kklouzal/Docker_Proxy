@@ -40,6 +40,30 @@ def test_follower_opened_mid_line_skips_the_fragment(tmp_path) -> None:
     assert _drain(follower) == ["next"]
 
 
+@pytest.mark.parametrize("mismatch_from_start", [False, True])
+@pytest.mark.parametrize(
+    "resume",
+    [
+        lambda st: ((st.st_dev, st.st_ino + 1), 5),  # different file
+        lambda st: ((st.st_dev, st.st_ino), st.st_size + 1),  # truncated below it
+    ],
+)
+def test_stale_resume_point_starts_at_end_or_start(
+    tmp_path, resume, mismatch_from_start
+) -> None:
+    path = tmp_path / "access.log"
+    path.write_bytes(b"aaaa\nbbbb\n")
+    identity, offset = resume(path.stat())
+    follower = LogFollower(
+        str(path),
+        resume_identity=identity,
+        resume_offset=offset,
+        resume_mismatch_from_start=mismatch_from_start,
+    )
+    follower.ensure_open()
+    assert _drain(follower) == (["aaaa", "bbbb"] if mismatch_from_start else [])
+
+
 def test_resume_offset_inside_a_line_aligns_to_next_boundary(tmp_path) -> None:
     path = tmp_path / "access.log"
     path.write_bytes(b"aaaa\nbbbb\ncccc\n")
