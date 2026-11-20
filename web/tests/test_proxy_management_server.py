@@ -331,3 +331,21 @@ def test_graceful_stop_is_bounded() -> None:
     serving.join(5)
     assert results == [False]  # requests outlived the grace period
     assert time.monotonic() - started < 1.5
+
+
+def test_supervisor_stop_window_covers_the_graceful_drain() -> None:
+    import configparser
+
+    repo = Path(__file__).resolve().parents[2]
+    parser = configparser.RawConfigParser(inline_comment_prefixes=(";",))
+    parser.read(repo / "docker" / "supervisord.proxy.conf", encoding="utf-8")
+    entrypoint = (repo / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+    default = re.search(r'WEB_GRACEFUL_TIMEOUT:-(\d+)\}"\)"', entrypoint)
+    assert default is not None
+    assert parser.get("program:proxy_api", "command") == (
+        "python3 -m proxy.management_server"
+    )
+    # Requests in progress get the whole grace period before SIGKILL.
+    assert int(parser.get("program:proxy_api", "stopwaitsecs")) >= (
+        int(default.group(1)) + 10
+    )
