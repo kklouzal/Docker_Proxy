@@ -311,7 +311,6 @@ def test_build_sp_info_requires_explicit_public_base_url() -> None:
     with pytest.raises(ValueError, match="public admin base URL must be configured"):
         build_sp_info(
             profile,
-            _saml_request("https://attacker.example.test/auth/saml/metadata"),
         )
 
 
@@ -323,7 +322,6 @@ def test_build_sp_info_ignores_host_when_public_base_url_configured() -> None:
 
     sp = build_sp_info(
         profile,
-        _saml_request("https://attacker.example.test/auth/saml/metadata"),
     )
 
     assert sp == {
@@ -345,7 +343,6 @@ def test_build_saml_settings_rejects_host_derived_service_provider_urls() -> Non
     with pytest.raises(ValueError, match="public admin base URL must be configured"):
         build_saml_settings(
             profile,
-            _saml_request("https://evil.example.test/auth/saml/login"),
         )
 
 
@@ -1216,7 +1213,6 @@ def test_build_saml_settings_revalidates_cached_idp_endpoint_locations() -> None
     with pytest.raises(ValueError, match=r"SingleSignOnService.*must use https://"):
         build_saml_settings(
             profile,
-            _saml_request("https://admin.example.test/auth/saml/login"),
         )
 
 
@@ -1258,7 +1254,6 @@ def test_build_saml_settings_prefers_redirect_idp_endpoints_over_post_order() ->
 
     settings = build_saml_settings(
         profile,
-        _saml_request("https://admin.example.test/auth/saml/login"),
     )
 
     assert parsed["sso_services"][0]["binding"].endswith(":HTTP-POST")
@@ -1294,7 +1289,6 @@ def test_build_saml_settings_rejects_double_encoded_cached_idp_endpoint_location
     ):
         build_saml_settings(
             profile,
-            _saml_request("https://admin.example.test/auth/saml/login"),
         )
 
 

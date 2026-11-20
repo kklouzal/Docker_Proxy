@@ -1080,7 +1080,7 @@ def profile_metadata_ready(
     return bool(profile.enabled and profile_metadata_cache_ready(profile, now=now))
 
 
-def public_base_url(profile: SamlProviderProfile, request: Any) -> str:
+def public_base_url(profile: SamlProviderProfile) -> str:
     configured = (profile.public_base_url or "").strip().rstrip("/")
     if configured:
         return configured
@@ -1091,8 +1091,8 @@ def public_base_url(profile: SamlProviderProfile, request: Any) -> str:
     raise ValueError(msg)
 
 
-def build_sp_info(profile: SamlProviderProfile, request: Any) -> dict[str, str]:
-    base = public_base_url(profile, request)
+def build_sp_info(profile: SamlProviderProfile) -> dict[str, str]:
+    base = public_base_url(profile)
     return {
         "entity_id": f"{base}/auth/saml/metadata",
         "acs_url": f"{base}/auth/saml/acs",
@@ -1100,8 +1100,8 @@ def build_sp_info(profile: SamlProviderProfile, request: Any) -> dict[str, str]:
     }
 
 
-def build_sp_metadata(profile: SamlProviderProfile, request: Any) -> str:
-    sp = build_sp_info(profile, request)
+def build_sp_metadata(profile: SamlProviderProfile) -> str:
+    sp = build_sp_info(profile)
     return f"""<?xml version="1.0"?>
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{xml_escape(sp["entity_id"])}">
   <md:SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="true" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
@@ -1115,7 +1115,6 @@ def build_sp_metadata(profile: SamlProviderProfile, request: Any) -> str:
 
 def build_saml_settings(
     profile: SamlProviderProfile,
-    request: Any,
     *,
     require_idp_metadata: bool = True,
 ) -> dict[str, Any]:
@@ -1127,7 +1126,7 @@ def build_saml_settings(
         parsed,
         require_https=profile.require_https,
     )
-    sp = build_sp_info(profile, request)
+    sp = build_sp_info(profile)
     return {
         "strict": True,
         "debug": False,
@@ -1190,7 +1189,7 @@ def build_saml_auth(profile: SamlProviderProfile, request: Any) -> Any:
         raise RuntimeError(msg) from exc
     return OneLogin_Saml2_Auth(
         prepare_flask_request(request),
-        old_settings=build_saml_settings(profile, request),
+        old_settings=build_saml_settings(profile),
     )
 
 

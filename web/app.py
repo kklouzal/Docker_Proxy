@@ -3738,7 +3738,7 @@ def _establish_admin_session(
 def auth_saml_metadata():
     profile = _current_saml_profile()
     try:
-        metadata = build_sp_metadata(profile, request)
+        metadata = build_sp_metadata(profile)
     except Exception as exc:
         _record_audit_event(
             "saml_metadata_failed",
@@ -6251,7 +6251,7 @@ def _handle_auth_provider_post():
 def _saml_admin_status() -> dict[str, Any]:
     profile = _saml_auth_store.get_profile()
     try:
-        sp_info = build_sp_info(profile, request)
+        sp_info = build_sp_info(profile)
     except Exception:
         sp_info = {"entity_id": "", "acs_url": "", "sls_url": ""}
     ready = profile_metadata_ready(profile)
