@@ -45,6 +45,7 @@ from services.cert_manager import (
     generate_self_signed_ca_bundle,
     parse_pfx_bundle,
 )
+from services.certificate_bundles import CertificateActiveRevisionChangedError
 from services.certificate_bundles import (
     get_certificate_bundles as _default_get_certificate_bundles,
 )
@@ -4466,6 +4467,7 @@ def _publish_certificate_bundle_remote(
     bundle,
     *,
     original_filename: str = "",
+    expected_active_revision_id: int | None = None,
 ) -> tuple[bool, str]:
     bundle_store = get_certificate_bundles()
     previous_revision = None
@@ -4478,6 +4480,7 @@ def _publish_certificate_bundle_remote(
         created_by=str(session.get("user") or ""),
         original_filename=(original_filename or "")[:255],
         activate=True,
+        expected_active_revision_id=expected_active_revision_id,
     )
     leaf_detail = ""
 
@@ -9949,11 +9952,33 @@ def force_reconcile_certificate_proxy(proxy_id: str):
 
 @app.route("/certs/generate", methods=["POST"])
 def generate_certificate():
+    # The form carries the active revision it was rendered from; a double
+    # submit or a stale tab then cannot replace the CA a second time.
+    try:
+        expected_active_revision_id = int(
+            (request.form.get("expected_active_revision") or "").strip()
+        )
+    except ValueError:
+        expected_active_revision_id = -1
+    if expected_active_revision_id < 0:
+        return _redirect_with_message(
+            "certs",
+            ok=False,
+            msg="Reload the certificates page and confirm CA generation again.",
+        )
     try:
         bundle = generate_self_signed_ca_bundle()
-        ok, detail = _publish_certificate_bundle_remote(bundle)
+        ok, detail = _publish_certificate_bundle_remote(
+            bundle,
+            expected_active_revision_id=expected_active_revision_id,
+        )
         _record_audit_event("ca_ensure", ok=ok, detail=detail)
         return _redirect_with_message("certs", ok=ok, msg=detail)
+    except CertificateActiveRevisionChangedError as exc:
+        # Expected for double submits and stale tabs; not a server fault.
+        message = public_error_message(exc)
+        _record_audit_event("ca_ensure", ok=False, detail=message)
+        return _redirect_with_message("certs", ok=False, msg=message)
     except Exception as e:
         app.logger.exception("CA generation failed")
         message = public_error_message(e)

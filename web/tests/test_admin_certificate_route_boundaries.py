@@ -1891,7 +1891,7 @@ def test_certificate_generate_audits_zero_registered_proxy_failure(
 
     response = client.post(
         "/certs/generate",
-        data={"csrf_token": token},
+        data={"csrf_token": token, "expected_active_revision": "0"},
         follow_redirects=False,
     )
 
@@ -2858,7 +2858,9 @@ def test_certificate_generation_exception_is_sanitized_and_audited(
     token = csrf_token(client, "/certs")
 
     response = client.post(
-        "/certs/generate", data={"csrf_token": token}, follow_redirects=False
+        "/certs/generate",
+        data={"csrf_token": token, "expected_active_revision": "0"},
+        follow_redirects=False,
     )
 
     assert response.status_code in {301, 302, 303}
@@ -3177,3 +3179,55 @@ def test_certs_page_shows_der_sha256_fingerprint_not_pem_digest(
         f'SHA-256 fingerprint:</strong> <code class="mono">{fingerprint}</code>' in html
     )
     assert ca.cert_sha256 not in html
+
+
+def test_generate_ca_form_confirms_and_rejects_duplicate_submits(
+    monkeypatch, tmp_path
+) -> None:
+    bundles = FakeCertificateBundles(bundle=None)
+    loaded = load_admin_app(monkeypatch, tmp_path, certificate_bundles=bundles)
+    generated: list[object] = []
+
+    def generate_bundle():
+        bundle = _bundle()
+        generated.append(bundle)
+        return bundle
+
+    monkeypatch.setattr(
+        loaded.module, "generate_self_signed_ca_bundle", generate_bundle
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    page = client.get("/certs").get_data(as_text=True)
+    assert 'name="expected_active_revision" value="0"' in page
+    assert 'data-confirm-message="Generate a CA and publish it' in page
+    token = csrf_token(client, "/certs")
+
+    def submit(data):
+        return client.post(
+            "/certs/generate",
+            data={"csrf_token": token, **data},
+            follow_redirects=False,
+        )
+
+    # A post without the rendered revision (old form, script) never generates.
+    missing = submit({})
+    assert _location_params(missing)["ok"] == ["0"]
+    assert generated == []
+    assert bundles.created == []
+
+    first = submit({"expected_active_revision": "0"})
+    duplicate = submit({"expected_active_revision": "0"})
+
+    assert len(bundles.created) == 1
+    duplicate_params = _location_params(duplicate)
+    assert duplicate_params["ok"] == ["0"]
+    assert "revision 1 is active" in duplicate_params["msg"][0]
+    assert first.status_code in {301, 302, 303}
+    assert loaded.audit_store.records[-1]["kind"] == "ca_ensure"
+    assert loaded.audit_store.records[-1]["ok"] is False
+
+    page = client.get("/certs").get_data(as_text=True)
+    assert 'name="expected_active_revision" value="1"' in page
+    assert "Generate New CA" in page

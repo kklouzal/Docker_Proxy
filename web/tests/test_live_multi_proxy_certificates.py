@@ -108,10 +108,15 @@ def test_live_generate_certificate_creates_shared_bundle_and_nudges_all_register
 ) -> None:
     primary_before = latest_certificate_apply(LIVE_CONFIG.primary_proxy_id)
     remote_before = latest_certificate_apply(LIVE_CONFIG.remote_proxy_id)
+    active_before = active_certificate_bundle()
 
     response = multi_proxy_admin.admin_post_form(
         "/certs/generate",
-        {},
+        {
+            "expected_active_revision": str(
+                active_before.revision_id if active_before is not None else 0
+            )
+        },
         csrf_path="/certs",
         timeout_seconds=120.0,
     )

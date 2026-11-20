@@ -95,6 +95,10 @@ class AdminUiHttpsSettings:
     updated_ts: int
 
 
+class CertificateActiveRevisionChangedError(ValueError):
+    """Raised when the active revision is not the one a caller based its change on."""
+
+
 class InvalidAdminUiHttpsSettingsError(ValueError):
     """Raised when persisted Admin UI HTTPS settings violate their row contract."""
 
@@ -388,13 +392,25 @@ class CertificateBundleStore:
         created_by: str = "",
         original_filename: str = "",
         activate: bool = True,
+        expected_active_revision_id: int | None = None,
     ) -> CertificateBundleRevision:
+        """Store *bundle* as a revision (active unless ``activate=False``).
+
+        ``expected_active_revision_id`` (0 = no active revision) makes the
+        activation conditional: it is checked under the activation lock, so a
+        duplicate or stale submission based on an older active revision raises
+        CertificateActiveRevisionChangedError instead of replacing the CA again.
+        """
+        if expected_active_revision_id is not None and not activate:
+            msg = "expected_active_revision_id requires activate=True."
+            raise ValueError(msg)
         return self._with_db_lock_retry(
             lambda: self._create_revision_once(
                 bundle,
                 created_by=created_by,
                 original_filename=original_filename,
                 activate=activate,
+                expected_active_revision_id=expected_active_revision_id,
             ),
         )
 
@@ -405,6 +421,7 @@ class CertificateBundleStore:
         created_by: str = "",
         original_filename: str = "",
         activate: bool = True,
+        expected_active_revision_id: int | None = None,
     ) -> CertificateBundleRevision:
         self.init_db()
         now = int(time.time())
@@ -428,6 +445,16 @@ class CertificateBundleStore:
                             """,
                         ).fetchone(),
                     )
+                    current_id = current.revision_id if current is not None else 0
+                    if expected_active_revision_id is not None and current_id != int(
+                        expected_active_revision_id
+                    ):
+                        msg = (
+                            "The active CA changed since this page was loaded "
+                            f"(revision {current_id} is active); no new CA was "
+                            "published."
+                        )
+                        raise CertificateActiveRevisionChangedError(msg)
                     if (
                         current is not None
                         and current.bundle_sha256 == bundle.bundle_sha256

@@ -1220,7 +1220,25 @@ class FakeCertificateBundles:
     def get_revision(self, revision_id: object) -> Any | None:
         return self._revisions.get(int(revision_id or 0))
 
-    def create_revision(self, bundle: Any, **_kwargs: Any) -> Any:
+    def create_revision(
+        self,
+        bundle: Any,
+        *,
+        expected_active_revision_id: int | None = None,
+        **_kwargs: Any,
+    ) -> Any:
+        if expected_active_revision_id is not None:
+            from services.certificate_bundles import (
+                CertificateActiveRevisionChangedError,
+            )
+
+            current_id = int(getattr(self.bundle, "revision_id", 0) or 0)
+            if current_id != int(expected_active_revision_id):
+                msg = (
+                    "The active CA changed since this page was loaded "
+                    f"(revision {current_id} is active); no new CA was published."
+                )
+                raise CertificateActiveRevisionChangedError(msg)
         revision = SimpleNamespace(
             revision_id=len(self.created) + 1,
             bundle_sha256=getattr(bundle, "bundle_sha256", "bundle-sha"),
