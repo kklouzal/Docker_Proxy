@@ -24,6 +24,7 @@ from services.db import connect
 from services.errors import clean_text, redact_sensitive_text
 from services.external_auth_groups import (
     candidate_group_match_tokens,
+    ldap_dn_match_key,
     required_group_match_tokens,
 )
 from services.logutil import log_exception_throttled
@@ -144,6 +145,31 @@ DIRECTORY_PRESETS = {
         ),
     },
 }
+
+
+# Test evidence is recorded only while every security-relevant column still
+# matches the profile that was tested.
+_RECORD_CURRENT_TEST_SQL = """
+UPDATE directory_auth_profiles
+   SET last_test_ok = %s, last_test_ts = %s, last_test_detail = %s
+ WHERE provider = %s AND server_urls = %s AND use_starttls = %s
+   AND verify_tls = %s AND ca_bundle = %s AND bind_dn = %s
+   AND bind_password = %s AND base_dn = %s
+   AND user_search_base = %s AND user_filter = %s
+   AND user_attribute = %s AND group_search_base = %s
+   AND group_filter = %s AND required_admin_group = %s
+   AND timeout_seconds = %s
+"""
+_CURRENT_PROFILE_EXISTS_SQL = """
+SELECT 1 FROM directory_auth_profiles
+ WHERE provider = %s AND server_urls = %s AND use_starttls = %s
+   AND verify_tls = %s AND ca_bundle = %s AND bind_dn = %s
+   AND bind_password = %s AND base_dn = %s
+   AND user_search_base = %s AND user_filter = %s
+   AND user_attribute = %s AND group_search_base = %s
+   AND group_filter = %s AND required_admin_group = %s
+   AND timeout_seconds = %s
+"""
 
 
 @dataclass(frozen=True)
@@ -499,6 +525,25 @@ class DirectoryAuthStore:
             if not profile.last_test_ok:
                 msg = "Test the directory provider successfully before enabling it."
                 raise ValueError(msg)
+        self._write_profile(profile)
+        return self.get_profile(provider)
+
+    def disable_provider(self, provider: str) -> None:
+        provider = self._validate_provider(provider)
+        self.ensure_default_profiles()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE directory_auth_profiles SET enabled = 0, updated_ts = %s WHERE provider = %s",
+                (int(time.time()), provider),
+            )
+
+    def restore_profile(self, profile: DirectoryProfile) -> None:
+        """Restore an exact trusted snapshot after a temporary probe mutation."""
+        self._validate_provider(profile.provider)
+        self._write_profile(profile)
+
+    def _write_profile(self, profile: DirectoryProfile) -> None:
+        """Persist every profile column; enabling one provider disables the other."""
         self.ensure_default_profiles()
         with self._connect() as conn:
             if profile.enabled:
@@ -542,117 +587,42 @@ class DirectoryAuthStore:
                     profile.provider,
                 ),
             )
-        return self.get_profile(provider)
-
-    def disable_provider(self, provider: str) -> None:
-        provider = self._validate_provider(provider)
-        self.ensure_default_profiles()
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE directory_auth_profiles SET enabled = 0, updated_ts = %s WHERE provider = %s",
-                (int(time.time()), provider),
-            )
-
-    def restore_profile(self, profile: DirectoryProfile) -> None:
-        """Restore an exact trusted snapshot after a temporary probe mutation."""
-        provider = self._validate_provider(profile.provider)
-        self.ensure_default_profiles()
-        with self._connect() as conn:
-            if profile.enabled:
-                conn.execute(
-                    "UPDATE directory_auth_profiles SET enabled = 0 WHERE provider <> %s",
-                    (provider,),
-                )
-            conn.execute(
-                """
-                UPDATE directory_auth_profiles
-                   SET enabled = %s, server_urls = %s, use_starttls = %s,
-                       verify_tls = %s, ca_bundle = %s, bind_dn = %s,
-                       bind_password = %s, base_dn = %s, user_search_base = %s,
-                       user_filter = %s, user_attribute = %s,
-                       group_search_base = %s, group_filter = %s,
-                       required_admin_group = %s, timeout_seconds = %s,
-                       last_test_ok = %s, last_test_ts = %s,
-                       last_test_detail = %s, updated_ts = %s
-                 WHERE provider = %s
-                """,
-                (
-                    int(profile.enabled),
-                    profile.server_urls,
-                    int(profile.use_starttls),
-                    int(profile.verify_tls),
-                    profile.ca_bundle,
-                    profile.bind_dn,
-                    profile.bind_password,
-                    profile.base_dn,
-                    profile.user_search_base,
-                    profile.user_filter,
-                    profile.user_attribute,
-                    profile.group_search_base,
-                    profile.group_filter,
-                    profile.required_admin_group,
-                    profile.timeout_seconds,
-                    int(profile.last_test_ok),
-                    profile.last_test_ts,
-                    profile.last_test_detail,
-                    profile.updated_ts,
-                    provider,
-                ),
-            )
-
-    def record_test(self, provider: str, *, ok: bool, detail: str) -> None:
-        provider = self._validate_provider(provider)
-        self.ensure_default_profiles()
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE directory_auth_profiles
-                   SET last_test_ok = %s, last_test_ts = %s, last_test_detail = %s
-                 WHERE provider = %s
-                """,
-                (int(ok), int(time.time()), str(detail or "")[:2000], provider),
-            )
 
     def _record_test_if_current(
         self, profile: DirectoryProfile, *, ok: bool, detail: str
     ) -> bool:
         """Record evidence only if the security-relevant profile is unchanged."""
+        current_params = (
+            profile.provider,
+            profile.server_urls,
+            int(profile.use_starttls),
+            int(profile.verify_tls),
+            profile.ca_bundle,
+            profile.bind_dn,
+            profile.bind_password,
+            profile.base_dn,
+            profile.user_search_base,
+            profile.user_filter,
+            profile.user_attribute,
+            profile.group_search_base,
+            profile.group_filter,
+            profile.required_admin_group,
+            profile.timeout_seconds,
+        )
         self.ensure_default_profiles()
         with self._connect() as conn:
             cursor = conn.execute(
-                """
-                UPDATE directory_auth_profiles
-                   SET last_test_ok = %s, last_test_ts = %s, last_test_detail = %s
-                 WHERE provider = %s AND server_urls = %s AND use_starttls = %s
-                   AND verify_tls = %s AND ca_bundle = %s AND bind_dn = %s
-                   AND bind_password = %s AND base_dn = %s
-                   AND user_search_base = %s AND user_filter = %s
-                   AND user_attribute = %s AND group_search_base = %s
-                   AND group_filter = %s AND required_admin_group = %s
-                   AND timeout_seconds = %s
-                """,
-                (
-                    int(ok),
-                    int(time.time()),
-                    str(detail or "")[:2000],
-                    profile.provider,
-                    profile.server_urls,
-                    int(profile.use_starttls),
-                    int(profile.verify_tls),
-                    profile.ca_bundle,
-                    profile.bind_dn,
-                    profile.bind_password,
-                    profile.base_dn,
-                    profile.user_search_base,
-                    profile.user_filter,
-                    profile.user_attribute,
-                    profile.group_search_base,
-                    profile.group_filter,
-                    profile.required_admin_group,
-                    profile.timeout_seconds,
-                ),
+                _RECORD_CURRENT_TEST_SQL,
+                (int(ok), int(time.time()), str(detail or "")[:2000], *current_params),
             )
-        return bool(cursor.rowcount)
+            if cursor.rowcount:
+                return True
+            # MySQL reports changed rows: an identical same-second result on an
+            # unchanged profile updates nothing yet is still current evidence.
+            return (
+                conn.execute(_CURRENT_PROFILE_EXISTS_SQL, current_params).fetchone()
+                is not None
+            )
 
     def test_connection(self, provider: str) -> DirectoryAuthResult:
         profile = self.get_profile(provider)
@@ -768,6 +738,12 @@ class DirectoryAuthStore:
                     "Directory user lookup was ambiguous.",
                 )
             user_dn = str(entries[0].entry_dn)
+            # The login attribute names the directory's canonical login value;
+            # it identifies the admin session instead of the typed spelling.
+            directory_username = (
+                self._entry_attribute_value(entries[0], profile.user_attribute)
+                or username
+            )
             if not self._user_bind(profile, user_dn, password):
                 return DirectoryAuthResult(
                     False,
@@ -788,7 +764,7 @@ class DirectoryAuthStore:
             return DirectoryAuthResult(
                 True,
                 profile.provider,
-                username,
+                directory_username,
                 "Directory authentication succeeded.",
                 tuple(groups),
             )
@@ -812,6 +788,21 @@ class DirectoryAuthStore:
             if separator in username:
                 return username.rsplit(separator, 1)[-1] or username
         return username
+
+    @staticmethod
+    def _entry_attribute_value(entry: Any, attribute: str) -> str:
+        """Return the entry's first value of the configured login attribute."""
+        values = getattr(entry, "entry_attributes_as_dict", None) or {}
+        wanted = (attribute or "").casefold()
+        for name, raw in values.items():
+            if str(name).casefold() != wanted:
+                continue
+            items = raw if isinstance(raw, (list, tuple)) else [raw]
+            for item in items:
+                text = str(item or "").strip()
+                if text:
+                    return text
+        return ""
 
     def _groups_for_user(
         self,
@@ -837,9 +828,12 @@ class DirectoryAuthStore:
         groups: list[str] = []
         for entry in conn.entries:
             groups.append(str(entry.entry_dn))
-            cn = getattr(entry, "cn", None)
-            if cn:
-                groups.append(str(cn))
+            cn = str(getattr(entry, "cn", None) or "")
+            # A bare cn value is only a group-name alias. A cn spelled like a
+            # DN (e.g. "CN=Admins,OU=Groups,...") must never stand in for the
+            # DN of a different group, so only the entry DN carries DN identity.
+            if cn and not ldap_dn_match_key(cn):
+                groups.append(cn)
         return sorted({item for item in groups if item})
 
     def _service_connection(self, profile: DirectoryProfile) -> tuple[Any, Any]:
@@ -868,6 +862,7 @@ class DirectoryAuthStore:
                     auto_bind=False,
                     receive_timeout=profile.timeout_seconds,
                     raise_exceptions=True,
+                    auto_referrals=False,
                 )
                 conn.open()
                 if getattr(conn, "closed", False):
@@ -921,6 +916,7 @@ class DirectoryAuthStore:
                     auto_bind=False,
                     receive_timeout=profile.timeout_seconds,
                     raise_exceptions=True,
+                    auto_referrals=False,
                 )
                 conn.open()
                 if getattr(conn, "closed", False):
@@ -1087,7 +1083,7 @@ class DirectoryAuthStore:
         text = str(payload.get("ca_bundle") or "").strip()
         if text:
             return self.normalize_ca_bundle(text.encode())
-        if self._truthy(payload.get("clear_ca_bundle")):
+        if normalize_config_bool(payload.get("clear_ca_bundle")):
             return ""
         return current_ca_bundle
 
@@ -1217,19 +1213,12 @@ class DirectoryAuthStore:
             parsed = default
         return max(low, min(high, parsed))
 
-    def _truthy(self, value: Any, *, default: bool = False) -> bool:
-        """Compatibility shim for ancillary payload fields; use shared semantics."""
-        return normalize_config_bool(value, default=default)
-
     def _server_urls(self, value: str) -> list[str]:
         urls = [line.strip() for line in (value or "").splitlines() if line.strip()]
         if not urls:
             msg = "At least one LDAP server URL is required."
             raise ValueError(msg)
         return urls
-
-    def _first_server_url(self, value: str) -> str:
-        return self._server_urls(value)[0]
 
     def _join_dn(self, child: str, base: str) -> str:
         child = (child or "").strip().strip(",")

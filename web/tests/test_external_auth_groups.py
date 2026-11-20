@@ -83,3 +83,32 @@ def test_ldap_rdn_unescaping_contract(value: str, expected: str) -> None:
 )
 def test_malformed_or_non_group_first_rdn_has_no_alias(value: str) -> None:
     assert first_ldap_group_rdn_value(value) == ""
+
+
+@pytest.mark.parametrize(
+    ("required", "asserted"),
+    [
+        (
+            "CN=Docker Proxy Admins,OU=Groups,DC=example,DC=local",
+            (
+                "CN=CN\\=Docker Proxy Admins\\,OU\\=Groups\\,DC\\=example\\,DC\\=local,"
+                "OU=Delegated,DC=example,DC=local"
+            ),
+        ),
+        (
+            "CN=Docker Proxy Admins,OU=Groups,DC=example,DC=local",
+            "EVIL\\CN=Docker Proxy Admins,OU=Groups,DC=example,DC=local",
+        ),
+    ],
+)
+def test_dn_shaped_aliases_cannot_impersonate_required_group_dns(
+    required: str, asserted: str
+) -> None:
+    for preserve_full_dn in (False, True):
+        required_tokens = required_group_match_tokens(
+            required, preserve_full_dn=preserve_full_dn
+        )
+        candidate_tokens = candidate_group_match_tokens(
+            asserted, preserve_full_dn=preserve_full_dn
+        )
+        assert not required_tokens & candidate_tokens

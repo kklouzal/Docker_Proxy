@@ -398,8 +398,10 @@ def test_profile_save_clears_stale_connection_test_status_when_settings_change(
             "verify_tls": "1",
         },
     )
-    store.record_test(
-        "ldap", ok=True, detail="Directory bind and base search succeeded."
+    assert store._record_test_if_current(
+        store.get_profile("ldap"),
+        ok=True,
+        detail="Directory bind and base search succeeded.",
     )
 
     updated = store.save_profile(
@@ -581,8 +583,10 @@ def test_profile_requires_successful_connection_test_before_enable(tmp_path) -> 
     disabled = dict(payload)
     disabled["enabled"] = "0"
     store.save_profile("ldap", disabled)
-    store.record_test(
-        "ldap", ok=True, detail="Directory bind and base search succeeded."
+    assert store._record_test_if_current(
+        store.get_profile("ldap"),
+        ok=True,
+        detail="Directory bind and base search succeeded.",
     )
     tested = store.get_profile("ldap")
     store.save_profile("ldap", {**payload, "bind_password": ""})
@@ -739,12 +743,6 @@ def test_directory_auth_result_keeps_provider_and_groups() -> None:
     assert result.ok is True
     assert result.provider == "ldap"
     assert result.groups == ("cn=admins,dc=example,dc=org",)
-
-
-def test_profile_checkbox_false_value_overrides_default_true() -> None:
-    store = DirectoryAuthStore(lambda: "stable-secret")
-
-    assert store._truthy("0", default=True) is False
 
 
 def test_normalize_ca_bundle_validates_uploaded_certificate() -> None:
@@ -1443,3 +1441,139 @@ def test_user_bind_false_result_falls_back_and_rejects_when_all_fail(
 
     successful_server = ""
     assert store._user_bind(profile, "uid=alice,dc=example,dc=org", "wrong") is False
+
+
+def test_ldap_connections_never_chase_referrals_with_credentials(monkeypatch) -> None:
+    calls = _install_failing_first_ldap(monkeypatch)
+    captured = []
+    fake_ldap3 = sys.modules["ldap3"]
+    original = fake_ldap3.Connection
+
+    def capturing_connection(server, **kwargs):
+        captured.append(kwargs)
+        return original(server, **kwargs)
+
+    monkeypatch.setattr(fake_ldap3, "Connection", capturing_connection)
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("ldap"),
+        server_urls="ldaps://good.example.org:636",
+        bind_password=store._encrypt("bind-secret"),
+    )
+
+    conn, _ldap3 = store._service_connection(profile)
+    store._safe_unbind(conn)
+    assert store._user_bind(profile, "uid=alice,dc=example,dc=org", "secret") is True
+
+    assert calls
+    assert len(captured) == 2
+    assert all(kwargs.get("auto_referrals") is False for kwargs in captured)
+
+
+def _authenticate_with_entries(monkeypatch, user_entry, group_entries, required):
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    profile = replace(
+        store.default_profile("active_directory"),
+        bind_password=store._encrypt("bind-secret"),
+        required_admin_group=required,
+    )
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.entries = []
+
+        def search(self, _base, search_filter, **_kwargs):
+            if "member" in search_filter:
+                self.entries = list(group_entries)
+            else:
+                self.entries = [user_entry]
+            return bool(self.entries)
+
+        def unbind(self):
+            return None
+
+    fake_ldap3 = SimpleNamespace(
+        utils=SimpleNamespace(
+            conv=SimpleNamespace(escape_filter_chars=lambda value: value)
+        )
+    )
+    monkeypatch.setattr(
+        store, "_service_connection", lambda _profile: (FakeConn(), fake_ldap3)
+    )
+    monkeypatch.setattr(store, "_user_bind", lambda *_args: True)
+    return store.authenticate(profile, "EXAMPLE\\Alice", "secret")
+
+
+def test_dn_shaped_group_name_cannot_impersonate_required_group_dn(
+    monkeypatch,
+) -> None:
+    required = "CN=Docker Proxy Admins,OU=Groups,DC=example,DC=local"
+    forged = SimpleNamespace(
+        entry_dn=(
+            "CN=CN\\=Docker Proxy Admins\\,OU\\=Groups\\,DC\\=example\\,DC\\=local,"
+            "OU=Delegated,DC=example,DC=local"
+        ),
+        cn="CN=Docker Proxy Admins,OU=Groups,DC=example,DC=local",
+    )
+    user = SimpleNamespace(entry_dn="CN=Alice,OU=People,DC=example,DC=local")
+
+    result = _authenticate_with_entries(monkeypatch, user, [forged], required)
+
+    assert result.ok is False
+    assert "required admin group" in result.detail
+
+
+def test_directory_login_uses_canonical_login_attribute_value(monkeypatch) -> None:
+    user = SimpleNamespace(
+        entry_dn="CN=Alice,OU=People,DC=example,DC=local",
+        entry_attributes_as_dict={"sAMAccountName": ["alice"]},
+    )
+    group = SimpleNamespace(
+        entry_dn="CN=Docker Proxy Admins,OU=Groups,DC=example,DC=local",
+        cn="Docker Proxy Admins",
+    )
+
+    result = _authenticate_with_entries(
+        monkeypatch,
+        user,
+        [group],
+        "CN=Docker Proxy Admins,OU=Groups,DC=example,DC=local",
+    )
+
+    assert result.ok is True
+    assert result.username == "alice"
+
+
+@pytest.mark.parametrize(
+    ("rowcount", "current_row", "expected"),
+    [(1, None, True), (0, (1,), True), (0, None, False)],
+)
+def test_test_evidence_counts_identical_same_second_result_as_current(
+    monkeypatch, rowcount, current_row, expected
+) -> None:
+    store = DirectoryAuthStore(lambda: "stable-secret")
+    statements = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, sql, params=()):
+            statements.append(sql)
+            if sql.lstrip().startswith("SELECT"):
+                return SimpleNamespace(fetchone=lambda: current_row)
+            return SimpleNamespace(rowcount=rowcount)
+
+    monkeypatch.setattr(store, "ensure_default_profiles", lambda: None)
+    monkeypatch.setattr(store, "_connect", Conn)
+
+    assert (
+        store._record_test_if_current(
+            store.default_profile("ldap"), ok=True, detail="ok"
+        )
+        is expected
+    )
+    assert "bind_password = %s" in statements[0]

@@ -127,6 +127,7 @@ class MemorySamlAuthStore(SamlAuthStore):
             required_group=profile.required_group,
             updated_ts=now,
         )
+        return True
 
     def record_refresh_status(self, *, ok: bool, detail: str) -> None:
         now = int(time.time())
@@ -1382,3 +1383,55 @@ def test_saml_public_error_redacts_assertions_and_secret_parameters() -> None:
     assert "SAMLResponse=[redacted]" in detail
     assert "RelayState=[redacted]" in detail
     assert "password=[redacted]" in detail
+
+
+class _GuardedUpdateConnection:
+    def __init__(self, *, rowcount: int, current_row) -> None:
+        self.rowcount = rowcount
+        self.current_row = current_row
+        self.statements: list[tuple[str, tuple]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=()):
+        self.statements.append((sql, tuple(params)))
+        if sql.lstrip().startswith("SELECT"):
+            return SimpleNamespace(fetchone=lambda: self.current_row)
+        return SimpleNamespace(rowcount=self.rowcount)
+
+
+@pytest.mark.parametrize(
+    ("rowcount", "current_row", "expected_ok"),
+    [(1, None, True), (0, (1,), True), (0, None, False)],
+)
+def test_metadata_refresh_is_only_cached_for_the_current_fetch_settings(
+    monkeypatch, rowcount, current_row, expected_ok
+) -> None:
+    store = SamlAuthStore()
+    profile = replace(
+        store.default_profile(),
+        metadata_url="https://idp.example.test/metadata.xml",
+    )
+    conn = _GuardedUpdateConnection(rowcount=rowcount, current_row=current_row)
+    monkeypatch.setattr(store, "get_profile", lambda: profile)
+    monkeypatch.setattr(store, "fetch_metadata", lambda _profile: SAMPLE_METADATA)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(
+        store,
+        "record_refresh_status",
+        lambda **_kwargs: pytest.fail("success path must not record a failure"),
+    )
+
+    result = store.refresh_metadata()
+
+    assert result.ok is expected_ok
+    update_sql, update_params = conn.statements[0]
+    assert "metadata_url = %s" in update_sql
+    assert "max_metadata_bytes = %s" in update_sql
+    assert "https://idp.example.test/metadata.xml" in update_params
+    if not expected_ok:
+        assert "changed while metadata was being refreshed" in result.detail
