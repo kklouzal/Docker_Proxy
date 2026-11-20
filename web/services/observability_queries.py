@@ -154,14 +154,6 @@ class ObservabilityQueries:
         )
 
     @staticmethod
-    def _hit_sql(result_column: str = "result_code") -> str:
-        return _cache_hit_sql(result_column)
-
-    @staticmethod
-    def _present_sql(column: str) -> str:
-        return _present_value_sql(column)
-
-    @staticmethod
     def _url_host_sql(url_column: str = "url") -> str:
         trimmed = f"TRIM(COALESCE({url_column}, ''))"
         authority_source = (
@@ -190,19 +182,6 @@ class ObservabilityQueries:
         )
         return f"LOWER(TRIM(BOTH '.' FROM {host}))"
 
-    @staticmethod
-    def _not_cached_reason_sql(
-        *,
-        method_column: str = "method",
-        result_column: str = "result_code",
-        status_column: str = "http_status",
-    ) -> str:
-        return _not_cached_reason_sql(
-            method_column=method_column,
-            result_column=result_column,
-            status_column=status_column,
-        )
-
     def _request_icap_rollup_filters(
         self,
         *,
@@ -219,13 +198,13 @@ class ObservabilityQueries:
         request_where = [
             f"{request_prefix}proxy_id = %s",
             f"{request_prefix}ts >= %s",
-            self._present_sql(request_present_column),
+            _present_value_sql(request_present_column),
         ]
         request_params: list[Any] = [proxy_id, int(since)]
         icap_where = [
             "proxy_id = %s",
             "ts >= %s",
-            self._present_sql(icap_present_column),
+            _present_value_sql(icap_present_column),
         ]
         icap_params: list[Any] = [proxy_id, int(since)]
         search_value = (search or "").strip().lower()
@@ -309,7 +288,7 @@ class ObservabilityQueries:
         since: int,
         search: str,
         base_conditions: list[str] | None = None,
-        search_columns: tuple[str, ...],
+        search_columns: tuple[str, ...] = ("domain", "client_ip", "url"),
     ) -> tuple[str, list[Any]]:
         where = ["proxy_id = %s", "ts >= %s", *(base_conditions or [])]
         params: list[Any] = [get_proxy_id(), int(since)]
@@ -321,21 +300,6 @@ class ObservabilityQueries:
             where.append(search_sql)
             params.extend(search_params)
         return "WHERE " + " AND ".join(where), params
-
-    def _request_filters(
-        self,
-        *,
-        since: int,
-        search: str = "",
-        base_conditions: list[str] | None = None,
-        search_columns: tuple[str, ...] = ("domain", "client_ip", "url"),
-    ) -> tuple[str, list[Any]]:
-        return self._time_window_filters(
-            since=since,
-            search=search,
-            base_conditions=base_conditions,
-            search_columns=search_columns,
-        )
 
     @staticmethod
     def _av_status(summary: str, details: str) -> str:
@@ -378,7 +342,7 @@ class ObservabilityQueries:
 
     def summary(self, *, since: int) -> dict[str, Any]:
         proxy_id = get_proxy_id()
-        hit_sql = self._hit_sql("result_code")
+        hit_sql = _cache_hit_sql("result_code")
         tx_sql = self._request_identity_sql("id", "master_xaction")
 
         with self._connect() as conn:
@@ -391,7 +355,7 @@ class ObservabilityQueries:
                     COUNT(DISTINCT domain) AS destinations,
                     COUNT(DISTINCT {tx_sql}) AS transactions
                 FROM diagnostic_requests FORCE INDEX (idx_diagnostic_requests_proxy_ts)
-                WHERE proxy_id = %s AND ts >= %s AND {self._present_sql("domain")}
+                WHERE proxy_id = %s AND ts >= %s AND {_present_value_sql("domain")}
                 """,
                 (proxy_id, int(since)),
             ).fetchone()
@@ -432,7 +396,7 @@ class ObservabilityQueries:
         total_requests: int | None = None,
     ) -> list[dict[str, Any]]:
         lim = max(5, min(200, int(limit)))
-        hit_sql = self._hit_sql("r.result_code")
+        hit_sql = _cache_hit_sql("r.result_code")
         tx_sql = self._request_identity_sql("r.id", "r.master_xaction")
         request_where_sql, request_params, icap_where_sql, icap_params = (
             self._request_icap_rollup_filters(
@@ -530,7 +494,7 @@ class ObservabilityQueries:
         total_requests: int | None = None,
     ) -> list[dict[str, Any]]:
         lim = max(5, min(200, int(limit)))
-        hit_sql = self._hit_sql("r.result_code")
+        hit_sql = _cache_hit_sql("r.result_code")
         tx_sql = self._request_identity_sql("r.id", "r.master_xaction")
         request_where_sql, request_params, icap_where_sql, icap_params = (
             self._request_icap_rollup_filters(
@@ -643,12 +607,12 @@ class ObservabilityQueries:
         sort: str = "requests",
     ) -> list[dict[str, Any]]:
         lim = max(5, min(200, int(limit)))
-        hit_sql = self._hit_sql("result_code")
-        reason_sql = self._not_cached_reason_sql()
-        where_sql, params = self._request_filters(
+        hit_sql = _cache_hit_sql("result_code")
+        reason_sql = _not_cached_reason_sql()
+        where_sql, params = self._time_window_filters(
             since=since,
             search=search,
-            base_conditions=[self._present_sql("domain"), f"NOT {hit_sql}"],
+            base_conditions=[_present_value_sql("domain"), f"NOT {hit_sql}"],
         )
 
         if sort == "recent":
@@ -1087,11 +1051,11 @@ class ObservabilityQueries:
         }
 
     def cache_savings(self, *, since: int, search: str = "") -> dict[str, Any]:
-        hit_sql = self._hit_sql("result_code")
-        where_sql, params = self._request_filters(
+        hit_sql = _cache_hit_sql("result_code")
+        where_sql, params = self._time_window_filters(
             since=since,
             search=search,
-            base_conditions=[self._present_sql("domain")],
+            base_conditions=[_present_value_sql("domain")],
         )
         with self._connect() as conn:
             row = conn.execute(
@@ -1129,12 +1093,12 @@ class ObservabilityQueries:
         privacy: bool = False,
     ) -> list[dict[str, Any]]:
         lim = max(5, min(200, int(limit)))
-        hit_sql = self._hit_sql("result_code")
+        hit_sql = _cache_hit_sql("result_code")
         tx_sql = self._request_identity_sql("id", "master_xaction")
-        where_sql, params = self._request_filters(
+        where_sql, params = self._time_window_filters(
             since=since,
             search=search,
-            base_conditions=[self._present_sql("client_ip")],
+            base_conditions=[_present_value_sql("client_ip")],
             search_columns=("client_ip", "domain", "url"),
         )
         with self._connect() as conn:
@@ -1208,11 +1172,11 @@ class ObservabilityQueries:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         lim = max(5, min(200, int(limit)))
-        where_sql, params = self._request_filters(
+        where_sql, params = self._time_window_filters(
             since=since,
             search=search,
             base_conditions=[
-                self._present_sql("domain"),
+                _present_value_sql("domain"),
                 "LOWER(COALESCE(bump_mode, '')) LIKE '%%splice%%'",
             ],
         )
@@ -1532,16 +1496,16 @@ class ObservabilityQueries:
         privacy: bool = False,
     ) -> list[dict[str, Any]]:
         lim = max(5, min(200, int(limit)))
-        hit_sql = self._hit_sql("result_code")
+        hit_sql = _cache_hit_sql("result_code")
         group_sql = (
             "CASE "
             "WHEN client_ip LIKE '%%.%%.%%.%%' THEN CONCAT(SUBSTRING_INDEX(client_ip, '.', 3), '.0/24') "
             "ELSE client_ip END"
         )
-        where_sql, params = self._request_filters(
+        where_sql, params = self._time_window_filters(
             since=since,
             search=search,
-            base_conditions=[self._present_sql("client_ip")],
+            base_conditions=[_present_value_sql("client_ip")],
             search_columns=("client_ip", "domain", "url"),
         )
         with self._connect() as conn:
