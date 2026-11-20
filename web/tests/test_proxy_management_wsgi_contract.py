@@ -6,8 +6,10 @@ body bytes against ``golden/proxy_management_responses.json``, together with
 the runtime calls the request made. The golden file was recorded from the
 Flask implementation (Flask 3.1.3 / Werkzeug 3.1.9) and is the independent
 oracle for any replacement implementation, except for the entries of
-deliberate behaviour fixes made afterwards, which the dedicated tests at the
-end of this file pin independently.
+deliberate behaviour fixes made afterwards (``auth_non_ascii_token``: 403
+instead of 500), which the dedicated tests at the end of this file pin
+independently together with the other fix (unknown-length bodies over the
+limit get 413 instead of being truncated).
 
 Normalizations, each for a value that is not stable between runs:
 - ``Date`` values (wall clock) become ``<http-date>`` after a format check;
@@ -26,6 +28,7 @@ import importlib
 import io
 import json
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -1153,3 +1156,126 @@ def test_golden_covers_every_scenario_exactly() -> None:
     names = [s["name"] for s in SCENARIOS]
     assert len(names) == len(set(names))
     assert sorted(_load_golden()) == sorted(names)
+
+
+# --- deliberate fixes over the Flask implementation --------------------------
+
+
+def _scenario_record(scenario, monkeypatch, tmp_path) -> dict[str, Any]:
+    return run_scenario(scenario, monkeypatch=monkeypatch, tmp_path=tmp_path)
+
+
+def _forbidden_detail() -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "forbidden",
+        "detail": "Proxy management authentication failed. Check that PROXY_MANAGEMENT_TOKEN matches between the Admin UI and this proxy runtime.",
+    }
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        [("Authorization", "Bearer s\xe9cret")],
+        [("X-Proxy-Token", "☃")],
+        [("Authorization", "Bearer \udcff")],
+    ],
+    ids=["latin1_bearer", "non_latin1_x_proxy_token", "lone_surrogate"],
+)
+def test_non_ascii_management_token_is_forbidden_not_a_server_error(
+    headers, monkeypatch, tmp_path
+) -> None:
+    # Flask's str compare_digest raised TypeError (500) for non-ASCII input.
+    record = _scenario_record(
+        _s("non_ascii", "GET", "/api/manage/health", headers=headers),
+        monkeypatch,
+        tmp_path,
+    )
+    assert record["response"]["status"] == "403 FORBIDDEN"
+    assert json.loads(record["response"]["body"]) == _forbidden_detail()
+    assert record["runtime_calls"] == []
+
+
+def test_non_ascii_expected_token_still_authenticates(monkeypatch, tmp_path) -> None:
+    record = _scenario_record(
+        _s(
+            "non_ascii_expected",
+            "GET",
+            "/api/manage/health",
+            token="s\xe9cret",
+            headers=[("Authorization", "Bearer s\xe9cret")],
+        ),
+        monkeypatch,
+        tmp_path,
+    )
+    assert record["response"]["status"] == "200 OK"
+    assert record["runtime_calls"] == [["collect_navigation_health", {"force": False}]]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"config_text":"abc"}',
+        # Truncating this at the limit left a valid object, which Flask accepted.
+        b'{"config_text":"ab"}' + b" " * 50,
+    ],
+    ids=["malformed_when_truncated", "valid_when_truncated"],
+)
+def test_unknown_length_json_over_the_limit_is_rejected_not_truncated(
+    body, monkeypatch, tmp_path
+) -> None:
+    record = _scenario_record(
+        _s(
+            "chunked_over_limit",
+            "POST",
+            "/api/manage/config/validate",
+            env={"PROXY_MANAGEMENT_JSON_MAX_CONTENT_LENGTH": "20"},
+            headers=[_AUTH, ("Content-Type", _JSON)],
+            body=body,
+        ),
+        monkeypatch,
+        tmp_path,
+    )
+    assert record["response"]["status"] == "413 REQUEST ENTITY TOO LARGE"
+    assert json.loads(record["response"]["body"]) == {
+        "ok": False,
+        "detail": "Management JSON payload is limited to 20 bytes.",
+    }
+    assert record["runtime_calls"] == []
+
+
+def test_management_requests_load_no_flask_stack(tmp_path) -> None:
+
+    probe = """
+import io, sys
+from proxy import app
+for method, path, body in (("GET", "/health", b""), ("GET", "/api/manage/health", b""),
+                           ("POST", "/api/manage/sync", b'{"force": true}'),
+                           ("GET", "/api//manage/health", b""), ("GET", "/nope", b"")):
+    environ = {"REQUEST_METHOD": method, "SCRIPT_NAME": "", "PATH_INFO": path,
+               "QUERY_STRING": "", "SERVER_NAME": "0.0.0.0", "SERVER_PORT": "5000",
+               "HTTP_HOST": "proxy.example:5000", "wsgi.url_scheme": "http",
+               "HTTP_AUTHORIZATION": "Bearer t", "CONTENT_TYPE": "application/json",
+               "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body),
+               "wsgi.input_terminated": True, "wsgi.errors": sys.stderr}
+    b"".join(app.app(environ, lambda status, headers, exc_info=None: None))
+loaded = sorted(m for m in ("flask", "werkzeug", "jinja2", "markupsafe", "itsdangerous", "click", "blinker") if m in sys.modules)
+print(",".join(loaded))
+"""
+    repo = Path(__file__).resolve().parents[2]
+    env = {
+        "PYTHONPATH": f"{repo}:{repo / 'web'}",
+        "DISABLE_PROXY_AGENT": "1",
+        "PROXY_MANAGEMENT_TOKEN": "t",
+        "PROXY_CONTROL_PLANE_READY_FILE": str(tmp_path / "ready"),
+        "LOG_DIR": str(tmp_path),
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    assert result.stdout.strip() == ""
