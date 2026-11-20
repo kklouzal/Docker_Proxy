@@ -828,12 +828,20 @@ class DirectoryAuthStore:
         groups: list[str] = []
         for entry in conn.entries:
             groups.append(str(entry.entry_dn))
-            cn = str(getattr(entry, "cn", None) or "")
-            # A bare cn value is only a group-name alias. A cn spelled like a
-            # DN (e.g. "CN=Admins,OU=Groups,...") must never stand in for the
-            # DN of a different group, so only the entry DN carries DN identity.
-            if cn and not ldap_dn_match_key(cn):
-                groups.append(cn)
+            cn_attribute = getattr(entry, "cn", None)
+            # ldap3 attributes expose every value; str() of a multi-valued
+            # attribute is a list repr, so read the values individually.
+            cn_values = getattr(cn_attribute, "values", None)
+            if cn_values is None:
+                cn_values = [cn_attribute]
+            for value in cn_values:
+                cn = str(value or "").strip()
+                # A bare cn value is only a group-name alias. A cn spelled like
+                # a DN (e.g. "CN=Admins,OU=Groups,...") must never stand in for
+                # the DN of a different group; only the entry DN carries DN
+                # identity.
+                if cn and not ldap_dn_match_key(cn):
+                    groups.append(cn)
         return sorted({item for item in groups if item})
 
     def _service_connection(self, profile: DirectoryProfile) -> tuple[Any, Any]:

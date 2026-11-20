@@ -433,7 +433,6 @@ class AdblockStore:
             path,
             resume_identity=(int(st.st_dev), inode),
             resume_offset=pos,
-            resume_mismatch_from_start=True,
         )
 
     def _cicap_checkpoint_changes(self, follower: LogFollower) -> dict[str, str]:

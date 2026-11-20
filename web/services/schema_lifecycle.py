@@ -31,9 +31,6 @@ from services.sql_identifiers import (
     quote_mysql_identifier,
 )
 
-if False:  # pragma: no cover - type checkers only
-    pass
-
 _SCHEMA_VERSION = 34
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"

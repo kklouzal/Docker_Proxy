@@ -40,30 +40,6 @@ def test_follower_opened_mid_line_skips_the_fragment(tmp_path) -> None:
     assert _drain(follower) == ["next"]
 
 
-@pytest.mark.parametrize("mismatch_from_start", [False, True])
-@pytest.mark.parametrize(
-    "resume",
-    [
-        lambda st: ((st.st_dev, st.st_ino + 1), 5),  # different file
-        lambda st: ((st.st_dev, st.st_ino), st.st_size + 1),  # truncated below it
-    ],
-)
-def test_stale_resume_point_starts_at_end_or_start(
-    tmp_path, resume, mismatch_from_start
-) -> None:
-    path = tmp_path / "access.log"
-    path.write_bytes(b"aaaa\nbbbb\n")
-    identity, offset = resume(path.stat())
-    follower = LogFollower(
-        str(path),
-        resume_identity=identity,
-        resume_offset=offset,
-        resume_mismatch_from_start=mismatch_from_start,
-    )
-    follower.ensure_open()
-    assert _drain(follower) == (["aaaa", "bbbb"] if mismatch_from_start else [])
-
-
 def test_resume_offset_inside_a_line_aligns_to_next_boundary(tmp_path) -> None:
     path = tmp_path / "access.log"
     path.write_bytes(b"aaaa\nbbbb\ncccc\n")
@@ -75,12 +51,39 @@ def test_resume_offset_inside_a_line_aligns_to_next_boundary(tmp_path) -> None:
     assert _drain(follower) == ["cccc"]
 
 
-def test_resume_offset_for_another_file_identity_falls_back_to_end(tmp_path) -> None:
+def test_resume_offset_for_another_file_identity_reads_from_start(tmp_path) -> None:
     path = tmp_path / "access.log"
     path.write_bytes(b"aaaa\nbbbb\n")
-    follower = LogFollower(str(path), resume_identity=(0, 0), resume_offset=0)
+    follower = LogFollower(str(path), resume_identity=(0, 0), resume_offset=4)
     follower.ensure_open()
-    assert _drain(follower) == []
+    assert _drain(follower) == ["aaaa", "bbbb"]
+
+
+def test_at_current_end_follows_a_file_replaced_before_open_from_start(
+    tmp_path,
+) -> None:
+    path = tmp_path / "access.log"
+    path.write_bytes(b"seeded\n")
+    follower = LogFollower.at_current_end(str(path))
+    replacement = tmp_path / "access.log.new"
+    replacement.write_bytes(b"after rotation\n")
+    replacement.replace(path)
+    follower.ensure_open()
+    assert _drain(follower) == ["after rotation"]
+
+
+def test_at_current_end_reads_a_log_truncated_before_open_from_start(
+    tmp_path,
+) -> None:
+    path = tmp_path / "access.log"
+    path.write_bytes(b"seeded line one\nseeded line two\n")
+    follower = LogFollower.at_current_end(str(path))
+    with path.open("r+b") as handle:
+        handle.truncate(0)
+    with path.open("ab") as handle:
+        handle.write(b"new\n")
+    follower.ensure_open()
+    assert _drain(follower) == ["new"]
 
 
 def test_at_current_end_tails_lines_appended_after_capture(tmp_path) -> None:

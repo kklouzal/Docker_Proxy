@@ -48,22 +48,13 @@ class LogFollower:
         resume_identity: FileIdentity | None = None,
         resume_offset: int | None = None,
         from_start: bool = False,
-        resume_mismatch_from_start: bool = False,
         max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
     ) -> None:
-        """``resume_identity``/``resume_offset`` resume the first open there.
-
-        A resume point that no longer applies (different file, or offset past
-        the end after a truncation) starts at the end of the file, or at its
-        start with ``resume_mismatch_from_start`` (a persisted checkpoint: the
-        whole new file was written after it).
-        """
         self.path = path
         self.max_line_bytes = max(1, int(max_line_bytes))
         self._resume_identity = resume_identity
         self._resume_offset = resume_offset
         self._open_from_start = from_start
-        self._resume_mismatch_from_start = resume_mismatch_from_start
         self._handle: BinaryIO | None = None
         self._identity: FileIdentity | None = None
         self._offset = 0
@@ -136,14 +127,16 @@ class LogFollower:
             size = int(st.st_size)
             if self._open_from_start:
                 offset = 0
-            elif (
-                self._resume_offset is not None
-                and self._resume_identity == identity
-                and 0 <= int(self._resume_offset) <= size
-            ):
-                offset = int(self._resume_offset)
-            elif self._resume_offset is not None and self._resume_mismatch_from_start:
-                offset = 0
+            elif self._resume_offset is not None:
+                # A captured position on another file identity, or past the
+                # current size, means the file was replaced or truncated after
+                # the capture: everything it holds now was written since.
+                offset = (
+                    int(self._resume_offset)
+                    if self._resume_identity == identity
+                    and 0 <= int(self._resume_offset) <= size
+                    else 0
+                )
             else:
                 offset = size
             self._resume_identity = None

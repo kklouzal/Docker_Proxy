@@ -283,7 +283,7 @@ The Admin UI starts scheduled MySQL housekeeping when background services are
 enabled. In multi-worker Gunicorn deployments, a file lock allows one process to
 run background tailers, samplers, and housekeeping while the other workers serve
 requests normally. Daily runs prune stored observability rows (diagnostic
-requests/ICAP events/policy tags, live stats, adblock events, SSL errors, and
+requests/ICAP events/policy tags, adblock events, SSL errors, and
 audit events) older than the Observability page's MySQL retention setting
 (default 30 days; there is no per-table override) and stale control-plane
 history; weekly runs also refresh optimizer statistics and
