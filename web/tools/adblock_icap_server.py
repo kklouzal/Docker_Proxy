@@ -10,6 +10,7 @@ import errno
 import gc
 import html
 import io
+import ipaddress
 import math
 import os
 import re
@@ -281,6 +282,22 @@ def _parse_http_request(data: bytes) -> tuple[str, str, dict[str, str]]:
     elif "://" in target:
         target = _valid_absolute_or_scheme_relative_url(target)
     return method, target, headers
+
+
+def _http_client_ip(header_blob: bytes) -> str:
+    """Return the browser address Squid sends in X-Client-IP, or "".
+
+    The ICAP connection itself always comes from the local Squid, so its peer
+    address says nothing about which client was blocked.
+    """
+    lines = header_blob.decode("iso-8859-1", errors="replace").splitlines()[1:]
+    values = _header_values(lines, "x-client-ip")
+    if len(values) != 1:
+        return ""
+    try:
+        return str(ipaddress.ip_address(values[0]))
+    except ValueError:
+        return ""
 
 
 def _decision_list_key(decision: AdblockDecision) -> str:
@@ -920,6 +937,7 @@ class _AdblockIcapServer(socketserver.TCPServer):
             return _allow_response(close=close)
         self.increment_stat("blocked")
         self.log_access(
+            http_client_ip=_http_client_ip(header_blob),
             client_ip=client_ip,
             method=http_method,
             url=url,
@@ -994,6 +1012,7 @@ class _AdblockIcapServer(socketserver.TCPServer):
         *,
         client_ip: str,
         method: str,
+        http_client_ip: str = "",
         url: str,
         icap_status: int,
         http_status: int,
@@ -1007,7 +1026,7 @@ class _AdblockIcapServer(socketserver.TCPServer):
         csv.writer(output, delimiter="\t", lineterminator="\n").writerow(
             [
                 str(int(time.time())),
-                client_ip or "-",
+                http_client_ip or "-",
                 client_ip or "-",
                 "REQMOD",
                 "/adblockreq",
