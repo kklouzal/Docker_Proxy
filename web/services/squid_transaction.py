@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import hashlib
 import json
 import operator
@@ -756,13 +757,27 @@ def _bounded_detail(value: Any) -> str:
     return text[:_MAX_DETAIL_CHARS]
 
 
+# Filesystems that cannot fsync a directory; services.runtime_helpers.fsync_dir
+# uses the same set. This module runs as a standalone script from the
+# entrypoint (no services package on sys.path), hence its own copy.
+_UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS = frozenset(
+    {errno.EBADF, errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}
+)
+
+
 def _fsync_directory(path: Path) -> None:
+    """Persist a rename in ``path``; real I/O errors propagate to the caller."""
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    except OSError:
-        return
+    except OSError as exc:
+        if exc.errno in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
+            return
+        raise
     try:
         os.fsync(fd)
+    except OSError as exc:
+        if exc.errno not in _UNSUPPORTED_DIRECTORY_FSYNC_ERRNOS:
+            raise
     finally:
         os.close(fd)
 

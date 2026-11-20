@@ -445,7 +445,7 @@ def test_materialize_archive_restores_previous_target_when_publish_fsync_fails(
     target = tmp_path / "compiled"
     target.mkdir()
     (target / "settings.json").write_text("old", encoding="utf-8")
-    original_fsync_directory = artifacts_module._fsync_directory
+    original_fsync_directory = artifacts_module.fsync_dir
     fsync_error = OSError("injected directory fsync failure")
     failed = False
 
@@ -456,7 +456,7 @@ def test_materialize_archive_restores_previous_target_when_publish_fsync_fails(
             raise fsync_error
         original_fsync_directory(path)
 
-    monkeypatch.setattr(artifacts_module, "_fsync_directory", fail_once_after_publish)
+    monkeypatch.setattr(artifacts_module, "fsync_dir", fail_once_after_publish)
 
     with pytest.raises(OSError, match="injected directory fsync failure"):
         artifacts_module.materialize_archive_to_directory(

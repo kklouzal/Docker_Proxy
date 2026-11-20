@@ -43,6 +43,7 @@ from services.revision_lifecycle import (
     run_revision_store_transaction,
 )
 from services.runtime_helpers import env_int as _env_int
+from services.runtime_helpers import fsync_dir
 from services.runtime_helpers import now_ts as _now
 
 logger = logging.getLogger(__name__)
@@ -1635,14 +1636,6 @@ def adblock_archive_artifact_sha256(archive_blob: bytes) -> str:
     return digest.hexdigest()
 
 
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def _fsync_tree(root: Path) -> None:
     for current_root, directories, filenames in os.walk(root, topdown=False):
         current = Path(current_root)
@@ -1650,8 +1643,8 @@ def _fsync_tree(root: Path) -> None:
             with (current / filename).open("rb") as handle:
                 os.fsync(handle.fileno())
         for directory in directories:
-            _fsync_directory(current / directory)
-        _fsync_directory(current)
+            fsync_dir(current / directory)
+        fsync_dir(current)
 
 
 def materialize_archive_to_directory(
@@ -1696,17 +1689,17 @@ def materialize_archive_to_directory(
                 )
                 backup_dir.rmdir()
                 target.replace(backup_dir)
-                _fsync_directory(parent)
+                fsync_dir(parent)
 
             payload_dir.replace(target)
-            _fsync_directory(parent)
+            fsync_dir(parent)
         except Exception:
             if backup_dir is not None and backup_dir.exists():
                 try:
                     if target.exists():
                         target.replace(payload_dir)
                     backup_dir.replace(target)
-                    _fsync_directory(parent)
+                    fsync_dir(parent)
                 except Exception as restore_exc:
                     msg = (
                         "Failed to publish adblock artifact and failed to restore "
@@ -1718,7 +1711,7 @@ def materialize_archive_to_directory(
         if backup_dir is not None:
             try:
                 shutil.rmtree(backup_dir)
-                _fsync_directory(parent)
+                fsync_dir(parent)
             except OSError:
                 logger.warning(
                     "Published adblock artifact but could not remove recovery backup %s",

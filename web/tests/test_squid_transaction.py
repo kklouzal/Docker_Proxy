@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -446,3 +447,32 @@ def test_real_lock_exec_blocks_python_lifecycle_lock_until_handoff_release(
     finally:
         holder.kill()
         contender.kill()
+
+
+@pytest.mark.parametrize(
+    ("stage", "err", "raises"),
+    [
+        ("open", errno.EIO, True),
+        ("fsync", errno.EIO, True),
+        ("open", errno.EINVAL, False),
+        ("fsync", errno.EINVAL, False),
+    ],
+)
+def test_directory_fsync_reports_real_errors_and_tolerates_unsupported(
+    monkeypatch, tmp_path, stage, err, raises
+) -> None:
+    from services import squid_transaction as module  # type: ignore
+
+    def fail(*_args, **_kwargs):
+        raise OSError(err, os.strerror(err))
+
+    if stage == "open":
+        monkeypatch.setattr(module.os, "open", fail)
+    else:
+        monkeypatch.setattr(module.os, "fsync", fail)
+    if raises:
+        with pytest.raises(OSError) as info:
+            module._fsync_directory(tmp_path)
+        assert info.value.errno == err
+    else:
+        module._fsync_directory(tmp_path)
