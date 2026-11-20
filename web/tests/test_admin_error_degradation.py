@@ -62,16 +62,6 @@ class InitFailingAdblockStore:
     def stats(self):
         return {"total": 0, "last_24h": 0, "by_list": {}, "by_list_24h": {}}
 
-    def cache_stats(self):
-        return {
-            "hits": 0,
-            "misses": 0,
-            "evictions": 0,
-            "current_size": 0,
-            "last_flush": 0,
-            "last_flush_req": 0,
-        }
-
     def get_update_interval_seconds(self) -> int:
         return 3600
 
