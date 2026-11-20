@@ -85,6 +85,10 @@ def test_clamav_page_explains_configurable_failure_behavior() -> None:
     assert "GET and HEAD response coverage" in html
     assert "POST, PUT, and PATCH request coverage" in html
     assert "Compact baseline for file policy behavior" in html
+    # The RESPMOD exemptions documented in the README are visible to operators.
+    assert "Server-Sent Events" in html
+    assert "<span class=\"mono\">206</span> partial responses" in html
+    assert "CLAMAV_STREAM_MAX_BYTES" in html
 
 
 def test_ssl_policy_rule_cards_are_not_forced_into_sidebar_widths() -> None:
