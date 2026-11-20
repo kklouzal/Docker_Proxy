@@ -109,7 +109,7 @@
                       </select>
                     {% else %}
                       <label for="{{ field.key }}">{{ field.label }}</label>
-                      <input id="{{ field.key }}" name="{{ field.key }}" type="{{ field.input_type }}" value="{{ '' if value is none else value }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.minimum is not none %}min="{{ field.minimum }}"{% endif %} {% if field.maximum is not none %}max="{{ field.maximum }}"{% endif %} {% if field.step is not none %}step="{{ field.step }}"{% endif %} />
+                      <input id="{{ field.key }}" name="{{ field.key }}" type="{{ field.input_type }}" value="{{ '' if value is none else value }}" {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %} {% if field.minimum is not none %}min="{{ field.minimum }}"{% endif %} {% if field.maximum is not none %}max="{{ field.maximum }}"{% endif %} {% if field.step is not none %}step="{{ field.step }}"{% endif %} {% if field.pattern %}pattern="{{ field.pattern }}" title="{{ field.pattern_hint }}"{% endif %} />
                     {% endif %}
                     <div class="config-field-meta">
                       <div class="small mono config-field-directive">{{ field.directive }}</div>

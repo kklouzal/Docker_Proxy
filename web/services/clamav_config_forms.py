@@ -79,6 +79,8 @@ _PRESET_MANAGED_FIELDS: tuple[str, ...] = (
 )
 
 _SIZE_RE = re.compile(r"^(?:0|[1-9][0-9]*)(?:[KMG])?$", re.IGNORECASE)
+_SIZE_INPUT_PATTERN = "(?:0|[1-9][0-9]*)[KMGkmg]?"
+_SIZE_FORMAT_HINT = "0 or a positive integer with an optional K, M, or G suffix"
 _SIZE_FIELD_KEYS: tuple[str, ...] = (
     "file_security_max_download_size",
     "file_security_max_upload_size",
@@ -117,6 +119,9 @@ class ClamavFieldSpec:
     step: int | None = None
     rows: int = 3
     choices: tuple[UiChoiceSpec, ...] = ()
+    # Browser-side mirror of the server validation (HTML ``pattern`` syntax).
+    pattern: str = ""
+    pattern_hint: str = ""
 
 
 @dataclass(frozen=True)
@@ -149,6 +154,9 @@ def _field(
     **kwargs: Any,
 ) -> ClamavFieldSpec:
     choices = tuple(kwargs.pop("choices", ()))
+    if key in _SIZE_FIELD_KEYS:
+        kwargs.setdefault("pattern", _SIZE_INPUT_PATTERN)
+        kwargs.setdefault("pattern_hint", _SIZE_FORMAT_HINT)
     return ClamavFieldSpec(
         key,
         group,
@@ -823,10 +831,7 @@ def read_clamav_options_from_form(
         text = str(raw_value if raw_value is not None else "").strip()
         if not text or _SIZE_RE.fullmatch(text) is None:
             label = CLAMAV_FIELD_MAP[key].label
-            msg = (
-                f"{label} must be 0 or a positive integer with an optional "
-                "K, M, or G suffix (for example, 64M)."
-            )
+            msg = f"{label} must be {_SIZE_FORMAT_HINT} (for example, 64M)."
             raise ValueError(msg)
     current_values = normalize_clamav_options(current)
     values = dict(current_values)
