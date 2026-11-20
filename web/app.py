@@ -292,7 +292,24 @@ ADMIN_UI_CA_DIR = "/etc/squid/ssl/certs"
 
 app = Flask(__name__)
 install_http_optimizations(app)
-_asset_version = str(int(time.time()))
+
+
+def _static_asset_version(static_folder: str | None) -> str:
+    """Content digest for the ``?v=`` cache-buster on immutable static assets.
+
+    A digest (rather than process start time) keeps the version identical across
+    Gunicorn workers and restarts, so browsers only refetch the year-long cached
+    assets when their bytes actually change.
+    """
+    digest = hashlib.sha256()
+    root = pathlib.Path(static_folder or "")
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:16]
+
+
+_asset_version = _static_asset_version(app.static_folder)
 OBSERVABILITY_DEFAULT_WINDOW = 24 * 60 * 60
 _PROXY_HEALTH_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 _ADMIN_VERSION_STATUS_CACHE: tuple[float, dict[str, Any]] | None = None

@@ -150,10 +150,13 @@ def install_http_optimizations(
     @app.after_request
     def _http_optimizations_after_request(response: Any):
         endpoint = request.endpoint or ""
-        if endpoint == "static":
+        if endpoint == "static" and response.status_code in {200, 304}:
             response.headers["Cache-Control"] = (
                 f"public, max-age={int(static_max_age_seconds)}, immutable"
             )
+        elif endpoint == "static":
+            # A missing asset must not be pinned in caches for a year.
+            response.headers["Cache-Control"] = "no-store"
         elif default_dynamic_max_age_seconds <= 0:
             if (
                 request.method in {"GET", "HEAD"}
