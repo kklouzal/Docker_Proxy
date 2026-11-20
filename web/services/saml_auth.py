@@ -1590,14 +1590,14 @@ def saml_assertion_use(
       younger than ``acceptance_window_seconds`` (pending TTL plus the future
       tolerance for the creating worker's clock), so a replay is impossible
       after ``now + acceptance_window_seconds``.
-    * python3-saml rejects a SubjectConfirmationData NotOnOrAfter at or before
-      its ``now`` with no drift, so a replay is also impossible after that
-      NotOnOrAfter when present.
+    * The assertion's SubjectConfirmationData NotOnOrAfter is not a safe
+      tighter bound: python3-saml accepts the response when any bearer
+      SubjectConfirmation is valid, and reports only the NotOnOrAfter of the
+      first valid one, so a later confirmation could still accept a replay.
 
-    A replay needs both, so the tighter bound is safe; adding
-    SAML_CLOCK_DRIFT_SECONDS covers skew between the accepting worker and the
-    pruner. The pending window also caps the expiry (16 minutes by default),
-    so an IdP issuing long-lived assertions cannot grow the table.
+    Adding SAML_CLOCK_DRIFT_SECONDS covers skew between the accepting worker
+    and the pruner. The pending window fixes the expiry (16 minutes by
+    default), so an IdP issuing long-lived assertions cannot grow the table.
     """
     assertion_id = str(auth.get_last_assertion_id() or "").strip()
     if not assertion_id:
@@ -1612,11 +1612,7 @@ def saml_assertion_use(
     if not idp_entity_id:
         msg = "SAML IdP entity ID is unknown; refresh metadata."
         raise ValueError(msg)
-    now = int(now)
-    expires_ts = now + int(acceptance_window_seconds)
-    not_on_or_after = auth.get_last_assertion_not_on_or_after()
-    if not_on_or_after:
-        expires_ts = min(expires_ts, max(int(not_on_or_after), now))
+    expires_ts = int(now) + int(acceptance_window_seconds)
     replay_key = hashlib.sha256(
         json.dumps([idp_entity_id, assertion_id], separators=(",", ":")).encode()
     ).hexdigest()

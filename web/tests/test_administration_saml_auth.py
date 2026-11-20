@@ -151,7 +151,6 @@ class FakeSamlToolkit:
         self.process_response_calls = 0
         # Each toolkit models one IdP response, so each has a fresh assertion.
         self.assertion_id = assertion_id or f"_assertion-{next(_ASSERTION_IDS)}"
-        self.not_on_or_after: int | None = int(time.time()) + 300
         self.session_expiration = session_expiration
         self.in_response_to: str | None = None
 
@@ -169,9 +168,6 @@ class FakeSamlToolkit:
 
     def get_last_assertion_id(self):
         return self.assertion_id
-
-    def get_last_assertion_not_on_or_after(self):
-        return self.not_on_or_after
 
     def get_last_response_in_response_to(self):
         return self.in_response_to
