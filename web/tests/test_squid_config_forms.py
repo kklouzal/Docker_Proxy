@@ -1030,7 +1030,7 @@ def test_parse_cache_override_form_defaults_unchecked_to_false() -> None:
     assert overrides["ignore_no_store"] is False
 
 
-def test_parse_cache_override_form_accepts_legacy_semantic_names() -> None:
+def test_parse_cache_override_form_ignores_retired_semantic_names() -> None:
     overrides = parse_cache_override_form(
         {
             "override_client_no_cache": "on",
@@ -1039,12 +1039,7 @@ def test_parse_cache_override_form_accepts_legacy_semantic_names() -> None:
         },
     )
 
-    assert overrides["ignore_reload"] is True
-    assert overrides["ignore_private"] is True
-    assert overrides["ignore_no_store"] is True
-    assert overrides["override_expire"] is False
-    assert overrides["override_lastmod"] is False
-    assert overrides["reload_into_ims"] is False
+    assert not any(overrides.values())
 
 
 def test_cache_override_form_contains_exact_current_squid_override_options() -> None:
