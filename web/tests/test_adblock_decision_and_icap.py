@@ -2272,3 +2272,25 @@ def test_ubo_option_aliases_apply_and_unknown_options_discard_rules(
     # Unsupported options must not turn into unrestricted block or allow rules.
     assert engine.decide("https://unknown-option.example/a").blocked is False
     assert engine.decide("https://unknown-allow.example/a").blocked is True
+
+
+def test_important_exception_overrides_important_block(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "||vip.example^$important",
+            "@@||vip.example/ok^$important",
+            "@@||vip.example/plain^",
+        ],
+    )
+
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+
+    allowed = engine.decide("https://vip.example/ok")
+    assert allowed.blocked is False
+    assert allowed.reason == "important-exception"
+    plain = engine.decide("https://vip.example/plain")
+    assert plain.blocked is True
+    assert plain.reason == "important-rule-match"

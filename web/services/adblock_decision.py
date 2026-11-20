@@ -248,6 +248,41 @@ def third_party_hint_from_headers(headers: dict[str, str] | None) -> bool | None
     return None
 
 
+def _first_match(
+    matches: list[dict[str, Any]],
+    action: str,
+    *,
+    important: bool,
+) -> dict[str, Any] | None:
+    for rule in matches:
+        if rule.get("action") != action:
+            continue
+        if not important or "important" in set(rule.get("behavior_options") or []):
+            return rule
+    return None
+
+
+def _decision_for_matches(matches: list[dict[str, Any]]) -> AdblockDecision:
+    # uBO precedence: important exception > important block > exception > block.
+    for action, important, reason in (
+        ("allow", True, "important-exception"),
+        ("block", True, "important-rule-match"),
+        ("allow", False, "exception"),
+        ("block", False, "rule-match"),
+    ):
+        rule = _first_match(matches, action, important=important)
+        if rule is not None:
+            return AdblockDecision(
+                blocked=action == "block",
+                rule_id=str(rule.get("rule_id") or rule.get("id") or ""),
+                raw=str(rule.get("raw") or ""),
+                action=action,
+                reason=reason,
+                list_key=str(rule.get("list_key") or ""),
+            )
+    return AdblockDecision(blocked=False)
+
+
 class AdblockDecisionEngine:
     def __init__(
         self,
@@ -318,57 +353,7 @@ class AdblockDecisionEngine:
             resource_type=effective_resource_type,
         )
         matches = [rule for rule in candidates if self._rule_matches(rule, context)]
-        important_block = next(
-            (
-                rule
-                for rule in matches
-                if rule.get("action") == "block"
-                and "important" in set(rule.get("behavior_options") or [])
-            ),
-            None,
-        )
-        if important_block is not None:
-            decision = AdblockDecision(
-                blocked=True,
-                rule_id=str(
-                    important_block.get("rule_id") or important_block.get("id") or "",
-                ),
-                raw=str(important_block.get("raw") or ""),
-                action="block",
-                reason="important-rule-match",
-                list_key=str(important_block.get("list_key") or ""),
-            )
-        else:
-            allow = next(
-                (rule for rule in matches if rule.get("action") == "allow"),
-                None,
-            )
-            if allow is not None:
-                decision = AdblockDecision(
-                    blocked=False,
-                    rule_id=str(allow.get("rule_id") or allow.get("id") or ""),
-                    raw=str(allow.get("raw") or ""),
-                    action="allow",
-                    reason="exception",
-                    list_key=str(allow.get("list_key") or ""),
-                )
-            else:
-                block = next(
-                    (rule for rule in matches if rule.get("action") == "block"),
-                    None,
-                )
-                decision = (
-                    AdblockDecision(
-                        blocked=True,
-                        rule_id=str(block.get("rule_id") or block.get("id") or ""),
-                        raw=str(block.get("raw") or ""),
-                        action="block",
-                        reason="rule-match",
-                        list_key=str(block.get("list_key") or ""),
-                    )
-                    if block is not None
-                    else AdblockDecision(blocked=False)
-                )
+        decision = _decision_for_matches(matches)
         self._put_cached(cache_key, decision)
         return decision
 
