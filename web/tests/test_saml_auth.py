@@ -1468,18 +1468,18 @@ def test_replay_clock_drift_matches_python3_saml_constant() -> None:
 
 
 @pytest.mark.parametrize(
-    ("not_on_or_after", "expected_offset"),
+    "not_on_or_after",
     [
-        # No SubjectConfirmationData NotOnOrAfter: the pending window bounds it.
-        (None, 660 + 300),
-        # Long-lived assertion: still capped by the pending-request window.
-        (1_000_000 + 86_400, 660 + 300),
-        # Short-lived assertion: its NotOnOrAfter is the tighter bound.
-        (1_000_000 + 120, 120 + 300),
+        None,
+        # Long-lived assertion: capped by the pending-request window.
+        1_000_000 + 86_400,
+        # Short-lived assertion: python3-saml reports only the first valid
+        # SubjectConfirmation's NotOnOrAfter, so it never shortens the claim.
+        1_000_000 + 120,
     ],
 )
 def test_assertion_replay_expiry_outlives_every_acceptance_window(
-    not_on_or_after, expected_offset
+    not_on_or_after,
 ) -> None:
     use = saml_auth.saml_assertion_use(
         _ReplayToolkit(not_on_or_after=not_on_or_after),
@@ -1489,7 +1489,7 @@ def test_assertion_replay_expiry_outlives_every_acceptance_window(
         now=1_000_000,
     )
 
-    assert use.expires_ts == 1_000_000 + expected_offset
+    assert use.expires_ts == 1_000_000 + 660 + 300
     assert len(use.replay_key) == 64
 
 

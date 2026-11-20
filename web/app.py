@@ -2427,7 +2427,17 @@ def _is_logged_in() -> bool:
     memo = g.get(_ADMIN_SESSION_MEMO_ATTR)
     if memo is not None:
         return bool(memo)
-    valid = _validate_admin_session()
+    try:
+        valid = _validate_admin_session()
+    except ServiceUnavailable:
+        # Sign-in, sign-out and pre-auth routes never need a validated
+        # session: a session that cannot be validated (directory or MySQL
+        # outage) counts as signed out there, so the local break-glass login
+        # stays reachable. The session itself is kept; a new login replaces it.
+        if request.endpoint not in _LOGIN_EXEMPT_ENDPOINTS:
+            g._admin_session_unvalidated = True
+            raise
+        valid = False
     setattr(g, _ADMIN_SESSION_MEMO_ATTR, valid)
     return valid
 
@@ -3409,9 +3419,11 @@ def _recover_from_unhandled_admin_error(exc: Exception):
             database_cause,
             interval_seconds=60.0,
         )
-        return ServiceUnavailable(
-            description="The Admin UI database is temporarily unavailable.",
-            retry_after=5,
+        return _service_unavailable(
+            ServiceUnavailable(
+                description="The Admin UI database is temporarily unavailable.",
+                retry_after=5,
+            )
         )
 
     log_exception_throttled(
@@ -3426,27 +3438,63 @@ def _recover_from_unhandled_admin_error(exc: Exception):
     with contextlib.suppress(Exception):
         recover_url = url_for("recover_admin_session")
     csrf_token = _ensure_csrf_token()
-    html = f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Admin UI Recovery | Docker Proxy</title>
-  <style>body{{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f6f7f9;color:#151922}}main{{max-width:720px;margin:12vh auto;padding:32px;background:#fff;border:1px solid #d9dee8;border-radius:8px;box-shadow:0 12px 32px rgba(15,23,42,.08)}}h1{{font-size:1.35rem;margin:0 0 12px}}p{{line-height:1.5}}.btn{{display:inline-block;margin-top:14px;padding:10px 14px;border-radius:6px;background:#1f6feb;color:#fff;text-decoration:none;font-weight:600}}.small{{color:#5c667a;font-size:.92rem}}</style>
-</head>
-<body>
-  <main>
-    <h1>Admin UI recovered from a request error</h1>
+    html = _standalone_page_html(
+        "Admin UI Recovery",
+        f"""<h1>Admin UI recovered from a request error</h1>
     <p>The selected proxy/session context was reset so the next page load can start from the current registered proxy inventory.</p>
     <p class="small">{message}</p>
     <form method="post" action="{escape(recover_url)}">
       <input type="hidden" name="csrf_token" value="{escape(csrf_token)}">
       <button class="btn" type="submit">Return to dashboard</button>
-    </form>
+    </form>""",
+    )
+    return Response(html, status=500, mimetype="text/html")
+
+
+def _standalone_page_html(title: str, main_html: str) -> str:
+    # Rendered without templates or context processors, so these pages work
+    # while the session cannot be validated. No scripts (CSP script-src 'self').
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(title)} | Docker Proxy</title>
+  <style>body{{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f6f7f9;color:#151922}}main{{max-width:720px;margin:12vh auto;padding:32px;background:#fff;border:1px solid #d9dee8;border-radius:8px;box-shadow:0 12px 32px rgba(15,23,42,.08)}}h1{{font-size:1.35rem;margin:0 0 12px}}p{{line-height:1.5}}.btn{{display:inline-block;margin:14px 8px 0 0;padding:10px 14px;border:0;border-radius:6px;background:#1f6feb;color:#fff;text-decoration:none;font:inherit;font-weight:600;cursor:pointer}}.btn.secondary{{background:#e8ebf1;color:#151922}}.small{{color:#5c667a;font-size:.92rem}}</style>
+</head>
+<body>
+  <main>
+    {main_html}
   </main>
 </body>
 </html>"""
-    return Response(html, status=500, mimetype="text/html")
+
+
+@app.errorhandler(ServiceUnavailable)
+def _service_unavailable(exc: ServiceUnavailable):
+    response = exc.get_response()
+    if not getattr(g, "_admin_session_unvalidated", False):
+        return response
+    # A signed-in session that cannot be validated right now (directory or
+    # MySQL outage) is kept, so offer a way out without clearing cookies:
+    # sign out, or sign in again (e.g. as the local break-glass administrator).
+    description = escape(exc.description or "")
+    csrf_token = _ensure_csrf_token()
+    response.set_data(
+        _standalone_page_html(
+            "Temporarily Unavailable",
+            f"""<h1>Admin UI temporarily unavailable</h1>
+    <p>{description}</p>
+    <p class="small">Your session is kept and resumes once the service answers again. To use another account, such as the local administrator, sign out or sign in again.</p>
+    <form method="post" action="{escape(url_for("logout"))}">
+      <input type="hidden" name="csrf_token" value="{escape(csrf_token)}">
+      <button class="btn" type="submit">Sign out</button>
+      <a class="btn secondary" href="{escape(url_for("login"))}">Sign in again</a>
+    </form>""",
+        )
+    )
+    response.mimetype = "text/html"
+    return response
 
 
 _MUTATING_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -3739,6 +3787,7 @@ def _reset_proxy_context(_exc) -> None:
 def _inject_proxy_context():
     if not _is_logged_in():
         return {
+            "admin_signed_in": False,
             "active_proxy_id": None,
             "active_proxy": None,
             "proxy_inventory": [],
@@ -3754,6 +3803,7 @@ def _inject_proxy_context():
     ):
         _active_proxy_id, active_proxy, proxies = _resolve_selected_proxy_context()
     return {
+        "admin_signed_in": True,
         "active_proxy_id": active_proxy.proxy_id,
         "active_proxy": active_proxy,
         "proxy_inventory": proxies,
@@ -3764,10 +3814,12 @@ def _inject_proxy_context():
 def login():
     saml_profile = _current_saml_profile()
     saml_enabled = profile_metadata_ready(saml_profile)
+    database_unavailable = False
     try:
         local_admin_configured = _auth_store.any_users()
-    except Exception:
+    except Exception as exc:
         local_admin_configured = True
+        database_unavailable = transient_mysql_cause(exc) is not None
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
@@ -3788,9 +3840,34 @@ def login():
             else "local"
         )
         directory_attempted = directory_provider != "local"
-        local_auth_version = (
-            None if directory_ok else _auth_store.authenticate_user(username, password)
-        )
+        try:
+            local_auth_version = (
+                None
+                if directory_ok
+                else _auth_store.authenticate_user(username, password)
+            )
+        except Exception as exc:
+            if transient_mysql_cause(exc) is None:
+                raise
+            log_database_unavailable(
+                app.logger,
+                "web.app.login_database_unavailable",
+                "Local administrator sign-in deferred while MySQL is unavailable",
+                exc,
+                interval_seconds=60.0,
+            )
+            return (
+                render_template(
+                    "login.html",
+                    error=None,
+                    next=next_url,
+                    saml_enabled=saml_enabled,
+                    local_admin_configured=local_admin_configured,
+                    database_unavailable=True,
+                ),
+                503,
+                {"Retry-After": "5"},
+            )
         local_ok = local_auth_version is not None
         if directory_ok or local_ok:
             login_provider = directory_provider if directory_ok else "local"
@@ -3844,6 +3921,7 @@ def login():
             next=next_url,
             saml_enabled=saml_enabled,
             local_admin_configured=local_admin_configured,
+            database_unavailable=database_unavailable,
         )
 
     if _is_logged_in():
@@ -3855,6 +3933,7 @@ def login():
         next=next_url,
         saml_enabled=saml_enabled,
         local_admin_configured=local_admin_configured,
+        database_unavailable=database_unavailable,
     )
 
 

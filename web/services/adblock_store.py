@@ -720,24 +720,14 @@ class AdblockStore:
         )
         return [events, counts]
 
-    def get_settings(self) -> dict[str, Any]:
+    @staticmethod
+    def _artifact_settings_from_rows(m: dict[str, str]) -> dict[str, Any]:
         def as_int(s: str, default: int) -> int:
             try:
                 return int((s or "").strip())
             except Exception:
                 return default
 
-        with self._connect() as conn:
-            rows = conn.execute("SELECT k, v FROM adblock_settings").fetchall()
-            m = {str(r[0]): str(r[1]) for r in rows}
-            legacy_enabled = (
-                "1"
-                if (m.get("enabled") or _DEFAULT_SETTINGS["enabled"]).strip() == "1"
-                else "0"
-            )
-            runtime_enabled = self._get_proxy_meta(conn, "enabled", legacy_enabled)
-
-        enabled = runtime_enabled.strip() == "1"
         cache_ttl = as_int(
             m.get("cache_ttl") or _DEFAULT_SETTINGS["cache_ttl"],
             int(_DEFAULT_SETTINGS["cache_ttl"]),
@@ -748,13 +738,35 @@ class AdblockStore:
         )
 
         # Clamp to safe ranges.
-        cache_ttl = max(0, min(7 * 24 * 3600, cache_ttl))
-        cache_max = max(0, min(1_000_000, cache_max))
+        return {
+            "cache_ttl": max(0, min(7 * 24 * 3600, cache_ttl)),
+            "cache_max": max(0, min(1_000_000, cache_max)),
+        }
+
+    def get_artifact_settings(self) -> dict[str, Any]:
+        """Settings shared by every proxy (the compiled artifact's inputs).
+
+        Unlike get_settings() this reads no proxy-scoped state, so the shared
+        artifact builder works before any proxy has registered.
+        """
+        with self._connect() as conn:
+            rows = conn.execute("SELECT k, v FROM adblock_settings").fetchall()
+        return self._artifact_settings_from_rows({str(r[0]): str(r[1]) for r in rows})
+
+    def get_settings(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT k, v FROM adblock_settings").fetchall()
+            m = {str(r[0]): str(r[1]) for r in rows}
+            legacy_enabled = (
+                "1"
+                if (m.get("enabled") or _DEFAULT_SETTINGS["enabled"]).strip() == "1"
+                else "0"
+            )
+            runtime_enabled = self._get_proxy_meta(conn, "enabled", legacy_enabled)
 
         return {
-            "enabled": enabled,
-            "cache_ttl": cache_ttl,
-            "cache_max": cache_max,
+            "enabled": runtime_enabled.strip() == "1",
+            **self._artifact_settings_from_rows(m),
         }
 
     def set_runtime_enabled(self, enabled: bool) -> None:

@@ -19,7 +19,7 @@ from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
 from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
 
-def _import_artifact_modules(tmp_path: Path):
+def _import_artifact_modules(tmp_path: Path, *, register_proxies: bool = True):
     repo_root = Path(__file__).resolve().parents[2]
     web_root = repo_root / "web"
     for path in (str(repo_root), str(web_root)):
@@ -28,7 +28,12 @@ def _import_artifact_modules(tmp_path: Path):
 
     os.environ["DISABLE_BACKGROUND"] = "1"
     configure_test_mysql_env(tmp_path, secret_path=tmp_path / "flask_secret.key")
-    register_test_proxies()
+    if register_proxies:
+        register_test_proxies()
+    else:
+        from services.proxy_registry import get_proxy_registry  # type: ignore
+
+        get_proxy_registry().init_db()
 
     import services.adblock_artifacts as artifacts_module  # type: ignore
     import services.adblock_store as store_module  # type: ignore
@@ -911,8 +916,8 @@ def test_build_active_artifact_persists_download_pending_when_no_cached_lists(
         def init_db(self) -> None:
             return None
 
-        def get_settings(self) -> dict[str, object]:
-            return {"enabled": True, "cache_ttl": 120, "cache_max": 4096}
+        def get_artifact_settings(self) -> dict[str, object]:
+            return {"cache_ttl": 120, "cache_max": 4096}
 
         def get_settings_version(self) -> int:
             return 7
@@ -1116,8 +1121,8 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
         def init_db(self) -> None:
             return None
 
-        def get_settings(self) -> dict[str, object]:
-            return {"enabled": True}
+        def get_artifact_settings(self) -> dict[str, object]:
+            return {}
 
         def list_statuses(self) -> list[SimpleNamespace]:
             return [SimpleNamespace(key="easylist", enabled=True)]
@@ -1219,8 +1224,8 @@ def test_manual_refresh_downloads_enabled_lists_even_when_adblock_disabled(
         def init_db(self) -> None:
             return None
 
-        def get_settings(self) -> dict[str, object]:
-            return {"enabled": False, "cache_ttl": 120, "cache_max": 4096}
+        def get_artifact_settings(self) -> dict[str, object]:
+            return {"cache_ttl": 120, "cache_max": 4096}
 
         def get_settings_version(self) -> int:
             return 7
@@ -1484,8 +1489,8 @@ def test_build_active_artifact_preserves_previous_and_pending_on_compile_failure
         def init_db(self) -> None:
             return None
 
-        def get_settings(self) -> dict[str, object]:
-            return {"enabled": True, "cache_ttl": 120, "cache_max": 4096}
+        def get_artifact_settings(self) -> dict[str, object]:
+            return {"cache_ttl": 120, "cache_max": 4096}
 
         def get_settings_version(self) -> int:
             return 7
@@ -1669,8 +1674,8 @@ def _run_background_loop_due_check(
         def init_db(self) -> None:
             return None
 
-        def get_settings(self) -> dict[str, object]:
-            return {"enabled": True}
+        def get_artifact_settings(self) -> dict[str, object]:
+            return {}
 
         def list_statuses(self) -> list[object]:
             return [self.status]
@@ -3103,3 +3108,40 @@ def test_build_result_recording_failure_is_logged_not_raised(caplog) -> None:
         artifacts_module._record_build_result(Store(), ok=True, detail="built")
 
     assert "Failed to record the adblock artifact build result" in caplog.text
+
+
+@pytest.mark.mysql
+def test_background_builder_builds_shared_artifact_before_any_proxy_registers(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    # Fresh install: the registry exists but no proxy has registered yet. The
+    # shared artifact needs no proxy-scoped state, so the builder must neither
+    # fail nor log a ProxyLifecycleWriteError traceback on every poll.
+    store_module, artifacts_module = _import_artifact_modules(
+        tmp_path, register_proxies=False
+    )
+    store = store_module.get_adblock_store()
+    store.lists_dir = str(tmp_path / "lists")
+    Path(store.lists_dir).mkdir(parents=True, exist_ok=True)
+    builder = artifacts_module.get_adblock_artifacts()
+    monkeypatch.setattr(
+        artifacts_module, "nudge_registered_proxies", lambda **_kwargs: None
+    )
+    sleeps: list[float] = []
+
+    def stop_after_one_poll(seconds: float) -> bool:
+        sleeps.append(seconds)
+        builder._stop_event.set()
+        return True
+
+    monkeypatch.setattr(builder._stop_event, "wait", stop_after_one_poll)
+
+    with caplog.at_level("INFO"):
+        builder._loop()
+
+    assert [r for r in caplog.records if r.levelname in {"WARNING", "ERROR"}] == []
+    assert all(r.exc_info is None for r in caplog.records)
+    active = builder.get_active_artifact_summary()
+    assert active is not None
+    assert store.get_artifact_build_status()["ok"] is True
+    assert sleeps == [30.0]

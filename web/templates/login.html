@@ -22,6 +22,15 @@
             <span class="badge">Web admin only</span>
         </div>
         <div class="card-body stack-md">
+            {% if database_unavailable %}
+            <div class="banner warning">
+                <span class="badge warning">Unavailable</span>
+                <div class="banner-copy">
+                    <strong>The Admin UI database is temporarily unavailable</strong>
+                    <span class="small">Sign-in cannot be verified until MySQL answers again. Retry in a moment.</span>
+                </div>
+            </div>
+            {% endif %}
             {% if not local_admin_configured %}
             <div class="banner warning">
                 <span class="badge warning">Setup required</span>
