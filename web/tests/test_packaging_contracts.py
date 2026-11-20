@@ -406,7 +406,7 @@ def test_proxy_and_admin_dockerfiles_keep_runtime_payloads_separated() -> None:
     assert "GIT_COMMIT=${GIT_COMMIT}" in admin
 
 
-def test_proxy_wsgi_imports_packaged_proxy_application(tmp_path) -> None:
+def test_proxy_management_server_imports_packaged_proxy_application(tmp_path) -> None:
     dockerfile = _read("docker/Dockerfile.proxy")
     supervisord = _read("docker/supervisord.proxy.conf")
     package = tmp_path / "proxy"
@@ -416,17 +416,31 @@ def test_proxy_wsgi_imports_packaged_proxy_application(tmp_path) -> None:
         "def app(environ, start_response):\n    return []\n",
         encoding="utf-8",
     )
-    (package / "wsgi.py").write_text(_read("proxy/wsgi.py"), encoding="utf-8")
+    (package / "management_server.py").write_text(
+        _read("proxy/management_server.py"), encoding="utf-8"
+    )
 
     assert "WORKDIR /app" in dockerfile
     assert "COPY proxy /app/proxy" in dockerfile
     assert "directory=/app" in supervisord
-    assert "proxy.wsgi:app" in supervisord
-    _assert_staged_wsgi_import(
-        tmp_path,
-        entrypoint_module="proxy.wsgi",
-        application_module="proxy.app",
+    assert "command=python3 -m proxy.management_server\n" in supervisord
+    # The packaged entry point serves the packaged management application.
+    script = """
+import inspect
+import proxy.app
+import proxy.management_server as server
+
+assert "from proxy.app import app" in inspect.getsource(server.main)
+assert callable(proxy.app.app)
+"""
+    result = run_test_process(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
     )
+    assert result.returncode == 0, result.stderr
 
 
 def test_admin_wsgi_imports_flat_packaged_application(tmp_path) -> None:
@@ -461,7 +475,7 @@ def test_admin_wsgi_imports_flat_packaged_application(tmp_path) -> None:
 
 
 PROXY_PYTHON_RUNTIME_ROOTS = {
-    "proxy.wsgi",
+    "proxy.management_server",
     "proxy.public_app",
     "proxy.agent",
     "proxy.forwarding_canary",
@@ -491,7 +505,7 @@ def test_proxy_dockerfile_contains_transitive_local_import_closure() -> None:
     supervisord = _read("docker/supervisord.proxy.conf")
     entrypoint = _read("docker/entrypoint.sh")
     for marker in (
-        "proxy.wsgi:app",
+        "proxy.management_server",
         "proxy.public_app:app",
         "proxy.agent",
         "proxy.forwarding_canary",
@@ -2384,7 +2398,7 @@ def test_public_pac_listener_runs_apart_from_management_and_loads_no_database() 
     assert "PAC_HTTP_PORT" in public
     assert "proxy.public_app:app" in public
     assert "PAC_WEB_THREADS" in public
-    # Both gunicorn masters would otherwise claim the same default socket.
+    # Nothing uses a gunicorn control socket; it would cost the arbiter a thread.
     assert "--no-control-socket" in public
 
     probe = (

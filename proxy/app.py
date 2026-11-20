@@ -703,7 +703,7 @@ def app(environ: dict[str, Any], start_response: Callable[..., Any]) -> Iterable
     return send(response, environ, start_response)
 
 
-# proxy_api runs under gunicorn, which only configures its own gunicorn.* loggers.
+# proxy.management_server, which serves this app, configures no logging itself.
 configure_process_logging()
 
 if (os.environ.get("DISABLE_PROXY_AGENT") or "").strip() != "1":
