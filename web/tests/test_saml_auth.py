@@ -1893,7 +1893,7 @@ def test_background_refresh_is_due_gated_and_single_flight(
         "disabled": replace(due, enabled=False),
     }.get(variant, due)
     conn = _NamedLockConnection(acquired=0 if variant == "lock_held_elsewhere" else 1)
-    monkeypatch.setattr(store, "_connect", lambda: conn)
+    monkeypatch.setattr(store, "_connect_lock_session", lambda: conn)
     if variant == "refreshed_by_other_holder":
         reads = iter([due, replace(due, next_refresh_ts=now + 900)])
         monkeypatch.setattr(store, "get_profile", lambda: next(reads))

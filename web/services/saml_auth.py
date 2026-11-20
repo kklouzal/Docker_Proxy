@@ -36,6 +36,7 @@ from services.db import (
     DATABASE_ERRORS,
     acquire_mysql_named_lock,
     connect,
+    connect_unpooled,
     mysql_error_code,
     release_mysql_named_lock,
 )
@@ -357,6 +358,11 @@ class SamlAuthStore:
 
     def _connect(self):
         return connect()
+
+    def _connect_lock_session(self):
+        # The refresh lock is held across the metadata fetch; a dedicated
+        # session keeps it from occupying a pooled request connection.
+        return connect_unpooled()
 
     def ensure_schema(self) -> None:
         if self._schema_ready:
@@ -883,7 +889,7 @@ class SamlAuthStore:
         if profile.next_refresh_ts > current:
             return profile.next_refresh_ts
         lock_name = scoped_lock_name(_REFRESH_LOCK_NAMESPACE)
-        with self._connect() as conn:
+        with self._connect_lock_session() as conn:
             if not acquire_mysql_named_lock(conn, lock_name, 0):
                 # Another process is refreshing; look again shortly.
                 return current + _REFRESH_MIN_INTERVAL_SECONDS
