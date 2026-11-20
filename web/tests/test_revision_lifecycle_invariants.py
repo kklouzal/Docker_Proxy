@@ -545,3 +545,42 @@ def test_mysql_adblock_artifact_legacy_repair_enforces_global_single_active(
             ).fetchone()
             is not None
         )
+
+
+@pytest.mark.parametrize("fail_in", ["body", "commit"])
+def test_advisory_lock_reports_rollback_failure_on_the_primary_error(
+    monkeypatch, fail_in
+) -> None:
+    monkeypatch.setattr(
+        revision_lifecycle, "acquire_mysql_named_lock", lambda *_a, **_k: True
+    )
+    released: list[str] = []
+    monkeypatch.setattr(
+        revision_lifecycle,
+        "release_mysql_named_lock",
+        lambda _conn, name: released.append(name),
+    )
+
+    class Conn:
+        def commit(self):
+            if fail_in == "commit":
+                msg = "commit lost"
+                raise RuntimeError(msg)
+
+        def rollback(self):
+            msg = "connection gone"
+            raise OSError(msg)
+
+    with pytest.raises(RuntimeError) as caught:
+        with revision_lifecycle.mysql_advisory_lock(Conn(), namespace="test"):
+            if fail_in == "body":
+                msg = "body failed"
+                raise RuntimeError(msg)
+
+    # The primary failure propagates; the failed rollback is not swallowed.
+    assert str(caught.value) in {"body failed", "commit lost"}
+    assert any(
+        "Rollback after this failure also failed: OSError: connection gone" in note
+        for note in getattr(caught.value, "__notes__", [])
+    )
+    assert len(released) == 1
