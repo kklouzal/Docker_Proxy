@@ -951,6 +951,7 @@ results = [call(m, p, h)[0] for m, p, h in (
     ("GET", "/policy-request", {}), ("GET", "/nope", {}), ("GET", "/api/manage/x", {}),
 )]
 watched = {"pymysql", "services.db", "services.policy_requests", "services.pac_renderer",
+           "flask", "werkzeug", "markupsafe",
            "proxy.runtime", "proxy.agent"}
 print(json.dumps({"statuses": results,
                   "loaded": sorted(m for m in sys.modules if m in watched)}))
