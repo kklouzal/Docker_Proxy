@@ -200,7 +200,15 @@ Source builds use Alpine's `edge` image tag by default so Squid and runtime pack
 docker compose build --build-arg ALPINE_VERSION=3.23.4
 ```
 
-The proxy image defaults its c-icap sources to release refs and independently pinned commit IDs. The build verifies each checked-out `HEAD` before compilation and fails closed if a ref moves or resolves to different source. Advanced source overrides must supply each ref and its matching full commit together, for example `--build-arg CICAP_GIT_REF=<ref> --build-arg CICAP_GIT_COMMIT=<40-character-commit>` (and the corresponding `CICAP_MODULES_GIT_REF` / `CICAP_MODULES_GIT_COMMIT` pair). Changing only a ref or only its expected commit intentionally fails the build.
+Because `edge` packages move while the tag stays the same, pass a new `PACKAGE_REFRESH` value (or use `--no-cache`) to rebuild the package layers from the current Alpine index instead of the local build cache:
+
+```powershell
+docker compose build --pull --build-arg PACKAGE_REFRESH=<any-new-value>
+```
+
+Each image records the base image reference, `/etc/alpine-release` snapshot, and the installed Squid/Python/OpenSSL package builds in `/usr/share/docker-proxy/build-info`.
+
+The proxy image fetches its c-icap sources by pinned full commit IDs (`CICAP_GIT_COMMIT` and `CICAP_MODULES_GIT_COMMIT`), verifies each fetched `HEAD` before compilation, and fails closed on a mismatch. The defaults are the heads of the upstream `c_icap_0_6_x` and `c_icap_modules_0_5_x` release branches; an advanced source override passes another full 40-character commit, for example `--build-arg CICAP_GIT_COMMIT=<40-character-commit>`.
 
 ### Prebuilt images
 
@@ -485,6 +493,8 @@ Docker Proxy is intended to be operated as managed network infrastructure, not a
 The project requires a MySQL 8+ backend today. SQLite and ad-hoc local state are not supported runtime modes. The default Compose stack publishes useful LAN-facing ports for testing and appliance deployment, but operators remain responsible for host firewalls, management-network exposure, database backups, certificate distribution, legal/organizational consent for inspection, and any compliance controls around retained logs.
 
 ## Testing and release gates
+
+Tests, Ruff (`target-version = "py314"`), and both images use Python 3.14; use a Python 3.14 virtual environment with `web/requirements-dev.txt` installed.
 
 Local deterministic tests:
 

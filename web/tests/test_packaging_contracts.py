@@ -935,24 +935,67 @@ def test_proxy_cicap_sources_are_pinned_and_verified_before_compilation() -> Non
 
     expected_sources = {
         "CICAP": (
-            "C_ICAP_0.6.5",
-            "b34baf32b764a2d79db34c61041cd9f92c39a535",
+            "a2ed1d4d1ad7226e638fcf6878ef29e241690ca4",
+            "c-icap-server",
             "c_icap_src",
+            "c_icap_commit",
         ),
         "CICAP_MODULES": (
-            "C_ICAP_MODULES_0.5.7",
             "e1f6af0e06be1ae1e8b8f822ae74bc0d352b788f",
+            "c-icap-modules",
             "c_icap_modules_src",
+            "c_icap_modules_commit",
         ),
     }
-    for prefix, (git_ref, git_commit, checkout) in expected_sources.items():
-        assert f"ARG {prefix}_GIT_REF={git_ref}" in proxy
+    assert "_GIT_REF" not in proxy
+    for prefix, (
+        git_commit,
+        repository,
+        checkout,
+        info_key,
+    ) in expected_sources.items():
         assert f"ARG {prefix}_GIT_COMMIT={git_commit}" in proxy
         build_step = proxy.split(f"cd {checkout};", 1)[1].split("make install", 1)[0]
+        assert (
+            f"git fetch --quiet --depth 1 https://github.com/c-icap/{repository}.git "
+            f'"${{{prefix}_GIT_COMMIT}}"'
+        ) in build_step
         assert 'actual_commit="$(git rev-parse HEAD)"' in build_step
         assert f'"${{{prefix}_GIT_COMMIT}}"' in build_step
         assert "source verification failed" in build_step
         assert build_step.index("git rev-parse HEAD") < build_step.index("./configure")
+        assert f'"{info_key}=${{{prefix}_GIT_COMMIT}}"' in proxy
+
+
+def test_images_record_resolved_package_snapshot() -> None:
+    helper = _read("docker/record-build-info.sh")
+    assert "/etc/alpine-release" in helper
+    assert 'apk info -e -v "$1"' in helper
+
+    for dockerfile, packages in (
+        ("docker/Dockerfile.admin", ("python3", "openssl", "xmlsec")),
+        ("docker/Dockerfile.proxy", ("squid", "python3", "openssl")),
+    ):
+        text = _read(dockerfile)
+        runtime_stage = _dockerfile_stages(dockerfile)[-1]
+        assert (
+            'LABEL org.opencontainers.image.base.name="docker.io/library/alpine:'
+            '${ALPINE_VERSION}"'
+        ) in runtime_stage
+        record = runtime_stage.split(
+            'RUN record-build-info "alpine:${ALPINE_VERSION}"'
+        )[1]
+        assert runtime_stage.index("RUN apk-install") < runtime_stage.index(
+            "RUN record-build-info"
+        )
+        for package in packages:
+            assert f" {package}" in record.split("\n\n", 1)[0]
+        for stage in _dockerfile_stages(dockerfile):
+            if "RUN apk-install" in stage:
+                assert stage.index("ARG PACKAGE_REFRESH=") < stage.index(
+                    "RUN apk-install"
+                )
+        assert "ARG ALPINE_VERSION=edge" in text
 
 
 def test_proxy_cicap_build_enables_compression_support_and_strips_artifacts() -> None:

@@ -2,6 +2,10 @@ ARG ALPINE_VERSION=edge
 
 FROM alpine:${ALPINE_VERSION} AS python_deps
 
+# Alpine edge packages move without the base tag changing. Any new
+# PACKAGE_REFRESH value invalidates the cached package layers below; CI sets it
+# to force fresh packages (see .github/workflows/publish-ghcr.yml).
+ARG PACKAGE_REFRESH=
 COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install
 RUN apk-install \
     python3 \
@@ -22,6 +26,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -m pip install --no-compile --target /python-deps -r /tmp/deps/requirements.txt
 
 FROM alpine:${ALPINE_VERSION}
+ARG ALPINE_VERSION
+# Alpine edge packages move without the base tag changing. Any new
+# PACKAGE_REFRESH value invalidates the cached package layers below; CI sets it
+# to force fresh packages (see .github/workflows/publish-ghcr.yml).
+ARG PACKAGE_REFRESH=
 ARG APP_VERSION=unknown
 ARG GIT_COMMIT=
 ARG GIT_REF_NAME=
@@ -35,6 +44,8 @@ ENV APP_VERSION=${APP_VERSION} \
     IMAGE_NAME=${IMAGE_NAME} \
     PYTHONPATH=/opt/docker-proxy/python-deps
 
+LABEL org.opencontainers.image.base.name="docker.io/library/alpine:${ALPINE_VERSION}"
+
 COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install
 RUN apk-install \
     python3 \
@@ -46,6 +57,8 @@ RUN apk-install \
     libxml2 \
     libxslt \
     xmlsec
+COPY --chmod=755 docker/record-build-info.sh /usr/local/bin/record-build-info
+RUN record-build-info "alpine:${ALPINE_VERSION}" python3 openssl supervisor xmlsec libxml2
 
 WORKDIR /app
 

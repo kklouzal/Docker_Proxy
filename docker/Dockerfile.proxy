@@ -1,7 +1,19 @@
 ARG ALPINE_VERSION=edge
+# Sources are fetched by immutable commit ID. The server pin is the head of the
+# maintained c_icap_0_6_x release branch: C_ICAP_0.6.5 plus six upstream
+# backports (ICAP Encapsulated-header double free/use-after-free, ci_read
+# error/EOF handling, TLS client address, fork/pipe error paths, stats
+# divide-by-zero, ServiceAlias NULL args). The modules pin is C_ICAP_MODULES_0.5.7,
+# which is also the head of the c_icap_modules_0_5_x release branch.
+ARG CICAP_GIT_COMMIT=a2ed1d4d1ad7226e638fcf6878ef29e241690ca4
+ARG CICAP_MODULES_GIT_COMMIT=e1f6af0e06be1ae1e8b8f822ae74bc0d352b788f
 
 FROM alpine:${ALPINE_VERSION} AS python_deps
 
+# Alpine edge packages move without the base tag changing. Any new
+# PACKAGE_REFRESH value invalidates the cached package layers below; CI sets it
+# to force fresh packages (see .github/workflows/publish-ghcr.yml).
+ARG PACKAGE_REFRESH=
 COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install
 RUN apk-install python3 py3-pip ca-certificates
 
@@ -14,10 +26,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 FROM alpine:${ALPINE_VERSION} AS cicap_builder
 
-ARG CICAP_GIT_REF=C_ICAP_0.6.5
-ARG CICAP_GIT_COMMIT=b34baf32b764a2d79db34c61041cd9f92c39a535
-ARG CICAP_MODULES_GIT_REF=C_ICAP_MODULES_0.5.7
-ARG CICAP_MODULES_GIT_COMMIT=e1f6af0e06be1ae1e8b8f822ae74bc0d352b788f
+ARG CICAP_GIT_COMMIT
+ARG CICAP_MODULES_GIT_COMMIT
+# Alpine edge packages move without the base tag changing. Any new
+# PACKAGE_REFRESH value invalidates the cached package layers below; CI sets it
+# to force fresh packages (see .github/workflows/publish-ghcr.yml).
+ARG PACKAGE_REFRESH=
 
 COPY --chmod=755 docker/apk-install.sh /usr/local/bin/apk-install
 RUN apk-install \
@@ -44,12 +58,14 @@ WORKDIR /tmp/build
 # them under one WORKDIR avoids extra layers and is clearer than changing it.
 # hadolint ignore=DL3003
 RUN set -eu; \
-    echo "[c-icap] cloning GitHub ref ${CICAP_GIT_REF}"; \
-    git clone --depth 1 --branch "${CICAP_GIT_REF}" https://github.com/c-icap/c-icap-server.git c_icap_src; \
+    echo "[c-icap] fetching GitHub commit ${CICAP_GIT_COMMIT}"; \
+    git init --quiet c_icap_src; \
     cd c_icap_src; \
+    git fetch --quiet --depth 1 https://github.com/c-icap/c-icap-server.git "${CICAP_GIT_COMMIT}"; \
+    git checkout --quiet --detach FETCH_HEAD; \
     actual_commit="$(git rev-parse HEAD)"; \
     if [ "${actual_commit}" != "${CICAP_GIT_COMMIT}" ]; then \
-        echo >&2 "[c-icap] source verification failed: ref ${CICAP_GIT_REF} resolved to ${actual_commit}, expected ${CICAP_GIT_COMMIT}"; \
+        echo >&2 "[c-icap] source verification failed: fetched ${actual_commit}, expected ${CICAP_GIT_COMMIT}"; \
         exit 1; \
     fi; \
     echo "[c-icap] verified commit ${actual_commit}"; \
@@ -66,12 +82,14 @@ COPY docker/patches/c-icap-modules-clamd-timeout.patch /tmp/build/
 # Same bounded builder-stage checkout pattern as c-icap above.
 # hadolint ignore=DL3003
 RUN set -eu; \
-    echo "[c-icap-modules] cloning GitHub ref ${CICAP_MODULES_GIT_REF}"; \
-    git clone --depth 1 --branch "${CICAP_MODULES_GIT_REF}" https://github.com/c-icap/c-icap-modules.git c_icap_modules_src; \
+    echo "[c-icap-modules] fetching GitHub commit ${CICAP_MODULES_GIT_COMMIT}"; \
+    git init --quiet c_icap_modules_src; \
     cd c_icap_modules_src; \
+    git fetch --quiet --depth 1 https://github.com/c-icap/c-icap-modules.git "${CICAP_MODULES_GIT_COMMIT}"; \
+    git checkout --quiet --detach FETCH_HEAD; \
     actual_commit="$(git rev-parse HEAD)"; \
     if [ "${actual_commit}" != "${CICAP_MODULES_GIT_COMMIT}" ]; then \
-        echo >&2 "[c-icap-modules] source verification failed: ref ${CICAP_MODULES_GIT_REF} resolved to ${actual_commit}, expected ${CICAP_MODULES_GIT_COMMIT}"; \
+        echo >&2 "[c-icap-modules] source verification failed: fetched ${actual_commit}, expected ${CICAP_MODULES_GIT_COMMIT}"; \
         exit 1; \
     fi; \
     echo "[c-icap-modules] verified commit ${actual_commit}"; \
@@ -96,6 +114,13 @@ RUN set -eu; \
     find /out -type f -exec sh -c 'file -b "$1" | grep -Eq "ELF.*(executable|shared object)" && strip --strip-unneeded "$1" || true' sh {} \;
 
 FROM alpine:${ALPINE_VERSION}
+ARG ALPINE_VERSION
+ARG CICAP_GIT_COMMIT
+ARG CICAP_MODULES_GIT_COMMIT
+# Alpine edge packages move without the base tag changing. Any new
+# PACKAGE_REFRESH value invalidates the cached package layers below; CI sets it
+# to force fresh packages (see .github/workflows/publish-ghcr.yml).
+ARG PACKAGE_REFRESH=
 ARG APP_VERSION=unknown
 ARG GIT_COMMIT=
 ARG GIT_REF_NAME=
@@ -108,6 +133,8 @@ ENV APP_VERSION=${APP_VERSION} \
     BUILD_DATE=${BUILD_DATE} \
     IMAGE_NAME=${IMAGE_NAME} \
     PYTHONPATH=/opt/docker-proxy/python-deps
+
+LABEL org.opencontainers.image.base.name="docker.io/library/alpine:${ALPINE_VERSION}"
 
 # Proxy container responsibilities only:
 # - Squid, SQLite adblock ICAP helper, and AV c-icap runtime
@@ -221,6 +248,10 @@ COPY --chmod=755 docker/cicap_av_runner.py /usr/local/bin/cicap_av_runner.py
 COPY --chmod=755 docker/squid_logrotate.sh /usr/local/bin/squid_logrotate.sh
 
 COPY --from=cicap_builder /out/ /
+COPY --chmod=755 docker/record-build-info.sh /usr/local/bin/record-build-info
+RUN record-build-info "alpine:${ALPINE_VERSION}" squid python3 openssl supervisor \
+        -- "c_icap_commit=${CICAP_GIT_COMMIT}" \
+        "c_icap_modules_commit=${CICAP_MODULES_GIT_COMMIT}"
 RUN set -eu; \
     if [ ! -x /usr/bin/c-icap ] && [ -x /usr/sbin/c-icap ]; then \
         ln -s /usr/sbin/c-icap /usr/bin/c-icap; \

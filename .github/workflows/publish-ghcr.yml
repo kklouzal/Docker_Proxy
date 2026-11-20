@@ -6,7 +6,16 @@ on:
   push:
     branches: ["main"]
     tags: ["v*"]
+  # Weekly forced package refresh: Alpine edge moves without its tag changing.
+  # Runs after the Monday Dependabot windows (04:00-05:00 UTC).
+  schedule:
+    - cron: "30 6 * * 1"
   workflow_dispatch:
+    inputs:
+      refresh_packages:
+        description: "Rebuild Alpine package layers from the current index (no stale build cache)"
+        type: boolean
+        default: false
 
 # Pull requests, including Dependabot PRs, run the complete release gate with a
 # read-only token and no repository secrets. Publishing remains non-PR only.
@@ -24,6 +33,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Resolve the floating base tag once so every build in this run, tested and
+  # published, uses the same Alpine edge image, and decide whether package
+  # layers must bypass the build cache.
+  resolve-base:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      alpine-version: ${{ steps.base.outputs.alpine-version }}
+      base-digest: ${{ steps.base.outputs.base-digest }}
+      package-refresh: ${{ steps.base.outputs.package-refresh }}
+    steps:
+      - name: Resolve alpine:edge digest and package refresh key
+        id: base
+        shell: bash
+        env:
+          FORCE_REFRESH: ${{ github.event_name == 'schedule' || inputs.refresh_packages == true }}
+          RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect alpine:edge --format '{{.Manifest.Digest}}')"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::could not resolve alpine:edge digest (got '$digest')"
+            exit 1
+          fi
+          refresh=""
+          if [ "$FORCE_REFRESH" = "true" ]; then
+            refresh="$RUN_KEY"
+          fi
+          {
+            echo "alpine-version=edge@${digest}"
+            echo "base-digest=${digest}"
+            echo "package-refresh=${refresh}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Base image"
+            echo "- alpine:edge@${digest}"
+            echo "- forced package refresh: ${FORCE_REFRESH}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   static-analysis:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -37,7 +85,7 @@ jobs:
         shell: bash
         env:
           ACTIONLINT_VERSION: "1.7.12"
-          ZIZMOR_VERSION: "1.29.0"
+          ZIZMOR_VERSION: "1.32.0"
           SHELLCHECK_VERSION: "0.11.0"
           HADOLINT_VERSION: "2.15.1"
           GITLEAKS_VERSION: "8.30.1"
@@ -57,7 +105,7 @@ jobs:
           curl --fail --silent --show-error --location \
             --output "$downloads/zizmor.tar.gz" \
             "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
-          echo "dd96df044a6e8538d5f423790f453bdd03d49e5b2bcc38214acc41a2f1297839  $downloads/zizmor.tar.gz" | sha256sum --check
+          echo "bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b  $downloads/zizmor.tar.gz" | sha256sum --check
           tar -xzf "$downloads/zizmor.tar.gz" -C "$downloads" zizmor
           install -m 0755 "$downloads/zizmor" "$bin/zizmor"
 
@@ -131,9 +179,9 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Install lint dependencies
         run: |
@@ -157,9 +205,9 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Install test dependencies
         run: |
@@ -206,9 +254,9 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Install test dependencies
         run: |
@@ -227,7 +275,7 @@ jobs:
   build-test-images:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: [deterministic-tests, mysql-integration-tests]
+    needs: [resolve-base, deterministic-tests, mysql-integration-tests]
     strategy:
       fail-fast: false
       matrix:
@@ -243,7 +291,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Compute OCI build date
         id: build-date
@@ -251,18 +299,36 @@ jobs:
         run: echo "value=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
       - name: Build local test image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           load: true
+          pull: true
           tags: docker-proxy-${{ matrix.image }}:ci
+          labels: |
+            org.opencontainers.image.base.digest=${{ needs.resolve-base.outputs.base-digest }}
           build-args: |
+            ALPINE_VERSION=${{ needs.resolve-base.outputs.alpine-version }}
+            PACKAGE_REFRESH=${{ needs.resolve-base.outputs.package-refresh }}
             APP_VERSION=${{ github.ref_name }}
             GIT_COMMIT=${{ github.sha }}
             GIT_REF_NAME=${{ github.ref_name }}
             BUILD_DATE=${{ steps.build-date.outputs.value }}
             IMAGE_NAME=docker-proxy-${{ matrix.image }}:ci
+
+      - name: Report resolved package snapshot
+        shell: bash
+        env:
+          IMAGE_REF: docker-proxy-${{ matrix.image }}:ci
+        run: |
+          set -euo pipefail
+          {
+            echo "### ${IMAGE_REF} build-info"
+            echo '```'
+            docker run --rm --entrypoint cat "$IMAGE_REF" /usr/share/docker-proxy/build-info
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Scan exact local image for actionable vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -275,12 +341,12 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
           format: table
-          version: v0.73.0
+          version: v0.76.2
 
   live-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    needs: build-test-images
+    needs: [resolve-base, build-test-images]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -288,7 +354,14 @@ jobs:
           persist-credentials: false
 
       - name: Build live-test stack
-        run: docker compose -f docker-compose.yml -f docker-compose.live-tests.yml build
+        env:
+          ALPINE_VERSION: ${{ needs.resolve-base.outputs.alpine-version }}
+          PACKAGE_REFRESH: ${{ needs.resolve-base.outputs.package-refresh }}
+        run: >-
+          docker compose -f docker-compose.yml -f docker-compose.live-tests.yml
+          build --pull
+          --build-arg "ALPINE_VERSION=${ALPINE_VERSION}"
+          --build-arg "PACKAGE_REFRESH=${PACKAGE_REFRESH}"
 
       - name: Run live tests
         run: >-
@@ -320,7 +393,7 @@ jobs:
 
       - name: Retain live-test diagnostics
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: live-test-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: live-test-diagnostics/
@@ -340,7 +413,7 @@ jobs:
       id-token: write
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    needs: live-tests
+    needs: [resolve-base, live-tests]
     strategy:
       fail-fast: false
       matrix:
@@ -357,13 +430,13 @@ jobs:
           persist-credentials: false
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -371,7 +444,7 @@ jobs:
 
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.image }}
           tags: |
@@ -387,16 +460,22 @@ jobs:
         run: echo "value=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.base.digest=${{ needs.resolve-base.outputs.base-digest }}
           annotations: ${{ steps.meta.outputs.annotations }}
+          # A forced refresh (schedule or dispatch input) sets PACKAGE_REFRESH,
+          # which invalidates the cached Alpine package layers of every stage.
           build-args: |
+            ALPINE_VERSION=${{ needs.resolve-base.outputs.alpine-version }}
+            PACKAGE_REFRESH=${{ needs.resolve-base.outputs.package-refresh }}
             APP_VERSION=${{ github.ref_name }}
             GIT_COMMIT=${{ github.sha }}
             GIT_REF_NAME=${{ github.ref_name }}
