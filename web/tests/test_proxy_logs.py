@@ -8,7 +8,9 @@ def test_proxy_logs_reads_only_allowlisted_current_file_tail(
 ) -> None:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    (log_dir / "access.log").write_text("first\nsecond\nthird\n", encoding="utf-8")
+    (log_dir / "access-observe.log").write_text(
+        "first\nsecond\nthird\n", encoding="utf-8"
+    )
     monkeypatch.setenv("LOG_DIR", str(log_dir))
 
     payload = proxy_logs.read_proxy_log("access", max_bytes=13)
@@ -24,7 +26,7 @@ def test_proxy_logs_drop_leading_partial_line_from_truncated_tail(
 ) -> None:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    (log_dir / "access.log").write_text(
+    (log_dir / "access-observe.log").write_text(
         "first record with context\nsecond record\nthird record\n",
         encoding="utf-8",
     )
@@ -44,7 +46,9 @@ def test_proxy_logs_preserve_line_boundary_truncated_tail(
 ) -> None:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    (log_dir / "access.log").write_text("first\nsecond\nthird\n", encoding="utf-8")
+    (log_dir / "access-observe.log").write_text(
+        "first\nsecond\nthird\n", encoding="utf-8"
+    )
     monkeypatch.setenv("LOG_DIR", str(log_dir))
 
     payload = proxy_logs.read_proxy_log("access", max_bytes=len("second\nthird\n"))
@@ -59,7 +63,7 @@ def test_proxy_log_tail_bounds_match_file_opened_after_log_grows(
 ) -> None:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    log_path = log_dir / "access.log"
+    log_path = log_dir / "access-observe.log"
     log_path.write_text("old\n", encoding="utf-8")
     monkeypatch.setenv("LOG_DIR", str(log_dir))
 
@@ -68,7 +72,11 @@ def test_proxy_log_tail_bounds_match_file_opened_after_log_grows(
 
     def growing_open(path, flags, *args, **kwargs):
         nonlocal grew
-        if path == "access.log" and kwargs.get("dir_fd") is not None and not grew:
+        if (
+            path == "access-observe.log"
+            and kwargs.get("dir_fd") is not None
+            and not grew
+        ):
             grew = True
             log_path.write_text("old\nfresh-tail\n", encoding="utf-8")
         return real_open(path, flags, *args, **kwargs)
@@ -101,7 +109,7 @@ def test_proxy_log_max_bytes_parser_bounds_operator_input() -> None:
 def test_proxy_logs_clamps_unsafe_max_bytes_values(monkeypatch, tmp_path) -> None:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    (log_dir / "access.log").write_text("abc\n", encoding="utf-8")
+    (log_dir / "access-observe.log").write_text("abc\n", encoding="utf-8")
     monkeypatch.setenv("LOG_DIR", str(log_dir))
 
     tiny_payload = proxy_logs.read_proxy_log("access", max_bytes=0)
@@ -135,7 +143,7 @@ def test_proxy_logs_rejects_allowlisted_symlink_outside_log_dir(
     log_dir.mkdir()
     outside = tmp_path / "outside.log"
     outside.write_text("secret\n", encoding="utf-8")
-    (log_dir / "access.log").symlink_to(outside)
+    (log_dir / "access-observe.log").symlink_to(outside)
     monkeypatch.setenv("LOG_DIR", str(log_dir))
 
     payload = proxy_logs.read_proxy_log("access")
@@ -146,7 +154,7 @@ def test_proxy_logs_rejects_allowlisted_symlink_outside_log_dir(
     assert payload["status"] == "not_found"
     assert "content" not in payload
     assert access_log["available"] is False
-    assert access_log["path"] == str(log_dir / "access.log")
+    assert access_log["path"] == str(log_dir / "access-observe.log")
 
 
 def test_proxy_logs_rejects_symlink_swap_between_validation_and_open(
@@ -154,7 +162,7 @@ def test_proxy_logs_rejects_symlink_swap_between_validation_and_open(
 ) -> None:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    log_path = log_dir / "access.log"
+    log_path = log_dir / "access-observe.log"
     log_path.write_text("safe\n", encoding="utf-8")
     outside = tmp_path / "outside.log"
     outside.write_text("secret\n", encoding="utf-8")
@@ -165,7 +173,11 @@ def test_proxy_logs_rejects_symlink_swap_between_validation_and_open(
 
     def swapping_open(path, flags, *args, **kwargs):
         nonlocal swapped
-        if path == "access.log" and kwargs.get("dir_fd") is not None and not swapped:
+        if (
+            path == "access-observe.log"
+            and kwargs.get("dir_fd") is not None
+            and not swapped
+        ):
             swapped = True
             log_path.unlink()
             log_path.symlink_to(outside)
@@ -186,7 +198,7 @@ def test_proxy_logs_rejects_symlink_swap_between_validation_and_open(
 def test_proxy_logs_rejects_fifo_swap_without_blocking(monkeypatch, tmp_path) -> None:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    log_path = log_dir / "access.log"
+    log_path = log_dir / "access-observe.log"
     log_path.write_text("safe\n", encoding="utf-8")
     monkeypatch.setenv("LOG_DIR", str(log_dir))
 
@@ -195,7 +207,11 @@ def test_proxy_logs_rejects_fifo_swap_without_blocking(monkeypatch, tmp_path) ->
 
     def swapping_open(path, flags, *args, **kwargs):
         nonlocal swapped
-        if path == "access.log" and kwargs.get("dir_fd") is not None and not swapped:
+        if (
+            path == "access-observe.log"
+            and kwargs.get("dir_fd") is not None
+            and not swapped
+        ):
             swapped = True
             log_path.unlink()
             proxy_logs.os.mkfifo(log_path)
@@ -216,7 +232,7 @@ def test_proxy_logs_rejects_fifo_swap_without_blocking(monkeypatch, tmp_path) ->
 def test_proxy_logs_retries_copytruncate_before_read(monkeypatch, tmp_path) -> None:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    log_path = log_dir / "access.log"
+    log_path = log_dir / "access-observe.log"
     original = "old first line\nold second line\n"
     replacement = "new tail\n"
     log_path.write_text(original, encoding="utf-8")
@@ -263,7 +279,7 @@ def test_proxy_logs_unreadable_allowlisted_file_is_server_error(
 ) -> None:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    (log_dir / "access.log").write_text("alpha\n", encoding="utf-8")
+    (log_dir / "access-observe.log").write_text("alpha\n", encoding="utf-8")
     monkeypatch.setenv("LOG_DIR", str(log_dir))
     monkeypatch.setattr(
         proxy_logs,
@@ -278,3 +294,23 @@ def test_proxy_logs_unreadable_allowlisted_file_is_server_error(
     assert payload["content"] == ""
     assert proxy_logs.proxy_log_status_code(payload) == 500
     assert proxy_logs.proxy_log_status_code({"ok": False, "status": "not_found"}) == 404
+
+
+def test_proxy_log_specs_match_files_the_squid_template_writes() -> None:
+    import re
+    from pathlib import Path
+
+    template = (
+        Path(__file__).resolve().parents[2] / "squid" / "squid.conf.template"
+    ).read_text(encoding="utf-8")
+    written = {
+        match.group(1)
+        for match in re.finditer(
+            r"^\s*(?:access_log|cache_log|icap_log)\s+(?:stdio:)?/var/log/squid/(\S+)",
+            template,
+            flags=re.MULTILINE,
+        )
+    }
+
+    assert {spec.path for spec in proxy_logs.PROXY_LOG_SPECS} <= written
+    assert any(spec.key == "access" for spec in proxy_logs.PROXY_LOG_SPECS)

@@ -17,10 +17,12 @@ class ProxyLogSpec:
     path: str
 
 
+# Only files Squid is configured to write. The entrypoint and config writer
+# collapse the legacy access.log into the structured access-observe.log, so the
+# default "access" key reads that file.
 PROXY_LOG_SPECS: tuple[ProxyLogSpec, ...] = (
-    ProxyLogSpec("access", "Squid access log", "access.log"),
+    ProxyLogSpec("access", "Squid access log", "access-observe.log"),
     ProxyLogSpec("cache", "Squid cache log", "cache.log"),
-    ProxyLogSpec("access_observe", "Observability access log", "access-observe.log"),
     ProxyLogSpec("icap", "ICAP log", "icap.log"),
 )
 
