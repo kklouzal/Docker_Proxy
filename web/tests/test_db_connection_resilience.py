@@ -545,11 +545,13 @@ def test_compat_result_closes_cursor_when_fetch_raises() -> None:
     assert cursor.closed is True
 
 
-def test_interface_error_zero_is_retryable_mysql_error() -> None:
+def test_interface_error_zero_is_retryable_mysql_connect_error() -> None:
     import pymysql  # type: ignore
     from services import db  # type: ignore
 
-    assert db._is_retryable_mysql_error(pymysql.err.InterfaceError(0, "")) is True
+    assert (
+        db._is_retryable_mysql_connect_error(pymysql.err.InterfaceError(0, "")) is True
+    )
 
 
 def test_returning_connection_to_pool_rolls_back_any_open_transaction(

@@ -37,8 +37,8 @@ class _GuardConn:
         text = " ".join(str(sql).split())
         self.calls.append(text)
         params = tuple(params or ())
-        if "CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones" in text:
-            return _Result()
+        if "information_schema.tables" in text:
+            return _Result([(1,)])
         if is_lifecycle_state_query(text):
             if self.fail_tombstone:
                 msg = "metadata offline"
@@ -340,17 +340,19 @@ def test_guarded_proxy_write_uses_one_metadata_round_trip_per_check(
         return [
             "ddl"
             if call.startswith("CREATE TABLE")
+            else "probe"
+            if "information_schema.tables" in call
             else "state"
             if is_lifecycle_state_query(call)
             else call.split()[0] + (" GET_LOCK" if "GET_LOCK" in call else "")
             for call in calls
         ]
 
-    # Tombstone DDL runs once per process; information_schema is never probed.
-    assert kinds(first_calls) == ["ddl", "state", "SELECT GET_LOCK", "state", "DO"]
+    # The tombstone table is probed once per process; no DDL (which would
+    # implicitly commit the caller's transaction) runs when it exists.
+    assert kinds(first_calls) == ["probe", "state", "SELECT GET_LOCK", "state", "DO"]
     # Later writes: cached pre-lock decision, then lock + one recheck + release.
     assert kinds(conn.calls) == ["SELECT GET_LOCK", "state", "DO"]
-    assert not any("information_schema" in call for call in first_calls)
 
 
 def test_proxy_write_guard_follows_alias_and_tombstone_chain(monkeypatch) -> None:

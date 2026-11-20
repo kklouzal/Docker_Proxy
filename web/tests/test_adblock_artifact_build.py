@@ -99,8 +99,8 @@ class _AdblockAliasReadConn:
         compact = " ".join(str(sql).split())
         params = tuple(params or ())
         self.queries.append((compact, params))
-        if compact.startswith("CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones"):
-            return _FakeSqlResult()
+        if "FROM information_schema.tables" in compact:
+            return _FakeSqlResult([(1,)])
         if is_lifecycle_state_query(compact):
             return _FakeSqlResult(
                 [
@@ -134,8 +134,8 @@ class _AdblockProxyMetaAliasConn:
         compact = " ".join(str(sql).split())
         params = tuple(params or ())
         self.queries.append((compact, params))
-        if compact.startswith("CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones"):
-            return _FakeSqlResult()
+        if "FROM information_schema.tables" in compact:
+            return _FakeSqlResult([(1,)])
         if is_lifecycle_state_query(compact):
             return _FakeSqlResult(
                 [

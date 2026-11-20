@@ -13,7 +13,7 @@ from services.bounded_delete import (
     default_max_rows,
     delete_where_in_chunks,
 )
-from services.db import DATABASE_ERRORS, connect, mysql_error_code, table_exists
+from services.db import DATABASE_ERRORS, connect, table_exists
 from services.mysql_table_maintenance import (
     maintenance_connect,
     run_mysql_table_maintenance,
@@ -48,76 +48,6 @@ CONTROL_PLANE_MAINTENANCE_TABLES: tuple[str, ...] = (
 WEBCAT_BUILD_TABLE_CLEANUP_TABLE = "webcat_build_tables"
 
 _RETENTION_ID_COLUMN = "id"
-
-
-CONTROL_PLANE_RETENTION_INDEXES: dict[str, tuple[tuple[str, str], ...]] = {
-    "proxy_config_revisions": (
-        (
-            "idx_proxy_config_revisions_proxy_created_id",
-            "ALTER TABLE proxy_config_revisions ADD INDEX idx_proxy_config_revisions_proxy_created_id (proxy_id, created_ts, id)",
-        ),
-        (
-            "idx_proxy_config_revisions_proxy_active_created_id",
-            "ALTER TABLE proxy_config_revisions ADD INDEX idx_proxy_config_revisions_proxy_active_created_id (proxy_id, is_active, created_ts, id)",
-        ),
-    ),
-    "certificate_bundle_revisions": (
-        (
-            "idx_certificate_bundle_revisions_created_id",
-            "ALTER TABLE certificate_bundle_revisions ADD INDEX idx_certificate_bundle_revisions_created_id (created_ts, id)",
-        ),
-        (
-            "idx_certificate_bundle_revisions_active_created_id",
-            "ALTER TABLE certificate_bundle_revisions ADD INDEX idx_certificate_bundle_revisions_active_created_id (is_active, created_ts, id)",
-        ),
-    ),
-    "proxy_config_applications": (
-        (
-            "idx_proxy_config_applications_proxy_applied_id",
-            "ALTER TABLE proxy_config_applications ADD INDEX idx_proxy_config_applications_proxy_applied_id (proxy_id, applied_ts, id)",
-        ),
-    ),
-    "proxy_certificate_applications": (
-        (
-            "idx_proxy_certificate_applications_proxy_applied_id",
-            "ALTER TABLE proxy_certificate_applications ADD INDEX idx_proxy_certificate_applications_proxy_applied_id (proxy_id, applied_ts, id)",
-        ),
-    ),
-    "proxy_adblock_artifact_applications": (
-        (
-            "idx_proxy_adblock_artifact_apply_proxy_applied_id",
-            "ALTER TABLE proxy_adblock_artifact_applications ADD INDEX idx_proxy_adblock_artifact_apply_proxy_applied_id (proxy_id, applied_ts, id)",
-        ),
-    ),
-    "proxy_operations": (
-        (
-            "idx_proxy_operations_proxy_updated_id",
-            "ALTER TABLE proxy_operations ADD INDEX idx_proxy_operations_proxy_updated_id (proxy_id, updated_ts, id)",
-        ),
-    ),
-    "policy_requests": (
-        (
-            "idx_policy_requests_proxy_updated_id",
-            "ALTER TABLE policy_requests ADD INDEX idx_policy_requests_proxy_updated_id (proxy_id, updated_ts, id)",
-        ),
-    ),
-    "policy_exceptions": (
-        (
-            "idx_policy_exceptions_status_expires",
-            "ALTER TABLE policy_exceptions ADD INDEX idx_policy_exceptions_status_expires (status, expires_ts, id)",
-        ),
-        (
-            "idx_policy_exceptions_proxy_updated_id",
-            "ALTER TABLE policy_exceptions ADD INDEX idx_policy_exceptions_proxy_updated_id (proxy_id, updated_ts, id)",
-        ),
-    ),
-    "observability_maintenance_runs": (
-        (
-            "idx_observability_maintenance_runs_started_id",
-            "ALTER TABLE observability_maintenance_runs ADD INDEX idx_observability_maintenance_runs_started_id (started_ts, id)",
-        ),
-    ),
-}
 
 
 def _format_webcat_cleanup_detail(cleanup) -> str:
@@ -182,36 +112,6 @@ def normalize_control_plane_retention_days(value: object) -> int:
 def _table_exists(table: str) -> bool:
     with connect() as conn:
         return table_exists(conn, table)
-
-
-def _index_exists(conn, table_name: str, index_name: str) -> bool:
-    row = conn.execute(
-        """
-        SELECT 1
-        FROM information_schema.statistics
-        WHERE table_schema = DATABASE()
-          AND table_name = %s
-          AND index_name = %s
-        LIMIT 1
-        """,
-        (table_name, index_name),
-    ).fetchone()
-    return row is not None
-
-
-def _ensure_control_plane_retention_indexes(table: str) -> None:
-    indexes = CONTROL_PLANE_RETENTION_INDEXES.get(table, ())
-    if not indexes:
-        return
-    with connect() as conn:
-        for index_name, ddl in indexes:
-            if _index_exists(conn, table, index_name):
-                continue
-            try:
-                conn.execute(ddl)
-            except DATABASE_ERRORS as exc:
-                if mysql_error_code(exc) != 1061:
-                    raise
 
 
 def _bounded_retention_detail(result: BoundedDeleteResult) -> str:
@@ -462,10 +362,6 @@ def _delete_expired_cache(table: str, *, now_ts: int) -> BoundedDeleteResult:
     )
 
 
-def _row_value(row: Any, key: str, index: int, default: object = None) -> object:
-    return row_value(row, key, index, default)
-
-
 def _queue_policy_exception_expiry_policy_sync(proxy_id: str) -> bool:
     from services.operation_ledger import normalize_operation_target_ref
     from services.policy_materializer import build_proxy_policy_state
@@ -539,10 +435,10 @@ def _expire_policy_exceptions(*, now_ts: int) -> PolicyExceptionExpiryResult:
             ).fetchall()
             ids_by_proxy: dict[str, list[int]] = {}
             for row in rows:
-                row_id = int(_row_value(row, "id", 0, 0) or 0)
+                row_id = int(row_value(row, "id", 0, 0) or 0)
                 if row_id <= 0:
                     continue
-                proxy_id = str(_row_value(row, "proxy_id", 1, "") or "").strip().lower()
+                proxy_id = str(row_value(row, "proxy_id", 1, "") or "").strip().lower()
                 ids_by_proxy.setdefault(proxy_id, []).append(row_id)
 
             updated = 0
@@ -638,8 +534,6 @@ def _run_one_prune(
         minimum=1,
         maximum=1000,
     )
-
-    _ensure_control_plane_retention_indexes(table)
 
     if table == "proxy_config_revisions":
         deleted = _delete_revision_rows(

@@ -378,7 +378,6 @@ class _PoolState:
     active: int = 0
 
 
-_mysql_ready = False
 _mysql_ready_keys: set[tuple[str, int, str, str, str]] = set()
 _mysql_ready_lock = threading.Lock()
 _pool_condition = threading.Condition()
@@ -470,18 +469,6 @@ def is_mysql_lock_contention_error(exc: BaseException) -> bool:
     return _is_retryable_mysql_transaction_error(exc)
 
 
-def _is_retryable_mysql_error(exc: BaseException) -> bool:
-    """Backward-compatible predicate for tests and old importers.
-
-    Connection establishment may retry disconnect/connectivity errors. Whole
-    transaction helpers retry only deadlock and lock-wait failures so they do not
-    replay an operation whose transaction may already have begun or committed.
-    """
-    return _is_retryable_mysql_connect_error(
-        exc
-    ) or _is_retryable_mysql_transaction_error(exc)
-
-
 def _should_discard_native_connection(exc: BaseException) -> bool:
     if isinstance(exc, pymysql.InterfaceError):
         return True
@@ -505,53 +492,19 @@ def _mysql_connect_retries() -> int:
 
 
 def _mysql_connect_retry_delay_seconds() -> float:
-    try:
-        return max(
-            0.05,
-            min(
-                5.0,
-                float(
-                    (
-                        os.environ.get("MYSQL_CONNECT_RETRY_DELAY_SECONDS") or "0.2"
-                    ).strip()
-                    or "0.2",
-                ),
-            ),
-        )
-    except Exception:
-        return 0.2
+    return _env_float(
+        "MYSQL_CONNECT_RETRY_DELAY_SECONDS", 0.2, minimum=0.05, maximum=5.0
+    )
 
 
 def _mysql_retry_jitter_seconds() -> float:
-    try:
-        return max(
-            0.0,
-            min(
-                1.0,
-                float(
-                    (os.environ.get("MYSQL_RETRY_JITTER_SECONDS") or "0.05").strip()
-                    or "0.05"
-                ),
-            ),
-        )
-    except Exception:
-        return 0.05
+    return _env_float("MYSQL_RETRY_JITTER_SECONDS", 0.05, minimum=0.0, maximum=1.0)
 
 
 def _pool_acquire_timeout_seconds() -> float:
-    try:
-        return max(
-            1.0,
-            min(
-                600.0,
-                float(
-                    (os.environ.get("DB_POOL_ACQUIRE_TIMEOUT_SECONDS") or "30").strip()
-                    or "30",
-                ),
-            ),
-        )
-    except Exception:
-        return 30.0
+    return _env_float(
+        "DB_POOL_ACQUIRE_TIMEOUT_SECONDS", 30.0, minimum=1.0, maximum=600.0
+    )
 
 
 def _retry_delay_seconds(attempt: int, base_delay: float) -> float:
@@ -736,6 +689,21 @@ def acquire_mysql_named_lock(conn: Any, name: str, timeout_seconds: int) -> bool
             return False
 
 
+def release_mysql_named_lock(conn: Any, name: str) -> None:
+    """Release named lock ``name`` held by ``conn`` without masking the caller.
+
+    Named locks are session-scoped and survive COMMIT/ROLLBACK. When the
+    release fails its outcome is unknown, so the session is marked for discard
+    instead of returning to the pool still holding the lock; closing the
+    physical connection then releases it server-side.
+    """
+    try:
+        conn.execute("DO RELEASE_LOCK(%s)", (name,))
+    except Exception:
+        if hasattr(conn, "_discard_on_close"):
+            conn._discard_on_close = True
+
+
 @contextlib.contextmanager
 def mysql_advisory_lock(
     conn: CompatConnection,
@@ -750,13 +718,7 @@ def mysql_advisory_lock(
     try:
         yield
     finally:
-        try:
-            conn.execute("DO RELEASE_LOCK(%s)", (lock_name,))
-        except Exception:
-            # Advisory locks are connection-scoped and survive transaction
-            # rollback.  If release is uncertain, the session must not be
-            # reused from the pool.  Preserve any exception from the body.
-            conn._discard_on_close = True
+        release_mysql_named_lock(conn, lock_name)
 
 
 def _session_wait_timeout_seconds() -> int:
@@ -879,12 +841,7 @@ def _pool_max_idle_seconds() -> float:
     Always kept MYSQL_SESSION_WAIT_TIMEOUT minus a 30 s margin or lower, so the
     server never closes an idle pooled session before the pool retires it.
     """
-    try:
-        configured = float(
-            (os.environ.get("DB_POOL_MAX_IDLE_SECONDS") or "240").strip() or "240",
-        )
-    except Exception:
-        configured = 240.0
+    configured = _env_float("DB_POOL_MAX_IDLE_SECONDS", 240.0)
     server_bound = (
         float(_session_wait_timeout_seconds()) - _POOL_IDLE_WAIT_TIMEOUT_MARGIN_SECONDS
     )
@@ -1442,7 +1399,6 @@ def connect_unpooled(config: DatabaseConfig | None = None) -> CompatConnection:
 
 
 def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
-    global _mysql_ready
     ready_key = _mysql_ready_key(cfg)
     if (ready_key in _mysql_ready_keys) or not cfg.create_database:
         return
@@ -1479,7 +1435,6 @@ def _ensure_mysql_database(cfg: DatabaseConfig) -> None:
 
         _retry_mysql_operation(_create_database)
         _mysql_ready_keys.add(ready_key)
-        _mysql_ready = True
 
 
 def table_exists(conn: CompatConnection, table_name: str) -> bool:
@@ -1491,9 +1446,7 @@ def table_exists(conn: CompatConnection, table_name: str) -> bool:
 
 
 def reset_mysql_ready_for_tests() -> None:
-    global _mysql_ready
     with _mysql_ready_lock:
-        _mysql_ready = False
         _mysql_ready_keys.clear()
     _clear_pooled_connections()
     _reset_connect_circuits()

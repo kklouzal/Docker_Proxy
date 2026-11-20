@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Self
 
+import pymysql
 import pytest
 from services import observability_maintenance as maintenance
 
@@ -14,13 +15,9 @@ class FakeResult:
 
 
 class FakeConnection:
-    def __init__(
-        self, existing_tables: set[str], *, fail_first_table_exists: bool = False
-    ) -> None:
+    def __init__(self, existing_tables: set[str]) -> None:
         self.existing_tables = existing_tables
         self.statements: list[str] = []
-        self.fail_first_table_exists = fail_first_table_exists
-        self.table_exists_calls = 0
 
     def __enter__(self) -> Self:
         return self
@@ -31,10 +28,6 @@ class FakeConnection:
     def execute(self, sql: str, params: tuple[object, ...] | None = None) -> FakeResult:
         self.statements.append(sql)
         if "information_schema.tables" in sql:
-            self.table_exists_calls += 1
-            if self.fail_first_table_exists and self.table_exists_calls == 1:
-                msg = "InterfaceError: (0, '')"
-                raise RuntimeError(msg)
             return FakeResult(1)
         return FakeResult(0)
 
@@ -97,29 +90,6 @@ def test_clear_observability_logs_skips_tables_that_do_not_exist(monkeypatch) ->
         "ssl_errors" in sql and sql.strip().upper().startswith("TRUNCATE TABLE")
         for sql in conn.statements
     )
-
-
-def test_clear_observability_logs_retries_stale_connection_on_table_probe(
-    monkeypatch,
-) -> None:
-    existing = set(maintenance.OBSERVABILITY_LOG_TABLES)
-    conn = FakeConnection(existing, fail_first_table_exists=True)
-
-    monkeypatch.setattr(maintenance, "connect", lambda: conn)
-
-    def fake_table_exists(fake_conn: FakeConnection, table: str) -> bool:
-        fake_conn.execute(
-            "SELECT 1 FROM information_schema.tables WHERE table_name = %s", (table,)
-        )
-        return table in existing
-
-    monkeypatch.setattr(maintenance, "table_exists", fake_table_exists)
-
-    result = maintenance.clear_observability_logs()
-
-    assert result["ok"] is True
-    assert conn.table_exists_calls >= 2
-    assert any(sql == "TRUNCATE TABLE `diagnostic_requests`" for sql in conn.statements)
 
 
 def test_maintain_observability_tables_analyzes_and_optimizes_existing_tables(
@@ -257,8 +227,8 @@ def test_observability_advisory_lock_uses_unpooled_connection(monkeypatch) -> No
 
     assert pooled_calls == []
     assert unpooled_calls == [
-        "SELECT GET_LOCK(%s, 0)",
-        "SELECT RELEASE_LOCK(%s)",
+        "SELECT GET_LOCK(%s, %s) AS acquired",
+        "DO RELEASE_LOCK(%s)",
         "close",
     ]
 
@@ -278,8 +248,9 @@ def test_clear_observability_logs_does_not_replay_commit_unknown_truncate(
 
         def execute(self, sql, _params=None):
             statements.append(sql)
-            msg = "Lost connection to MySQL server password=secret"
-            raise RuntimeError(msg)
+            raise pymysql.err.OperationalError(
+                2013, "Lost connection to MySQL server password=secret"
+            )
 
     monkeypatch.setattr(
         maintenance,
@@ -345,39 +316,6 @@ def test_clear_observability_logs_accepts_successful_truncate_before_commit_erro
     assert result["tables"][0]["maintenance"] == "truncated"
     assert statements == ["TRUNCATE TABLE `diagnostic_requests`"]
     assert fallback_calls == []
-
-
-def test_truncate_retries_only_connection_acquisition_before_issuing_sql(
-    monkeypatch,
-) -> None:
-    calls = 0
-    statements: list[str] = []
-
-    class Connection:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def execute(self, sql, _params=None):
-            statements.append(sql)
-            return FakeResult()
-
-    def connect():
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            msg = "InterfaceError: (0, '')"
-            raise RuntimeError(msg)
-        return Connection()
-
-    monkeypatch.setattr(maintenance, "connect", connect)
-
-    maintenance._truncate_table("diagnostic_requests")
-
-    assert calls == 2
-    assert statements == ["TRUNCATE TABLE `diagnostic_requests`"]
 
 
 def test_clear_observability_logs_reports_partial_bounded_delete_fallback(

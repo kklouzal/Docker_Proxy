@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
-import socket
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
@@ -21,8 +19,7 @@ from services.proxy_recovery_restore import (
     restore_recovery_bundle,
 )
 from services.proxy_registry import (
-    resolve_local_proxy_management_url,
-    resolve_local_proxy_public_fields,
+    local_proxy_registration_fields,
 )
 from services.schema_lifecycle import ensure_startup_schema_if_configured
 
@@ -277,25 +274,9 @@ def capture_recovery_bundle_after_authoritative_state(
 
 
 def _register_minimal_proxy_identity(registry: Any, proxy_id: str) -> Any:
-    display_name = (
-        os.environ.get("PROXY_DISPLAY_NAME") or proxy_id
-    ).strip() or proxy_id
-    hostname = (os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip()
-    public_fields = resolve_local_proxy_public_fields()
-    management_url = resolve_local_proxy_management_url(
-        proxy_id,
-        public_fields.get("public_host"),
-    )
     return registry.ensure_proxy(
         proxy_id,
-        display_name=display_name,
-        hostname=hostname,
-        management_url=management_url,
-        public_host=str(public_fields.get("public_host") or ""),
-        public_pac_scheme=str(public_fields.get("public_pac_scheme") or "http"),
-        public_pac_port=int(public_fields.get("public_pac_port") or 80),
-        public_pac_path=str(public_fields.get("public_pac_path") or "/proxy.pac"),
-        public_http_proxy_port=int(public_fields.get("public_http_proxy_port") or 3128),
+        **local_proxy_registration_fields(proxy_id),
         status="starting",
         detail="proxy recovery startup identity guard",
     )

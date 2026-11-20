@@ -2,12 +2,12 @@ from __future__ import annotations
 
 # ruff: file-ignore[hardcoded-sql-expression]
 import hashlib
-import os
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from services.bounded_delete import default_chunk_size, default_max_rows
 from services.db import DATABASE_ERRORS, mysql_error_code, table_exists
+from services.runtime_helpers import env_int
 from services.sql_identifiers import quote_mysql_identifier
 
 LifecycleAction = Literal["rename", "remove"]
@@ -184,23 +184,21 @@ _SPECIAL_TABLES = {"proxy_instances", "proxy_id_aliases", "proxy_lifecycle_tombs
 
 
 def lifecycle_chunk_size() -> int:
-    raw = os.environ.get("MYSQL_PROXY_LIFECYCLE_CHUNK_SIZE")
-    if raw is None or not raw.strip():
-        return default_chunk_size()
-    try:
-        return max(1, min(10_000, int(raw.strip())))
-    except Exception:
-        return default_chunk_size()
+    return env_int(
+        "MYSQL_PROXY_LIFECYCLE_CHUNK_SIZE",
+        default_chunk_size(),
+        minimum=1,
+        maximum=10_000,
+    )
 
 
 def lifecycle_max_rows_per_table() -> int:
-    raw = os.environ.get("MYSQL_PROXY_LIFECYCLE_MAX_ROWS_PER_TABLE")
-    if raw is None or not raw.strip():
-        return default_max_rows()
-    try:
-        return max(0, min(1_000_000, int(raw.strip())))
-    except Exception:
-        return default_max_rows()
+    return env_int(
+        "MYSQL_PROXY_LIFECYCLE_MAX_ROWS_PER_TABLE",
+        default_max_rows(),
+        minimum=0,
+        maximum=1_000_000,
+    )
 
 
 def ensure_lifecycle_schema(conn: Any) -> None:

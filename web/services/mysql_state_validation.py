@@ -103,6 +103,7 @@ _REQUIRED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("proxy_operations", "request_key"),
     ("proxy_operations", "claim_token"),
     ("proxy_operations", "stale_requeue_count"),
+    ("proxy_operations", "force_sync"),
     ("webfilter_blocked_log", "proxy_id"),
     ("proxy_recovery_adoptions", "bundle_content_sha256"),
     ("proxy_recovery_adoptions", "status"),

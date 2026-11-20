@@ -251,7 +251,7 @@ def test_webcat_acl_blocked_log_writer_retention_index_bootstrap():
 
 
 def test_control_plane_retention_index_manifest_matches_prune_queries():
-    from services.control_plane_maintenance import CONTROL_PLANE_RETENTION_INDEXES
+    from services.schema_lifecycle import CONTROL_PLANE_RETENTION_INDEXES
 
     expected = {
         "proxy_config_revisions": "idx_proxy_config_revisions_proxy_created_id (proxy_id, created_ts, id)",

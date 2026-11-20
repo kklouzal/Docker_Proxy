@@ -228,8 +228,9 @@ def test_runtime_schema_readiness_rejects_corrupt_earlier_history() -> None:
     conn.migrations[1]["status"] = "failed"
 
     assert schema_lifecycle.runtime_schema_current_applied(conn) is False
-    with pytest.raises(RuntimeError, match="migration 1 is not applied"):
-        schema_lifecycle.assert_schema_current(conn)
+    assert schema_lifecycle.schema_history_error(conn) == (
+        "MySQL schema migration 1 is not applied"
+    )
 
 
 @pytest.mark.parametrize(

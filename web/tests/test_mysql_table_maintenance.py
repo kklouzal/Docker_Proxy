@@ -26,25 +26,6 @@ class _Connection:
             raise RuntimeError(msg)
 
 
-def test_retries_stale_connection_acquisition_before_maintenance() -> None:
-    conn = _Connection()
-    calls = 0
-
-    def connect():
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            msg = "server has gone away"
-            raise RuntimeError(msg)
-        return conn
-
-    result = run_mysql_table_maintenance(connect, "events", analyze=True, optimize=True)
-
-    assert result == "analyzed,optimized"
-    assert calls == 2
-    assert conn.statements == ["ANALYZE TABLE `events`", "OPTIMIZE TABLE `events`"]
-
-
 def test_does_not_replay_uncertain_maintenance_statement() -> None:
     connections = [_Connection(fail_sql="ANALYZE TABLE"), _Connection()]
     calls = 0
