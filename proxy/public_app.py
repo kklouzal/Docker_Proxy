@@ -8,9 +8,12 @@ submission touches MySQL, imported lazily on that request.
 
 This is a plain WSGI callable rather than a Flask app: the listener has a
 handful of fixed routes and Flask's import graph dominated the worker's
-resident memory. Responses stay byte-identical to the former Flask
-implementation (status lines, header order, Werkzeug error pages,
-``make_conditional`` ETag handling, the shared gzip policy);
+resident memory. Responses match the former Flask implementation (status
+lines, header order, Werkzeug error pages, the shared gzip policy) except for
+deliberate fixes: a single charset on policy pages, RFC 9110 If-Match /
+If-None-Match evaluation, and policy bodies that are over the limit
+(including unknown-length ones), truncated or of invalid length being rejected
+instead of truncated or partially recorded.
 ``web/tests/golden/proxy_public_responses.json`` records that contract.
 Werkzeug is imported only to parse policy-request form bodies.
 """
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import io
 import json
 import logging
 import os
@@ -72,9 +76,6 @@ _STATUS_LINES = {
     503: "503 SERVICE UNAVAILABLE",
 }
 _HTML = "text/html; charset=utf-8"
-# The policy-request pages always declared this type through Werkzeug's
-# ``mimetype=``, which appends the charset a second time; kept byte-identical.
-_POLICY_HTML = "text/html; charset=utf-8; charset=utf-8"
 _PAC_VARY = "Host, X-Forwarded-For, X-Forwarded-Host, X-Real-IP"
 _GET_METHODS = ("GET", "HEAD", "OPTIONS")
 _POLICY_METHODS = ("GET", "HEAD", "OPTIONS", "POST")
@@ -286,20 +287,22 @@ def _parse_etags(value: str | None) -> tuple[bool, frozenset, frozenset]:
 
 
 def _conditional_status(environ: dict[str, Any], etag: str) -> int | None:
-    """Werkzeug ``make_conditional`` for an ETag-only response without ranges."""
-    none_star, none_strong, none_weak = _parse_etags(environ.get("HTTP_IF_NONE_MATCH"))
+    """RFC 9110 section 13.2.2 preconditions for the PAC's strong ETag.
+
+    The PAC always exists and only carries an ETag (no Last-Modified, no
+    ranges), so If-Match is evaluated first (``*`` matches; otherwise strong
+    comparison, so weak tags never match), then If-None-Match (``*`` matches;
+    weak comparison).
+    """
     match_star, match_strong, match_weak = _parse_etags(environ.get("HTTP_IF_MATCH"))
-    unmodified = False
-    if none_star or none_strong or none_weak:
-        # Weak comparison for If-None-Match (RFC 7232 section 3.2).
-        unmodified = none_star or etag in none_strong or etag in none_weak
-    if_match_present = bool(match_star or match_strong or match_weak)
-    if if_match_present:
-        # Strong comparison for If-Match; Werkzeug never matches ``*`` here.
-        unmodified = etag not in match_strong
-    if not unmodified:
-        return None
-    return 412 if if_match_present else 304
+    if (match_star or match_strong or match_weak) and not (
+        match_star or etag in match_strong
+    ):
+        return 412
+    none_star, none_strong, none_weak = _parse_etags(environ.get("HTTP_IF_NONE_MATCH"))
+    if none_star or etag in none_strong or etag in none_weak:
+        return 304
+    return None
 
 
 def _public_pac(environ: dict[str, Any], path: str) -> _Response:
@@ -343,34 +346,66 @@ def _public_pac(environ: dict[str, Any], path: str) -> _Response:
 def _html_response(title: str, body: str, *, status: int = 200) -> _Response:
     return _Response(
         status,
-        _POLICY_HTML,
+        _HTML,
         f"<!doctype html><title>{title}</title><h1>{title}</h1><p>{body}</p>".encode(),
     )
 
 
-def _policy_request_form_or_error(request: Any) -> tuple[Any | None, _Response | None]:
-    from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
-
-    max_content_length = _policy_request_max_content_length()
-    too_large = _html_response(
+def _too_large(max_content_length: int) -> _Response:
+    return _html_response(
         "Request too large",
         f"Policy request submissions are limited to {max_content_length} bytes.",
         status=413,
     )
-    request.max_content_length = max_content_length
-    content_length = request.content_length
-    if content_length is not None and content_length > max_content_length:
-        return None, too_large
-    try:
-        return request.form, None
-    except RequestEntityTooLarge:
-        return None, too_large
-    except BadRequest:
-        return None, _html_response(
-            "Request failed",
-            "The policy request form could not be parsed.",
-            status=400,
-        )
+
+
+def _read_policy_body(
+    environ: dict[str, Any], max_content_length: int
+) -> bytes | _Response:
+    """Read the whole bounded body, or the response that rejects it.
+
+    A declared Content-Length must be a valid decimal within the limit and be
+    delivered in full: a truncated submission is never recorded. Without one,
+    a terminated input stream (gunicorn chunked bodies) is read to at most the
+    limit; anything beyond it is rejected rather than truncated. Without either,
+    WSGI allows no body to be read.
+    """
+    stream = environ["wsgi.input"]
+    raw_length = environ.get("CONTENT_LENGTH") or ""
+    if raw_length:
+        if not (raw_length.isascii() and raw_length.isdigit()):
+            return _unparsable()
+        length = int(raw_length)
+        if length > max_content_length:
+            return _too_large(max_content_length)
+        limit = length
+    elif environ.get("wsgi.input_terminated"):
+        length = None
+        limit = max_content_length + 1
+    else:
+        return b""
+    chunks: list[bytes] = []
+    received = 0
+    while received < limit:
+        chunk = stream.read(limit - received)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        received += len(chunk)
+    body = b"".join(chunks)
+    if length is not None and received < length:
+        return _unparsable()
+    if received > max_content_length:
+        return _too_large(max_content_length)
+    return body
+
+
+def _unparsable() -> _Response:
+    return _html_response(
+        "Request failed",
+        "The policy request form could not be parsed.",
+        status=400,
+    )
 
 
 def _policy_request_client_ip(request: Any, form: Any, normalize_client_ip) -> str:
@@ -394,11 +429,23 @@ def _policy_request_store_unavailable(exc: BaseException) -> bool:
 
 
 def _public_policy_request(environ: dict[str, Any]) -> _Response:
+    max_content_length = _policy_request_max_content_length()
+    body = _read_policy_body(environ, max_content_length)
+    if isinstance(body, _Response):
+        return body
     # Block-page submissions are rare; keep form parsing and the
     # database-backed store out of the PAC listener until one arrives.
     from werkzeug.wrappers import Request
 
-    request = Request(environ)
+    request = Request(
+        {
+            **environ,
+            "wsgi.input": io.BytesIO(body),
+            "CONTENT_LENGTH": str(len(body)),
+            "wsgi.input_terminated": False,
+        },
+    )
+    request.max_content_length = max_content_length
     request.max_form_memory_size = _POLICY_REQUEST_MAX_FORM_MEMORY_SIZE
     request.max_form_parts = _POLICY_REQUEST_MAX_FORM_PARTS
     try:
@@ -409,9 +456,13 @@ def _public_policy_request(environ: dict[str, Any]) -> _Response:
 
 
 def _record_policy_request(request: Any) -> _Response:
-    form, form_error = _policy_request_form_or_error(request)
-    if form_error is not None:
-        return form_error
+    from werkzeug.exceptions import RequestEntityTooLarge
+
+    try:
+        form = request.form
+    except RequestEntityTooLarge:
+        # Multipart part-count or in-memory field limits.
+        return _too_large(request.max_content_length)
     from markupsafe import escape
     from services.policy_requests import (
         PolicyRequestAdmissionError,
@@ -434,7 +485,7 @@ def _record_policy_request(request: Any) -> _Response:
             user_note=form.get("user_note") or "",
         )
         body = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Request submitted</title><style>body{{font-family:system-ui;margin:0;background:#0b1220;color:#eef4ff}}main{{max-width:760px;margin:48px auto;padding:24px}}.card{{border:1px solid rgba(255,255,255,.16);border-radius:18px;padding:28px;background:rgba(255,255,255,.08)}}code{{overflow-wrap:anywhere}}</style></head><body><main><section class="card"><p>Docker Proxy · Policy request</p><h1>Request submitted</h1><p>Your administrator can now review this blocked destination.</p><p>Request #{req.id}: <code>{escape(req.domain)}</code></p></section></main></body></html>"""
-        return _Response(200, _POLICY_HTML, body.encode())
+        return _Response(200, _HTML, body.encode())
     except PolicyRequestAdmissionError as exc:
         return _html_response(
             "Request not accepted",

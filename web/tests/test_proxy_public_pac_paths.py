@@ -57,7 +57,10 @@ def public_pac_client(monkeypatch):
         pac_http._CACHES.clear()
         return Client(proxy_app.app)
 
-    return build_client
+    yield build_client
+    # Leave no materialized PAC from this tmp dir in the module caches.
+    pac_http.pac_render_dir.cache_clear()
+    pac_http._CACHES.clear()
 
 
 def test_public_listener_serves_configured_pac_path(

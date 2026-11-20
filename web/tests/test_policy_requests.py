@@ -1201,21 +1201,17 @@ def test_proxy_public_policy_request_rejects_parser_enforced_oversize(
     assert store_requested is False
 
 
-def test_proxy_public_policy_request_rejects_malformed_form_parse(
+def test_proxy_public_policy_request_rejects_truncated_body(
     monkeypatch,
 ) -> None:
     ensure_proxy_runtime_import_path()
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
-    from werkzeug.exceptions import BadRequest
 
     import proxy.public_app as proxy_app
 
     proxy_app = importlib.reload(proxy_app)
     store_requested = False
-
-    def raise_bad_request(_self):
-        raise BadRequest
 
     def get_store():
         nonlocal store_requested
@@ -1227,14 +1223,15 @@ def test_proxy_public_policy_request_rejects_malformed_form_parse(
 
         return Store()
 
-    monkeypatch.setattr(Request, "form", property(raise_bad_request))
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", get_store)
+    # The client announced more bytes than it delivered (disconnect): a
+    # partial form is never recorded.
     res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
-        data=b"request_url=%",
+        data=b"domain=x.example",
         content_type="application/x-www-form-urlencoded",
-        environ_overrides={"CONTENT_LENGTH": ""},
+        environ_overrides={"CONTENT_LENGTH": "100", "wsgi.input_terminated": True},
     )
 
     assert res.status_code == 400

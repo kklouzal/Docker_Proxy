@@ -4,7 +4,11 @@ Every scenario drives ``proxy.public_app.app`` through a raw, gunicorn-shaped
 WSGI environ and compares the status line, the full ordered header list and
 the body bytes against ``golden/proxy_public_responses.json``. The golden file
 was recorded from the Flask implementation (Flask 3.1.3 / Werkzeug 3.1.9) and
-is the independent oracle for any replacement implementation.
+is the independent oracle for any replacement implementation, except for the
+entries of deliberate behaviour fixes made afterwards (single charset on policy
+pages; RFC 9110 preconditions; over-limit unknown-length, truncated and
+invalid-length policy bodies rejected), which the dedicated tests at the end of
+this file pin independently.
 
 Normalizations, each for a value Flask itself does not keep stable:
 - ``Date`` values (wall clock) become ``<http-date>`` after a format check;
@@ -888,6 +892,9 @@ def run_scenario(scenario, *, monkeypatch, tmp_path, golden_etags: dict[str, str
         close = getattr(iterable, "close", None)
         if close is not None:
             close()
+    # Leave no scenario's materialized PAC in the module-level caches.
+    pac_http.pac_render_dir.cache_clear()
+    pac_http._CACHES.clear()
     record = _normalize(captured["status"], captured["headers"], body)
     return record, recorded
 
@@ -993,3 +1000,132 @@ def test_pac_and_health_requests_load_no_database_modules(tmp_path) -> None:
         "404 NOT FOUND",
     ]
     assert report["loaded"] == []
+
+
+# --- intentional deltas from the Flask recording (owner decisions r4) ------
+
+
+def _run(scenario, monkeypatch, tmp_path):
+    return run_scenario(
+        scenario,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        golden_etags=_golden_etags(_load_golden()),
+    )
+
+
+def _header(record: dict[str, Any], name: str) -> str | None:
+    return next((v for k, v in record["headers"] if k.lower() == name.lower()), None)
+
+
+@pytest.mark.parametrize("store", ["ok", "admission", "generic"])
+def test_policy_pages_declare_a_single_charset(store, monkeypatch, tmp_path) -> None:
+    record, _recorded = _run(
+        _s(
+            "charset",
+            "POST",
+            "/policy-request",
+            store=store,
+            headers=[("Content-Type", _FORM)],
+            body=b"domain=x.example",
+        ),
+        monkeypatch,
+        tmp_path,
+    )
+
+    assert _header(record, "Content-Type") == "text/html; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    ("limit", "body_size", "status"),
+    [
+        (None, 16384, "200 OK"),
+        (None, 16385, "413 REQUEST ENTITY TOO LARGE"),
+        ("128", 128, "200 OK"),
+        ("128", 129, "413 REQUEST ENTITY TOO LARGE"),
+    ],
+)
+def test_unknown_length_policy_post_over_the_limit_is_rejected_not_truncated(
+    limit, body_size, status, monkeypatch, tmp_path
+) -> None:
+    body = b"domain=" + b"x" * (body_size - len(b"domain="))
+    record, recorded = _run(
+        _s(
+            "chunked",
+            "POST",
+            "/policy-request",
+            store="ok",
+            env={"POLICY_REQUEST_MAX_CONTENT_LENGTH": limit} if limit else {},
+            headers=[("Content-Type", _FORM)],
+            body=body,
+        ),
+        monkeypatch,
+        tmp_path,
+    )
+
+    assert record["status"] == status
+    if status == "200 OK":
+        assert recorded["domain"] == body[len(b"domain=") :].decode()
+    else:
+        assert recorded == {}
+        assert "limited to" in record["body"]
+
+
+@pytest.mark.parametrize("terminated", [True, False])
+@pytest.mark.parametrize("content_length", ["100", "abc", "-1", "1e3"])
+def test_truncated_or_invalid_length_policy_post_is_a_bad_request(
+    terminated, content_length, monkeypatch, tmp_path
+) -> None:
+    record, recorded = _run(
+        _s(
+            "truncated",
+            "POST",
+            "/policy-request",
+            store="ok",
+            headers=[("Content-Type", _FORM), ("Content-Length", content_length)],
+            body=b"domain=x.example",
+            environ={"wsgi.input_terminated": terminated},
+        ),
+        monkeypatch,
+        tmp_path,
+    )
+
+    assert record["status"] == "400 BAD REQUEST"
+    assert "could not be parsed" in record["body"]
+    assert recorded == {}
+
+
+@pytest.mark.parametrize(
+    ("if_match", "if_none_match", "status"),
+    [
+        ("*", None, "200 OK"),
+        ("{etag}", None, "200 OK"),
+        ('"zz", {etag}', None, "200 OK"),
+        ("W/{etag}", None, "412 PRECONDITION FAILED"),
+        ('"other"', None, "412 PRECONDITION FAILED"),
+        ("*", "{etag}", "304 NOT MODIFIED"),
+        ("{etag}", "{etag}", "304 NOT MODIFIED"),
+        ("{etag}", "W/{etag}", "304 NOT MODIFIED"),
+        ("{etag}", '"other"', "200 OK"),
+        ("W/{etag}", "{etag}", "412 PRECONDITION FAILED"),
+        (None, "*", "304 NOT MODIFIED"),
+    ],
+)
+def test_pac_preconditions_follow_rfc_9110(
+    if_match, if_none_match, status, monkeypatch, tmp_path
+) -> None:
+    headers = []
+    if if_match is not None:
+        headers.append(("If-Match", if_match))
+    if if_none_match is not None:
+        headers.append(("If-None-Match", if_none_match))
+    record, _recorded = _run(
+        _s("conditional", "GET", "/proxy.pac", headers=headers),
+        monkeypatch,
+        tmp_path,
+    )
+
+    assert record["status"] == status
+    # The PAC validator is a strong ETag.
+    if status != "304 NOT MODIFIED":
+        assert _header(record, "ETag").startswith('"')
