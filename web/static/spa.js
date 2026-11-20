@@ -1665,6 +1665,14 @@
       }
     });
 
+    // Selects marked data-autosubmit submit their form on change: no inline
+    // event handlers, so the CSP allows scripts from 'self' only.
+    document.addEventListener('change', (event) => {
+      const select = event.target instanceof HTMLSelectElement ? event.target : null;
+      if (select && select.dataset.autosubmit !== undefined && select.form) {
+        select.form.submit();
+      }
+    });
     document.addEventListener('click', onDocumentClick, true);
     document.addEventListener('submit', onDocumentSubmit, true);
     window.addEventListener('popstate', onPopState);

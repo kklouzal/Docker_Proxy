@@ -2364,3 +2364,28 @@ def test_decision_cache_keys_on_source_host_not_referer_path(tmp_path: Path) -> 
         is False
     )
     assert len(engine._cache) == 2
+
+
+def test_icap_server_refuses_unsupported_lookup_schema_before_listening(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import sqlite3
+
+    from services.adblock_lookup import AdblockLookupSchemaError
+    from tools import adblock_icap_server
+
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("UPDATE metadata SET value='3' WHERE key='schema_version'")
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        adblock_icap_server,
+        "_AdblockIcapServer",
+        lambda *_args, **_kwargs: pytest.fail("served an unsupported lookup"),
+    )
+
+    with pytest.raises(AdblockLookupSchemaError, match="schema version 3"):
+        adblock_icap_server.main(["--db", str(db_path), "--port", "0"])

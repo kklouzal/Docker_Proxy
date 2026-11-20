@@ -7,6 +7,8 @@ from typing import Any
 
 from flask import request
 
+from services.runtime_helpers import normalize_config_bool
+
 _COMPRESSIBLE_MIMETYPES = frozenset(
     {
         "application/javascript",
@@ -29,17 +31,6 @@ _TRANSFORMATION_INVALIDATED_HEADERS = (
     "Digest",
     "Content-MD5",
 )
-
-
-def _bool_env(value: str | None, *, default: bool) -> bool:
-    raw = str(value or "").strip().lower()
-    if not raw:
-        return bool(default)
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    return bool(default)
 
 
 def _client_accepts_gzip() -> bool:
@@ -141,7 +132,7 @@ def install_http_optimizations(
     in-memory buffers. It only adds cache headers and opportunistic gzip for
     already-buffered text-like responses.
     """
-    compression_enabled = _bool_env(
+    compression_enabled = normalize_config_bool(
         os.environ.get("ENABLE_GZIP_RESPONSES")
         or getattr(app, "config", {}).get("ENABLE_GZIP_RESPONSES"),
         default=True,

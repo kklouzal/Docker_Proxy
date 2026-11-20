@@ -8,6 +8,7 @@ import ipaddress
 import json
 import logging
 import posixpath
+import random
 import re
 import threading
 import time
@@ -609,6 +610,24 @@ class SafeBrowsingVerdict:
     cache_ttl_seconds: int | None = field(default=None, compare=False, repr=False)
 
 
+# The v5 reference (hashLists.batchGet, Local.Database; fetched 2026-11-20)
+# defines no failure back-off. Its predecessor's request-frequency rules
+# (developers.google.com/safe-browsing/v4/request-frequency) do: after N
+# consecutive unsuccessful updates wait MIN(2^(N-1) * 15 min * (RAND + 1), 24 h),
+# RAND drawn in [0, 1) after every failure.
+_UPDATE_BACKOFF_BASE_SECONDS = 15 * 60
+_UPDATE_BACKOFF_MAX_SECONDS = 24 * 60 * 60
+
+
+def update_failure_backoff_seconds(
+    consecutive_failures: int, rand: float | None = None
+) -> int:
+    n = max(1, int(consecutive_failures))
+    jitter = random.random() if rand is None else min(max(float(rand), 0.0), 1.0)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
+    base = _UPDATE_BACKOFF_BASE_SECONDS * 2 ** min(n - 1, 16)
+    return int(min(base * (jitter + 1.0), _UPDATE_BACKOFF_MAX_SECONDS))
+
+
 class SafeBrowsingStore:
     _schema_ready = False
     _schema_lock = threading.Lock()
@@ -619,6 +638,8 @@ class SafeBrowsingStore:
         self._thread: threading.Thread | None = None
         self._started = False
         self._pending_status: tuple[bool, str, int] | None = None
+        # Updater thread only: consecutive unsuccessful list updates.
+        self._update_failures = 0
 
     def _connect(self):
         return connect()
@@ -860,7 +881,7 @@ class SafeBrowsingStore:
                     default="Google Safe Browsing list update failed.",
                     max_len=500,
                 ),
-                1800,
+                0,  # the updater applies its failure back-off
             )
 
     def status(self, settings: SafeBrowsingSettings) -> SafeBrowsingStatus:
@@ -1184,7 +1205,7 @@ class SafeBrowsingStore:
         ):
             return
 
-        failure_wait = 1800
+        failure_wait = update_failure_backoff_seconds(self._update_failures + 1)
         # Persist the attempt and a retry floor before provider/database work.
         # If final status persistence fails, this durable reservation prevents
         # every scheduler poll from repeating the provider request.
@@ -1205,7 +1226,12 @@ class SafeBrowsingStore:
         finished_at = _now()
         # A successful update with no minimumWaitDuration means the client
         # SHOULD update again immediately; the next scheduler poll does so.
-        retry_after = int(wait) if ok else int(wait or failure_wait)
+        if ok:
+            self._update_failures = 0
+            retry_after = int(wait)
+        else:
+            self._update_failures += 1
+            retry_after = int(wait or failure_wait)
         self._persist_updater_status(
             set_status,
             (ok, err, finished_at + max(60, retry_after)),
@@ -1226,6 +1252,47 @@ class SafeBrowsingStore:
             except Exception:
                 pass
             self._stop_event.wait(poll)
+
+
+def _search_item_has_prefix(item: object, prefix: bytes) -> bool:
+    if not isinstance(item, dict):
+        return False
+    try:
+        return _decode_search_full_hash(item.get("fullHash")).startswith(prefix)
+    except ValueError:
+        return False
+
+
+def _confirmed_verdict(
+    response: Sequence[object],
+    prefix: bytes,
+    full_set: set[bytes],
+    local_lists: Sequence[str],
+    local_threat_types: set[str],
+) -> SafeBrowsingVerdict:
+    """Verdict for ``prefix`` from a hashes.search response (or cached copy)."""
+    for item in response:
+        if not isinstance(item, dict):
+            continue
+        try:
+            returned = _decode_search_full_hash(item.get("fullHash"))
+        except ValueError:
+            continue
+        if not (returned.startswith(prefix) and returned in full_set):
+            continue
+        threat = _enforceable_threat(
+            item.get("fullHashDetails") or [],
+            allowed=local_threat_types,
+        )
+        if threat and threat in local_threat_types:
+            return SafeBrowsingVerdict(
+                "unsafe",
+                threat,
+                _list_name_for_threat(local_lists, threat),
+                False,
+                "confirmed by hashes.search",
+            )
+    return SafeBrowsingVerdict("safe", reason="full hash not returned")
 
 
 class SafeBrowsingLocalChecker:
@@ -1607,6 +1674,10 @@ class SafeBrowsingLocalChecker:
             "safe",
             reason="no local hash-prefix match",
         )
+        # Pass 1: local prefix matches and stored full-hash verdicts. Prefixes
+        # still unconfirmed are then searched together, as hashes.search
+        # accepts every prefix of one URL (up to 30) in a single request.
+        pending: list[tuple[bytes, tuple[str, ...], set[str]]] = []
         for full_hash in hashes:
             prefix = full_hash[:4]
             local_lists = self._local_lists_for_prefix(prefix)
@@ -1620,77 +1691,72 @@ class SafeBrowsingLocalChecker:
                     verdict_ttl,
                     max(0, int(cached_verdict.cache_ttl_seconds or 0)),
                 )
-                if (
-                    cached_verdict.verdict == "unsafe"
-                    and cached_verdict.threat_type not in local_threat_types
-                ):
-                    cached_verdict = None
-                else:
-                    verdict = cached_verdict
-            if cached_verdict is None:
-                api_key = self._api_key_from_settings()
-                if not api_key:
-                    cache_final_verdict = False
-                    verdict = SafeBrowsingVerdict(
-                        "safe",
-                        reason="api key unavailable for full-hash confirmation",
-                    )
-                else:
-                    cached_search = self._cached_search_response(prefix)
-                    if cached_search is not None:
-                        response, duration = cached_search
-                    else:
-                        try:
-                            response, duration = self._store.search_hashes(
-                                api_key, [prefix]
-                            )
-                        except Exception:
-                            self.close()
-                            cache_final_verdict = False
-                            verdict = SafeBrowsingVerdict(
-                                "safe",
-                                reason="full-hash confirmation unavailable",
-                            )
-                            last_safe_verdict = verdict
-                            continue
-                        self._remember_search_response(prefix, response, duration)
-                        self._cache_search_response(
-                            prefix, response, duration, local_lists
+                # Stored rows are positive matches only; one for a threat the
+                # current lists no longer select is confirmed again remotely.
+                if cached_verdict.threat_type in local_threat_types:
+                    if cache_final_verdict:
+                        self._cache_verdict(
+                            cache_key, cached_verdict, cache_generation, verdict_ttl
                         )
-                    verdict_ttl = min(verdict_ttl, max(0, int(duration)))
-                    verdict = SafeBrowsingVerdict(
+                    return cached_verdict
+            if all(item[0] != prefix for item in pending):
+                pending.append((prefix, local_lists, local_threat_types))
+
+        if pending:
+            api_key = self._api_key_from_settings()
+            responses: dict[bytes, tuple[list[dict[str, object]], int]] = {}
+            unconfirmed: list[bytes] = []
+            for prefix, _lists, _threats in pending:
+                cached_search = self._cached_search_response(prefix)
+                if cached_search is not None:
+                    responses[prefix] = cached_search
+                else:
+                    unconfirmed.append(prefix)
+            search_failed = False
+            if unconfirmed and api_key:
+                try:
+                    response, duration = self._store.search_hashes(api_key, unconfirmed)
+                except Exception:
+                    self.close()
+                    search_failed = True
+                else:
+                    for prefix, local_lists, _threats in pending:
+                        if prefix not in unconfirmed:
+                            continue
+                        subset = [
+                            item
+                            for item in response
+                            if _search_item_has_prefix(item, prefix)
+                        ]
+                        self._remember_search_response(prefix, subset, duration)
+                        self._cache_search_response(
+                            prefix, subset, duration, local_lists
+                        )
+                        responses[prefix] = (subset, duration)
+            for prefix, local_lists, local_threat_types in pending:
+                if prefix not in responses:
+                    cache_final_verdict = False
+                    last_safe_verdict = SafeBrowsingVerdict(
                         "safe",
-                        reason="full hash not returned",
+                        reason=(
+                            "full-hash confirmation unavailable"
+                            if search_failed
+                            else "api key unavailable for full-hash confirmation"
+                        ),
                     )
-                    for item in response:
-                        if not isinstance(item, dict):
-                            continue
-                        try:
-                            returned = _decode_search_full_hash(item.get("fullHash"))
-                        except ValueError:
-                            continue
-                        if returned.startswith(prefix) and returned in full_set:
-                            threat = _enforceable_threat(
-                                item.get("fullHashDetails") or [],
-                                allowed=local_threat_types,
-                            )
-                            if not threat or threat not in local_threat_types:
-                                continue
-                            verdict = SafeBrowsingVerdict(
-                                "unsafe",
-                                threat,
-                                _list_name_for_threat(local_lists, threat),
-                                False,
-                                "confirmed by hashes.search",
-                            )
-                            break
-            if verdict.verdict == "unsafe":
-                if cache_final_verdict:
-                    self._cache_verdict(
-                        cache_key, verdict, cache_generation, verdict_ttl
-                    )
-                return verdict
-            last_safe_verdict = verdict
+                    continue
+                response, duration = responses[prefix]
+                verdict_ttl = min(verdict_ttl, max(0, int(duration)))
+                verdict = _confirmed_verdict(
+                    response, prefix, full_set, local_lists, local_threat_types
+                )
+                if verdict.verdict == "unsafe":
+                    if cache_final_verdict:
+                        self._cache_verdict(
+                            cache_key, verdict, cache_generation, verdict_ttl
+                        )
+                    return verdict
+                last_safe_verdict = verdict
         verdict = (
             last_safe_verdict
             if saw_local_match

@@ -645,24 +645,34 @@ def test_adblock_proxy_meta_values_write_one_row_alias_upsert(
     ]
 
 
-def test_adblock_tailer_keeps_partial_line_until_newline(
-    monkeypatch, tmp_path, adblock_store
-) -> None:
-    log_path = tmp_path / "cicap-access.log"
-    partial = (
-        "1710000000\t10.0.0.5\t127.0.0.1\tREQMOD\t/adblockreq\t200\t"
-        "GET http://ads.example/banner.js HTTP/1.1\t"
-    )
-    suffix = "http://ads.example/banner.js\tHTTP/1.1 403 Forbidden\textra\n"
-    log_path.write_text(partial, encoding="utf-8")
+_CICAP_BLOCK = (
+    "1710000000\t10.0.0.5\t127.0.0.1\tREQMOD\t/adblockreq\t200\t"
+    "GET http://ads.example/{name} HTTP/1.1\t"
+    "http://ads.example/{name}\tHTTP/1.1 403 Forbidden\textra\n"
+)
 
-    meta = {"cicap_access_inode": "0", "cicap_access_pos": "0"}
-    inserted: list[tuple[object, ...]] = []
-    calls: list[str] = []
 
-    meta_writes: list[dict[str, str]] = []
+class _CicapMetaConn:
+    """MySQL fake for the adblock tailer: proxy meta, lifecycle guard, events."""
 
-    class Result:
+    def __init__(self, meta: dict[str, str]) -> None:
+        self.meta = meta
+        self.inserted: list[tuple[object, ...]] = []
+        self.meta_writes: list[list[str]] = []
+        self.calls: list[str] = []
+        self.connects = 0
+
+    def connect(self):
+        self.connects += 1
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    class _Result:
         def __init__(self, row=None, *, rows=None, rowcount: int = 1) -> None:
             self._row = row
             self._rows = list(rows or ())
@@ -674,170 +684,200 @@ def test_adblock_tailer_keeps_partial_line_until_newline(
         def fetchall(self):
             return list(self._rows)
 
-    class Conn:
-        native = object()
+    def execute(self, sql, params=()):
+        normalized = " ".join(str(sql).split())
+        self.calls.append(normalized)
+        if "SELECT k, v FROM adblock_proxy_meta" in normalized:
+            keys = [str(key) for key in tuple(params or ())[1:]]
+            return self._Result(
+                rows=[(key, self.meta[key]) for key in keys if key in self.meta]
+            )
+        if is_lifecycle_state_query(normalized):
+            return self._Result(lifecycle_state_row(registry_status="healthy"))
+        if "GET_LOCK" in normalized:
+            return self._Result({"acquired": 1})
+        if normalized.startswith("INSERT INTO adblock_proxy_meta"):
+            values = tuple(params or ())
+            written = []
+            for offset in range(0, len(values), 3):
+                _proxy_id, key, value = values[offset : offset + 3]
+                self.meta[str(key)] = str(value)
+                written.append(str(key))
+            self.meta_writes.append(sorted(written))
+        return self._Result()
 
-        def execute(self, sql, params=()):
-            normalized = " ".join(str(sql).split())
-            calls.append(normalized)
-            if "SELECT k, v FROM adblock_proxy_meta" in normalized:
-                keys = [str(key) for key in tuple(params or ())[1:]]
-                return Result(rows=[(key, meta[key]) for key in keys if key in meta])
-            if "CREATE TABLE IF NOT EXISTS proxy_lifecycle_tombstones" in normalized:
-                return Result()
-            if is_lifecycle_state_query(normalized):
-                return Result(lifecycle_state_row(registry_status="healthy"))
-            if "GET_LOCK" in normalized:
-                return Result({"acquired": 1})
-            if "RELEASE_LOCK" in normalized:
-                return Result()
-            if normalized.startswith("INSERT INTO adblock_proxy_meta"):
-                values = tuple(params or ())
-                for offset in range(0, len(values), 3):
-                    _proxy_id, key, value = values[offset : offset + 3]
-                    meta[str(key)] = str(value)
-                meta_writes.append(dict(meta))
-            elif normalized.startswith("INSERT IGNORE INTO adblock_events"):
-                inserted.append(tuple(params or ()))
+    def executemany(self, sql, rows):
+        if " ".join(str(sql).split()).startswith("INSERT IGNORE INTO adblock_events"):
+            self.inserted.extend(tuple(row) for row in rows)
+        return self._Result(rowcount=len(rows))
 
-            return Result()
+    def commit(self) -> None:
+        return None
 
-        def executemany(self, sql, rows):
-            normalized = " ".join(str(sql).split())
-            if normalized.startswith("INSERT IGNORE INTO adblock_events"):
-                inserted.extend(tuple(row) for row in rows)
-            return Result(rowcount=len(inserted))
+    def rollback(self) -> None:
+        return None
 
-        def commit(self) -> None:
-            return None
 
-        def rollback(self) -> None:
-            return None
-
+def _run_adblock_tailer(monkeypatch, adblock_store, log_path, conn, *, on_poll=None):
+    """Run the real tailer until its ``on_poll`` hook (default: first poll) stops it."""
     monkeypatch.setattr(adblock_store, "get_proxy_id", lambda: "proxy-a")
     store = adblock_store.AdblockStore(cicap_access_log_path=str(log_path))
-    conn = Conn()
+    monkeypatch.setattr(store, "_connect", conn.connect)
+    polls = iter(range(1000))
 
-    store._ingest_new_cicap_lines(conn)
+    def wait(_seconds: float) -> bool:
+        index = next(polls)
+        if on_poll is None or on_poll(index):
+            store._blocklog_stop_event.set()
+            return True
+        return False
 
-    assert inserted == []
-    assert meta["cicap_access_pos"] == "0"
-    assert meta["cicap_access_inode"] == str(log_path.stat().st_ino)
-    assert any("proxy_lifecycle_tombstones" in call for call in calls)
-    assert any("FROM proxy_instances" in call for call in calls)
-    assert any("GET_LOCK" in call for call in calls)
-
-    log_path.write_text(partial + suffix, encoding="utf-8")
-
-    store._ingest_new_cicap_lines(conn)
-
-    assert len(inserted) == 1
-    assert inserted[0][0] == "proxy-a"
-    assert inserted[0][5] == "http://ads.example/banner.js"
-    assert meta["cicap_access_pos"] == str(log_path.stat().st_size)
-    # The inode changed on the first pass and the position on the second; each
-    # pass wrote only the keys that moved.
-    assert [sorted(write) for write in meta_writes] == [
-        ["cicap_access_inode", "cicap_access_pos"],
-        ["cicap_access_inode", "cicap_access_pos"],
-    ]
-
-    assert store._cicap_checkpoint == (
-        log_path.stat().st_ino,
-        log_path.stat().st_size,
-    )
-    assert store._cicap_log_unchanged(str(log_path)) is True
-
-    # An idle poll with an unchanged checkpoint reads once and writes nothing:
-    # no lifecycle lock, no upsert, no commit traffic.
-    calls.clear()
-    store._ingest_new_cicap_lines(conn)
-    assert len(meta_writes) == 2
-    assert not any("GET_LOCK" in call for call in calls)
-    assert [call for call in calls if "adblock_proxy_meta" in call] == [
-        "SELECT k, v FROM adblock_proxy_meta WHERE proxy_id=%s AND k IN (%s,%s)"
-    ]
+    monkeypatch.setattr(store._blocklog_stop_event, "wait", wait)
+    store._blocklog_tail_loop()
+    return store
 
 
-def test_adblock_seed_ignores_syntactically_valid_partial_trailing_record(
+def test_adblock_tailer_keeps_partial_line_until_newline(
     monkeypatch, tmp_path, adblock_store
 ) -> None:
     log_path = tmp_path / "cicap-access.log"
-    complete = (
-        "1710000000\t10.0.0.5\t127.0.0.1\tREQMOD\t/adblockreq\t200\t"
-        "GET http://ads.example/complete.js HTTP/1.1\t"
-        "http://ads.example/complete.js\tHTTP/1.1 403 Forbidden\teasylist\trule"
-    )
-    partial = (
-        "1710000001\t10.0.0.5\t127.0.0.1\tREQMOD\t/adblockreq\t200\t"
-        "GET http://ads.example/partial.js HTTP/1.1\t"
-        "http://ads.example/partial.js\tHTTP/1.1 403 Forbidden"
-    )
-    log_path.write_text(complete + "\n" + partial, encoding="utf-8")
-    inserted: list[dict[str, object]] = []
-    store = adblock_store.AdblockStore(cicap_access_log_path=str(log_path))
-    assert store._parse_cicap_access_line(partial) is not None
-    monkeypatch.setattr(store, "_insert_event", lambda _conn, row: inserted.append(row))
-    monkeypatch.setattr(store, "_prune_events", lambda _conn: None)
+    record = _CICAP_BLOCK.format(name="banner.js")
+    log_path.write_text(record[:60], encoding="utf-8")
+    conn = _CicapMetaConn({"cicap_access_inode": "0", "cicap_access_pos": "0"})
 
-    store._seed_from_recent_log(object())
+    _run_adblock_tailer(monkeypatch, adblock_store, log_path, conn)
 
-    assert [row["url"] for row in inserted] == ["http://ads.example/complete.js"]
+    # The partial record is not ingested; only the new inode is checkpointed.
+    assert conn.inserted == []
+    assert conn.meta == {
+        "cicap_access_inode": str(log_path.stat().st_ino),
+        "cicap_access_pos": "0",
+    }
+    assert conn.meta_writes == [["cicap_access_inode"]]
 
+    # A restarted tailer resumes at the checkpoint and reads the finished line.
+    log_path.write_text(record, encoding="utf-8")
+    _run_adblock_tailer(monkeypatch, adblock_store, log_path, conn)
 
-def _pad_cicap_record(base: bytes, *, total_size: int, newline: bool) -> bytes:
-    body_size = total_size - int(newline)
-    remaining = body_size - len(base)
-    chunks: list[bytes] = []
-    while remaining > 1001:
-        chunks.append(b"\t" + (b"x" * 1000))
-        remaining -= 1001
-    if remaining:
-        chunks.append(b"\t" + (b"x" * (remaining - 1)))
-    return base + b"".join(chunks) + (b"\n" if newline else b"")
+    assert len(conn.inserted) == 1
+    assert conn.inserted[0][0] == "proxy-a"
+    assert conn.inserted[0][5] == "http://ads.example/banner.js"
+    assert conn.meta["cicap_access_pos"] == str(log_path.stat().st_size)
+    assert conn.meta_writes == [["cicap_access_inode"], ["cicap_access_pos"]]
 
 
-def test_adblock_seed_reader_drops_plausible_truncated_suffix_without_newline(
-    tmp_path, adblock_store
+@pytest.mark.parametrize(
+    ("checkpoint", "expected"),
+    [
+        # Matching inode and offset: resume after the first line.
+        (lambda st, first: (st.st_ino, first), ["two.js"]),
+        # Different inode (rotated/replaced while down): read the new file whole.
+        (lambda st, first: (st.st_ino + 1, first), ["one.js", "two.js"]),
+        # Offset past the end (truncated while down): read from the start.
+        (lambda st, first: (st.st_ino, st.st_size + 10), ["one.js", "two.js"]),
+        # No checkpoint yet: read the whole file.
+        (lambda _st, _first: (0, 0), ["one.js", "two.js"]),
+    ],
+)
+def test_adblock_tailer_resumes_at_persisted_checkpoint(
+    monkeypatch, tmp_path, adblock_store, checkpoint, expected
 ) -> None:
     log_path = tmp_path / "cicap-access.log"
-    plausible_suffix = (
-        b"1710000002\t10.0.0.5\t127.0.0.1\tREQMOD\t/adblockreq\t200\t"
-        b"GET http://ads.example/truncated.js HTTP/1.1\t"
-        b"http://ads.example/truncated.js\tHTTP/1.1 403 Forbidden\t"
+    first = _CICAP_BLOCK.format(name="one.js")
+    log_path.write_text(first + _CICAP_BLOCK.format(name="two.js"), encoding="utf-8")
+    inode, pos = checkpoint(log_path.stat(), len(first.encode()))
+    conn = _CicapMetaConn(
+        {"cicap_access_inode": str(inode), "cicap_access_pos": str(pos)}
     )
-    plausible_suffix = _pad_cicap_record(
-        plausible_suffix,
-        total_size=1_000_000,
-        newline=False,
-    )
-    assert len(plausible_suffix) == 1_000_000
-    log_path.write_bytes(b"oversized-record-prefix" + plausible_suffix)
-    store = adblock_store.AdblockStore(cicap_access_log_path=str(log_path))
-    assert store._parse_cicap_access_line(plausible_suffix.decode()) is not None
 
-    lines = store._read_last_lines(str(log_path), max_lines=10)
+    _run_adblock_tailer(monkeypatch, adblock_store, log_path, conn)
 
-    assert lines == []
+    assert [row[5].rsplit("/", 1)[1] for row in conn.inserted] == expected
+    assert conn.meta == {
+        "cicap_access_inode": str(log_path.stat().st_ino),
+        "cicap_access_pos": str(log_path.stat().st_size),
+    }
 
 
-def test_adblock_seed_reader_keeps_line_when_window_starts_at_boundary(
-    tmp_path, adblock_store
+def test_adblock_tailer_poll_skips_mysql_while_log_is_unchanged(
+    monkeypatch, tmp_path, adblock_store
 ) -> None:
     log_path = tmp_path / "cicap-access.log"
-    base = (
-        b"1710000003\t10.0.0.5\t127.0.0.1\tREQMOD\t/adblockreq\t200\t"
-        b"GET http://ads.example/boundary.js HTTP/1.1\t"
-        b"http://ads.example/boundary.js\tHTTP/1.1 403 Forbidden\t"
+    log_path.write_text("", encoding="utf-8")
+    conn = _CicapMetaConn(
+        {"cicap_access_inode": str(log_path.stat().st_ino), "cicap_access_pos": "0"}
     )
-    tailed_record = _pad_cicap_record(base, total_size=1_000_000, newline=True)
-    assert len(tailed_record) == 1_000_000
-    log_path.write_bytes(b"earlier-record\n" + tailed_record)
-    store = adblock_store.AdblockStore(cicap_access_log_path=str(log_path))
+    connects_at_poll: list[int] = []
 
-    lines = store._read_last_lines(str(log_path), max_lines=1)
+    def on_poll(index: int) -> bool:
+        connects_at_poll.append(conn.connects)
+        if index == 2:
+            log_path.write_text(_CICAP_BLOCK.format(name="late.js"), encoding="utf-8")
+        return index >= 3
 
-    assert lines == [tailed_record.decode().rstrip("\n")]
+    _run_adblock_tailer(monkeypatch, adblock_store, log_path, conn, on_poll=on_poll)
+
+    # Only the checkpoint read touched MySQL while idle; the new line is
+    # committed with its checkpoint once.
+    assert connects_at_poll == [1, 1, 1, 1]
+    assert len(conn.inserted) == 1
+    assert conn.connects == 2
+
+
+def test_adblock_tailer_retains_rows_until_flush_succeeds(
+    monkeypatch, tmp_path, adblock_store
+) -> None:
+    import pymysql  # type: ignore
+
+    log_path = tmp_path / "cicap-access.log"
+    log_path.write_text(_CICAP_BLOCK.format(name="kept.js"), encoding="utf-8")
+    conn = _CicapMetaConn({})
+    real_connect = conn.connect
+    attempts: list[int] = []
+
+    def flaky_connect():
+        attempts.append(1)
+        if len(attempts) == 2:
+            raise pymysql.err.OperationalError(2003, "down")
+        return real_connect()
+
+    monkeypatch.setattr(conn, "connect", flaky_connect)
+    monkeypatch.setattr(adblock_store, "log_database_unavailable", lambda *_a: None)
+    clock = _Clock()
+    clock.install(monkeypatch)
+
+    def on_poll(_index: int) -> bool:
+        clock.now += 1000.0
+        return len(attempts) >= 3
+
+    _run_adblock_tailer(monkeypatch, adblock_store, log_path, conn, on_poll=on_poll)
+
+    assert len(conn.inserted) == 1
+    assert conn.meta["cicap_access_pos"] == str(log_path.stat().st_size)
+
+
+def test_adblock_write_batch_rolls_back_rejected_guard(
+    monkeypatch, adblock_store
+) -> None:
+    from services.proxy_write_guard import ProxyLifecycleWriteError
+
+    def reject_rows(_conn, proxy_id, *_args, **_kwargs):
+        msg = f"Proxy {proxy_id!r} has been removed"
+        raise ProxyLifecycleWriteError(msg)
+
+    rollbacks: list[int] = []
+    conn = _CicapMetaConn({})
+    monkeypatch.setattr(conn, "rollback", lambda: rollbacks.append(1))
+    monkeypatch.setattr(adblock_store, "guarded_proxy_rows", reject_rows)
+    monkeypatch.setattr(adblock_store, "get_proxy_id", lambda: "edge-removed")
+    store = adblock_store.AdblockStore(cicap_access_log_path="unused.log")
+
+    with pytest.raises(ProxyLifecycleWriteError):
+        store._write_cicap_batch(
+            conn, [{"url": "https://ads.example/"}], {"cicap_access_pos": "9"}
+        )
+    assert rollbacks == [1]
+    assert conn.meta == {}
 
 
 def test_adblock_meta_set_is_one_row_alias_upsert(monkeypatch, adblock_store) -> None:
@@ -1161,45 +1201,3 @@ def test_missing_log_poll_is_interruptible_by_bounded_stop(
     getattr(store, start_name)()
     assert entered_wait.wait(1.0), "tailer did not enter its interruptible poll wait"
     assert getattr(store, stop_name)(timeout=0.25) is True
-
-
-def test_adblock_tailer_poll_skips_mysql_while_log_is_unchanged(
-    monkeypatch, tmp_path, adblock_store
-) -> None:
-    log_path = tmp_path / "cicap-access.log"
-    log_path.write_text("", encoding="utf-8")
-    store = adblock_store.AdblockStore(cicap_access_log_path=str(log_path))
-    ingests: list[int] = []
-
-    class Conn:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-    def fake_ingest(_conn) -> None:
-        ingests.append(1)
-        st = log_path.stat()
-        store._cicap_checkpoint = (st.st_ino, st.st_size)
-
-    polls = iter(range(4))
-
-    def wait_once(_seconds: float) -> bool:
-        index = next(polls, None)
-        if index == 1:
-            # The log grows after the second idle poll.
-            log_path.write_text("x\n", encoding="utf-8")
-        if index is None or index >= 3:
-            store._blocklog_stop_event.set()
-        return False
-
-    monkeypatch.setattr(store, "_connect", Conn)
-    monkeypatch.setattr(store, "_ingest_new_cicap_lines", fake_ingest)
-    monkeypatch.setattr(store._blocklog_stop_event, "wait", wait_once)
-
-    store._blocklog_tail_loop()
-
-    # First poll establishes the checkpoint; identical (inode, size) polls do
-    # not open a connection; growth goes back to MySQL once.
-    assert len(ingests) == 2

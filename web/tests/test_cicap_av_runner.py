@@ -1072,7 +1072,7 @@ def test_drain_chunked_body_preview_ieof_zero_does_not_continue() -> None:
 
 def test_parse_chunk_size_rejects_unbounded_tokens_and_bad_extensions() -> None:
     runner = _load_runner()
-    too_long = b"F" * (runner.MAX_ICAP_CHUNK_SIZE_DIGITS + 1)
+    too_long = b"F" * (16 + 1)
     cases = (
         ("extremely long hex token", too_long),
         ("plus sign", b"+1"),
@@ -1108,11 +1108,10 @@ def test_parse_chunk_size_rejects_unbounded_tokens_and_bad_extensions() -> None:
 def test_parse_chunk_size_preserves_valid_extensions_and_ieof_case() -> None:
     runner = _load_runner()
 
-    assert runner._parse_chunk_line(b'a; foo=bar; flag; quoted="a b;c"')[0] == 10
-    assert runner._parse_chunk_line(b"0;IEOF")[0] == 0
-    size, extensions = runner._parse_chunk_line(b"0;IEOF")
-    assert size == 0
-    assert extensions == {b"ieof"}
+    assert runner._parse_chunk_line(b'a; foo=bar; flag; quoted="a b;c"').size == 10
+    header = runner._parse_chunk_line(b"0;IEOF")
+    assert header.size == 0
+    assert header.has_ieof is True
 
 
 def test_drain_chunked_body_preview_requires_ieof_extension_name() -> None:

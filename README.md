@@ -359,7 +359,7 @@ can lower, but never raise, that scheduled-housekeeping bound.
 - Header-only adblock decisions for browsing and common API methods; CONNECT tunnel setup is deliberately excluded because authority-only requests lack safe URL/resource/party context. Request bodies are bounded and drained only enough to keep ICAP transactions healthy.
 - ABP-style network rules, exceptions, resource-type options, third-party checks, domain scoping, wildcard hosts, regex rules, and `$badfilter` suppression are compiled into proxy-local lookup artifacts.
 - Domain, host-pattern, regex-token, generic-literal, resource-type, and domain-scope SQLite indexes are staged locally in the proxy container so request-path checks do not scan every parsed rule.
-- Cosmetic, scriptlet, and HTML-filter rules are parsed into artifact buckets for visibility and future use, but the proxy runtime does not inject browser-side cosmetic filtering.
+- Cosmetic, scriptlet, and HTML-filter rules are only counted (per marker) in the artifact report; the proxy runtime does not inject browser-side cosmetic filtering.
 - Block counters, recent event logging, and artifact application tracking.
 
 ### ClamAV scanning

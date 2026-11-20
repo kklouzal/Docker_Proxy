@@ -11,68 +11,77 @@ from .subprocess_test_utils import run_test_process
 
 
 def _compile_sample(tmp_path: Path, lines: list[str]) -> Path:
+    """Compile ``lines`` as list "sample"; return the lookup database path."""
     from tools import adblock_compile as ac  # type: ignore
 
     out = tmp_path / "compiled"
     out.mkdir()
+    db_path = out / "request_lookup.sqlite"
+    ac._write_request_lookup_index(str(db_path), [("sample", lines)], ac._Aggregate())
+    return db_path
 
-    agg = ac._Aggregate(
-        network_rules_total=0,
-        network_rules_by_kind={},
-        network_rules_with_options=0,
-        network_rules_with_domain_opt=0,
-        cosmetic_rules_total=0,
-        cosmetic_rules_by_marker={},
-        option_key_counts={},
-        option_group_counts={},
+
+def _parsed_rules(lines: list[str]) -> list[dict[str, Any]]:
+    """Return the normalized network records the compiler parses from ``lines``."""
+    from tools import adblock_compile as ac  # type: ignore
+
+    records: list[dict[str, Any]] = []
+    ac._compile_and_extract_all(
+        lines=lines,
+        list_key="sample",
+        agg=ac._Aggregate(),
+        add_network_rule=records.append,
     )
-
-    with (out / "network_rules.jsonl").open(
-        "w", encoding="utf-8", newline="\n"
-    ) as network_jsonl:
-        ac._compile_and_extract_all(
-            lines=lines,
-            list_key="sample",
-            agg=agg,
-            network_jsonl=network_jsonl,
-        )
-
-    return out
+    return records
 
 
-_HOST_KINDS = (
+_INDEXED_RULES_SQL = {
+    "domain_index": (
+        "SELECT r.raw FROM rules r JOIN (SELECT DISTINCT rule_id FROM "
+        "domain_index) i ON i.rule_id = r.rule_id ORDER BY r.raw"
+    ),
+    "generic_index": (
+        "SELECT r.raw FROM rules r JOIN (SELECT DISTINCT rule_id FROM "
+        "generic_index) i ON i.rule_id = r.rule_id ORDER BY r.raw"
+    ),
+}
+
+
+def _indexed_raws(db_path: Path, table: str) -> list[str]:
+    """Return the raw text of the rules that ``table`` indexes."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return [row[0] for row in conn.execute(_INDEXED_RULES_SQL[table])]
+    finally:
+        conn.close()
+
+
+_HOST_KINDS = {
     "absolute_url",
     "absolute_url_pattern",
     "host_anchored",
     "host_anchored_pattern",
-)
+}
 
 
-def _rules_of_kind(out: Path, *kinds: str) -> list[dict[str, Any]]:
+def _of_kind(records: list[dict[str, Any]], *kinds: str) -> list[dict[str, Any]]:
+    return [rule for rule in records if rule["pattern_kind"] in kinds]
+
+
+def _generic(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         rule
-        for rule in _read_jsonl(out / "network_rules.jsonl")
-        if rule["pattern_kind"] in kinds
+        for rule in records
+        if rule["pattern_kind"] not in {*_HOST_KINDS, "domain_only", "regex", "empty"}
     ]
 
 
-def _generic_rules(out: Path) -> list[dict[str, Any]]:
-    indexed = {"domain_only", "regex", "empty", *_HOST_KINDS}
-    return [
-        rule
-        for rule in _read_jsonl(out / "network_rules.jsonl")
-        if rule["pattern_kind"] not in indexed
-    ]
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+def _domain_index_hosts(db_path: Path) -> set[str]:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return {row[0] for row in conn.execute("SELECT host FROM domain_index")}
+    finally:
+        conn.close()
 
 
 def test_main_compiles_explicit_enabled_lists_without_database_state(
@@ -100,10 +109,13 @@ def test_main_compiles_explicit_enabled_lists_without_database_state(
     assert rc == 0
     report = json.loads((out / "report.json").read_text(encoding="utf-8"))
     assert report["enabled_lists"] == ["easylist"]
-    assert "ads.example" in (out / "network_rules.jsonl").read_text(encoding="utf-8")
-    assert "disabled.example" not in (out / "network_rules.jsonl").read_text(
-        encoding="utf-8"
-    )
+    assert report["files"] == {"request_lookup_sqlite": "request_lookup.sqlite"}
+    # Only the runtime lookup is written: no diagnostic buckets.
+    assert sorted(path.name for path in out.iterdir()) == [
+        "report.json",
+        "request_lookup.sqlite",
+    ]
+    assert _domain_index_hosts(out / "request_lookup.sqlite") == {"ads.example"}
 
 
 def test_script_entrypoint_compiles_explicit_enabled_lists_without_pythonpath(
@@ -134,9 +146,9 @@ def test_script_entrypoint_compiles_explicit_enabled_lists_without_pythonpath(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "script-entry.example" in (out / "network_rules.jsonl").read_text(
-        encoding="utf-8"
-    )
+    assert _domain_index_hosts(out / "request_lookup.sqlite") == {
+        "script-entry.example"
+    }
 
 
 def test_abp_regex_options_split_after_closing_delimiter() -> None:
@@ -195,9 +207,8 @@ def test_abp_regex_compilation_honors_escaped_pattern_metacharacters() -> None:
     assert not re.match(abp_suffix_to_regex("|"), "/")
 
 
-def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
-    out = _compile_sample(
-        tmp_path,
+def test_network_rules_emit_normalized_request_indexes() -> None:
+    records = _parsed_rules(
         [
             (
                 r"/^https?:\/\/s3\.*\.amazonaws\.com\/[a-f0-9]{45,}"
@@ -217,7 +228,7 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
         ],
     )
 
-    regex_rules = _rules_of_kind(out, "regex")
+    regex_rules = _of_kind(records, "regex")
     assert len(regex_rules) == 1
     regex_rule = regex_rules[0]
     assert regex_rule["pattern_kind"] == "regex"
@@ -226,7 +237,7 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
     assert regex_rule["domain_excludes"] == ["amazon.com"]
     assert "/$script" not in regex_rule["options"]
 
-    host_rules = _rules_of_kind(out, *_HOST_KINDS)
+    host_rules = _of_kind(records, *_HOST_KINDS)
     by_host = {rule["host"]: rule for rule in host_rules}
     assert by_host["example.com"]["suffix"] == "/ad/path|"
     assert by_host["example.com"]["suffix_right_anchored"] is True
@@ -257,13 +268,13 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
     assert absolute_patterns[0]["resource_types"] == ["websocket"]
     assert absolute_patterns[0]["third_party"] == "only"
 
-    domain_rules = _rules_of_kind(out, "domain_only")
+    domain_rules = _of_kind(records, "domain_only")
     assert any(
         rule["host"] == "ads.example" and rule["third_party"] == "only"
         for rule in domain_rules
     )
 
-    generic_rules = _generic_rules(out)
+    generic_rules = _generic(records)
     assert {rule["pattern_kind"] for rule in generic_rules} == {
         "right_anchored",
         "substring",
@@ -276,27 +287,22 @@ def test_network_rules_emit_normalized_request_indexes(tmp_path: Path) -> None:
 
 
 def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> None:
-    out = _compile_sample(
-        tmp_path,
-        [
-            "||ads.example^",
-            "@@||allow.example^",
-            "||example.com/ad/path|$script,~third-party",
-            "wss://loader.*.com/ws^$websocket,third-party",
-            "/tracker[.]example/$third-party",
-            "plain-ad-token$~stylesheet",
-            "$popup,third-party,domain=example.com",
-            "badfilter-target",
-            "badfilter-target$badfilter",
-        ],
-    )
-
     from tools import adblock_compile as ac  # type: ignore
 
-    db_path = out / "request_lookup.sqlite"
-    counts = ac._write_request_lookup_index(
-        str(db_path),
-        str(out / "network_rules.jsonl"),
+    lines = [
+        "||ads.example^",
+        "@@||allow.example^",
+        "||example.com/ad/path|$script,~third-party",
+        "wss://loader.*.com/ws^$websocket,third-party",
+        "/tracker[.]example/$third-party",
+        "plain-ad-token$~stylesheet",
+        "$popup,third-party,domain=example.com",
+        "badfilter-target",
+        "badfilter-target$badfilter",
+    ]
+    db_path = tmp_path / "request_lookup.sqlite"
+    _per_list, counts = ac._write_request_lookup_index(
+        str(db_path), [("sample", lines)], ac._Aggregate()
     )
 
     conn = sqlite3.connect(str(db_path))
@@ -358,22 +364,21 @@ def test_request_lookup_sqlite_indexes_fast_candidate_shapes(tmp_path: Path) -> 
         conn.close()
 
 
-def test_request_lookup_skips_rules_disabled_by_badfilter(tmp_path: Path) -> None:
-    from tools import adblock_compile as ac  # type: ignore
+def test_request_indexes_skip_rules_disabled_by_badfilter(tmp_path: Path) -> None:
+    lines = [
+        "badfilter-target",
+        "badfilter-target$badfilter",
+        "@@||allow.example^",
+        "@@||allow.example^$badfilter",
+        "||kept.example^",
+    ]
+    out = _compile_sample(tmp_path, lines)
 
-    out = _compile_sample(
-        tmp_path,
-        [
-            "badfilter-target",
-            "badfilter-target$badfilter",
-            "@@||allow.example^",
-            "@@||allow.example^$badfilter",
-            "||kept.example^",
-        ],
-    )
+    assert _indexed_raws(out, "generic_index") == []
+    assert _indexed_raws(out, "domain_index") == ["||kept.example^"]
 
-    network_rules = _read_jsonl(out / "network_rules.jsonl")
-    assert {rule["raw"] for rule in network_rules} == {
+    # Disabled rules are still parsed (and counted); only the lookup omits them.
+    assert {rule["raw"] for rule in _parsed_rules(lines)} == {
         "badfilter-target",
         "badfilter-target$badfilter",
         "@@||allow.example^",
@@ -381,26 +386,16 @@ def test_request_lookup_skips_rules_disabled_by_badfilter(tmp_path: Path) -> Non
         "||kept.example^",
     }
 
-    db_path = out / "request_lookup.sqlite"
-    ac._write_request_lookup_index(str(db_path), str(out / "network_rules.jsonl"))
-    conn = sqlite3.connect(str(db_path))
-    try:
-        rows = conn.execute("SELECT raw FROM rules").fetchall()
-    finally:
-        conn.close()
-    assert [row[0] for row in rows] == ["||kept.example^"]
 
-
-def test_parser_preserves_option_only_and_csp_rules(tmp_path: Path) -> None:
-    out = _compile_sample(
-        tmp_path,
+def test_parser_preserves_option_only_and_csp_rules() -> None:
+    records = _parsed_rules(
         [
             "$popup,third-party,domain=example.com|~excluded.example",
             "$csp=script-src 'self' data: 'unsafe-inline' 'unsafe-hashes' 'unsafe-eval',domain=thumbs.pro",
         ],
     )
 
-    generic_rules = _generic_rules(out)
+    generic_rules = _generic(records)
     by_option = {rule["options_raw"].split("=", 1)[0]: rule for rule in generic_rules}
 
     popup_rule = by_option["popup,third-party,domain"]
@@ -418,9 +413,8 @@ def test_parser_preserves_option_only_and_csp_rules(tmp_path: Path) -> None:
     assert csp_rule["misc_options"] == {}
 
 
-def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
-    out = _compile_sample(
-        tmp_path,
+def test_parser_indexes_wildcard_hosts_as_host_patterns() -> None:
+    records = _parsed_rules(
         [
             "||google.*/pagead/lvz?$script",
             "||betvictor.com*&utm_campaign=$popup",
@@ -434,7 +428,7 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
         ],
     )
 
-    host_rules = _rules_of_kind(out, *_HOST_KINDS)
+    host_rules = _of_kind(records, *_HOST_KINDS)
     by_raw = {rule["raw"]: rule for rule in host_rules}
 
     wildcard = by_raw["||google.*/pagead/lvz?$script"]
@@ -459,7 +453,7 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
     assert exception["host_pattern"] == "sourcepointcmp.bloomberg.*"
     assert exception["domain_includes"] == ["bloomberg.co.jp", "bloomberg.com"]
 
-    domain_rules = _rules_of_kind(out, "domain_only")
+    domain_rules = _of_kind(records, "domain_only")
     domain_by_raw = {rule["raw"]: rule for rule in domain_rules}
 
     unspecified_ipv6 = domain_by_raw["||[::]^$third-party,domain=~[::1]|~localhost"]
@@ -498,14 +492,10 @@ def test_parser_indexes_wildcard_hosts_as_host_patterns(tmp_path: Path) -> None:
     assert duplicated_domain["domain_includes"] == ["fortune.com", "hsl.fi"]
 
 
-def test_cosmetic_rules_are_counted_by_marker_without_network_rules(
-    tmp_path: Path,
-) -> None:
+def test_cosmetic_rules_are_counted_by_marker_not_indexed(tmp_path: Path) -> None:
     from tools import adblock_compile as ac  # type: ignore
 
-    lists = tmp_path / "lists"
-    out = tmp_path / "compiled"
-    lists.mkdir()
+    agg = ac._Aggregate()
     lines = [
         "madewell.com##+js(cookie-remover, dns_cookie)",
         "example.com#@#+js(set, foo, noopFunc)",
@@ -514,39 +504,22 @@ def test_cosmetic_rules_are_counted_by_marker_without_network_rules(
         "podleze-piekielko.pl#$#abort-on-property-read cookieman",
         "example.com#@$#abort-on-property-read cookieman",
         "plain.example##.ad-unit",
-        "||ads.example^",
     ]
-    (lists / "easylist.txt").write_text(
-        "".join(f"{line}\n" for line in lines),
-        encoding="utf-8",
+    per_list, counts = ac._write_request_lookup_index(
+        str(tmp_path / "request_lookup.sqlite"), [("sample", lines)], agg
     )
 
-    rc = ac.main(
-        [
-            "--lists-dir",
-            str(lists),
-            "--out-dir",
-            str(out),
-            "--enabled-list",
-            "easylist",
-        ],
-    )
-
-    assert rc == 0
-    report = json.loads((out / "report.json").read_text(encoding="utf-8"))
-    assert report["counts"]["cosmetic_rules_total"] == 7
-    assert report["breakdowns"]["cosmetic_by_marker"] == {
+    assert agg.cosmetic_rules_total == 7
+    assert agg.cosmetic_rules_by_marker == {
         "##": 2,
-        "#$#": 1,
-        "#?#": 1,
         "#@#": 1,
-        "#@$#": 1,
+        "#?#": 1,
         "#@?#": 1,
+        "#$#": 1,
+        "#@$#": 1,
     }
-    assert report["files"] == {"request_lookup_sqlite": "request_lookup.sqlite"}
-    assert [rule["raw"] for rule in _read_jsonl(out / "network_rules.jsonl")] == [
-        "||ads.example^",
-    ]
+    assert per_list["sample"]["cosmetic"] == 7
+    assert counts["rules"] == 0
 
 
 def test_identical_inputs_compile_to_identical_artifact_digest(tmp_path: Path) -> None:

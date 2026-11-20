@@ -32,6 +32,8 @@ def _db_down_recovery_error() -> ProxyRecoveryStartupError:
 
 
 class _Runtime:
+    proxy_id = "edge"
+
     def __init__(self, recovery_outcomes: list[object]) -> None:
         self.recovery_outcomes = recovery_outcomes
         self.calls: list[str] = []
@@ -117,7 +119,7 @@ def test_cold_start_with_mysql_down_keeps_agent_alive_and_writes_nothing(
 def test_pending_startup_is_finished_by_the_sync_loop_once_mysql_returns(
     agent, monkeypatch
 ) -> None:
-    recovered = SimpleNamespace(proxy_id="edge", capture_required=False)
+    recovered = SimpleNamespace(status="test", proxy_id="edge", capture_required=False)
     runtime = _Runtime([_db_down_recovery_error(), recovered])
     monkeypatch.setattr(agent, "get_runtime", lambda: runtime)
     agent.start_agent()
@@ -163,7 +165,9 @@ def test_mysql_recovery_listener_wakes_both_loops(agent, monkeypatch) -> None:
 
     listeners = list(db._mysql_recovery_listeners)
     try:
-        runtime = _Runtime([SimpleNamespace(proxy_id="edge", capture_required=False)])
+        runtime = _Runtime(
+            [SimpleNamespace(status="test", proxy_id="edge", capture_required=False)]
+        )
         monkeypatch.setattr(agent, "get_runtime", lambda: runtime)
         agent.start_agent()
         heartbeat_wake = _loop_args("proxy-heartbeat")[3]
@@ -236,7 +240,7 @@ def test_agent_publishes_control_plane_readiness_only_after_startup(
 
     # A marker left by an earlier agent process must not count.
     mark_control_plane_ready()
-    recovered = SimpleNamespace(proxy_id="edge", capture_required=False)
+    recovered = SimpleNamespace(status="test", proxy_id="edge", capture_required=False)
     runtime = _Runtime([_db_down_recovery_error(), recovered])
     monkeypatch.setattr(agent, "get_runtime", lambda: runtime)
 

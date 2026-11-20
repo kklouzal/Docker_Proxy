@@ -8,10 +8,7 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from typing import Any
 
 from services.adblock_hosts import (
     adblock_host_suffix_candidates as _host_suffix_candidates,
@@ -26,6 +23,33 @@ _DEFAULT_RULE_CACHE_MAX = 50000
 _SQLITE_IN_CHUNK_SIZE = 500
 _DEFAULT_CLOSE_TIMEOUT_SECONDS = 5.0
 
+# Version of the request lookup database the compiler writes
+# (tools/adblock_compile.py) and this reader requires. Readers reject any other
+# version instead of guessing at its tables; the Admin UI rebuilds artifacts
+# whose report names another version.
+LOOKUP_SCHEMA_VERSION = "4"
+
+
+def lookup_schema_error(conn: sqlite3.Connection) -> str:
+    """Return why ``conn`` is not a supported lookup database, else ""."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM metadata WHERE key='schema_version'"
+        ).fetchone()
+    except sqlite3.DatabaseError:
+        row = None
+    version = str(row[0]) if row else ""
+    if version == LOOKUP_SCHEMA_VERSION:
+        return ""
+    return (
+        f"adblock request lookup schema version {version or '(missing)'} is not "
+        f"supported (expected {LOOKUP_SCHEMA_VERSION}); rebuild the adblock artifact."
+    )
+
+
+class AdblockLookupSchemaError(RuntimeError):
+    pass
+
 
 class AdblockArtifactCorruptError(RuntimeError):
     """A compiled rule's stored payload is unreadable or belongs to another rule.
@@ -36,12 +60,11 @@ class AdblockArtifactCorruptError(RuntimeError):
     """
 
 
-def _verified_row_payload(raw_payload: str, rule_id: str) -> dict[str, Any] | None:
-    """Return the embedded payload, None for a legacy id-less one, or raise.
+def _verified_row_payload(raw_payload: str, rule_id: str) -> dict[str, Any]:
+    """Return the rule's embedded payload or raise AdblockArtifactCorruptError.
 
-    An id-less object (legacy artifacts stored ``{}``) is not corrupt: the
-    caller resolves it through the legacy JSONL payloads. Unreadable JSON, a
-    non-object, or a payload naming another rule is corrupt.
+    Supported lookup schemas always embed the rule id in ``payload_json``; an
+    unreadable, non-object, id-less, or foreign payload is corrupt.
     """
     try:
         payload = json.loads(raw_payload)
@@ -52,8 +75,6 @@ def _verified_row_payload(raw_payload: str, rule_id: str) -> dict[str, Any] | No
         msg = f"Adblock rule {rule_id!r} payload_json is not an object."
         raise AdblockArtifactCorruptError(msg)
     payload_id = str(payload.get("id") or payload.get("rule_id") or "")
-    if not payload_id:
-        return None
     if payload_id != rule_id:
         msg = f"Adblock rule {rule_id!r} payload_json describes rule {payload_id!r}."
         raise AdblockArtifactCorruptError(msg)
@@ -110,22 +131,7 @@ def _url_literal_tokens(url: str) -> list[str]:
     return sorted(tokens)
 
 
-def _row_payload_json(row: sqlite3.Row) -> str:
-    try:
-        return str(row["payload_json"] or "")
-    except Exception:
-        return ""
-
-
-def _row_to_rule(
-    row: sqlite3.Row,
-    payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    if payload is None:
-        try:
-            payload = json.loads(_row_payload_json(row) or "{}")
-        except Exception:
-            payload = {}
+def _row_to_rule(row: sqlite3.Row) -> dict[str, Any]:
     rule = {
         "rule_id": row["rule_id"],
         "list_key": row["list_key"],
@@ -143,9 +149,11 @@ def _row_to_rule(
         "behavior_options": json.loads(row["behavior_options_json"] or "[]"),
         "value_options": json.loads(row["value_options_json"] or "{}"),
     }
-    if isinstance(payload, dict):
-        rule.update(payload)
-        rule["rule_id"] = row["rule_id"]
+    # payload_json carries the matcher fields that have no column of their own.
+    rule.update(
+        _verified_row_payload(row["payload_json"] or "", str(row["rule_id"] or ""))
+    )
+    rule["rule_id"] = row["rule_id"]
     return rule
 
 
@@ -187,21 +195,24 @@ class AdblockLookupIndex:
         self._connections: set[sqlite3.Connection] = set()
         self._connection_users: dict[sqlite3.Connection, int] = {}
         self._closed = False
-        self._payloads: dict[str, dict[str, Any]] | None = None
-        self._payloads_lock = threading.Lock()
         self._rule_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._rule_cache_lock = threading.Lock()
         self._host_patterns: dict[str, _HostPatternCandidate] | None = None
         self._host_patterns_lock = threading.Lock()
-        self._host_pattern_token_index_available: bool | None = None
         self._host_pattern_token_fallback_ids: set[str] | None = None
         self._regex_candidates: dict[str, _RegexCandidate] | None = None
         self._regex_candidates_lock = threading.Lock()
-        self._regex_token_index_available: bool | None = None
         self._regex_token_fallback_ids: set[str] | None = None
-        # The compiled index is immutable for the life of this lookup (a new
-        # artifact restarts the ICAP helper), so schema probes run once.
-        self._schema_probes: dict[str, bool] = {}
+
+    def check_schema(self) -> None:
+        """Raise ``AdblockLookupSchemaError`` unless the database is supported."""
+        conn = self._acquire_thread_connection()
+        try:
+            error = lookup_schema_error(conn)
+        finally:
+            self._release_thread_connection(conn)
+        if error:
+            raise AdblockLookupSchemaError(error)
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
@@ -324,18 +335,8 @@ class AdblockLookupIndex:
                     cached[rule_id] = rule
 
         loaded: dict[str, dict[str, Any]] = {}
-        for row in _rules_by_ids(
-            conn,
-            missing,
-        ):
-            payload: dict[str, Any] | None = None
-            rule_id = str(row["rule_id"] or "")
-            raw_payload = _row_payload_json(row)
-            if raw_payload:
-                payload = _verified_row_payload(raw_payload, rule_id)
-            if payload is None:
-                payload = self._payload_by_id().get(rule_id)
-            rule = _row_to_rule(row, payload=payload)
+        for row in _rules_by_ids(conn, missing):
+            rule = _row_to_rule(row)
             loaded[str(rule["rule_id"])] = rule
 
         if loaded and self.rule_cache_max:
@@ -346,43 +347,7 @@ class AdblockLookupIndex:
                 while len(self._rule_cache) > self.rule_cache_max:
                     self._rule_cache.popitem(last=False)
 
-        rules = list(cached.values()) + list(loaded.values())
-        return sorted(
-            rules,
-            key=lambda rule: (
-                0 if rule.get("action") == "allow" else 1,
-                str(rule.get("pattern_kind") or ""),
-                str(rule.get("raw") or ""),
-            ),
-        )
-
-    def _payload_by_id(self) -> dict[str, dict[str, Any]]:
-        if self._payloads is not None:
-            return self._payloads
-        with self._payloads_lock:
-            if self._payloads is not None:
-                return self._payloads
-            path = self.db_path.parent / "network_rules.jsonl"
-            payloads: dict[str, dict[str, Any]] = {}
-            try:
-                with path.open(encoding="utf-8", errors="replace") as handle:
-                    for line in handle:
-                        if not line.strip():
-                            continue
-                        rec = json.loads(line)
-                        rule_id = str(rec.get("id") or "")
-                        if rule_id:
-                            payloads[rule_id] = rec
-            except Exception:
-                payloads = {}
-            self._payloads = payloads
-            return payloads
-
-    def _schema_probe(self, key: str, probe: Callable[[], bool]) -> bool:
-        cached = self._schema_probes.get(key)
-        if cached is None:
-            cached = self._schema_probes[key] = bool(probe())
-        return cached
+        return sorted([*cached.values(), *loaded.values()], key=_rule_order)
 
     def _candidate_rule_ids(
         self,
@@ -408,39 +373,21 @@ class AdblockLookupIndex:
         )
 
         if host:
-            if self._schema_probe(
-                "host_index.pattern_kind",
-                lambda: _table_column_exists(conn, "host_index", "pattern_kind"),
-            ):
-                rule_ids.update(
-                    str(row["rule_id"])
-                    for row in conn.execute(
-                        "SELECT rule_id FROM host_index WHERE host=? AND pattern_kind='absolute_url'",
-                        (host,),
-                    )
+            rule_ids.update(
+                str(row["rule_id"])
+                for row in conn.execute(
+                    "SELECT rule_id FROM host_index WHERE host=? AND pattern_kind='absolute_url'",
+                    (host,),
                 )
-                rule_ids.update(
-                    str(row["rule_id"])
-                    for row in _query_by_values(
-                        conn,
-                        "SELECT rule_id FROM host_index WHERE pattern_kind='host_anchored' AND host IN ",
-                        host_suffixes,
-                    )
+            )
+            rule_ids.update(
+                str(row["rule_id"])
+                for row in _query_by_values(
+                    conn,
+                    "SELECT rule_id FROM host_index WHERE pattern_kind='host_anchored' AND host IN ",
+                    host_suffixes,
                 )
-            else:
-                # Legacy indexes did not distinguish exact absolute-URL hosts
-                # from host-anchored rules. Query every host suffix so the
-                # lookup remains a candidate superset; final matching removes
-                # the possible absolute-URL false positives.
-                rule_ids.update(
-                    str(row["rule_id"])
-                    for row in _query_by_values(
-                        conn,
-                        "SELECT rule_id FROM host_index WHERE host IN ",
-                        host_suffixes,
-                    )
-                )
-
+            )
             rule_ids.update(
                 self._matching_host_pattern_ids(conn, host, host_suffixes),
             )
@@ -463,16 +410,7 @@ class AdblockLookupIndex:
             )
         )
 
-        if self._schema_probe(
-            "resource_type_index",
-            lambda: _table_has_columns(
-                conn,
-                "resource_type_index",
-                {"rule_id", "resource_type", "negated"},
-            ),
-        ):
-            return _filter_by_resource_type(conn, rule_ids, resource_type)
-        return rule_ids
+        return _filter_by_resource_type(conn, rule_ids, resource_type)
 
     def _matching_host_pattern_ids(
         self,
@@ -488,19 +426,13 @@ class AdblockLookupIndex:
             host,
             candidates_by_id,
         )
-        candidates = (
-            candidates_by_id.values()
-            if candidate_ids is None
-            else (
-                candidates_by_id[rule_id]
-                for rule_id in candidate_ids
-                if rule_id in candidates_by_id
-            )
-        )
         return {
-            candidate.rule_id
-            for candidate in candidates
-            if _host_pattern_matches_candidate(host, host_suffixes, candidate)
+            rule_id
+            for rule_id in candidate_ids
+            if rule_id in candidates_by_id
+            and _host_pattern_matches_candidate(
+                host, host_suffixes, candidates_by_id[rule_id]
+            )
         }
 
     def _host_pattern_candidate_ids(
@@ -508,17 +440,7 @@ class AdblockLookupIndex:
         conn: sqlite3.Connection,
         host: str,
         candidates_by_id: dict[str, _HostPatternCandidate],
-    ) -> set[str] | None:
-        if self._host_pattern_token_index_available is False:
-            return None
-        if self._host_pattern_token_index_available is None:
-            self._host_pattern_token_index_available = _table_has_columns(
-                conn,
-                "host_pattern_token_index",
-                {"literal_key", "rule_id"},
-            )
-            if not self._host_pattern_token_index_available:
-                return None
+    ) -> set[str]:
         literal_tokens = _url_literal_tokens(host)
         rule_ids = {
             str(row["rule_id"])
@@ -559,18 +481,15 @@ class AdblockLookupIndex:
         with self._host_patterns_lock:
             if self._host_patterns is not None:
                 return self._host_patterns
-            host_pattern_query = (
-                "SELECT host_pattern, pattern_kind, rule_id FROM host_pattern_index"
-                if _table_column_exists(conn, "host_pattern_index", "pattern_kind")
-                else "SELECT host_pattern, '' AS pattern_kind, rule_id FROM host_pattern_index"
-            )
             self._host_patterns = {
                 str(row["rule_id"] or ""): _HostPatternCandidate(
                     str(row["host_pattern"] or ""),
                     str(row["pattern_kind"] or ""),
                     str(row["rule_id"] or ""),
                 )
-                for row in conn.execute(host_pattern_query)
+                for row in conn.execute(
+                    "SELECT host_pattern, pattern_kind, rule_id FROM host_pattern_index"
+                )
                 if row["host_pattern"] and row["rule_id"]
             }
             return self._host_patterns
@@ -585,13 +504,9 @@ class AdblockLookupIndex:
             return set()
         candidate_ids = self._regex_candidate_ids(conn, url, candidates_by_id)
         candidates = (
-            candidates_by_id.values()
-            if candidate_ids is None
-            else (
-                candidates_by_id[rule_id]
-                for rule_id in candidate_ids
-                if rule_id in candidates_by_id
-            )
+            candidates_by_id[rule_id]
+            for rule_id in candidate_ids
+            if rule_id in candidates_by_id
         )
         return {
             candidate.rule_id
@@ -604,17 +519,7 @@ class AdblockLookupIndex:
         conn: sqlite3.Connection,
         url: str,
         candidates_by_id: dict[str, _RegexCandidate],
-    ) -> set[str] | None:
-        if self._regex_token_index_available is False:
-            return None
-        if self._regex_token_index_available is None:
-            self._regex_token_index_available = _table_has_columns(
-                conn,
-                "regex_token_index",
-                {"literal_key", "rule_id"},
-            )
-            if not self._regex_token_index_available:
-                return None
+    ) -> set[str]:
         literal_tokens = _url_literal_tokens(url)
         rule_ids = {
             str(row["rule_id"])
@@ -681,31 +586,6 @@ def _query_by_values(
         placeholders = ",".join("?" for _ in chunk)
         rows.extend(conn.execute(sql_prefix + "(" + placeholders + ")", tuple(chunk)))
     return rows
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
-def _table_has_columns(
-    conn: sqlite3.Connection,
-    table_name: str,
-    required_columns: set[str],
-) -> bool:
-    if not _table_exists(conn, table_name):
-        return False
-    try:
-        columns = {
-            str(row["name"] or "")
-            for row in conn.execute(f"PRAGMA table_info({table_name})")
-        }
-    except sqlite3.DatabaseError:
-        return False
-    return required_columns.issubset(columns)
 
 
 def _token_keys_by_rule_id(
@@ -789,42 +669,36 @@ def _host_pattern_matches_candidate(
 ) -> bool:
     if candidate.pattern_kind == "absolute_url_pattern":
         return fnmatch.fnmatchcase(host, candidate.host_pattern)
-    # Legacy rows have no pattern_kind. Treating them as host-anchored may add
-    # candidates for absolute-URL rules, but cannot omit a true match.
+    # host_anchored_pattern: the pattern may match any parent domain.
     return any(
         fnmatch.fnmatchcase(host_suffix, candidate.host_pattern)
         for host_suffix in host_suffixes
     )
 
 
-def _table_column_exists(
-    conn: sqlite3.Connection,
-    table_name: str,
-    column_name: str,
-) -> bool:
-    try:
-        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    except sqlite3.DatabaseError:
-        return False
-    return any(str(row["name"] or "") == column_name for row in rows)
+def _rule_order(rule: dict[str, Any]) -> tuple[int, str, str, str, str]:
+    """Total candidate order: the first matching rule is attributed the decision.
+
+    The same rule text in two lists ties on (action, kind, raw); list key and
+    rule id break the tie so attribution never depends on the database's
+    physical row order or on which candidates were cached.
+    """
+    return (
+        0 if rule.get("action") == "allow" else 1,
+        str(rule.get("pattern_kind") or ""),
+        str(rule.get("raw") or ""),
+        str(rule.get("list_key") or ""),
+        str(rule.get("rule_id") or ""),
+    )
 
 
 def _rules_by_ids(conn: sqlite3.Connection, rule_ids: set[str]) -> list[sqlite3.Row]:
     if not rule_ids:
         return []
-    ordered_ids = sorted(rule_ids)
-    rows = _query_by_values(
+    return _query_by_values(
         conn,
         "SELECT * FROM rules WHERE rule_id IN ",
-        ordered_ids,
-    )
-    return sorted(
-        rows,
-        key=lambda row: (
-            0 if row["action"] == "allow" else 1,
-            str(row["pattern_kind"] or ""),
-            str(row["raw"] or ""),
-        ),
+        sorted(rule_ids),
     )
 
 

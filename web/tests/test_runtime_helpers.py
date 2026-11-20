@@ -421,3 +421,26 @@ def test_read_bounded_complete_lines_stops_at_end_offset(tmp_path) -> None:
     assert read_bounded_complete_lines(
         path, max_lines=10, max_bytes=100, end_offset=len(b"one\ntw")
     ) == ["one"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "default", "expected"),
+    [
+        (None, True, True),
+        ("", False, False),
+        (" Enabled ", False, True),
+        ("off", True, False),
+        ("garbage", True, True),
+        ("garbage", False, False),
+    ],
+)
+def test_env_bool_keeps_default_for_empty_or_unknown(
+    monkeypatch, raw, default, expected
+) -> None:
+    from services.runtime_helpers import env_bool  # type: ignore
+
+    if raw is None:
+        monkeypatch.delenv("DP_TEST_FLAG", raising=False)
+    else:
+        monkeypatch.setenv("DP_TEST_FLAG", raw)
+    assert env_bool("DP_TEST_FLAG", default=default) is expected

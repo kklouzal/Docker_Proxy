@@ -304,42 +304,10 @@ def test_adblock_event_insert_and_batch_use_guard_canonical_proxy(monkeypatch) -
         "raw": "raw-line",
     }
 
-    store._insert_event(conn, parsed)
-    assert conn.calls[-1][1][0] == "edge-new"
-
-    conn.calls.clear()
-    monkeypatch.setattr(store, "_get_proxy_meta", lambda *_args: "0")
     monkeypatch.setattr(store, "_set_proxy_meta_values", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(store, "_prune_events", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        module.os, "stat", lambda _path: SimpleNamespace(st_ino=7, st_size=128)
-    )
 
-    class FakePath:
-        def __init__(self, _path):
-            pass
-
-        def open(self, *_args, **_kwargs):
-            return self
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-        def seek(self, *_args):
-            return None
-
-        def read(self):
-            return b"111\t192.0.2.10\t198.51.100.10\tREQMOD\t/adblockreq\t200\tGET / HTTP/1.1\thttps://ads.example/\tHTTP/1.1 403 Forbidden\n"
-
-        def tell(self):
-            return 128
-
-    monkeypatch.setattr(module.pathlib, "Path", FakePath)
-
-    store._ingest_new_cicap_lines(conn)
+    store._write_cicap_batch(conn, [parsed], {})
 
     batch_insert = next(
         call for call in conn.calls if "INSERT IGNORE INTO adblock_events" in call[0]
@@ -385,41 +353,7 @@ def test_guarded_service_writes_reject_tombstoned_proxy(monkeypatch) -> None:
     monkeypatch.setattr(pol_store, "_connect", lambda: conn)
 
     with pytest.raises(ProxyLifecycleWriteError):
-        ad_store._insert_event(conn, {"url": "https://ads.example/"})
-
-    monkeypatch.setattr(
-        adblock_module.os,
-        "stat",
-        lambda _path: SimpleNamespace(st_ino=7, st_size=128),
-    )
-
-    class FakePath:
-        def __init__(self, _path):
-            pass
-
-        def open(self, *_args, **_kwargs):
-            return self
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-        def seek(self, *_args):
-            return None
-
-        def read(self):
-            return b"111\t192.0.2.10\t198.51.100.10\tREQMOD\t/adblockreq\t200\tGET / HTTP/1.1\thttps://ads.example/\tHTTP/1.1 403 Forbidden\n"
-
-        def tell(self):
-            return 128
-
-    monkeypatch.setattr(adblock_module.pathlib, "Path", FakePath)
-    monkeypatch.setattr(ad_store, "_get_proxy_meta", lambda *_args: "0")
-
-    with pytest.raises(ProxyLifecycleWriteError):
-        ad_store._ingest_new_cicap_lines(conn)
+        ad_store._write_cicap_batch(conn, [{"url": "https://ads.example/"}], {})
     with pytest.raises(ProxyLifecycleWriteError):
         pac_store.delete_backup_proxy(21)
     with pytest.raises(ProxyLifecycleWriteError):

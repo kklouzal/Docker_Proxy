@@ -4,6 +4,7 @@ import logging
 import signal
 import threading
 import time
+from typing import Any
 
 from services.db import (
     DATABASE_ERRORS,
@@ -130,10 +131,8 @@ def _run_once_logged(key: str, message: str, func) -> tuple[bool, object | None]
         return False, None
 
 
-def _sync_result_ok(result: object | None) -> bool:
-    return bool(
-        getattr(result, "get", lambda _key, _default=None: _default)("ok", False),
-    )
+def _sync_result_ok(result: dict[str, Any] | None) -> bool:
+    return bool(result is not None and result.get("ok", False))
 
 
 def _sync_loop(
@@ -144,13 +143,9 @@ def _sync_loop(
 ):
     if stop_event is not None and stop_event.is_set():
         return None
-    initial_capture_required = bool(
-        getattr(runtime, "recovery_initial_capture_required", False)
-    )
+    initial_capture_required = runtime.recovery_initial_capture_required
     if initial_capture_required:
-        ensure_startup_schema = getattr(runtime, "ensure_startup_schema", None)
-        if callable(ensure_startup_schema):
-            ensure_startup_schema()
+        runtime.ensure_startup_schema()
     else:
         runtime.start_background_tasks()
 
@@ -159,25 +154,15 @@ def _sync_loop(
     result = runtime.sync_from_db(force=force)
     if stop_event is not None and stop_event.is_set():
         return result
-    capture_recovery_bundle = getattr(runtime, "capture_recovery_bundle", None)
-    if (
-        callable(capture_recovery_bundle)
-        and bool(getattr(runtime, "recovery_initial_capture_required", False))
-        and _sync_result_ok(result)
-    ):
-        capture_recovery_bundle(
+    if runtime.recovery_initial_capture_required and _sync_result_ok(result):
+        runtime.capture_recovery_bundle(
             reason="startup_initial",
             required=True,
-            changed=bool(
-                getattr(result, "get", lambda _key, _default=None: _default)(
-                    "changed",
-                    False,
-                ),
-            ),
+            changed=bool(result.get("changed", False)),
         )
     if (
         initial_capture_required
-        and not bool(getattr(runtime, "recovery_initial_capture_required", False))
+        and not runtime.recovery_initial_capture_required
         and not (stop_event is not None and stop_event.is_set())
     ):
         runtime.start_background_tasks()
@@ -199,19 +184,15 @@ class _ControlPlaneStartup:
 
     def __init__(self, runtime) -> None:
         self.runtime = runtime
-        self.recovery: object = _RECOVERY_PENDING
+        self.recovery: Any = _RECOVERY_PENDING
         self.schema_ok = False
         self.complete = False
 
     def _recover(self) -> bool:
         if self.recovery is not _RECOVERY_PENDING:
             return True
-        run_startup_recovery = getattr(self.runtime, "run_startup_recovery", None)
-        if not callable(run_startup_recovery):
-            self.recovery = None
-            return True
         try:
-            self.recovery = run_startup_recovery()
+            self.recovery = self.runtime.run_startup_recovery()
         except Exception as exc:
             cause = _transient_control_plane_cause(exc)
             if cause is not None:
@@ -248,22 +229,14 @@ class _ControlPlaneStartup:
         if stop_event is not None and stop_event.is_set():
             return False
         startup_recovery = self.recovery
-        ensure_startup_schema = getattr(runtime, "ensure_startup_schema", None)
-        if (
-            not self.schema_ok
-            and callable(ensure_startup_schema)
-            and (
-                startup_recovery is None
-                or bool(getattr(startup_recovery, "capture_required", False))
-            )
-        ):
+        if not self.schema_ok and startup_recovery.capture_required:
             # A present bundle path runs schema inside recovery before adoption.
             # For brand-new/no-bundle proxies, migrate explicitly here before
             # normal registration/default refresh/apply can write DB state.
             self.schema_ok, _schema = _run_once_logged(
                 "proxy.agent.startup_schema",
                 "Initial startup schema migration failed",
-                ensure_startup_schema,
+                runtime.ensure_startup_schema,
             )
             if not self.schema_ok:
                 return False
@@ -301,12 +274,7 @@ class _ControlPlaneStartup:
             )
         if stop_event is not None and stop_event.is_set():
             return False
-        capture_recovery_bundle = getattr(runtime, "capture_recovery_bundle", None)
-        if (
-            callable(capture_recovery_bundle)
-            and startup_recovery is not None
-            and bool(getattr(startup_recovery, "capture_required", False))
-        ):
+        if startup_recovery.capture_required:
             if (
                 registered_ok
                 and bootstrap_ok
@@ -319,29 +287,23 @@ class _ControlPlaneStartup:
                 _run_once_logged(
                     "proxy.agent.initial_capture",
                     "Proxy recovery initial capture failed",
-                    lambda: capture_recovery_bundle(
+                    lambda: runtime.capture_recovery_bundle(
                         reason="startup_initial",
                         required=True,
-                        changed=bool(
-                            getattr(
-                                sync_result,
-                                "get",
-                                lambda _key, _default=None: _default,
-                            )("changed", False),
-                        ),
+                        changed=bool(sync_result.get("changed", False)),
                     ),
                 )
             else:
                 logger.warning(
                     "Proxy recovery initial capture deferred for proxy_id=%s because initial DB startup did not complete",
-                    getattr(startup_recovery, "proxy_id", ""),
+                    startup_recovery.proxy_id,
                 )
         self.complete = True
         _publish_control_plane_ready()
         logger.info(
             "Proxy control-plane startup completed: recovery=%s registered=%s "
             "bootstrap=%s initial_sync=%s",
-            getattr(startup_recovery, "status", "not_applicable"),
+            startup_recovery.status,
             registered_ok,
             bootstrap_ok,
             bool(sync_ok and _sync_result_ok(sync_result)),
@@ -389,9 +351,7 @@ def _heartbeat_cycle(runtime, startup: _ControlPlaneStartup):
         return runtime.heartbeat()
     # Until recovery adoption/schema complete, keep Squid and the ICAP helpers
     # self-healing locally but write nothing to the control plane.
-    local_self_heal = getattr(runtime, "run_local_self_heal", None)
-    if callable(local_self_heal):
-        local_self_heal(reason="heartbeat")
+    runtime.run_local_self_heal(reason="heartbeat")
     return None
 
 
@@ -407,7 +367,7 @@ def start_agent(*, stop_event: threading.Event | None = None) -> None:
         runtime = get_runtime()
         logger.info(
             "Proxy agent starting control-plane startup for proxy_id=%s",
-            getattr(runtime, "proxy_id", ""),
+            runtime.proxy_id,
         )
         if stop_event is not None and stop_event.is_set():
             return

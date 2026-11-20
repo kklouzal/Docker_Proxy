@@ -23,6 +23,12 @@ from services.clamd_protocol import (  # ruff: ignore[module-import-not-at-top-o
     ping_reply_is_pong,
     recv_terminated_reply,
 )
+from services.icap_protocol import (  # ruff: ignore[module-import-not-at-top-of-file]
+    ChunkHeader,
+    IcapWireSyntaxError,
+    parse_chunk_header,
+    validate_chunk_trailer,
+)
 
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled", "required", "strict"}
 FALSE_VALUES = {"0", "false", "no", "off", "disabled", "optional"}
@@ -34,7 +40,6 @@ DEFAULT_MAX_HEADER_BYTES = 64 * 1024
 MAX_ENCAPSULATED_OFFSET_DIGITS = 20
 MAX_HTTP_CONTENT_LENGTH_DIGITS = 20
 MAX_ICAP_PREVIEW_DIGITS = 20
-MAX_ICAP_CHUNK_SIZE_DIGITS = 16
 MAX_ICAP_HEADER_LINE_BYTES = 8192
 MAX_ICAP_TRAILER_LINE_BYTES = 8192
 MAX_ICAP_TRAILERS_BYTES = DEFAULT_MAX_HEADER_BYTES
@@ -48,14 +53,6 @@ _CHUNK_TCHARS = frozenset(
 )
 _ICAP_FIELD_NAME_TCHARS = _CHUNK_TCHARS
 _HTTP_FIELD_NAME_TCHARS = _CHUNK_TCHARS
-_FORBIDDEN_ICAP_TRAILER_FIELDS = {
-    b"allow",
-    b"content-length",
-    b"encapsulated",
-    b"preview",
-    b"trailer",
-    b"transfer-encoding",
-}
 _SINGLETON_ICAP_HEADERS = {
     "allow": "Allow",
     "encapsulated": "Encapsulated",
@@ -481,110 +478,18 @@ def _drain_chunked_body(
     return remainder
 
 
-def _skip_chunk_ows(line: bytes, index: int) -> int:
-    while index < len(line) and line[index] in _CHUNK_OWS:
-        index += 1
-    return index
-
-
-def _parse_chunk_quoted_string(line: bytes, index: int) -> int | None:
-    escaped = False
-    index += 1
-    while index < len(line):
-        ch = line[index]
-        if escaped:
-            if ch not in _CHUNK_OWS and not (0x21 <= ch <= 0x7E):
-                return None
-            escaped = False
-        elif ch == 0x5C:  # backslash
-            escaped = True
-        elif ch == 0x22:
-            return index + 1
-        elif ch < 0x20 or ch >= 0x7F:
-            return None
-        index += 1
-    return None
-
-
-def _parse_chunk_line(line: bytes) -> tuple[int, set[bytes]]:
-    if any(ch < 0x20 and ch not in _CHUNK_OWS for ch in line) or any(
-        ch >= 0x7F for ch in line
-    ):
-        message = "invalid ICAP chunk-size line"
-        raise IcapProtocolError(message)
-    first_extension = line.find(b";")
-    size_token = line if first_extension < 0 else line[:first_extension]
-    if (
-        not size_token
-        or len(size_token) > MAX_ICAP_CHUNK_SIZE_DIGITS
-        or any(ch not in b"0123456789abcdefABCDEF" for ch in size_token)
-    ):
-        message = "invalid ICAP chunk-size line"
-        raise IcapProtocolError(message)
-    extensions: set[bytes] = set()
-    index = first_extension
-    while index >= 0 and index < len(line):
-        if line[index] != 0x3B:  # semicolon
-            message = "invalid ICAP chunk extension"
-            raise IcapProtocolError(message)
-        index = _skip_chunk_ows(line, index + 1)
-        name_start = index
-        while index < len(line) and line[index] in _CHUNK_TCHARS:
-            index += 1
-        name = line[name_start:index]
-        if not name:
-            message = "invalid ICAP chunk extension"
-            raise IcapProtocolError(message)
-        index = _skip_chunk_ows(line, index)
-        separator = index < len(line) and line[index] == 0x3D  # equals
-        if separator:
-            index = _skip_chunk_ows(line, index + 1)
-            if index < len(line) and line[index] == 0x22:  # double quote
-                index = _parse_chunk_quoted_string(line, index) or -1
-            else:
-                value_start = index
-                while index < len(line) and line[index] in _CHUNK_TCHARS:
-                    index += 1
-                if index == value_start:
-                    message = "invalid ICAP chunk extension"
-                    raise IcapProtocolError(message)
-            if index < 0:
-                message = "invalid ICAP chunk extension"
-                raise IcapProtocolError(message)
-            index = _skip_chunk_ows(line, index)
-        if index < len(line) and line[index] != 0x3B:
-            message = "invalid ICAP chunk extension"
-            raise IcapProtocolError(message)
-        name = name.lower()
-        if name in extensions:
-            message = f"duplicate ICAP chunk extension: {name.decode('ascii')}"
-            raise IcapProtocolError(message)
-        if name == b"ieof" and separator:
-            message = "invalid ICAP preview ieof chunk extension"
-            raise IcapProtocolError(message)
-        extensions.add(name)
-    size = int(size_token, 16)
-    if size != 0 and b"ieof" in extensions:
-        message = "invalid ICAP preview ieof chunk extension"
-        raise IcapProtocolError(message)
-    return size, extensions
+def _parse_chunk_line(line: bytes) -> ChunkHeader:
+    try:
+        return parse_chunk_header(line)
+    except IcapWireSyntaxError as exc:
+        raise IcapProtocolError(str(exc)) from exc
 
 
 def _validate_chunk_trailer(line: bytes) -> None:
-    if b":" not in line:
-        message = "invalid ICAP chunk trailer"
-        raise IcapProtocolError(message)
-    field_name, field_value = line.split(b":", 1)
-    if not field_name or any(ch not in _CHUNK_TCHARS for ch in field_name):
-        message = "invalid ICAP chunk trailer field name"
-        raise IcapProtocolError(message)
-    field_name = field_name.lower()
-    if field_name in _FORBIDDEN_ICAP_TRAILER_FIELDS:
-        message = f"forbidden ICAP chunk trailer field: {field_name.decode('ascii')}"
-        raise IcapProtocolError(message)
-    if any(ch != 0x09 and (ch < 0x20 or ch >= 0x7F) for ch in field_value):
-        message = "invalid ICAP chunk trailer value"
-        raise IcapProtocolError(message)
+    try:
+        validate_chunk_trailer(line)
+    except IcapWireSyntaxError as exc:
+        raise IcapProtocolError(str(exc)) from exc
 
 
 def _read_chunk_trailers(sock: socket.socket, data: bytes) -> bytes:
@@ -642,11 +547,12 @@ def _read_chunked_body(
             message = "truncated ICAP chunk-size line"
             raise IcapProtocolError(message)
         line, data = data.split(CRLF, 1)
-        size, extensions = _parse_chunk_line(line)
+        chunk = _parse_chunk_line(line)
+        size = chunk.size
         if size == 0:
             data = _read_chunk_trailers(sock, data)
             if preview_pending:
-                if b"ieof" in extensions:
+                if chunk.has_ieof:
                     return bytes(body), data
                 if preview_size is not None and total < preview_size:
                     message = "ICAP preview terminated before Preview header size"

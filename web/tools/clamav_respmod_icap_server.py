@@ -31,6 +31,7 @@ if str(app_root) not in sys.path:
 
 from services.helper_runtime import HelperStats  # ruff: ignore[module-import-not-at-top-of-file]
 from services.icap_protocol import (  # ruff: ignore[module-import-not-at-top-of-file]
+    ChunkHeader,
     IcapWireSyntaxError,
     parse_chunk_header,
     parse_encapsulated_sections,
@@ -390,15 +391,13 @@ def _read_chunk_header(stream: BinaryIO, initial: bytes = b"") -> tuple[str, byt
     return line[:-2].decode("ascii", errors="replace"), remainder
 
 
-def _parse_icap_chunk_size(line: str) -> int:
-    size_token = line.split(";", 1)[0]
-    if len(size_token) > 16:
-        message = f"invalid ICAP chunk size: {line!r}"
-        raise IcapProtocolError(message)
+def _parse_icap_chunk_header(line: str) -> ChunkHeader:
     try:
-        return parse_chunk_header(line.encode("ascii")).size
+        return parse_chunk_header(line.encode("ascii"))
     except (UnicodeEncodeError, IcapWireSyntaxError) as exc:
-        if isinstance(exc, IcapWireSyntaxError) and str(exc).startswith("duplicate"):
+        if isinstance(exc, IcapWireSyntaxError) and (
+            str(exc) != "invalid ICAP chunk-size line"
+        ):
             message = str(exc)
         else:
             message = f"invalid ICAP chunk size: {line!r}"
@@ -415,22 +414,6 @@ def _drain_chunk_trailers(stream: BinaryIO, initial: bytes = b"") -> bytes:
             validate_chunk_trailer(line[:-2])
         except IcapWireSyntaxError as exc:
             raise IcapProtocolError(str(exc)) from exc
-
-
-def _chunk_has_ieof_extension(line: str) -> bool:
-    try:
-        parsed = parse_chunk_header(line.encode("ascii"))
-        if parsed.has_ieof and parsed.size != 0:
-            message = "invalid ICAP ieof chunk extension on nonzero chunk"
-            raise IcapProtocolError(message)
-        return parsed.has_ieof
-    except (UnicodeEncodeError, IcapWireSyntaxError) as exc:
-        message = (
-            str(exc)
-            if isinstance(exc, IcapWireSyntaxError)
-            else (f"invalid ICAP chunk size: {line!r}")
-        )
-        raise IcapProtocolError(message) from exc
 
 
 def read_icap_chunked_body(
@@ -467,8 +450,9 @@ def read_icap_chunked_body(
     post_preview_chunk_seen = False
     while True:
         line, remainder = _read_chunk_header(stream, remainder)
-        size = _parse_icap_chunk_size(line)
-        has_ieof = _chunk_has_ieof_extension(line)
+        chunk_header = _parse_icap_chunk_header(line)
+        size = chunk_header.size
+        has_ieof = chunk_header.has_ieof
         if size == 0:
             remainder = _drain_chunk_trailers(stream, remainder)
             if preview and not preview_terminator_seen and not has_ieof:

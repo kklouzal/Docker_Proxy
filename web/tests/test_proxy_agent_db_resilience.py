@@ -8,6 +8,31 @@ import pytest
 from .clock_patching import patch_module_clock
 
 
+class _AgentRuntime:
+    """No-op defaults for the ProxyRuntime surface the agent calls.
+
+    Tests override the calls they observe; the defaults model a proxy without
+    a recovery bundle (the real ``run_startup_recovery`` result for that case).
+    """
+
+    proxy_id = "edge-01"
+    recovery_initial_capture_required = False
+
+    def run_startup_recovery(self):
+        return SimpleNamespace(
+            status="missing_bundle", proxy_id=self.proxy_id, capture_required=True
+        )
+
+    def ensure_startup_schema(self) -> None:
+        return None
+
+    def capture_recovery_bundle(self, *, reason, required=False, changed=False):
+        return {"ok": True}
+
+    def run_local_self_heal(self, *, reason: str = "heartbeat") -> None:
+        return None
+
+
 def test_proxy_agent_startup_does_not_exit_when_initial_control_plane_db_calls_fail(
     monkeypatch,
 ) -> None:
@@ -16,7 +41,7 @@ def test_proxy_agent_startup_does_not_exit_when_initial_control_plane_db_calls_f
     calls: list[str] = []
     threads: list[tuple[str, object]] = []
 
-    class Runtime:
+    class Runtime(_AgentRuntime):
         def ensure_registered(self) -> NoReturn:
             calls.append("ensure_registered")
             msg = "mysql unavailable"
@@ -71,7 +96,7 @@ def test_proxy_agent_runtime_construction_failure_allows_one_successful_retry(
     runtime_attempts = 0
     thread_starts: list[str] = []
 
-    class Runtime:
+    class Runtime(_AgentRuntime):
         def ensure_registered(self) -> None:
             pass
 
@@ -147,7 +172,7 @@ def test_proxy_agent_thread_start_failure_retries_only_missing_loops(
     successful_starts: list[str] = []
     failure_raised = False
 
-    class Runtime:
+    class Runtime(_AgentRuntime):
         def ensure_registered(self) -> None:
             pass
 
@@ -203,12 +228,14 @@ def test_proxy_agent_thread_start_failure_retries_only_missing_loops(
     assert agent._started is True
 
 
-def test_proxy_agent_runs_schema_when_runtime_has_no_recovery_hook(monkeypatch) -> None:
+def test_proxy_agent_runs_schema_when_no_recovery_bundle_is_present(
+    monkeypatch,
+) -> None:
     from proxy import agent  # type: ignore
 
     calls: list[str] = []
 
-    class Runtime:
+    class Runtime(_AgentRuntime):
         def ensure_startup_schema(self) -> None:
             calls.append("schema")
 
@@ -260,10 +287,12 @@ def test_proxy_agent_skips_initial_db_mutation_when_missing_bundle_schema_deferr
     calls: list[str] = []
     threads: list[str] = []
 
-    class Runtime:
+    class Runtime(_AgentRuntime):
         def run_startup_recovery(self):
             calls.append("recovery")
-            return SimpleNamespace(proxy_id="edge-01", capture_required=True)
+            return SimpleNamespace(
+                status="test", proxy_id="edge-01", capture_required=True
+            )
 
         def ensure_startup_schema(self) -> None:
             calls.append("schema")
@@ -313,10 +342,12 @@ def test_proxy_agent_runs_recovery_before_initial_registration_and_required_capt
 
     calls: list[str] = []
 
-    class Runtime:
+    class Runtime(_AgentRuntime):
         def run_startup_recovery(self):
             calls.append("recovery")
-            return SimpleNamespace(proxy_id="edge-01", capture_required=True)
+            return SimpleNamespace(
+                status="test", proxy_id="edge-01", capture_required=True
+            )
 
         def ensure_startup_schema(self) -> None:
             calls.append("schema")
@@ -374,10 +405,12 @@ def test_proxy_agent_defers_initial_capture_when_initial_sync_result_failed(
 
     calls: list[str] = []
 
-    class Runtime:
+    class Runtime(_AgentRuntime):
         def run_startup_recovery(self):
             calls.append("recovery")
-            return SimpleNamespace(proxy_id="edge-01", capture_required=True)
+            return SimpleNamespace(
+                status="test", proxy_id="edge-01", capture_required=True
+            )
 
         def ensure_startup_schema(self) -> None:
             calls.append("schema")
@@ -432,7 +465,7 @@ def test_proxy_agent_retries_deferred_required_initial_capture_in_sync_loop() ->
 
     calls: list[str] = []
 
-    class Runtime:
+    class Runtime(_AgentRuntime):
         recovery_initial_capture_required = True
 
         def ensure_startup_schema(self) -> None:
@@ -470,7 +503,7 @@ def test_proxy_agent_required_capture_failure_stays_required_and_retryable() -> 
 
     calls: list[str] = []
 
-    class Runtime:
+    class Runtime(_AgentRuntime):
         recovery_initial_capture_required = True
         capture_attempts = 0
 
@@ -521,7 +554,7 @@ def test_proxy_agent_defers_required_capture_when_sync_result_failed() -> None:
 
     calls: list[str] = []
 
-    class Runtime:
+    class Runtime(_AgentRuntime):
         recovery_initial_capture_required = True
 
         def ensure_startup_schema(self) -> None:
@@ -549,7 +582,7 @@ def test_proxy_agent_sync_loop_retries_background_tasks_before_sync() -> None:
 
     calls: list[str] = []
 
-    class Runtime:
+    class Runtime(_AgentRuntime):
         def start_background_tasks(self) -> None:
             calls.append("background")
 
@@ -569,7 +602,7 @@ def test_proxy_agent_sync_loop_does_not_restart_background_after_shutdown() -> N
     calls: list[str] = []
     stop_event = agent.threading.Event()
 
-    class Runtime:
+    class Runtime(_AgentRuntime):
         recovery_initial_capture_required = True
 
         def ensure_startup_schema(self) -> None:

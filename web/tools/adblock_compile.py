@@ -10,7 +10,7 @@ import re
 import sqlite3
 import sys
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -25,6 +25,9 @@ from services.adblock_hosts import (  # ruff: ignore[module-import-not-at-top-of
 from services.adblock_hosts import (  # ruff: ignore[module-import-not-at-top-of-file]
     normalize_adblock_host as _normalize_host,
 )
+from services.adblock_lookup import (  # ruff: ignore[module-import-not-at-top-of-file]
+    LOOKUP_SCHEMA_VERSION,
+)
 from services.adblock_patterns import (  # ruff: ignore[module-import-not-at-top-of-file]
     abp_host_anchored_to_regex as _abp_host_anchored_to_regex,
 )
@@ -34,15 +37,16 @@ from services.adblock_patterns import (  # ruff: ignore[module-import-not-at-top
 from services.adblock_patterns import abp_to_regex as _abp_to_regex  # ruff: ignore[module-import-not-at-top-of-file]
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
 # ABP / EasyList parsing notes (minimal subset):
 # - Comments start with '!'
 # - Header line often: [Adblock Plus 2.0]
 # - Cosmetic rules contain selector separators like '##', '#@#', '#?#', '#$#'
 # - Exception rules start with '@@'
-# - Options are appended after '$' (network rules); request indexes preserve
-#   full parsed rules for SQLite-backed request-time lookup.
+# - Options are appended after '$' (network rules). Network rules are parsed
+#   straight into the SQLite request lookup; cosmetic rules are only counted
+#   (the ICAP helper filters requests, it does not rewrite pages).
 
 
 _COSMETIC_MARKERS = ("#@?#", "#@$#", "#@%#", "#@#", "#?#", "#$#", "#%#", "##")
@@ -50,18 +54,14 @@ _COSMETIC_MARKERS = ("#@?#", "#@$#", "#@%#", "#@#", "#?#", "#$#", "#%#", "##")
 
 @dataclass
 class _Aggregate:
-    network_rules_total: int
-    network_rules_by_kind: dict[str, int]
-    network_rules_with_options: int
-    network_rules_with_domain_opt: int
-    cosmetic_rules_total: int
-    cosmetic_rules_by_marker: dict[str, int]
-    option_key_counts: dict[str, int]
-    option_group_counts: dict[str, int]
-
-
-def _write_jsonl_rule(writer: Any, rule: dict[str, Any]) -> None:
-    writer.write(json.dumps(rule, ensure_ascii=False) + "\n")
+    network_rules_total: int = 0
+    network_rules_by_kind: dict[str, int] = field(default_factory=dict)
+    network_rules_with_options: int = 0
+    network_rules_with_domain_opt: int = 0
+    cosmetic_rules_total: int = 0
+    cosmetic_rules_by_marker: dict[str, int] = field(default_factory=dict)
+    option_key_counts: dict[str, int] = field(default_factory=dict)
+    option_group_counts: dict[str, int] = field(default_factory=dict)
 
 
 _KNOWN_TYPES: set[str] = {
@@ -141,7 +141,6 @@ def _canonical_option_key(key: str) -> str:
     return canonical[1:] if canonical.startswith("~") else f"~{canonical}"
 
 
-LOOKUP_SCHEMA_VERSION = "4"
 LOOKUP_INDEX_COUNT_TABLES = (
     "rules",
     "domain_index",
@@ -396,7 +395,7 @@ def _option_semantics(
 
 
 def _rule_id(list_key: str, raw_line: str, *, exception: bool) -> str:
-    # Stable id for cross-bucket joins without parsing all JSONL files.
+    # Stable id: identical list lines keep their id across rebuilds.
     h = hashlib.sha1()
     h.update((list_key or "").encode("utf-8", errors="ignore"))
     h.update(b"\n")
@@ -618,16 +617,52 @@ def _classify_network_pattern(pattern: str) -> tuple[str, dict[str, Any]]:
     return "substring", {"substring": p}
 
 
+def _cosmetic_marker(rule: str) -> str:
+    return next(marker for marker in _COSMETIC_MARKERS if marker in rule)
+
+
+def _split_network_rule(s: str) -> tuple[bool, str, str]:
+    """Return (exception, pattern, options) for a stripped network rule line."""
+    is_exception = s.startswith("@@")
+    if is_exception:
+        s = s[2:].strip()
+    pattern, opts = _split_options(s)
+    return is_exception, pattern, opts
+
+
+def _badfilter_disabled_keys(
+    sources: list[tuple[str, list[str]]],
+) -> set[tuple[str, str, str]]:
+    """Rules named by a ``$badfilter`` rule in any enabled list."""
+    disabled: set[tuple[str, str, str]] = set()
+    for _list_key, lines in sources:
+        for raw in lines:
+            s = (raw or "").strip()
+            if "badfilter" not in s or _is_comment_or_header(s) or _is_cosmetic(s):
+                continue
+            is_exception, pattern, opts = _split_network_rule(s)
+            _, opt_parsed = _parse_options(opts)
+            if "badfilter" in opt_parsed:
+                disabled.add(
+                    _badfilter_disable_key(
+                        {
+                            "action": "allow" if is_exception else "block",
+                            "pattern": pattern,
+                            "options": opt_parsed,
+                        },
+                    ),
+                )
+    return disabled
+
+
 def _compile_and_extract_all(
     *,
     lines: Iterable[str],
     list_key: str,
     agg: _Aggregate,
-    network_jsonl: Any,
+    add_network_rule: Callable[[dict[str, Any]], None],
 ) -> dict[str, int]:
-    # Single pass over a list file that counts every rule for the report and
-    # writes each normalized network rule to the JSONL stream that feeds the
-    # SQLite request lookup used by the runtime ICAP helper.
+    """Parse one list, passing each normalized network rule to ``add_network_rule``."""
     cosmetic = comments = empty = network_other = 0
     total = 0
     network_total = 0
@@ -639,28 +674,20 @@ def _compile_and_extract_all(
         if not s:
             empty += 1
             continue
-        if s.startswith("!") or (s.startswith("[") and s.endswith("]")):
+        if _is_comment_or_header(s):
             comments += 1
             continue
 
-        # Cosmetic rules are counted for the report; the request-time
-        # lookup only consumes network rules.
         if _is_cosmetic(s):
             cosmetic += 1
-            marker = next(m for m in _COSMETIC_MARKERS if m in s)
+            marker = _cosmetic_marker(s)
             agg.cosmetic_rules_total += 1
             agg.cosmetic_rules_by_marker[marker] = (
                 agg.cosmetic_rules_by_marker.get(marker, 0) + 1
             )
             continue
 
-        # Network rules.
-        is_exception = False
-        if s.startswith("@@"):
-            is_exception = True
-            s = s[2:].strip()
-
-        pattern, opts = _split_options(s)
+        is_exception, pattern, opts = _split_network_rule(s)
         opt_tokens, opt_parsed = _parse_options(opts)
         if opts:
             network_with_opts += 1
@@ -668,7 +695,6 @@ def _compile_and_extract_all(
         pattern_kind, extra = _classify_network_pattern(pattern)
         network_total += 1
 
-        # Update aggregate stats.
         agg.network_rules_total += 1
         agg.network_rules_by_kind[pattern_kind] = (
             agg.network_rules_by_kind.get(pattern_kind, 0) + 1
@@ -699,7 +725,6 @@ def _compile_and_extract_all(
         }:
             network_other += 1
 
-        # Persist full normalized rule for future use.
         rec: dict[str, Any] = {
             "kind": "network",
             "id": _rule_id(list_key, raw, exception=is_exception),
@@ -715,7 +740,7 @@ def _compile_and_extract_all(
         rec.update(_option_semantics(opt_tokens, opt_parsed))
         if extra:
             rec.update(extra)
-        _write_jsonl_rule(network_jsonl, rec)
+        add_network_rule(rec)
 
     return {
         "total": total,
@@ -905,16 +930,222 @@ def _create_lookup_indexes(conn: sqlite3.Connection) -> None:
     )
 
 
+# Matcher fields of a rule that have no rules-table column (adblock_decision
+# reads them from the candidate rule). Empty values are omitted: every reader
+# treats a missing field as empty. "id" lets older readers, which ignore a
+# payload naming another rule, keep using these artifacts.
+_RULE_PAYLOAD_FIELDS = (
+    "id",
+    "host",
+    "compiled_regex",
+    "suffix",
+    "regex",
+    "misc_options",
+    "domain_includes",
+    "domain_excludes",
+    "domain_include_patterns",
+    "domain_exclude_patterns",
+)
+
+
+def _rule_match_payload(rec: dict[str, Any]) -> dict[str, Any]:
+    return {key: rec[key] for key in _RULE_PAYLOAD_FIELDS if rec.get(key)}
+
+
+def _insert_lookup_rule(
+    conn: sqlite3.Connection,
+    rec: dict[str, Any],
+    counts: dict[str, int],
+) -> None:
+    rule_id = str(rec.get("id") or "")
+    if not rule_id:
+        return
+    action = str(rec.get("action") or "")
+    pattern_kind = str(rec.get("pattern_kind") or "")
+    inserted = conn.execute(
+        """
+            INSERT OR IGNORE INTO rules(
+                rule_id, list_key, action, exception, pattern_kind, raw,
+                pattern, options_json, resource_types_json,
+                excluded_resource_types_json, third_party,
+                behavior_options_json, value_options_json, payload_json
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+        (
+            rule_id,
+            str(rec.get("list_key") or ""),
+            action,
+            1 if rec.get("exception") else 0,
+            pattern_kind,
+            str(rec.get("raw") or ""),
+            str(rec.get("pattern") or ""),
+            _json_compact(rec.get("options") or {}),
+            _json_compact(rec.get("resource_types") or []),
+            _json_compact(rec.get("excluded_resource_types") or []),
+            str(rec.get("third_party") or "any"),
+            _json_compact(rec.get("behavior_options") or []),
+            _json_compact(rec.get("value_options") or {}),
+            _json_compact(_rule_match_payload(rec)),
+        ),
+    )
+    if not inserted.rowcount:
+        return
+    counts["rules"] += 1
+
+    if pattern_kind == "domain_only" and rec.get("host"):
+        conn.execute(
+            "INSERT OR IGNORE INTO domain_index(host, action, rule_id) VALUES(?, ?, ?)",
+            (str(rec.get("host") or ""), action, rule_id),
+        )
+        counts["domain_index"] += 1
+    elif pattern_kind in {
+        "absolute_url",
+        "host_anchored",
+    } and rec.get("host"):
+        conn.execute(
+            """
+                INSERT OR IGNORE INTO host_index(
+                    host, action, rule_id, pattern_kind,
+                    url_scheme_pattern, path_pattern, query_pattern,
+                    suffix_separator_prefix, suffix_separator_suffix
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            (
+                str(rec.get("host") or ""),
+                action,
+                rule_id,
+                pattern_kind,
+                str(rec.get("url_scheme_pattern") or ""),
+                str(rec.get("path_pattern") or ""),
+                str(rec.get("query_pattern") or ""),
+                1 if rec.get("suffix_separator_prefix") else 0,
+                1 if rec.get("suffix_separator_suffix") else 0,
+            ),
+        )
+        counts["host_index"] += 1
+    elif pattern_kind in {
+        "absolute_url_pattern",
+        "host_anchored_pattern",
+    } and rec.get("host_pattern"):
+        host_pattern = str(rec.get("host_pattern") or "")
+        conn.execute(
+            """
+                INSERT OR IGNORE INTO host_pattern_index(
+                    host_pattern, action, rule_id, pattern_kind,
+                    url_scheme_pattern, path_pattern, query_pattern
+                ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                host_pattern,
+                action,
+                rule_id,
+                pattern_kind,
+                str(rec.get("url_scheme_pattern") or ""),
+                str(rec.get("path_pattern") or ""),
+                str(rec.get("query_pattern") or ""),
+            ),
+        )
+        counts["host_pattern_index"] += 1
+        conn.execute(
+            "INSERT OR IGNORE INTO host_pattern_token_index(literal_key, rule_id) VALUES(?, ?)",
+            (_literal_lookup_key(host_pattern), rule_id),
+        )
+        counts["host_pattern_token_index"] += 1
+    elif pattern_kind == "regex":
+        regex = str(rec.get("regex") or "")
+        conn.execute(
+            "INSERT OR IGNORE INTO regex_index(action, rule_id, regex) VALUES(?, ?, ?)",
+            (action, rule_id, regex),
+        )
+        counts["regex_index"] += 1
+        conn.execute(
+            "INSERT OR IGNORE INTO regex_token_index(literal_key, rule_id) VALUES(?, ?)",
+            (_regex_lookup_key(regex), rule_id),
+        )
+        counts["regex_token_index"] += 1
+    elif pattern_kind != "empty":
+        conn.execute(
+            """
+                INSERT OR IGNORE INTO generic_index(
+                    literal_key, pattern_kind, action, rule_id
+                ) VALUES(?, ?, ?, ?)
+                """,
+            (
+                _literal_lookup_key(str(rec.get("pattern") or "")),
+                pattern_kind,
+                action,
+                rule_id,
+            ),
+        )
+        counts["generic_index"] += 1
+
+    options = rec.get("options") or {}
+    if isinstance(options, dict):
+        for key, value in options.items():
+            for item in _sqlite_scalar_values(value):
+                conn.execute(
+                    "INSERT OR IGNORE INTO option_index(option_key, option_value, rule_id) VALUES(?, ?, ?)",
+                    (str(key), item, rule_id),
+                )
+                counts["option_index"] += 1
+
+    for resource_type in rec.get("resource_types") or []:
+        conn.execute(
+            "INSERT OR IGNORE INTO resource_type_index(resource_type, negated, rule_id) VALUES(?, 0, ?)",
+            (str(resource_type), rule_id),
+        )
+        counts["resource_type_index"] += 1
+    for resource_type in rec.get("excluded_resource_types") or []:
+        conn.execute(
+            "INSERT OR IGNORE INTO resource_type_index(resource_type, negated, rule_id) VALUES(?, 1, ?)",
+            (str(resource_type), rule_id),
+        )
+        counts["resource_type_index"] += 1
+
+    for domain in rec.get("domain_includes") or []:
+        conn.execute(
+            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 0, 0, ?)",
+            (str(domain), rule_id),
+        )
+        counts["domain_scope_index"] += 1
+    for domain in rec.get("domain_excludes") or []:
+        conn.execute(
+            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 1, 0, ?)",
+            (str(domain), rule_id),
+        )
+        counts["domain_scope_index"] += 1
+    for domain in rec.get("domain_include_patterns") or []:
+        conn.execute(
+            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 0, 1, ?)",
+            (str(domain), rule_id),
+        )
+        counts["domain_scope_index"] += 1
+    for domain in rec.get("domain_exclude_patterns") or []:
+        conn.execute(
+            "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 1, 1, ?)",
+            (str(domain), rule_id),
+        )
+        counts["domain_scope_index"] += 1
+
+
 def _write_request_lookup_index(
     sqlite_path: str,
-    network_jsonl_path: str,
-) -> dict[str, int]:
+    sources: list[tuple[str, list[str]]],
+    agg: _Aggregate,
+) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
+    """Compile ``(list_key, lines)`` sources straight into the lookup database.
+
+    Rules stream into SQLite in source order (deterministic file bytes);
+    ``$badfilter`` targets are collected from every source first. Returns the
+    per-list parse counts and the lookup table counts.
+    """
     path = pathlib.Path(sqlite_path)
     path.parent.mkdir(exist_ok=True, parents=True)
     with suppress(FileNotFoundError):
         path.unlink()
     conn = sqlite3.connect(str(path))
     counts: dict[str, int] = dict.fromkeys(LOOKUP_INDEX_COUNT_TABLES, 0)
+    per_list_counts: dict[str, dict[str, int]] = {}
     try:
         _create_lookup_schema(conn)
         conn.execute(
@@ -925,194 +1156,27 @@ def _write_request_lookup_index(
             "INSERT INTO metadata(key, value) VALUES(?, ?)",
             ("lookup_strategy", LOOKUP_STRATEGY),
         )
-        with pathlib.Path(network_jsonl_path).open(
-            encoding="utf-8",
-            errors="replace",
-        ) as handle:
-            records = [json.loads(line) for line in handle if line.strip()]
-        disabled_by_badfilter = {
-            _badfilter_disable_key(rec)
-            for rec in records
-            if "badfilter" in set(rec.get("behavior_options") or [])
-        }
+        disabled_by_badfilter = _badfilter_disabled_keys(sources)
         skipped_badfilter = 0
+
+        def add_network_rule(rec: dict[str, Any]) -> None:
+            nonlocal skipped_badfilter
+            if (
+                "badfilter" in set(rec.get("behavior_options") or [])
+                or _badfilter_disable_key(rec) in disabled_by_badfilter
+            ):
+                skipped_badfilter += 1
+                return
+            _insert_lookup_rule(conn, rec, counts)
+
         with conn:
-            for rec in records:
-                if (
-                    "badfilter" in set(rec.get("behavior_options") or [])
-                    or _badfilter_disable_key(rec) in disabled_by_badfilter
-                ):
-                    skipped_badfilter += 1
-                    continue
-                rule_id = str(rec.get("id") or "")
-                if not rule_id:
-                    continue
-                action = str(rec.get("action") or "")
-                pattern_kind = str(rec.get("pattern_kind") or "")
-                inserted = conn.execute(
-                    """
-                        INSERT OR IGNORE INTO rules(
-                            rule_id, list_key, action, exception, pattern_kind, raw,
-                            pattern, options_json, resource_types_json,
-                            excluded_resource_types_json, third_party,
-                            behavior_options_json, value_options_json, payload_json
-                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                    (
-                        rule_id,
-                        str(rec.get("list_key") or ""),
-                        action,
-                        1 if rec.get("exception") else 0,
-                        pattern_kind,
-                        str(rec.get("raw") or ""),
-                        str(rec.get("pattern") or ""),
-                        _json_compact(rec.get("options") or {}),
-                        _json_compact(rec.get("resource_types") or []),
-                        _json_compact(rec.get("excluded_resource_types") or []),
-                        str(rec.get("third_party") or "any"),
-                        _json_compact(rec.get("behavior_options") or []),
-                        _json_compact(rec.get("value_options") or {}),
-                        _json_compact(rec),
-                    ),
+            for list_key, lines in sources:
+                per_list_counts[list_key] = _compile_and_extract_all(
+                    lines=lines,
+                    list_key=list_key,
+                    agg=agg,
+                    add_network_rule=add_network_rule,
                 )
-                if not inserted.rowcount:
-                    continue
-                counts["rules"] += 1
-
-                if pattern_kind == "domain_only" and rec.get("host"):
-                    conn.execute(
-                        "INSERT OR IGNORE INTO domain_index(host, action, rule_id) VALUES(?, ?, ?)",
-                        (str(rec.get("host") or ""), action, rule_id),
-                    )
-                    counts["domain_index"] += 1
-                elif pattern_kind in {
-                    "absolute_url",
-                    "host_anchored",
-                } and rec.get("host"):
-                    conn.execute(
-                        """
-                            INSERT OR IGNORE INTO host_index(
-                                host, action, rule_id, pattern_kind,
-                                url_scheme_pattern, path_pattern, query_pattern,
-                                suffix_separator_prefix, suffix_separator_suffix
-                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                        (
-                            str(rec.get("host") or ""),
-                            action,
-                            rule_id,
-                            pattern_kind,
-                            str(rec.get("url_scheme_pattern") or ""),
-                            str(rec.get("path_pattern") or ""),
-                            str(rec.get("query_pattern") or ""),
-                            1 if rec.get("suffix_separator_prefix") else 0,
-                            1 if rec.get("suffix_separator_suffix") else 0,
-                        ),
-                    )
-                    counts["host_index"] += 1
-                elif pattern_kind in {
-                    "absolute_url_pattern",
-                    "host_anchored_pattern",
-                } and rec.get("host_pattern"):
-                    host_pattern = str(rec.get("host_pattern") or "")
-                    conn.execute(
-                        """
-                            INSERT OR IGNORE INTO host_pattern_index(
-                                host_pattern, action, rule_id, pattern_kind,
-                                url_scheme_pattern, path_pattern, query_pattern
-                            ) VALUES(?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            host_pattern,
-                            action,
-                            rule_id,
-                            pattern_kind,
-                            str(rec.get("url_scheme_pattern") or ""),
-                            str(rec.get("path_pattern") or ""),
-                            str(rec.get("query_pattern") or ""),
-                        ),
-                    )
-                    counts["host_pattern_index"] += 1
-                    conn.execute(
-                        "INSERT OR IGNORE INTO host_pattern_token_index(literal_key, rule_id) VALUES(?, ?)",
-                        (_literal_lookup_key(host_pattern), rule_id),
-                    )
-                    counts["host_pattern_token_index"] += 1
-                elif pattern_kind == "regex":
-                    regex = str(rec.get("regex") or "")
-                    conn.execute(
-                        "INSERT OR IGNORE INTO regex_index(action, rule_id, regex) VALUES(?, ?, ?)",
-                        (action, rule_id, regex),
-                    )
-                    counts["regex_index"] += 1
-                    conn.execute(
-                        "INSERT OR IGNORE INTO regex_token_index(literal_key, rule_id) VALUES(?, ?)",
-                        (_regex_lookup_key(regex), rule_id),
-                    )
-                    counts["regex_token_index"] += 1
-                elif pattern_kind != "empty":
-                    conn.execute(
-                        """
-                            INSERT OR IGNORE INTO generic_index(
-                                literal_key, pattern_kind, action, rule_id
-                            ) VALUES(?, ?, ?, ?)
-                            """,
-                        (
-                            _literal_lookup_key(str(rec.get("pattern") or "")),
-                            pattern_kind,
-                            action,
-                            rule_id,
-                        ),
-                    )
-                    counts["generic_index"] += 1
-
-                options = rec.get("options") or {}
-                if isinstance(options, dict):
-                    for key, value in options.items():
-                        for item in _sqlite_scalar_values(value):
-                            conn.execute(
-                                "INSERT OR IGNORE INTO option_index(option_key, option_value, rule_id) VALUES(?, ?, ?)",
-                                (str(key), item, rule_id),
-                            )
-                            counts["option_index"] += 1
-
-                for resource_type in rec.get("resource_types") or []:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO resource_type_index(resource_type, negated, rule_id) VALUES(?, 0, ?)",
-                        (str(resource_type), rule_id),
-                    )
-                    counts["resource_type_index"] += 1
-                for resource_type in rec.get("excluded_resource_types") or []:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO resource_type_index(resource_type, negated, rule_id) VALUES(?, 1, ?)",
-                        (str(resource_type), rule_id),
-                    )
-                    counts["resource_type_index"] += 1
-
-                for domain in rec.get("domain_includes") or []:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 0, 0, ?)",
-                        (str(domain), rule_id),
-                    )
-                    counts["domain_scope_index"] += 1
-                for domain in rec.get("domain_excludes") or []:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 1, 0, ?)",
-                        (str(domain), rule_id),
-                    )
-                    counts["domain_scope_index"] += 1
-                for domain in rec.get("domain_include_patterns") or []:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 0, 1, ?)",
-                        (str(domain), rule_id),
-                    )
-                    counts["domain_scope_index"] += 1
-                for domain in rec.get("domain_exclude_patterns") or []:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO domain_scope_index(domain, excluded, pattern, rule_id) VALUES(?, 1, 1, ?)",
-                        (str(domain), rule_id),
-                    )
-                    counts["domain_scope_index"] += 1
 
         _create_lookup_indexes(conn)
         count_queries = {
@@ -1142,19 +1206,14 @@ def _write_request_lookup_index(
         )
         conn.execute("PRAGMA optimize")
         conn.commit()
+        # Rules arrive in source order but are keyed by a hash, which leaves
+        # half-full B-tree pages; rebuilding packs them (deterministically,
+        # -9% file size). A file temp store keeps the rebuild out of memory.
+        conn.execute("PRAGMA temp_store=FILE")
+        conn.execute("VACUUM")
     finally:
         conn.close()
-    return counts
-
-
-def _artifact_relative_paths(value: Any, out_dir: str) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _artifact_relative_paths(item, out_dir) for key, item in value.items()
-        }
-    if isinstance(value, str):
-        return os.path.relpath(value, out_dir)
-    return value
+    return per_list_counts, counts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1220,48 +1279,19 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = str(ns.out_dir)
     pathlib.Path(out_dir).mkdir(exist_ok=True, parents=True)
 
-    # The normalized network-rule stream is the build-time input of the
-    # request lookup database; only that database ships in the artifact.
-    network_jsonl_path = os.path.join(out_dir, "network_rules.jsonl")
-    request_lookup_sqlite_path = os.path.join(out_dir, "request_lookup.sqlite")
+    sources: list[tuple[str, list[str]]] = []
+    for key, path in enabled_paths:
+        try:
+            with pathlib.Path(path).open(encoding="utf-8", errors="replace") as f:
+                sources.append((key, f.read().splitlines()))
+        except Exception:
+            continue
 
-    agg = _Aggregate(
-        network_rules_total=0,
-        network_rules_by_kind={},
-        network_rules_with_options=0,
-        network_rules_with_domain_opt=0,
-        cosmetic_rules_total=0,
-        cosmetic_rules_by_marker={},
-        option_key_counts={},
-        option_group_counts={},
-    )
-
-    per_list_counts: dict[str, dict[str, int]] = {}
-
-    with pathlib.Path(network_jsonl_path).open(
-        "w",
-        encoding="utf-8",
-        newline="\n",
-    ) as network_jsonl:
-        for key, path in enabled_paths:
-            try:
-                with pathlib.Path(path).open(encoding="utf-8", errors="replace") as f:
-                    lines = f.read().splitlines()
-            except FileNotFoundError:
-                continue
-            except Exception:
-                continue
-
-            per_list_counts[key] = _compile_and_extract_all(
-                lines=lines,
-                list_key=key,
-                agg=agg,
-                network_jsonl=network_jsonl,
-            )
-
-    lookup_index_counts = _write_request_lookup_index(
-        request_lookup_sqlite_path,
-        network_jsonl_path,
+    agg = _Aggregate()
+    per_list_counts, lookup_index_counts = _write_request_lookup_index(
+        os.path.join(out_dir, "request_lookup.sqlite"),
+        sources,
+        agg,
     )
 
     merged_counts = {
@@ -1271,7 +1301,11 @@ def main(argv: list[str] | None = None) -> int:
         "cosmetic_rules_total": int(agg.cosmetic_rules_total),
     }
 
+    # report.json is part of the published artifact and its SHA-256: it names
+    # artifact-relative files only, so identical inputs produce an identical
+    # artifact and revision reuse works.
     report = {
+        "lookup_schema_version": LOOKUP_SCHEMA_VERSION,
         "enabled_lists": [k for k, _ in enabled_paths if k in per_list_counts],
         "counts": merged_counts,
         "breakdowns": {
@@ -1296,15 +1330,11 @@ def main(argv: list[str] | None = None) -> int:
             "lookup_index_counts": lookup_index_counts,
         },
         "per_list": per_list_counts,
-        "files": {"request_lookup_sqlite": request_lookup_sqlite_path},
+        "files": {"request_lookup_sqlite": "request_lookup.sqlite"},
         "notes": {
-            "request_lookup_sqlite": "request_lookup.sqlite is the fast lookup substrate: indexed domain suffix, exact host, host-pattern, regex, generic literal-key, option, resource-type, and domain-scope tables joined to full rule payloads by rule_id.",
+            "request_lookup_sqlite": "request_lookup.sqlite is the fast lookup substrate: indexed domain suffix, exact host, host-pattern, regex, generic literal-key, option, resource-type, and domain-scope tables joined to the rules table by rule_id.",
         },
     }
-    # report.json is part of the published artifact and its SHA-256. Record
-    # artifact-relative names, not the (random temporary) build directory, so
-    # identical inputs produce an identical artifact and revision reuse works.
-    report["files"] = _artifact_relative_paths(report["files"], out_dir)
     with pathlib.Path(os.path.join(out_dir, "report.json")).open(
         "w",
         encoding="utf-8",

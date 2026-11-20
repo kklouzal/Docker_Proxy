@@ -462,7 +462,10 @@ def test_html_security_headers_are_present(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["X-Frame-Options"] == "SAMEORIGIN"
-    assert "default-src" in response.headers.get("Content-Security-Policy", "")
+    csp = response.headers.get("Content-Security-Policy", "")
+    assert "default-src" in csp
+    # Scripts come only from static files; no inline script is allowed.
+    assert "script-src 'self';" in csp
 
 
 def test_index_uses_cold_cache_safe_proxy_health_timeout(monkeypatch, tmp_path) -> None:

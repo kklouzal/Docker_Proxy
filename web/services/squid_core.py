@@ -51,14 +51,9 @@ _SAFE_CLAMD_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _ADBLOCK_ICAP_METHODS = "GET HEAD POST OPTIONS PUT PATCH DELETE"
 
 
-def _env_flag(name: str, default: bool) -> bool:
-    return security_env_bool(name, default=default)
-
-
 def _clamav_required_from_env() -> bool:
-    return _env_flag("CLAMAV_REQUIRED", False) or _env_flag(
-        "FILE_SECURITY_AV_REQUIRED",
-        False,
+    return security_env_bool("CLAMAV_REQUIRED", default=False) or security_env_bool(
+        "FILE_SECURITY_AV_REQUIRED", default=False
     )
 
 
@@ -293,7 +288,9 @@ class SquidController:
         # state disabled; runtime reconciliation and UI apply paths overwrite
         # this from persisted adblock_settings, while an explicit env opt-in is
         # still honored.
-        self._adblock_routing_enabled = _env_flag("ADBLOCK_ENABLED", False)
+        self._adblock_routing_enabled = security_env_bool(
+            "ADBLOCK_ENABLED", default=False
+        )
 
     def _transaction_runtime_paths(self, candidate_config: str = "") -> list[Path]:
         current_config = self.get_current_config()
@@ -1101,7 +1098,9 @@ stdout_logfile_maxbytes=0
             extract_clamav_options(config_text or ""),
         )
         av_bypass = "on" if clamav_fail_open(clamav_options) else "off"
-        adblock_bypass = "off" if _env_flag("ADBLOCK_ICAP_REQUIRED", False) else "on"
+        adblock_bypass = (
+            "off" if security_env_bool("ADBLOCK_ICAP_REQUIRED", default=False) else "on"
+        )
         file_security_policy = render_file_security_policy_config(
             clamav_options
         ).strip()

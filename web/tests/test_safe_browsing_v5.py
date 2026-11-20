@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import threading
+from types import SimpleNamespace
 from typing import NoReturn
 
 import pytest
@@ -20,6 +21,15 @@ from services.safe_browsing_v5 import (
 )
 
 from .clock_patching import patch_module_clock
+
+
+@pytest.fixture
+def _max_update_backoff_jitter(monkeypatch) -> None:
+    """Pin the back-off jitter: a first failure then waits exactly 30 min."""
+    monkeypatch.setattr(safe_browsing_v5.random, "random", lambda: 1.0)
+
+
+pytestmark = pytest.mark.usefixtures("_max_update_backoff_jitter")
 
 
 def _ignore_cache_response(_prefix, _response, _cache_duration, local_lists=None):
@@ -1969,7 +1979,7 @@ def test_safe_browsing_invalid_removal_without_checksum_requires_full_refresh(
 
     assert ok is False
     assert "full refresh required" in error
-    assert wait == 1800
+    assert wait == 0  # the updater applies its failure back-off
     assert conn.persisted_prefixes == set()
     assert conn.persisted_version is None
     assert conn.rollback_count == 1
@@ -2410,7 +2420,7 @@ def test_safe_browsing_update_lists_rejects_malformed_batch_without_mutation(
 
     assert ok is False
     assert error_fragment in error
-    assert wait == 1800
+    assert wait == 0  # the updater applies its failure back-off
     assert conn.persisted_applied == []
 
 
@@ -2449,7 +2459,7 @@ def test_safe_browsing_update_lists_rejects_invalid_batch_names_atomically(
 
     assert ok is False
     assert error_fragment in error
-    assert wait == 1800
+    assert wait == 0  # the updater applies its failure back-off
     assert conn.persisted_applied == []
 
 
@@ -2537,7 +2547,7 @@ def test_safe_browsing_update_lists_rejects_duplicate_requested_names(
 
     assert ok is False
     assert "duplicate" in error
-    assert wait == 1800
+    assert wait == 0  # the updater applies its failure back-off
     assert conn.persisted_applied == []
     assert calls == []
 
@@ -2773,7 +2783,7 @@ def test_safe_browsing_update_lists_redacts_api_key_from_url_errors(
     )
 
     assert ok is False
-    assert wait == 1800
+    assert wait == 0  # the updater applies its failure back-off
     assert "AIzaSECRET" not in err
     assert "safebrowsing.googleapis.com/v5/hashes:search" in err
     assert "?key=[redacted]" in err
@@ -3079,3 +3089,100 @@ def test_safe_browsing_caches_empty_hash_search_answers(monkeypatch) -> None:
     clock["now"] += 301
     checker.check_url("http://collision.example/d")
     assert len(remote_calls) == 3
+
+
+def test_safe_browsing_checker_searches_all_matched_prefixes_in_one_request(
+    monkeypatch,
+) -> None:
+    import base64
+
+    checker = SafeBrowsingLocalChecker(api_key="test")
+    url = "http://a.b.bad.example/path/page.html"
+    hashes = expression_hashes(url)
+    first, second = hashes[0], hashes[-1]
+    assert first[:4] != second[:4]
+    matched = {first[:4], second[:4]}
+    calls: list[tuple[bytes, ...]] = []
+
+    monkeypatch.setattr(
+        checker,
+        "_local_lists_for_prefix",
+        lambda prefix: ("mw-4b",) if prefix in matched else (),
+    )
+    monkeypatch.setattr(
+        checker, "_cache_lookup", lambda prefix, full_hashes, local_lists=None: None
+    )
+    monkeypatch.setattr(checker, "_cache_search_response", lambda *_a, **_k: None)
+
+    def search_hashes(api_key, prefixes):
+        calls.append(tuple(prefixes))
+        return (
+            [
+                {
+                    "fullHash": base64.urlsafe_b64encode(second).decode(),
+                    "fullHashDetails": [{"threatType": "MALWARE"}],
+                }
+            ],
+            300,
+        )
+
+    monkeypatch.setattr(checker._store, "search_hashes", search_hashes)
+
+    verdict = checker.check_url(url)
+
+    assert verdict.verdict == "unsafe"
+    assert verdict.threat_type == "MALWARE"
+    assert calls == [(first[:4], second[:4])]
+    # Each prefix keeps its own slice of the response for later checks.
+    assert checker._cached_search_response(first[:4])[0] == []
+    assert len(checker._cached_search_response(second[:4])[0]) == 1
+
+
+@pytest.mark.parametrize(
+    ("failures", "rand", "expected"),
+    [
+        (1, 0.0, 15 * 60),
+        (1, 0.5, 22 * 60 + 30),
+        (2, 0.0, 30 * 60),
+        (3, 1.0, 120 * 60),
+        (7, 0.0, 16 * 60 * 60),
+        (8, 0.0, 24 * 60 * 60),
+        (40, 1.0, 24 * 60 * 60),
+    ],
+)
+def test_safe_browsing_update_backoff_follows_request_frequency_rules(
+    failures, rand, expected
+) -> None:
+    assert safe_browsing_v5.update_failure_backoff_seconds(failures, rand) == expected
+
+
+def test_safe_browsing_updater_backs_off_exponentially_and_resets(monkeypatch) -> None:
+    state = {"next_run_ts": 0, "now": 1000}
+    results = iter([False, False, True, False])
+    store = SafeBrowsingStore()
+    persisted: list[int] = []
+
+    def set_status(ok, error, next_run_ts):
+        state["next_run_ts"] = next_run_ts
+        persisted.append(next_run_ts - state["now"])
+
+    def get_settings():
+        return SimpleNamespace(
+            enabled=True,
+            api_key="key",
+            next_run_ts=state["next_run_ts"],
+            last_error="",
+        )
+
+    monkeypatch.setattr(safe_browsing_v5, "_now", lambda: state["now"])
+    monkeypatch.setattr(
+        store,
+        "update_lists",
+        lambda _settings: (True, "", 600) if next(results) else (False, "down", 0),
+    )
+    for _ in range(4):
+        store._run_updater_once(get_settings, set_status)
+        state["now"] = state["next_run_ts"]
+
+    # Each attempt persists its reservation, then its outcome.
+    assert persisted[1::2] == [30 * 60, 60 * 60, 600, 30 * 60]

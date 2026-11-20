@@ -17,6 +17,7 @@ from urllib.parse import unquote, urlparse
 import pymysql  # type: ignore
 
 from services.logutil import log_exception_throttled
+from services.runtime_helpers import env_bool
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
 from services.sql_identifiers import quote_mysql_identifier
@@ -1097,11 +1098,6 @@ def _return_connection(cfg: DatabaseConfig, native: Any) -> None:
         _pool_condition.notify_all()
 
 
-def _env_bool(name: str, default: str = "0") -> bool:
-    v = (os.environ.get(name, default) or "").strip().lower()
-    return v in {"1", "true", "yes", "on"}
-
-
 def _parse_mysql_env_int(
     name: str,
     default: int,
@@ -1169,7 +1165,7 @@ def _parse_database_url(url: str) -> DatabaseConfig:
         database=db_name,
         charset=(os.environ.get("MYSQL_CHARSET") or "utf8mb4").strip() or "utf8mb4",
         **_database_config_timeouts(),
-        create_database=_env_bool("MYSQL_CREATE_DATABASE", "1"),
+        create_database=env_bool("MYSQL_CREATE_DATABASE", default=True),
     )
 
 
@@ -1193,7 +1189,7 @@ def resolve_database_config() -> DatabaseConfig:
         database=mysql_db or MYSQL_DEFAULT_DB,
         charset=(os.environ.get("MYSQL_CHARSET") or "utf8mb4").strip() or "utf8mb4",
         **_database_config_timeouts(),
-        create_database=_env_bool("MYSQL_CREATE_DATABASE", "1"),
+        create_database=env_bool("MYSQL_CREATE_DATABASE", default=True),
     )
 
 

@@ -26,28 +26,22 @@ from services.logutil import log_database_unavailable, log_exception_throttled
 from services.observability_backoff import DatabaseWriteBackoff
 from services.proxy_context import get_proxy_id
 from services.proxy_write_guard import guarded_proxy_rows
+from services.runtime_helpers import (
+    env_bool,
+    read_bounded_complete_lines,
+    split_squid_tsv,
+)
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import escape_like as _escape_like
 from services.runtime_helpers import extract_domain as _extract_domain
 from services.runtime_helpers import normalize_hostish as _normalize_hostish
 from services.runtime_helpers import now_ts as _now
-from services.runtime_helpers import read_bounded_complete_lines, split_squid_tsv
 
 logger = logging.getLogger(__name__)
 
 
 _INTERNAL_NETWORK_CACHE: tuple[float, tuple[Any, ...]] = (0.0, ())
-_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
-_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
-
-
-def _env_truthy(value: object | None) -> bool:
-    return str(value or "").strip().lower() in _TRUE_ENV_VALUES
-
-
-def _env_falsey(value: object | None) -> bool:
-    return str(value or "").strip().lower() in _FALSE_ENV_VALUES
 
 
 def _append_bounded_pending_row(
@@ -86,13 +80,11 @@ def _running_in_container() -> bool:
 
 
 def _diagnostic_filter_internal_traffic_enabled() -> bool:
-    override = os.environ.get("DIAGNOSTIC_FILTER_INTERNAL_TRAFFIC")
-    if override is not None:
-        if _env_falsey(override):
-            return False
-        if _env_truthy(override):
-            return True
-    return not _env_truthy(os.environ.get("ENABLE_TEST_MODE"))
+    # An explicit override wins; otherwise filter except in test mode.
+    return env_bool(
+        "DIAGNOSTIC_FILTER_INTERNAL_TRAFFIC",
+        default=not env_bool("ENABLE_TEST_MODE", default=False),
+    )
 
 
 def _read_local_link_networks() -> tuple[Any, ...]:

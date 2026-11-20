@@ -229,13 +229,20 @@ def _cp(returncode: int, stdout: str = "", stderr: str = ""):
     )
 
 
-def _write_adblock_lookup_metadata(path: Path, *, count_rules: int) -> None:
+def _write_adblock_lookup_metadata(
+    path: Path, *, count_rules: int, schema_version: str | None = None
+) -> None:
+    from services.adblock_lookup import LOOKUP_SCHEMA_VERSION  # type: ignore
+
     conn = sqlite3.connect(str(path))
     try:
         conn.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT)")
-        conn.execute(
-            "INSERT INTO metadata(key, value) VALUES('count_rules', ?)",
-            (str(int(count_rules)),),
+        conn.executemany(
+            "INSERT INTO metadata(key, value) VALUES(?, ?)",
+            [
+                ("count_rules", str(int(count_rules))),
+                ("schema_version", schema_version or LOOKUP_SCHEMA_VERSION),
+            ],
         )
         conn.commit()
     finally:
@@ -4655,7 +4662,7 @@ def test_sync_adblock_state_rolls_back_when_materialized_artifact_fails_integrit
 
     assert result["ok"] is False
     assert restarts == []
-    assert "Failed to materialize adblock artifact" in result["detail"]
+    assert "rule count 3 does not match active artifact count 12" in result["detail"]
     assert "Restored previous adblock compiled artifact" in result["detail"]
     assert (compiled / ".artifact-sha256").read_text(encoding="utf-8") == "old-sha"
     assert (compiled / "request_lookup.sqlite").read_bytes() == b"old-db"
@@ -4712,16 +4719,32 @@ def test_sync_adblock_state_force_does_not_restart_when_artifact_is_current() ->
     assert restarts == []
 
 
+@pytest.mark.parametrize(
+    ("local_rules", "local_schema", "applied_schema", "expect_ok"),
+    [
+        (0, None, None, True),  # incomplete local lookup: reapply
+        (12, "3", None, True),  # unsupported local schema: reapply
+        (0, None, "3", False),  # active artifact has an unsupported schema
+    ],
+)
 def test_sync_adblock_state_reapplies_when_current_marker_has_incomplete_lookup(
     tmp_path,
     monkeypatch,
+    local_rules,
+    local_schema,
+    applied_schema,
+    expect_ok,
 ) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
     compiled = tmp_path / "compiled"
     compiled.mkdir()
     (compiled / ".artifact-sha256").write_text("same-sha", encoding="utf-8")
-    _write_adblock_lookup_metadata(compiled / "request_lookup.sqlite", count_rules=0)
+    _write_adblock_lookup_metadata(
+        compiled / "request_lookup.sqlite",
+        count_rules=local_rules,
+        schema_version=local_schema,
+    )
     recorded: list[dict[str, object]] = []
 
     class Artifacts:
@@ -4765,7 +4788,11 @@ def test_sync_adblock_state_reapplies_when_current_marker_has_incomplete_lookup(
         root = Path(directory)
         (root / ".artifact-sha256").write_text(artifact_sha256, encoding="utf-8")
         (root / "request_lookup.sqlite").unlink()
-        _write_adblock_lookup_metadata(root / "request_lookup.sqlite", count_rules=12)
+        _write_adblock_lookup_metadata(
+            root / "request_lookup.sqlite",
+            count_rules=12,
+            schema_version=applied_schema,
+        )
 
     restarts: list[bool] = []
     runtime = _runtime_shell()
@@ -4788,10 +4815,17 @@ def test_sync_adblock_state_reapplies_when_current_marker_has_incomplete_lookup(
 
     result = runtime.sync_adblock_state(force=True)
 
+    assert result["application_id"] == 17
+    if not expect_ok:
+        # Rejected explicitly and rolled back instead of serving the tables.
+        assert result["ok"] is False
+        assert "schema version 3 is not supported" in result["detail"]
+        assert recorded[-1]["ok"] is False
+        assert restarts == []
+        return
     assert result["ok"] is True
     assert result["changed"] is True
     assert result["artifact_changed"] is True
-    assert result["application_id"] == 17
     assert "local materialization was stale" in result["detail"]
     assert restarts == [True]
     assert recorded[-1]["ok"] is True
@@ -9608,3 +9642,39 @@ def test_runtime_self_heal_leaves_live_or_reconciled_transactions_alone(
     )
 
     assert runtime.self_heal_config_if_needed(reason="heartbeat")["ok"] is True
+
+
+def test_heartbeat_reports_local_registration_fields_except_display_name(
+    monkeypatch,
+) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.setenv("PROXY_DISPLAY_NAME", "Renamed by env")
+    monkeypatch.setenv("PROXY_HOSTNAME", "edge-host")
+    monkeypatch.setenv("PROXY_PUBLIC_HOST", "proxy.example.test")
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    runtime = _runtime_shell()
+    runtime.run_local_self_heal = lambda **_kwargs: None
+    runtime.collect_health = lambda: {
+        "status": "healthy",
+        "current_config_sha": "c" * 64,
+        "proxy_status": "ok",
+    }
+    runtime.registry = SimpleNamespace(
+        heartbeat=lambda proxy_id, **kwargs: calls.append((proxy_id, kwargs))
+    )
+
+    runtime.heartbeat()
+
+    expected = runtime_module.local_proxy_registration_fields("edge-a")
+    expected.pop("display_name")
+    [(proxy_id, kwargs)] = calls
+    assert proxy_id == "edge-a"
+    assert kwargs == {
+        **expected,
+        "status": "healthy",
+        "current_config_sha": "c" * 64,
+        "detail": "ok",
+    }
+    assert kwargs["hostname"] == "edge-host"

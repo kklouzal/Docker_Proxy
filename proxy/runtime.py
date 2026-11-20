@@ -7,7 +7,6 @@ import logging
 import os
 import pathlib
 import shutil
-import socket
 import sqlite3
 import subprocess
 import tempfile
@@ -20,10 +19,12 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from services.adblock_artifacts import (
+    AdblockArtifactArchiveError,
     get_adblock_artifacts,
     materialize_archive_to_directory,
     read_materialized_artifact_sha,
 )
+from services.adblock_lookup import lookup_schema_error
 from services.adblock_store import get_adblock_store
 from services.certificate_bundles import get_certificate_bundles
 from services.certificate_core import (
@@ -74,8 +75,7 @@ from services.proxy_recovery_startup import (
 )
 from services.proxy_registry import (
     get_proxy_registry,
-    resolve_local_proxy_management_url,
-    resolve_local_proxy_public_fields,
+    local_proxy_registration_fields,
 )
 from services.runtime_helpers import decode_bytes as _decode_bytes
 from services.runtime_helpers import normalize_config_bool, normalize_icap_worker_count
@@ -1438,6 +1438,7 @@ class ProxyRuntime:
         try:
             conn = sqlite3.connect(str(lookup_path))
             try:
+                schema_error = lookup_schema_error(conn)
                 row = conn.execute(
                     "SELECT value FROM metadata WHERE key='count_rules'",
                 ).fetchone()
@@ -1449,6 +1450,8 @@ class ProxyRuntime:
                 default="adblock request lookup database could not be inspected.",
             )
             return False, detail
+        if schema_error:
+            return False, schema_error
 
         expected_rules = self._active_adblock_lookup_rule_count()
         if expected_rules is None:
@@ -3505,7 +3508,8 @@ class ProxyRuntime:
                         "Materialized adblock artifact failed validation: "
                         f"{post_apply_detail}"
                     )
-                    raise RuntimeError(msg)
+                    # A ValueError subclass: the apply record shows the reason.
+                    raise AdblockArtifactArchiveError(msg)
             except Exception as exc:
                 detail = public_error_message(
                     exc,
@@ -4523,22 +4527,14 @@ class ProxyRuntime:
     def heartbeat(self) -> dict[str, Any]:
         self.run_local_self_heal(reason="heartbeat")
         health = self.collect_health()
-        public_fields = resolve_local_proxy_public_fields()
+        fields = local_proxy_registration_fields(self.proxy_id)
+        # The display name is operator-owned once registered; heartbeats only
+        # refresh what the proxy itself knows.
+        fields.pop("display_name")
         self.registry.heartbeat(
             self.proxy_id,
             status=str(health.get("status") or "unknown"),
-            hostname=(os.environ.get("PROXY_HOSTNAME") or socket.gethostname()).strip(),
-            management_url=resolve_local_proxy_management_url(
-                self.proxy_id,
-                public_fields.get("public_host"),
-            ),
-            public_host=str(public_fields.get("public_host") or ""),
-            public_pac_scheme=str(public_fields.get("public_pac_scheme") or "http"),
-            public_pac_port=int(public_fields.get("public_pac_port") or 80),
-            public_pac_path=str(public_fields.get("public_pac_path") or "/proxy.pac"),
-            public_http_proxy_port=int(
-                public_fields.get("public_http_proxy_port") or 3128,
-            ),
+            **fields,
             current_config_sha=str(health.get("current_config_sha") or ""),
             detail=str(health.get("proxy_status") or "")[:4000],
         )
