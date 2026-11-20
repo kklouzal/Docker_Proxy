@@ -380,21 +380,46 @@ can lower, but never raise, that scheduled-housekeeping bound.
   This avoids proxy-local temp-file path handoff.
 - Fail-open/fail-closed policy controls, c-icap `virus_scan` tuning for uploads,
   and stream-based RESPMOD scanning for downloads.
-- RESPMOD scans complete GET/HEAD response bodies. Range requests, `206`
-  partial responses, and Server-Sent Events are not sent to it: an event
-  stream has no end, so buffering it would hold every event until the helper's
-  2 s client idle timeout and then fail the reply. An exchange counts as SSE
-  only when the request's `Accept` names `text/event-stream` (browsers'
+- RESPMOD scans complete GET/HEAD response bodies and delivers them
+  progressively: bytes are passed on to the client while they download and
+  are streamed to clamd at the same time; only the newest part of the body is
+  withheld until clamd's verdict (at least 256 KiB, or
+  `CLAMAV_RESPMOD_STREAM_HOLD_BYTES`, and at least 1% of a declared length).
+  - A clean response completes normally once the verdict arrives.
+  - A response no larger than the withheld amount is answered whole, so a
+    small infected file still gets the "Blocked by Docker_Proxy ClamAV" 403
+    page.
+  - A larger infected response is aborted before the withheld tail: the
+    client sees the download fail (connection closed short of its
+    `Content-Length`, or a chunked reply without its final chunk) and keeps
+    at most an incomplete partial file. Squid does not cache the aborted
+    reply. The helper logs `blocked infected response after partial
+    delivery` and counts `infected` and `stream_aborts`.
+  - With fail-closed AV, a scan failure or scan-limit overrun after delivery
+    started aborts the same way; before delivery started it returns the
+    502/403 page as before.
+  - After a large body arrives the helper waits up to `CLAMD_SCAN_TIMEOUT`
+    (120 s by default; keep it at least the remote clamd's scan time for the
+    largest scanned file and below Squid's `icap_io_timeout`) for the verdict;
+    small bodies keep `CLAMD_TIMEOUT`. A body may idle for up to
+    `CLAMAV_RESPMOD_BODY_TIMEOUT` (300 s) between bytes, so slow or stalling
+    origins are not cut off.
+- Range requests, `206` partial responses, and Server-Sent Events are not sent
+  to RESPMOD: an event stream has no end, so its events would sit in the
+  withheld tail and the reply would never get a verdict. An exchange counts as
+  SSE only when the request's `Accept` names `text/event-stream` (browsers'
   `EventSource` always sends it) and the reply is `text/event-stream`, so an
   origin cannot relabel a download to skip scanning for ordinary clients.
   URL-extension file-security blocks still apply to SSE replies.
 - `CLAMAV_STREAM_MAX_BYTES` is the proxy helper's explicit per-response scan
   ceiling (256 MiB by default). Remote clamd `StreamMaxLength`/`MaxFileSize`
-  settings are not discoverable through the INSTREAM protocol and should be at
-  least this large for full scanning. If either side's limit is reached, the
-  helper never labels the response clean: optional/fail-open AV drains and
-  disk-spools the complete response before transparent unscanned replay, while
-  required/fail-closed AV drains it and returns a safe policy block.
+  settings (100 MiB by default in clamd) are not discoverable through the
+  INSTREAM protocol and should be at least this large for full scanning. If
+  either side's limit is reached, the helper never labels the response clean:
+  optional/fail-open AV delivers it unscanned (a declared length over the
+  limit is not sent to clamd at all), while required/fail-closed AV returns a
+  safe policy block when the length is declared, or aborts the transfer at
+  the limit when it is not.
 - Per-proxy health view that separates Squid policy, AV c-icap listener health, and remote `clamd` reachability.
 - EICAR and sample ICAP verification actions executed through the selected proxy runtime.
 

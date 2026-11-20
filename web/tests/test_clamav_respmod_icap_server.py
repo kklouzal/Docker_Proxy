@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import io
 import logging
@@ -178,51 +179,22 @@ def test_icap_chunks_stream_to_clamd_incrementally(monkeypatch) -> None:
     )
 
 
-def test_chunk_reader_spools_one_large_wire_chunk_in_bounded_pieces() -> None:
+def test_chunk_reader_decodes_one_large_wire_chunk_in_bounded_pieces() -> None:
     server = _load_server()
     payload = b"0123456789abcdef"
-    replay = server.SpooledReplayBody(memory_limit=8)
-    callback_sizes: list[int] = []
+    received: list[bytes] = []
 
-    def retain(chunk: bytes) -> None:
-        callback_sizes.append(len(chunk))
-        replay.write(chunk)
+    body, remainder = server.read_icap_chunked_body(
+        io.BytesIO(b"10\r\n" + payload + b"\r\n0\r\n\r\n"),
+        chunk_callback=received.append,
+        buffer_body=False,
+        read_size=4,
+    )
 
-    try:
-        body, remainder = server.read_icap_chunked_body(
-            io.BytesIO(b"10\r\n" + payload + b"\r\n0\r\n\r\n"),
-            chunk_callback=retain,
-            buffer_body=False,
-            read_size=4,
-        )
-        replayed = io.BytesIO()
-        replay.write_to(replayed)
-
-        assert body == b""
-        assert remainder == b""
-        assert callback_sizes == [4, 4, 4, 4]
-        assert replay.length == len(payload)
-        assert replay.rolled_to_disk is True
-        assert replayed.getvalue() == payload
-    finally:
-        replay.close()
-
-    assert replay.closed is True
-
-
-def test_spooled_replay_body_stays_in_memory_through_exact_threshold() -> None:
-    server = _load_server()
-    replay = server.SpooledReplayBody(memory_limit=8)
-
-    replay.write(b"12345678")
-    assert replay.length == 8
-    assert replay.rolled_to_disk is False
-
-    replay.write(b"9")
-    assert replay.length == 9
-    assert replay.rolled_to_disk is True
-    replay.close()
-    assert replay.closed is True
+    assert body == b""
+    assert remainder == b""
+    assert [len(chunk) for chunk in received] == [4, 4, 4, 4]
+    assert b"".join(received) == payload
 
 
 def test_clamd_instream_scan_reports_found(monkeypatch) -> None:
@@ -2869,6 +2841,28 @@ def _recv_icap_exchange_state(
             response.extend(chunk)
 
 
+def _decode_icap_response_body(response: bytes) -> tuple[bytes, bytes, bool]:
+    """Return (adapted HTTP header, decoded body, terminal chunk seen)."""
+    icap_end = response.index(b"\r\n\r\n") + 4
+    icap_head = response[:icap_end].decode("ascii")
+    body_offset = int(icap_head.split("res-body=", 1)[1].split("\r\n", 1)[0])
+    http_header = response[icap_end : icap_end + body_offset]
+    rest = response[icap_end + body_offset :]
+    body = bytearray()
+    while True:
+        line_end = rest.find(b"\r\n")
+        if line_end < 0:
+            return http_header, bytes(body), False
+        size = int(rest[:line_end], 16)
+        if size == 0:
+            return http_header, bytes(body), rest[line_end:] == b"\r\n\r\n"
+        chunk = rest[line_end + 2 : line_end + 2 + size]
+        body.extend(chunk)
+        if len(chunk) < size:
+            return http_header, bytes(body), False
+        rest = rest[line_end + 2 + size + 2 :]
+
+
 def _options_request(port: int) -> bytes:
     return (
         f"OPTIONS icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
@@ -3038,7 +3032,7 @@ class CleanScanner:
     def send_chunk(self, _data: bytes) -> None:
         pass
 
-    def finish(self):
+    def finish(self, **_kwargs):
         server = _load_server()
         return server.ClamdResult(clean=True)
 
@@ -3056,7 +3050,7 @@ class RecordingScanner(CleanScanner):
     def send_chunk(self, data: bytes) -> None:
         self.chunks.append(data)
 
-    def finish(self):
+    def finish(self, **_kwargs):
         self.finished = True
         return super().finish()
 
@@ -3076,7 +3070,7 @@ class SizeLimitScanner(RecordingScanner):
 
 
 class SlowScanner(CleanScanner):
-    def finish(self):
+    def finish(self, **_kwargs):
         message = "clamd INSTREAM scan timed out"
         raise TimeoutError(message)
 
@@ -3099,7 +3093,7 @@ class DelayedFailOpenScanner(CleanScanner):
     def __exit__(self, *_exc):
         return False
 
-    def finish(self):
+    def finish(self, **_kwargs):
         time.sleep(0.05)
         message = "clamd unavailable after body drain"
         raise RuntimeError(message)
@@ -3124,20 +3118,14 @@ class BlockingFakeSocket(FakeSocket):
         return self.response
 
 
-def test_clean_respmod_spools_exact_replay_and_closes_storage() -> None:
+def test_small_clean_respmod_is_scanned_then_replayed_whole() -> None:
     server = _load_server()
     payload = b"clean-body"
     scanner = RecordingScanner()
-    replay_bodies = []
 
     class CapturingServer(server.ClamAvRespmodServer):
         def open_scan(self):
             return scanner
-
-        def create_replay_body(self):
-            replay = super().create_replay_body()
-            replay_bodies.append(replay)
-            return replay
 
     http_header = (
         b"HTTP/1.1 200 OK\r\n"
@@ -3154,7 +3142,6 @@ def test_clean_respmod_spools_exact_replay_and_closes_storage() -> None:
         max_scan_bytes=1024,
         client_timeout=0.5,
         max_connections=4,
-        replay_memory_bytes=4,
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
@@ -3169,23 +3156,14 @@ def test_clean_respmod_spools_exact_replay_and_closes_storage() -> None:
     assert scanner.chunks == [payload]
     assert scanner.finished is True
     assert response.endswith(wire_body)
-    assert replay_bodies
-    assert replay_bodies[0].rolled_to_disk is True
-    assert replay_bodies[0].closed is True
 
 
-def test_preview_respmod_spools_exact_replay_across_continuation() -> None:
+def test_preview_respmod_replays_whole_body_across_continuation() -> None:
     server = _load_server()
-    replay_bodies = []
 
     class CapturingServer(server.ClamAvRespmodServer):
         def open_scan(self):
             return CleanScanner()
-
-        def create_replay_body(self):
-            replay = super().create_replay_body()
-            replay_bodies.append(replay)
-            return replay
 
     with CapturingServer(
         ("127.0.0.1", 0),
@@ -3196,7 +3174,6 @@ def test_preview_respmod_spools_exact_replay_across_continuation() -> None:
         max_scan_bytes=1024,
         client_timeout=0.5,
         max_connections=4,
-        replay_memory_bytes=2,
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
@@ -3208,17 +3185,13 @@ def test_preview_respmod_spools_exact_replay_across_continuation() -> None:
 
     assert response.startswith(b"ICAP/1.0 100 Continue\r\n\r\n")
     assert response.endswith(b"5\r\nhello\r\n0\r\n\r\n")
-    assert replay_bodies
-    assert replay_bodies[0].rolled_to_disk is True
-    assert replay_bodies[0].closed is True
 
 
-def test_infected_respmod_closes_spool_without_replaying_original() -> None:
+def test_small_infected_respmod_returns_block_page_without_original() -> None:
     server = _load_server()
-    replay_bodies = []
 
     class InfectedScanner(CleanScanner):
-        def finish(self):
+        def finish(self, **_kwargs):
             return server.ClamdResult(
                 clean=False, infected=True, signature="Test.Signature"
             )
@@ -3226,11 +3199,6 @@ def test_infected_respmod_closes_spool_without_replaying_original() -> None:
     class CapturingServer(server.ClamAvRespmodServer):
         def open_scan(self):
             return InfectedScanner()
-
-        def create_replay_body(self):
-            replay = super().create_replay_body()
-            replay_bodies.append(replay)
-            return replay
 
     with CapturingServer(
         ("127.0.0.1", 0),
@@ -3241,7 +3209,6 @@ def test_infected_respmod_closes_spool_without_replaying_original() -> None:
         max_scan_bytes=1024,
         client_timeout=0.5,
         max_connections=4,
-        replay_memory_bytes=2,
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
@@ -3251,30 +3218,29 @@ def test_infected_respmod_closes_spool_without_replaying_original() -> None:
 
     assert b"HTTP/1.1 403 Forbidden" in response
     assert b"5\r\nhello\r\n0\r\n\r\n" not in response
-    assert replay_bodies
-    assert replay_bodies[0].rolled_to_disk is True
-    assert replay_bodies[0].closed is True
 
 
-def test_oversize_fail_open_drains_spools_and_replays_after_clamd_limit(
-    caplog,
+@pytest.mark.parametrize(
+    ("http_header", "scanned_chunks"),
+    [
+        # A declared length over the limit is never sent to clamd and streams
+        # straight through; an unknown length stops scanning at the limit.
+        (b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n", []),
+        (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", [b"abc"]),
+    ],
+)
+def test_oversize_fail_open_delivers_unscanned(
+    caplog, http_header: bytes, scanned_chunks: list[bytes]
 ) -> None:
     server = _load_server()
     scanner = SizeLimitScanner(scanner_limit=3)
-    replay_bodies = []
 
     class CapturingServer(server.ClamAvRespmodServer):
         def open_scan(self):
             return scanner
 
-        def create_replay_body(self):
-            replay = super().create_replay_body()
-            replay_bodies.append(replay)
-            return replay
-
     payload = b"abcdefghi"
     request_body = b"3\r\nabc\r\n3\r\ndef\r\n3\r\nghi\r\n0\r\n\r\n"
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n"
     caplog.set_level(logging.WARNING, logger="clamav-respmod")
     with CapturingServer(
         ("127.0.0.1", 0),
@@ -3285,7 +3251,6 @@ def test_oversize_fail_open_drains_spools_and_replays_after_clamd_limit(
         max_scan_bytes=5,
         client_timeout=0.5,
         max_connections=4,
-        replay_memory_bytes=2,
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
@@ -3299,16 +3264,15 @@ def test_oversize_fail_open_drains_spools_and_replays_after_clamd_limit(
 
     assert response.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"HTTP/1.1 200 OK" in response
-    assert response.endswith(b"9\r\n" + payload + b"\r\n0\r\n\r\n")
+    adapted_header, body, terminated = _decode_icap_response_body(response)
+    assert b"Content-Length: 9\r\n" in adapted_header
+    assert body == payload
+    assert terminated is True
     assert b"ClamAV response scan failed" not in response
     assert b"scan failed before complete response body" not in response
-    assert scanner.chunks == [b"abc", b"de"]
+    assert scanner.chunks == scanned_chunks
     assert scanner.finished is False
-    assert scanner.closed is True
-    assert replay_bodies
-    assert replay_bodies[0].length == len(payload)
-    assert replay_bodies[0].rolled_to_disk is True
-    assert replay_bodies[0].closed is True
+    assert scanner.closed is bool(scanned_chunks)
     assert icap_server.stats.counters == {
         "errors": 1,
         "scan_limit_exceeded": 1,
@@ -3320,23 +3284,25 @@ def test_oversize_fail_open_drains_spools_and_replays_after_clamd_limit(
     assert "action=replay_unscanned" in caplog.text
 
 
-def test_oversize_fail_closed_drains_then_returns_safe_policy_block(caplog) -> None:
+@pytest.mark.parametrize(
+    ("http_header", "scanned_chunks"),
+    [
+        (b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n", []),
+        (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", [b"abc"]),
+    ],
+)
+def test_oversize_fail_closed_drains_then_returns_safe_policy_block(
+    caplog, http_header: bytes, scanned_chunks: list[bytes]
+) -> None:
     server = _load_server()
     scanner = SizeLimitScanner(scanner_limit=3)
-    replay_bodies = []
 
     class CapturingServer(server.ClamAvRespmodServer):
         def open_scan(self):
             return scanner
 
-        def create_replay_body(self):
-            replay = super().create_replay_body()
-            replay_bodies.append(replay)
-            return replay
-
     payload = b"abcdefghi"
     request_body = b"3\r\nabc\r\n3\r\ndef\r\n3\r\nghi\r\n0\r\n\r\n"
-    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n"
     caplog.set_level(logging.WARNING, logger="clamav-respmod")
     with CapturingServer(
         ("127.0.0.1", 0),
@@ -3347,7 +3313,6 @@ def test_oversize_fail_closed_drains_then_returns_safe_policy_block(caplog) -> N
         max_scan_bytes=5,
         client_timeout=0.5,
         max_connections=4,
-        replay_memory_bytes=2,
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
         port = icap_server.server_address[1]
@@ -3365,13 +3330,9 @@ def test_oversize_fail_closed_drains_then_returns_safe_policy_block(caplog) -> N
     assert payload not in response
     assert b"ClamAV response scan failed" not in response
     assert b"Size limit reached" not in response
-    assert scanner.chunks == [b"abc", b"de"]
+    assert scanner.chunks == scanned_chunks
     assert scanner.finished is False
-    assert scanner.closed is True
-    assert replay_bodies
-    assert replay_bodies[0].length == len(payload)
-    assert replay_bodies[0].rolled_to_disk is True
-    assert replay_bodies[0].closed is True
+    assert scanner.closed is bool(scanned_chunks)
     assert icap_server.stats.counters == {
         "errors": 1,
         "scan_limit_exceeded": 1,
@@ -3381,43 +3342,6 @@ def test_oversize_fail_closed_drains_then_returns_safe_policy_block(caplog) -> N
     }
     assert "reason=scan_limit_exceeded" in caplog.text
     assert "action=block_unverified" in caplog.text
-
-
-def test_null_body_respmod_does_not_allocate_replay_spool() -> None:
-    server = _load_server()
-    replay_allocations = 0
-
-    class CapturingServer(server.ClamAvRespmodServer):
-        def scan_body(self, body: bytes):
-            assert body == b""
-            return server.ClamdResult(clean=True)
-
-        def create_replay_body(self):
-            nonlocal replay_allocations
-            replay_allocations += 1
-            return super().create_replay_body()
-
-    with CapturingServer(
-        ("127.0.0.1", 0),
-        clamd_host="127.0.0.1",
-        clamd_port=3310,
-        clamd_timeout=0.1,
-        fail_open=False,
-        max_scan_bytes=1024,
-        client_timeout=0.5,
-        max_connections=4,
-        replay_memory_bytes=2,
-    ) as icap_server:
-        thread = _serve_in_thread(icap_server)
-        port = icap_server.server_address[1]
-        response = _recv_icap_exchange(
-            port, _sample_null_body_respmod_request(port), timeout=1
-        )
-        icap_server.shutdown()
-        thread.join(timeout=1)
-
-    assert response.startswith(b"ICAP/1.0 204 No Content\r\n")
-    assert replay_allocations == 0
 
 
 def test_client_timeout_is_per_inactivity_gap_not_total_stream_duration() -> None:
@@ -4057,6 +3981,7 @@ def test_preview_terminator_without_ieof_eof_after_continue_is_not_clean_fail_op
         fail_open=True,
         max_scan_bytes=1024,
         client_timeout=0.2,
+        body_timeout=0.2,
         max_connections=4,
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
@@ -4322,6 +4247,7 @@ def test_truncated_later_chunk_after_valid_chunk_fails_closed_without_partial_re
         fail_open=True,
         max_scan_bytes=1024,
         client_timeout=0.2,
+        body_timeout=0.2,
         max_connections=4,
     ) as icap_server:
         thread = _serve_in_thread(icap_server)
@@ -4693,19 +4619,12 @@ def test_unavailable_clamd_fail_open_stress_handles_mixed_respmod_shapes(
 def test_fail_open_without_allow_204_replays_after_clamd_reset(monkeypatch) -> None:
     server = _load_server()
     fake = ResetBeforeVerdictSocket()
-    replay_bodies = []
-
-    class CapturingServer(server.ClamAvRespmodServer):
-        def create_replay_body(self):
-            replay = super().create_replay_body()
-            replay_bodies.append(replay)
-            return replay
 
     monkeypatch.setattr(
         server.socket, "create_connection", lambda address, timeout: fake
     )
 
-    with CapturingServer(
+    with server.ClamAvRespmodServer(
         ("127.0.0.1", 0),
         clamd_host="127.0.0.1",
         clamd_port=3310,
@@ -4726,8 +4645,6 @@ def test_fail_open_without_allow_204_replays_after_clamd_reset(monkeypatch) -> N
     assert response.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"HTTP/1.1 200 OK" in response
     assert b"5\r\nhello\r\n0\r\n\r\n" in response
-    assert replay_bodies
-    assert replay_bodies[0].closed is True
 
 
 def test_infected_verdict_blocks_after_complete_body(monkeypatch) -> None:
@@ -4814,16 +4731,10 @@ def test_scan_capacity_exhaustion_fails_open_without_wedging_options(
 
 def test_slow_clamd_scan_fails_closed_with_error_payload() -> None:
     server = _load_server()
-    replay_bodies = []
 
     class FailClosedServer(server.ClamAvRespmodServer):
         def open_scan(self):
             return SlowScanner()
-
-        def create_replay_body(self):
-            replay = super().create_replay_body()
-            replay_bodies.append(replay)
-            return replay
 
     with FailClosedServer(
         ("127.0.0.1", 0),
@@ -4844,8 +4755,6 @@ def test_slow_clamd_scan_fails_closed_with_error_payload() -> None:
     assert response.startswith(b"ICAP/1.0 200 OK\r\n")
     assert b"HTTP/1.1 502 Bad Gateway" in response
     assert b"clamd INSTREAM scan timed out" in response
-    assert replay_bodies
-    assert replay_bodies[0].closed is True
 
 
 @pytest.mark.parametrize("name", ["CLAMAV_REQUIRED", "FILE_SECURITY_AV_REQUIRED"])
@@ -4891,14 +4800,16 @@ def test_respmod_runtime_args_bound_clients_and_concurrency(monkeypatch) -> None
     monkeypatch.setenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", "0.05")
     monkeypatch.setenv("CLAMAV_RESPMOD_MAX_CONNECTIONS", "0")
     monkeypatch.setenv("CLAMAV_RESPMOD_MAX_SCANS", "10")
-    monkeypatch.setenv("CLAMAV_RESPMOD_REPLAY_MEMORY_BYTES", "0")
+    monkeypatch.setenv("CLAMAV_RESPMOD_STREAM_HOLD_BYTES", "-5")
+    monkeypatch.setenv("CLAMAV_RESPMOD_BODY_TIMEOUT", "0.01")
 
     args = server._parse_args([])
 
     assert math.isclose(args.client_timeout, 0.1)
     assert args.max_connections == 1
     assert args.max_scans == 1
-    assert args.replay_memory_bytes == 1
+    assert args.stream_hold_bytes == 0
+    assert math.isclose(args.body_timeout, args.client_timeout)
 
 
 def test_respmod_runtime_args_cli_overrides_malformed_numeric_env(monkeypatch) -> None:
@@ -4910,7 +4821,8 @@ def test_respmod_runtime_args_cli_overrides_malformed_numeric_env(monkeypatch) -
     monkeypatch.setenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", "bad")
     monkeypatch.setenv("CLAMAV_RESPMOD_MAX_CONNECTIONS", "nope")
     monkeypatch.setenv("CLAMAV_RESPMOD_MAX_SCANS", "also-nope")
-    monkeypatch.setenv("CLAMAV_RESPMOD_REPLAY_MEMORY_BYTES", "invalid")
+    monkeypatch.setenv("CLAMAV_RESPMOD_STREAM_HOLD_BYTES", "invalid")
+    monkeypatch.setenv("CLAMAV_RESPMOD_BODY_TIMEOUT", "invalid")
 
     args = server._parse_args(
         [
@@ -4928,8 +4840,10 @@ def test_respmod_runtime_args_cli_overrides_malformed_numeric_env(monkeypatch) -
             "8",
             "--max-scans",
             "4",
-            "--replay-memory-bytes",
+            "--stream-hold-bytes",
             "8192",
+            "--body-timeout",
+            "60",
         ]
     )
 
@@ -4940,7 +4854,8 @@ def test_respmod_runtime_args_cli_overrides_malformed_numeric_env(monkeypatch) -
     assert math.isclose(args.client_timeout, 1.5)
     assert args.max_connections == 8
     assert args.max_scans == 4
-    assert args.replay_memory_bytes == 8192
+    assert args.stream_hold_bytes == 8192
+    assert math.isclose(args.body_timeout, 60.0)
 
 
 def test_respmod_runtime_args_malformed_numeric_env_uses_defaults(monkeypatch) -> None:
@@ -4952,7 +4867,8 @@ def test_respmod_runtime_args_malformed_numeric_env_uses_defaults(monkeypatch) -
     monkeypatch.setenv("CLAMAV_RESPMOD_CLIENT_TIMEOUT", "bad")
     monkeypatch.setenv("CLAMAV_RESPMOD_MAX_CONNECTIONS", "nope")
     monkeypatch.setenv("CLAMAV_RESPMOD_MAX_SCANS", "also-nope")
-    monkeypatch.setenv("CLAMAV_RESPMOD_REPLAY_MEMORY_BYTES", "invalid")
+    monkeypatch.setenv("CLAMAV_RESPMOD_STREAM_HOLD_BYTES", "invalid")
+    monkeypatch.setenv("CLAMAV_RESPMOD_BODY_TIMEOUT", "invalid")
 
     args = server._parse_args([])
 
@@ -4963,7 +4879,8 @@ def test_respmod_runtime_args_malformed_numeric_env_uses_defaults(monkeypatch) -
     assert math.isclose(args.client_timeout, server.DEFAULT_CLIENT_TIMEOUT)
     assert args.max_connections == server.DEFAULT_MAX_CONNECTIONS
     assert args.max_scans == server.DEFAULT_MAX_SCANS
-    assert args.replay_memory_bytes == server.DEFAULT_REPLAY_MEMORY_BYTES
+    assert args.stream_hold_bytes == server.DEFAULT_STREAM_HOLD_BYTES
+    assert math.isclose(args.body_timeout, server.DEFAULT_BODY_TIMEOUT)
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
@@ -5081,3 +4998,335 @@ def test_fail_open_icap_client_failure_does_not_mark_clamd_unavailable(
         with pytest.raises(RuntimeError, match="clamd INSTREAM scan failed"):
             icap_server.scan_body(b"payload")
         assert icap_server._scan_unavailable_until > 0.0
+
+
+# --- Progressive (streamed) delivery -------------------------------------
+
+
+MARKER = b"<infected-marker>"
+
+
+class MarkerScanner(RecordingScanner):
+    """Fake clamd: infected when MARKER appears anywhere in the stream."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.verdict_timeouts: list[float | None] = []
+
+    def finish(self, *, verdict_timeout=None):
+        self.finished = True
+        self.verdict_timeouts.append(verdict_timeout)
+        server = _load_server()
+        if MARKER in b"".join(self.chunks):
+            return server.ClamdResult(clean=False, infected=True, signature="Marker")
+        return server.ClamdResult(clean=True)
+
+
+def _streaming_server(server, scanner, **overrides):
+    class StreamingServer(server.ClamAvRespmodServer):
+        def open_scan(self):
+            if isinstance(scanner, Exception):
+                raise scanner
+            return scanner
+
+    options = {
+        "clamd_host": "127.0.0.1",
+        "clamd_port": 3310,
+        "clamd_timeout": 0.1,
+        "fail_open": True,
+        "max_scan_bytes": 1 << 20,
+        "client_timeout": 0.5,
+        "max_connections": 4,
+        "stream_hold_bytes": 8,
+    }
+    options.update(overrides)
+    return StreamingServer(("127.0.0.1", 0), **options)
+
+
+def _stream_request_head(port: int, http_header: bytes) -> bytes:
+    return (
+        f"RESPMOD icap://127.0.0.1:{port}/avrespmod ICAP/1.0\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Allow: 204\r\n"
+        f"Encapsulated: res-hdr=0, res-body={len(http_header)}\r\n\r\n"
+    ).encode("ascii") + http_header
+
+
+def _wire_chunk(data: bytes) -> bytes:
+    return f"{len(data):X}\r\n".encode("ascii") + data + b"\r\n"
+
+
+def _read_available(sock: socket.socket, *, until: bytes, timeout: float) -> bytes:
+    sock.settimeout(timeout)
+    data = bytearray()
+    while until not in data:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        data.extend(chunk)
+    return bytes(data)
+
+
+def _read_to_close(sock: socket.socket, *, timeout: float = 1.0) -> tuple[bytes, str]:
+    """Read until EOF; return the data and how the connection ended."""
+    sock.settimeout(timeout)
+    data = bytearray()
+    while True:
+        try:
+            chunk = sock.recv(65536)
+        except ConnectionResetError:
+            return bytes(data), "reset"
+        except TimeoutError:
+            return bytes(data), "open"
+        if not chunk:
+            return bytes(data), "eof"
+        data.extend(chunk)
+
+
+def _run_stream(icap_server, http_header: bytes, parts: list[bytes]):
+    """Send parts one at a time; return what arrived after each part and the end."""
+    thread = _serve_in_thread(icap_server)
+    port = icap_server.server_address[1]
+    seen_after_part: list[bytes] = []
+    try:
+        with CLIENT_CREATE_CONNECTION(("127.0.0.1", port), timeout=1) as sock:
+            sock.sendall(_stream_request_head(port, http_header))
+            received = bytearray()
+            for part in parts:
+                with contextlib.suppress(OSError):
+                    sock.sendall(_wire_chunk(part))
+                # Collect everything the helper forwards until it goes quiet.
+                rest, _ending = _read_to_close(sock, timeout=0.1)
+                received.extend(rest)
+                seen_after_part.append(bytes(received))
+            with contextlib.suppress(OSError):
+                sock.sendall(b"0\r\n\r\n")
+            rest, ending = _read_to_close(sock)
+            received.extend(rest)
+    finally:
+        icap_server.shutdown()
+        thread.join(timeout=1)
+    return seen_after_part, bytes(received), ending
+
+
+def test_streamed_clean_body_is_forwarded_before_the_body_ends() -> None:
+    server = _load_server()
+    scanner = MarkerScanner()
+    parts = [b"A" * 20, b"B" * 20, b"C" * 5]
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 45\r\n\r\n"
+    with _streaming_server(server, scanner) as icap_server:
+        seen, response, _ending = _run_stream(icap_server, http_header, parts)
+
+    # Everything beyond the 8-byte hold reaches Squid while the origin body
+    # is still arriving; the declared length is kept for the client.
+    _header, first, terminated = _decode_icap_response_body(seen[0])
+    assert first == b"A" * 12
+    assert terminated is False
+    _header, second, _ = _decode_icap_response_body(seen[1])
+    assert second == b"A" * 20 + b"B" * 12
+    adapted_header, body, terminated = _decode_icap_response_body(response)
+    assert b"Content-Length: 45\r\n" in adapted_header
+    assert body == b"".join(parts)
+    assert terminated is True
+    assert scanner.chunks == parts
+    assert scanner.verdict_timeouts == [icap_server.scan_timeout]
+    assert icap_server.stats.counters == {"clean": 1}
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        [MARKER + b"A" * 20, b"B" * 20],  # infected at start
+        [b"A" * 20, b"B" * 20 + MARKER],  # infected at end
+    ],
+)
+@pytest.mark.parametrize("fail_open", [True, False])
+def test_streamed_infected_body_is_aborted_without_the_held_tail(
+    parts: list[bytes], fail_open: bool
+) -> None:
+    server = _load_server()
+    scanner = MarkerScanner()
+    payload = b"".join(parts)
+    http_header = f"HTTP/1.1 200 OK\r\nContent-Length: {len(payload)}\r\n\r\n".encode()
+    with _streaming_server(server, scanner, fail_open=fail_open) as icap_server:
+        _seen, response, ending = _run_stream(icap_server, http_header, parts)
+
+    _header, body, terminated = _decode_icap_response_body(response)
+    # The client never gets the complete file: the hold is withheld, the
+    # ICAP body has no terminal chunk and the connection is reset.
+    assert terminated is False
+    assert body == payload[: len(payload) - icap_server.stream_hold_bytes]
+    assert ending in {"reset", "eof"}
+    assert icap_server.stats.counters == {"infected": 1, "stream_aborts": 1}
+
+
+def test_small_infected_body_still_gets_the_block_page() -> None:
+    server = _load_server()
+    scanner = MarkerScanner()
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 17\r\n\r\n"
+    with _streaming_server(server, scanner, stream_hold_bytes=64) as icap_server:
+        _seen, response, _ending = _run_stream(icap_server, http_header, [MARKER])
+
+    assert b"HTTP/1.1 403 Forbidden" in response
+    assert MARKER not in response
+    # Held bodies keep the short clamd verdict timeout.
+    assert scanner.verdict_timeouts == [None]
+
+
+def test_hold_covers_at_least_one_percent_of_a_declared_length() -> None:
+    server = _load_server()
+    with _streaming_server(server, CleanScanner(), stream_hold_bytes=8) as srv:
+        assert srv.stream_hold_bytes_for(None) == 8
+        assert srv.stream_hold_bytes_for(b"500") == 8
+        assert srv.stream_hold_bytes_for(b"10001") == 101
+        # Never verified, so nothing is held back.
+        assert srv.stream_hold_bytes_for(str((1 << 20) + 1).encode()) == 0
+
+
+def test_streamed_unknown_length_over_limit_fail_closed_aborts() -> None:
+    server = _load_server()
+    scanner = MarkerScanner()
+    http_header = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+    parts = [b"A" * 20, b"B" * 20]
+    with _streaming_server(
+        server, scanner, fail_open=False, max_scan_bytes=30
+    ) as icap_server:
+        _seen, response, ending = _run_stream(icap_server, http_header, parts)
+
+    adapted_header, body, terminated = _decode_icap_response_body(response)
+    assert b"Content-Length" not in adapted_header
+    assert b"Transfer-Encoding" not in adapted_header
+    assert body == b"A" * 12
+    assert terminated is False
+    assert ending in {"reset", "eof"}
+    assert scanner.chunks == [b"A" * 20]
+    assert scanner.closed is True
+    assert icap_server.stats.counters == {
+        "errors": 1,
+        "scan_limit_exceeded": 1,
+        "scan_errors": 1,
+        "fail_closed_errors": 1,
+        "oversize_blocks": 1,
+        "stream_aborts": 1,
+    }
+
+
+@pytest.mark.parametrize("fail_open", [True, False])
+def test_streamed_body_with_clamd_down(fail_open: bool) -> None:
+    server = _load_server()
+    unavailable = RuntimeError("clamd INSTREAM scan failed: connection refused")
+    parts = [b"A" * 20, b"B" * 20]
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n"
+    with _streaming_server(server, unavailable, fail_open=fail_open) as icap_server:
+        seen, response, _ending = _run_stream(icap_server, http_header, parts)
+
+    if fail_open:
+        # Optional AV: delivered progressively, unscanned, and counted.
+        _header, first, _ = _decode_icap_response_body(seen[0])
+        assert first == b"A" * 12
+        _header, body, terminated = _decode_icap_response_body(response)
+        assert body == b"".join(parts)
+        assert terminated is True
+        assert icap_server.stats.counters["fail_open_bypasses"] == 1
+    else:
+        # Required AV: nothing of the body leaves before the error page.
+        assert seen == [b"", b""]
+        assert b"HTTP/1.1 502 Bad Gateway" in response
+        assert b"A" * 12 not in response
+        assert icap_server.stats.counters["fail_closed_errors"] == 1
+
+
+@pytest.mark.parametrize("fail_open", [True, False])
+def test_streamed_body_clamd_failure_mid_stream(fail_open: bool) -> None:
+    server = _load_server()
+    scanner = FailingSendAfterPreviewScanner()
+    parts = [b"A" * 20, b"B" * 20, b"C" * 20]
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 60\r\n\r\n"
+    with _streaming_server(server, scanner, fail_open=fail_open) as icap_server:
+        _seen, response, ending = _run_stream(icap_server, http_header, parts)
+
+    _header, body, terminated = _decode_icap_response_body(response)
+    if fail_open:
+        assert body == b"".join(parts)
+        assert terminated is True
+        assert icap_server.stats.counters["fail_open_bypasses"] == 1
+    else:
+        assert terminated is False
+        assert len(body) < len(b"".join(parts))
+        assert ending in {"reset", "eof"}
+        assert icap_server.stats.counters["stream_aborts"] == 1
+
+
+def test_streamed_slow_verdict_fail_open_completes_unscanned() -> None:
+    server = _load_server()
+    parts = [b"A" * 20, b"B" * 20]
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n"
+    with _streaming_server(server, SlowScanner()) as icap_server:
+        _seen, response, _ending = _run_stream(icap_server, http_header, parts)
+
+    _header, body, terminated = _decode_icap_response_body(response)
+    assert body == b"".join(parts)
+    assert terminated is True
+    assert icap_server.stats.counters["scan_errors"] == 1
+    assert icap_server.stats.counters["fail_open_bypasses"] == 1
+
+
+def test_streamed_content_length_mismatch_aborts_instead_of_completing() -> None:
+    server = _load_server()
+    scanner = MarkerScanner()
+    parts = [b"A" * 20, b"B" * 20]
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n"
+    with _streaming_server(server, scanner) as icap_server:
+        _seen, response, ending = _run_stream(icap_server, http_header, parts)
+
+    _header, _body, terminated = _decode_icap_response_body(response)
+    assert terminated is False
+    assert ending in {"reset", "eof"}
+    assert scanner.finished is False
+    assert icap_server.stats.counters["stream_aborts"] == 1
+
+
+def test_squid_abort_mid_stream_releases_the_scan() -> None:
+    server = _load_server()
+    scanner = MarkerScanner()
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n"
+    with _streaming_server(server, scanner) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        with CLIENT_CREATE_CONNECTION(("127.0.0.1", port), timeout=1) as sock:
+            sock.sendall(_stream_request_head(port, http_header))
+            sock.sendall(_wire_chunk(b"A" * 20))
+            # Content-Length 1000 holds max(8, 1%) = 10 bytes.
+            _read_available(sock, until=b"A" * 10, timeout=1)
+        deadline = time.monotonic() + 1
+        while scanner.closed is False and time.monotonic() < deadline:
+            time.sleep(0.01)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    assert scanner.closed is True
+    assert scanner.finished is False
+    assert icap_server.stats.counters["protocol_errors"] == 1
+
+
+def test_streamed_body_tolerates_origin_gaps_longer_than_client_timeout() -> None:
+    server = _load_server()
+    scanner = MarkerScanner()
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n"
+    with _streaming_server(
+        server, scanner, client_timeout=0.1, body_timeout=2
+    ) as icap_server:
+        thread = _serve_in_thread(icap_server)
+        port = icap_server.server_address[1]
+        with CLIENT_CREATE_CONNECTION(("127.0.0.1", port), timeout=2) as sock:
+            sock.sendall(_stream_request_head(port, http_header))
+            sock.sendall(_wire_chunk(b"A" * 20))
+            time.sleep(0.3)  # stalled origin, longer than client_timeout
+            sock.sendall(_wire_chunk(b"B" * 20) + b"0\r\n\r\n")
+            response, _ending = _read_to_close(sock)
+        icap_server.shutdown()
+        thread.join(timeout=1)
+
+    _header, body, terminated = _decode_icap_response_body(response)
+    assert body == b"A" * 20 + b"B" * 20
+    assert terminated is True
