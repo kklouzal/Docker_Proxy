@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import contextlib
-import csv
 import hashlib
-import io
 import ipaddress
 import logging
 import os
@@ -34,7 +32,7 @@ from services.runtime_helpers import escape_like as _escape_like
 from services.runtime_helpers import extract_domain as _extract_domain
 from services.runtime_helpers import normalize_hostish as _normalize_hostish
 from services.runtime_helpers import now_ts as _now
-from services.runtime_helpers import read_bounded_complete_lines
+from services.runtime_helpers import read_bounded_complete_lines, split_squid_tsv
 
 logger = logging.getLogger(__name__)
 
@@ -210,41 +208,6 @@ def _safe_text(value: object, *, max_len: int = 0) -> str:
     return text
 
 
-def _split_tsv(line: str) -> list[str]:
-    s = (line or "").strip("\r\n")
-    if not s:
-        return []
-    if "\\t" in s:
-        normalized = []
-        in_quotes = False
-        i = 0
-        while i < len(s):
-            ch = s[i]
-            if ch == '"':
-                normalized.append(ch)
-                if in_quotes and i + 1 < len(s) and s[i + 1] == '"':
-                    normalized.append(s[i + 1])
-                    i += 2
-                    continue
-                in_quotes = not in_quotes
-                i += 1
-                continue
-            if not in_quotes and ch == "\\" and i + 1 < len(s) and s[i + 1] == "t":
-                normalized.append("\t")
-                i += 2
-                continue
-            normalized.append(ch)
-            i += 1
-        s = "".join(normalized)
-    if '"' not in s:
-        return [item.strip() for item in s.split("	")]
-    try:
-        row = next(csv.reader(io.StringIO(s), delimiter="	", quotechar='"'))
-    except Exception:
-        return []
-    return [item.strip() for item in row]
-
-
 def _split_squid_fields(line: str) -> list[str]:
     """Split a Squid log row, mapping Squid's ``-`` absent marker to ``""``.
 
@@ -252,7 +215,7 @@ def _split_squid_fields(line: str) -> list[str]:
     SNI or transaction id (absent transaction ids would then correlate with
     each other).
     """
-    return ["" if value == "-" else value for value in _split_tsv(line)]
+    return ["" if value == "-" else value for value in split_squid_tsv(line)]
 
 
 def _header_text(value: str, *, max_len: int) -> str:

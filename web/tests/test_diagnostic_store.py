@@ -8,8 +8,8 @@ from services.diagnostic_store import (
     _nearest_rows,
     _normalize_icap_row,
     _normalize_request_row,
-    _split_tsv,
 )
+from services.runtime_helpers import split_squid_tsv as _split_tsv
 
 from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
@@ -1275,8 +1275,6 @@ def test_file_security_note_materializes_structured_policy_tag() -> None:
 
 
 def test_split_tsv_normalizes_escaped_delimiters_when_quoted_field_contains_real_tab():
-    from services.diagnostic_store import _split_tsv
-
     line = '1710000000\\t10\\t192.0.2.10\\tGET\\thttp://example.test/\\t"agent\twith real tab"\\tTCP_MISS/200'
 
     assert _split_tsv(line) == [

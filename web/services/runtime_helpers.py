@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import contextlib
+import csv
 import errno
+import io
 import ipaddress
 import math
 import os
@@ -141,6 +143,46 @@ def read_bounded_complete_lines(
         return chunk.decode("utf-8", errors="replace").splitlines()[-max_lines:]
     except Exception:
         return []
+
+
+def split_squid_tsv(line: str) -> list[str]:
+    r"""Split one tab-separated Squid logformat row into stripped fields.
+
+    Accepts real tabs and the two-character ``\t`` some builds emit; escaped
+    tabs inside a quoted field stay literal.
+    """
+    s = (line or "").strip("\r\n")
+    if not s:
+        return []
+    if "\\t" in s:
+        normalized = []
+        in_quotes = False
+        i = 0
+        while i < len(s):
+            ch = s[i]
+            if ch == '"':
+                normalized.append(ch)
+                if in_quotes and i + 1 < len(s) and s[i + 1] == '"':
+                    normalized.append(s[i + 1])
+                    i += 2
+                    continue
+                in_quotes = not in_quotes
+                i += 1
+                continue
+            if not in_quotes and ch == "\\" and i + 1 < len(s) and s[i + 1] == "t":
+                normalized.append("\t")
+                i += 2
+                continue
+            normalized.append(ch)
+            i += 1
+        s = "".join(normalized)
+    if '"' not in s:
+        return [item.strip() for item in s.split("	")]
+    try:
+        row = next(csv.reader(io.StringIO(s), delimiter="	", quotechar='"'))
+    except Exception:
+        return []
+    return [item.strip() for item in row]
 
 
 def _decoded_hostish_has_delimiters(value: str) -> bool:

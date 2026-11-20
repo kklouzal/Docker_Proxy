@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from services.diagnostic_store import _split_tsv  # type: ignore
+from services.runtime_helpers import split_squid_tsv as _split_tsv  # type: ignore
 
 
 def test_split_tsv_fast_path_accepts_tab_separated_rows() -> None:
