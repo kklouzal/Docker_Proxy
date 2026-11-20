@@ -327,7 +327,8 @@ def test_cache_flush_read_failure_is_not_reported_as_no_request(monkeypatch) -> 
             return False
 
         def execute(self, *args, **kwargs):
-            raise RuntimeError("adblock meta read failed")
+            msg = "adblock meta read failed"
+            raise RuntimeError(msg)
 
     monkeypatch.setattr(store, "_connect", _FailingConn)
     monkeypatch.setattr(

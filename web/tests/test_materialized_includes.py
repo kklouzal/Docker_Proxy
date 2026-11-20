@@ -1019,7 +1019,8 @@ def test_webfilter_render_propagates_policy_exception_read_failure(
     )
 
     def fail_exceptions(*, proxy_id):
-        raise RuntimeError("policy exception table unavailable")
+        msg = "policy exception table unavailable"
+        raise RuntimeError(msg)
 
     policy_store = SimpleNamespace(active_webfilter_exceptions=fail_exceptions)
     monkeypatch.setattr(module, "get_policy_request_store", lambda: policy_store)
