@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pymysql
+import pytest
 
 from .clock_patching import patch_module_clock
 from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
@@ -152,3 +153,43 @@ def test_adblock_set_enabled_retries_transient_deadlock(monkeypatch) -> None:
         for call in calls
     )
     assert sleeps == [0.2]
+
+
+def test_refresh_clear_keeps_request_made_during_build(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path / "adblock-refresh-compare-and-clear")
+    register_test_proxies()
+
+    from services.adblock_store import AdblockStore  # type: ignore
+
+    store = AdblockStore(lists_dir=str(tmp_path / "lists"))
+    store.init_db()
+    store.request_refresh_now()
+    observed = store.get_refresh_requested()
+    assert observed > 0
+
+    # A second request in the same second must still yield a newer token.
+    store.request_refresh_now()
+    newer = store.get_refresh_requested()
+    assert newer > observed
+
+    store.clear_refresh_requested(observed)
+    assert store.get_refresh_requested() == newer
+
+    store.clear_refresh_requested(newer)
+    assert store.get_refresh_requested() == 0
+
+
+def test_corrupt_refresh_request_token_raises(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path / "adblock-refresh-corrupt")
+    register_test_proxies()
+
+    from services.adblock_store import AdblockStore  # type: ignore
+    from services.db import connect  # type: ignore
+
+    store = AdblockStore(lists_dir=str(tmp_path / "lists"))
+    store.init_db()
+    with connect() as conn:
+        conn.execute("UPDATE adblock_meta SET v='bogus' WHERE k='refresh_requested'")
+
+    with pytest.raises(ValueError):
+        store.get_refresh_requested()

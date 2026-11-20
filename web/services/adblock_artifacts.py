@@ -1218,7 +1218,8 @@ class AdblockArtifactStore:
                 active = self.get_active_artifact_metadata()
                 statuses = store.list_statuses()
                 enabled_statuses = [status for status in statuses if status.enabled]
-                refresh_requested = bool(store.get_refresh_requested())
+                refresh_token = int(store.get_refresh_requested())
+                refresh_requested = refresh_token > 0
                 settings_version = store.get_settings_version()
                 # Subscription artifacts are shared; proxy enablement controls
                 # Squid routing and must not empty another proxy's artifact.
@@ -1269,12 +1270,12 @@ class AdblockArtifactStore:
                     )
                     if bool(result.get("changed")):
                         nudge_registered_proxies(force=False)
-                    if bool(result.get("ok")):
-                        # A completed build consumed the refresh request; lists
-                        # whose download failed are retried after the
-                        # per-list download backoff, not on every poll.
-                        with contextlib.suppress(Exception):
-                            store.clear_refresh_requested()
+                    if bool(result.get("ok")) and refresh_requested:
+                        # A completed build consumed the observed refresh
+                        # request; lists whose download failed are retried after
+                        # the per-list download backoff, not on every poll. A
+                        # newer request made during the build stays pending.
+                        store.clear_refresh_requested(refresh_token)
                     if not bool(result.get("ok")) or bool(
                         result.get("download_pending"),
                     ):

@@ -815,7 +815,7 @@ def test_live_adblock_list_settings_refresh_and_flush_workflows(
             cache_ttl=int(original_settings.get("cache_ttl") or 0),
             cache_max=int(original_settings.get("cache_max") or 0),
         )
-        store.clear_refresh_requested()
+        store.clear_refresh_requested(store.get_refresh_requested())
         _with_proxy_id(LIVE_CONFIG.primary_proxy_id, store.mark_cache_flushed)
 
 
@@ -825,7 +825,7 @@ def test_live_proxy_sync_materializes_adblock_artifact_revision(
     store = _adblock_store()
     # Drain refresh operations queued by the preceding workflow before publishing
     # this fixture; an already-running compiler could otherwise supersede it.
-    store.clear_refresh_requested()
+    store.clear_refresh_requested(store.get_refresh_requested())
     _sync_primary_proxy(admin_client, force=False)
 
     artifact_dir = tmp_path / "adblock-artifact"

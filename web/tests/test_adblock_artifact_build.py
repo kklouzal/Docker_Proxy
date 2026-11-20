@@ -327,7 +327,8 @@ def test_cache_flush_read_failure_is_not_reported_as_no_request(monkeypatch) -> 
             return False
 
         def execute(self, *args, **kwargs):
-            raise RuntimeError("adblock meta read failed")
+            msg = "adblock meta read failed"
+            raise RuntimeError(msg)
 
     monkeypatch.setattr(store, "_connect", _FailingConn)
     monkeypatch.setattr(
@@ -1164,7 +1165,7 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
     lists_dir.mkdir(parents=True, exist_ok=True)
     list_path = lists_dir / "easylist.txt"
     list_path.write_text("||cached.example^\n", encoding="utf-8")
-    cleared: list[bool] = []
+    cleared: list[int] = []
     nudges: list[bool] = []
     sleeps: list[float] = []
 
@@ -1194,8 +1195,8 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
         def should_update(self, *_args, **_kwargs) -> bool:
             return False
 
-        def clear_refresh_requested(self) -> None:
-            cleared.append(True)
+        def clear_refresh_requested(self, observed: int) -> None:
+            cleared.append(observed)
 
     monkeypatch.setattr(store_module, "get_adblock_store", FakeStore)
     monkeypatch.setattr(
@@ -1247,7 +1248,7 @@ def test_background_loop_nudges_changed_artifact_even_when_download_pending(
     assert nudges == [False]
     # The completed build consumed the refresh; the pending list is retried by
     # its download backoff instead of a forced re-download on every poll.
-    assert cleared == [True]
+    assert cleared == [1]
     assert sleeps == [30.0]
 
 
@@ -1749,7 +1750,7 @@ def _run_background_loop_due_check(
                 self.update_interval_seconds
             )
 
-        def clear_refresh_requested(self) -> None:
+        def clear_refresh_requested(self, _observed: int) -> None:
             self.cleared += 1
 
     fake_store = FakeStore()
@@ -1937,7 +1938,8 @@ def test_background_loop_builds_when_twelve_hour_download_is_due(
             "source_kind": "background",
         }
     ]
-    assert cleared == 1
+    # No operator refresh was pending, so there is no request token to clear.
+    assert cleared == 0
     assert sleeps == [30.0]
 
 

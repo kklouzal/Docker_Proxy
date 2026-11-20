@@ -3279,33 +3279,51 @@ class ProxyRuntime:
             "degraded": not snapshot_ok,
         }
 
-    def _build_adblock_artifact_for_runtime_operation(self) -> dict[str, Any]:
-        refresh_lists = False
-        with suppress(Exception):
-            refresh_lists = bool(self.adblock_store.get_refresh_requested())
-        try:
-            result = self.adblock_artifacts.build_active_artifact(
-                refresh_lists=refresh_lists,
-                created_by="proxy-runtime",
-                source_kind="background",
-            )
-        except Exception as exc:
+    def _build_adblock_artifact_for_runtime_operation(self) -> dict[str, Any] | None:
+        """Honor a pending operator refresh; None means no request is pending.
+
+        Only the observed request token is cleared, so a refresh requested while
+        the build runs stays pending for the next build.
+        """
+
+        def failure(exc: Exception, default: str) -> dict[str, Any]:
             return {
                 "ok": False,
                 "changed": False,
-                "detail": public_error_message(
-                    exc,
-                    default="Adblock artifact build failed.",
-                ),
+                "detail": public_error_message(exc, default=default),
                 "revision_id": None,
                 "adblock_settings_version": None,
                 "artifact_sha256": "",
                 "download_pending": False,
             }
+
+        try:
+            refresh_requested = int(self.adblock_store.get_refresh_requested())
+        except Exception as exc:
+            return failure(exc, "Adblock refresh request could not be read.")
+        if not refresh_requested:
+            return None
+        try:
+            result = self.adblock_artifacts.build_active_artifact(
+                refresh_lists=True,
+                created_by="proxy-runtime",
+                source_kind="background",
+            )
+        except Exception as exc:
+            return failure(exc, "Adblock artifact build failed.")
         revision = result.get("revision")
         if bool(result.get("ok")) and not bool(result.get("download_pending")):
-            with suppress(Exception):
-                self.adblock_store.clear_refresh_requested()
+            try:
+                self.adblock_store.clear_refresh_requested(refresh_requested)
+            except Exception:
+                # The build result stands; the uncleared request only causes
+                # one redundant rebuild later.
+                log_exception_throttled(
+                    logger,
+                    "proxy.runtime.adblock_refresh_clear",
+                    interval_seconds=300.0,
+                    message="Failed to clear the honored adblock refresh request",
+                )
         return {
             "ok": bool(result.get("ok")),
             "changed": bool(result.get("changed")),
@@ -4812,19 +4830,12 @@ class ProxyRuntime:
             return policy_result
 
         if _operations_request_adblock_artifact_build(operations):
-            build_still_requested = True
-            try:
-                build_still_requested = bool(self.adblock_store.get_refresh_requested())
-            except Exception:
-                build_still_requested = True
-            if not build_still_requested:
+            adblock_build_result = self._build_adblock_artifact_for_runtime_operation()
+            if adblock_build_result is None:
                 detail_parts.append(
                     "Queued adblock artifact build request was already cleared; reconciling the active adblock artifact.",
                 )
             else:
-                adblock_build_result = (
-                    self._build_adblock_artifact_for_runtime_operation()
-                )
                 if str(adblock_build_result.get("detail") or "").strip():
                     detail_parts.append(str(adblock_build_result["detail"]).strip())
                 if not bool(adblock_build_result.get("ok")):

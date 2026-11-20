@@ -8646,7 +8646,7 @@ def test_sync_from_db_reports_cache_clear_as_runtime_change(monkeypatch) -> None
 def test_sync_from_db_builds_adblock_artifact_for_build_operation() -> None:
     runtime = _runtime_shell()
     build_calls: list[dict[str, object]] = []
-    cleared_refresh: list[bool] = []
+    cleared_refresh: list[int] = []
 
     runtime.ensure_registered = lambda: None
     runtime.bootstrap_revision_if_missing = lambda: None
@@ -8679,8 +8679,8 @@ def test_sync_from_db_builds_adblock_artifact_for_build_operation() -> None:
     )
     runtime.registry = SimpleNamespace(mark_apply_result=lambda *args, **kwargs: None)
     runtime.adblock_store = SimpleNamespace(
-        get_refresh_requested=lambda: 1,
-        clear_refresh_requested=lambda: cleared_refresh.append(True),
+        get_refresh_requested=lambda: 1700000000,
+        clear_refresh_requested=cleared_refresh.append,
     )
     runtime.adblock_artifacts = SimpleNamespace(
         build_active_artifact=lambda **kwargs: (
@@ -8730,7 +8730,7 @@ def test_sync_from_db_builds_adblock_artifact_for_build_operation() -> None:
             "source_kind": "background",
         }
     ]
-    assert cleared_refresh == [True]
+    assert cleared_refresh == [1700000000]
 
 
 def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() -> None:
@@ -8777,7 +8777,7 @@ def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() 
     runtime.registry = SimpleNamespace(mark_apply_result=lambda *args, **kwargs: None)
     runtime.adblock_store = SimpleNamespace(
         get_refresh_requested=lambda: 0,
-        clear_refresh_requested=lambda: (_ for _ in ()).throw(
+        clear_refresh_requested=lambda _observed: (_ for _ in ()).throw(
             AssertionError("cleared build operation should not clear refresh again")
         ),
     )
@@ -8818,6 +8818,32 @@ def test_sync_from_db_skips_cleared_adblock_build_and_applies_active_revision() 
     assert result["executed_operation_types"] == ["adblock_refresh"]
     assert "build request was already cleared" in result["detail"]
     assert adblock_calls == [True]
+
+
+def test_runtime_adblock_build_fails_when_refresh_request_unreadable() -> None:
+    runtime = _runtime_shell()
+
+    def unreadable() -> int:
+        msg = "refresh request read failed"
+        raise RuntimeError(msg)
+
+    runtime.adblock_store = SimpleNamespace(
+        get_refresh_requested=unreadable,
+        clear_refresh_requested=lambda _observed: (_ for _ in ()).throw(
+            AssertionError("an unread request must not be cleared")
+        ),
+    )
+    runtime.adblock_artifacts = SimpleNamespace(
+        build_active_artifact=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("build must not run without the request state")
+        )
+    )
+
+    result = runtime._build_adblock_artifact_for_runtime_operation()
+
+    assert result is not None
+    assert result["ok"] is False
+    assert result["detail"]
 
 
 def test_sync_certificate_bundle_rolls_back_material_after_restart_failure(
