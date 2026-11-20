@@ -4,7 +4,6 @@ import contextlib
 import email.utils
 import ipaddress
 import logging
-import os
 import pathlib
 import re
 from typing import Any
@@ -13,7 +12,11 @@ from services.squid_config_forms import (
     DEFAULT_CACHE_POLICY_RULES,
     DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES,
     DEFAULT_REFRESH_PATTERNS,
+    _clamp_port,
+    _default_intercept_port,
+    _first_available_port,
     coerce_config_bool,
+    max_squid_workers,
 )
 from services.squid_core import SquidController as _CoreSquidController
 
@@ -808,12 +811,7 @@ class SquidController(_CoreSquidController):
         vary_ignore_expire_on = bool_value("vary_ignore_expire_on", False)
 
         workers = int_value("workers", 1, minimum=1)
-        try:
-            max_workers = int((os.environ.get("MAX_WORKERS") or "4").strip())
-        except Exception:
-            max_workers = 4
-        max_workers = min(4, max(1, max_workers))
-        workers = min(max_workers, workers)
+        workers = min(max_squid_workers(), workers)
 
         if cache_dir_type == "rock":
             cache_dir_parts = [
@@ -1180,25 +1178,6 @@ class SquidController(_CoreSquidController):
         with pathlib.Path(path).open(encoding="utf-8") as handle:
             return handle.read()
 
-    def _coerce_port(self, value: Any, default: int) -> int:
-        try:
-            parsed = int(str(value or "").strip() or str(default))
-        except Exception:
-            parsed = int(default)
-        return min(65535, max(1, parsed))
-
-    def _default_intercept_port(self, explicit_port: int) -> int:
-        return explicit_port + 1 if explicit_port < 65535 else 3129
-
-    def _first_available_port(self, preferred: int, used_ports: set[int]) -> int:
-        candidate = self._coerce_port(preferred, 3130)
-        for _ in range(65535):
-            if candidate not in used_ports:
-                return candidate
-            candidate = 1 if candidate >= 65535 else candidate + 1
-        msg = "No available TCP listener ports remain."
-        raise ValueError(msg)
-
     def _logical_config_lines(self, text: str) -> list[tuple[list[str], str]]:
         logical: list[tuple[list[str], str]] = []
         pending: list[str] = []
@@ -1223,14 +1202,14 @@ class SquidController(_CoreSquidController):
         if not token:
             return None
         if token.isdigit():
-            return self._coerce_port(token, 3128)
+            return _clamp_port(token, 3128)
         if (token.startswith("[") and "]:" in token) or ":" in token:
             candidate = token.rsplit(":", 1)[1]
         else:
             return None
         if not candidate.isdigit():
             return None
-        return self._coerce_port(candidate, 3128)
+        return _clamp_port(candidate, 3128)
 
     def _http_port_listener_settings(self, text: str) -> dict[str, Any]:
         explicit_port: int | None = None
@@ -1273,7 +1252,7 @@ class SquidController(_CoreSquidController):
             "intercept_enabled": intercept_port is not None,
             "intercept_port": intercept_port
             if intercept_port is not None
-            else self._default_intercept_port(explicit),
+            else _default_intercept_port(explicit),
             "https_intercept_enabled": https_intercept_port is not None,
             "https_intercept_port": https_intercept_port
             if https_intercept_port is not None
@@ -1288,7 +1267,7 @@ class SquidController(_CoreSquidController):
         dynamic_cert_mem_cache_size_mb: int,
     ) -> list[str]:
         return [
-            f"http_port 0.0.0.0:{self._coerce_port(port, 3128)} ssl-bump \\",
+            f"http_port 0.0.0.0:{_clamp_port(port, 3128)} ssl-bump \\",
             "\tcert=/etc/squid/ssl/certs/ca.crt \\",
             "\tkey=/etc/squid/ssl/certs/ca.key \\",
             "\tgenerate-host-certificates=on \\",
@@ -1299,7 +1278,7 @@ class SquidController(_CoreSquidController):
         return [
             "# BEGIN SQUID-UI INTERCEPT LISTENER",
             "# HTTP NAT intercept listener. Requires external REDIRECT/DNAT rules; do not expose directly.",
-            f"http_port 0.0.0.0:{self._coerce_port(port, 3129)} intercept",
+            f"http_port 0.0.0.0:{_clamp_port(port, 3129)} intercept",
             "# END SQUID-UI INTERCEPT LISTENER",
         ]
 
@@ -1311,7 +1290,7 @@ class SquidController(_CoreSquidController):
         return [
             "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER",
             "# HTTPS NAT intercept listener. Requires TCP/443 REDIRECT/DNAT and explicit operator consent.",
-            f"https_port 0.0.0.0:{self._coerce_port(port, 3130)} intercept ssl-bump \\",
+            f"https_port 0.0.0.0:{_clamp_port(port, 3130)} intercept ssl-bump \\",
             "\tname=https_intercept \\",
             "\tcert=/etc/squid/ssl/certs/ca.crt \\",
             "\tkey=/etc/squid/ssl/certs/ca.key \\",
@@ -1326,16 +1305,16 @@ class SquidController(_CoreSquidController):
         options: dict[str, Any],
         dynamic_cert_mem_cache_size_mb: int,
     ) -> str:
-        explicit_port = self._coerce_port(options.get("explicit_proxy_port"), 3128)
+        explicit_port = _clamp_port(options.get("explicit_proxy_port"), 3128)
         intercept_enabled = coerce_config_bool(options.get("intercept_enabled_on"))
-        intercept_port = self._coerce_port(
+        intercept_port = _clamp_port(
             options.get("intercept_port"),
-            self._default_intercept_port(explicit_port),
+            _default_intercept_port(explicit_port),
         )
         https_intercept_enabled = coerce_config_bool(
             options.get("https_intercept_enabled_on"),
         )
-        https_intercept_port = self._coerce_port(
+        https_intercept_port = _clamp_port(
             options.get("https_intercept_port"),
             3130 if explicit_port != 3130 else 3131,
         )
@@ -1385,12 +1364,12 @@ class SquidController(_CoreSquidController):
                 continue
             unmanaged_listener_ports.add(port)
 
-        explicit_port = self._first_available_port(
+        explicit_port = _first_available_port(
             explicit_port,
             unmanaged_listener_ports,
         )
         if intercept_enabled:
-            intercept_port = self._first_available_port(
+            intercept_port = _first_available_port(
                 intercept_port,
                 {explicit_port, *unmanaged_listener_ports},
             )
@@ -1399,7 +1378,7 @@ class SquidController(_CoreSquidController):
             intercept_port if intercept_enabled else None,
             *unmanaged_listener_ports,
         }
-        https_intercept_port = self._first_available_port(
+        https_intercept_port = _first_available_port(
             https_intercept_port,
             used_ports,
         )

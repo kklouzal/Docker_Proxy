@@ -178,6 +178,7 @@ from services.proxy_sync import canonical_registered_proxy_id, request_proxy_rec
 from services.runtime_helpers import env_float as _env_float
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import extract_domain as _extract_domain
+from services.runtime_helpers import int_or as _safe_int
 from services.runtime_helpers import normalize_config_bool
 from services.safe_browsing_v5 import SafeBrowsingStore
 from services.saml_auth import (
@@ -201,6 +202,7 @@ from services.squid_config_forms import (
     coerce_config_bool,
     get_config_ui_field_map,
     get_config_ui_sections,
+    max_squid_workers,
     newly_enabled_cache_overrides,
     normalize_safe_form_kind,
     parse_cache_override_form,
@@ -2120,20 +2122,6 @@ def _cached_observability_result(
         copy_value=_copy_cached_value,
         prune=_prune_observability_result_cache,
     )
-
-
-def _max_workers() -> int:
-    """Upper bound for Squid workers.
-
-    Must match the backend Squid controller clamp to avoid the UI silently
-    downscaling an existing config.
-    """
-    try:
-        v = int((os.environ.get("MAX_WORKERS") or "4").strip())
-    except Exception:
-        v = 4
-    # Hard-cap worker count to keep SMP sizing sane for this container profile.
-    return min(4, max(1, v))
 
 
 # Global request body limit (bytes). Keep reasonably above common form posts.
@@ -4105,7 +4093,7 @@ def logout():
 
 
 def _options_from_tunables(tunables: dict[str, Any]) -> dict[str, Any]:
-    return build_template_options(tunables, max_workers=_max_workers())
+    return build_template_options(tunables, max_workers=max_squid_workers())
 
 
 _disable_background = (os.environ.get("DISABLE_BACKGROUND") or "").strip() == "1"
@@ -4140,13 +4128,6 @@ _background_coordinator = BackgroundServiceCoordinator(
     (_stop_adblock_background, _stop_webfilter_background, stop_housekeeping),
 )
 atexit.register(_background_coordinator.stop)
-
-
-def _safe_int(value: object, default: int = 0) -> int:
-    try:
-        return int(value or default)
-    except Exception:
-        return int(default)
 
 
 def _present_adblock_artifact_summary(summary: object | None) -> dict[str, Any]:
@@ -9737,7 +9718,7 @@ def squid_config():
                 return _redirect_config(tab, error=True, msg=detail)
     current_config = _current_managed_config()
     tunables = squid_controller.get_tunable_options(current_config)
-    managed_options = build_template_options(tunables, max_workers=_max_workers())
+    managed_options = build_template_options(tunables, max_workers=max_squid_workers())
     overrides = squid_controller.get_cache_override_options(current_config)
     section_map = {section.key: section for section in config_sections}
     active_section = section_map.get(tab)
@@ -9852,7 +9833,7 @@ def apply_safe_caching():
             tunables,
             request.form,
             form_kind=form_kind,
-            max_workers=_max_workers(),
+            max_workers=max_squid_workers(),
         )
         ok, detail = _publish_template_config(
             options,

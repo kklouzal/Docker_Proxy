@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any
@@ -362,6 +363,19 @@ def _resolve_dynamic_cert_mem_cache_mb(tunables: TunableMap, max_workers: int) -
     workers = _current_workers(tunables, max_workers)
     derived = workers * 128
     return min(512, max(128, derived))
+
+
+def max_squid_workers() -> int:
+    """Upper bound for Squid workers from MAX_WORKERS, hard-capped at 4.
+
+    Shared by the UI form builder and the Squid controller so the UI never
+    silently downscales an existing config.
+    """
+    try:
+        value = int((os.environ.get("MAX_WORKERS") or "4").strip())
+    except Exception:
+        value = 4
+    return min(4, max(1, value))
 
 
 def _clamp_port(value: Any, default: int) -> int:

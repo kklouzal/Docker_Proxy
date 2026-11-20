@@ -430,3 +430,11 @@ def sha256_text(text: str) -> str:
     Same encoding as the persisted config-revision digest.
     """
     return hashlib.sha256((text or "").encode("utf-8", errors="replace")).hexdigest()
+
+
+def int_or(value: object, default: int = 0) -> int:
+    """``int(value)`` for display/report values; falsy or unparsable -> default."""
+    try:
+        return int(value or default)
+    except Exception:
+        return int(default)

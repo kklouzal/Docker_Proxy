@@ -20,6 +20,7 @@ from services.proxy_write_guard import guarded_proxy_write
 from services.runtime_helpers import cache_hit_sql as _cache_hit_sql
 from services.runtime_helpers import escape_like as _escape_like
 from services.runtime_helpers import extract_domain as _extract_domain
+from services.runtime_helpers import int_or as _int_or
 from services.runtime_helpers import not_cached_reason_sql as _not_cached_reason_sql
 from services.runtime_helpers import present_value_sql as _present_value_sql
 from services.ssl_errors_store import get_ssl_errors_store
@@ -41,13 +42,6 @@ def _pct(part: int, whole: int) -> float:
     if whole <= 0:
         return 0.0
     return round((float(part) / float(whole)) * 100.0, 1)
-
-
-def _int_or(value: object, default: int) -> int:
-    try:
-        return int(value or default)
-    except Exception:
-        return int(default)
 
 
 def normalize_runtime_health_state_errors(value: object) -> list[str]:
