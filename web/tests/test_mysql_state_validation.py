@@ -304,6 +304,24 @@ def test_mysql_state_validation_fails_missing_operation_proxy_id_before_invarian
     ]
 
 
+def test_mysql_state_validation_fails_missing_operation_force_sync_column() -> None:
+    # OperationLedger.create_operation writes force_sync on every queued op.
+    from services import mysql_state_validation  # type: ignore
+
+    result = mysql_state_validation.validate_mysql_state(
+        _ValidationConn(
+            mysql_state_validation,
+            missing_columns=(("proxy_operations", "force_sync"),),
+        ),
+        phase="post-restore",
+    )
+
+    assert result.ok is False
+    assert result.errors == [
+        "missing generated/idempotency columns: proxy_operations.force_sync"
+    ]
+
+
 def test_mysql_state_validation_fails_missing_operation_progress_index() -> None:
     from services import mysql_state_validation  # type: ignore
 

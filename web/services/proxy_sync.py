@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from services.errors import public_error_message, redact_sensitive_text
 from services.operation_ledger import (
@@ -32,8 +33,6 @@ def _ephemeral_operation(
     force: bool = False,
 ) -> ProxyOperation:
     """Build an in-memory operation for paths that cannot create a DB ledger row."""
-    import time
-
     now = int(time.time())
     try:
         normalized_request_hash = normalize_operation_request_hash(request_hash)
@@ -104,64 +103,48 @@ def request_proxy_reconcile(
             force=force,
         )
     except ValueError as exc:
-        error_detail = public_error_message(
+        failure_detail = _not_queued_detail(
             exc,
+            reason="the operation identity is invalid",
             default="The operation identity is invalid.",
-            max_len=500,
-        )
-        failure_detail = (
-            "Proxy reconcile was not queued because the operation identity is invalid."
-        )
-        if error_detail:
-            failure_detail = f"{failure_detail} {error_detail}"
-        if detail:
-            failure_detail = (
-                f"{failure_detail}\n{redact_sensitive_text(detail)}".strip()
-            )
-        return _ephemeral_operation(
-            proxy_id,
-            status="failed",
-            operation_type=operation_type,
-            subject=subject,
-            summary=summary,
-            target_kind=target_kind,
-            target_ref=target_ref,
-            rollback_kind=rollback_kind,
-            rollback_ref=rollback_ref,
-            request_hash=request_hash,
-            detail=failure_detail,
-            created_by=created_by,
-            force=force,
+            detail=detail,
         )
     except Exception as exc:
-        error_detail = public_error_message(
+        failure_detail = _not_queued_detail(
             exc,
+            reason="the operation ledger is unavailable",
             default="The operation ledger is unavailable.",
-            max_len=500,
+            detail=detail,
         )
-        failure_detail = "Proxy reconcile was not queued because the operation ledger is unavailable."
-        if error_detail:
-            failure_detail = f"{failure_detail} {error_detail}"
-        if detail:
-            failure_detail = (
-                f"{failure_detail}\n{redact_sensitive_text(detail)}".strip()
-            )
-        return _ephemeral_operation(
-            proxy_id,
-            status="failed",
-            operation_type=operation_type,
-            subject=subject,
-            summary=summary,
-            target_kind=target_kind,
-            target_ref=target_ref,
-            rollback_kind=rollback_kind,
-            rollback_ref=rollback_ref,
-            request_hash=request_hash,
-            detail=failure_detail,
-            created_by=created_by,
-            force=force,
-        )
-    return op
+    else:
+        return op
+    return _ephemeral_operation(
+        proxy_id,
+        status="failed",
+        operation_type=operation_type,
+        subject=subject,
+        summary=summary,
+        target_kind=target_kind,
+        target_ref=target_ref,
+        rollback_kind=rollback_kind,
+        rollback_ref=rollback_ref,
+        request_hash=request_hash,
+        detail=failure_detail,
+        created_by=created_by,
+        force=force,
+    )
+
+
+def _not_queued_detail(
+    exc: BaseException, *, reason: str, default: str, detail: str
+) -> str:
+    failure_detail = f"Proxy reconcile was not queued because {reason}."
+    error_detail = public_error_message(exc, default=default, max_len=500)
+    if error_detail:
+        failure_detail = f"{failure_detail} {error_detail}"
+    if detail:
+        failure_detail = f"{failure_detail}\n{redact_sensitive_text(detail)}".strip()
+    return failure_detail
 
 
 def canonical_registered_proxy_id(proxy: object) -> str:
@@ -171,10 +154,6 @@ def canonical_registered_proxy_id(proxy: object) -> str:
     if not raw_proxy_id or raw_proxy_id != canonical_proxy_id:
         return ""
     return canonical_proxy_id
-
-
-def _canonical_registered_proxy_id(proxy: object) -> str:
-    return canonical_registered_proxy_id(proxy)
 
 
 def nudge_registered_proxies(*, force: bool = False) -> tuple[int, int]:

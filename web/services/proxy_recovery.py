@@ -16,6 +16,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
 
+from services.runtime_helpers import fsync_parent_dir
+
 # Recovery bundles are private disaster-recovery material: they may contain
 # declarative policy, certificates, directory/SAML settings, and future secret
 # fields.  This module deliberately keeps all state local to the durable proxy
@@ -508,7 +510,7 @@ def get_or_create_signing_key(
             os.link(tmp_path, path)
         except FileExistsError:
             return read_signing_key(normalized, root)
-        _fsync_dir(root)
+        fsync_parent_dir(path)
     finally:
         try:
             tmp_path.unlink()
@@ -919,7 +921,7 @@ def _atomic_write_private(path: Path, data: bytes, mode: int) -> None:
         Path(tmp_path).chmod(mode)
         Path(tmp_path).replace(path)
         Path(path).chmod(mode)
-        _fsync_dir(root)
+        fsync_parent_dir(path)
     finally:
         try:
             tmp_path.unlink()
@@ -968,22 +970,6 @@ def _stat_regular_nosymlink(path: Path) -> os.stat_result:
         msg = "recovery file is not a regular file"
         raise _recovery_error(msg)
     return stat_result
-
-
-def _fsync_dir(path: Path) -> None:
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
-    try:
-        fd = os.open(path, flags)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        return
-    finally:
-        os.close(fd)
 
 
 validate_recovery_registry()

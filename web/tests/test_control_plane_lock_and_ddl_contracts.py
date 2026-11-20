@@ -271,3 +271,53 @@ def test_stale_connection_classifier_uses_mysql_error_codes() -> None:
         pymysql.err.IntegrityError(1062, "Duplicate entry '2006' for key 'PRIMARY'")
     )
     assert not looks_like_stale_connection(RuntimeError("lost connection 2013"))
+
+
+def test_recovery_bundle_write_reports_directory_fsync_failure(
+    monkeypatch, tmp_path
+) -> None:
+    # A failed directory fsync means the rename may not be durable; it must
+    # surface instead of being silently ignored.
+    import errno
+    import os
+    import stat
+
+    from services import proxy_recovery
+
+    real_fsync = os.fsync
+
+    def fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "I/O error")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+
+    with pytest.raises(OSError, match="I/O error"):
+        proxy_recovery._atomic_write_private(
+            tmp_path / "edge.bundle.json", b"{}", 0o600
+        )
+
+
+def test_recovery_bundle_write_tolerates_unsupported_directory_fsync(
+    monkeypatch, tmp_path
+) -> None:
+    import errno
+    import os
+    import stat
+
+    from services import proxy_recovery
+
+    real_fsync = os.fsync
+
+    def fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "unsupported")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    target = tmp_path / "edge.bundle.json"
+
+    proxy_recovery._atomic_write_private(target, b"{}", 0o600)
+
+    assert target.read_bytes() == b"{}"
