@@ -895,7 +895,7 @@ def test_new_canonical_runtime_can_claim_and_complete_after_rename(
     assert conn.row["claim_token"] is None
 
 
-def test_list_recent_since_preserves_claim_token(monkeypatch) -> None:
+def test_list_operations_preserves_claim_token(monkeypatch) -> None:
     from services.operation_ledger import OperationLedger
 
     row = _operation_row(
@@ -928,18 +928,14 @@ def test_list_recent_since_preserves_claim_token(monkeypatch) -> None:
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
 
-    recent = ledger.list_recent_since(
-        "edge-a",
-        after_updated_ts=123,
-        after_id=6,
-        limit=5,
-    )
+    recent = ledger.list_operations("edge-a", limit=5)
 
     assert [op.operation_id for op in recent] == [7]
     assert recent[0].claim_token == "claim-recent"
     select_sql, select_params = conn.queries[0]
     assert "claim_token" in select_sql
-    assert select_params == ("edge-a", 123, 123, 6, 5)
+    assert "ORDER BY updated_ts DESC, id DESC" in select_sql
+    assert select_params == ("edge-a", 5)
 
 
 def test_requeue_stale_applying_recovers_without_active_key_collisions(

@@ -586,21 +586,6 @@ class FakeOperationLedger:
                 counts[op.status] += 1
         return counts
 
-    def list_recent_since(
-        self,
-        proxy_id: object,
-        *,
-        after_updated_ts: int = 0,
-        after_id: int = 0,
-        limit: int = 100,
-    ) -> list[Any]:
-        return [
-            op
-            for op in self.list_operations(proxy_id, limit=limit)
-            if op.updated_ts > after_updated_ts
-            or (op.updated_ts == after_updated_ts and op.operation_id > after_id)
-        ]
-
     def get_operation(self, operation_id: object) -> Any | None:
         target = int(operation_id or 0)
         return next((op for op in self.operations if op.operation_id == target), None)

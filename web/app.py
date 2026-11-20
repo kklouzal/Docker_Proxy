@@ -2597,20 +2597,6 @@ def _query_int_arg(
     )
 
 
-def _query_nonnegative_int_arg(name: str, *, default: int = 0) -> int:
-    raw_value = request.args.get(name)
-    if raw_value is None or raw_value == "":
-        return default
-    message = f"{name} must be a non-negative integer."
-    try:
-        value = int(str(raw_value).strip())
-    except Exception as exc:
-        raise ValueError(message) from exc
-    if value < 0:
-        raise ValueError(message)
-    return value
-
-
 def _positive_form_id(name: str, message: str) -> int:
     value = request.form.get(name)
     try:
@@ -6779,33 +6765,12 @@ def api_logs_status():
 @app.route("/api/operations", methods=["GET"])
 def api_operations():
     proxy_id = get_proxy_id()
-    try:
-        after_ts = _query_nonnegative_int_arg("after_updated_ts")
-        after_id = _query_nonnegative_int_arg("after_id")
-    except ValueError as exc:
-        return jsonify(
-            {
-                "ok": False,
-                "proxy_id": proxy_id,
-                "operations": [],
-                "counts": {},
-                "error": public_error_message(exc),
-            },
-        ), 400
     ledger = get_operation_ledger()
     try:
-        if after_ts or after_id:
-            operations = ledger.list_recent_since(
-                proxy_id,
-                after_updated_ts=after_ts,
-                after_id=after_id,
-                limit=OPERATION_HISTORY_LIMIT,
-            )
-        else:
-            operations = ledger.list_operations(
-                proxy_id,
-                limit=OPERATION_HISTORY_LIMIT,
-            )
+        operations = ledger.list_operations(
+            proxy_id,
+            limit=OPERATION_HISTORY_LIMIT,
+        )
         counts = ledger.counts_by_status(proxy_id)
         return jsonify(
             {
