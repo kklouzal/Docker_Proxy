@@ -6175,7 +6175,10 @@ http_access deny all
 
     assert active_sha != normalized_sha
     assert result["ok"] is True
-    assert result["active_revision_sha"] == normalized_sha
+    # The revision keeps its database identity (the Admin UI compares it with
+    # the saved revision); the normalized SHA is reported as the effective one.
+    assert result["active_revision_sha"] == active_sha
+    assert result["effective_config_sha"] == normalized_sha
     assert result["current_config_sha"] == normalized_sha
     assert result["state_errors"] == []
 

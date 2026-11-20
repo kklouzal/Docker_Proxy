@@ -259,61 +259,6 @@ replace_or_append_config_line() {
     fi
 }
 
-extract_sslcrtd_child_option() {
-    file_path="$1"
-    option_name="$2"
-    if [ ! -f "$file_path" ]; then
-        printf ''
-        return 0
-    fi
-    awk -v opt="$option_name" '
-        /^[[:space:]]*#/ { next }
-        tolower($1)=="sslcrtd_children" {
-            for (i = 3; i <= NF; i++) {
-                if (index($i, "=") == 0) {
-                    continue
-                }
-                split($i, parts, "=")
-                if (tolower(parts[1]) == opt && parts[2] ~ /^[0-9]+$/) {
-                    print parts[2]
-                    exit
-                }
-            }
-            exit
-        }
-    ' "$file_path" 2>/dev/null || true
-}
-
-build_sslcrtd_children_value() {
-    file_path="$1"
-    children="$2"
-    startup="$(extract_sslcrtd_child_option "$file_path" "startup")"
-    idle="$(extract_sslcrtd_child_option "$file_path" "idle")"
-    queue_size="$(extract_sslcrtd_child_option "$file_path" "queue-size")"
-
-    if [ -z "$startup" ]; then
-        startup=2
-    fi
-    if [ -z "$idle" ]; then
-        idle=1
-    fi
-    if [ -z "$queue_size" ]; then
-        queue_size=32
-    fi
-
-    # Squid caps these subordinate helper counts at the configured maximum and
-    # warns on every config parse. Preserve valid explicit values, but normalize
-    # stale values when an environment override lowers the child maximum.
-    if [ "$startup" -gt "$children" ]; then
-        startup="$children"
-    fi
-    if [ "$idle" -gt "$children" ]; then
-        idle="$children"
-    fi
-
-    printf '%s startup=%s idle=%s queue-size=%s\n' "$children" "$startup" "$idle" "$queue_size"
-}
-
 normalize_http_port_listeners() {
     file_path="$1"
     if [ ! -f "$file_path" ]; then
@@ -598,23 +543,23 @@ apply_squid_perf_tuning() {
         return 0
     fi
 
+    # Keep the resolved worker count and fill only missing sizing directives
+    # with the derived defaults.
     replace_or_append_config_line "$file_path" "workers" "$SQUID_WORKERS"
-
-    if [ -n "${EXPLICIT_SQUID_CACHE_MEM_MB:-}" ] || ! config_has_directive "$file_path" "cache_mem"; then
+    if ! config_has_directive "$file_path" "cache_mem"; then
         replace_or_append_config_line "$file_path" "cache_mem" "$SQUID_CACHE_MEM_MB MB"
     fi
-
-    if [ -n "${EXPLICIT_SQUID_SSLCRTD_CHILDREN:-}" ] || ! config_has_directive "$file_path" "sslcrtd_children"; then
-        replace_or_append_config_line "$file_path" "sslcrtd_children" "$(build_sslcrtd_children_value "$file_path" "$SQUID_SSLCRTD_CHILDREN")"
+    if ! config_has_directive "$file_path" "sslcrtd_children"; then
+        replace_or_append_config_line "$file_path" "sslcrtd_children" "$SQUID_SSLCRTD_CHILDREN startup=2 idle=1 queue-size=32"
     fi
-
-    if [ -n "${EXPLICIT_SQUID_MAX_FILEDESCRIPTORS:-}" ] || ! config_has_directive "$file_path" "max_filedescriptors"; then
+    if ! config_has_directive "$file_path" "max_filedescriptors"; then
         replace_or_append_config_line "$file_path" "max_filedescriptors" "$SQUID_MAX_FILEDESCRIPTORS"
     fi
 
-    if [ -n "${EXPLICIT_SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-}" ] || ! grep -qi "dynamic_cert_mem_cache_size=" "$file_path" 2>/dev/null; then
-        sed -i -E "s#(dynamic_cert_mem_cache_size=)[0-9]+MB#\1${SQUID_DYNAMIC_CERT_MEM_CACHE_MB}MB#I" "$file_path" || true
-    fi
+    # Pin the host resource sizing overrides last. The proxy runtime applies the
+    # same overlay whenever it normalizes squid.conf, so this file is already the
+    # effective config for the active revision.
+    python3 /app/services/squid_host_sizing.py apply "$file_path"
 }
 
 # The adblock compile and policy include helpers below read MySQL. Probe it once
@@ -694,17 +639,32 @@ if [ -n "$TEMPLATE" ] && [ ! -f "$PERSISTED_SQUID_CONF_PATH" ]; then
     fi
 fi
 
+# Host resource sizing: validate the operator's sizing variables once, before
+# the defaults below are derived into the same names, and export the accepted
+# set for every proxy process. Set values pin their directives over the config
+# revision (services/squid_host_sizing.py); invalid values are ignored with a
+# warning.
+SQUID_HOST_SIZING_OVERRIDES="$(python3 /app/services/squid_host_sizing.py capture)"
+export SQUID_HOST_SIZING_OVERRIDES
+
+host_sizing_value() {
+    for pair in $SQUID_HOST_SIZING_OVERRIDES; do
+        case "$pair" in
+            "$1="*)
+                printf '%s' "${pair#*=}"
+                return 0
+                ;;
+        esac
+    done
+}
+
 # Resolve the authoritative Squid worker count.
 # Precedence:
-#   1) explicit SQUID_WORKERS env override (deployment/bootstrap override)
+#   1) SQUID_WORKERS host override
 #   2) persisted squid.conf workers line (web UI / config file authority)
 #   3) current config/template value
 #   4) safe fallback of 1
-EXPLICIT_SQUID_WORKERS="$(sanitize_positive_int "${SQUID_WORKERS:-}")"
-EXPLICIT_SQUID_CACHE_MEM_MB="$(sanitize_positive_int "${SQUID_CACHE_MEM_MB:-}")"
-EXPLICIT_SQUID_SSLCRTD_CHILDREN="$(sanitize_positive_int "${SQUID_SSLCRTD_CHILDREN:-}")"
-EXPLICIT_SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$(sanitize_nonnegative_int "${SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-}")"
-EXPLICIT_SQUID_MAX_FILEDESCRIPTORS="$(sanitize_positive_int "${SQUID_MAX_FILEDESCRIPTORS:-}")"
+EXPLICIT_SQUID_WORKERS="$(host_sizing_value SQUID_WORKERS)"
 PERSISTED_SQUID_WORKERS="$(extract_squid_workers_from_file "$PERSISTED_SQUID_CONF_PATH")"
 CONFIG_SQUID_WORKERS="$(extract_squid_workers_from_file /etc/squid/squid.conf)"
 
@@ -720,31 +680,16 @@ fi
 WORKERS="$(clamp_int "$WORKERS" 1 4)"
 export SQUID_WORKERS="$WORKERS"
 
-# Derive the rest of the process/helper counts from the resolved Squid worker count
-# unless the user explicitly overrides them.
-if [ -n "$EXPLICIT_SQUID_CACHE_MEM_MB" ]; then
-    export SQUID_CACHE_MEM_MB="$EXPLICIT_SQUID_CACHE_MEM_MB"
-elif [ -z "${SQUID_CACHE_MEM_MB:-}" ]; then
-    export SQUID_CACHE_MEM_MB=256
-fi
-if [ -n "$EXPLICIT_SQUID_SSLCRTD_CHILDREN" ]; then
-    export SQUID_SSLCRTD_CHILDREN="$EXPLICIT_SQUID_SSLCRTD_CHILDREN"
-elif [ -z "${SQUID_SSLCRTD_CHILDREN:-}" ]; then
-    SQUID_SSLCRTD_CHILDREN="$(recommend_sslcrtd_children "$WORKERS")"
-    export SQUID_SSLCRTD_CHILDREN
-fi
-if [ -n "$EXPLICIT_SQUID_DYNAMIC_CERT_MEM_CACHE_MB" ]; then
-    export SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$EXPLICIT_SQUID_DYNAMIC_CERT_MEM_CACHE_MB"
-elif [ -z "${SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-}" ]; then
-    SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$(recommend_dynamic_cert_cache_mb "$WORKERS")"
-    export SQUID_DYNAMIC_CERT_MEM_CACHE_MB
-fi
-if [ -n "$EXPLICIT_SQUID_MAX_FILEDESCRIPTORS" ]; then
-    export SQUID_MAX_FILEDESCRIPTORS="$EXPLICIT_SQUID_MAX_FILEDESCRIPTORS"
-elif [ -z "${SQUID_MAX_FILEDESCRIPTORS:-}" ]; then
-    SQUID_MAX_FILEDESCRIPTORS="$(recommend_nofile "$WORKERS")"
-    export SQUID_MAX_FILEDESCRIPTORS
-fi
+# Derive the remaining sizing defaults from the resolved worker count unless a
+# host override pins them. The defaults only fill directives a config lacks.
+SQUID_CACHE_MEM_MB="$(host_sizing_value SQUID_CACHE_MEM_MB)"
+export SQUID_CACHE_MEM_MB="${SQUID_CACHE_MEM_MB:-256}"
+SQUID_SSLCRTD_CHILDREN="$(host_sizing_value SQUID_SSLCRTD_CHILDREN)"
+export SQUID_SSLCRTD_CHILDREN="${SQUID_SSLCRTD_CHILDREN:-$(recommend_sslcrtd_children "$WORKERS")}"
+SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$(host_sizing_value SQUID_DYNAMIC_CERT_MEM_CACHE_MB)"
+export SQUID_DYNAMIC_CERT_MEM_CACHE_MB="${SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-$(recommend_dynamic_cert_cache_mb "$WORKERS")}"
+SQUID_MAX_FILEDESCRIPTORS="$(host_sizing_value SQUID_MAX_FILEDESCRIPTORS)"
+export SQUID_MAX_FILEDESCRIPTORS="${SQUID_MAX_FILEDESCRIPTORS:-$(recommend_nofile "$WORKERS")}"
 if [ -z "${ULIMIT_NOFILE:-}" ]; then
     export ULIMIT_NOFILE="$SQUID_MAX_FILEDESCRIPTORS"
 fi

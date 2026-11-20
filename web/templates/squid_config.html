@@ -61,6 +61,13 @@
             </div>
         </div>
         <div class="surface-note small">{{ config_runtime_state.detail }}</div>
+        {% if config_runtime_state.host_config_overrides %}
+            <div class="surface-note small" data-host-config-overrides>
+                Host-pinned on {{ active_proxy.display_name }}: the proxy container environment overrides these directives, so the saved revision's values for them are not in effect on this proxy:
+                {% for item in config_runtime_state.host_config_overrides %}<code class="mono">{{ item.directive }} {{ item.value }}</code> ({{ item.env }}){{ ', ' if not loop.last else '' }}{% endfor %}.
+                Change or unset those variables on the proxy to change them.
+            </div>
+        {% endif %}
         {% if config_runtime_state.latest_apply_ts %}
             <div class="surface-note small">Last proxy apply record: revision #{{ config_runtime_state.latest_apply_revision_id or 'n/a' }} · {{ 'ok' if config_runtime_state.latest_apply_ok else 'failed' }} · {{ fmt_ts(config_runtime_state.latest_apply_ts) }}</div>
         {% endif %}

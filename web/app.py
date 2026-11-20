@@ -1250,6 +1250,26 @@ def _latest_config_revision_operation(proxy_id: str, revision_id: int):
     )
 
 
+def _host_config_overrides_view(
+    runtime_health: dict[str, Any] | None,
+) -> list[dict[str, str]]:
+    """Directives the proxy pins from its container environment (bounded)."""
+    raw = (runtime_health or {}).get("host_config_overrides")
+    if not isinstance(raw, list):
+        return []
+    view: list[dict[str, str]] = []
+    for item in raw[:16]:
+        if not isinstance(item, dict):
+            continue
+        entry = {
+            key: clean_text(str(item.get(key) or ""), max_len=64)
+            for key in ("env", "directive", "value")
+        }
+        if entry["env"] and entry["directive"]:
+            view.append(entry)
+    return view
+
+
 def _config_runtime_state(
     proxy_id: str,
     *,
@@ -1292,6 +1312,12 @@ def _config_runtime_state(
     )
     runtime_active_sha = str((runtime_health or {}).get("active_revision_sha") or "")
     running_sha = str((runtime_health or {}).get("current_config_sha") or "")
+    # The proxy reports the SHA it runs for its active revision after
+    # normalization and its host resource sizing overlay.
+    runtime_effective_sha = str(
+        (runtime_health or {}).get("effective_config_sha") or "",
+    )
+    host_config_overrides = _host_config_overrides_view(runtime_health)
     latest_apply_revision_id = _safe_revision_id(
         getattr(latest_apply, "revision_id", 0),
     )
@@ -1312,7 +1338,13 @@ def _config_runtime_state(
         revision_id
         and revision_sha
         and running_sha
-        and revision_sha == running_sha
+        and (
+            revision_sha == running_sha
+            or (
+                runtime_active_sha == revision_sha
+                and runtime_effective_sha == running_sha
+            )
+        )
         and not runtime_active_sha_mismatch
         and (not running_revision_id or running_revision_id == revision_id)
     )
@@ -1394,6 +1426,7 @@ def _config_runtime_state(
         "runtime_active_revision_short_sha": _short_sha(runtime_active_sha),
         "running_config_sha": running_sha,
         "running_config_short_sha": _short_sha(running_sha),
+        "host_config_overrides": host_config_overrides,
         "latest_apply_revision_id": latest_apply_revision_id,
         "latest_apply_ok": bool(getattr(latest_apply, "ok", False))
         if latest_apply is not None

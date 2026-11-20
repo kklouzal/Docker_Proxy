@@ -13,6 +13,7 @@ from werkzeug.datastructures import MultiDict
 from .admin_route_test_utils import (
     FakeAdblockArtifacts,
     FakeAuditStore,
+    FakeConfigRevisions,
     FakeProxyClient,
     FakeRegistry,
     FakeSslfilterStore,
@@ -1524,6 +1525,115 @@ def test_api_squid_config_state_rejects_active_runtime_metadata_sha_mismatch(
     assert data["label"] == "Saved/runtime metadata mismatch"
     assert data["active_revision_sha"] == POLICY_SHA
     assert data["runtime_active_revision_sha"] == "previous-sha"
+
+
+def _host_sizing_revisions():
+    class Revisions(FakeConfigRevisions):
+        def get_active_revision_metadata(self, proxy_id):
+            assert proxy_id == "default"
+            return SimpleNamespace(
+                revision_id=5,
+                proxy_id="default",
+                config_sha256=POLICY_SHA,
+                source_kind="manual",
+                created_by="operator",
+                created_ts=10,
+                is_active=True,
+            )
+
+        def latest_apply_for_revision(self, proxy_id, revision_id):
+            return None
+
+    return Revisions()
+
+
+class _HostSizedProxyClient(RecordingProxyClient):
+    effective_sha = POLICY_SHA_B
+
+    def get_health(self, proxy_id, *_, timeout_seconds=None, **kwargs):
+        payload = super().get_health(
+            proxy_id, timeout_seconds=timeout_seconds, **kwargs
+        )
+        payload.update(
+            {
+                "active_revision_id": 5,
+                "active_revision_sha": POLICY_SHA,
+                "effective_config_sha": self.effective_sha,
+                "current_config_sha": POLICY_SHA_B,
+                "host_config_overrides": [
+                    {
+                        "env": "SQUID_CACHE_MEM_MB",
+                        "directive": "cache_mem",
+                        "value": "32 MB",
+                    },
+                    "not-a-mapping",
+                    {"env": "", "directive": "workers", "value": "1"},
+                ],
+            }
+        )
+        return payload
+
+
+def test_api_squid_config_state_reconciles_host_sized_effective_config(
+    monkeypatch, tmp_path
+) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        config_revisions=_host_sizing_revisions(),
+        proxy_client=_HostSizedProxyClient(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/squid-config/state?proxy_id=default")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["state"] == "reconciled"
+    assert data["host_config_overrides"] == [
+        {"env": "SQUID_CACHE_MEM_MB", "directive": "cache_mem", "value": "32 MB"},
+    ]
+
+
+def test_api_squid_config_state_reports_drift_when_effective_config_differs(
+    monkeypatch, tmp_path
+) -> None:
+    class StaleEffectiveProxyClient(_HostSizedProxyClient):
+        effective_sha = POLICY_SHA_OLD
+
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        config_revisions=_host_sizing_revisions(),
+        proxy_client=StaleEffectiveProxyClient(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/squid-config/state?proxy_id=default")
+
+    data = response.get_json()
+    assert data["state"] == "drift"
+    assert data["label"] == "Saved/running mismatch"
+
+
+def test_squid_config_page_lists_host_pinned_directives(monkeypatch, tmp_path) -> None:
+    loaded = load_admin_app(
+        monkeypatch,
+        tmp_path,
+        config_revisions=_host_sizing_revisions(),
+        proxy_client=_HostSizedProxyClient(),
+    )
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    response = client.get("/squid/config?tab=config")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "data-host-config-overrides" in text
+    assert '<code class="mono">cache_mem 32 MB</code> (SQUID_CACHE_MEM_MB)' in text
 
 
 def test_cached_proxy_health_redacts_proxy_client_errors(monkeypatch, tmp_path) -> None:

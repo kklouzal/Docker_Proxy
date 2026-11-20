@@ -85,6 +85,10 @@ from services.squid_core import (
     SquidController,
     _exclusive_squid_lifecycle_lock,
 )
+from services.squid_host_sizing import active_overrides as active_host_sizing_overrides
+from services.squid_host_sizing import (
+    describe_overrides as describe_host_sizing_overrides,
+)
 from services.squid_transaction import SquidTransactionJournal, default_journal_path
 from services.ssl_errors_store import get_ssl_errors_store
 from services.stats import get_stats
@@ -4370,6 +4374,10 @@ class ProxyRuntime:
             active_revision_sha = (
                 active_revision.config_sha256 if active_revision else ""
             )
+            # The revision SHA is its database identity; the effective SHA is
+            # what this proxy runs for it after normalization and the host
+            # resource sizing overlay, and is what reconciles with current_sha.
+            effective_config_sha = active_revision_sha
             if active_revision_sha and active_revision_sha != current_sha:
                 try:
                     active_revision_full = self.revisions.get_active_revision(
@@ -4387,8 +4395,7 @@ class ProxyRuntime:
                                 errors="replace",
                             ),
                         ).hexdigest()
-                        if normalized_active_sha == current_sha:
-                            active_revision_sha = normalized_active_sha
+                        effective_config_sha = normalized_active_sha
                 except Exception:
                     log_exception_throttled(
                         logger,
@@ -4407,7 +4414,7 @@ class ProxyRuntime:
             state_errors.extend(
                 drift_detail
                 for drift_detail in (
-                    _state_drift_detail("config", active_revision_sha, current_sha),
+                    _state_drift_detail("config", effective_config_sha, current_sha),
                     _state_drift_detail(
                         "certificate bundle",
                         active_certificate_sha,
@@ -4461,7 +4468,11 @@ class ProxyRuntime:
                 if active_revision
                 else None,
                 "active_revision_sha": active_revision_sha,
+                "effective_config_sha": effective_config_sha,
                 "current_config_sha": current_sha,
+                "host_config_overrides": describe_host_sizing_overrides(
+                    active_host_sizing_overrides(),
+                ),
                 "active_certificate_revision_id": active_certificate.revision_id
                 if active_certificate
                 else None,

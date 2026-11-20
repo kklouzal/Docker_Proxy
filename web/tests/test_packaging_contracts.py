@@ -71,6 +71,10 @@ def _entrypoint_shell_block(start_marker: str, end_marker: str) -> str:
     return text[start:end]
 
 
+def _host_sizing_helper_command() -> str:
+    return f"{sys.executable} {REPO_ROOT / 'web/services/squid_host_sizing.py'}"
+
+
 def _entrypoint_perf_tuning_script() -> str:
     return "\n".join(
         [
@@ -84,9 +88,11 @@ def _entrypoint_perf_tuning_script() -> str:
             ),
             _entrypoint_shell_block(
                 "apply_squid_perf_tuning() {",
-                "\n# Adblock request lookup state.",
+                "\n# The adblock compile and policy include helpers below read MySQL.",
             ),
         ],
+    ).replace(
+        "python3 /app/services/squid_host_sizing.py", _host_sizing_helper_command()
     )
 
 
@@ -109,21 +115,21 @@ def _entrypoint_numeric_env_script() -> str:
     )
 
 
-def _run_entrypoint_perf_tuning(config_path, *, children: int) -> None:
+def _run_entrypoint_perf_tuning(config_path, *, overrides: str) -> None:
     script = (
         "set -eu\n"
         f"{_entrypoint_perf_tuning_script()}\n"
         "SQUID_WORKERS=4\n"
         "SQUID_CACHE_MEM_MB=256\n"
-        f"SQUID_SSLCRTD_CHILDREN={children}\n"
-        f"EXPLICIT_SQUID_SSLCRTD_CHILDREN={children}\n"
+        "SQUID_SSLCRTD_CHILDREN=2\n"
         "SQUID_MAX_FILEDESCRIPTORS=65536\n"
-        "SQUID_DYNAMIC_CERT_MEM_CACHE_MB=256\n"
         'apply_squid_perf_tuning "$1"\n'
     )
+    env = {**os.environ, "SQUID_HOST_SIZING_OVERRIDES": overrides}
     run_test_process(
         ["/bin/sh", "-c", script, "entrypoint-perf-tuning-test", str(config_path)],
         check=True,
+        env=env,
     )
 
 
@@ -2062,7 +2068,7 @@ def test_proxy_entrypoint_perf_tuning_preserves_sslcrtd_child_options(tmp_path) 
         encoding="utf-8",
     )
 
-    _run_entrypoint_perf_tuning(config, children=2)
+    _run_entrypoint_perf_tuning(config, overrides="SQUID_SSLCRTD_CHILDREN=2")
 
     rendered = config.read_text(encoding="utf-8")
     assert "sslcrtd_children 2 startup=2 idle=2 queue-size=96" in rendered
@@ -2081,7 +2087,7 @@ def test_proxy_entrypoint_perf_tuning_caps_sslcrtd_subordinate_counts(
         encoding="utf-8",
     )
 
-    _run_entrypoint_perf_tuning(config, children=1)
+    _run_entrypoint_perf_tuning(config, overrides="SQUID_SSLCRTD_CHILDREN=1")
 
     rendered = config.read_text(encoding="utf-8")
     assert "sslcrtd_children 1 startup=1 idle=1 queue-size=96" in rendered
@@ -2093,10 +2099,108 @@ def test_proxy_entrypoint_perf_tuning_synthesizes_sslcrtd_child_options(
     config = tmp_path / "squid.conf"
     config.write_text("workers 4\ncache_mem 256 MB\n", encoding="utf-8")
 
-    _run_entrypoint_perf_tuning(config, children=2)
+    _run_entrypoint_perf_tuning(config, overrides="SQUID_SSLCRTD_CHILDREN=2")
 
     rendered = config.read_text(encoding="utf-8")
     assert "sslcrtd_children 2 startup=2 idle=1 queue-size=32" in rendered
+
+
+_ENTRYPOINT_SIZING_NAMES = (
+    "SQUID_HOST_SIZING_OVERRIDES",
+    "SQUID_WORKERS",
+    "SQUID_CACHE_MEM_MB",
+    "SQUID_SSLCRTD_CHILDREN",
+    "SQUID_DYNAMIC_CERT_MEM_CACHE_MB",
+    "SQUID_MAX_FILEDESCRIPTORS",
+)
+
+
+def _run_entrypoint_sizing_resolution(tmp_path, **env_values: str) -> dict[str, str]:
+    persisted = tmp_path / "persisted.conf"
+    persisted.write_text("workers 3\n", encoding="utf-8")
+    script = "\n".join(
+        [
+            "set -eu",
+            _entrypoint_shell_block("clamp_int() {", "\nsanitize_bounded_int() {"),
+            _entrypoint_shell_block(
+                "# Host resource sizing: validate the operator's sizing variables once",
+                '\nif [ -z "${ULIMIT_NOFILE:-}" ]; then',
+            )
+            .replace(
+                "python3 /app/services/squid_host_sizing.py",
+                _host_sizing_helper_command(),
+            )
+            .replace("/etc/squid/squid.conf", str(tmp_path / "missing.conf")),
+            "printf '%s\\n' "
+            + " ".join(f'"{name}=${name}"' for name in _ENTRYPOINT_SIZING_NAMES),
+        ],
+    )
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith("SQUID_")
+    }
+    env.update(env_values)
+    env["PERSISTED_SQUID_CONF_PATH"] = str(persisted)
+    result = run_test_process(
+        ["/bin/sh", "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    values = dict(line.split("=", 1) for line in result.stdout.splitlines())
+    values["stderr"] = result.stderr
+    return values
+
+
+def test_proxy_entrypoint_exports_validated_host_sizing_overrides(tmp_path) -> None:
+    values = _run_entrypoint_sizing_resolution(
+        tmp_path,
+        SQUID_WORKERS="9",
+        SQUID_CACHE_MEM_MB="32",
+        SQUID_SSLCRTD_CHILDREN="1",
+    )
+
+    assert values["SQUID_HOST_SIZING_OVERRIDES"] == (
+        "SQUID_CACHE_MEM_MB=32 SQUID_SSLCRTD_CHILDREN=1"
+    )
+    assert "SQUID_WORKERS=9 is outside 1..4" in values["stderr"]
+    # An ignored worker override falls back to the persisted config.
+    assert values["SQUID_WORKERS"] == "3"
+    assert values["SQUID_CACHE_MEM_MB"] == "32"
+    assert values["SQUID_SSLCRTD_CHILDREN"] == "1"
+    assert values["SQUID_DYNAMIC_CERT_MEM_CACHE_MB"] == "384"
+    assert values["SQUID_MAX_FILEDESCRIPTORS"] == "98304"
+
+
+def test_proxy_entrypoint_without_sizing_env_exports_no_overrides(tmp_path) -> None:
+    values = _run_entrypoint_sizing_resolution(tmp_path, SQUID_CACHE_MEM_MB="lots")
+
+    assert values["SQUID_HOST_SIZING_OVERRIDES"] == ""
+    assert values["SQUID_CACHE_MEM_MB"] == "256"
+    assert "SQUID_CACHE_MEM_MB='lots'" in values["stderr"]
+
+
+def test_proxy_entrypoint_perf_tuning_pins_host_overrides(tmp_path) -> None:
+    config = tmp_path / "squid.conf"
+    config.write_text(
+        "workers 4\n"
+        "cache_mem 256 MB\n"
+        "cache_dir rock /var/spool/squid 10000 slot-size=32768\n"
+        "http_port 3128 ssl-bump generate-host-certificates=on dynamic_cert_mem_cache_size=128MB\n",
+        encoding="utf-8",
+    )
+
+    _run_entrypoint_perf_tuning(
+        config,
+        overrides="SQUID_WORKERS=1 SQUID_CACHE_MEM_MB=32 SQUID_CACHE_DIR_MB=1024 "
+        "SQUID_DYNAMIC_CERT_MEM_CACHE_MB=16",
+    )
+
+    rendered = config.read_text(encoding="utf-8")
+    assert "workers 1\n" in rendered
+    assert "cache_mem 32 MB\n" in rendered
+    assert "cache_dir rock /var/spool/squid 1024 slot-size=32768\n" in rendered
+    assert "dynamic_cert_mem_cache_size=16MB" in rendered
 
 
 def test_proxy_entrypoint_env_can_materialize_https_intercept_listener(
