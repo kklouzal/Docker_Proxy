@@ -391,7 +391,7 @@ can lower, but never raise, that scheduled-housekeeping bound.
 - Diagnostic ingestion from Squid and ICAP helper logs into MySQL-backed rollups.
 - SSL error store, block logs, CSV-style exports, remediation recommendations, and log maintenance actions.
 - Operations page for queued, applying, applied, superseded, and failed proxy operations, including rollback support when a failed operation has a rollback target.
-- Policy request workflow for users to submit unblock/review requests from custom block pages.
+- Policy request workflow for users to submit unblock/review requests from custom block pages. Only web-filter category blocks can be approved into enforced exceptions; Safe Browsing verdicts (`google-safe-browsing/*`) cannot be exempted, and any such legacy exception is shown as not applicable.
 
 ## Configuration reference
 

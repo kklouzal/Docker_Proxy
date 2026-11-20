@@ -2513,3 +2513,105 @@ def test_proxy_policy_request_route_uses_form_client_ip_from_trusted_proxy(
     )
     assert res.status_code == 200
     assert recorded["client_ip"] == "10.11.12.14"
+
+
+def test_safe_browsing_verdict_requests_cannot_be_approved(tmp_path) -> None:
+    configure_test_mysql_env(tmp_path / "policy-requests-safe-browsing")
+    register_test_proxies("default", "edge-a")
+    ensure_web_import_path()
+    from services.policy_requests import (
+        SAFE_BROWSING_APPROVAL_UNAVAILABLE,
+        PolicyRequestStore,
+    )
+
+    store = PolicyRequestStore()
+    store.init_db()
+    req = store.create_request(
+        proxy_id="edge-a",
+        client_ip="192.168.1.55",
+        request_url="https://malware.example/",
+        domain="malware.example",
+        category="google-safe-browsing/MALWARE",
+    )
+    assert req.approval_unavailable_reason == SAFE_BROWSING_APPROVAL_UNAVAILABLE
+
+    with pytest.raises(ValueError, match="Safe Browsing verdicts cannot be exempted"):
+        store.approve_request(req.id, reviewer="admin", duration_seconds=3600)
+
+    assert [r.id for r in store.list_requests(statuses=["pending"])] == [req.id]
+    assert store.list_exceptions() == []
+
+
+def test_safe_browsing_exceptions_show_not_applicable_and_stay_revocable() -> None:
+    ensure_web_import_path()
+    from services.policy_requests import (
+        PolicyException,
+        PolicyRequest,
+        is_safe_browsing_category,
+    )
+
+    assert is_safe_browsing_category("google-safe-browsing")
+    assert is_safe_browsing_category("Google-Safe-Browsing/SOCIAL_ENGINEERING")
+    assert not is_safe_browsing_category("google-safe-browsing-like")
+    assert not is_safe_browsing_category("adult")
+
+    def exception(category: str) -> PolicyException:
+        return PolicyException(
+            1, "default", "active", "webfilter", "192.0.2.1", "a.example",
+            category, 1, 1, "admin", "", 0, 0, "", None,
+        )  # fmt: skip
+
+    legacy = exception("google-safe-browsing/MALWARE")
+    assert legacy.effective_status == "not_applicable"
+    assert legacy.can_revoke is True
+    assert exception("adult").effective_status == "active"
+
+    webfilter = PolicyRequest(
+        1, "default", "pending", "webfilter", "192.0.2.1", "https://a.example/",
+        "a.example", "adult", "", "", "", "", 1, 1, 0, "", None,
+    )  # fmt: skip
+    assert webfilter.approval_unavailable_reason == ""
+
+
+def test_admin_requests_page_hides_safe_browsing_approval_and_marks_exceptions(
+    monkeypatch, tmp_path
+) -> None:
+    from services.policy_requests import PolicyException, PolicyRequest
+
+    from .admin_route_test_utils import load_admin_app, login_client
+
+    class Store:
+        def init_db(self) -> None:
+            pass
+
+        def list_requests(self, *, statuses=None, **_kwargs):
+            rows = [
+                PolicyRequest(
+                    9, "default", "pending", "webfilter", "192.0.2.9",
+                    "https://phish.example/", "phish.example",
+                    "google-safe-browsing/SOCIAL_ENGINEERING", "GET",
+                    "ERR_ACCESS_DENIED", "", "", 1, 1, 0, "", None,
+                )
+            ]  # fmt: skip
+            return [r for r in rows if not statuses or r.status in statuses]
+
+        def list_exceptions(self, **_kwargs):
+            return [
+                PolicyException(
+                    4, "default", "active", "webfilter", "192.0.2.9",
+                    "phish.example", "google-safe-browsing/SOCIAL_ENGINEERING",
+                    1, 1, "admin", "", 0, 0, "", None,
+                )
+            ]  # fmt: skip
+
+    loaded = load_admin_app(monkeypatch, tmp_path, policy_request_store=Store())
+    client = loaded.module.app.test_client()
+    login_client(client)
+
+    text = client.get("/requests").get_data(as_text=True)
+
+    assert "Safe Browsing verdicts cannot be exempted by a policy request." in text
+    assert 'name="action" value="approve"' not in text
+    assert 'name="action" value="reject"' in text
+    assert "not applicable" in text
+    assert 'name="action" value="revoke"' in text

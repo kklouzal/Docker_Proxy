@@ -38,7 +38,7 @@
             <input type="hidden" name="request_id" value="{{ r.id }}">
             <label for="admin-note-{{ r.id }}" class="small">Admin note</label>
             <textarea id="admin-note-{{ r.id }}" name="admin_note" rows="2" placeholder="Admin note"></textarea>
-            {% if r.block_type == 'webfilter' %}
+            {% if not r.approval_unavailable_reason %}
             <label for="duration-seconds-{{ r.id }}" class="small">Approval duration</label>
             <select id="duration-seconds-{{ r.id }}" name="duration_seconds">
               <option value="3600">1 hour</option>
@@ -48,10 +48,10 @@
             </select>
             <label class="checkbox-inline"><input type="checkbox" name="duration_mode" value="indefinite"> Indefinite</label>
             {% else %}
-            <p class="small">Approval is unavailable for {{ r.block_type }} requests because this request type does not materialize into enforced runtime policy. Reject or close it after review.</p>
+            <p class="small">{{ r.approval_unavailable_reason }}</p>
             {% endif %}
             <div class="button-row">
-              {% if r.block_type == 'webfilter' %}<button class="btn" name="action" value="approve">Approve</button>{% endif %}
+              {% if not r.approval_unavailable_reason %}<button class="btn" name="action" value="approve">Approve</button>{% endif %}
               <button class="btn ghost" name="action" value="reject">Reject</button>
             </div>
           </form>
@@ -76,7 +76,7 @@
       <tbody>
       {% for e in exceptions %}
       <tr>
-        <td>{{ e.effective_status }}</td>
+        <td>{% if e.effective_status == 'not_applicable' %}not applicable<br><small>Safe Browsing verdicts cannot be exempted; this exception has no effect.</small>{% else %}{{ e.effective_status }}{% endif %}</td>
         <td>{{ e.proxy_id }}</td>
         <td><code>{{ e.client_ip }}</code></td>
         <td><code>{{ e.domain }}</code></td>
