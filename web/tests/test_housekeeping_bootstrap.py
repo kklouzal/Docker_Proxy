@@ -85,12 +85,14 @@ class _TimeseriesConn:
     def execute(self, sql, params=None):
         text = str(sql)
         self.calls.append(text)
-        if self.fail_insert and "INSERT INTO ts_1s" in text:
-            msg = "(1146, table 'squid_proxy.ts_1s' doesn't exist)"
-            raise RuntimeError(msg)
-        if self.fail_select and "FROM ts_" in text:
-            msg = "(1146, table 'squid_proxy.ts_1s' doesn't exist)"
-            raise RuntimeError(msg)
+        if (self.fail_insert and "INSERT INTO ts_1s" in text) or (
+            self.fail_select and "FROM ts_" in text
+        ):
+            import pymysql  # type: ignore
+
+            raise pymysql.err.ProgrammingError(
+                1146, "Table 'squid_proxy.ts_1s' doesn't exist"
+            )
         return _TimeseriesResult(text)
 
 

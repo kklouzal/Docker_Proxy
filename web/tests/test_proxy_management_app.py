@@ -939,7 +939,7 @@ def test_proxy_management_logs_endpoint_reads_allowlisted_log_tail(
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    (log_dir / "access.log").write_text("alpha\nbeta\n", encoding="utf-8")
+    (log_dir / "access-observe.log").write_text("alpha\nbeta\n", encoding="utf-8")
     monkeypatch.setenv("LOG_DIR", str(log_dir))
     proxy_app.runtime = _Runtime()
     client = proxy_app.app.test_client()
@@ -967,7 +967,7 @@ def test_proxy_management_logs_endpoint_accepts_bounded_max_bytes(
     monkeypatch.setenv("PROXY_MANAGEMENT_TOKEN", "secret")
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    (log_dir / "access.log").write_text("alpha\nbeta\n", encoding="utf-8")
+    (log_dir / "access-observe.log").write_text("alpha\nbeta\n", encoding="utf-8")
     monkeypatch.setenv("LOG_DIR", str(log_dir))
     proxy_app.runtime = _Runtime()
     client = proxy_app.app.test_client()
