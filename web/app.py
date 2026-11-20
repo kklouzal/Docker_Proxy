@@ -3560,33 +3560,15 @@ def _inject_proxy_context():
             "active_proxy": None,
             "proxy_inventory": [],
         }
-    get_proxy_id()
     active_proxy = getattr(g, "_active_proxy", None)
     proxies = getattr(g, "_proxy_inventory", None)
-    if request.endpoint in _FLEET_MANAGEMENT_ENDPOINTS:
-        requested_form_proxy = request.form.get("proxy_id")
-        if requested_form_proxy is not None:
-            session["active_proxy_id"] = normalize_proxy_id(requested_form_proxy)
-        else:
-            requested_proxy = request.args.get("proxy_id")
-            if requested_proxy is not None:
-                session["active_proxy_id"] = normalize_route_proxy_id(requested_proxy)
-        registry = get_proxy_registry()
-        proxies = _proxy_inventory_or_default(registry)
-        preferred = normalize_proxy_id(
-            session.get("active_proxy_id") or _admin_default_proxy_id(registry),
-        )
-        active_proxy = _resolve_proxy_from_inventory(registry, proxies, preferred)
-        if active_proxy is None:
-            active_proxy = _default_or_first_proxy(registry, proxies)
-        if active_proxy is not None:
-            session["active_proxy_id"] = active_proxy.proxy_id
-        return {
-            "active_proxy_id": active_proxy.proxy_id if active_proxy else None,
-            "active_proxy": active_proxy,
-            "proxy_inventory": proxies,
-        }
-    if active_proxy is None or proxies is None:
+    # Fleet management routes are not bound before the request because they
+    # change the inventory; resolve the context afresh when they render.
+    if (
+        request.endpoint in _FLEET_MANAGEMENT_ENDPOINTS
+        or active_proxy is None
+        or proxies is None
+    ):
         _active_proxy_id, active_proxy, proxies = _resolve_selected_proxy_context()
     return {
         "active_proxy_id": active_proxy.proxy_id,
