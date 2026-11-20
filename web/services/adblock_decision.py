@@ -112,6 +112,10 @@ class AdblockDecision:
     list_key: str = ""
 
 
+# Shared by every unmatched request (and so by most decision cache entries).
+_NO_MATCH = AdblockDecision(blocked=False)
+
+
 @dataclass(frozen=True)
 class _RequestContext:
     """Per-request facts shared by every candidate rule evaluation."""
@@ -297,7 +301,7 @@ def _decision_for_matches(matches: list[_RuleMatcher]) -> AdblockDecision:
                     reason=reason,
                     list_key=str(rule.get("list_key") or ""),
                 )
-    return AdblockDecision(blocked=False)
+    return _NO_MATCH
 
 
 def _compiled_domain_test(domain: Any) -> tuple[bool, str] | None:
@@ -630,7 +634,7 @@ class AdblockDecisionEngine:
             third_party_hint=effective_third_party_hint,
         )
         if context is None:
-            decision = AdblockDecision(blocked=False)
+            decision = _NO_MATCH
             self._put_cached(cache_key, decision)
             return decision
 
