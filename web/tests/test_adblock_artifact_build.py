@@ -3051,3 +3051,17 @@ def test_active_lists_drift_accepts_builder_poll_metadata(tmp_path: Path) -> Non
         )
         is True
     )
+
+
+def test_build_result_recording_failure_is_logged_not_raised(caplog) -> None:
+    artifacts_module = _import_adblock_artifacts_module()
+
+    class Store:
+        def record_artifact_build_result(self, **_kwargs: object) -> None:
+            msg = "status write failed"
+            raise RuntimeError(msg)
+
+    with caplog.at_level("ERROR"):
+        artifacts_module._record_build_result(Store(), ok=True, detail="built")
+
+    assert "Failed to record the adblock artifact build result" in caplog.text

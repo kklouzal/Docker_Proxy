@@ -2460,8 +2460,15 @@ class ProxyRuntime:
         if ok and not callable(getattr(self.controller, "reconfigure_squid", None)):
             try:
                 ok = bool(self.controller._wait_for_http_listener(timeout=10.0))
-            except Exception:
-                ok = True
+            except Exception as exc:
+                ok = False
+                probe_detail = public_error_message(
+                    exc,
+                    default="Squid listener probe failed after policy reconfigure.",
+                )
+                detail = "\n".join(
+                    part for part in (detail, probe_detail) if str(part or "").strip()
+                ).strip()
         if ok and wait_for_adblock_icap:
             # Squid can accept TCP connections before ICAP OPTIONS/helper state has
             # fully converged after rapid policy/adblock churn. Wait for the local
@@ -2539,12 +2546,20 @@ class ProxyRuntime:
             reason=reason or "Rollback requested.",
         )
         current_sha = self._current_config_sha()
-        with suppress(Exception):
+        try:
             self.registry.mark_apply_result(
                 self.proxy_id,
                 ok=ok,
                 detail=detail,
                 current_config_sha=current_sha,
+            )
+        except Exception:
+            # The rollback outcome stands; only its registry record is missing.
+            log_exception_throttled(
+                logger,
+                "proxy.runtime.rollback_mark_apply_result",
+                interval_seconds=300.0,
+                message="Failed to record the rollback result in the proxy registry",
             )
         result = {
             "ok": bool(ok),
@@ -4657,16 +4672,32 @@ class ProxyRuntime:
             )
         except Exception as exc:
             if ledger is not None and claimed_operations:
-                with suppress(Exception):
+                try:
                     ledger.mark_many(
                         claimed_operations,
                         status="failed",
                         detail=redact_sensitive_text(exc)[:4000],
                     )
+                except Exception:
+                    log_exception_throttled(
+                        logger,
+                        "proxy.runtime.mark_claimed_operations",
+                        interval_seconds=300.0,
+                        message="Failed to record claimed operation results; stale-claim recovery will requeue them",
+                    )
             raise
         if ledger is not None and claimed_operations:
-            with suppress(Exception):
+            # The sync result stands; unrecorded claims are requeued by the
+            # ledger's stale-applying recovery and re-executed.
+            try:
                 self._mark_claimed_operations(ledger, claimed_operations, result)
+            except Exception:
+                log_exception_throttled(
+                    logger,
+                    "proxy.runtime.mark_claimed_operations",
+                    interval_seconds=300.0,
+                    message="Failed to record claimed operation results; stale-claim recovery will requeue them",
+                )
         self._capture_recovery_bundle_after_sync(result)
         return result
 

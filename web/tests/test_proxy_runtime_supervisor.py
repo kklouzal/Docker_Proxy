@@ -3368,6 +3368,55 @@ def test_reload_for_policy_update_accepts_missing_pid_when_listener_healthy(
     assert "Squid reconfigured for policy update." in detail
 
 
+def test_reload_for_policy_update_fails_when_listener_probe_raises() -> None:
+    runtime = _runtime_shell()
+
+    class Controller:
+        def _run(self, *_args, **_kwargs):
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        def _wait_for_http_listener(self, *, timeout: float) -> bool:
+            msg = "listener probe crashed"
+            raise OSError(msg)
+
+    runtime.controller = Controller()
+
+    ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=False)
+
+    assert ok is False
+    assert "Squid reconfigured for policy update." not in detail
+
+
+def test_sync_logs_when_claimed_operation_marking_fails(monkeypatch, caplog) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    runtime = _runtime_shell()
+    sync_result = {"ok": True, "detail": "synced"}
+    claimed = [SimpleNamespace(operation_type="policy_refresh")]
+
+    class Ledger:
+        def requeue_stale_applying(self, *_args, **_kwargs) -> int:
+            return 0
+
+        def claim_pending(self, *_args, **_kwargs) -> list[object]:
+            return claimed
+
+    def fail_mark(*_args, **_kwargs) -> NoReturn:
+        msg = "ledger write failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(runtime_module, "get_operation_ledger", Ledger)
+    runtime._sync_from_db_unlocked = lambda **_kwargs: sync_result
+    runtime._capture_recovery_bundle_after_sync = lambda _result: None
+    runtime._mark_claimed_operations = fail_mark
+
+    with caplog.at_level("ERROR"):
+        result = runtime._sync_from_db_locked(force=False, operation_id=None)
+
+    assert result is sync_result
+    assert "Failed to record claimed operation results" in caplog.text
+
+
 def test_squid_controller_rolls_back_to_persisted_config_after_reconfigure_timeout(
     tmp_path, monkeypatch
 ) -> None:
