@@ -9330,37 +9330,38 @@ def clamav_settings():
     )
 
 
-@app.route("/clamav/test-eicar", methods=["POST"])
-def clamav_test_eicar():
+def _redirect_with_clamav_probe_result(
+    probe: Callable[[str], dict[str, Any]],
+    *,
+    result_param: str,
+    detail_param: str,
+):
     try:
-        res = get_proxy_client().test_clamav_eicar(get_proxy_id())
+        res = probe(get_proxy_id())
     except ProxyClientError as exc:
-        res = {
-            "ok": False,
-            "detail": clean_text(redact_sensitive_text(str(exc)), max_len=300),
-        }
+        res = {"ok": False, "detail": str(exc)}
     detail = clean_text(redact_sensitive_text(res.get("detail") or ""), max_len=300)
     return _redirect_to(
         "clamav",
-        eicar="ok" if res.get("ok") else "fail",
-        eicar_detail=detail,
+        **{result_param: "ok" if res.get("ok") else "fail", detail_param: detail},
+    )
+
+
+@app.route("/clamav/test-eicar", methods=["POST"])
+def clamav_test_eicar():
+    return _redirect_with_clamav_probe_result(
+        get_proxy_client().test_clamav_eicar,
+        result_param="eicar",
+        detail_param="eicar_detail",
     )
 
 
 @app.route("/clamav/test-icap", methods=["POST"])
 def clamav_test_icap():
-    try:
-        res = get_proxy_client().test_clamav_icap(get_proxy_id())
-    except ProxyClientError as exc:
-        res = {
-            "ok": False,
-            "detail": clean_text(redact_sensitive_text(str(exc)), max_len=300),
-        }
-    detail = clean_text(redact_sensitive_text(res.get("detail") or ""), max_len=300)
-    return _redirect_to(
-        "clamav",
-        icap_sample="ok" if res.get("ok") else "fail",
-        icap_detail=detail,
+    return _redirect_with_clamav_probe_result(
+        get_proxy_client().test_clamav_icap,
+        result_param="icap_sample",
+        detail_param="icap_detail",
     )
 
 
