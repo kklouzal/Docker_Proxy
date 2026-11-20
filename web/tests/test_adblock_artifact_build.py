@@ -3145,3 +3145,48 @@ def test_background_builder_builds_shared_artifact_before_any_proxy_registers(
     assert active is not None
     assert store.get_artifact_build_status()["ok"] is True
     assert sleeps == [30.0]
+
+
+@pytest.mark.mysql
+def test_blocklog_batch_counts_blocks_with_events_in_mysql(tmp_path: Path) -> None:
+    store_module, _artifacts_module = _import_artifact_modules(tmp_path)
+    store = store_module.AdblockStore(
+        lists_dir=str(tmp_path / "lists"),
+        cicap_access_log_path=str(tmp_path / "cicap-access.log"),
+    )
+    store.init_db()
+    day = 20_000
+
+    def line(ts: int, url: str, list_key: str) -> dict[str, object]:
+        row = store._parse_cicap_access_line(
+            f"{ts}\t192.0.2.10\t192.0.2.10\tREQMOD\t/adblockreq\t200\t"
+            f"GET {url} HTTP/1.1\t{url}\tHTTP/1.1 403 Forbidden\t{list_key}\t"
+            "rule\tblock\trule-match\n"
+        )
+        assert row is not None
+        return row
+
+    first = [
+        line(day * 86400 + 5, "https://ads.example/a", "easylist"),
+        line(day * 86400 + 5, "https://ads.example/a", "easylist"),
+        line(day * 86400 + 6, "https://t.example/p", "-"),
+    ]
+    with store._connect() as conn:
+        store._write_cicap_batch(conn, first, {"cicap_access_pos": "100"})
+    with store._connect() as conn:
+        store._write_cicap_batch(
+            conn,
+            [line(day * 86400 + 7, "https://ads.example/b", "easylist")],
+            {"cicap_access_pos": "150"},
+        )
+        rows = conn.execute(
+            "SELECT day, list_key, blocked FROM adblock_counts "
+            "WHERE proxy_id=%s ORDER BY day, list_key",
+            ("default",),
+        ).fetchall()
+    assert [(row["day"], row["list_key"], row["blocked"]) for row in rows] == [
+        (day, "easylist", 3),
+        (day, "unknown", 1),
+    ]
+    stats = store.stats()
+    assert stats["total"] == 4
