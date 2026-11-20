@@ -90,6 +90,7 @@ note cache_bypass cookie has_cookie !cookie_static_url
 note cache_bypass cookie-reply has_cookie !cookie_cache_hit cookie_reply_unshareable
 cache deny has_cookie !cookie_static_url
 store_miss deny has_cookie cookie_reply_unshareable
+send_hit deny has_cookie cookie_reply_unshareable
 
 # Prevent caching responses with complex Vary headers.
 acl has_vary rep_header Vary .

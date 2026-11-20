@@ -72,6 +72,10 @@ _ADBLOCK_ICAP_METHODS = "GET HEAD POST OPTIONS PUT PATCH DELETE"
 # no-store and no-cache stay binding here even with ignore-private or
 # ignore-no-store. "cookie" logs a request-level bypass; "cookie-reply" logs a
 # static miss whose reply was refused (not hits from the existing cache).
+# `send_hit` applies the same shareability test to stored objects, so a cookie
+# request is never answered with an entry kept only through refresh_pattern
+# overrides (for example the anonymous copy of a no-store reply); it forwards
+# instead, and a shareable reply then replaces that entry (owner 2026-11-20).
 COOKIE_STATIC_CACHE_RULES = r"""# Cache cookie-bearing requests only for static assets the origin marked shareable.
 acl cookie_static_url urlpath_regex -i ^[^?]*\.(woff2?|ttf|otf|eot|css|js|mjs|map|wasm|avif|jxl|heic|heif|png|jpe?g|gif|webp|bmp|ico|svgz?|tiff?|mp4|m4v|mkv|flv|mov|avi|mpeg|mpg|webm|mp3|m4a|wav|ogg|oga|opus|flac|aac|iso|img|dmg|bin|exe|msi|msu|msp|cab|deb|rpm|apk|appx|appxbundle|msix|msixbundle|ipa|pkg|run|rar|jar|war|ear|gz|tgz|tar|bz2|tbz2|xz|txz|zst|zip|7z)(\?.*)?$
 acl cookie_reply_sets_cookie rep_header Set-Cookie .
@@ -83,7 +87,8 @@ acl cookie_cache_hit rep_header Cache-Status ;hit(;[^,]*)?$
 note cache_bypass cookie has_cookie !cookie_static_url
 note cache_bypass cookie-reply has_cookie !cookie_cache_hit cookie_reply_unshareable
 cache deny has_cookie !cookie_static_url
-store_miss deny has_cookie cookie_reply_unshareable"""
+store_miss deny has_cookie cookie_reply_unshareable
+send_hit deny has_cookie cookie_reply_unshareable"""
 
 _LEGACY_COOKIE_CACHE_DENY_RE = re.compile(
     r"^[ \t]*cache[ \t]+deny[ \t]+has_cookie[ \t]*$", re.MULTILINE

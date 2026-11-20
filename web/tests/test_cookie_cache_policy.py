@@ -70,6 +70,7 @@ def test_cookie_rules_cache_only_static_urls_and_shareable_replies() -> None:
     assert "cache deny has_cookie !cookie_static_url" in lines
     # Reply-time: refused replies are never stored for a cookie-bearing request.
     assert "store_miss deny has_cookie cookie_reply_unshareable" in lines
+    assert "send_hit deny has_cookie cookie_reply_unshareable" in lines
     unshareable = next(
         line for line in lines if line.startswith("acl cookie_reply_unshareable ")
     )
