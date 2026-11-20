@@ -1359,12 +1359,13 @@ done
     echo "acl file_security_download_methods method GET HEAD"
     echo "acl file_security_range_request req_header Range .+"
     echo "acl file_security_partial_response http_status 206"
+    echo "acl file_security_event_stream_request req_header Accept -i text/event-stream"
     echo 'acl file_security_streaming_response rep_mime_type -i ^text/event-stream([[:space:]]*;.*)?$'
     echo "# Startup fallback scans eligible downloads with AV. Upload scanning and strict extension/content denies are materialized from persisted UI policy."
     echo "adaptation_access av_req_set deny all"
     echo "adaptation_access av_resp_set deny file_security_range_request"
     echo "adaptation_access av_resp_set deny file_security_partial_response"
-    echo "adaptation_access av_resp_set deny file_security_streaming_response"
+    echo "adaptation_access av_resp_set deny file_security_event_stream_request file_security_streaming_response"
     echo "adaptation_access av_resp_set allow file_security_download_methods"
     echo "adaptation_access av_resp_set deny all"
 } > /etc/squid/conf.d/20-icap.conf

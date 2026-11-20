@@ -1919,7 +1919,10 @@ def test_adblock_icap_adapts_browsing_and_connect_methods() -> None:
 
 
 def test_entrypoint_bootstrap_av_policy_matches_schema_safety_guards() -> None:
-    from services.clamav_config_forms import STREAMING_RESPONSE_MIME_REGEX
+    from services.clamav_config_forms import (
+        EVENT_STREAM_ACCEPT_REGEX,
+        STREAMING_RESPONSE_MIME_REGEX,
+    )
 
     entrypoint = _read("docker/entrypoint.sh")
 
@@ -1937,8 +1940,12 @@ def test_entrypoint_bootstrap_av_policy_matches_schema_safety_guards() -> None:
         f"{STREAMING_RESPONSE_MIME_REGEX}'" in entrypoint
     )
     assert (
-        "adaptation_access av_resp_set deny file_security_streaming_response"
-        in entrypoint
+        "acl file_security_event_stream_request req_header Accept -i "
+        f'{EVENT_STREAM_ACCEPT_REGEX}"' in entrypoint
+    )
+    assert (
+        "adaptation_access av_resp_set deny file_security_event_stream_request "
+        "file_security_streaming_response" in entrypoint
     )
 
 

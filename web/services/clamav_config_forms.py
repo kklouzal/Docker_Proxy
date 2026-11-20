@@ -560,6 +560,7 @@ def _preset_defaults(preset: Any) -> dict[str, Any]:
 
 # POSIX ERE (Alpine Squid uses musl regex): no \s, so use [[:space:]].
 STREAMING_RESPONSE_MIME_REGEX = "^text/event-stream([[:space:]]*;.*)?$"
+EVENT_STREAM_ACCEPT_REGEX = "text/event-stream"
 
 
 def render_file_security_policy_config(
@@ -600,6 +601,9 @@ def render_file_security_policy_config(
             "acl file_security_partial_response http_status 206",
             # Server-Sent Events are unbounded live streams, not files: RESPMOD
             # would buffer them until its idle timeout and then fail the reply.
+            # Both sides must agree (EventSource always sends this Accept), so
+            # an origin cannot relabel a download to skip AV for other clients.
+            f"acl file_security_event_stream_request req_header Accept -i {EVENT_STREAM_ACCEPT_REGEX}",
             f"acl file_security_streaming_response rep_mime_type -i {STREAMING_RESPONSE_MIME_REGEX}",
         ),
     )
@@ -645,7 +649,7 @@ def render_file_security_policy_config(
             [
                 "adaptation_access av_resp_set deny file_security_range_request",
                 "adaptation_access av_resp_set deny file_security_partial_response",
-                "adaptation_access av_resp_set deny file_security_streaming_response",
+                "adaptation_access av_resp_set deny file_security_event_stream_request file_security_streaming_response",
                 "adaptation_access av_resp_set allow file_security_download_methods",
                 "adaptation_access av_resp_set deny all",
             ],

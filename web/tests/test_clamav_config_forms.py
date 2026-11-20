@@ -97,6 +97,7 @@ def test_download_respmod_policy_skips_event_streams_before_scanning_downloads()
     import re
 
     from services.clamav_config_forms import (
+        EVENT_STREAM_ACCEPT_REGEX,
         STREAMING_RESPONSE_MIME_REGEX,
         render_file_security_policy_config,
     )
@@ -107,8 +108,14 @@ def test_download_respmod_policy_skips_event_streams_before_scanning_downloads()
         "acl file_security_streaming_response rep_mime_type -i "
         f"{STREAMING_RESPONSE_MIME_REGEX}"
     ) in lines
+    assert (
+        "acl file_security_event_stream_request req_header Accept -i "
+        f"{EVENT_STREAM_ACCEPT_REGEX}"
+    ) in lines
+    # Both ACLs on one line are ANDed: the reply type alone never skips AV.
     deny = lines.index(
-        "adaptation_access av_resp_set deny file_security_streaming_response"
+        "adaptation_access av_resp_set deny file_security_event_stream_request "
+        "file_security_streaming_response"
     )
     assert deny < lines.index(
         "adaptation_access av_resp_set allow file_security_download_methods"
