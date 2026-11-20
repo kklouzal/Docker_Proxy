@@ -232,11 +232,6 @@ class AdblockLookupIndex:
         if error:
             raise AdblockLookupSchemaError(error)
 
-    def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
-        _configure_read_connection(conn)
-        return conn
-
     def _acquire_thread_connection(self) -> sqlite3.Connection:
         with self._connections_condition:
             if self._closed:
