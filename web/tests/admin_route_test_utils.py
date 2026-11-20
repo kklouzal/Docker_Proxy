@@ -967,15 +967,7 @@ class FakeSslfilterStore:
             exclude_private_nets=self.exclude_private_nets,
         )
 
-    def list_nobump(self) -> list[tuple[str, int]]:
-        return [(cidr, 1) for cidr in self.no_bump_src_nets]
-
-    def add_domain(
-        self, policy: str, value: str | None = None
-    ) -> tuple[bool, str, str]:
-        if value is None:
-            value = policy
-            policy = "nobump"
+    def add_domain(self, policy: str, value: str) -> tuple[bool, str, str]:
         value = (value or "").strip().lower()
         if not value or " " in value or "/" in value:
             return False, "Invalid domain.", ""
@@ -1012,10 +1004,7 @@ class FakeSslfilterStore:
         ok, detail, canonical = self.add_domain(policy, value)
         return ok, detail, canonical, ok
 
-    def remove_domain(self, policy: str, value: str | None = None) -> None:
-        if value is None:
-            value = policy
-            policy = "nobump"
+    def remove_domain(self, policy: str, value: str) -> None:
         target = self.no_bump_domains if policy == "nobump" else self.no_cache_domains
         target[:] = [item for item in target if item != (value or "").strip().lower()]
 
@@ -1039,12 +1028,6 @@ class FakeSslfilterStore:
     def remove_src_net(self, policy: str, cidr: str) -> None:
         target = self.no_bump_src_nets if policy == "nobump" else self.no_cache_src_nets
         target[:] = [item for item in target if item != cidr]
-
-    def add_nobump(self, cidr: str) -> tuple[bool, str, str]:
-        return self.add_src_net("nobump", cidr)
-
-    def remove_nobump(self, cidr: str) -> None:
-        self.remove_src_net("nobump", cidr)
 
     def set_exclude_private_nets(self, enabled: bool) -> None:
         self.exclude_private_nets = bool(enabled)

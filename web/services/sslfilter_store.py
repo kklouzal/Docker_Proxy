@@ -333,15 +333,7 @@ class SslFilterStore:
             v = self._get_setting_conn(conn, "inspection_enabled")
         return False if v is None else (v == "1")
 
-    def add_domain(
-        self,
-        policy: str,
-        domain: str | None = None,
-    ) -> tuple[bool, str, str]:
-        # Backward-compatible two-arg behavior: add_domain(domain) means no-bump domain.
-        if domain is None:
-            domain = policy
-            policy = "nobump"
+    def add_domain(self, policy: str, domain: str) -> tuple[bool, str, str]:
         policy_key = _canonical_policy(policy)
         if policy_key not in _DOMAIN_POLICIES:
             return False, "Invalid domain policy.", ""
@@ -388,10 +380,7 @@ class SslFilterStore:
         detail = "" if changed else "Domain is already configured."
         return True, detail, canonical, changed
 
-    def remove_domain(self, policy: str, domain: str | None = None) -> None:
-        if domain is None:
-            domain = policy
-            policy = "nobump"
+    def remove_domain(self, policy: str, domain: str) -> None:
         policy_key = _canonical_policy(policy)
         if policy_key not in _DOMAIN_POLICIES:
             return
@@ -468,23 +457,6 @@ class SslFilterStore:
                     f"WHERE proxy_id=%s AND policy=%s AND cidr IN ({placeholders})",
                     (guard.proxy_id, policy_key, *values),
                 )
-
-    # Backward-compatible helpers for older tests/callers.
-    def list_nobump(self, limit: int = 5000) -> list[tuple[str, int]]:
-        self.init_db()
-        proxy_id = get_proxy_id()
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT cidr, added_ts FROM sslfilter_src_nets WHERE proxy_id=%s AND policy='nobump' ORDER BY added_ts DESC, cidr ASC LIMIT %s",
-                (proxy_id, int(limit)),
-            ).fetchall()
-        return [(str(r[0]), int(r[1]) if r[1] is not None else 0) for r in rows]
-
-    def add_nobump(self, entry: str) -> tuple[bool, str, str]:
-        return self.add_src_net("nobump", entry)
-
-    def remove_nobump(self, cidr: str) -> None:
-        self.remove_src_net("nobump", cidr)
 
     def _list_domains_conn(self, conn: Any, policy: str) -> list[str]:
         rows = conn.execute(
