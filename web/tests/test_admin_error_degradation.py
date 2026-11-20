@@ -566,3 +566,22 @@ def test_adblock_build_state_uses_shared_lists_when_selected_proxy_is_disabled(
     assert state["enabled_lists"] == ["default"]
     assert state["lists_stale"] is True
     assert state["pending"] is True
+
+
+def test_audit_write_failure_is_logged_without_failing_the_action(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    module = loaded.module
+
+    class BrokenAudit:
+        def record(self, **_kwargs):
+            msg = "audit table unavailable"
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr(module, "get_audit_store", BrokenAudit)
+    caplog.set_level("ERROR")
+    with module.app.test_request_context("/"):
+        module._record_audit_event("audit_failure_probe", ok=True)
+
+    assert "Failed to record Admin UI audit event 'audit_failure_probe'" in caplog.text

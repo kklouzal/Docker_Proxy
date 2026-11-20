@@ -2484,8 +2484,16 @@ def _record_audit_event(
     }
     if config_text is not None:
         payload["config_text"] = config_text
-    with contextlib.suppress(Exception):
+    # Auditing never fails the audited action, but a lost record is logged.
+    try:
         get_audit_store().record(**payload)
+    except Exception:
+        log_exception_throttled(
+            app.logger,
+            f"web.app.audit_record.{kind}",
+            interval_seconds=60.0,
+            message=f"Failed to record Admin UI audit event {kind!r}",
+        )
 
 
 def _audit_safe_detail(value: Any, *, limit: int = 500) -> str:
