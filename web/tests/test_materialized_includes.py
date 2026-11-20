@@ -962,14 +962,9 @@ def test_webfilter_policy_exception_materialization_skips_malformed_client_ips(
     rendered = store.render_materialized_state().include_text
 
     assert "acl webfilter_exception_src_101 src 192.0.2.10" in rendered
-    assert (
-        "acl webfilter_exception_dst_101 dstdomain example.com .example.com" in rendered
-    )
+    assert "acl webfilter_exception_dst_101 dstdomain .example.com" in rendered
     assert "acl webfilter_exception_src_102 src 2001:db8::5" in rendered
-    assert (
-        "acl webfilter_exception_dst_102 dstdomain ipv6.example.test .ipv6.example.test"
-        in rendered
-    )
+    assert "acl webfilter_exception_dst_102 dstdomain .ipv6.example.test" in rendered
     assert "webfilter_exception_src_103" not in rendered
     assert "webfilter_exception_src_104" not in rendered
     assert "webfilter_exception_src_105" not in rendered

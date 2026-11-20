@@ -886,20 +886,29 @@ def test_webfilter_materialization_scopes_exceptions_to_enforced_categories(
     finally:
         reset_proxy_id(token)
     assert "acl webfilter_exception_src_7 src 192.168.1.55" in text
-    assert "acl webfilter_exception_dst_7 dstdomain bad.example .bad.example" in text
+    assert "acl webfilter_exception_dst_7 dstdomain .bad.example" in text
     assert "acl webfilter_exception_method_7 method GET" in text
+    # A category-scoped exception exempts only its category: it must not become
+    # a global allow that also bypasses other categories and Safe Browsing.
     assert (
-        "http_access allow webfilter_exception_src_7 webfilter_exception_dst_7 webfilter_exception_method_7"
-        in text
-    )
+        "acl webfilter_exception_7 all-of webfilter_exception_src_7 "
+        "webfilter_exception_dst_7 webfilter_exception_method_7"
+    ) in text
+    assert "http_access allow webfilter_exception_src_7" not in text
+    assert "http_access deny !webfilter_exception_7 webfilter_block_adult" in text
+    assert "note webfilter_allow exception_7 webfilter_exception_7" in text
     assert "webfilter_exception_src_8" not in text
     assert "bad domain.example" not in text
     assert "webfilter_exception_src_9" not in text
     assert "stale.example" not in text
     assert "webfilter_exception_src_10 src 192.168.1.58" in text
-    assert "webfilter_exception_dst_10 dstdomain legacy.example .legacy.example" in text
-    assert text.index("http_access allow webfilter_exception_src_7") < text.index(
-        "http_access deny webfilter_block_adult"
+    assert "webfilter_exception_dst_10 dstdomain .legacy.example" in text
+    assert text.index("acl webfilter_exception_7 all-of") < text.index(
+        "http_access deny !webfilter_exception_7 webfilter_block_adult"
+    )
+    assert (
+        "http_access allow webfilter_exception_src_10 webfilter_exception_dst_10"
+        in (text)
     )
     assert "http_access deny webfilter_block_google_safe_browsing" in text
 
