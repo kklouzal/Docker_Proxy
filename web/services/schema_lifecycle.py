@@ -34,7 +34,7 @@ from services.sql_identifiers import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 34
+_SCHEMA_VERSION = 37
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _CONTROL_PLANE_ID_RE = re.compile(
@@ -1767,6 +1767,30 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                 SchemaDataStep(
                     "drop_live_stats_tables",
                     _drop_retired_live_stats_tables,
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=37,
+            name="saml_assertion_replay_cache",
+            tables=(
+                SchemaObjectSpec(
+                    "saml_assertion_replay",
+                    """
+                    CREATE TABLE IF NOT EXISTS saml_assertion_replay (
+                        replay_key CHAR(64) NOT NULL PRIMARY KEY,
+                        expires_ts BIGINT NOT NULL,
+                        created_ts BIGINT NOT NULL,
+                        INDEX idx_saml_assertion_replay_expires (expires_ts)
+                    )
+                    """,
+                ),
+            ),
+            indexes=(
+                SchemaIndexSpec(
+                    "saml_assertion_replay",
+                    "idx_saml_assertion_replay_expires",
+                    "ALTER TABLE saml_assertion_replay ADD INDEX idx_saml_assertion_replay_expires (expires_ts)",
                 ),
             ),
         ),

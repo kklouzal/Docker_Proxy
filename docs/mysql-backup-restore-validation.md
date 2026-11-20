@@ -12,6 +12,7 @@ A complete MySQL state export/import must include:
 - Operation idempotency/claim state in `proxy_operations`, including `request_key` and `claim_token`.
 - Revision/apply evidence for proxy config, certificate bundles, and adblock artifacts.
 - Proxy config application evidence, including `proxy_config_applications.config_sha256`, so restored apply ledgers can be checked against the referenced revision content hash.
+- Admin authentication state: `directory_auth_profiles`, `saml_auth_profiles`, and the SAML assertion replay cache `saml_assertion_replay` (short-lived, but restoring it keeps recently used assertions from being replayable).
 - Safe Browsing tables, adblock/webfilter logs and caches, SSL errors, diagnostics, live stats, timeseries rollups, audit events, policy/PAC tables, and observability settings/report schedules.
 - Timeseries metric count columns on every `ts_*` rollup table, which preserve sample-count semantics across backup/import boundaries.
 - Application secrets that live outside MySQL, especially `FLASK_SECRET_PATH` and TLS/private-key material, must be backed up by the host secret-management path rather than by MySQL exports.

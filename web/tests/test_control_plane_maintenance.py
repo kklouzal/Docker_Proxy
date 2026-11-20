@@ -961,3 +961,35 @@ def test_keep_n_retention_matches_count_oracle_on_mysql(tmp_path, monkeypatch) -
     assert all(result.deleted_rows <= 25 for result in passes)
     assert passes[-1].truncated is False
     assert survivors == expected
+
+
+def test_control_plane_prune_expires_saml_assertion_replay_rows(monkeypatch) -> None:
+    assert "saml_assertion_replay" in maintenance.CONTROL_PLANE_MAINTENANCE_TABLES
+    conn = _Connection()
+    monkeypatch.setattr(
+        maintenance, "CONTROL_PLANE_MAINTENANCE_TABLES", ("saml_assertion_replay",)
+    )
+    monkeypatch.setattr(maintenance, "_table_exists", lambda _table: True)
+    monkeypatch.setattr(maintenance, "connect", lambda: conn)
+    patch_module_clock(monkeypatch, maintenance, time=lambda: 1_000_000)
+    monkeypatch.setattr(
+        maintenance,
+        "cleanup_stale_webcat_build_tables",
+        lambda *_args, **_kwargs: _CleanupResult(),
+    )
+
+    result = maintenance.prune_control_plane_tables(retention_days=1)
+
+    assert result["ok"] is True
+    row = result["tables"][0]
+    assert row["table"] == "saml_assertion_replay"
+    assert row["status"] == "pruned"
+    assert row["maintenance"] == "bounded_expiry_delete"
+    deletes = [
+        (query, params)
+        for query, params in conn.queries
+        if query.startswith("DELETE FROM `saml_assertion_replay` WHERE expires_ts")
+    ]
+    assert deletes
+    # Only rows already past their expiry (which carries the drift margin).
+    assert deletes[0][1][0] == 1_000_000

@@ -113,9 +113,21 @@ class FakeSamlAuthStore:
 
         self._base = SamlAuthStore()
         self.profile = self._base.default_profile()
+        self.assertion_uses: set[str] = set()
 
     def ensure_default_profile(self) -> None:
         return None
+
+    def get_session_policy(self, *, now=None):
+        from services.saml_auth import saml_session_policy  # type: ignore
+
+        return saml_session_policy(self.profile, now=now)
+
+    def record_assertion_use(self, use, *, now) -> bool:
+        if use.replay_key in self.assertion_uses:
+            return False
+        self.assertion_uses.add(use.replay_key)
+        return True
 
     def default_profile(self):
         return self._base.default_profile()

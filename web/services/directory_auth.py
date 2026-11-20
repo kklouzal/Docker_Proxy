@@ -4,6 +4,7 @@ import base64
 import contextlib
 import hashlib
 import ipaddress
+import json
 import logging
 import re
 import threading
@@ -211,6 +212,77 @@ class DirectoryAuthResult:
     username: str
     detail: str = ""
     groups: tuple[str, ...] = ()
+    # Successful logins carry what session revalidation needs: the login name
+    # that was typed (user filters may match a different attribute than the
+    # canonical username) and the policy fingerprint of the profile used.
+    lookup_name: str = ""
+    policy_fingerprint: str = ""
+
+
+class DirectoryUnavailableError(RuntimeError):
+    """The directory could not answer, so the admin check has no outcome."""
+
+
+class _DirectoryDeniedError(Exception):
+    """A definitive negative directory answer for an admin lookup."""
+
+
+def directory_policy_fingerprint(profile: DirectoryProfile) -> str:
+    """Hash the profile fields that decide who is a directory administrator.
+
+    Excludes the enabled flag (checked separately), the encrypted bind
+    password (rotation is routine and must not appear in the session even as
+    a hash), timeouts, and the volatile last_test_* / updated_ts bookkeeping
+    that connection tests and saves rewrite without changing authorization.
+    """
+    fields = (
+        profile.provider,
+        profile.server_urls,
+        bool(profile.use_starttls),
+        bool(profile.verify_tls),
+        profile.ca_bundle,
+        profile.bind_dn,
+        profile.base_dn,
+        profile.user_search_base,
+        profile.user_filter,
+        profile.user_attribute,
+        profile.group_search_base,
+        profile.group_filter,
+        profile.required_admin_group,
+    )
+    encoded = json.dumps(fields, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class DirectoryRevalidationBackoff:
+    """Per-process pause on directory revalidation after an outage.
+
+    Holds one (policy fingerprint, deadline) pair, so it is bounded and a
+    profile change (new fingerprint) is retried at once. Thread-safe.
+    """
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = float(seconds)
+        self._lock = threading.Lock()
+        self._fingerprint = ""
+        self._until = 0.0
+
+    def active(self, fingerprint: str, *, now: float | None = None) -> bool:
+        current = time.monotonic() if now is None else float(now)
+        with self._lock:
+            return bool(self._fingerprint == fingerprint and current < self._until)
+
+    def record_failure(self, fingerprint: str, *, now: float | None = None) -> None:
+        current = time.monotonic() if now is None else float(now)
+        with self._lock:
+            self._fingerprint = fingerprint
+            self._until = current + self.seconds
+
+    def record_success(self, fingerprint: str) -> None:
+        with self._lock:
+            if self._fingerprint == fingerprint:
+                self._fingerprint = ""
+                self._until = 0.0
 
 
 @dataclass(frozen=True)
@@ -366,6 +438,11 @@ class DirectoryAuthStore:
 
     def list_profiles(self) -> dict[str, DirectoryProfile]:
         self.ensure_default_profiles()
+        return self._select_profiles()
+
+    def _select_profiles(
+        self, *, enabled_only: bool = False
+    ) -> dict[str, DirectoryProfile]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -376,8 +453,10 @@ class DirectoryAuthStore:
                        timeout_seconds, last_test_ok, last_test_ts,
                        last_test_detail, updated_ts
                 FROM directory_auth_profiles
+                WHERE (%s = 0 OR enabled = 1)
                 ORDER BY provider ASC
                 """,
+                (int(enabled_only),),
             ).fetchall()
         return {str(row[0]): self._row_to_profile(row) for row in rows}
 
@@ -387,7 +466,21 @@ class DirectoryAuthStore:
         return profiles.get(provider) or self.default_profile(provider)
 
     def get_active_profile(self) -> DirectoryProfile | None:
-        profiles = self.list_profiles()
+        return self._single_enabled(self.list_profiles())
+
+    def get_active_profile_for_session(self) -> DirectoryProfile | None:
+        """Read-only active-profile lookup for per-request session checks.
+
+        Skips the default-row upserts of ``get_active_profile``; a missing row
+        simply means no active provider.
+        """
+        self.ensure_schema()
+        return self._single_enabled(self._select_profiles(enabled_only=True))
+
+    @staticmethod
+    def _single_enabled(
+        profiles: dict[str, DirectoryProfile],
+    ) -> DirectoryProfile | None:
         enabled = [profile for profile in profiles.values() if profile.enabled]
         if len(enabled) != 1:
             return None
@@ -715,59 +808,26 @@ class DirectoryAuthStore:
         conn = None
         try:
             conn, ldap3 = self._service_connection(profile)
-            escape_filter_chars = ldap3.utils.conv.escape_filter_chars
-            user_filter = profile.user_filter.format(
-                username=escape_filter_chars(lookup_username),
-            )
-            user_base = self._join_dn(profile.user_search_base, profile.base_dn)
-            if not conn.search(
-                user_base,
-                user_filter,
-                attributes=[profile.user_attribute, "dn"],
-                size_limit=2,
-            ):
-                return DirectoryAuthResult(
-                    False, profile.provider, username, "Directory user was not found."
-                )
-            entries = list(conn.entries)
-            if len(entries) != 1:
-                return DirectoryAuthResult(
-                    False,
-                    profile.provider,
-                    username,
-                    "Directory user lookup was ambiguous.",
-                )
-            user_dn = str(entries[0].entry_dn)
-            # The login attribute names the directory's canonical login value;
-            # it identifies the admin session instead of the typed spelling.
-            directory_username = (
-                self._entry_attribute_value(entries[0], profile.user_attribute)
-                or username
+            user_dn, directory_username = self._find_admin_user(
+                profile, conn, ldap3, username, lookup_username
             )
             if not self._user_bind(profile, user_dn, password):
-                return DirectoryAuthResult(
-                    False,
-                    profile.provider,
-                    username,
-                    "Directory password check failed.",
-                )
-            groups = self._groups_for_user(
-                profile, conn, user_dn, lookup_username, ldap3
+                msg = "Directory password check failed."
+                raise _DirectoryDeniedError(msg)
+            groups = self._require_admin_group(
+                profile, conn, ldap3, user_dn, lookup_username
             )
-            if not self._required_group_matches(profile.required_admin_group, groups):
-                return DirectoryAuthResult(
-                    False,
-                    profile.provider,
-                    username,
-                    "User is not in the required admin group.",
-                )
             return DirectoryAuthResult(
                 True,
                 profile.provider,
                 directory_username,
                 "Directory authentication succeeded.",
                 tuple(groups),
+                lookup_name=username,
+                policy_fingerprint=directory_policy_fingerprint(profile),
             )
+        except _DirectoryDeniedError as denied:
+            return DirectoryAuthResult(False, profile.provider, username, str(denied))
         except Exception as exc:
             log_exception_throttled(
                 logger,
@@ -780,6 +840,114 @@ class DirectoryAuthStore:
             )
         finally:
             self._safe_unbind(conn)
+
+    def revalidate_admin(
+        self,
+        profile: DirectoryProfile,
+        username: str,
+        lookup_name: str,
+    ) -> DirectoryAuthResult:
+        """Re-check an established directory admin session via the service bind.
+
+        Returns a definitive outcome: ok, or not ok when the user is gone,
+        ambiguous, no longer in the required admin group, or now resolves to a
+        different canonical username. Raises ``DirectoryUnavailableError`` when
+        the directory cannot answer, so callers can keep the session.
+        """
+        username = (username or "").strip()
+        lookup_name = (lookup_name or username).strip()
+        if not username:
+            return DirectoryAuthResult(
+                False, profile.provider, username, "Username is required."
+            )
+        if detail := self._bind_password_required_detail(profile):
+            return DirectoryAuthResult(False, profile.provider, username, detail)
+        lookup_username = self._lookup_username(profile, lookup_name)
+        conn = None
+        try:
+            conn, ldap3 = self._service_connection(profile)
+            user_dn, directory_username = self._find_admin_user(
+                profile, conn, ldap3, lookup_name, lookup_username
+            )
+            groups = self._require_admin_group(
+                profile, conn, ldap3, user_dn, lookup_username
+            )
+        except _DirectoryDeniedError as denied:
+            return DirectoryAuthResult(False, profile.provider, username, str(denied))
+        except Exception as exc:
+            log_exception_throttled(
+                logger,
+                f"directory_auth.revalidate.{profile.provider}",
+                interval_seconds=300.0,
+                message="Directory session revalidation failed",
+            )
+            raise DirectoryUnavailableError(self._public_error(exc)) from exc
+        finally:
+            self._safe_unbind(conn)
+        if directory_username != username:
+            return DirectoryAuthResult(
+                False,
+                profile.provider,
+                username,
+                "Directory login now resolves to a different username.",
+            )
+        return DirectoryAuthResult(
+            True,
+            profile.provider,
+            directory_username,
+            "Directory session revalidated.",
+            tuple(groups),
+            lookup_name=lookup_name,
+            policy_fingerprint=directory_policy_fingerprint(profile),
+        )
+
+    def _find_admin_user(
+        self,
+        profile: DirectoryProfile,
+        conn: Any,
+        ldap3: Any,
+        username: str,
+        lookup_username: str,
+    ) -> tuple[str, str]:
+        """Return the unique user's DN and canonical login value."""
+        escape_filter_chars = ldap3.utils.conv.escape_filter_chars
+        user_filter = profile.user_filter.format(
+            username=escape_filter_chars(lookup_username),
+        )
+        user_base = self._join_dn(profile.user_search_base, profile.base_dn)
+        if not conn.search(
+            user_base,
+            user_filter,
+            attributes=[profile.user_attribute, "dn"],
+            size_limit=2,
+        ):
+            msg = "Directory user was not found."
+            raise _DirectoryDeniedError(msg)
+        entries = list(conn.entries)
+        if len(entries) != 1:
+            msg = "Directory user lookup was ambiguous."
+            raise _DirectoryDeniedError(msg)
+        user_dn = str(entries[0].entry_dn)
+        # The login attribute names the directory's canonical login value;
+        # it identifies the admin session instead of the typed spelling.
+        directory_username = (
+            self._entry_attribute_value(entries[0], profile.user_attribute) or username
+        )
+        return user_dn, directory_username
+
+    def _require_admin_group(
+        self,
+        profile: DirectoryProfile,
+        conn: Any,
+        ldap3: Any,
+        user_dn: str,
+        lookup_username: str,
+    ) -> list[str]:
+        groups = self._groups_for_user(profile, conn, user_dn, lookup_username, ldap3)
+        if not self._required_group_matches(profile.required_admin_group, groups):
+            msg = "User is not in the required admin group."
+            raise _DirectoryDeniedError(msg)
+        return groups
 
     def _lookup_username(self, profile: DirectoryProfile, username: str) -> str:
         if profile.provider != PROVIDER_ACTIVE_DIRECTORY or "@" in username:

@@ -6,6 +6,7 @@ import time
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pymysql
 import pytest
 from services import saml_auth
 from services.saml_auth import (
@@ -231,7 +232,12 @@ class _FallbackSchemaConnection:
             "SELECT version, name, checksum, status, error FROM schema_migrations"
         ):
             return SimpleNamespace(fetchall=list)
-        if text.startswith("CREATE TABLE IF NOT EXISTS saml_auth_profiles"):
+        if text.startswith(
+            (
+                "CREATE TABLE IF NOT EXISTS saml_auth_profiles",
+                "CREATE TABLE IF NOT EXISTS saml_assertion_replay",
+            )
+        ):
             return SimpleNamespace(fetchone=lambda: None)
         if "FROM information_schema.columns" in text:
             return SimpleNamespace(fetchone=lambda: {"exists": 1})
@@ -251,6 +257,10 @@ def test_ensure_schema_preserves_fallback_when_lifecycle_is_not_current(
     assert store._schema_ready is True
     assert any(
         op.startswith("CREATE TABLE IF NOT EXISTS saml_auth_profiles")
+        for op in conn.ops
+    )
+    assert any(
+        op.startswith("CREATE TABLE IF NOT EXISTS saml_assertion_replay")
         for op in conn.ops
     )
     assert not any(op.startswith("ALTER TABLE") for op in conn.ops)
@@ -1429,3 +1439,296 @@ def test_metadata_refresh_is_only_cached_for_the_current_fetch_settings(
     assert "https://idp.example.test/metadata.xml" in update_params
     if not expected_ok:
         assert "changed while metadata was being refreshed" in result.detail
+
+
+class _ReplayToolkit:
+    def __init__(
+        self,
+        *,
+        assertion_id: str | None = "_assertion-1",
+        not_on_or_after: int | None = None,
+        in_response_to: str | None = "REQ-1",
+    ) -> None:
+        self.assertion_id = assertion_id
+        self.not_on_or_after = not_on_or_after
+        self.in_response_to = in_response_to
+
+    def get_last_assertion_id(self):
+        return self.assertion_id
+
+    def get_last_assertion_not_on_or_after(self):
+        return self.not_on_or_after
+
+    def get_last_response_in_response_to(self):
+        return self.in_response_to
+
+
+def _replay_profile(entity_id: str = "https://idp.example.test/entity"):
+    return replace(SamlAuthStore().default_profile(), entity_id=entity_id)
+
+
+def test_replay_clock_drift_matches_python3_saml_constant() -> None:
+    from onelogin.saml2.constants import OneLogin_Saml2_Constants
+
+    assert (
+        OneLogin_Saml2_Constants.ALLOWED_CLOCK_DRIFT
+        == saml_auth.SAML_CLOCK_DRIFT_SECONDS
+    )
+
+
+@pytest.mark.parametrize(
+    ("not_on_or_after", "expected_offset"),
+    [
+        # No SubjectConfirmationData NotOnOrAfter: the pending window bounds it.
+        (None, 660 + 300),
+        # Long-lived assertion: still capped by the pending-request window.
+        (1_000_000 + 86_400, 660 + 300),
+        # Short-lived assertion: its NotOnOrAfter is the tighter bound.
+        (1_000_000 + 120, 120 + 300),
+    ],
+)
+def test_assertion_replay_expiry_outlives_every_acceptance_window(
+    not_on_or_after, expected_offset
+) -> None:
+    use = saml_auth.saml_assertion_use(
+        _ReplayToolkit(not_on_or_after=not_on_or_after),
+        _replay_profile(),
+        request_id="REQ-1",
+        acceptance_window_seconds=660,
+        now=1_000_000,
+    )
+
+    assert use.expires_ts == 1_000_000 + expected_offset
+    assert len(use.replay_key) == 64
+
+
+def test_assertion_replay_key_is_scoped_to_idp_entity() -> None:
+    def key(entity_id: str, assertion_id: str) -> str:
+        return saml_auth.saml_assertion_use(
+            _ReplayToolkit(assertion_id=assertion_id),
+            _replay_profile(entity_id),
+            request_id="REQ-1",
+            acceptance_window_seconds=660,
+            now=1_000_000,
+        ).replay_key
+
+    assert key("https://a.example", "_x") == key("https://a.example", "_x")
+    assert key("https://a.example", "_x") != key("https://b.example", "_x")
+    assert key("https://a.example", "_x") != key("https://a.example", "_y")
+
+
+@pytest.mark.parametrize(
+    ("toolkit", "profile", "message"),
+    [
+        (_ReplayToolkit(assertion_id=None), _replay_profile(), "did not include an ID"),
+        (_ReplayToolkit(assertion_id="  "), _replay_profile(), "did not include an ID"),
+        (_ReplayToolkit(in_response_to=None), _replay_profile(), "pending login"),
+        (_ReplayToolkit(in_response_to="REQ-2"), _replay_profile(), "pending login"),
+        (_ReplayToolkit(), _replay_profile(entity_id=""), "entity ID is unknown"),
+    ],
+)
+def test_assertion_replay_claim_rejects_unbindable_assertions(
+    toolkit, profile, message
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        saml_auth.saml_assertion_use(
+            toolkit,
+            profile,
+            request_id="REQ-1",
+            acceptance_window_seconds=660,
+            now=1_000_000,
+        )
+
+
+class _ReplayInsertConnection:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.statements: list[tuple[str, tuple]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=()):
+        self.statements.append((" ".join(str(sql).split()), tuple(params)))
+        if self.error is not None:
+            raise self.error
+        return SimpleNamespace(rowcount=1)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [(None, True), (pymysql.err.IntegrityError(1062, "dup"), False)],
+)
+def test_record_assertion_use_claims_once(monkeypatch, error, expected) -> None:
+    store = SamlAuthStore()
+    conn = _ReplayInsertConnection(error)
+    monkeypatch.setattr(store, "ensure_schema", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    use = saml_auth.SamlAssertionUse(replay_key="a" * 64, expires_ts=1_000_960)
+
+    assert store.record_assertion_use(use, now=1_000_000) is expected
+    sql, params = conn.statements[0]
+    assert sql.startswith("INSERT INTO saml_assertion_replay(")
+    assert params == ("a" * 64, 1_000_960, 1_000_000)
+
+
+def test_record_assertion_use_propagates_other_database_errors(monkeypatch) -> None:
+    store = SamlAuthStore()
+    conn = _ReplayInsertConnection(pymysql.err.OperationalError(2013, "lost"))
+    monkeypatch.setattr(store, "ensure_schema", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+
+    with pytest.raises(pymysql.err.OperationalError):
+        store.record_assertion_use(
+            saml_auth.SamlAssertionUse(replay_key="b" * 64, expires_ts=1),
+            now=0,
+        )
+
+
+def _ready_saml_profile(now: int):
+    parsed = parse_saml_metadata(SAMPLE_METADATA)
+    return replace(
+        SamlAuthStore().default_profile(),
+        enabled=True,
+        metadata_url="https://idp.example.test/metadata.xml",
+        raw_metadata_xml=SAMPLE_METADATA,
+        parsed_metadata_json=json.dumps(parsed, sort_keys=True),
+        entity_id=parsed["entity_id"],
+        fetched_ts=now,
+        cache_expires_ts=now + 3600,
+        last_refresh_ok=True,
+        last_refresh_ts=now,
+        public_base_url="https://admin.example.test",
+        required_group="Admins",
+        updated_ts=now,
+    )
+
+
+def test_saml_policy_fingerprint_ignores_refresh_bookkeeping_only() -> None:
+    now = int(time.time())
+    profile = _ready_saml_profile(now)
+    fingerprint = saml_auth.saml_policy_fingerprint(profile)
+
+    refreshed = replace(
+        profile,
+        fetched_ts=now + 60,
+        cache_expires_ts=now + 7200,
+        last_refresh_ts=now + 60,
+        last_refresh_detail="refreshed",
+        updated_ts=now + 60,
+        raw_metadata_xml=SAMPLE_METADATA + "\n",
+    )
+    assert saml_auth.saml_policy_fingerprint(refreshed) == fingerprint
+    for changed in (
+        replace(profile, required_group="Other"),
+        replace(profile, groups_attribute="roles"),
+        replace(profile, username_attribute="upn"),
+        replace(profile, entity_id="https://other.example/idp"),
+        replace(profile, metadata_url="https://other.example/metadata.xml"),
+        replace(profile, public_base_url="https://other.example.test"),
+    ):
+        assert saml_auth.saml_policy_fingerprint(changed) != fingerprint
+
+
+class _SessionPolicyConnection:
+    def __init__(self, row) -> None:
+        self.row = row
+        self.sql = ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, _params=()):
+        self.sql = " ".join(str(sql).split())
+        return SimpleNamespace(fetchone=lambda: self.row)
+
+
+@pytest.mark.parametrize(
+    "variant",
+    ["ready", "disabled", "no_metadata", "cache_expired", "refresh_failed"],
+)
+def test_session_policy_query_matches_full_profile_readiness(
+    monkeypatch, variant
+) -> None:
+    now = int(time.time())
+    profile = _ready_saml_profile(now)
+    profile = {
+        "ready": profile,
+        "disabled": replace(profile, enabled=False),
+        "no_metadata": replace(profile, raw_metadata_xml=""),
+        "cache_expired": replace(profile, cache_expires_ts=now - 1),
+        "refresh_failed": replace(profile, last_refresh_ok=False),
+    }[variant]
+    row = (
+        int(profile.enabled),
+        int(profile.raw_metadata_xml != ""),
+        int(profile.parsed_metadata_json != ""),
+        int(profile.last_refresh_ok),
+        profile.cache_expires_ts,
+        profile.valid_until_ts,
+        profile.entity_id,
+        profile.metadata_url,
+        profile.public_base_url,
+        profile.username_attribute,
+        profile.groups_attribute,
+        profile.required_group,
+    )
+    store = SamlAuthStore()
+    conn = _SessionPolicyConnection(row)
+    monkeypatch.setattr(store, "ensure_schema", lambda: None)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+
+    policy = store.get_session_policy(now=now)
+
+    assert policy == saml_auth.saml_session_policy(profile, now=now)
+    assert policy.ready is (variant == "ready")
+    # The per-request read never transfers the cached metadata documents.
+    selected = conn.sql.split(" FROM ", 1)[0]
+    assert "raw_metadata_xml <> ''" in selected
+    assert "raw_metadata_xml," not in selected
+
+
+@pytest.mark.mysql
+def test_saml_replay_cache_claims_once_and_is_pruned_on_mysql(tmp_path) -> None:
+    import importlib
+
+    from .mysql_test_utils import configure_test_mysql_env
+
+    configure_test_mysql_env(tmp_path / "saml-replay-cache")
+    schema_lifecycle = importlib.import_module("services.schema_lifecycle")
+    schema_lifecycle.migrate_schema(require_privileges=False)
+    live_saml = importlib.import_module("services.saml_auth")
+    maintenance = importlib.import_module("services.control_plane_maintenance")
+    store = live_saml.SamlAuthStore()
+    now = int(time.time())
+    fresh = live_saml.SamlAssertionUse(replay_key="c" * 64, expires_ts=now + 900)
+    stale = live_saml.SamlAssertionUse(replay_key="d" * 64, expires_ts=now - 1)
+
+    assert store.record_assertion_use(fresh, now=now) is True
+    assert store.record_assertion_use(fresh, now=now) is False
+    assert store.record_assertion_use(stale, now=now - 1000) is True
+    assert store.get_session_policy(now=now) == live_saml.saml_session_policy(
+        store.get_profile(), now=now
+    )
+
+    result = maintenance.prune_control_plane_tables(retention_days=1)
+
+    replay_result = next(
+        row for row in result["tables"] if row["table"] == "saml_assertion_replay"
+    )
+    assert replay_result["status"] == "pruned"
+    assert replay_result["deleted_rows"] == 1
+    with live_saml.connect() as conn:
+        keys = {
+            str(row["replay_key"])
+            for row in conn.execute(
+                "SELECT replay_key FROM saml_assertion_replay"
+            ).fetchall()
+        }
+    assert keys == {"c" * 64}

@@ -1157,3 +1157,26 @@ def test_migrate_schema_holds_migration_lock_outside_the_pool(monkeypatch) -> No
     # lock-holding outer session must not consume the only DB_POOL_SIZE=1 slot.
     assert factories
     assert all(factory is schema_lifecycle.connect_unpooled for factory in factories)
+
+
+def test_saml_assertion_replay_cache_migration() -> None:
+    from services import mysql_state_validation, saml_auth
+
+    by_version = {spec.version: spec for spec in schema_lifecycle._migration_specs()}
+    spec = by_version[37]
+    assert spec.name == "saml_assertion_replay_cache"
+    assert [table.table for table in spec.tables] == ["saml_assertion_replay"]
+    create_sql = spec.tables[0].create_sql
+    assert "CREATE TABLE IF NOT EXISTS saml_assertion_replay" in create_sql
+    assert "replay_key CHAR(64) NOT NULL PRIMARY KEY" in create_sql
+    assert "expires_ts BIGINT NOT NULL" in create_sql
+    # No proxy_id column: proxy lifecycle discovery must not treat it as scoped.
+    assert "proxy_id" not in create_sql
+    assert [(index.table, index.name) for index in spec.indexes] == [
+        ("saml_assertion_replay", "idx_saml_assertion_replay_expires")
+    ]
+    # The lazy-store fallback creates exactly the migrated table.
+    assert schema_lifecycle._normalize_sql(
+        saml_auth._SAML_ASSERTION_REPLAY_DDL
+    ) == schema_lifecycle._normalize_sql(create_sql)
+    assert "saml_assertion_replay" in mysql_state_validation._REQUIRED_TABLES

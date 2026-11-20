@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -30,7 +31,7 @@ except ImportError:  # pragma: no cover - production image installs defusedxml.
     DefusedXmlException = ()  # type: ignore[assignment]
     _DEFUSEDXML_AVAILABLE = False
 
-from services.db import connect
+from services.db import DATABASE_ERRORS, connect, mysql_error_code
 from services.errors import clean_text, redact_sensitive_text
 from services.external_auth_groups import (
     candidate_group_match_tokens,
@@ -61,6 +62,28 @@ _SAML_METADATA_REQUEST_HEADERS = {
 }
 _SAML_HTTP_REDIRECT_BINDING = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
 _MAX_URL_PERCENT_DECODE_PASSES = 8
+# Mirrors OneLogin_Saml2_Constants.ALLOWED_CLOCK_DRIFT (python3-saml 1.16), the
+# skew python3-saml grants to Conditions NotBefore/NotOnOrAfter. The replay
+# cache reuses it as the bound on clock skew between Admin UI workers and the
+# housekeeping pruner; a test pins it to the library constant.
+SAML_CLOCK_DRIFT_SECONDS = 300
+SAML_ASSERTION_REPLAY_TABLE = "saml_assertion_replay"
+# Single-use claims of accepted assertions, keyed by SHA-256 of the IdP entity
+# ID plus assertion ID. Rows are pruned by control-plane housekeeping once
+# expires_ts has passed (see saml_assertion_use for the expiry contract).
+_SAML_ASSERTION_REPLAY_DDL = """
+CREATE TABLE IF NOT EXISTS saml_assertion_replay (
+    replay_key CHAR(64) NOT NULL PRIMARY KEY,
+    expires_ts BIGINT NOT NULL,
+    created_ts BIGINT NOT NULL,
+    INDEX idx_saml_assertion_replay_expires (expires_ts)
+)
+"""
+_INSERT_ASSERTION_REPLAY_SQL = (
+    "INSERT INTO saml_assertion_replay(replay_key, expires_ts, created_ts) "
+    "VALUES (%s, %s, %s)"
+)
+_MYSQL_DUPLICATE_KEY = 1062
 
 
 # Fetched metadata is cached only while the fetch settings still match.
@@ -261,6 +284,22 @@ class SamlMetadataRefreshResult:
 
 
 @dataclass(frozen=True)
+class SamlAssertionUse:
+    """One accepted assertion's replay-cache claim."""
+
+    replay_key: str
+    expires_ts: int
+
+
+@dataclass(frozen=True)
+class SamlSessionPolicy:
+    """What per-request SAML session checks need, without the metadata XML."""
+
+    ready: bool
+    fingerprint: str
+
+
+@dataclass(frozen=True)
 class SamlAuthResult:
     ok: bool
     username: str = ""
@@ -340,6 +379,7 @@ class SamlAuthStore:
                     "required_group",
                     "ALTER TABLE saml_auth_profiles ADD COLUMN required_group TEXT NOT NULL AFTER groups_attribute",
                 )
+                conn.execute(_SAML_ASSERTION_REPLAY_DDL)
             self._schema_ready = True
 
     def ensure_default_profile(self) -> None:
@@ -434,6 +474,67 @@ class SamlAuthStore:
                 (PROVIDER_SAML,),
             ).fetchone()
         return self._row_to_profile(row) if row else self.default_profile()
+
+    def get_session_policy(self, *, now: int | None = None) -> SamlSessionPolicy:
+        """Per-request readiness/fingerprint read that skips the metadata blobs.
+
+        ``profile_metadata_ready`` only needs to know whether the cached
+        metadata columns are non-empty, so they are tested server-side instead
+        of transferring up to max_metadata_bytes on every admin request.
+        """
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT enabled, raw_metadata_xml <> '', parsed_metadata_json <> '',
+                       last_refresh_ok, cache_expires_ts, valid_until_ts,
+                       entity_id, metadata_url, public_base_url,
+                       username_attribute, groups_attribute, required_group
+                  FROM saml_auth_profiles
+                 WHERE provider = %s
+                """,
+                (PROVIDER_SAML,),
+            ).fetchone()
+        if not row:
+            return SamlSessionPolicy(ready=False, fingerprint="")
+        ready = bool(row[0]) and _metadata_cache_ready(
+            has_metadata=bool(row[1]) and bool(row[2]),
+            last_refresh_ok=bool(row[3]),
+            cache_expires_ts=int(row[4] or 0),
+            valid_until_ts=int(row[5] or 0),
+            now=now,
+        )
+        return SamlSessionPolicy(
+            ready=ready,
+            fingerprint=_saml_policy_fingerprint(
+                entity_id=str(row[6] or ""),
+                metadata_url=str(row[7] or ""),
+                public_base_url=str(row[8] or ""),
+                username_attribute=str(row[9] or "NameID"),
+                groups_attribute=str(row[10] or "groups"),
+                required_group=str(row[11] or ""),
+            ),
+        )
+
+    def record_assertion_use(self, use: SamlAssertionUse, *, now: int) -> bool:
+        """Atomically claim an assertion; False means it was already used.
+
+        The primary key makes the INSERT the single check-and-set, so two
+        workers racing on the same assertion cannot both succeed. Any other
+        database error propagates and the caller must fail the login closed.
+        """
+        self.ensure_schema()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    _INSERT_ASSERTION_REPLAY_SQL,
+                    (use.replay_key, int(use.expires_ts), int(now)),
+                )
+        except DATABASE_ERRORS as exc:
+            if mysql_error_code(exc) == _MYSQL_DUPLICATE_KEY:
+                return False
+            raise
+        return True
 
     def save_profile(self, payload: dict[str, Any]) -> SamlProviderProfile:
         current = self.get_profile()
@@ -1062,15 +1163,84 @@ def _cache_expires_ts(parsed: dict[str, Any], now: int) -> int:
     return min(candidates)
 
 
-def profile_metadata_cache_ready(
-    profile: SamlProviderProfile, *, now: int | None = None
+def _metadata_cache_ready(
+    *,
+    has_metadata: bool,
+    last_refresh_ok: bool,
+    cache_expires_ts: int,
+    valid_until_ts: int,
+    now: int | None,
 ) -> bool:
     now = int(time.time()) if now is None else int(now)
     return bool(
-        profile.has_metadata
-        and profile.last_refresh_ok
-        and (not profile.cache_expires_ts or profile.cache_expires_ts > now)
-        and (not profile.valid_until_ts or profile.valid_until_ts > now)
+        has_metadata
+        and last_refresh_ok
+        and (not cache_expires_ts or cache_expires_ts > now)
+        and (not valid_until_ts or valid_until_ts > now)
+    )
+
+
+def profile_metadata_cache_ready(
+    profile: SamlProviderProfile, *, now: int | None = None
+) -> bool:
+    return _metadata_cache_ready(
+        has_metadata=profile.has_metadata,
+        last_refresh_ok=profile.last_refresh_ok,
+        cache_expires_ts=profile.cache_expires_ts,
+        valid_until_ts=profile.valid_until_ts,
+        now=now,
+    )
+
+
+def _saml_policy_fingerprint(
+    *,
+    entity_id: str,
+    metadata_url: str,
+    public_base_url: str,
+    username_attribute: str,
+    groups_attribute: str,
+    required_group: str,
+) -> str:
+    fields = (
+        PROVIDER_SAML,
+        entity_id,
+        metadata_url,
+        public_base_url,
+        username_attribute,
+        groups_attribute,
+        required_group,
+    )
+    encoded = json.dumps(fields, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def saml_policy_fingerprint(profile: SamlProviderProfile) -> str:
+    """Hash the SAML settings that decide who an admin session belongs to.
+
+    Covers the IdP identity (metadata URL and entity ID), the SP identity
+    (public base URL, which derives the SP entity ID/ACS URL) and the
+    username/group mapping. Excludes the enabled flag and metadata freshness
+    (checked separately through readiness), signing certificates (routine
+    rollover via metadata refresh), and the fetched_ts/last_refresh_*/
+    updated_ts bookkeeping that every metadata refresh rewrites.
+    """
+    return _saml_policy_fingerprint(
+        entity_id=profile.entity_id,
+        metadata_url=profile.metadata_url,
+        public_base_url=profile.public_base_url,
+        username_attribute=profile.username_attribute,
+        groups_attribute=profile.groups_attribute,
+        required_group=profile.required_group,
+    )
+
+
+def saml_session_policy(
+    profile: SamlProviderProfile, *, now: int | None = None
+) -> SamlSessionPolicy:
+    """Session policy computed from an already-loaded full profile."""
+    return SamlSessionPolicy(
+        ready=profile_metadata_ready(profile, now=now),
+        fingerprint=saml_policy_fingerprint(profile),
     )
 
 
@@ -1232,6 +1402,66 @@ def resolve_saml_login(auth: Any, profile: SamlProviderProfile) -> SamlAuthResul
         session_index=str(auth.get_session_index() or ""),
         name_id=name_id,
     )
+
+
+def saml_assertion_use(
+    auth: Any,
+    profile: SamlProviderProfile,
+    *,
+    request_id: str,
+    acceptance_window_seconds: int,
+    now: int,
+) -> SamlAssertionUse:
+    """Build the replay-cache claim for a toolkit-validated SAML response.
+
+    Expiry contract: the row must outlive every moment at which python3-saml
+    plus the ACS could accept the same assertion again, measured on any
+    worker's clock, because the pruner deletes rows by its own clock.
+
+    * The response must answer this pending request (InResponseTo equal to
+      the request ID). The ACS accepts a pending request only while it is
+      younger than ``acceptance_window_seconds`` (pending TTL plus the future
+      tolerance for the creating worker's clock), so a replay is impossible
+      after ``now + acceptance_window_seconds``.
+    * python3-saml rejects a SubjectConfirmationData NotOnOrAfter at or before
+      its ``now`` with no drift, so a replay is also impossible after that
+      NotOnOrAfter when present.
+
+    A replay needs both, so the tighter bound is safe; adding
+    SAML_CLOCK_DRIFT_SECONDS covers skew between the accepting worker and the
+    pruner. The pending window also caps the expiry (16 minutes by default),
+    so an IdP issuing long-lived assertions cannot grow the table.
+    """
+    assertion_id = str(auth.get_last_assertion_id() or "").strip()
+    if not assertion_id:
+        msg = "SAML assertion did not include an ID."
+        raise ValueError(msg)
+    if str(auth.get_last_response_in_response_to() or "") != str(request_id):
+        # Without this binding the pending-request window would not bound
+        # replays of an unsolicited response, only its (optional) timestamps.
+        msg = "SAML response does not answer the pending login request."
+        raise ValueError(msg)
+    idp_entity_id = (profile.entity_id or "").strip()
+    if not idp_entity_id:
+        msg = "SAML IdP entity ID is unknown; refresh metadata."
+        raise ValueError(msg)
+    now = int(now)
+    expires_ts = now + int(acceptance_window_seconds)
+    not_on_or_after = auth.get_last_assertion_not_on_or_after()
+    if not_on_or_after:
+        expires_ts = min(expires_ts, max(int(not_on_or_after), now))
+    replay_key = hashlib.sha256(
+        json.dumps([idp_entity_id, assertion_id], separators=(",", ":")).encode()
+    ).hexdigest()
+    return SamlAssertionUse(
+        replay_key=replay_key,
+        expires_ts=expires_ts + SAML_CLOCK_DRIFT_SECONDS,
+    )
+
+
+def saml_response_authenticated(auth: Any) -> bool:
+    """Whether python3-saml validated the response (signature, timing, audience)."""
+    return not list(auth.get_errors() or []) and bool(auth.is_authenticated())
 
 
 def _saml_group_matches_required(required_group: str, candidate_group: str) -> bool:
