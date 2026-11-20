@@ -563,8 +563,10 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "retire_live_stats_aggregate_tables",
         "drop_redundant_audit_and_diagnostic_indexes",
         "retire_adblock_cache_stats",
+        "saml_assertion_replay_cache",
+        "saml_metadata_refresh_schedule",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 37
+    assert schema_lifecycle.latest_schema_version() == 38
     manual_spec = all_specs[-6]
     assert manual_spec.version == 26
     assert manual_spec.name == "observability_manual_export_preset_contract"
@@ -1268,3 +1270,19 @@ def test_saml_assertion_replay_cache_migration() -> None:
         saml_auth._SAML_ASSERTION_REPLAY_DDL
     ) == schema_lifecycle._normalize_sql(create_sql)
     assert "saml_assertion_replay" in mysql_state_validation._REQUIRED_TABLES
+
+
+def test_saml_metadata_refresh_schedule_migration() -> None:
+    from services import mysql_state_validation, saml_auth
+
+    by_version = {spec.version: spec for spec in schema_lifecycle._migration_specs()}
+    spec = by_version[38]
+    assert spec.name == "saml_metadata_refresh_schedule"
+    columns = [(column.table, column.name, column.ddl) for column in spec.columns]
+    # The lazy-store fallback adds exactly the migrated columns.
+    assert [(table, name, ddl) for table, name, ddl in columns] == [
+        ("saml_auth_profiles", name, ddl)
+        for name, ddl in saml_auth._SAML_REFRESH_SCHEDULE_COLUMNS
+    ]
+    for _table, name, _ddl in columns:
+        assert ("saml_auth_profiles", name) in mysql_state_validation._REQUIRED_COLUMNS

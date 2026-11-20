@@ -107,6 +107,8 @@ _REQUIRED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("saml_auth_profiles", "username_attribute"),
     ("saml_auth_profiles", "groups_attribute"),
     ("saml_auth_profiles", "required_group"),
+    ("saml_auth_profiles", "refresh_failures"),
+    ("saml_auth_profiles", "next_refresh_ts"),
     *_TIMESERIES_METRIC_COUNT_COLUMNS,
 )
 

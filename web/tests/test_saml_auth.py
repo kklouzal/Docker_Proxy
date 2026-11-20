@@ -127,34 +127,25 @@ class MemorySamlAuthStore(SamlAuthStore):
             groups_attribute=profile.groups_attribute,
             required_group=profile.required_group,
             updated_ts=now,
+            refresh_failures=0,
+            next_refresh_ts=saml_auth._next_scheduled_refresh_ts(
+                fetched_ts=now,
+                cache_expires_ts=now + parsed["cache_duration_seconds"],
+                valid_until_ts=parsed["valid_until_ts"],
+            ),
         )
         return True
 
-    def record_refresh_status(self, *, ok: bool, detail: str) -> None:
-        now = int(time.time())
-        self.profile = type(self.profile)(
-            provider=self.profile.provider,
-            enabled=self.profile.enabled,
-            metadata_url=self.profile.metadata_url,
-            require_https=self.profile.require_https,
-            verify_tls=self.profile.verify_tls,
-            ca_bundle=self.profile.ca_bundle,
-            timeout_seconds=self.profile.timeout_seconds,
-            max_metadata_bytes=self.profile.max_metadata_bytes,
-            raw_metadata_xml=self.profile.raw_metadata_xml,
-            parsed_metadata_json=self.profile.parsed_metadata_json,
-            entity_id=self.profile.entity_id,
-            fetched_ts=self.profile.fetched_ts,
-            cache_expires_ts=self.profile.cache_expires_ts,
-            valid_until_ts=self.profile.valid_until_ts,
+    def record_refresh_status(
+        self, *, ok: bool, detail: str, refresh_failures: int, next_refresh_ts: int
+    ) -> None:
+        self.profile = replace(
+            self.profile,
             last_refresh_ok=ok,
-            last_refresh_ts=now,
+            last_refresh_ts=int(time.time()),
             last_refresh_detail=detail,
-            public_base_url=self.profile.public_base_url,
-            username_attribute=self.profile.username_attribute,
-            groups_attribute=self.profile.groups_attribute,
-            required_group=self.profile.required_group,
-            updated_ts=self.profile.updated_ts,
+            refresh_failures=refresh_failures,
+            next_refresh_ts=next_refresh_ts,
         )
 
 
@@ -1651,25 +1642,40 @@ class _SessionPolicyConnection:
 
 @pytest.mark.parametrize(
     "variant",
-    ["ready", "disabled", "no_metadata", "cache_expired", "refresh_failed"],
+    [
+        "ready",
+        "disabled",
+        "no_metadata",
+        "refresh_failed",
+        "within_stale_grace",
+        "past_stale_grace",
+        "past_valid_until",
+    ],
 )
 def test_session_policy_query_matches_full_profile_readiness(
     monkeypatch, variant
 ) -> None:
     now = int(time.time())
     profile = _ready_saml_profile(now)
+    window = 2 * 3600
+    stale = replace(profile, fetched_ts=now - window - 60, cache_expires_ts=now - 60)
     profile = {
         "ready": profile,
         "disabled": replace(profile, enabled=False),
         "no_metadata": replace(profile, raw_metadata_xml=""),
-        "cache_expired": replace(profile, cache_expires_ts=now - 1),
+        # A failed refresh keeps the last good metadata in use.
         "refresh_failed": replace(profile, last_refresh_ok=False),
+        "within_stale_grace": stale,
+        "past_stale_grace": replace(
+            stale, fetched_ts=now - 2 * window - 1, cache_expires_ts=now - window - 1
+        ),
+        "past_valid_until": replace(stale, valid_until_ts=now - 1),
     }[variant]
     row = (
         int(profile.enabled),
         int(profile.raw_metadata_xml != ""),
         int(profile.parsed_metadata_json != ""),
-        int(profile.last_refresh_ok),
+        profile.fetched_ts,
         profile.cache_expires_ts,
         profile.valid_until_ts,
         profile.entity_id,
@@ -1687,7 +1693,9 @@ def test_session_policy_query_matches_full_profile_readiness(
     policy = store.get_session_policy(now=now)
 
     assert policy == saml_auth.saml_session_policy(profile, now=now)
-    assert policy.ready is (variant == "ready")
+    assert policy.ready is (
+        variant in {"ready", "refresh_failed", "within_stale_grace"}
+    )
     # The per-request read never transfers the cached metadata documents.
     selected = conn.sql.split(" FROM ", 1)[0]
     assert "raw_metadata_xml <> ''" in selected
@@ -1732,3 +1740,257 @@ def test_saml_replay_cache_claims_once_and_is_pruned_on_mysql(tmp_path) -> None:
             ).fetchall()
         }
     assert keys == {"c" * 64}
+
+
+def test_metadata_stale_grace_is_bounded_by_window_and_valid_until() -> None:
+    day = 24 * 3600
+    grace = saml_auth.SAML_METADATA_STALE_GRACE_SECONDS
+    assert (
+        saml_auth.metadata_usable_until(
+            fetched_ts=1000, cache_expires_ts=1000 + day, valid_until_ts=0
+        )
+        == 1000 + day + grace
+    )
+    # A short cache window never gets more grace than its own length.
+    assert (
+        saml_auth.metadata_usable_until(
+            fetched_ts=1000, cache_expires_ts=1600, valid_until_ts=0
+        )
+        == 2200
+    )
+    # validUntil is a hard limit the grace never passes.
+    assert (
+        saml_auth.metadata_usable_until(
+            fetched_ts=1000, cache_expires_ts=1000 + day, valid_until_ts=1000 + day + 5
+        )
+        == 1000 + day + 5
+    )
+    assert (
+        saml_auth.metadata_usable_until(
+            fetched_ts=0, cache_expires_ts=0, valid_until_ts=0
+        )
+        == 0
+    )
+
+
+def _enabled_store_with_metadata() -> MemorySamlAuthStore:
+    store = MemorySamlAuthStore()
+    saved = store.save_profile(
+        {
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+        }
+    )
+    store.record_metadata_refresh(
+        saved, raw_xml=SAMPLE_METADATA, parsed=parse_saml_metadata(SAMPLE_METADATA)
+    )
+    store.save_profile(
+        {
+            "enabled": "1",
+            "metadata_url": "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml",
+            "public_base_url": "https://admin.example.test",
+        }
+    )
+    return store
+
+
+def test_failed_refresh_keeps_last_good_metadata_and_backs_off(monkeypatch) -> None:
+    store = _enabled_store_with_metadata()
+    good_xml = store.profile.raw_metadata_xml
+
+    def unreachable(_profile):
+        msg = "IdP unreachable"
+        raise OSError(msg)
+
+    monkeypatch.setattr(store, "fetch_metadata", unreachable)
+    now = int(time.time())
+    delays = []
+    for _attempt in range(10):
+        before = int(time.time())
+        assert store.refresh_metadata().ok is False
+        delays.append(store.profile.next_refresh_ts - before)
+
+    profile = store.profile
+    assert profile.refresh_failures == 10
+    assert profile.raw_metadata_xml == good_xml
+    assert profile.last_refresh_ok is False
+    # Logins and sessions keep working on the cached metadata within its window.
+    assert saml_auth.profile_metadata_ready(profile, now=now) is True
+    # Equal jitter around a doubling delay, capped at one hour.
+    assert 30 <= delays[0] <= 61
+    assert 60 <= delays[1] <= 121
+    assert all(1800 <= delay <= 3601 for delay in delays[6:])
+
+
+def test_successful_refresh_resets_backoff_and_schedules_mid_window() -> None:
+    now = int(time.time())
+    parsed = parse_saml_metadata(SAMPLE_METADATA)
+    for _ in range(20):
+        next_ts = saml_auth._next_scheduled_refresh_ts(
+            fetched_ts=now, cache_expires_ts=now + 24 * 3600, valid_until_ts=0
+        )
+        assert now + int(0.45 * 24 * 3600) <= next_ts <= now + 12 * 3600
+    # A validUntil earlier than the cache expiry shortens the schedule.
+    assert (
+        saml_auth._next_scheduled_refresh_ts(
+            fetched_ts=now, cache_expires_ts=now + 24 * 3600, valid_until_ts=now + 600
+        )
+        <= now + 300
+    )
+    # The real store writes the schedule and clears failures with the metadata.
+    store = SamlAuthStore()
+    profile = replace(
+        store.default_profile(),
+        metadata_url="https://idp.example.test/metadata.xml",
+        refresh_failures=4,
+    )
+    conn = _GuardedUpdateConnection(rowcount=1, current_row=None)
+    store._connect = lambda: conn  # type: ignore[method-assign]
+    assert store.record_metadata_refresh(
+        profile, raw_xml=SAMPLE_METADATA, parsed=parsed
+    )
+    update_sql, update_params = conn.statements[0]
+    assert "refresh_failures = 0, next_refresh_ts = %s" in " ".join(update_sql.split())
+    scheduled = update_params[8]
+    assert now + 60 <= scheduled <= now + 12 * 3600 + 5
+
+
+class _NamedLockConnection:
+    def __init__(self, *, acquired: int) -> None:
+        self.acquired = acquired
+        self.statements: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=()):
+        self.statements.append(" ".join(str(sql).split()))
+        if "GET_LOCK" in sql:
+            return SimpleNamespace(fetchone=lambda: {"acquired": self.acquired})
+        return SimpleNamespace(fetchone=lambda: {"released": 1})
+
+
+@pytest.mark.parametrize(
+    ("variant", "expect_fetch"),
+    [
+        ("not_due", False),
+        ("disabled", False),
+        ("lock_held_elsewhere", False),
+        ("refreshed_by_other_holder", False),
+        ("due", True),
+    ],
+)
+def test_background_refresh_is_due_gated_and_single_flight(
+    monkeypatch, variant, expect_fetch
+) -> None:
+    now = int(time.time())
+    store = _enabled_store_with_metadata()
+    due = replace(store.profile, next_refresh_ts=now - 1)
+    store.profile = {
+        "not_due": replace(due, next_refresh_ts=now + 600),
+        "disabled": replace(due, enabled=False),
+    }.get(variant, due)
+    conn = _NamedLockConnection(acquired=0 if variant == "lock_held_elsewhere" else 1)
+    monkeypatch.setattr(store, "_connect", lambda: conn)
+    if variant == "refreshed_by_other_holder":
+        reads = iter([due, replace(due, next_refresh_ts=now + 900)])
+        monkeypatch.setattr(store, "get_profile", lambda: next(reads))
+    fetches = []
+    monkeypatch.setattr(
+        store, "fetch_metadata", lambda _profile: fetches.append(1) or SAMPLE_METADATA
+    )
+
+    next_due = store.refresh_metadata_if_due(now=now)
+
+    assert bool(fetches) is expect_fetch
+    if variant == "disabled":
+        assert next_due == 0
+    elif variant == "not_due":
+        assert next_due == now + 600
+        assert conn.statements == []
+    elif variant == "due":
+        assert next_due > now
+        assert store.profile.refresh_failures == 0
+    if variant in {"due", "refreshed_by_other_holder"}:
+        assert any("RELEASE_LOCK" in sql for sql in conn.statements)
+
+
+def test_background_refresh_loop_poll_bounds(monkeypatch) -> None:
+    from services import saml_metadata_refresh
+
+    assert saml_metadata_refresh.next_poll_delay(0, 100) == 300
+    assert saml_metadata_refresh.next_poll_delay(50, 100) == 30
+    assert saml_metadata_refresh.next_poll_delay(160, 100) == 60
+    assert saml_metadata_refresh.next_poll_delay(10_000, 100) == 300
+
+    class _BrokenStore:
+        def refresh_metadata_if_due(self):
+            msg = "mysql down"
+            raise RuntimeError(msg)
+
+    assert saml_metadata_refresh.run_once(_BrokenStore()) == 30
+
+
+@pytest.mark.mysql
+def test_saml_background_refresh_schedule_round_trips_on_mysql(
+    tmp_path, monkeypatch
+) -> None:
+    import importlib
+
+    from .mysql_test_utils import configure_test_mysql_env
+
+    configure_test_mysql_env(tmp_path / "saml-refresh-schedule")
+    schema_lifecycle = importlib.import_module("services.schema_lifecycle")
+    schema_lifecycle.migrate_schema(require_privileges=False)
+    live_saml = importlib.import_module("services.saml_auth")
+    store = live_saml.SamlAuthStore()
+    url = "https://adfs.example.local/FederationMetadata/2007-06/FederationMetadata.xml"
+    store.save_profile({"metadata_url": url})
+    monkeypatch.setattr(store, "fetch_metadata", lambda _profile: SAMPLE_METADATA)
+    assert store.refresh_metadata().ok is True
+    store.save_profile(
+        {
+            "enabled": "1",
+            "metadata_url": url,
+            "public_base_url": "https://admin.example.test",
+        }
+    )
+    scheduled = store.get_profile().next_refresh_ts
+    now = int(time.time())
+    assert scheduled > now
+
+    # Not due: no fetch, schedule unchanged.
+    monkeypatch.setattr(
+        store, "fetch_metadata", lambda _profile: pytest.fail("refresh not due")
+    )
+    assert store.refresh_metadata_if_due(now=now) == scheduled
+
+    # Due and failing: metadata kept, backoff recorded, still ready.
+    with live_saml.connect() as conn:
+        conn.execute("UPDATE saml_auth_profiles SET next_refresh_ts = 1")
+
+    def unreachable(_profile):
+        msg = "IdP unreachable"
+        raise OSError(msg)
+
+    monkeypatch.setattr(store, "fetch_metadata", unreachable)
+    retry_at = store.refresh_metadata_if_due()
+    profile = store.get_profile()
+    assert profile.refresh_failures == 1
+    assert retry_at == profile.next_refresh_ts
+    assert now + 29 <= retry_at <= int(time.time()) + 61
+    assert profile.raw_metadata_xml == SAMPLE_METADATA
+    assert store.get_session_policy().ready is True
+
+    # Another holder of the refresh lock makes this process skip the fetch.
+    with live_saml.connect() as conn:
+        conn.execute("UPDATE saml_auth_profiles SET next_refresh_ts = 1")
+        lock_name = live_saml.scoped_lock_name(live_saml._REFRESH_LOCK_NAMESPACE)
+        assert live_saml.acquire_mysql_named_lock(conn, lock_name, 0)
+        try:
+            assert store.refresh_metadata_if_due() > int(time.time())
+            assert store.get_profile().refresh_failures == 1
+        finally:
+            live_saml.release_mysql_named_lock(conn, lock_name)

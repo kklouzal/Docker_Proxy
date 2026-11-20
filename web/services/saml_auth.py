@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 import re
 import ssl
 import threading
@@ -31,7 +32,13 @@ except ImportError:  # pragma: no cover - production image installs defusedxml.
     DefusedXmlException = ()  # type: ignore[assignment]
     _DEFUSEDXML_AVAILABLE = False
 
-from services.db import DATABASE_ERRORS, connect, mysql_error_code
+from services.db import (
+    DATABASE_ERRORS,
+    acquire_mysql_named_lock,
+    connect,
+    mysql_error_code,
+    release_mysql_named_lock,
+)
 from services.errors import clean_text, redact_sensitive_text
 from services.external_auth_groups import (
     candidate_group_match_tokens,
@@ -39,6 +46,7 @@ from services.external_auth_groups import (
 )
 from services.logutil import log_exception_throttled
 from services.public_endpoint import normalize_public_host
+from services.revision_lifecycle import scoped_lock_name
 from services.runtime_helpers import (
     authority_has_empty_explicit_port,
     normalize_config_bool,
@@ -85,6 +93,34 @@ _INSERT_ASSERTION_REPLAY_SQL = (
 )
 _MYSQL_DUPLICATE_KEY = 1062
 
+# Metadata lifetime and automatic refresh (README "SAML metadata refresh").
+# Without validUntil/cacheDuration the IdP metadata is cached for 24 hours.
+DEFAULT_METADATA_CACHE_SECONDS = 24 * 60 * 60
+# After cache expiry (never past validUntil) the last good metadata stays
+# usable for at most this long, or the length of its cache window when that is
+# shorter, so a transient IdP/metadata outage does not end every SAML session.
+SAML_METADATA_STALE_GRACE_SECONDS = 6 * 60 * 60
+# The background refresher fetches again once this fraction of the cache
+# window has elapsed (jittered), leaving the rest of the window for retries.
+_REFRESH_WINDOW_FRACTION = 0.5
+_REFRESH_SUCCESS_JITTER = 0.1
+_REFRESH_MIN_INTERVAL_SECONDS = 60
+# Failed refreshes retry with capped exponential backoff and equal jitter.
+_REFRESH_RETRY_BASE_SECONDS = 60
+_REFRESH_RETRY_MAX_SECONDS = 60 * 60
+_REFRESH_LOCK_NAMESPACE = "saml_metadata_refresh"
+# Lazy-store copy of schema migration 38.
+_SAML_REFRESH_SCHEDULE_COLUMNS = (
+    (
+        "refresh_failures",
+        "ALTER TABLE saml_auth_profiles ADD COLUMN refresh_failures INT NOT NULL DEFAULT 0 AFTER updated_ts",
+    ),
+    (
+        "next_refresh_ts",
+        "ALTER TABLE saml_auth_profiles ADD COLUMN next_refresh_ts BIGINT NOT NULL DEFAULT 0 AFTER refresh_failures",
+    ),
+)
+
 
 # Fetched metadata is cached only while the fetch settings still match.
 _RECORD_CURRENT_METADATA_SQL = """
@@ -93,6 +129,7 @@ UPDATE saml_auth_profiles
        entity_id = %s, fetched_ts = %s, cache_expires_ts = %s,
        valid_until_ts = %s, last_refresh_ok = 1,
        last_refresh_ts = %s, last_refresh_detail = %s,
+       refresh_failures = 0, next_refresh_ts = %s,
        updated_ts = %s
  WHERE provider = %s AND metadata_url = %s AND require_https = %s
    AND verify_tls = %s AND ca_bundle = %s AND timeout_seconds = %s
@@ -259,6 +296,10 @@ class SamlProviderProfile:
     groups_attribute: str
     required_group: str
     updated_ts: int
+    # Automatic refresh schedule: consecutive failed refreshes and the
+    # earliest time the background refresher fetches again (0 = due now).
+    refresh_failures: int = 0
+    next_refresh_ts: int = 0
 
     @property
     def has_metadata(self) -> bool:
@@ -355,7 +396,9 @@ class SamlAuthStore:
                         username_attribute VARCHAR(255) NOT NULL DEFAULT 'NameID',
                         groups_attribute VARCHAR(255) NOT NULL DEFAULT 'groups',
                         required_group TEXT NOT NULL,
-                        updated_ts BIGINT NOT NULL
+                        updated_ts BIGINT NOT NULL,
+                        refresh_failures INT NOT NULL DEFAULT 0,
+                        next_refresh_ts BIGINT NOT NULL DEFAULT 0
                     )
                     """,
                 )
@@ -379,6 +422,8 @@ class SamlAuthStore:
                     "required_group",
                     "ALTER TABLE saml_auth_profiles ADD COLUMN required_group TEXT NOT NULL AFTER groups_attribute",
                 )
+                for column_name, ddl in _SAML_REFRESH_SCHEDULE_COLUMNS:
+                    self._ensure_column(conn, column_name, ddl)
                 conn.execute(_SAML_ASSERTION_REPLAY_DDL)
             self._schema_ready = True
 
@@ -467,7 +512,8 @@ class SamlAuthStore:
                        fetched_ts, cache_expires_ts, valid_until_ts,
                        last_refresh_ok, last_refresh_ts, last_refresh_detail,
                        public_base_url, username_attribute, groups_attribute,
-                       required_group, updated_ts
+                       required_group, updated_ts, refresh_failures,
+                       next_refresh_ts
                   FROM saml_auth_profiles
                  WHERE provider = %s
                 """,
@@ -487,7 +533,7 @@ class SamlAuthStore:
             row = conn.execute(
                 """
                 SELECT enabled, raw_metadata_xml <> '', parsed_metadata_json <> '',
-                       last_refresh_ok, cache_expires_ts, valid_until_ts,
+                       fetched_ts, cache_expires_ts, valid_until_ts,
                        entity_id, metadata_url, public_base_url,
                        username_attribute, groups_attribute, required_group
                   FROM saml_auth_profiles
@@ -499,7 +545,7 @@ class SamlAuthStore:
             return SamlSessionPolicy(ready=False, fingerprint="")
         ready = bool(row[0]) and _metadata_cache_ready(
             has_metadata=bool(row[1]) and bool(row[2]),
-            last_refresh_ok=bool(row[3]),
+            fetched_ts=int(row[3] or 0),
             cache_expires_ts=int(row[4] or 0),
             valid_until_ts=int(row[5] or 0),
             now=now,
@@ -592,6 +638,8 @@ class SamlAuthStore:
         fetched_ts = current.fetched_ts if not connection_changed else 0
         cache_expires_ts = current.cache_expires_ts if not connection_changed else 0
         valid_until_ts = current.valid_until_ts if not connection_changed else 0
+        refresh_failures = current.refresh_failures if not connection_changed else 0
+        next_refresh_ts = current.next_refresh_ts if not connection_changed else 0
 
         profile = SamlProviderProfile(
             provider=PROVIDER_SAML,
@@ -616,6 +664,8 @@ class SamlAuthStore:
             groups_attribute=groups_attribute,
             required_group=required_group,
             updated_ts=int(time.time()),
+            refresh_failures=refresh_failures,
+            next_refresh_ts=next_refresh_ts,
         )
         if profile.enabled and not profile.public_base_url:
             msg = "Set the SAML public admin base URL before enabling the provider."
@@ -660,7 +710,13 @@ class SamlAuthStore:
             )
         except Exception as exc:
             detail = self._public_error(exc)
-            self.record_refresh_status(ok=False, detail=detail)
+            failures = profile.refresh_failures + 1
+            self.record_refresh_status(
+                ok=False,
+                detail=detail,
+                refresh_failures=failures,
+                next_refresh_ts=_next_retry_ts(failures, int(time.time())),
+            )
             log_exception_throttled(
                 logger,
                 "saml_auth.refresh_metadata",
@@ -738,6 +794,11 @@ class SamlAuthStore:
         now = int(time.time())
         cache_expires_ts = _cache_expires_ts(parsed, now)
         valid_until_ts = int(parsed.get("valid_until_ts") or 0)
+        next_refresh_ts = _next_scheduled_refresh_ts(
+            fetched_ts=now,
+            cache_expires_ts=cache_expires_ts,
+            valid_until_ts=valid_until_ts,
+        )
         current_params = (
             profile.provider,
             profile.metadata_url,
@@ -759,6 +820,7 @@ class SamlAuthStore:
                     valid_until_ts,
                     now,
                     "SAML IdP metadata refreshed successfully.",
+                    next_refresh_ts,
                     now,
                     *current_params,
                 ),
@@ -772,18 +834,69 @@ class SamlAuthStore:
                 is not None
             )
 
-    def record_refresh_status(self, *, ok: bool, detail: str) -> None:
+    def record_refresh_status(
+        self,
+        *,
+        ok: bool,
+        detail: str,
+        refresh_failures: int,
+        next_refresh_ts: int,
+    ) -> None:
+        """Record a refresh attempt that stored no metadata.
+
+        The cached metadata is kept: it stays usable until its own expiry plus
+        the bounded stale grace (see ``metadata_usable_until``).
+        """
         self.ensure_default_profile()
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE saml_auth_profiles
                    SET last_refresh_ok = %s, last_refresh_ts = %s,
-                       last_refresh_detail = %s
+                       last_refresh_detail = %s, refresh_failures = %s,
+                       next_refresh_ts = %s
                  WHERE provider = %s
                 """,
-                (int(ok), int(time.time()), str(detail or "")[:2000], PROVIDER_SAML),
+                (
+                    int(ok),
+                    int(time.time()),
+                    str(detail or "")[:2000],
+                    int(refresh_failures),
+                    int(next_refresh_ts),
+                    PROVIDER_SAML,
+                ),
             )
+
+    def refresh_metadata_if_due(self, *, now: int | None = None) -> int:
+        """Background refresh of an enabled provider's metadata when due.
+
+        Single-flight across Admin UI processes and pods through a
+        non-blocking MySQL named lock; the due check is repeated under the lock
+        so a refresh another holder just finished is not repeated. Returns the
+        earliest time this provider is due again (0 when automatic refresh does
+        not apply), for the caller's sleep.
+        """
+        profile = self.get_profile()
+        current = int(time.time()) if now is None else int(now)
+        if not _refresh_applies(profile):
+            return 0
+        if profile.next_refresh_ts > current:
+            return profile.next_refresh_ts
+        lock_name = scoped_lock_name(_REFRESH_LOCK_NAMESPACE)
+        with self._connect() as conn:
+            if not acquire_mysql_named_lock(conn, lock_name, 0):
+                # Another process is refreshing; look again shortly.
+                return current + _REFRESH_MIN_INTERVAL_SECONDS
+            try:
+                profile = self.get_profile()
+                if not _refresh_applies(profile):
+                    return 0
+                if profile.next_refresh_ts > int(time.time()):
+                    return profile.next_refresh_ts
+                self.refresh_metadata()
+                return self.get_profile().next_refresh_ts
+            finally:
+                release_mysql_named_lock(conn, lock_name)
 
     def _persist(self, profile: SamlProviderProfile) -> None:
         self.ensure_default_profile()
@@ -799,7 +912,8 @@ class SamlAuthStore:
                        last_refresh_ok = %s, last_refresh_ts = %s,
                        last_refresh_detail = %s, public_base_url = %s,
                        username_attribute = %s, groups_attribute = %s,
-                       required_group = %s, updated_ts = %s
+                       required_group = %s, updated_ts = %s,
+                       refresh_failures = %s, next_refresh_ts = %s
                  WHERE provider = %s
                 """,
                 (
@@ -824,6 +938,8 @@ class SamlAuthStore:
                     profile.groups_attribute,
                     profile.required_group,
                     profile.updated_ts,
+                    profile.refresh_failures,
+                    profile.next_refresh_ts,
                     profile.provider,
                 ),
             )
@@ -852,6 +968,8 @@ class SamlAuthStore:
             groups_attribute=str(row[19] or "groups"),
             required_group=str(row[20] or ""),
             updated_ts=int(row[21] or 0),
+            refresh_failures=int(row[22] or 0),
+            next_refresh_ts=int(row[23] or 0),
         )
 
     def _ensure_column(self, conn: Any, column_name: str, ddl: str) -> None:
@@ -1159,25 +1277,68 @@ def _cache_expires_ts(parsed: dict[str, Any], now: int) -> int:
     if cache_duration_seconds:
         candidates.append(now + cache_duration_seconds)
     if not candidates:
-        candidates.append(now + 24 * 60 * 60)
+        candidates.append(now + DEFAULT_METADATA_CACHE_SECONDS)
     return min(candidates)
+
+
+def metadata_usable_until(
+    *, fetched_ts: int, cache_expires_ts: int, valid_until_ts: int
+) -> int:
+    """Last second the cached metadata may be used (0 = no expiry recorded).
+
+    Past ``cache_expires_ts`` the last good metadata keeps working for the
+    bounded stale grace (the shorter of SAML_METADATA_STALE_GRACE_SECONDS and
+    the cache window), so a failed background refresh does not end sessions
+    or logins at once. ``validUntil`` is a hard limit the grace never passes.
+    """
+    limits: list[int] = []
+    if cache_expires_ts:
+        window = max(0, cache_expires_ts - fetched_ts) if fetched_ts else 0
+        limits.append(cache_expires_ts + min(SAML_METADATA_STALE_GRACE_SECONDS, window))
+    if valid_until_ts:
+        limits.append(valid_until_ts)
+    return min(limits) if limits else 0
 
 
 def _metadata_cache_ready(
     *,
     has_metadata: bool,
-    last_refresh_ok: bool,
+    fetched_ts: int,
     cache_expires_ts: int,
     valid_until_ts: int,
     now: int | None,
 ) -> bool:
     now = int(time.time()) if now is None else int(now)
-    return bool(
-        has_metadata
-        and last_refresh_ok
-        and (not cache_expires_ts or cache_expires_ts > now)
-        and (not valid_until_ts or valid_until_ts > now)
+    usable_until = metadata_usable_until(
+        fetched_ts=fetched_ts,
+        cache_expires_ts=cache_expires_ts,
+        valid_until_ts=valid_until_ts,
     )
+    return bool(has_metadata and (not usable_until or usable_until > now))
+
+
+def _refresh_applies(profile: SamlProviderProfile) -> bool:
+    return bool(profile.enabled and profile.metadata_url)
+
+
+def _next_scheduled_refresh_ts(
+    *, fetched_ts: int, cache_expires_ts: int, valid_until_ts: int
+) -> int:
+    """When to refresh after a success: part-way through the cache window."""
+    expiry_candidates = [ts for ts in (cache_expires_ts, valid_until_ts) if ts]
+    expiry = min(expiry_candidates) if expiry_candidates else 0
+    window = max(0, expiry - fetched_ts) if expiry else DEFAULT_METADATA_CACHE_SECONDS
+    delay = window * _REFRESH_WINDOW_FRACTION
+    delay *= random.uniform(1.0 - _REFRESH_SUCCESS_JITTER, 1.0)  # ruff: ignore[suspicious-non-cryptographic-random-usage] - schedule jitter only.
+    return fetched_ts + max(_REFRESH_MIN_INTERVAL_SECONDS, int(delay))
+
+
+def _next_retry_ts(failures: int, now: int) -> int:
+    """Capped exponential backoff with equal jitter after a failed refresh."""
+    exponent = min(max(0, int(failures) - 1), 16)
+    delay = min(_REFRESH_RETRY_MAX_SECONDS, _REFRESH_RETRY_BASE_SECONDS * 2**exponent)
+    jittered = random.uniform(delay / 2, delay)  # ruff: ignore[suspicious-non-cryptographic-random-usage] - schedule jitter only.
+    return now + max(1, int(jittered))
 
 
 def profile_metadata_cache_ready(
@@ -1185,7 +1346,7 @@ def profile_metadata_cache_ready(
 ) -> bool:
     return _metadata_cache_ready(
         has_metadata=profile.has_metadata,
-        last_refresh_ok=profile.last_refresh_ok,
+        fetched_ts=profile.fetched_ts,
         cache_expires_ts=profile.cache_expires_ts,
         valid_until_ts=profile.valid_until_ts,
         now=now,
