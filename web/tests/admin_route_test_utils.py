@@ -457,9 +457,6 @@ class FakeController:
         self.config_text = text
         return True, "applied locally"
 
-    def reload_squid(self):
-        return b"reloaded", b""
-
     def get_tunable_options(self, _text: str) -> dict[str, Any]:
         intercept_enabled = " intercept" in (self.config_text or "")
         return {
