@@ -207,77 +207,36 @@ def _write_live_adblock_artifact(
     settings_version = _adblock_store().get_settings_version()
     directory.mkdir(parents=True, exist_ok=True)
 
-    def _domain_records(lines: str, *, action: str) -> list[dict]:
-        records = []
-        for idx, raw in enumerate(lines.splitlines(), start=1):
+    def _domain_rules(lines: str, *, action: str) -> list[str]:
+        prefix = "@@" if action == "allow" else ""
+        rules = []
+        for raw in lines.splitlines():
             host = raw.strip().lower().rstrip(".")
-            if not host or host.startswith("#"):
-                continue
-            records.append(
-                {
-                    "kind": "network",
-                    "id": f"live-domain-{action}-{idx}-{host}",
-                    "list_key": "live-fixture",
-                    "action": action,
-                    "exception": action == "allow",
-                    "raw": f"{'@@' if action == 'allow' else ''}||{host}^",
-                    "pattern": f"||{host}^",
-                    "pattern_kind": "domain_only",
-                    "host": host,
-                    "options_raw": "",
-                    "options": {},
-                    "resource_types": [],
-                    "excluded_resource_types": [],
-                    "third_party": "any",
-                    "behavior_options": [],
-                    "value_options": {},
-                }
-            )
-        return records
+            if host and not host.startswith("#"):
+                rules.append(f"{prefix}||{host}^")
+        return rules
 
-    def _regex_records(lines: str, *, action: str) -> list[dict]:
-        records = []
-        for idx, raw in enumerate(lines.splitlines(), start=1):
+    def _regex_rules(lines: str, *, action: str) -> list[str]:
+        prefix = "@@" if action == "allow" else ""
+        rules = []
+        for raw in lines.splitlines():
             item = raw.strip()
             if not item or item.startswith("#"):
                 continue
             regex = item[1:-1] if item.startswith("/") and item.endswith("/") else item
-            records.append(
-                {
-                    "kind": "network",
-                    "id": f"live-regex-{action}-{idx}",
-                    "list_key": "live-fixture",
-                    "action": action,
-                    "exception": action == "allow",
-                    "raw": f"{'@@' if action == 'allow' else ''}/{regex}/",
-                    "pattern": f"/{regex}/",
-                    "pattern_kind": "regex",
-                    "regex": regex,
-                    "options_raw": "",
-                    "options": {},
-                    "resource_types": [],
-                    "excluded_resource_types": [],
-                    "third_party": "any",
-                    "behavior_options": [],
-                    "value_options": {},
-                }
-            )
-        return records
+            rules.append(f"{prefix}/{regex}/")
+        return rules
 
-    records = [
-        *_domain_records(block_domains, action="block"),
-        *_domain_records(allow_domains, action="allow"),
-        *_regex_records(block_regexes, action="block"),
-        *_regex_records(allow_regexes, action="allow"),
+    rules = [
+        *_domain_rules(block_domains, action="block"),
+        *_domain_rules(allow_domains, action="allow"),
+        *_regex_rules(block_regexes, action="block"),
+        *_regex_rules(allow_regexes, action="allow"),
     ]
-    network_jsonl = directory / "network_rules.jsonl"
-    network_jsonl.write_text(
-        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
-        encoding="utf-8",
-    )
-    lookup_counts = adblock_compile._write_request_lookup_index(
+    _per_list_counts, lookup_counts = adblock_compile._write_request_lookup_index(
         str(directory / "request_lookup.sqlite"),
-        str(network_jsonl),
+        [("live-fixture", rules)],
+        adblock_compile._Aggregate(),
     )
     (directory / "settings.json").write_text(
         json.dumps(
@@ -298,7 +257,7 @@ def _write_live_adblock_artifact(
             {
                 "enabled_lists": ["live-fixture"] if enabled else [],
                 "counts": {
-                    "network_rules_total": len(records),
+                    "network_rules_total": len(rules),
                     "network_rules_with_options": 0,
                     "cosmetic_rules_total": 0,
                 },
