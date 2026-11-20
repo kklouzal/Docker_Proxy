@@ -33,7 +33,7 @@ from services.sql_identifiers import (
 if False:  # pragma: no cover - type checkers only
     pass
 
-_SCHEMA_VERSION = 33
+_SCHEMA_VERSION = 34
 _MIGRATOR_NAME = "docker_proxy_schema_lifecycle"
 _MIGRATION_LOCK_NAME = "docker_proxy:schema_lifecycle:migrate"
 _RUNTIME_LOCK_NAME = "docker_proxy:schema_lifecycle:runtime_ddl"
@@ -802,8 +802,29 @@ def _init_ssl_errors_schema(_conn: Any) -> None:
     ).get_ssl_errors_store().init_db()
 
 
-def _init_live_stats_schema(_conn: Any) -> None:
-    importlib.import_module("services.live_stats").get_store().init_db()
+def _retired_live_stats_schema(_conn: Any) -> None:
+    """Migration 7 created the live_stats_* aggregates retired by migration 34.
+
+    Fresh installs create nothing here; the step name stays so the recorded
+    migration 7 checksum of existing databases remains valid.
+    """
+
+
+_RETIRED_LIVE_STATS_TABLES = (
+    "live_stats_client_domain_nocache",
+    "live_stats_client_domains",
+    "live_stats_clients",
+    "live_stats_domains",
+    "live_stats_seed_state",
+)
+
+
+def _drop_retired_live_stats_tables(conn: Any) -> None:
+    """Drop the write-only live-stats aggregates (no reader since 2c6eaac)."""
+    conn.execute(
+        "DROP TABLE IF EXISTS "
+        + ", ".join(quote_mysql_identifier(name) for name in _RETIRED_LIVE_STATS_TABLES)
+    )
 
 
 def _init_timeseries_schema(_conn: Any) -> None:
@@ -1323,7 +1344,7 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
         SchemaMigrationSpec(
             version=7,
             name="live_stats_aggregate_tables",
-            data_steps=(SchemaDataStep("live_stats", _init_live_stats_schema),),
+            data_steps=(SchemaDataStep("live_stats", _retired_live_stats_schema),),
         ),
         SchemaMigrationSpec(
             version=8,
@@ -1751,6 +1772,16 @@ def _migration_specs() -> tuple[SchemaMigrationSpec, ...]:
                 SchemaDataStep(
                     "drop_duplicate_diagnostic_indexes",
                     _drop_duplicate_diagnostic_indexes,
+                ),
+            ),
+        ),
+        SchemaMigrationSpec(
+            version=34,
+            name="retire_live_stats_aggregate_tables",
+            data_steps=(
+                SchemaDataStep(
+                    "drop_live_stats_tables",
+                    _drop_retired_live_stats_tables,
                 ),
             ),
         ),

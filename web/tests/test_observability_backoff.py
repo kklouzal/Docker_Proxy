@@ -6,7 +6,7 @@ from typing import ClassVar
 
 import pymysql
 import pytest
-from services import diagnostic_store, live_stats, timeseries_store
+from services import diagnostic_store, timeseries_store
 from services.observability_backoff import DatabaseWriteBackoff, stagger_delay_from_env
 
 from .clock_patching import patch_module_clock
@@ -103,120 +103,6 @@ def test_stagger_delay_invalid_random_value_uses_zero_fallback(
     assert stagger_delay_from_env(
         "TIMESERIES_STARTUP_JITTER_SECONDS", 15.0, maximum=300.0
     ) == pytest.approx(0.0)
-
-
-def test_live_stats_background_starts_even_when_initial_db_is_down(
-    monkeypatch, tmp_path
-) -> None:
-    _FakeThread.created.clear()
-    log_path = tmp_path / "access.log"
-    log_path.write_text("")
-    store = live_stats.LiveStatsStore(access_log_path=str(log_path))
-
-    def fail_init() -> None:
-        raise pymysql.err.OperationalError(
-            2013, "Lost connection to MySQL server during query"
-        )
-
-    monkeypatch.setattr(store, "init_db", fail_init)
-    monkeypatch.setattr(live_stats.threading, "Thread", _FakeThread)
-
-    store.start_background()
-
-    assert store._started is True
-    assert [thread.name for thread in _FakeThread.created] == ["live-stats-tailer"]
-    assert _FakeThread.created[0].started is True
-
-
-def test_live_stats_background_stop_allows_restart_without_duplicate_tailers(
-    monkeypatch,
-) -> None:
-    store = live_stats.LiveStatsStore()
-    entered = threading.Event()
-    release = threading.Event()
-    active = 0
-    max_active = 0
-    calls = 0
-    counter_lock = threading.Lock()
-
-    monkeypatch.setattr(store, "init_db", lambda: None)
-
-    def tail_loop() -> None:
-        nonlocal active, max_active, calls
-        with counter_lock:
-            active += 1
-            max_active = max(max_active, active)
-            calls += 1
-            entered.set()
-        release.wait()
-        with counter_lock:
-            active -= 1
-
-    monkeypatch.setattr(store, "_tail_loop", tail_loop)
-
-    starters = [threading.Thread(target=store.start_background) for _ in range(8)]
-    for starter in starters:
-        starter.start()
-    for starter in starters:
-        starter.join()
-    assert entered.wait(1.0)
-    assert calls == 1
-    assert max_active == 1
-
-    release.set()
-    assert store.stop_background(timeout=1.0) is True
-    assert store._started is False
-    assert store._thread is None
-
-    entered.clear()
-    release.clear()
-    store.start_background()
-    assert entered.wait(1.0)
-    assert calls == 2
-    assert max_active == 1
-    release.set()
-    assert store.stop_background(timeout=1.0) is True
-
-
-def test_live_stats_background_stop_timeout_preserves_live_tailer() -> None:
-    class LiveThread:
-        def join(self, _timeout: float) -> None:
-            pass
-
-        def is_alive(self) -> bool:
-            return True
-
-    store = live_stats.LiveStatsStore()
-    worker = LiveThread()
-    store._thread = worker  # type: ignore[assignment]
-    store._started = True
-
-    assert store.stop_background(timeout=0.0) is False
-    assert store._thread is worker
-    assert store._started is True
-
-
-def test_live_stats_background_failed_thread_start_keeps_stopped_state(
-    monkeypatch,
-) -> None:
-    class FailedThread:
-        def __init__(self, **_kwargs) -> None:
-            pass
-
-        def start(self) -> None:
-            message = "thread start failed"
-            raise RuntimeError(message)
-
-    store = live_stats.LiveStatsStore()
-    monkeypatch.setattr(store, "init_db", lambda: None)
-    monkeypatch.setattr(live_stats.threading, "Thread", FailedThread)
-
-    with pytest.raises(RuntimeError, match="thread start failed"):
-        store.start_background()
-
-    assert store._started is False
-    assert store._thread is None
-    assert store._stop_event.is_set()
 
 
 def test_diagnostic_background_starts_even_when_initial_db_is_down(

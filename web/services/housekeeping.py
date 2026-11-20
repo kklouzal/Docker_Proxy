@@ -18,7 +18,6 @@ from services.control_plane_maintenance import (
 from services.db import run_mysql_lock_contention_with_retry
 from services.diagnostic_store import get_diagnostic_store
 from services.errors import public_error_message
-from services.live_stats import get_store
 from services.logutil import log_exception_throttled, should_log
 from services.observability_maintenance import (
     ObservabilityMaintenanceAlreadyRunningError,
@@ -205,10 +204,6 @@ def _run_prune_once(*, retention_days: int) -> dict[str, Any]:
                 _failed_tables_detail(value),
             )
 
-    run_step(
-        "live_stats",
-        lambda: get_store().prune_old_entries(retention_days=retention_days),
-    )
     run_step(
         "diagnostics",
         lambda: get_diagnostic_store().prune_old_entries(retention_days=retention_days),

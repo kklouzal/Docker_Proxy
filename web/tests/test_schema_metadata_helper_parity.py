@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import pytest
-from services import adblock_store, live_stats, webfilter_store
+from services import adblock_store, webfilter_store
 
 
 @pytest.mark.parametrize(
     ("module", "owner"),
     [
         (adblock_store, adblock_store.AdblockStore),
-        (live_stats, live_stats.LiveStatsStore),
         (webfilter_store, webfilter_store.WebFilterStore),
     ],
 )

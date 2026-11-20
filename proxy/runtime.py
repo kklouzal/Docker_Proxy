@@ -38,7 +38,6 @@ from services.db import DATABASE_ERRORS
 from services.diagnostic_store import get_diagnostic_store
 from services.errors import public_error_message, redact_sensitive_text
 from services.health_checks import build_clamav_health
-from services.live_stats import get_store
 from services.logutil import log_exception_throttled, should_log
 from services.materialized_files import (
     ManagedFileRollbackError,
@@ -936,7 +935,6 @@ class ProxyRuntimeServices:
     adblock_artifacts: Any
     cert_manager: Any
     adblock_store: Any
-    live_stats_store: Any
     diagnostic_store: Any
     timeseries_store: Any
     ssl_errors_store: Any
@@ -965,7 +963,6 @@ def build_runtime_services(**overrides: Any) -> ProxyRuntimeServices:
         adblock_artifacts=get_adblock_artifacts(),
         cert_manager=CertManager(certs_dir),
         adblock_store=get_adblock_store(),
-        live_stats_store=get_store(),
         diagnostic_store=get_diagnostic_store(),
         timeseries_store=get_timeseries_store(),
         ssl_errors_store=get_ssl_errors_store(),
@@ -1170,7 +1167,6 @@ class ProxyRuntime:
         self.adblock_artifacts = self.services.adblock_artifacts
         self.cert_manager = self.services.cert_manager
         self.adblock_store = self.services.adblock_store
-        self.live_stats_store = self.services.live_stats_store
         self.diagnostic_store = self.services.diagnostic_store
         self.timeseries_store = self.services.timeseries_store
         self.ssl_errors_store = self.services.ssl_errors_store
@@ -4008,11 +4004,6 @@ class ProxyRuntime:
             return
         for key, message, starter in (
             (
-                "proxy_runtime.background.live_stats",
-                "Failed to start proxy live stats background task",
-                self.live_stats_store.start_background,
-            ),
-            (
                 "proxy_runtime.background.diagnostic",
                 "Failed to start proxy diagnostic background task",
                 self.diagnostic_store.start_background,
@@ -4057,7 +4048,6 @@ class ProxyRuntime:
             getattr(self.ssl_errors_store, "stop_background", None),
             getattr(self.timeseries_store, "stop_background", None),
             getattr(self.diagnostic_store, "stop_background", None),
-            getattr(self.live_stats_store, "stop_background", None),
         )
         for stopper in stoppers:
             if not callable(stopper):

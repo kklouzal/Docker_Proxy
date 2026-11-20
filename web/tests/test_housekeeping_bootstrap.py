@@ -40,7 +40,6 @@ def housekeeping():
 def test_prune_methods_initialize_tables_before_deleting(monkeypatch) -> None:
     from services.adblock_store import AdblockStore  # type: ignore
     from services.diagnostic_store import DiagnosticStore  # type: ignore
-    from services.live_stats import LiveStatsStore  # type: ignore
     from services.ssl_errors_store import SslErrorsStore  # type: ignore
 
     stores = []
@@ -52,9 +51,6 @@ def test_prune_methods_initialize_tables_before_deleting(monkeypatch) -> None:
     diagnostic = DiagnosticStore.__new__(DiagnosticStore)
     diagnostic.retention_days = 30
     stores.append(diagnostic)
-
-    live = LiveStatsStore.__new__(LiveStatsStore)
-    stores.append(live)
 
     ssl_errors = SslErrorsStore.__new__(SslErrorsStore)
     stores.append(ssl_errors)
@@ -499,7 +495,6 @@ def test_housekeeping_prune_continues_after_step_failure(
                 msg = f"{self.name} failed"
                 raise RuntimeError(msg)
 
-    monkeypatch.setattr(housekeeping, "get_store", lambda: Store("live"))
     monkeypatch.setattr(
         housekeeping,
         "get_diagnostic_store",
@@ -528,7 +523,6 @@ def test_housekeeping_prune_continues_after_step_failure(
     result = housekeeping._run_prune_once(retention_days=7)
 
     assert calls == [
-        "live:7",
         "diagnostic:7",
         "adblock:7",
         "ssl:7",
@@ -538,7 +532,6 @@ def test_housekeeping_prune_continues_after_step_failure(
     ]
     assert result["ok"] is False
     assert [row["name"] for row in result["steps"] if row["ok"]] == [
-        "live_stats",
         "adblock",
         "ssl_errors",
         "audit",
@@ -999,7 +992,6 @@ def _stub_prune_stores(monkeypatch, housekeeping, *, diagnostic_result=None):
         def prune_old_entries(self, *, retention_days: int):
             return self.value
 
-    monkeypatch.setattr(housekeeping, "get_store", Store)
     monkeypatch.setattr(
         housekeeping, "get_diagnostic_store", lambda: Store(diagnostic_result)
     )

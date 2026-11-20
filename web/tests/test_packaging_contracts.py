@@ -1124,13 +1124,6 @@ def test_admin_ui_numeric_env_executable_boundary_handles_oversized_digits() -> 
 def test_observability_runtime_env_knobs_are_documented_and_composed() -> None:
     env_names = {
         "DB_POOL_MAX_IDLE_SECONDS",
-        "LIVE_STATS_COMMIT_BATCH",
-        "LIVE_STATS_COMMIT_INTERVAL_SECONDS",
-        "LIVE_STATS_POLL_INTERVAL_SECONDS",
-        "LIVE_STATS_MAX_PENDING_ROWS",
-        "LIVE_STATS_DB_WRITE_BACKOFF_INITIAL_SECONDS",
-        "LIVE_STATS_DB_WRITE_BACKOFF_MAX_SECONDS",
-        "LIVE_STATS_DB_WRITE_BACKOFF_JITTER_RATIO",
         "DIAGNOSTIC_COMMIT_BATCH",
         "DIAGNOSTIC_COMMIT_INTERVAL_SECONDS",
         "DIAGNOSTIC_POLL_INTERVAL_SECONDS",

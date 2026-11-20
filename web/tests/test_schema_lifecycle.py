@@ -558,8 +558,9 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
         "adblock_event_policy_attribution",
         "admin_default_proxy_selection",
         "diagnostic_requests_drop_duplicate_indexes",
+        "retire_live_stats_aggregate_tables",
     } <= names
-    assert schema_lifecycle.latest_schema_version() == 33
+    assert schema_lifecycle.latest_schema_version() == 34
     manual_spec = all_specs[-6]
     assert manual_spec.version == 26
     assert manual_spec.name == "observability_manual_export_preset_contract"
@@ -690,6 +691,40 @@ def test_schema_lifecycle_declares_every_deferred_mysql_family() -> None:
     assert duplicate_index_spec.name == "diagnostic_requests_drop_duplicate_indexes"
     assert [step.name for step in duplicate_index_spec.data_steps] == [
         "drop_duplicate_diagnostic_indexes"
+    ]
+    retire_spec = every_spec[33]
+    assert retire_spec.version == 34
+    assert retire_spec.name == "retire_live_stats_aggregate_tables"
+    assert [step.name for step in retire_spec.data_steps] == ["drop_live_stats_tables"]
+
+
+def test_retired_live_stats_migrations_keep_recorded_checksums() -> None:
+    """Applied databases recorded these checksums; drift would block startup."""
+    by_version = {spec.version: spec for spec in schema_lifecycle._migration_specs()}
+    assert by_version[7].checksum == (
+        "389a7df404d19b52435eb6aee4a9f69bf222877d4231b2cd7b2bc14ae8226948"
+    )
+    assert by_version[24].checksum == (
+        "50c11c3fa609a8b1d1332c35cb6f2cfdf5d604da088342b973e48bcab47d0afa"
+    )
+
+
+def test_retired_live_stats_schema_creates_nothing_and_drop_is_idempotent() -> None:
+    executed: list[str] = []
+
+    class Conn:
+        def execute(self, sql, _params=()):
+            executed.append(" ".join(str(sql).split()))
+
+    schema_lifecycle._retired_live_stats_schema(Conn())
+    assert executed == []
+    schema_lifecycle._drop_retired_live_stats_tables(Conn())
+    assert executed == [
+        (
+            "DROP TABLE IF EXISTS `live_stats_client_domain_nocache`, "
+            "`live_stats_client_domains`, `live_stats_clients`, "
+            "`live_stats_domains`, `live_stats_seed_state`"
+        )
     ]
 
 
