@@ -28,9 +28,14 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   DOCKER_BUILD_RECORD_RETENTION_DAYS: 7
 
+# Superseded pull-request runs are cancelled. Runs that publish (push, tag,
+# schedule, dispatch) queue instead: a push must not cancel the weekly forced
+# package refresh or a half-pushed multi-arch image, and serial runs keep the
+# branch tag on the newest commit. GitHub keeps one pending run per group, so
+# a newer run still replaces an older one that has not started.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Resolve the floating base tag once so every build in this run, tested and

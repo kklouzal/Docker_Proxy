@@ -217,7 +217,7 @@ The proxy image fetches its c-icap sources by pinned full commit IDs (`CICAP_GIT
 - `ghcr.io/kklouzal/docker_proxy-admin-ui:main`
 - `ghcr.io/kklouzal/docker_proxy-proxy:main`
 
-The publish workflow runs deterministic tests, builds both images, runs the live Compose test stack, and then publishes multi-architecture images with SBOM and provenance metadata.
+The publish workflow runs deterministic tests, builds both images, runs the live Compose test stack, and then publishes multi-architecture images with SBOM and provenance metadata. Every run resolves `alpine:edge` to one digest for all of its builds. A weekly scheduled run (Mondays 06:30 UTC) and a manual run with `refresh_packages` rebuild the Alpine package layers from the current index instead of the build cache; publishing runs queue rather than cancel each other.
 
 ### Standalone control plane
 
