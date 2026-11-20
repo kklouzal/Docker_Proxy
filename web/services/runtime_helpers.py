@@ -289,52 +289,6 @@ def extract_domain(
     return normalize_hostish(candidate)
 
 
-def not_cached_reason(
-    method: object | None,
-    result_code: object | None,
-    http_status: object | None = None,
-) -> str:
-    m = str(method or "").strip().upper()
-    rc = str(result_code or "").strip().upper()
-
-    status: int | None = None
-    try:
-        if http_status is not None and str(http_status).strip() != "":
-            status = int(http_status)
-    except Exception:
-        status = None
-    if status is None:
-        try:
-            if "/" in rc:
-                status = int(rc.rsplit("/", 1)[1])
-        except Exception:
-            status = None
-
-    if m and m not in {"GET", "HEAD", "CONNECT"}:
-        return f"{m} method (not cacheable by default)"
-
-    if m == "CONNECT" or rc.startswith(("TCP_TUNNEL", "TCP_CONNECT")):
-        return "HTTPS tunnel (CONNECT) — not cacheable without SSL-bump"
-
-    if status is not None:
-        if status in {301, 302, 303, 307, 308}:
-            return f"Redirect response ({status}) (often not cached without explicit freshness)"
-        if status >= 400:
-            return f"Error response status {status} (often not cached)"
-
-    if "DENIED" in rc or rc.startswith("TCP_DENIED"):
-        return "Denied by ACL"
-    if "BYPASS" in rc:
-        return "Bypassed (cache deny rule or client no-cache)"
-    if "ABORTED" in rc:
-        return "Aborted (client/upstream closed connection)"
-    if "SWAPFAIL" in rc:
-        return "Cache swap failure"
-    if "MISS" in rc:
-        return "Cache miss (object not in cache)"
-    return "Not served from cache"
-
-
 def cache_hit_sql(result_column: str = "result_code") -> str:
     return (
         f"(COALESCE({result_column}, '') <> '' "
