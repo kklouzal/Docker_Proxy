@@ -443,18 +443,17 @@ class ManagementServer:
         """Serve one request; True when the connection may be kept alive."""
         req = None
         sock = conn.sock
+        keep_alive = False
         try:
             if conn.parser is None:
                 conn.parser = RequestParser(_PARSER_CONFIG, conn, conn.addr)
             req = next(conn.parser)
             conn.head_deadline = None
             sock.settimeout(self.io_timeout)
-            if not self._respond(req, conn):
-                return False
             # Unread body bytes would look like the next request: drain them
             # within gthread's bounds, or close.
-            return bool(
-                conn.parser.finish_body(deadline=time.monotonic() + BODY_DRAIN_TIMEOUT)
+            keep_alive = self._respond(req, conn) and conn.parser.finish_body(
+                deadline=time.monotonic() + BODY_DRAIN_TIMEOUT
             )
         except http_errors.NoMoreData as exc:
             _LOGGER.debug("Ignored premature client disconnection. %s", exc)
@@ -469,8 +468,11 @@ class ManagementServer:
             self._handle_error(req, sock, conn.addr, exc)
         finally:
             conn.head_deadline = None
-        gunicorn_util.close_graceful(sock)
-        return False
+        if not keep_alive:
+            # FIN first and drain, so unread input does not turn into an RST
+            # that truncates the reply.
+            gunicorn_util.close_graceful(sock)
+        return keep_alive
 
     def _respond(self, req: Any, conn: _Connection) -> bool:
         """Run the application; True unless the response ends the connection."""
