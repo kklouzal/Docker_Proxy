@@ -69,22 +69,6 @@ def _trusted_pac_header_networks() -> tuple[
     return tuple(networks)
 
 
-def _remote_addr_trusts_forwarded_headers(remote_addr: str | None) -> bool:
-    try:
-        remote_ip = ipaddress.ip_address((remote_addr or "").strip())
-    except ValueError:
-        return False
-    remote_ips = [remote_ip]
-    mapped_ipv4 = getattr(remote_ip, "ipv4_mapped", None)
-    if mapped_ipv4 is not None:
-        remote_ips.append(mapped_ipv4)
-    return any(
-        candidate.version == network.version and candidate in network
-        for candidate in remote_ips
-        for network in _trusted_pac_header_networks()
-    )
-
-
 def _single_header_value(value: object | None) -> str:
     candidate = str(value or "").strip()
     if not candidate or "," in candidate:
@@ -221,13 +205,17 @@ def _normalize_request_authority(value: object | None) -> str:
 
 
 def forwarded_headers_trusted(remote_addr: str | None = None) -> bool:
-    return _remote_addr_trusts_forwarded_headers(remote_addr)
+    try:
+        remote_ip = ipaddress.ip_address((remote_addr or "").strip())
+    except ValueError:
+        return False
+    return _ip_matches_networks(remote_ip, _trusted_pac_header_networks())
 
 
 def forwarded_client_ip_from_headers(
     headers: Any, remote_addr: str | None = None
 ) -> str:
-    if headers is not None and _remote_addr_trusts_forwarded_headers(remote_addr):
+    if headers is not None and forwarded_headers_trusted(remote_addr):
         xff = _forwarded_client_ip(headers.get("X-Forwarded-For"))
         if xff:
             return xff
@@ -245,7 +233,7 @@ def client_ip_from_headers(headers: Any, remote_addr: str | None = None) -> str:
 
 
 def request_host_from_headers(headers: Any, remote_addr: str | None = None) -> str:
-    if headers is not None and _remote_addr_trusts_forwarded_headers(remote_addr):
+    if headers is not None and forwarded_headers_trusted(remote_addr):
         forwarded_host = _normalize_request_authority(
             _single_header_value(headers.get("X-Forwarded-Host"))
         )
