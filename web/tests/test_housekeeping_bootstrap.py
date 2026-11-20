@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 
 import pytest
 
+from .clock_patching import patch_module_clock
+
 
 class _FakeConn:
     def __init__(self, calls: list[str]) -> None:
@@ -227,7 +229,7 @@ def test_housekeeping_lock_retry_skips_sleep_after_final_failure(
 
     sleeps: list[float] = []
 
-    monkeypatch.setattr(housekeeping.time, "sleep", sleeps.append)
+    patch_module_clock(monkeypatch, housekeeping, sleep=sleeps.append)
 
     def fail_locked():
         raise pymysql.OperationalError(1213, "localized deadlock message")
@@ -305,8 +307,10 @@ def test_housekeeping_full_run_prunes_then_maintains_tables(
 def test_housekeeping_success_duration_uses_monotonic_clock(
     monkeypatch, housekeeping
 ) -> None:
-    monkeypatch.setattr(housekeeping.time, "time", iter([1_000.9, 900.1]).__next__)
-    monkeypatch.setattr(housekeeping.time, "monotonic", iter([10.0, 10.1259]).__next__)
+    patch_module_clock(monkeypatch, housekeeping, time=iter([1_000.9, 900.1]).__next__)
+    patch_module_clock(
+        monkeypatch, housekeeping, monotonic=iter([10.0, 10.1259]).__next__
+    )
 
     def acquire_lock():
         return object()
@@ -337,8 +341,12 @@ def test_housekeeping_skipped_duration_uses_monotonic_clock(
     monkeypatch, housekeeping
 ) -> None:
     recorded: list[dict] = []
-    monkeypatch.setattr(housekeeping.time, "time", iter([1_000.1, 1_500.9]).__next__)
-    monkeypatch.setattr(housekeeping.time, "monotonic", iter([20.0, 20.0429]).__next__)
+    patch_module_clock(
+        monkeypatch, housekeeping, time=iter([1_000.1, 1_500.9]).__next__
+    )
+    patch_module_clock(
+        monkeypatch, housekeeping, monotonic=iter([20.0, 20.0429]).__next__
+    )
     monkeypatch.setattr(
         housekeeping, "acquire_observability_maintenance_lock", lambda: None
     )
@@ -362,8 +370,12 @@ def test_housekeeping_exception_duration_uses_monotonic_clock(
     monkeypatch, housekeeping
 ) -> None:
     recorded: list[dict] = []
-    monkeypatch.setattr(housekeeping.time, "time", iter([2_000.9, 1_000.2]).__next__)
-    monkeypatch.setattr(housekeeping.time, "monotonic", iter([30.0, 30.0079]).__next__)
+    patch_module_clock(
+        monkeypatch, housekeeping, time=iter([2_000.9, 1_000.2]).__next__
+    )
+    patch_module_clock(
+        monkeypatch, housekeeping, monotonic=iter([30.0, 30.0079]).__next__
+    )
 
     def acquire_lock():
         return object()

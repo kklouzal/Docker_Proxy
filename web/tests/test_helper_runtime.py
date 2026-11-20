@@ -10,6 +10,8 @@ from services.helper_runtime import (
     write_acl_response,
 )
 
+from .clock_patching import patch_module_clock
+
 
 def test_split_acl_channel_and_write_response(capsys) -> None:
     assert split_acl_channel("12 src.example category") == (
@@ -116,7 +118,7 @@ def test_helper_stats_emits_snapshot_without_blocking_increments(
     monkeypatch, capsys
 ) -> None:
     clock = {"now": 10.0}
-    monkeypatch.setattr(helper_runtime.time, "monotonic", lambda: clock["now"])
+    patch_module_clock(monkeypatch, helper_runtime, monotonic=lambda: clock["now"])
     stats = helper_runtime.HelperStats("sample", emit_interval_seconds=5.0)
 
     stats.increment("requests")
@@ -150,7 +152,7 @@ def test_helper_stats_lifecycle_close_is_idempotent(capsys) -> None:
 
 def test_ttl_lru_cache_expires_and_evicts(monkeypatch) -> None:
     clock = {"now": 10.0}
-    monkeypatch.setattr(helper_runtime.time, "monotonic", lambda: clock["now"])
+    patch_module_clock(monkeypatch, helper_runtime, monotonic=lambda: clock["now"])
     cache = helper_runtime.TtlLruCache(max_entries=2, ttl_seconds=5.0)
 
     cache.put("a", 1)

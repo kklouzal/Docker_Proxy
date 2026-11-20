@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import threading
 
+from .clock_patching import patch_module_clock
+
 
 class FakeThread:
     def __init__(self, name: str, *, alive_after_join: bool) -> None:
@@ -77,7 +79,7 @@ def test_shutdown_gracefully_stops_background_tasks_with_remaining_budget(
 
     monotonic_values = iter((200.0, 201.0, 202.0))
     monkeypatch.setattr(agent, "_loop_threads", [stopped])
-    monkeypatch.setattr(agent.time, "monotonic", lambda: next(monotonic_values))
+    patch_module_clock(monkeypatch, agent, monotonic=lambda: next(monotonic_values))
 
     assert agent._shutdown(Runtime(), timeout=10.0) is True
 

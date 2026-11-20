@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pymysql
 
+from .clock_patching import patch_module_clock
 from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
 
@@ -141,7 +142,7 @@ def test_adblock_set_enabled_retries_transient_deadlock(monkeypatch) -> None:
 
     monkeypatch.setattr(store, "_connect", lambda: next(connections))
     monkeypatch.setenv("MYSQL_RETRY_JITTER_SECONDS", "0")
-    monkeypatch.setattr("services.db.time.sleep", sleeps.append)
+    patch_module_clock(monkeypatch, "services.db", sleep=sleeps.append)
 
     store.set_enabled({"easylist": True, "easyprivacy": False})
 

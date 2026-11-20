@@ -19,6 +19,8 @@ from services.safe_browsing_v5 import (
     url_expressions,
 )
 
+from .clock_patching import patch_module_clock
+
 
 def _ignore_cache_response(_prefix, _response, _cache_duration, local_lists=None):
     return None
@@ -466,7 +468,7 @@ def test_safe_browsing_request_json_enforces_total_body_deadline(monkeypatch) ->
     def open_response(_request, timeout):
         return FakeResponse()
 
-    monkeypatch.setattr(safe_browsing_v5.time, "monotonic", monotonic)
+    patch_module_clock(monkeypatch, safe_browsing_v5, monotonic=monotonic)
     monkeypatch.setattr(safe_browsing_v5, "_open_safe_browsing_request", open_response)
 
     with pytest.raises(TimeoutError, match="timed out after 5 seconds"):
@@ -502,7 +504,7 @@ def test_safe_browsing_request_json_accepts_bounded_partial_body(monkeypatch) ->
     def open_response(_request, timeout):
         return FakeResponse()
 
-    monkeypatch.setattr(safe_browsing_v5.time, "monotonic", monotonic)
+    patch_module_clock(monkeypatch, safe_browsing_v5, monotonic=monotonic)
     monkeypatch.setattr(safe_browsing_v5, "_open_safe_browsing_request", open_response)
 
     result = SafeBrowsingStore()._request_json(
@@ -1140,7 +1142,7 @@ def test_safe_browsing_prefix_miss_cache_uses_short_ttl(monkeypatch) -> None:
         prefix_miss_ttl_seconds=10,
         selected_lists=("mw-4b",),
     )
-    monkeypatch.setattr(safe_browsing_v5.time, "monotonic", lambda: now[0])
+    patch_module_clock(monkeypatch, safe_browsing_v5, monotonic=lambda: now[0])
     monkeypatch.setattr(checker, "_connect", FakeConn)
 
     assert checker._local_lists_for_prefix(b"abcd") == ()
@@ -1180,7 +1182,7 @@ def test_safe_browsing_prefix_lookup_filters_to_selected_lists(monkeypatch) -> N
             return Result([])
 
     checker = SafeBrowsingLocalChecker(api_key="test", selected_lists=("mw-4b",))
-    monkeypatch.setattr(safe_browsing_v5.time, "monotonic", lambda: 100.0)
+    patch_module_clock(monkeypatch, safe_browsing_v5, monotonic=lambda: 100.0)
     monkeypatch.setattr(checker, "_connect", FakeConn)
 
     assert checker._local_lists_for_prefix(b"abcd") == ()
@@ -2859,7 +2861,7 @@ def test_safe_browsing_remote_verdict_cache_does_not_outlive_provider_ttl(
     target = expression_hashes("http://short-lived.example/")[0]
     now = [100.0]
     remote_calls = []
-    monkeypatch.setattr(safe_browsing_v5.time, "monotonic", lambda: now[0])
+    patch_module_clock(monkeypatch, safe_browsing_v5, monotonic=lambda: now[0])
     monkeypatch.setattr(checker, "_synchronize_local_cache_versions", lambda _lists: 0)
     monkeypatch.setattr(
         checker,
@@ -2994,7 +2996,7 @@ def test_safe_browsing_hash_list_replacement_skips_existing_prefix_read_and_mark
             self.executemany_calls.append((normalized, rows))
             return Result(rowcount=len(rows))
 
-    monkeypatch.setattr(safe_browsing_v5.time, "time_ns", lambda: 123456789)
+    patch_module_clock(monkeypatch, safe_browsing_v5, time_ns=lambda: 123456789)
     conn = FakeConn()
     item = {
         "name": "mw-4b",

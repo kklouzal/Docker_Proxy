@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pymysql
 import pytest
 
+from .clock_patching import patch_module_clock
 from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
 from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
@@ -2931,7 +2932,7 @@ def test_builder_mysql_operation_retries_only_lock_and_deadlock_errors(
     import services.adblock_artifacts as artifacts_module  # type: ignore
 
     sleeps: list[float] = []
-    monkeypatch.setattr(artifacts_module.time, "sleep", sleeps.append)
+    patch_module_clock(monkeypatch, artifacts_module, sleep=sleeps.append)
 
     attempts = 0
 
@@ -2997,7 +2998,7 @@ def test_builder_mysql_operation_propagates_non_database_errors(monkeypatch) -> 
     import services.adblock_artifacts as artifacts_module  # type: ignore
 
     sleeps: list[float] = []
-    monkeypatch.setattr(artifacts_module.time, "sleep", sleeps.append)
+    patch_module_clock(monkeypatch, artifacts_module, sleep=sleeps.append)
 
     def fail() -> None:
         msg = "not transient mysql"

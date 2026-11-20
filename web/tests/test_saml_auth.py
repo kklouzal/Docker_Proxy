@@ -17,6 +17,8 @@ from services.saml_auth import (
     resolve_saml_login,
 )
 
+from .clock_patching import patch_module_clock
+
 SIGNING_CERT = "MIICsigningCERTvalue"
 ENCRYPTION_CERT = "MIICencryptionCERTvalue"
 ENTITY_METADATA = """<?xml version="1.0" encoding="UTF-8"?>
@@ -859,7 +861,7 @@ def test_saml_fetch_enforces_one_deadline_across_open_and_body_reads(
 
     response = SlowTrickleResponse()
     opened_requests = _use_fake_metadata_opener(monkeypatch, response)
-    monkeypatch.setattr(saml_auth.time, "monotonic", lambda: next(monotonic_values))
+    patch_module_clock(monkeypatch, saml_auth, monotonic=lambda: next(monotonic_values))
 
     with pytest.raises(
         TimeoutError,
@@ -887,7 +889,7 @@ def test_saml_fetch_does_not_open_when_setup_exhausts_total_deadline(
         _FakeMetadataResponse(SAMPLE_METADATA.encode(), profile.metadata_url),
     )
     monotonic_values = iter((100.0, 110.0))
-    monkeypatch.setattr(saml_auth.time, "monotonic", lambda: next(monotonic_values))
+    patch_module_clock(monkeypatch, saml_auth, monotonic=lambda: next(monotonic_values))
 
     with pytest.raises(
         TimeoutError,
@@ -1016,7 +1018,7 @@ def test_saml_fetch_redirect_uses_remaining_total_deadline(monkeypatch) -> None:
             )
         )
     )
-    monkeypatch.setattr(saml_auth.time, "monotonic", lambda: 104.0)
+    patch_module_clock(monkeypatch, saml_auth, monotonic=lambda: 104.0)
 
     redirected = saml_auth._SamlMetadataRedirectHandler(
         require_https=True,

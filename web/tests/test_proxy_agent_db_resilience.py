@@ -5,6 +5,8 @@ from typing import NoReturn
 
 import pytest
 
+from .clock_patching import patch_module_clock
+
 
 def test_proxy_agent_startup_does_not_exit_when_initial_control_plane_db_calls_fail(
     monkeypatch,
@@ -923,7 +925,7 @@ def test_runtime_stop_background_tasks_uses_one_bounded_shared_deadline(monkeypa
     runtime.ssl_errors_store = Store("ssl")
     runtime.adblock_store = Adblock()
     ticks = iter((100.0, 101.0, 102.0, 103.0, 104.0, 105.0))
-    monkeypatch.setattr("proxy.runtime.time.monotonic", lambda: next(ticks))
+    patch_module_clock(monkeypatch, "proxy.runtime", monotonic=lambda: next(ticks))
 
     assert runtime.stop_background_tasks(timeout=10.0) is True
     assert calls == [

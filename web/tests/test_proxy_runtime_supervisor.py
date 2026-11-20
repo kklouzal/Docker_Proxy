@@ -15,6 +15,7 @@ from typing import NoReturn
 
 import pytest
 
+from .clock_patching import patch_module_clock
 from .subprocess_test_utils import run_test_process
 
 
@@ -930,7 +931,7 @@ def test_restart_supervisor_program_scaled_fail_safe_avoids_logical_no_such_proc
     import proxy.runtime as runtime_module  # type: ignore
 
     monkeypatch.setenv("SQUID_WORKERS", "1")
-    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
     calls: list[tuple[str, str | None]] = []
     started = False
 
@@ -1103,7 +1104,7 @@ def test_test_control_supervisor_start_uses_one_total_monotonic_budget(
     command_timeouts: list[float] = []
     status_timeouts: list[float] = []
 
-    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
+    patch_module_clock(monkeypatch, runtime_module, monotonic=lambda: elapsed["value"])
 
     runtime = _runtime_shell()
     runtime._invalidate_health_cache = lambda: None
@@ -1145,7 +1146,7 @@ def test_test_control_supervisor_start_skips_status_when_total_budget_expires(
 
     elapsed = {"value": 0.0}
     status_called = False
-    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
+    patch_module_clock(monkeypatch, runtime_module, monotonic=lambda: elapsed["value"])
 
     runtime = _runtime_shell()
     runtime._invalidate_health_cache = lambda: None
@@ -1313,7 +1314,7 @@ def test_restart_supervisor_program_trusts_running_status_after_failed_start(
 ) -> None:
     import proxy.runtime as runtime_module  # type: ignore
 
-    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
     results = [
         _cp(0, stdout="cicap_adblock: stopped"),
         _cp(0, stdout="cicap_adblock STOPPED May 11 03:54 AM"),
@@ -1338,7 +1339,7 @@ def test_restart_supervisor_program_accepts_starting_after_startsecs_change(
     import proxy.runtime as runtime_module  # type: ignore
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
     results = [
         _cp(0, stdout="cicap_adblock: stopped"),
         _cp(0, stdout="cicap_adblock STOPPED Jun 15 02:17 AM"),
@@ -1372,7 +1373,7 @@ def test_restart_supervisor_program_rejects_unstable_post_start_states(
     import proxy.runtime as runtime_module  # type: ignore
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
 
     def fake_run(args, **_kwargs):
         calls.append(list(args))
@@ -1434,12 +1435,12 @@ def test_wait_for_supervisor_stop_uses_monotonic_deadline_during_wall_clock_jump
         timeouts.append(kwargs["timeout"])
         return _cp(0, stdout="squid RUNNING pid 123, uptime 0:00:01")
 
-    monkeypatch.setattr(runtime_module.time, "time", lambda: next(wall_times))
-    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
-    monkeypatch.setattr(
-        runtime_module.time,
-        "sleep",
-        lambda seconds: elapsed.__setitem__("value", elapsed["value"] + seconds),
+    patch_module_clock(monkeypatch, runtime_module, time=lambda: next(wall_times))
+    patch_module_clock(monkeypatch, runtime_module, monotonic=lambda: elapsed["value"])
+    patch_module_clock(
+        monkeypatch,
+        runtime_module,
+        sleep=lambda seconds: elapsed.__setitem__("value", elapsed["value"] + seconds),
     )
     monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
 
@@ -1458,7 +1459,7 @@ def test_restart_supervisor_program_returns_false_after_retries(monkeypatch) -> 
     import proxy.runtime as runtime_module  # type: ignore
 
     calls = {"count": 0}
-    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
 
     def fake_run(args, **_kwargs):
         calls["count"] += 1
@@ -1498,11 +1499,11 @@ def test_restart_supervisor_program_uses_one_total_monotonic_budget(
             return _cp(3, stdout="service FATAL")
         return _cp(1, stderr="service: ERROR (abnormal termination)")
 
-    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
-    monkeypatch.setattr(
-        runtime_module.time,
-        "sleep",
-        lambda seconds: elapsed.__setitem__(
+    patch_module_clock(monkeypatch, runtime_module, monotonic=lambda: elapsed["value"])
+    patch_module_clock(
+        monkeypatch,
+        runtime_module,
+        sleep=lambda seconds: elapsed.__setitem__(
             "value", elapsed["value"] + min(seconds, 2.0 - elapsed["value"])
         ),
     )
@@ -1543,16 +1544,16 @@ def test_restart_adblock_health_wait_uses_monotonic_deadline_during_wall_clock_j
     runtime.services = SimpleNamespace(adblock_service_restarter=None)
     runtime._restart_supervisor_program = lambda *_args, **_kwargs: (True, "restarted")
 
-    monkeypatch.setattr(
-        runtime_module.time,
-        "time",
-        lambda: 10**9 if probes["count"] % 2 else -(10**9),
+    patch_module_clock(
+        monkeypatch,
+        runtime_module,
+        time=lambda: 10**9 if probes["count"] % 2 else -(10**9),
     )
-    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
-    monkeypatch.setattr(
-        runtime_module.time,
-        "sleep",
-        lambda _seconds: elapsed.__setitem__("value", elapsed["value"] + 5.0),
+    patch_module_clock(monkeypatch, runtime_module, monotonic=lambda: elapsed["value"])
+    patch_module_clock(
+        monkeypatch,
+        runtime_module,
+        sleep=lambda _seconds: elapsed.__setitem__("value", elapsed["value"] + 5.0),
     )
 
     def unhealthy(**_kwargs):
@@ -1572,7 +1573,7 @@ def test_restart_adblock_service_stops_program_after_restart_loop(monkeypatch) -
     import proxy.runtime as runtime_module  # type: ignore
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
 
     stop_calls = 0
 
@@ -1624,7 +1625,7 @@ def test_restart_adblock_service_surfaces_unverified_fail_safe_stop(
     import proxy.runtime as runtime_module  # type: ignore
 
     stop_calls = 0
-    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
 
     def fake_run(args, **_kwargs):
         nonlocal stop_calls
@@ -1675,7 +1676,7 @@ def test_restart_adblock_service_reports_scaled_worker_failure_without_squid(
 
     calls: list[list[str]] = []
     started: set[str] = set()
-    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
     monkeypatch.setenv("SQUID_WORKERS", "2")
 
     def fake_run(args, **_kwargs):
@@ -2355,7 +2356,7 @@ def test_runtime_service_self_heal_first_restart_is_not_suppressed_by_uptime(
     )
     monkeypatch.setenv("ADBLOCK_ICAP_SELF_HEAL_FAILURE_THRESHOLD", "3")
     monkeypatch.setenv("ADBLOCK_ICAP_SELF_HEAL_RESTART_COOLDOWN_SECONDS", "600")
-    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: 100.0)
+    patch_module_clock(monkeypatch, runtime_module, monotonic=lambda: 100.0)
     monkeypatch.setattr(
         runtime_module,
         "_check_icap_adblock",
@@ -3300,7 +3301,7 @@ def test_reload_for_policy_update_waits_for_adblock_icap_health(monkeypatch) -> 
 
     runtime.controller = Controller()
     monkeypatch.setattr(runtime_module, "_check_icap_adblock", fake_icap)
-    monkeypatch.setattr(runtime_module.time, "sleep", sleeps.append)
+    patch_module_clock(monkeypatch, runtime_module, sleep=sleeps.append)
 
     ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=True)
 
@@ -3334,11 +3335,11 @@ def test_reload_for_policy_update_fails_when_adblock_icap_never_recovers(
         "_check_icap_adblock",
         lambda **_kwargs: {"ok": False, "detail": "icap not ready"},
     )
-    monkeypatch.setattr(runtime_module.time, "time", lambda: now["value"])
-    monkeypatch.setattr(
-        runtime_module.time,
-        "sleep",
-        lambda seconds: now.__setitem__("value", now["value"] + seconds + 1.0),
+    patch_module_clock(monkeypatch, runtime_module, time=lambda: now["value"])
+    patch_module_clock(
+        monkeypatch,
+        runtime_module,
+        sleep=lambda seconds: now.__setitem__("value", now["value"] + seconds + 1.0),
     )
 
     ok, detail = runtime._reload_for_policy_update(wait_for_adblock_icap=True)
@@ -3365,16 +3366,16 @@ def test_policy_reload_icap_wait_uses_monotonic_deadline_during_wall_clock_jumps
             return True
 
     runtime.controller = Controller()
-    monkeypatch.setattr(
-        runtime_module.time,
-        "time",
-        lambda: -(10**9) if probes["count"] % 2 else 10**9,
+    patch_module_clock(
+        monkeypatch,
+        runtime_module,
+        time=lambda: -(10**9) if probes["count"] % 2 else 10**9,
     )
-    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: elapsed["value"])
-    monkeypatch.setattr(
-        runtime_module.time,
-        "sleep",
-        lambda _seconds: elapsed.__setitem__("value", elapsed["value"] + 5.0),
+    patch_module_clock(monkeypatch, runtime_module, monotonic=lambda: elapsed["value"])
+    patch_module_clock(
+        monkeypatch,
+        runtime_module,
+        sleep=lambda _seconds: elapsed.__setitem__("value", elapsed["value"] + 5.0),
     )
 
     def unhealthy(**_kwargs):
@@ -5017,7 +5018,7 @@ def test_sync_adblock_state_changed_artifact_refreshes_helpers_without_squid_sto
             return _cp(0, stdout=f"{program}: started")
         raise AssertionError(args)
 
-    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
     monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
     monkeypatch.setattr(
         runtime_module,
@@ -5126,7 +5127,7 @@ def test_sync_adblock_state_cache_flush_refreshes_helpers_without_squid_stop(
             return _cp(0, stdout=f"{program}: started")
         raise AssertionError(args)
 
-    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, runtime_module, sleep=lambda _seconds: None)
     monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
     monkeypatch.setattr(
         runtime_module,
@@ -9665,7 +9666,7 @@ def test_runtime_self_heal_recovers_stranded_squid_transaction_with_backoff(
 
     runtime = _runtime_shell()
     clock = {"now": 1000.0}
-    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: clock["now"])
+    patch_module_clock(monkeypatch, runtime_module, monotonic=lambda: clock["now"])
     journal = {"status": "recovery_required", "transaction_id": "tx-1"}
     runtime._squid_transaction_health = lambda: dict(journal)
     runtime.controller = SimpleNamespace(

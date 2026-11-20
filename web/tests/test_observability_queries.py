@@ -4,6 +4,7 @@ from typing import Self
 
 import pytest
 
+from .clock_patching import patch_module_clock
 from .mysql_test_utils import configure_test_mysql_env, register_test_proxies
 
 
@@ -735,7 +736,7 @@ def test_remediation_runtime_health_bad_timestamp_degrades_safely(
         "ssl_overview",
         lambda **_kwargs: {"exclusion_candidates": []},
     )
-    monkeypatch.setattr(observability_queries.time, "time", lambda: 5150)
+    patch_module_clock(monkeypatch, observability_queries, time=lambda: 5150)
 
     payload = queries.remediation_overview(
         since=5000,

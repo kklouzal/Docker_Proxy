@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from .clock_patching import patch_module_clock
+
 
 def _import_download_safety():
     web_dir = Path(__file__).resolve().parents[1]
@@ -1662,7 +1664,7 @@ def test_open_download_url_enforces_one_deadline_across_body_reads(
         lambda *_handlers: _Opener(),
     )
     times = iter((100.0, 100.0, 100.0, 103.0, 103.0, 111.0))
-    monkeypatch.setattr(download_safety.time, "monotonic", lambda: next(times))
+    patch_module_clock(monkeypatch, download_safety, monotonic=lambda: next(times))
 
     opened = download_safety.open_download_url(
         "https://public.example/feed.txt",

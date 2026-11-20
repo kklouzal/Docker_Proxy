@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from .clock_patching import patch_module_clock
+
 ResponsePayload = bytes | list[bytes]
 
 
@@ -270,8 +272,8 @@ def test_icap_readiness_probe_has_absolute_receive_deadline(monkeypatch) -> None
             return b"x"
 
     monotonic_values = iter([0.0, 0.05, 0.11])
-    monkeypatch.setattr(
-        icap_readiness.time, "monotonic", lambda: next(monotonic_values)
+    patch_module_clock(
+        monkeypatch, icap_readiness, monotonic=lambda: next(monotonic_values)
     )
     monkeypatch.setattr(
         icap_readiness.socket,
@@ -444,7 +446,7 @@ def test_icap_readiness_waits_until_options_ready(tmp_path, monkeypatch) -> None
 
     server = _start_server(methods="REQMOD", ready_after_calls=3)
     sleeps: list[float] = []
-    monkeypatch.setattr(icap_readiness.time, "sleep", sleeps.append)
+    patch_module_clock(monkeypatch, icap_readiness, sleep=sleeps.append)
     try:
         config = tmp_path / "20-icap.conf"
         status_file = tmp_path / "status.json"
@@ -483,7 +485,7 @@ def test_icap_readiness_wait_json_uses_success_payload_without_extra_probe(
             b"ICAP/1.0 503 Service Unavailable\r\nConnection: close\r\n\r\n",
         ]
     )
-    monkeypatch.setattr(icap_readiness.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, icap_readiness, sleep=lambda _seconds: None)
     try:
         config = tmp_path / "20-icap.conf"
         status_file = tmp_path / "status.json"
@@ -532,11 +534,11 @@ def test_icap_readiness_wait_json_reports_timeout_payload_without_recheck(
             b"ICAP/1.0 200 OK\r\nMethods: REQMOD\r\nConnection: close\r\nEncapsulated: null-body=0\r\n\r\n",
         ]
     )
-    monkeypatch.setattr(icap_readiness.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, icap_readiness, sleep=lambda _seconds: None)
     # wait deadline, probe deadline, post-connect/read budgets, wait timeout check
     monotonic_values = iter([0.0, 0.01, 0.02, 0.03, 0.1])
-    monkeypatch.setattr(
-        icap_readiness.time, "monotonic", lambda: next(monotonic_values)
+    patch_module_clock(
+        monkeypatch, icap_readiness, monotonic=lambda: next(monotonic_values)
     )
     try:
         config = tmp_path / "20-icap.conf"

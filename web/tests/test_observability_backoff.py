@@ -9,6 +9,8 @@ import pytest
 from services import diagnostic_store, live_stats, timeseries_store
 from services.observability_backoff import DatabaseWriteBackoff, stagger_delay_from_env
 
+from .clock_patching import patch_module_clock
+
 
 class _FakeThread:
     created: ClassVar[list[_FakeThread]] = []
@@ -322,7 +324,9 @@ def test_timeseries_rollup_cadence_is_configurable_and_not_every_snapshot(
     monkeypatch.setenv("TIMESERIES_STARTUP_JITTER_SECONDS", "0")
     monkeypatch.setenv("TIMESERIES_ROLLUP_INTERVAL_SECONDS", "30")
     monkeypatch.setattr(timeseries_store.threading, "Thread", RunningThread)
-    monkeypatch.setattr(timeseries_store.time, "monotonic", lambda: current["value"])
+    patch_module_clock(
+        monkeypatch, timeseries_store, monotonic=lambda: current["value"]
+    )
 
     def fake_sleep(_seconds: float) -> None:
         current["sleeps"] += 1

@@ -4,6 +4,8 @@ from typing import NoReturn
 
 import pytest
 
+from .clock_patching import patch_module_clock
+
 
 def test_parse_database_url_resolves_valid_mysql_url(monkeypatch) -> None:
     from services import db  # type: ignore
@@ -1329,7 +1331,7 @@ def test_transaction_retry_replays_lock_wait_timeout(monkeypatch) -> None:
     monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "2")
     monkeypatch.setenv("MYSQL_CONNECT_RETRY_DELAY_SECONDS", "0")
     monkeypatch.setenv("MYSQL_RETRY_JITTER_SECONDS", "0")
-    monkeypatch.setattr(db.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, db, sleep=lambda _seconds: None)
 
     assert db.run_mysql_operation_with_retry(operation) == "ok"
     assert attempts["count"] == 2
@@ -1402,7 +1404,7 @@ def test_transaction_retry_replays_deadlock_with_bounded_jitter(monkeypatch) -> 
     monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "2")
     monkeypatch.setenv("MYSQL_CONNECT_RETRY_DELAY_SECONDS", "0.1")
     monkeypatch.setenv("MYSQL_RETRY_JITTER_SECONDS", "0.05")
-    monkeypatch.setattr(db.time, "sleep", sleeps.append)
+    patch_module_clock(monkeypatch, db, sleep=sleeps.append)
     monkeypatch.setattr(db.random, "uniform", lambda _low, high: high)
 
     assert db.run_mysql_operation_with_retry(operation) == "ok"

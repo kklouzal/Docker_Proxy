@@ -3,11 +3,13 @@ from __future__ import annotations
 import pytest
 from services import stats
 
+from .clock_patching import patch_module_clock
+
 
 def _get_cpu_utilization(monkeypatch, samples: list[str]) -> float | None:
     sample_iter = iter(samples)
     monkeypatch.setattr(stats, "_read_text", lambda _path: next(sample_iter))
-    monkeypatch.setattr(stats.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, stats, sleep=lambda _seconds: None)
     return stats.get_cpu_utilization_percent()
 
 

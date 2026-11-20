@@ -7,6 +7,8 @@ import pymysql
 import pytest
 from services import db  # type: ignore
 
+from .clock_patching import patch_module_clock
+
 
 class _Native:
     def __init__(self) -> None:
@@ -210,7 +212,7 @@ def test_timed_out_attempt_opens_circuit_for_others_but_caller_keeps_retries(
     monkeypatch.setenv("MYSQL_CONNECT_CIRCUIT_BACKOFF_INITIAL_SECONDS", "60")
     monkeypatch.setenv("MYSQL_CONNECT_CIRCUIT_BACKOFF_MAX_SECONDS", "60")
     real_sleep = time.sleep
-    monkeypatch.setattr(db.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, db, sleep=lambda _seconds: None)
     attempts: list[str] = []
     other_call: dict[str, BaseException] = {}
 
@@ -244,7 +246,7 @@ def test_timed_out_attempt_opens_circuit_for_others_but_caller_keeps_retries(
 
 def test_fast_connect_failures_keep_bounded_in_call_retries(monkeypatch) -> None:
     monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "4")
-    monkeypatch.setattr(db.time, "sleep", lambda _seconds: None)
+    patch_module_clock(monkeypatch, db, sleep=lambda _seconds: None)
     attempts: list[int] = []
 
     def refused_then_up(_cfg):
@@ -303,7 +305,7 @@ def test_hung_pooled_session_ping_opens_circuit(monkeypatch) -> None:
 def test_open_circuit_error_is_not_replayed_by_in_call_retries(monkeypatch) -> None:
     monkeypatch.setenv("MYSQL_CONNECT_RETRIES", "4")
     sleeps: list[float] = []
-    monkeypatch.setattr(db.time, "sleep", sleeps.append)
+    patch_module_clock(monkeypatch, db, sleep=sleeps.append)
 
     def refused(_cfg):
         raise pymysql.OperationalError(2003, "Connection refused")

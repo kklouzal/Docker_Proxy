@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from .clock_patching import patch_module_clock
 from .test_adblock_lookup import _build_lookup_db
 
 
@@ -413,11 +414,9 @@ def test_adblock_decision_cache_ttl_uses_elapsed_not_wall_time(
     from services import adblock_decision
 
     clocks = {"wall": 1_000.0, "elapsed": 100.0}
-    monkeypatch.setattr(adblock_decision.time, "time", lambda: clocks["wall"])
-    monkeypatch.setattr(
-        adblock_decision.time,
-        "monotonic",
-        lambda: clocks["elapsed"],
+    patch_module_clock(monkeypatch, adblock_decision, time=lambda: clocks["wall"])
+    patch_module_clock(
+        monkeypatch, adblock_decision, monotonic=lambda: clocks["elapsed"]
     )
     engine = adblock_decision.AdblockDecisionEngine(
         db_path,

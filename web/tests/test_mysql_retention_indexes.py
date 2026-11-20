@@ -4,6 +4,8 @@ import pathlib
 import sys
 from contextlib import contextmanager
 
+from .clock_patching import patch_module_clock
+
 WEB_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
@@ -284,7 +286,7 @@ def test_operation_ledger_schema_bootstraps_bounded_progress_indexes(monkeypatch
     conn = _FakeConn()
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
 
     ledger.init_db()
 

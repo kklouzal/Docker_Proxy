@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 from services import control_plane_maintenance as maintenance
 
+from .clock_patching import patch_module_clock
+
 
 class _CleanupResult:
     dropped_tables = ()
@@ -76,7 +78,7 @@ def test_control_plane_prune_expires_policy_and_cache_rows(monkeypatch) -> None:
         "_queue_policy_exception_expiry_policy_sync",
         lambda _proxy_id: True,
     )
-    monkeypatch.setattr(maintenance.time, "time", lambda: 1_000_000)
+    patch_module_clock(monkeypatch, maintenance, time=lambda: 1_000_000)
     monkeypatch.setattr(
         maintenance,
         "cleanup_stale_webcat_build_tables",
@@ -134,7 +136,7 @@ def test_control_plane_prune_keeps_active_blob_revisions(monkeypatch) -> None:
     monkeypatch.setattr(
         adblock_artifacts, "AdblockArtifactStore", FakeAdblockArtifactStore
     )
-    monkeypatch.setattr(maintenance.time, "time", lambda: 1_000_000)
+    patch_module_clock(monkeypatch, maintenance, time=lambda: 1_000_000)
     monkeypatch.setattr(
         maintenance,
         "cleanup_stale_webcat_build_tables",
@@ -167,7 +169,7 @@ def test_control_plane_prune_invokes_webcat_stale_build_table_cleanup(
 
     monkeypatch.setattr(maintenance, "CONTROL_PLANE_MAINTENANCE_TABLES", ())
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
-    monkeypatch.setattr(maintenance.time, "time", lambda: 5_000)
+    patch_module_clock(monkeypatch, maintenance, time=lambda: 5_000)
 
     def cleanup(cleanup_conn, *, now_ts: int):
         calls.append((cleanup_conn, now_ts))
@@ -815,7 +817,7 @@ def test_control_plane_prune_reports_policy_sync_failure_and_continues(
         )
 
     monkeypatch.setattr(maintenance, "_delete_expired_cache", delete_expired_cache)
-    monkeypatch.setattr(maintenance.time, "time", lambda: 1_000_000)
+    patch_module_clock(monkeypatch, maintenance, time=lambda: 1_000_000)
     monkeypatch.setattr(
         maintenance,
         "_cleanup_stale_webcat_build_tables_result",
@@ -847,7 +849,7 @@ def test_control_plane_prune_reports_truncated_backlog(monkeypatch) -> None:
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
     monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 1)
     monkeypatch.setattr(maintenance, "default_max_rows", lambda: 2)
-    monkeypatch.setattr(maintenance.time, "time", lambda: 1_000_000)
+    patch_module_clock(monkeypatch, maintenance, time=lambda: 1_000_000)
     monkeypatch.setattr(
         maintenance,
         "cleanup_stale_webcat_build_tables",

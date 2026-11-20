@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 from services import background_guard, logutil  # type: ignore
 
+from .clock_patching import patch_module_clock
+
 
 def _reset_logutil_state() -> None:
     logutil._last_log.clear()
@@ -404,7 +406,7 @@ def test_acquire_background_lock_is_idempotent_for_current_process(
 def test_should_log_throttles_by_key_and_interval(monkeypatch) -> None:
     _reset_logutil_state()
     current = {"value": 100.0}
-    monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
+    patch_module_clock(monkeypatch, logutil, monotonic=lambda: current["value"])
 
     assert logutil.should_log("same", interval_seconds=10.0) is True
     assert logutil.should_log("same", interval_seconds=10.0) is False
@@ -424,7 +426,7 @@ def test_log_exception_throttled_never_raises_and_respects_interval(
             message % args if args else message
         )
     )
-    monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
+    patch_module_clock(monkeypatch, logutil, monotonic=lambda: current["value"])
 
     logutil.log_exception_throttled(
         logger, "key", "one", interval_seconds=10.0, message="failure %s"
@@ -452,7 +454,7 @@ def test_log_exception_throttled_never_raises_and_respects_interval(
 def test_should_log_prunes_stale_dynamic_keys_after_safe_window(monkeypatch) -> None:
     _reset_logutil_state()
     current = {"value": 1000.0}
-    monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
+    patch_module_clock(monkeypatch, logutil, monotonic=lambda: current["value"])
 
     assert logutil.should_log("dynamic.old", interval_seconds=10.0) is True
     current["value"] += logutil._THROTTLE_KEY_PRUNE_INTERVAL_SECONDS
@@ -471,7 +473,7 @@ def test_should_log_keeps_keys_within_throttle_interval_when_pruning(
 ) -> None:
     _reset_logutil_state()
     current = {"value": 10000.0}
-    monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
+    patch_module_clock(monkeypatch, logutil, monotonic=lambda: current["value"])
 
     assert logutil.should_log("long.active", interval_seconds=7200.0) is True
     current["value"] += logutil._THROTTLE_KEY_MIN_RETENTION_SECONDS + 1.0
@@ -484,7 +486,7 @@ def test_should_log_keeps_keys_within_throttle_interval_when_pruning(
 def test_should_log_malformed_intervals_do_not_break_logging_loop(monkeypatch) -> None:
     _reset_logutil_state()
     current = {"value": 1000.0}
-    monkeypatch.setattr(logutil.time, "monotonic", lambda: current["value"])
+    patch_module_clock(monkeypatch, logutil, monotonic=lambda: current["value"])
 
     assert (
         logutil.should_log(  # type: ignore[arg-type]

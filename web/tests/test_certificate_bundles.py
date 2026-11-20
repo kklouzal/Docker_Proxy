@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import pytest
 from services import certificate_bundles  # type: ignore
 
+from .clock_patching import patch_module_clock
+
 CertificateBundleRevision = certificate_bundles.CertificateBundleRevision
 CertificateBundleStore = certificate_bundles.CertificateBundleStore
 
@@ -22,7 +24,7 @@ def test_certificate_bundle_lock_retry_uses_shared_numeric_policy(monkeypatch) -
             raise pymysql.OperationalError(1213, "localized message")
         return "ok"
 
-    monkeypatch.setattr(certificate_bundles.time, "sleep", sleeps.append)
+    patch_module_clock(monkeypatch, certificate_bundles, sleep=sleeps.append)
 
     assert store._with_db_lock_retry(operation, attempts=2) == "ok"
     assert attempts["count"] == 2

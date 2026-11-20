@@ -6,6 +6,8 @@ from typing import NoReturn
 import pymysql
 from services.config_revisions import ConfigRevisionStore  # type: ignore
 
+from .clock_patching import patch_module_clock
+
 
 class _ConfigRevisionConn:
     def __init__(
@@ -80,7 +82,9 @@ def test_config_revision_create_retries_transient_deadlock(monkeypatch) -> None:
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "get_active_revision", lambda _proxy_id: None)
     monkeypatch.setattr(store, "_connect", lambda: next(connections))
-    monkeypatch.setattr("services.config_revisions.time.sleep", lambda _seconds: None)
+    patch_module_clock(
+        monkeypatch, "services.config_revisions", sleep=lambda _seconds: None
+    )
 
     revision = store.create_revision(
         "edge-a", "workers 1\n", created_by="system", source_kind="bootstrap"
@@ -103,7 +107,9 @@ def test_config_revision_create_retries_transient_commit_deadlock(monkeypatch) -
 
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "_connect", lambda: next(connections))
-    monkeypatch.setattr("services.config_revisions.time.sleep", lambda _seconds: None)
+    patch_module_clock(
+        monkeypatch, "services.config_revisions", sleep=lambda _seconds: None
+    )
 
     revision = store.create_revision(
         "edge-a", "workers 1\n", created_by="system", source_kind="bootstrap"
@@ -129,7 +135,7 @@ def test_config_revision_lock_retry_exhaustion_preserves_exception(monkeypatch) 
             1213, "Deadlock found when trying to get lock; try restarting transaction"
         )
 
-    monkeypatch.setattr("services.config_revisions.time.sleep", sleeps.append)
+    patch_module_clock(monkeypatch, "services.config_revisions", sleep=sleeps.append)
 
     try:
         store._with_db_lock_retry(always_deadlock, attempts=3)
@@ -153,9 +159,12 @@ def test_config_revision_retry_does_not_retry_non_lock_operational_errors(
         attempts["count"] += 1
         raise pymysql.OperationalError(2003, "Can't connect to MySQL server")
 
-    monkeypatch.setattr(
-        "services.config_revisions.time.sleep",
-        lambda _seconds: (_ for _ in ()).throw(AssertionError("sleep should not run")),
+    patch_module_clock(
+        monkeypatch,
+        "services.config_revisions",
+        sleep=lambda _seconds: (_ for _ in ()).throw(
+            AssertionError("sleep should not run")
+        ),
     )
 
     try:
@@ -182,7 +191,7 @@ def test_config_revision_lock_retry_backoff_is_capped(monkeypatch) -> None:
             )
         return "ok"
 
-    monkeypatch.setattr("services.config_revisions.time.sleep", sleeps.append)
+    patch_module_clock(monkeypatch, "services.config_revisions", sleep=sleeps.append)
 
     assert store._with_db_lock_retry(fail_many_then_succeed, attempts=8) == "ok"
     assert sleeps == [0.1, 0.2, 0.4, 0.8, 1.0, 1.0, 1.0]

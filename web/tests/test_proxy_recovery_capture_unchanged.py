@@ -9,6 +9,8 @@ import pytest
 from services import proxy_recovery  # type: ignore
 from services import proxy_recovery_db as recovery_db  # type: ignore
 
+from .clock_patching import patch_module_clock
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -198,7 +200,9 @@ def test_unverifiable_fingerprint_record_forces_full_capture(
         first.path.chmod(0o600)
     elif tamper == "record_expired":
         real_time = recovery_db.time.time
-        monkeypatch.setattr(recovery_db.time, "time", lambda: real_time() + 25 * 3600)
+        patch_module_clock(
+            monkeypatch, recovery_db, time=lambda: real_time() + 25 * 3600
+        )
     else:
         record.unlink()
 

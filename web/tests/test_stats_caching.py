@@ -9,6 +9,8 @@ from typing import Any, NoReturn
 import pytest
 from services import stats
 
+from .clock_patching import patch_module_clock
+
 
 def _reset_cpu_cache() -> None:
     stats._CACHE_CPU_INFLIGHT = False
@@ -116,7 +118,7 @@ def test_get_stats_negatively_caches_failed_storage_probes_until_ttl(
     now = 100.0
     calls = {"dir": 0, "disk": 0}
 
-    monkeypatch.setattr(stats.time, "monotonic", lambda: now)
+    patch_module_clock(monkeypatch, stats, monotonic=lambda: now)
     monkeypatch.setattr(stats, "get_meminfo", lambda: {"total": 10, "available": 4})
     monkeypatch.setattr(
         stats,
@@ -259,7 +261,7 @@ def test_get_stats_storage_refresh_serves_stale_good_value(
     _reset_stats_caches()
     monkeypatch.setenv("STATS_CACHE_DIR_SIZE_TTL_SECONDS", "5")
     monkeypatch.setenv("STATS_CACHE_DISK_USAGE_TTL_SECONDS", "5")
-    monkeypatch.setattr(stats.time, "monotonic", lambda: 100.0)
+    patch_module_clock(monkeypatch, stats, monotonic=lambda: 100.0)
     _stub_non_storage_collectors(monkeypatch)
 
     collector_started = threading.Event()

@@ -9,6 +9,8 @@ from services.client_identity_cache import (  # type: ignore
     ClientIdentityCache,
 )
 
+from .clock_patching import patch_module_clock
+
 
 def test_client_identity_cache_invalid_ip_returns_invalid_without_lookup(
     monkeypatch,
@@ -778,8 +780,8 @@ def test_client_identity_cache_evicts_oldest_entry_when_full(monkeypatch) -> Non
     # max_entries is clamped to at least 64; shrink after construction to exercise eviction deterministically.
     cache.max_entries = 1
     now = {"value": 1000.0}
-    monkeypatch.setattr(
-        "services.client_identity_cache.time.monotonic", lambda: now["value"]
+    patch_module_clock(
+        monkeypatch, "services.client_identity_cache", monotonic=lambda: now["value"]
     )
     monkeypatch.setattr(
         cache,
@@ -805,8 +807,8 @@ def test_client_identity_cache_replaces_expired_entry(monkeypatch) -> None:
     )
     calls: list[str] = []
 
-    monkeypatch.setattr(
-        "services.client_identity_cache.time.monotonic", lambda: now["value"]
+    patch_module_clock(
+        monkeypatch, "services.client_identity_cache", monotonic=lambda: now["value"]
     )
 
     def fake_lookup(ip: str) -> tuple[str, str, str]:
@@ -833,12 +835,13 @@ def test_client_identity_cache_wall_clock_rollback_does_not_extend_ttl(
         ]
     )
 
-    monkeypatch.setattr(
-        "services.client_identity_cache.time.time", lambda: clocks["wall"]
+    patch_module_clock(
+        monkeypatch, "services.client_identity_cache", time=lambda: clocks["wall"]
     )
-    monkeypatch.setattr(
-        "services.client_identity_cache.time.monotonic",
-        lambda: clocks["monotonic"],
+    patch_module_clock(
+        monkeypatch,
+        "services.client_identity_cache",
+        monotonic=lambda: clocks["monotonic"],
     )
     monkeypatch.setattr(
         cache, "_lookup_hostname", lambda _ip, **_kwargs: next(responses)

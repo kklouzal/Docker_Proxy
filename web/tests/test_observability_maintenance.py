@@ -5,6 +5,8 @@ from typing import Self
 import pytest
 from services import observability_maintenance as maintenance
 
+from .clock_patching import patch_module_clock
+
 
 class FakeResult:
     def __init__(self, rowcount: int = 0) -> None:
@@ -187,7 +189,7 @@ def test_observability_retention_settings_round_trip(monkeypatch) -> None:
 
     conn = SettingsConnection()
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
-    monkeypatch.setattr(maintenance.time, "time", lambda: 1234)
+    patch_module_clock(monkeypatch, maintenance, time=lambda: 1234)
 
     initial = maintenance.get_observability_retention_settings()
     saved = maintenance.set_observability_retention_settings(retention_days="45")

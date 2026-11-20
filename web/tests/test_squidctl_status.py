@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from .clock_patching import patch_module_clock
+
 
 @pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] -- isolation guard for every test here
 def _isolated_squid_transaction_paths(tmp_path, monkeypatch) -> None:
@@ -391,9 +393,9 @@ def test_http_listener_absence_timeout_uses_monotonic_clock_during_wall_rollback
 
     monkeypatch.setattr(controller, "_http_listener_ports", lambda: (3128,))
     monkeypatch.setattr(controller, "_tcp_listener_accepts", lambda port: True)
-    monkeypatch.setattr(squid_core.time, "monotonic", lambda: monotonic_now)
-    monkeypatch.setattr(squid_core.time, "time", lambda: wall_now)
-    monkeypatch.setattr(squid_core.time, "sleep", fake_sleep)
+    patch_module_clock(monkeypatch, squid_core, monotonic=lambda: monotonic_now)
+    patch_module_clock(monkeypatch, squid_core, time=lambda: wall_now)
+    patch_module_clock(monkeypatch, squid_core, sleep=fake_sleep)
 
     assert controller._wait_for_http_listener_absent(timeout=1.0) is False
     assert sleeps == [0.5, 0.5]

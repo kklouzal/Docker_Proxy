@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from .clock_patching import patch_module_clock
 from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
 
 
@@ -213,7 +214,13 @@ def test_live_stats_tailer_retains_batch_across_rotation_and_backoff(
     monkeypatch.setattr(store, "_accumulate_line", accumulate)
     monkeypatch.setattr(store, "_flush_batch_with_conn", flush_batch)
     monkeypatch.setattr(store, "_checkpoint_for_offset", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(live_stats.time, "monotonic", lambda: next(times, 999.0))
+    patch_module_clock(
+        monkeypatch,
+        live_stats,
+        "services.logutil",
+        "services.observability_backoff",
+        monotonic=lambda: next(times, 999.0),
+    )
     monkeypatch.setattr(store._stop_event, "wait", stop_after_retry)
     monkeypatch.setattr(live_stats.pathlib.Path, "exists", lambda _self: True)
     monkeypatch.setattr(
@@ -453,14 +460,14 @@ def test_live_stats_commit_cadence_uses_monotonic_time(
         "_save_seed_checkpoint",
         lambda _conn, _proxy_id, value: saved_checkpoints.append(value),
     )
-    monkeypatch.setattr(
-        live_stats.time, "monotonic", lambda: next(monotonic_times, 101.2)
+    patch_module_clock(
+        monkeypatch, live_stats, monotonic=lambda: next(monotonic_times, 101.2)
     )
     monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
-    monkeypatch.setattr(
-        live_stats.time,
-        "time",
-        lambda: (_ for _ in ()).throw(AssertionError("cadence used wall time")),
+    patch_module_clock(
+        monkeypatch,
+        live_stats,
+        time=lambda: (_ for _ in ()).throw(AssertionError("cadence used wall time")),
     )
     monkeypatch.setattr(live_stats.pathlib.Path, "exists", lambda _self: True)
     monkeypatch.setattr(
@@ -546,7 +553,9 @@ def test_diagnostic_tailer_keeps_partial_line_until_newline(
     times = iter([100.0, 101.0, 101.1, 102.1, 102.2])
     monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "1")
     monkeypatch.setattr(store, "_connect", Conn)
-    monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: next(times, 101.0))
+    patch_module_clock(
+        monkeypatch, diagnostic_store, monotonic=lambda: next(times, 101.0)
+    )
     monkeypatch.setattr(store._stop_event, "wait", sleep)
 
     with pytest.raises(StopLoop):
@@ -593,7 +602,7 @@ def test_diagnostic_tailer_restarts_at_zero_after_copytruncate_regrowth(
         return ("row", line)
 
     monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "10")
-    monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: 100.0)
+    patch_module_clock(monkeypatch, diagnostic_store, monotonic=lambda: 100.0)
     monkeypatch.setattr(store._stop_event, "wait", sleep)
 
     with pytest.raises(StopLoop):
@@ -650,7 +659,12 @@ def test_diagnostic_tailer_recovers_when_partial_line_rotates(
     times = iter([100.0, 100.1, 100.2, 100.3, 101.6, 101.7])
     monkeypatch.setenv("DIAGNOSTIC_COMMIT_INTERVAL_SECONDS", "0.25")
     monkeypatch.setattr(store, "_connect", Conn)
-    monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: next(times, 102.0))
+    patch_module_clock(
+        monkeypatch,
+        diagnostic_store,
+        "services.observability_backoff",
+        monotonic=lambda: next(times, 102.0),
+    )
     monkeypatch.setattr(store._stop_event, "wait", sleep)
 
     with pytest.raises(StopLoop):
@@ -742,7 +756,7 @@ def test_ssl_errors_tailer_keeps_partial_line_until_newline(
             (domain, sample)
         ),
     )
-    monkeypatch.setattr(ssl_errors_store.time, "time", lambda: 100.0)
+    patch_module_clock(monkeypatch, ssl_errors_store, time=lambda: 100.0)
     monkeypatch.setattr(store._stop_event, "wait", sleep)
 
     with pytest.raises(StopLoop):
@@ -793,15 +807,13 @@ def test_ssl_errors_tailer_idle_flush_uses_monotonic_elapsed_time(
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "_tailer_connect", Conn)
     monkeypatch.setattr(store, "_flush_pending_error", flush_pending)
-    monkeypatch.setattr(
-        ssl_errors_store.time,
-        "monotonic",
-        lambda: next(monotonic_times, 101.2),
+    patch_module_clock(
+        monkeypatch, ssl_errors_store, monotonic=lambda: next(monotonic_times, 101.2)
     )
-    monkeypatch.setattr(
-        ssl_errors_store.time,
-        "time",
-        lambda: (_ for _ in ()).throw(AssertionError("cadence used wall time")),
+    patch_module_clock(
+        monkeypatch,
+        ssl_errors_store,
+        time=lambda: (_ for _ in ()).throw(AssertionError("cadence used wall time")),
     )
     monkeypatch.setattr(store._stop_event, "wait", sleep)
 
@@ -857,10 +869,11 @@ def test_ssl_errors_tailer_retries_idle_flush_after_database_error(
     monkeypatch.setattr(store, "init_db", lambda: None)
     monkeypatch.setattr(store, "_tailer_connect", Conn)
     monkeypatch.setattr(store, "_flush_pending_error", flush_pending)
-    monkeypatch.setattr(
-        ssl_errors_store.time,
-        "monotonic",
-        lambda: next(monotonic_times, 102.3),
+    patch_module_clock(
+        monkeypatch,
+        ssl_errors_store,
+        "services.logutil",
+        monotonic=lambda: next(monotonic_times, 102.3),
     )
     monkeypatch.setattr(store._stop_event, "wait", sleep)
 
@@ -920,7 +933,9 @@ def test_ssl_errors_tailer_restarts_at_zero_after_copytruncate_regrowth(
         "_upsert",
         lambda _conn, domain, _category, _reason, _ts, _sample: domains.append(domain),
     )
-    monkeypatch.setattr(ssl_errors_store.time, "time", lambda: 100.0)
+    patch_module_clock(
+        monkeypatch, ssl_errors_store, "services.runtime_helpers", time=lambda: 100.0
+    )
     monkeypatch.setattr(store._stop_event, "wait", sleep)
 
     with pytest.raises(StopLoop):
@@ -1320,7 +1335,7 @@ def test_live_stats_tailer_logs_database_outage_without_traceback(
         ),
     )
     times = iter([100.0, 101.0, 102.0])
-    monkeypatch.setattr(live_stats.time, "monotonic", lambda: next(times))
+    patch_module_clock(monkeypatch, live_stats, monotonic=lambda: next(times))
     monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
 
     class Handle:
@@ -1388,7 +1403,9 @@ def test_diagnostic_tailer_logs_database_outage_without_traceback(
         ),
     )
     times = iter([100.0, 100.1, 102.0])
-    monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: next(times, 102.0))
+    patch_module_clock(
+        monkeypatch, diagnostic_store, monotonic=lambda: next(times, 102.0)
+    )
     monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
 
     class Handle:
@@ -1509,7 +1526,9 @@ def test_diagnostic_tailer_retains_rotation_rows_until_retry_succeeds(
     monkeypatch.setenv("DIAGNOSTIC_DB_WRITE_BACKOFF_MAX_SECONDS", "0.25")
     monkeypatch.setenv("DIAGNOSTIC_DB_WRITE_BACKOFF_JITTER_RATIO", "0")
     monkeypatch.setattr(store, "_connect", connect)
-    monkeypatch.setattr(diagnostic_store.time, "monotonic", fake_monotonic)
+    patch_module_clock(
+        monkeypatch, diagnostic_store, "services.logutil", monotonic=fake_monotonic
+    )
     monkeypatch.setattr(store._stop_event, "wait", stop_after_retry)
     monkeypatch.setattr(diagnostic_store.pathlib.Path, "exists", lambda _self: True)
     monkeypatch.setattr(
@@ -1593,7 +1612,12 @@ def test_diagnostic_tailer_skips_rotation_flush_while_backoff_active(
     monkeypatch.setenv("DIAGNOSTIC_DB_WRITE_BACKOFF_MAX_SECONDS", "10")
     monkeypatch.setenv("DIAGNOSTIC_DB_WRITE_BACKOFF_JITTER_RATIO", "0")
     monkeypatch.setattr(store, "_connect", connect)
-    monkeypatch.setattr(diagnostic_store.time, "monotonic", lambda: next(times, 100.3))
+    patch_module_clock(
+        monkeypatch,
+        diagnostic_store,
+        "services.logutil",
+        monotonic=lambda: next(times, 100.3),
+    )
     monkeypatch.setattr(store._stop_event, "wait", _stop_sleep)
     monkeypatch.setattr(diagnostic_store.pathlib.Path, "exists", lambda _self: True)
     monkeypatch.setattr(

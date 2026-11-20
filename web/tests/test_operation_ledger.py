@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from .clock_patching import patch_module_clock
 from .lifecycle_guard_fakes import is_lifecycle_state_query, lifecycle_state_row
 
 POLICY_SHA = "a" * 64
@@ -342,7 +343,7 @@ def test_create_prunes_in_transaction_after_idempotent_upsert(monkeypatch) -> No
     monkeypatch.setattr(
         ledger, "_prune_proxy_history", lambda _conn, proxy, **_kwargs: 0
     )
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
 
     operation = ledger.create_operation(
         "edge-a",
@@ -374,7 +375,7 @@ def test_mark_terminal_prunes_before_returning_retained_row(monkeypatch) -> None
         "_prune_proxy_history",
         lambda _conn, proxy, **_kwargs: prune_calls.append(proxy) or 0,
     )
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 456)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 456)
 
     operation = ledger.mark_status(7, status="applied")
 
@@ -417,7 +418,7 @@ def test_create_prune_failure_rolls_back_and_returns_no_operation(monkeypatch) -
         "_prune_proxy_history",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("prune failed")),
     )
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
 
     with pytest.raises(RuntimeError, match="prune failed"):
         ledger.create_operation(
@@ -482,7 +483,7 @@ def test_create_commits_prune_before_releasing_proxy_guard(monkeypatch) -> None:
         "services.operation_ledger.guarded_proxy_write",
         observed_guard,
     )
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
 
     ledger.create_operation(
         "edge-a",
@@ -503,7 +504,7 @@ def test_init_db_backfills_active_request_keys_before_unique_index(monkeypatch) 
     conn = _Connection()
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
 
     ledger.init_db()
 
@@ -605,7 +606,7 @@ def test_claim_pending_locks_and_updates_claimed_rows_in_one_transaction(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
     monkeypatch.setattr(
         "services.operation_ledger.secrets.token_hex", lambda _n: "claim-0"
     )
@@ -630,7 +631,7 @@ def test_claim_pending_can_target_single_operation_id(monkeypatch) -> None:
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
     monkeypatch.setattr(
         "services.operation_ledger.secrets.token_hex", lambda _n: "claim-0"
     )
@@ -648,7 +649,7 @@ def test_claim_pending_preserves_force_flag(monkeypatch) -> None:
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
     monkeypatch.setattr(
         "services.operation_ledger.secrets.token_hex", lambda _n: "claim-0"
     )
@@ -695,7 +696,7 @@ def test_claim_pending_accepts_lifecycle_alias_and_uses_canonical_proxy(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
     monkeypatch.setattr(
         "services.operation_ledger.secrets.token_hex", lambda _n: "claim-aliased"
     )
@@ -880,7 +881,7 @@ def test_new_canonical_runtime_can_claim_and_complete_after_rename(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
     monkeypatch.setattr(
         "services.operation_ledger.secrets.token_hex", lambda _n: "claim-new"
     )
@@ -976,7 +977,7 @@ def test_requeue_stale_applying_recovers_without_active_key_collisions(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 1000)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 1000)
 
     requeued = ledger.requeue_stale_applying("edge-a", older_than_seconds=300)
 
@@ -1044,7 +1045,7 @@ def test_requeue_stale_applying_accepts_lifecycle_alias_and_scopes_canonical(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 1000)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 1000)
 
     requeued = ledger.requeue_stale_applying("edge-old", older_than_seconds=300)
 
@@ -1083,7 +1084,7 @@ def test_requeue_stale_applying_supersede_sql_preserves_valid_keeper_ordering(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 1000)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 1000)
 
     ledger.requeue_stale_applying("edge-a", older_than_seconds=300)
 
@@ -1156,7 +1157,7 @@ def test_claim_pending_returns_only_rows_claimed_by_current_token(monkeypatch) -
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
     monkeypatch.setattr(
         "services.operation_ledger.secrets.token_hex", lambda _n: "claim-current"
     )
@@ -1177,7 +1178,7 @@ def test_mark_status_can_guard_applying_claim_token(monkeypatch) -> None:
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 456)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 456)
 
     ledger.mark_status(
         7,
@@ -1216,7 +1217,7 @@ def test_mark_status_empty_expected_claim_token_adds_claim_guard(monkeypatch) ->
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 456)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 456)
 
     ledger.mark_status(
         7,
@@ -1300,7 +1301,7 @@ def test_stale_claim_completion_does_not_overwrite_reclaimed_operation_detail(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 500)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 500)
 
     current = ledger.mark_status(
         11,
@@ -1382,7 +1383,7 @@ def test_empty_stale_claim_completion_does_not_overwrite_reclaimed_operation_det
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 500)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 500)
 
     current = ledger.mark_status(
         11,
@@ -1508,7 +1509,7 @@ def test_mark_status_update_is_explicitly_scoped_to_initial_proxy_identity(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 600)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 600)
 
     current = ledger.mark_status(
         11,
@@ -1559,7 +1560,7 @@ def test_create_operation_uses_active_request_upsert(monkeypatch) -> None:
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
 
     op = ledger.create_operation(
         "edge-a",
@@ -1641,7 +1642,7 @@ def test_create_operation_normalizes_falsey_refs_and_redacts_operator_details(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
 
     op = ledger.create_operation(
         "edge-a",
@@ -1704,7 +1705,7 @@ def test_create_operation_normalizes_and_rejects_request_hash_evidence(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
 
     operation = ledger.create_operation(
         "edge-a",
@@ -1773,7 +1774,7 @@ def test_policy_and_pac_operation_target_refs_are_strict_sha256_and_normalized(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
 
     operation = ledger.create_operation(
         "edge-a",
@@ -1873,7 +1874,7 @@ def test_duplicate_active_request_preserves_original_rollback_metadata(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 124)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 124)
 
     op = ledger.create_operation(
         "edge-a",
@@ -2004,7 +2005,7 @@ def test_duplicate_active_request_fills_missing_rollback_metadata(
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     now = iter([100, 101])
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: next(now))
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: next(now))
 
     first = ledger.create_operation(
         "edge-a",
@@ -2143,7 +2144,7 @@ def test_duplicate_requests_refresh_mutable_fields_without_replacing_rollback(
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     now = iter([100, 101, 102])
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: next(now))
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: next(now))
     monkeypatch.setattr(
         "services.operation_ledger.secrets.token_hex", lambda _n: "claim-1"
     )
@@ -2259,7 +2260,7 @@ def test_duplicate_request_dedupes_existing_operation_types_without_regressing_u
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 200)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 200)
 
     op = ledger.create_operation(
         "edge-a",
@@ -2403,7 +2404,7 @@ def test_duplicate_while_applying_returns_same_id_preserves_rollback_and_no_pend
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     now = iter([100, 101, 102])
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: next(now))
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: next(now))
     monkeypatch.setattr(
         "services.operation_ledger.secrets.token_hex", lambda _n: "claim-1"
     )
@@ -2546,7 +2547,7 @@ def test_terminal_release_allows_genuine_retry_new_operation(monkeypatch) -> Non
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
     now = iter([100, 101, 102])
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: next(now))
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: next(now))
     monkeypatch.setattr(
         "services.operation_ledger.secrets.token_hex", lambda _n: "claim-1"
     )
@@ -2629,7 +2630,7 @@ def test_multi_proxy_same_request_key_is_isolated(monkeypatch) -> None:
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 123)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 123)
 
     kwargs = {
         "operation_type": "policy_sync",
@@ -2655,7 +2656,7 @@ def test_terminal_status_releases_active_request_key(monkeypatch) -> None:
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 456)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 456)
 
     ledger.mark_status(7, status="superseded", detail="newer revision applied")
 
@@ -2719,7 +2720,7 @@ def test_terminal_status_does_not_overwrite_existing_terminal_operation(
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 789)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 789)
 
     current = ledger.mark_status(7, status="failed", detail="late failure")
 
@@ -2739,7 +2740,7 @@ def test_non_terminal_status_keeps_active_request_key(monkeypatch) -> None:
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 789)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 789)
 
     ledger.mark_status(7, status="applying", detail="retrying")
 
@@ -2795,7 +2796,7 @@ def test_non_terminal_status_cannot_reopen_terminal_operation(monkeypatch) -> No
     ledger = OperationLedger()
     monkeypatch.setattr(ledger, "init_db", lambda: None)
     monkeypatch.setattr(ledger, "_connect", lambda: conn)
-    monkeypatch.setattr("services.operation_ledger.time.time", lambda: 789)
+    patch_module_clock(monkeypatch, "services.operation_ledger", time=lambda: 789)
 
     current = ledger.mark_status(7, status="applying", detail="late retry")
 

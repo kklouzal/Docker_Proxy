@@ -13,6 +13,7 @@ from .admin_route_test_utils import (
     load_admin_app,
     login_client,
 )
+from .clock_patching import patch_module_clock
 from .mysql_test_utils import configure_test_mysql_env
 
 
@@ -158,7 +159,7 @@ def test_other_workers_see_change_within_cache_ttl(tmp_path, monkeypatch):
     # Worker B may serve its cached value only until the bounded TTL expires.
     assert worker_b.effective_default_proxy_id() == "edge-a"
     clock = [0.0]
-    monkeypatch.setattr(proxy_registry.time, "monotonic", lambda: clock[0])
+    patch_module_clock(monkeypatch, proxy_registry, monotonic=lambda: clock[0])
     worker_b._invalidate_default_cache()
     assert worker_b.effective_default_proxy_id() == "edge-b"
     worker_a.set_default_proxy("edge-a")

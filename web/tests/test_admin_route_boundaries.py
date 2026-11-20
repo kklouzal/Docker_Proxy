@@ -20,6 +20,7 @@ from .admin_route_test_utils import (
     load_admin_app,
     login_client,
 )
+from .clock_patching import patch_module_clock
 
 POLICY_SHA = "a" * 64
 POLICY_SHA_B = "b" * 64
@@ -517,7 +518,7 @@ def test_cached_proxy_health_returns_fresh_cache_before_refresh(
     loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
     proxy_client.admin_app = loaded.module
     current_time = 100.0
-    monkeypatch.setattr(loaded.module.time, "monotonic", lambda: current_time)
+    patch_module_clock(monkeypatch, loaded.module, monotonic=lambda: current_time)
 
     fresh = loaded.module._cached_proxy_health(
         "default",
@@ -547,7 +548,7 @@ def test_cached_proxy_health_serves_recent_stale_payload_after_refresh_failure(
     loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
     proxy_client.admin_app = loaded.module
     current_time = 100.0
-    monkeypatch.setattr(loaded.module.time, "monotonic", lambda: current_time)
+    patch_module_clock(monkeypatch, loaded.module, monotonic=lambda: current_time)
 
     fresh = loaded.module._cached_proxy_health(
         "default",
@@ -1946,7 +1947,7 @@ def test_api_timeseries_degrades_to_json_when_store_query_fails(
     monkeypatch.delenv("EXPOSE_INTERNAL_ERRORS", raising=False)
     store = FailingTimeseriesStore()
     loaded = load_admin_app(monkeypatch, tmp_path, timeseries_store=store)
-    monkeypatch.setattr(loaded.module.time, "time", lambda: 1_700_000_000)
+    patch_module_clock(monkeypatch, loaded.module, time=lambda: 1_700_000_000)
     client = loaded.module.app.test_client()
     login_client(client)
 
@@ -2898,7 +2899,7 @@ def test_clamav_remote_health_returns_fresh_cache_before_refresh(
     loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
     proxy_client.admin_app = loaded.module
     current_time = 100.0
-    monkeypatch.setattr(loaded.module.time, "monotonic", lambda: current_time)
+    patch_module_clock(monkeypatch, loaded.module, monotonic=lambda: current_time)
 
     fresh = loaded.module._clamav_remote_health("default")
     assert fresh["detail"] == "cached clamav detail"
@@ -2921,7 +2922,7 @@ def test_clamav_remote_health_serves_recent_stale_payload_after_refresh_failure(
     loaded = load_admin_app(monkeypatch, tmp_path, proxy_client=proxy_client)
     proxy_client.admin_app = loaded.module
     current_time = 100.0
-    monkeypatch.setattr(loaded.module.time, "monotonic", lambda: current_time)
+    patch_module_clock(monkeypatch, loaded.module, monotonic=lambda: current_time)
 
     fresh = loaded.module._clamav_remote_health("default")
     assert fresh["detail"] == "cached clamav detail"

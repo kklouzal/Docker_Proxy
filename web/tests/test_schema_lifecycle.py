@@ -9,6 +9,8 @@ from typing import Any
 import pymysql
 import pytest
 
+from .clock_patching import patch_module_clock
+
 WEB_ROOT = Path(__file__).resolve().parents[1]
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
@@ -1093,7 +1095,7 @@ def test_advisory_lock_times_out_at_the_overall_deadline(monkeypatch) -> None:
                 clock["now"] += float(params[1])
             return super().execute(sql, params)
 
-    monkeypatch.setattr(db.time, "monotonic", lambda: clock["now"])
+    patch_module_clock(monkeypatch, db, monotonic=lambda: clock["now"])
     conn = _ClockConn(read_timeout=15, busy_waits=10**6)
 
     with pytest.raises(TimeoutError):

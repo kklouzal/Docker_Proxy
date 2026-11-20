@@ -19,6 +19,7 @@ from services.version_status import (
 )
 
 from .admin_route_test_utils import FakeProxyClient, load_admin_app, login_client
+from .clock_patching import patch_module_clock
 
 
 class _Response(io.BytesIO):
@@ -790,7 +791,11 @@ def test_api_version_status_reuses_compare_cache_across_admin_and_proxy(
         lambda: _VersionedProxyClient(loaded.module),
     )
     now = {"value": 100.0}
-    monkeypatch.setattr(loaded.module.time, "monotonic", lambda: now["value"])
+    # The admin cache and the GitHub compare cache in version_status both
+    # read the clock; each module's own binding must see the fake.
+    patch_module_clock(
+        monkeypatch, loaded.module, version_status, monotonic=lambda: now["value"]
+    )
     calls = {"count": 0}
 
     def urlopen(_request, *, timeout):
@@ -844,7 +849,7 @@ def test_admin_version_status_retries_failure_without_shortening_success_cache(
     loaded.module._ADMIN_VERSION_STATUS_CACHE = None
     monkeypatch.setenv("VERSION_STATUS_CACHE_TTL_SECONDS", "3600")
     now = {"value": 100.0}
-    monkeypatch.setattr(loaded.module.time, "monotonic", lambda: now["value"])
+    patch_module_clock(monkeypatch, loaded.module, monotonic=lambda: now["value"])
     results = iter(
         [
             {
