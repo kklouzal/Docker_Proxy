@@ -269,9 +269,12 @@ def _exclusive_squid_lifecycle_lock():
 
 
 class SquidController:
-    _LIVEUI_LOGFORMAT = r"logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st"
-    _DIAGNOSTIC_LOGFORMAT = r"logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note\t%{file_security_policy}note\t%{Content-Type}<h\t%{Server}<h\t%{Cf-Mitigated}<h\t%{Alt-Svc}<h"
-    _ICAP_OBSERVE_LOGFORMAT = r"logformat icapobserve %ts\t%master_xaction\t%>a\t%rm\t%ru\t%icap::tt\t%adapt::sum_trs\t%adapt::all_trs\t%{Host}>h\t%{User-Agent}>h\t%ssl::>sni\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note\t%icap::<service_name\t%icap::to\t%icap::Hs\t%icap::tr\t%icap::tio\t%icap::>st\t%icap::<st"
+    # Real tab separators, as the deployed revisions store them; both the
+    # replace and the append path below write these strings verbatim so
+    # normalize_config_text stays idempotent.
+    _LIVEUI_LOGFORMAT = "logformat liveui %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st"
+    _DIAGNOSTIC_LOGFORMAT = "logformat diagnostic %ts\t%tr\t%>a\t%rm\t%ru\t%Ss/%>Hs\t%st\t%master_xaction\t%Sh\t%ssl::bump_mode\t%ssl::>sni\t%ssl::>negotiated_version\t%ssl::>negotiated_cipher\t%ssl::<negotiated_version\t%ssl::<negotiated_cipher\t%{Host}>h\t%{User-Agent}>h\t%{Referer}>h\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note\t%{file_security_policy}note\t%{Content-Type}<h\t%{Server}<h\t%{Cf-Mitigated}<h\t%{Alt-Svc}<h"
+    _ICAP_OBSERVE_LOGFORMAT = "logformat icapobserve %ts\t%master_xaction\t%>a\t%rm\t%ru\t%icap::tt\t%adapt::sum_trs\t%adapt::all_trs\t%{Host}>h\t%{User-Agent}>h\t%ssl::>sni\t%{exclusion_rule}note\t%{ssl_exception}note\t%{webfilter_allow}note\t%{cache_bypass}note\t%icap::<service_name\t%icap::to\t%icap::Hs\t%icap::tr\t%icap::tio\t%icap::>st\t%icap::<st"
 
     def __init__(
         self,
@@ -640,7 +643,7 @@ class SquidController:
     ) -> str:
         regex = re.compile(pattern, re.MULTILINE)
         if regex.search(text):
-            return regex.sub(replacement, text, count=1)
+            return regex.sub(lambda _match: replacement, text, count=1)
         return text.rstrip() + "\n" + replacement + "\n"
 
     def _ensure_line_before_first_http_access(self, text: str, line: str) -> str:
@@ -795,7 +798,7 @@ class SquidController:
                 text = text.rstrip() + "\n" + note_line + "\n"
 
         # Host resource sizing from this proxy's environment is authoritative
-        # over the fleet-wide revision for the directives it owns.
+        # over the saved config revision for the directives it owns.
         text = apply_host_sizing(text, active_host_sizing_overrides())
         return text if text.endswith("\n") else text + "\n"
 
