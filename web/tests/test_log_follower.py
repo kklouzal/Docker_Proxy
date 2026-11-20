@@ -126,7 +126,7 @@ def test_replacement_is_followed_from_its_start(tmp_path) -> None:
     path.rename(tmp_path / "access.log.1")
     path.write_bytes(b"fresh\n")
     assert follower.poll_rotation() == "replaced"
-    assert not follower.is_open
+    assert follower._handle is None
     assert follower.ensure_open()
     assert _drain(follower) == ["fresh"]
 
@@ -192,7 +192,7 @@ def test_runner_keeps_cursor_across_loop_failures(tmp_path) -> None:
         )
 
     assert seen == ["one", "two", "three"]
-    assert not follower.is_open
+    assert follower._handle is None
 
 
 def test_runner_pauses_reading_at_capacity_until_flush_succeeds(tmp_path) -> None:

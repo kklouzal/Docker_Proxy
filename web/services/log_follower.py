@@ -93,10 +93,6 @@ class LogFollower:
     def identity(self) -> FileIdentity | None:
         return self._identity
 
-    @property
-    def is_open(self) -> bool:
-        return self._handle is not None
-
     def close(self) -> None:
         handle, self._handle = self._handle, None
         if handle is not None:
