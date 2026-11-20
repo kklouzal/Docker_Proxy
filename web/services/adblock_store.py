@@ -1104,13 +1104,14 @@ class AdblockStore:
 
     def next_download_ts(self, status: ListStatus, now_ts: int) -> int:
         """When the builder will next download this enabled list (at most now)."""
-        if status.last_attempt > status.last_success:
-            # A failed attempt waits out the retry backoff.
-            due = status.last_attempt + self.download_retry_seconds
-        elif status.last_success > 0:
+        due = now_ts
+        if status.last_success > 0:
             due = status.last_success + int(self.update_interval_seconds)
-        else:
-            due = now_ts
+        if status.last_attempt > status.last_success:
+            # A failed attempt also waits out the retry backoff; a list that
+            # still has a recent good copy then waits for its interval too
+            # (should_update), e.g. after a failed manual refresh.
+            due = max(due, status.last_attempt + self.download_retry_seconds)
         return max(int(due), int(now_ts))
 
     def download_retry_backoff(self, status: ListStatus, now_ts: int) -> bool:

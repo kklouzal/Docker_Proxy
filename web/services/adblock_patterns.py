@@ -123,8 +123,9 @@ def pattern_token_key(pattern: str, token_counts: Mapping[str, int]) -> str:
     """Return the candidate key of ABP ``pattern``: its rarest qualifying token.
 
     ``token_counts`` holds how many compiled patterns qualify each token; the
-    rarest one keeps candidate buckets small (ties prefer the longer token). Rules without a qualifying token are keyed "" and evaluated for
-    every request.
+    rarest one keeps candidate buckets small (ties prefer the longer token).
+    Rules without a qualifying token are keyed "" and evaluated for every
+    request.
     """
     tokens = pattern_tokens(pattern)
     if not tokens:

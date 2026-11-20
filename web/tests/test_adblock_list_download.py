@@ -153,5 +153,7 @@ def test_next_download_time_follows_the_failure_backoff() -> None:
     # Last attempt failed: retried after the backoff, not at the interval.
     assert store.next_download_ts(status(50_000, 99_800), now) == 99_800 + 900
     assert store.next_download_ts(status(0, 99_800), now) == 99_800 + 900
+    # A failed refresh of a recent good copy waits for the interval as well.
+    assert store.next_download_ts(status(99_000, 99_800), now) == 99_000 + 43200
     # Overdue is reported as now.
     assert store.next_download_ts(status(1, 1), now) == now
