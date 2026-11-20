@@ -36,6 +36,26 @@ def _import_tool_module(module_name: str):
     return importlib.reload(module)
 
 
+def _install_fake_store_module(monkeypatch, name: str, fake: object) -> None:
+    """Replace a policy store module for an apply helper under test.
+
+    The helpers' last-known-good restore imports services.policy_materializer,
+    which imports the real store modules; import it first so the fake only
+    replaces the store the helper loads, whatever ran earlier in the session.
+    """
+    importlib.import_module("services.policy_materializer")
+    monkeypatch.setitem(sys.modules, name, fake)
+
+
+def _without_policy_exceptions(monkeypatch, module) -> None:
+    """Serve an empty approved-exception list instead of reading MySQL."""
+    monkeypatch.setattr(
+        module,
+        "get_policy_request_store",
+        lambda: SimpleNamespace(active_webfilter_exceptions=lambda *, proxy_id: []),
+    )
+
+
 def _import_materialized_files_module():
     from services import materialized_files  # type: ignore
 
@@ -485,8 +505,8 @@ def test_sslfilter_apply_logs_safe_failure_when_materialization_fails(
             msg = "database socket unavailable"
             raise RuntimeError(msg)
 
-    monkeypatch.setitem(
-        sys.modules,
+    _install_fake_store_module(
+        monkeypatch,
         "services.sslfilter_store",
         SimpleNamespace(SslFilterStore=BrokenStore),
     )
@@ -515,8 +535,8 @@ def test_sslfilter_apply_logs_safe_failure_when_store_init_fails(
             msg = "database configuration unavailable"
             raise RuntimeError(msg)
 
-    monkeypatch.setitem(
-        sys.modules,
+    _install_fake_store_module(
+        monkeypatch,
         "services.sslfilter_store",
         SimpleNamespace(SslFilterStore=BrokenStore),
     )
@@ -553,8 +573,8 @@ def test_sslfilter_apply_reports_safe_include_publish_failure(
         msg = "permission denied for /secret/operator-path"
         raise PermissionError(msg)
 
-    monkeypatch.setitem(
-        sys.modules,
+    _install_fake_store_module(
+        monkeypatch,
         "services.sslfilter_store",
         SimpleNamespace(SslFilterStore=BrokenStore),
     )
@@ -581,7 +601,9 @@ def test_sslfilter_apply_writes_safe_include_when_store_import_fails(
     module = _import_tool_module("sslfilter_apply")
     out = tmp_path / "etc" / "squid" / "conf.d" / "10-sslfilter.conf"
 
-    monkeypatch.setitem(sys.modules, "services.sslfilter_store", SimpleNamespace())
+    _install_fake_store_module(
+        monkeypatch, "services.sslfilter_store", SimpleNamespace()
+    )
 
     assert module.main(["--out", str(out)]) == 2
     assert (
@@ -618,8 +640,8 @@ def test_webfilter_apply_reports_snapshot_publish_failure_without_replacing_poli
             out.parent.mkdir(parents=True)
             out.write_text(policy, encoding="utf-8")
 
-    monkeypatch.setitem(
-        sys.modules,
+    _install_fake_store_module(
+        monkeypatch,
         "services.webfilter_core",
         SimpleNamespace(ProxyWebFilterStore=DegradedStore),
     )
@@ -647,8 +669,8 @@ def test_webfilter_apply_logs_safe_failure_and_writes_safe_include(
             msg = "database socket unavailable"
             raise RuntimeError(msg)
 
-    monkeypatch.setitem(
-        sys.modules,
+    _install_fake_store_module(
+        monkeypatch,
         "services.webfilter_core",
         SimpleNamespace(ProxyWebFilterStore=BrokenStore),
     )
@@ -802,6 +824,7 @@ def test_webfilter_materialized_helper_name_tracks_safe_browsing_key(
         store, "_resolve_category_aliases", lambda categories: categories
     )
     monkeypatch.setattr(store, "_webcat_built_ts", lambda: 0)
+    _without_policy_exceptions(monkeypatch, module)
 
     def render_for_key(api_key: str) -> str:
         settings = module.WebFilterSettings(
@@ -881,6 +904,7 @@ def test_webfilter_materialized_categories_are_canonicalized_before_acl_render(
             return False
 
     monkeypatch.setattr(store, "get_settings", lambda: settings)
+    _without_policy_exceptions(monkeypatch, module)
     monkeypatch.setattr(
         module, "table_exists", lambda _conn, name: name == "webcat_aliases"
     )
@@ -973,6 +997,43 @@ def test_webfilter_policy_exception_materialization_skips_malformed_client_ips(
     assert "192.0.2.0/24" not in rendered
 
 
+def test_webfilter_render_propagates_policy_exception_read_failure(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_webfilter_core_module()
+    store = module.ProxyWebFilterStore(
+        squid_include_path=str(
+            tmp_path / "etc" / "squid" / "conf.d" / "30-webfilter.conf"
+        ),
+        whitelist_path=str(tmp_path / "var" / "lib" / "webfilter_whitelist.txt"),
+    )
+    settings = module.WebFilterSettings(
+        enabled=True,
+        source_url="",
+        blocked_categories=["adult"],
+        whitelist_domains=[],
+        last_success=0,
+        last_attempt=0,
+        last_error="",
+        next_run_ts=0,
+    )
+
+    def fail_exceptions(*, proxy_id):
+        raise RuntimeError("policy exception table unavailable")
+
+    policy_store = SimpleNamespace(active_webfilter_exceptions=fail_exceptions)
+    monkeypatch.setattr(module, "get_policy_request_store", lambda: policy_store)
+    monkeypatch.setattr(module, "get_proxy_id", lambda: "default")
+    monkeypatch.setattr(store, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        store, "_resolve_category_aliases", lambda categories: categories
+    )
+
+    # Rendering without the approved exceptions would silently revoke them.
+    with pytest.raises(RuntimeError, match="policy exception table unavailable"):
+        store.render_materialized_state()
+
+
 def test_webfilter_materialized_helpers_honor_fail_mode_env(
     tmp_path, monkeypatch
 ) -> None:
@@ -998,6 +1059,7 @@ def test_webfilter_materialized_helpers_honor_fail_mode_env(
     monkeypatch.setenv("WEBFILTER_FAIL", "closed")
     monkeypatch.setenv("SAFE_BROWSING_FAIL", "closed")
     monkeypatch.setattr(store, "get_settings", lambda: settings)
+    _without_policy_exceptions(monkeypatch, module)
     monkeypatch.setattr(
         store, "_resolve_category_aliases", lambda categories: categories
     )
@@ -1033,6 +1095,7 @@ def test_webfilter_materialized_safe_browsing_helper_receives_selected_lists(
         safe_browsing_lists=["se-4b", "invalid-list", "uwsa-4b"],
     )
     monkeypatch.setattr(store, "get_settings", lambda: settings)
+    _without_policy_exceptions(monkeypatch, module)
     monkeypatch.setattr(
         store, "_resolve_category_aliases", lambda categories: categories
     )
@@ -1685,6 +1748,7 @@ def test_webfilter_category_acl_names_are_injective(tmp_path, monkeypatch) -> No
         next_run_ts=0,
     )
     monkeypatch.setattr(store, "get_settings", lambda: settings)
+    _without_policy_exceptions(monkeypatch, module)
     monkeypatch.setattr(store, "_resolve_category_aliases", list)
     monkeypatch.setattr(store, "_webcat_built_ts", lambda: 0)
 
