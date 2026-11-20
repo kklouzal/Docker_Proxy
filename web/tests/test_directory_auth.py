@@ -1523,6 +1523,32 @@ def test_dn_shaped_group_name_cannot_impersonate_required_group_dn(
     assert "required admin group" in result.detail
 
 
+def test_multi_valued_group_cn_matches_each_plain_value_only(monkeypatch) -> None:
+    group = SimpleNamespace(
+        entry_dn="CN=Proxy Operators,OU=Delegated,DC=example,DC=local",
+        # ldap3 Attribute objects expose every value through .values.
+        cn=SimpleNamespace(
+            values=[
+                "Proxy Operators",
+                "Docker Proxy Admins",
+                "CN=Root Admins,OU=Groups,DC=example,DC=local",
+            ]
+        ),
+    )
+    user = SimpleNamespace(entry_dn="CN=Alice,OU=People,DC=example,DC=local")
+
+    plain = _authenticate_with_entries(
+        monkeypatch, user, [group], "Docker Proxy Admins"
+    )
+    forged_dn = _authenticate_with_entries(
+        monkeypatch, user, [group], "CN=Root Admins,OU=Groups,DC=example,DC=local"
+    )
+
+    assert plain.ok is True
+    assert "Docker Proxy Admins" in plain.groups
+    assert forged_dn.ok is False
+
+
 def test_directory_login_uses_canonical_login_attribute_value(monkeypatch) -> None:
     user = SimpleNamespace(
         entry_dn="CN=Alice,OU=People,DC=example,DC=local",
