@@ -974,3 +974,34 @@ def test_layout_renders_compact_version_status_without_github_call(
     assert 'data-version-status-url="/api/version-status' in body
     assert ">Admin<" in body
     assert ">Proxy<" in body
+
+
+def test_api_version_status_reads_only_registered_selected_proxy(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    module = loaded.module
+    module._ADMIN_VERSION_STATUS_CACHE = (
+        999999999.0,
+        {"component": "admin-ui", "version": "main", "state": "ok", "detail": ""},
+    )
+    requested: list[str] = []
+
+    def fake_health(proxy_id, **_kwargs):
+        requested.append(proxy_id)
+        return {"version": {"component": "proxy", "version": "main"}}
+
+    monkeypatch.setattr(module, "_cached_proxy_health", fake_health)
+    monkeypatch.setattr(
+        module,
+        "build_component_version_status",
+        lambda metadata: {**metadata, "state": "ok", "detail": "checked"},
+    )
+    client = module.app.test_client()
+    login_client(client)
+
+    response = client.get("/api/version-status?proxy_id=not-registered")
+
+    assert response.status_code == 200
+    assert requested == ["default"]

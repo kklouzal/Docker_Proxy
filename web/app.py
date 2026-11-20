@@ -2049,10 +2049,7 @@ def _prune_observability_result_cache() -> None:
         _OBSERVABILITY_RESULT_CACHE.pop(first_key, None)
 
 
-def _observability_result_cache_key(
-    *parts: Any,
-    bucket_seconds: float = _OBSERVABILITY_RESULT_CACHE_TTL_SECONDS,
-) -> tuple[Any, ...]:
+def _observability_result_cache_key(*parts: Any) -> tuple[Any, ...]:
     return tuple(parts)
 
 
@@ -6318,24 +6315,20 @@ def health():
 def api_version_status():
     admin_status = _cached_admin_version_status()
     proxy_status = _initial_version_header_status()["proxy"]
-    proxy_id = normalize_proxy_id(
-        request.args.get("proxy_id") or session.get("active_proxy_id") or ""
-    )
-    if proxy_id:
-        try:
-            health = _cached_proxy_health(
-                proxy_id,
-                timeout_seconds=_proxy_health_timeout_seconds(),
-            )
-            proxy_status = _proxy_version_status_from_health(health)
-        except Exception as exc:
-            proxy_status = {
-                **proxy_status,
-                "detail": public_error_message(
-                    exc,
-                    default="Selected proxy version metadata is unavailable.",
-                ),
-            }
+    try:
+        health = _cached_proxy_health(
+            get_proxy_id(),
+            timeout_seconds=_proxy_health_timeout_seconds(),
+        )
+        proxy_status = _proxy_version_status_from_health(health)
+    except Exception as exc:
+        proxy_status = {
+            **proxy_status,
+            "detail": public_error_message(
+                exc,
+                default="Selected proxy version metadata is unavailable.",
+            ),
+        }
     return jsonify({"ok": True, "admin": admin_status, "proxy": proxy_status})
 
 
