@@ -22,6 +22,7 @@ from services.db import (
     mysql_schema_lock_timeout_seconds,
     run_mysql_operation_with_retry,
 )
+from services.log_follower import LogFollower, run_batched_tail_loop
 from services.logutil import log_database_unavailable, log_exception_throttled
 from services.observability_backoff import DatabaseWriteBackoff
 from services.proxy_context import get_proxy_id
@@ -862,6 +863,11 @@ class DiagnosticStore:
                 return
             self._threads = []
             self._started = False
+            # Resume tailing where the startup seed window ends, so lines
+            # appended while seeding are not skipped (event keys dedupe the
+            # overlap).
+            request_follower = LogFollower.at_current_end(self.access_log_path)
+            icap_follower = LogFollower.at_current_end(self.icap_log_path)
             try:
                 self.init_db()
                 self.seed_from_recent_logs()
@@ -883,7 +889,7 @@ class DiagnosticStore:
             request_thread = threading.Thread(
                 target=self._tail_file_loop,
                 args=(
-                    self.access_log_path,
+                    request_follower,
                     self._build_request_insert_params,
                     self._flush_request_rows,
                     "diagnostic-requests-tailer",
@@ -896,7 +902,7 @@ class DiagnosticStore:
             icap_thread = threading.Thread(
                 target=self._tail_file_loop,
                 args=(
-                    self.icap_log_path,
+                    icap_follower,
                     self._build_icap_insert_params,
                     self._flush_icap_rows,
                     "diagnostic-icap-tailer",
@@ -960,7 +966,7 @@ class DiagnosticStore:
 
     def _tail_file_loop(
         self,
-        path: str,
+        follower: LogFollower,
         build_row_fn,
         flush_rows_fn,
         loop_name: str,
@@ -989,291 +995,46 @@ class DiagnosticStore:
             minimum=commit_batch,
             maximum=100000,
         )
-        last_inode: int | None = None
-        pending = 0
         pending_rows: list[tuple[Any, ...]] = []
         drop_state: dict[str, Any] = {"dropped": 0, "last_log_mono": None}
-        flush_backoff = DatabaseWriteBackoff.from_env(
-            "DIAGNOSTIC_DB_WRITE",
-            default_base=5.0,
-            default_max=120.0,
+
+        def accept_line(line: str) -> None:
+            row = build_row_fn(line)
+            if row is not None:
+                _append_bounded_pending_row(
+                    pending_rows,
+                    row,
+                    max_pending_rows=max_pending_rows,
+                    loop_name=loop_name,
+                    drop_state=drop_state,
+                )
+
+        def flush() -> None:
+            if not pending_rows:
+                return
+            self.init_db()
+            with self._connect() as conn:
+                flush_rows_fn(conn, pending_rows)
+            pending_rows.clear()
+
+        run_batched_tail_loop(
+            follower=follower,
+            stop_event=self._stop_event,
+            accept_line=accept_line,
+            pending=lambda: len(pending_rows),
+            flush=flush,
+            backoff=DatabaseWriteBackoff.from_env(
+                "DIAGNOSTIC_DB_WRITE",
+                default_base=5.0,
+                default_max=120.0,
+            ),
+            commit_batch=commit_batch,
+            commit_interval=commit_interval,
+            poll_interval=poll_interval,
+            logger=logger,
+            log_key=f"diagnostic_store.{loop_name}",
+            label=f"Diagnostic tailer for {loop_name}",
         )
-        last_commit = time.monotonic()
-        reopen_from_start = False
-
-        while not self._stop_event.is_set():
-            try:
-                if not pathlib.Path(path).exists():
-                    self._stop_event.wait(max(1.0, poll_interval))
-                    continue
-
-                st = os.stat(path)
-                inode = getattr(st, "st_ino", None)
-                if last_inode is None:
-                    last_inode = inode
-
-                def flush_pending() -> None:
-                    nonlocal pending, last_commit
-                    if not pending_rows:
-                        pending = 0
-                        last_commit = time.monotonic()
-                        return
-                    self.init_db()
-                    with self._connect() as conn:
-                        flush_rows_fn(conn, pending_rows)
-                    flush_backoff.record_success()
-                    pending_rows.clear()
-                    pending = 0
-                    last_commit = time.monotonic()
-
-                def record_deferred_flush(now_mono: float | None = None) -> float:
-                    nonlocal last_commit
-                    now_mono = time.monotonic() if now_mono is None else now_mono
-                    delay = flush_backoff.record_failure(now_mono)
-                    last_commit = now_mono
-                    return delay
-
-                with pathlib.Path(path).open(
-                    encoding="utf-8",
-                    errors="replace",
-                ) as handle:
-                    if reopen_from_start:
-                        handle.seek(0, os.SEEK_SET)
-                        reopen_from_start = False
-                    else:
-                        handle.seek(0, os.SEEK_END)
-                    last_complete_line_pos: int | None = None
-                    last_complete_line: str | None = None
-                    cursor_file_version: tuple[int, int, int] | None = None
-                    verify_cursor = False
-
-                    def open_file_version() -> tuple[int, int, int] | None:
-                        try:
-                            open_stat = os.fstat(handle.fileno())
-                            return (
-                                int(open_stat.st_size),
-                                int(open_stat.st_mtime_ns),
-                                int(open_stat.st_ctime_ns),
-                            )
-                        except Exception:
-                            return None
-
-                    while not self._stop_event.is_set():
-                        if verify_cursor:
-                            verify_cursor = False
-                            current_file_version = open_file_version()
-                            if (
-                                current_file_version != cursor_file_version
-                                and last_complete_line_pos is not None
-                                and last_complete_line is not None
-                            ):
-                                resume_pos = handle.tell()
-                                try:
-                                    handle.seek(last_complete_line_pos, os.SEEK_SET)
-                                    cursor_line = handle.readline()
-                                    if cursor_line != last_complete_line:
-                                        # copytruncate can regrow past the old
-                                        # cursor between polls, so size alone
-                                        # does not prove the cursor is valid.
-                                        handle.seek(0, os.SEEK_SET)
-                                        last_complete_line_pos = None
-                                        last_complete_line = None
-                                    else:
-                                        handle.seek(resume_pos, os.SEEK_SET)
-                                except Exception:
-                                    with contextlib.suppress(Exception):
-                                        handle.seek(resume_pos, os.SEEK_SET)
-                                    log_exception_throttled(
-                                        logger,
-                                        f"diagnostic_store.cursor.{loop_name}",
-                                        interval_seconds=300.0,
-                                        message=f"Diagnostic tailer cursor validation failed for {loop_name}",
-                                    )
-                        line_pos = handle.tell()
-                        line = handle.readline()
-                        if line:
-                            if not line.endswith("\n"):
-                                handle.seek(line_pos, os.SEEK_SET)
-                                try:
-                                    inode_now = getattr(os.stat(path), "st_ino", None)
-                                except OSError:
-                                    inode_now = None
-                                if (
-                                    inode_now is not None
-                                    and last_inode is not None
-                                    and inode_now != last_inode
-                                ):
-                                    last_inode = inode_now
-                                    if flush_backoff.can_attempt():
-                                        try:
-                                            flush_pending()
-                                        except DATABASE_ERRORS as exc:
-                                            delay = record_deferred_flush()
-                                            log_database_unavailable(
-                                                logger,
-                                                f"diagnostic_store.rotate.{loop_name}.db",
-                                                f"Diagnostic tailer deferred rotation flush for {loop_name} while MySQL is unavailable; retrying in about {delay:.1f}s",
-                                                exc,
-                                            )
-                                        except Exception:
-                                            log_exception_throttled(
-                                                logger,
-                                                f"diagnostic_store.rotate.{loop_name}",
-                                                interval_seconds=300.0,
-                                                message=f"Diagnostic tailer final commit failed during rotation for {loop_name}",
-                                            )
-                                    reopen_from_start = True
-                                    break
-                                self._stop_event.wait(poll_interval)
-                                continue
-                            last_complete_line_pos = line_pos
-                            last_complete_line = line
-                            try:
-                                row = build_row_fn(line)
-                                if row is not None:
-                                    _append_bounded_pending_row(
-                                        pending_rows,
-                                        row,
-                                        max_pending_rows=max_pending_rows,
-                                        loop_name=loop_name,
-                                        drop_state=drop_state,
-                                    )
-                                    pending = len(pending_rows)
-                            except Exception:
-                                log_exception_throttled(
-                                    logger,
-                                    f"diagnostic_store.ingest.{loop_name}",
-                                    interval_seconds=300.0,
-                                    message=f"Diagnostic tailer failed to parse a log line in {loop_name}",
-                                )
-                            now = time.monotonic()
-                            if (
-                                pending
-                                and flush_backoff.can_attempt(now)
-                                and (
-                                    pending >= commit_batch
-                                    or (now - last_commit) >= commit_interval
-                                )
-                            ):
-                                try:
-                                    flush_pending()
-                                except DATABASE_ERRORS as exc:
-                                    delay = record_deferred_flush(now)
-                                    log_database_unavailable(
-                                        logger,
-                                        f"diagnostic_store.commit.{loop_name}.db",
-                                        f"Diagnostic tailer deferred batch flush in {loop_name} while MySQL is unavailable; retrying in about {delay:.1f}s",
-                                        exc,
-                                    )
-                                except Exception:
-                                    log_exception_throttled(
-                                        logger,
-                                        f"diagnostic_store.commit.{loop_name}",
-                                        interval_seconds=300.0,
-                                        message=f"Diagnostic tailer batch commit failed in {loop_name}",
-                                    )
-                                    last_commit = now
-                            continue
-
-                        now = time.monotonic()
-                        if (
-                            pending
-                            and flush_backoff.can_attempt(now)
-                            and (now - last_commit) >= commit_interval
-                        ):
-                            try:
-                                flush_pending()
-                            except DATABASE_ERRORS as exc:
-                                delay = record_deferred_flush(now)
-                                log_database_unavailable(
-                                    logger,
-                                    f"diagnostic_store.idle_commit.{loop_name}.db",
-                                    f"Diagnostic tailer deferred idle flush in {loop_name} while MySQL is unavailable; retrying in about {delay:.1f}s",
-                                    exc,
-                                )
-                            except Exception:
-                                log_exception_throttled(
-                                    logger,
-                                    f"diagnostic_store.idle_commit.{loop_name}",
-                                    interval_seconds=300.0,
-                                    message=f"Diagnostic tailer idle commit failed in {loop_name}",
-                                )
-                                last_commit = now
-
-                        try:
-                            if pathlib.Path(path).stat().st_size < handle.tell():
-                                handle.seek(0, os.SEEK_SET)
-                                last_complete_line_pos = None
-                                last_complete_line = None
-                                continue
-                        except Exception:
-                            log_exception_throttled(
-                                logger,
-                                f"diagnostic_store.copytruncate.{loop_name}",
-                                interval_seconds=300.0,
-                                message=f"Diagnostic tailer copytruncate check failed for {loop_name}",
-                            )
-
-                        try:
-                            inode_now = getattr(os.stat(path), "st_ino", None)
-                        except OSError:
-                            inode_now = None
-                        if (
-                            inode_now is not None
-                            and last_inode is not None
-                            and inode_now != last_inode
-                        ):
-                            last_inode = inode_now
-                            if flush_backoff.can_attempt(now):
-                                try:
-                                    flush_pending()
-                                except DATABASE_ERRORS as exc:
-                                    delay = record_deferred_flush(now)
-                                    log_database_unavailable(
-                                        logger,
-                                        f"diagnostic_store.rotate.{loop_name}.db",
-                                        f"Diagnostic tailer deferred rotation flush for {loop_name} while MySQL is unavailable; retrying in about {delay:.1f}s",
-                                        exc,
-                                    )
-                                except Exception:
-                                    log_exception_throttled(
-                                        logger,
-                                        f"diagnostic_store.rotate.{loop_name}",
-                                        interval_seconds=300.0,
-                                        message=f"Diagnostic tailer final commit failed during rotation for {loop_name}",
-                                    )
-                            reopen_from_start = True
-                            break
-
-                        cursor_file_version = open_file_version()
-                        verify_cursor = True
-                        self._stop_event.wait(poll_interval)
-                    if self._stop_event.is_set():
-                        try:
-                            flush_pending()
-                        except Exception:
-                            log_exception_throttled(
-                                logger,
-                                "diagnostic_store.shutdown_flush",
-                                interval_seconds=300.0,
-                                message="Background telemetry final flush failed during shutdown",
-                            )
-            except DATABASE_ERRORS as exc:
-                log_database_unavailable(
-                    logger,
-                    f"diagnostic_store.loop.{loop_name}.db",
-                    f"Diagnostic tailer deferred database work for {loop_name} while MySQL is unavailable",
-                    exc,
-                )
-                self._stop_event.wait(max(5.0, poll_interval))
-            except Exception:
-                log_exception_throttled(
-                    logger,
-                    f"diagnostic_store.loop.{loop_name}",
-                    interval_seconds=300.0,
-                    message=f"Diagnostic tailer loop failed for {loop_name}",
-                )
-                self._stop_event.wait(max(1.0, poll_interval))
 
     def _parse_request_log_line(self, line: str) -> dict[str, Any] | None:
         row = _split_tsv(line)

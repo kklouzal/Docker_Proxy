@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import logging
-import os
 import pathlib
 import re
 import threading
@@ -13,6 +11,7 @@ from typing import Any
 
 from services.bounded_delete import BoundedDeleteIncompleteError, delete_where_in_chunks
 from services.db import DATABASE_ERRORS, connect, connect_unpooled
+from services.log_follower import LogFollower
 from services.logutil import (
     log_database_unavailable,
     log_exception_throttled,
@@ -806,12 +805,6 @@ class SslErrorsStore:
         return thread is None or not thread.is_alive()
 
     def _tail_loop(self) -> None:
-        commit_batch = _env_int(
-            "SSL_ERRORS_COMMIT_BATCH",
-            200,
-            minimum=25,
-            maximum=5000,
-        )
         commit_interval = _env_float(
             "SSL_ERRORS_COMMIT_INTERVAL_SECONDS",
             2.0,
@@ -824,222 +817,115 @@ class SslErrorsStore:
             minimum=0.1,
             maximum=5.0,
         )
-
-        path = self.cache_log_path
-        last_inode: int | None = None
-
-        while not self._stop_event.is_set():
+        # Capture the tail position before the startup seed so errors logged
+        # while the runtime restarted (seed) or while seeding (tail) are kept.
+        follower = LogFollower.at_current_end(self.cache_log_path)
+        if pathlib.Path(self.cache_log_path).exists():
             try:
-                if not pathlib.Path(path).exists():
-                    self._stop_event.wait(max(1.0, poll_interval))
-                    continue
-
-                st = os.stat(path)
-                inode = getattr(st, "st_ino", None)
-                if last_inode is None:
-                    last_inode = inode
-
-                pending = 0
-                last_commit = time.monotonic()
-
-                def ingest_line(line: str) -> bool:
-                    if not self._line_requires_database(line):
-                        return False
-                    self.init_db()
-                    with self._tailer_connect() as conn:
-                        return self._ingest_line_with_conn(conn, line)
-
-                def flush_pending() -> bool:
-                    if not self._has_uncommitted_pending_error():
-                        return False
-                    self.init_db()
-                    with self._tailer_connect() as conn:
-                        return self._flush_pending_error(conn)
-
-                with pathlib.Path(path).open(encoding="utf-8", errors="replace") as f:
-                    f.seek(0, os.SEEK_END)
-                    last_complete_line_pos: int | None = None
-                    last_complete_line: str | None = None
-                    cursor_file_version: tuple[int, int, int] | None = None
-                    verify_cursor = False
-
-                    def open_file_version() -> tuple[int, int, int] | None:
-                        try:
-                            open_stat = os.fstat(f.fileno())
-                            return (
-                                int(open_stat.st_size),
-                                int(open_stat.st_mtime_ns),
-                                int(open_stat.st_ctime_ns),
-                            )
-                        except Exception:
-                            return None
-
-                    while not self._stop_event.is_set():
-                        if verify_cursor:
-                            verify_cursor = False
-                            current_file_version = open_file_version()
-                            if (
-                                current_file_version != cursor_file_version
-                                and last_complete_line_pos is not None
-                                and last_complete_line is not None
-                            ):
-                                resume_pos = f.tell()
-                                try:
-                                    f.seek(last_complete_line_pos, os.SEEK_SET)
-                                    cursor_line = f.readline()
-                                    if cursor_line != last_complete_line:
-                                        # copytruncate can regrow past the old
-                                        # cursor between polls, so size alone
-                                        # does not prove the cursor is valid.
-                                        f.seek(0, os.SEEK_SET)
-                                        last_complete_line_pos = None
-                                        last_complete_line = None
-                                    else:
-                                        f.seek(resume_pos, os.SEEK_SET)
-                                except Exception:
-                                    with contextlib.suppress(Exception):
-                                        f.seek(resume_pos, os.SEEK_SET)
-                                    log_exception_throttled(
-                                        logger,
-                                        "ssl_errors_store.cursor",
-                                        interval_seconds=300.0,
-                                        message="SSL errors tailer cursor validation failed",
-                                    )
-                        line_pos = f.tell()
-                        line = f.readline()
-                        if line and line.endswith("\n"):
-                            last_complete_line_pos = line_pos
-                            last_complete_line = line
-                            try:
-                                if ingest_line(line):
-                                    pending += 1
-                            except DATABASE_ERRORS as exc:
-                                log_database_unavailable(
-                                    logger,
-                                    "ssl_errors_store.ingest.db",
-                                    "SSL errors tailer skipped database ingest because the database is unavailable",
-                                    exc,
-                                )
-                            except Exception:
-                                log_exception_throttled(
-                                    logger,
-                                    "ssl_errors_store.ingest",
-                                    interval_seconds=300.0,
-                                    message="SSL errors tailer failed to ingest a log line",
-                                )
-                            now = time.monotonic()
-                            if (
-                                pending >= commit_batch
-                                or (now - last_commit) >= commit_interval
-                            ):
-                                pending = 0
-                                last_commit = now
-                            continue
-                        if line:
-                            # readline() returns an unterminated fragment at
-                            # EOF. Rewind so an append completes the same line
-                            # instead of ingesting split writes separately.
-                            f.seek(line_pos, os.SEEK_SET)
-
-                        # EOF/idle: flush an in-memory pending TLS header without
-                        # keeping a DB transaction open while waiting for more log
-                        # lines.
-                        now = time.monotonic()
-                        if (now - last_commit) >= commit_interval:
-                            try:
-                                if flush_pending():
-                                    pending = 0
-                            except DATABASE_ERRORS as exc:
-                                log_database_unavailable(
-                                    logger,
-                                    "ssl_errors_store.idle_commit.db",
-                                    "SSL errors tailer deferred a pending SSL error flush because the database is unavailable",
-                                    exc,
-                                )
-                            except Exception:
-                                log_exception_throttled(
-                                    logger,
-                                    "ssl_errors_store.idle_commit",
-                                    interval_seconds=300.0,
-                                    message="SSL errors tailer idle flush failed",
-                                )
-                            last_commit = now
-
-                        # Handle copytruncate: inode unchanged but file shrinks.
-                        try:
-                            if pathlib.Path(path).stat().st_size < f.tell():
-                                f.seek(0, os.SEEK_SET)
-                                last_complete_line_pos = None
-                                last_complete_line = None
-                                continue
-                        except Exception:
-                            log_exception_throttled(
-                                logger,
-                                "ssl_errors_store.copytruncate",
-                                interval_seconds=300.0,
-                                message="SSL errors tailer copytruncate check failed",
-                            )
-
-                        # Detect rotation/recreate.
-                        try:
-                            st2 = os.stat(path)
-                            inode2 = getattr(st2, "st_ino", None)
-                        except OSError:
-                            inode2 = None
-
-                        if (
-                            inode2 is not None
-                            and last_inode is not None
-                            and inode2 != last_inode
-                        ):
-                            last_inode = inode2
-                            try:
-                                flush_pending()
-                            except DATABASE_ERRORS as exc:
-                                log_database_unavailable(
-                                    logger,
-                                    "ssl_errors_store.commit.rotate.db",
-                                    "SSL errors tailer deferred final rotation flush because the database is unavailable",
-                                    exc,
-                                )
-                            except Exception:
-                                log_exception_throttled(
-                                    logger,
-                                    "ssl_errors_store.commit.rotate",
-                                    interval_seconds=300.0,
-                                    message="SSL errors tailer final flush failed during rotation",
-                                )
-                            break
-
-                        cursor_file_version = open_file_version()
-                        verify_cursor = True
-                        self._stop_event.wait(poll_interval)
-                    if self._stop_event.is_set():
-                        try:
-                            flush_pending()
-                        except Exception:
-                            log_exception_throttled(
-                                logger,
-                                "ssl_errors_store.shutdown_flush",
-                                interval_seconds=300.0,
-                                message="Background telemetry final flush failed during shutdown",
-                            )
+                self.seed_from_recent_log()
             except DATABASE_ERRORS as exc:
                 log_database_unavailable(
                     logger,
-                    "ssl_errors_store.loop.db",
-                    "SSL errors tailer deferred database work while MySQL is unavailable",
+                    "ssl_errors_store.seed.db",
+                    "SSL errors tailer skipped the startup seed because the database is unavailable",
                     exc,
                 )
-                self._stop_event.wait(max(5.0, poll_interval))
             except Exception:
                 log_exception_throttled(
                     logger,
-                    "ssl_errors_store.loop",
+                    "ssl_errors_store.seed",
                     interval_seconds=300.0,
-                    message="SSL errors tailer loop failed",
+                    message="SSL errors tailer startup seed failed",
                 )
-                self._stop_event.wait(max(1.0, poll_interval))
+
+        def ingest_line(line: str) -> None:
+            if not self._line_requires_database(line):
+                return
+            self.init_db()
+            with self._tailer_connect() as conn:
+                self._ingest_line_with_conn(conn, line)
+
+        def flush_pending(reason: str, description: str) -> None:
+            # Commit a held TLS header block once its follow-up lines had time
+            # to arrive, without keeping a DB transaction open while idle.
+            if not self._has_uncommitted_pending_error():
+                return
+            try:
+                self.init_db()
+                with self._tailer_connect() as conn:
+                    self._flush_pending_error(conn)
+            except DATABASE_ERRORS as exc:
+                log_database_unavailable(
+                    logger,
+                    f"ssl_errors_store.{reason}.db",
+                    f"SSL errors tailer deferred a pending SSL error {description} flush because the database is unavailable",
+                    exc,
+                )
+            except Exception:
+                log_exception_throttled(
+                    logger,
+                    f"ssl_errors_store.{reason}",
+                    interval_seconds=300.0,
+                    message=f"SSL errors tailer {description} flush failed",
+                )
+
+        last_activity = time.monotonic()
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    if not follower.ensure_open():
+                        self._stop_event.wait(max(1.0, poll_interval))
+                        continue
+                    line = follower.read_line()
+                    if line is not None:
+                        last_activity = time.monotonic()
+                        try:
+                            ingest_line(line)
+                        except DATABASE_ERRORS as exc:
+                            log_database_unavailable(
+                                logger,
+                                "ssl_errors_store.ingest.db",
+                                "SSL errors tailer skipped database ingest because the database is unavailable",
+                                exc,
+                            )
+                        except Exception:
+                            log_exception_throttled(
+                                logger,
+                                "ssl_errors_store.ingest",
+                                interval_seconds=300.0,
+                                message="SSL errors tailer failed to ingest a log line",
+                            )
+                        continue
+                    now = time.monotonic()
+                    if (now - last_activity) >= commit_interval:
+                        flush_pending("idle_commit", "idle")
+                        last_activity = now
+                    change = follower.poll_rotation()
+                    if change == "replaced":
+                        flush_pending("commit.rotate", "rotation")
+                        continue
+                    if change == "truncated":
+                        continue
+                    self._stop_event.wait(poll_interval)
+                except DATABASE_ERRORS as exc:
+                    log_database_unavailable(
+                        logger,
+                        "ssl_errors_store.loop.db",
+                        "SSL errors tailer deferred database work while MySQL is unavailable",
+                        exc,
+                    )
+                    self._stop_event.wait(max(5.0, poll_interval))
+                except Exception:
+                    log_exception_throttled(
+                        logger,
+                        "ssl_errors_store.loop",
+                        interval_seconds=300.0,
+                        message="SSL errors tailer loop failed",
+                    )
+                    self._stop_event.wait(max(1.0, poll_interval))
+            flush_pending("shutdown_flush", "shutdown")
+        finally:
+            follower.close()
 
 
 _store: SslErrorsStore | None = None
