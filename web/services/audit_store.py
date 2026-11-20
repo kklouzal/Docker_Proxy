@@ -19,9 +19,9 @@ from services.row_access import row_value
 
 logger = logging.getLogger(__name__)
 
-
-def _row_value(row: object, column: str, index: int, default: object = None) -> object:
-    return row_value(row, column, index, default)
+# PyMySQL formats every parameterized statement with ``%``; keep LIKE wildcards
+# in a bound parameter so a literal ``%`` never reaches that formatter.
+_CONFIG_APPLY_KIND_PATTERN = "config_apply%"
 
 
 class AuditStore:
@@ -173,7 +173,7 @@ class AuditStore:
         for proxy_row in proxy_rows:
             if remaining_rows <= 0:
                 break
-            proxy_id = str(_row_value(proxy_row, "proxy_id", 0, "default") or "default")
+            proxy_id = str(row_value(proxy_row, "proxy_id", 0, "default") or "default")
             with self._connect() as conn:
                 rows = conn.execute(
                     """
@@ -187,8 +187,8 @@ class AuditStore:
                 ).fetchall()
             if len(rows) < keep:
                 continue
-            boundary_ts = int(_row_value(rows[-1], "ts", 0, 0) or 0)
-            boundary_id = int(_row_value(rows[-1], "id", 1, 0) or 0)
+            boundary_ts = int(row_value(rows[-1], "ts", 0, 0) or 0)
+            boundary_id = int(row_value(rows[-1], "id", 1, 0) or 0)
             result = delete_where_in_chunks(
                 self._connect,
                 table="audit_events",
@@ -212,11 +212,11 @@ class AuditStore:
                 """
                 SELECT ts, kind, ok, remote_addr, user_agent, detail
                 FROM audit_events
-                WHERE proxy_id=%s AND kind LIKE 'config_apply%'
+                WHERE proxy_id=%s AND kind LIKE %s
                 ORDER BY ts DESC, id DESC
                 LIMIT 1
                 """,
-                (proxy_id,),
+                (proxy_id, _CONFIG_APPLY_KIND_PATTERN),
             ).fetchone()
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
