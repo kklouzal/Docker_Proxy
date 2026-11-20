@@ -222,24 +222,20 @@ def test_webfilter_blocked_log_retention_index_bootstrap():
     )
 
 
-def test_webcat_acl_blocked_log_writer_retention_index_bootstrap():
+def test_webcat_acl_blocked_log_writer_retention_index_bootstrap(monkeypatch):
+    from services import blocked_log_runtime, schema_lifecycle
+
     conn = _FakeConn()
     writer = BlockedLogDb(max_rows=100)
+    monkeypatch.setattr(blocked_log_runtime, "connect", lambda: conn)
+    monkeypatch.setattr(
+        schema_lifecycle, "runtime_schema_ready_for_lazy_store", lambda _conn: False
+    )
 
-    writer._ensure_index(
-        conn,
-        "webfilter_blocked_log",
-        "idx_webfilter_blocked_log_ts_id",
-        "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)",
-    )
-    writer._ensure_index(
-        conn,
-        "webfilter_blocked_log",
-        "idx_webfilter_blocked_log_proxy_ts",
-        "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_proxy_ts (proxy_id, ts, id)",
-    )
+    assert writer._connect() is conn
 
     sql = _joined(conn)
+    assert "CREATE TABLE IF NOT EXISTS webfilter_blocked_log(" in sql
     assert (
         "ALTER TABLE webfilter_blocked_log ADD INDEX idx_webfilter_blocked_log_ts_id (ts, id)"
         in sql
