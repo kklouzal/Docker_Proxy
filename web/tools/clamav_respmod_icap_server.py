@@ -95,6 +95,10 @@ class ClamdResult:
     detail: str = ""
 
 
+class ScanCapacityError(RuntimeError):
+    """Every helper scan slot is taken; says nothing about clamd's health."""
+
+
 class ClamdSizeLimitError(RuntimeError):
     """clamd refused the stream at its StreamMaxLength."""
 
@@ -604,7 +608,7 @@ class ClamdInstreamSession:
         if self.concurrency_gate is not None:
             if not self.concurrency_gate.acquire(blocking=False):
                 message = "clamd INSTREAM scan capacity exhausted"
-                raise RuntimeError(message)
+                raise ScanCapacityError(message)
             self._gate_acquired = True
         try:
             self._sock = socket.create_connection(
@@ -1812,8 +1816,15 @@ class ClamAvRespmodServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                     # bypass window for every other response.
                     caller_failed = not scanner.failed
                     raise
-        except Exception:
-            if self.fail_open and not caller_failed:
+        except Exception as exc:
+            # Busy local scan slots (long downloads hold them for the client's
+            # transfer time) are not a clamd outage: only this response takes
+            # the failure policy, not every response for the retry window.
+            if (
+                self.fail_open
+                and not caller_failed
+                and not isinstance(exc, ScanCapacityError)
+            ):
                 unavailable_until = (
                     time.monotonic() + DEFAULT_CLAMD_UNAVAILABLE_RETRY_SECONDS
                 )

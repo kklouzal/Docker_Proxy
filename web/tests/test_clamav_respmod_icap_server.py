@@ -5007,6 +5007,35 @@ def test_fail_open_icap_client_failure_does_not_mark_clamd_unavailable(
         assert icap_server._scan_unavailable_until > 0.0
 
 
+def test_fail_open_scan_capacity_exhaustion_does_not_mark_clamd_unavailable(
+    monkeypatch,
+) -> None:
+    """Busy scan slots fail only the response that found them busy."""
+    server = _load_server()
+    monkeypatch.setattr(
+        server.socket, "create_connection", lambda _address, timeout: FakeSocket()
+    )
+    with server.ClamAvRespmodServer(
+        ("127.0.0.1", 0),
+        clamd_host="127.0.0.1",
+        clamd_port=3310,
+        clamd_timeout=0.5,
+        fail_open=True,
+        max_scan_bytes=1024,
+        client_timeout=0.5,
+        max_connections=4,
+        max_scans=1,
+    ) as icap_server:
+        with icap_server.open_scan():
+            with (
+                pytest.raises(server.ScanCapacityError),
+                icap_server.open_scan(),
+            ):
+                pass
+        assert not icap_server._scan_unavailable_until
+        assert icap_server.scan_body(b"payload").clean is True
+
+
 # --- Progressive (streamed) delivery -------------------------------------
 
 
