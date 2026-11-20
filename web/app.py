@@ -6301,7 +6301,6 @@ def index():
         "index.html",
         proxy_status=proxy_detail,
         proxy_ok=proxy_ok,
-        flask_status="OK",
         stats=stats,
         trends=trends,
         icap_health=icap_health,
@@ -9489,32 +9488,24 @@ def squid_config():
     tunables = squid_controller.get_tunable_options(current_config)
     managed_options = build_template_options(tunables, max_workers=_max_workers())
     overrides = squid_controller.get_cache_override_options(current_config)
-    caching_lines = squid_controller.get_caching_lines(current_config)
-    timeout_lines = squid_controller.get_timeout_lines(current_config)
-    logging_lines = squid_controller.get_logging_lines(current_config)
-    network_lines = squid_controller.get_network_lines(current_config)
-    dns_lines = squid_controller.get_dns_lines(current_config)
-    ssl_lines = squid_controller.get_ssl_lines(current_config)
-    icap_lines = squid_controller.get_icap_lines(current_config)
-    privacy_lines = squid_controller.get_privacy_lines(current_config)
-    limits_lines = squid_controller.get_limits_lines(current_config)
-    performance_lines = squid_controller.get_performance_lines(current_config)
-    http_lines = squid_controller.get_http_lines(current_config)
-    line_map = {
-        "caching": caching_lines,
-        "timeouts": timeout_lines,
-        "logging": logging_lines,
-        "network": network_lines,
-        "dns": dns_lines,
-        "ssl": ssl_lines,
-        "icap": icap_lines,
-        "privacy": privacy_lines,
-        "limits": limits_lines,
-        "performance": performance_lines,
-        "http": http_lines,
-    }
     section_map = {section.key: section for section in config_sections}
     active_section = section_map.get(tab)
+    # Only the active section's snapshot is rendered, so only it is parsed.
+    section_line_readers = {
+        "caching": squid_controller.get_caching_lines,
+        "timeouts": squid_controller.get_timeout_lines,
+        "logging": squid_controller.get_logging_lines,
+        "network": squid_controller.get_network_lines,
+        "dns": squid_controller.get_dns_lines,
+        "ssl": squid_controller.get_ssl_lines,
+        "icap": squid_controller.get_icap_lines,
+        "privacy": squid_controller.get_privacy_lines,
+        "limits": squid_controller.get_limits_lines,
+        "performance": squid_controller.get_performance_lines,
+        "http": squid_controller.get_http_lines,
+    }
+    read_section_lines = section_line_readers.get(tab)
+    running_lines = read_section_lines(current_config) if read_section_lines else []
     sslfilter_rules = get_sslfilter_store().list_all()
     sslfilter_count = (
         len(getattr(sslfilter_rules, "no_bump_domains", []) or [])
@@ -9549,29 +9540,16 @@ def squid_config():
         "squid_config.html",
         tab=tab,
         config_text=config_text,
-        tunables=tunables,
         managed_options=managed_options,
         overrides=overrides,
         subtab=subtab,
         summary=summary,
         config_runtime_state=config_runtime_state,
         validation=validation,
-        sslfilter_rules=sslfilter_rules,
         config_sections=config_sections,
         config_field_map=get_config_ui_field_map(),
         active_section=active_section,
-        line_map=line_map,
-        caching_lines=caching_lines,
-        timeout_lines=timeout_lines,
-        logging_lines=logging_lines,
-        network_lines=network_lines,
-        dns_lines=dns_lines,
-        ssl_lines=ssl_lines,
-        icap_lines=icap_lines,
-        privacy_lines=privacy_lines,
-        limits_lines=limits_lines,
-        performance_lines=performance_lines,
-        http_lines=http_lines,
+        running_lines=running_lines,
     )
 
 

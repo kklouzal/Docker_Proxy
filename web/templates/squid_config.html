@@ -176,7 +176,6 @@
             </div>
         </section>
     {% elif active_section %}
-        {% set running_lines = line_map.get(active_section.key, []) %}
         {% set running_line_count = running_lines|length if running_lines else 0 %}
 
         <section class="card config-snapshot-card">
