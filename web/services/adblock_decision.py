@@ -138,7 +138,29 @@ def _normalized_rule_host(value: str) -> str:
 
 @lru_cache(maxsize=8192)
 def _host_suffix_set(normalized_host: str) -> frozenset[str]:
-    return frozenset(adblock_host_suffix_candidates(normalized_host))
+    """Return the domain-option keys ``normalized_host`` matches.
+
+    These are the host and its parent domains plus, for a DNS name, the uBO
+    entity forms (``google.*`` for ``www.google.co.uk``: a registrable-domain
+    label sequence followed by its public suffix). Entity keys end in ``.*``,
+    which no host name does, so one membership test serves both.
+    """
+    suffixes = adblock_host_suffix_candidates(normalized_host)
+    labels = normalized_host.split(".")
+    if len(labels) < 2 or normalized_host.startswith("[") or "%" in normalized_host:
+        return frozenset(suffixes)
+    try:
+        ipaddress.ip_address(normalized_host)
+    except ValueError:
+        pass
+    else:
+        return frozenset(suffixes)
+    registrable = registrable_domain_start(labels)
+    entities = (
+        ".".join(labels[index : registrable + 1]) + ".*"
+        for index in range(registrable + 1)
+    )
+    return frozenset((*suffixes, *entities))
 
 
 @lru_cache(maxsize=8192)
@@ -210,21 +232,26 @@ def infer_resource_type(
     fetch_mode = lower_headers.get("sec-fetch-mode", "").strip().lower()
     fetch_dest_types = {
         "audio": "media",
+        "audioworklet": "script",
         "document": "document",
         "embed": "object",
+        "fencedframe": "subdocument",
         "font": "font",
+        "frame": "subdocument",
+        "iframe": "subdocument",
         "image": "image",
         "object": "object",
-        "track": "media",
+        "paintworklet": "script",
         "script": "script",
+        "serviceworker": "script",
+        "sharedworker": "script",
         "style": "stylesheet",
+        "track": "media",
         "video": "media",
         "worker": "script",
     }
     if fetch_dest in fetch_dest_types:
         return fetch_dest_types[fetch_dest]
-    if fetch_dest == "iframe":
-        return "subdocument"
     if fetch_mode in {"cors", "same-origin"} and fetch_dest in {"", "empty"}:
         return "xmlhttprequest"
     if lower_headers.get("x-requested-with", "").lower() == "xmlhttprequest":
@@ -244,6 +271,9 @@ def infer_resource_type(
         "ping" in content_type and normalized_method == "POST"
     ):
         return "ping"
+    # A navigation's Accept also lists image types, so test it first.
+    if "text/html" in accept and normalized_method in {"GET", "HEAD"}:
+        return "document"
     if "text/css" in accept:
         return "stylesheet"
     if "javascript" in accept or "ecmascript" in accept:
@@ -258,8 +288,6 @@ def infer_resource_type(
         "json" in accept or "xml" in accept
     ):
         return "xmlhttprequest"
-    if "text/html" in accept and normalized_method in {"GET", "HEAD"}:
-        return "document"
     return "other"
 
 
@@ -307,13 +335,17 @@ def _decision_for_matches(matches: list[_RuleMatcher]) -> AdblockDecision:
 def _compiled_domain_test(domain: Any) -> tuple[bool, str] | None:
     """Compile one domain option value for ``_any_domain_matches``.
 
-    A value containing ``*`` is an fnmatch pattern over the whole host; any
-    other value matches the host or one of its parent domains. Returns
-    (is_pattern, value), or None when the value can never match.
+    An entity (``example.*``) or a plain value matches through the host's
+    ``_host_suffix_set`` keys: the host, a parent domain, or an entity whose
+    ``*`` stands for the public suffix. Any other value containing ``*`` is an
+    fnmatch pattern over the whole host. Returns (is_pattern, value), or None
+    when the value can never match.
     """
     text = str(domain).strip().lower().rstrip(".")
     if not text:
         return None
+    if text.endswith(".*") and "*" not in text[:-2]:
+        return False, text
     if "*" in text:
         return True, text
     normalized = _normalized_rule_host(text)
@@ -350,11 +382,10 @@ class _RuleMatcher:
 
     __slots__ = (
         "action",
+        "applies_to_document",
         "case_sensitive",
         "denyallow",
-        "domain_exclude_patterns",
         "domain_excludes",
-        "domain_include_patterns",
         "domain_includes",
         "domain_scoped",
         "excluded_methods",
@@ -388,26 +419,32 @@ class _RuleMatcher:
             str(item) for item in rule.get("excluded_resource_types") or []
         )
         self.third_party = str(rule.get("third_party") or "any")
-        self.domain_includes = _compiled_domain_tests(rule.get("domain_includes"))
-        self.domain_excludes = _compiled_domain_tests(rule.get("domain_excludes"))
-        self.domain_include_patterns = tuple(
-            _normalized_rule_host(str(item))
-            for item in rule.get("domain_include_patterns") or []
+        self.kind = str(rule.get("pattern_kind") or "")
+        # A filter without type options covers every request type except the
+        # main document (ABP's default content type; uBO and adblock-rust
+        # agree), with uBO's strict-blocking exception: a pure hostname
+        # filter (||example.com^) also matches the page itself. Negated types
+        # (~script) leave the remaining default types, so not the document.
+        self.applies_to_document = (
+            "document" in self.resource_types
+            if self.resource_types
+            else self.kind == "domain_only" and not self.excluded_resource_types
         )
-        self.domain_exclude_patterns = tuple(
-            _normalized_rule_host(str(item))
-            for item in rule.get("domain_exclude_patterns") or []
-        )
+        includes = [
+            *(rule.get("domain_includes") or []),
+            *(rule.get("domain_include_patterns") or []),
+        ]
+        excludes = [
+            *(rule.get("domain_excludes") or []),
+            *(rule.get("domain_exclude_patterns") or []),
+        ]
+        self.domain_includes = _compiled_domain_tests(includes)
+        self.domain_excludes = _compiled_domain_tests(excludes)
         # Scope presence follows the raw lists: an entry that can never match
         # still makes the rule domain-scoped (and include-restricted).
-        self.has_domain_includes = bool(
-            rule.get("domain_includes") or rule.get("domain_include_patterns")
-        )
-        self.domain_scoped = self.has_domain_includes or bool(
-            rule.get("domain_excludes") or rule.get("domain_exclude_patterns")
-        )
+        self.has_domain_includes = bool(includes)
+        self.domain_scoped = bool(includes or excludes)
         self.denyallow: tuple[tuple[bool, str], ...] = ()
-        self.kind = str(rule.get("pattern_kind") or "")
         self.host_test: tuple[bool, str] | None = None
         self.needle = ""
         self.regex: re.Pattern[str] | None = None
@@ -507,9 +544,12 @@ class _RuleMatcher:
                 return False
             if request_method in self.excluded_methods:
                 return False
-        if self.resource_types and context.resource_type not in self.resource_types:
+        resource_type = context.resource_type
+        if self.resource_types and resource_type not in self.resource_types:
             return False
-        if context.resource_type in self.excluded_resource_types:
+        if resource_type in self.excluded_resource_types:
+            return False
+        if resource_type == "document" and not self.applies_to_document:
             return False
         third_party = self.third_party
         if third_party == "only" and context.third_party is not True:
@@ -528,22 +568,15 @@ class _RuleMatcher:
     def _domain_scope_matches(self, context: _RequestContext) -> bool:
         source_host = context.source_host
         if not source_host:
-            return False
+            # Like ABP and uBO, an unknown context is in no listed domain: a
+            # filter limited to listed domains does not apply, one that only
+            # excludes domains does.
+            return not self.has_domain_includes
         suffixes = context.source_suffixes
         if _any_domain_matches(source_host, suffixes, self.domain_excludes):
             return False
-        if any(
-            fnmatch.fnmatchcase(source_host, item)
-            for item in self.domain_exclude_patterns
-        ):
-            return False
         if self.has_domain_includes:
-            return _any_domain_matches(
-                source_host, suffixes, self.domain_includes
-            ) or any(
-                fnmatch.fnmatchcase(source_host, item)
-                for item in self.domain_include_patterns
-            )
+            return _any_domain_matches(source_host, suffixes, self.domain_includes)
         return True
 
     def _pattern_matches(self, context: _RequestContext) -> bool:

@@ -262,12 +262,14 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
         ).blocked
         is True
     )
+    # No Referer/Origin: the unknown context is in no excluded domain, so a
+    # filter that only excludes domains applies (ABP/uBO semantics).
     assert (
         engine.decide(
             "https://excluded-scope.example/ads.js",
             headers={"Sec-Fetch-Site": "cross-site"},
         ).blocked
-        is False
+        is True
     )
     assert (
         engine.decide(
@@ -353,6 +355,90 @@ def test_sqlite_decision_engine_applies_full_abp_semantics(tmp_path: Path) -> No
             headers={"referer": "https://other.example/page"},
         ).blocked
         is False
+    )
+
+
+def test_decision_engine_follows_filter_type_and_scope_defaults(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "||tracker.example^",
+            "||cdn.example/ads/",
+            "-ad-banner.",
+            "-sponsor-$~script",
+            "||popunder.example^$document",
+            "||ads.",
+            "||142.91.159.",
+            "||widget.example^$script,domain=shop.*",
+            "||cmp.example^",
+            "@@||cmp.example^$domain=~brand.*",
+        ],
+    )
+
+    from services.adblock_decision import AdblockDecisionEngine
+
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
+
+    def decide(url: str, resource_type: str, source: str = "") -> bool:
+        return engine.decide(
+            url, resource_type=resource_type, source_url=source
+        ).blocked
+
+    # Filters without type options skip the main document, except a pure
+    # hostname filter (uBO strict blocking); $document opts in explicitly.
+    assert decide("https://tracker.example/", "document") is True
+    assert decide("https://cdn.example/ads/page.html", "document") is False
+    assert decide("https://cdn.example/ads/a.js", "script") is True
+    assert decide("https://news.example/2026/x-ad-banner.html", "document") is False
+    assert decide("https://news.example/js/x-ad-banner.min.js", "script") is True
+    assert decide("https://news.example/x-sponsor-y.html", "document") is False
+    assert decide("https://news.example/x-sponsor-y.png", "image") is True
+    assert decide("https://popunder.example/landing", "document") is True
+    # A trailing dot leaves the host label open; it is not ||ads^.
+    assert decide("https://ads.tracker2.example/x.js", "script") is True
+    assert decide("https://adsense.example/x.js", "script") is False
+    assert decide("http://142.91.159.12/x.js", "script") is True
+    assert decide("http://142.91.15.12/x.js", "script") is False
+    # Entity domains: label sequence + any public suffix, subdomains included.
+    assert decide("https://widget.example/w.js", "script", "https://shop.de/") is True
+    assert (
+        decide("https://widget.example/w.js", "script", "https://www.shop.co.uk/")
+        is True
+    )
+    assert (
+        decide("https://widget.example/w.js", "script", "https://shop.evil.com/")
+        is False
+    )
+    assert decide("https://cmp.example/c.js", "script", "https://brand.fr/") is True
+    assert decide("https://cmp.example/c.js", "script", "https://other.fr/") is False
+
+
+def test_resource_type_inference_without_fetch_metadata() -> None:
+    from services.adblock_decision import infer_resource_type
+
+    navigation_accept = (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    )
+    assert (
+        infer_resource_type("GET", "https://x.example/", {"Accept": navigation_accept})
+        == "document"
+    )
+    assert (
+        infer_resource_type(
+            "GET", "https://x.example/p", {"Accept": "image/avif,image/webp,*/*"}
+        )
+        == "image"
+    )
+    assert (
+        infer_resource_type("GET", "https://x.example/p", {"Sec-Fetch-Dest": "frame"})
+        == "subdocument"
+    )
+    assert (
+        infer_resource_type(
+            "GET", "https://x.example/sw", {"Sec-Fetch-Dest": "serviceworker"}
+        )
+        == "script"
     )
 
 
