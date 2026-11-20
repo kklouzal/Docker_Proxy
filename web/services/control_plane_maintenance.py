@@ -42,7 +42,17 @@ CONTROL_PLANE_MAINTENANCE_TABLES: tuple[str, ...] = (
     "policy_exceptions",
     "safe_browsing_full_hash_cache",
     "safe_browsing_negative_cache",
+    "saml_assertion_replay",
     "observability_maintenance_runs",
+)
+_EXPIRY_CACHE_TABLES = frozenset(
+    {
+        "safe_browsing_full_hash_cache",
+        "safe_browsing_negative_cache",
+        # Replay-cache rows are dead once expires_ts passes; the expiry already
+        # carries the cross-worker clock-drift margin (services.saml_auth).
+        "saml_assertion_replay",
+    }
 )
 
 WEBCAT_BUILD_TABLE_CLEANUP_TABLE = "webcat_build_tables"
@@ -682,7 +692,7 @@ def _run_one_prune(
             detail=" ".join(details),
             truncated=deleted.truncated or updated.truncated,
         )
-    if table in {"safe_browsing_full_hash_cache", "safe_browsing_negative_cache"}:
+    if table in _EXPIRY_CACHE_TABLES:
         deleted = _delete_expired_cache(table, now_ts=now_ts)
         detail = f"iterations={deleted.iterations}" + (
             " truncated=true" if deleted.truncated else ""

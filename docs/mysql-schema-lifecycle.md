@@ -1,6 +1,6 @@
 # MySQL schema lifecycle hardening
 
-Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 34.
+Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `schema_migrations` and `schema_migration_events`, guarded by the advisory lock `docker_proxy:schema_lifecycle:migrate`. Runtime stores remain idempotent for old deployments, but normal reads/writes must not repeatedly issue `CREATE TABLE`, `ALTER TABLE`, or `information_schema` probes once the lifecycle-current cutover and current startup migrations are applied. This inventory currently tracks migrations through version 37.
 
 ## Version ownership
 
@@ -42,6 +42,7 @@ Docker_Proxy owns MySQL DDL through the startup schema lifecycle table pair, `sc
 | 34 | `retire_live_stats_aggregate_tables` | Drops `live_stats_domains`, `live_stats_clients`, `live_stats_client_domains`, `live_stats_client_domain_nocache`, and `live_stats_seed_state` (`DROP TABLE IF EXISTS`). They were written by the proxy but read by nothing since the Observability pages moved to `diagnostic_requests`. A not-yet-upgraded proxy keeps running: its live-stats writes fail with a throttled database warning behind the bounded write backoff until it is upgraded. |
 | 35 | `drop_redundant_audit_and_diagnostic_indexes` | Online (`ALGORITHM=INPLACE, LOCK=NONE`) drops of `audit_events.idx_audit_ts` (`(ts)` is stored as `(ts, id)`, the same B-tree as the kept `idx_audit_ts_id`) and `diagnostic_requests.idx_diagnostic_requests_proxy_client` (a column prefix of the kept `(proxy_id, client_ip, ts, bytes)` index; the only client-filtered `ts DESC, id DESC` query is pinned to `idx_diagnostic_requests_proxy_ts`). Each drop runs only while its covering index exists; fresh installs no longer create either index. |
 | 36 | `retire_adblock_cache_stats` | Drops `adblock_cache_stats` (`DROP TABLE IF EXISTS`; seeded with zero hits/misses/evictions and never read or updated) and deletes the write-only `adblock_proxy_meta` keys `cache_last_flush` / `cache_current_size`. `cache_flush_requested` stays: it drives the adblock cache-flush request. |
+| 37 | `saml_assertion_replay_cache` | `saml_assertion_replay` single-use claims of accepted SAML assertions (primary key: SHA-256 of IdP entity ID plus assertion ID) with the `expires_ts` index used by control-plane housekeeping to prune expired claims. It has no `proxy_id` column, so proxy lifecycle discovery never treats it as proxy-scoped. |
 
 ## Lifecycle model
 

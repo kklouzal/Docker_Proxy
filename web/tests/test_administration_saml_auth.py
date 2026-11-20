@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import itertools
 import json
 import time
 from types import SimpleNamespace
 
-from services.saml_auth import SamlAuthStore, parse_saml_metadata
+from services.saml_auth import (
+    SamlAuthStore,
+    parse_saml_metadata,
+    saml_session_policy,
+)
 
 from .admin_route_test_utils import (
     FakeAuditStore,
@@ -21,6 +26,18 @@ class FakeSamlStore(SamlAuthStore):
         self.saved: list[dict[str, str]] = []
         self.refreshed = 0
         self.disabled = 0
+        self.assertion_uses: dict[str, int] = {}
+        self.policy_reads = 0
+
+    def get_session_policy(self, *, now=None):
+        self.policy_reads += 1
+        return saml_session_policy(self.profile, now=now)
+
+    def record_assertion_use(self, use, *, now):
+        if use.replay_key in self.assertion_uses:
+            return False
+        self.assertion_uses[use.replay_key] = use.expires_ts
+        return True
 
     def ensure_schema(self) -> None:
         return None
@@ -116,12 +133,27 @@ class FakeSamlStore(SamlAuthStore):
         )
 
 
+_ASSERTION_IDS = itertools.count(1)
+
+
 class FakeSamlToolkit:
-    def __init__(self, *, ok: bool = True, groups: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        ok: bool = True,
+        groups: list[str] | None = None,
+        assertion_id: str | None = None,
+        session_expiration: int | None = None,
+    ) -> None:
         self.ok = ok
         self.groups = groups or ["AdminGroup"]
         self.processed_request_id = None
         self.process_response_calls = 0
+        # Each toolkit models one IdP response, so each has a fresh assertion.
+        self.assertion_id = assertion_id or f"_assertion-{next(_ASSERTION_IDS)}"
+        self.not_on_or_after: int | None = int(time.time()) + 300
+        self.session_expiration = session_expiration
+        self.in_response_to: str | None = None
 
     def login(self, return_to: str = "") -> str:
         return f"https://idp.example.test/sso?RelayState={return_to}"
@@ -132,6 +164,20 @@ class FakeSamlToolkit:
     def process_response(self, request_id: str | None = None) -> None:
         self.process_response_calls += 1
         self.processed_request_id = request_id
+        if self.in_response_to is None:
+            self.in_response_to = request_id
+
+    def get_last_assertion_id(self):
+        return self.assertion_id
+
+    def get_last_assertion_not_on_or_after(self):
+        return self.not_on_or_after
+
+    def get_last_response_in_response_to(self):
+        return self.in_response_to
+
+    def get_session_expiration(self):
+        return self.session_expiration
 
     def get_errors(self):
         return [] if self.ok else ["invalid_response"]
@@ -657,3 +703,233 @@ def test_saml_success_audit_redacts_username_like_secret(monkeypatch, tmp_path):
     assert "supersecret" not in detail
     assert "\n" not in detail
     assert "password=[redacted]" in detail
+
+
+def _saml_login(client):
+    login_response = client.get("/auth/saml/login?next=/administration")
+    relay_state = login_response.headers["Location"].split("RelayState=", 1)[1]
+    with client.session_transaction() as sess:
+        pending_cookie = dict(sess)
+    acs = client.post("/auth/saml/acs", data={"RelayState": relay_state})
+    return SimpleNamespace(
+        relay_state=relay_state, pending_cookie=pending_cookie, acs=acs
+    )
+
+
+def _saml_session(monkeypatch, tmp_path, *, toolkit=None, required_group="AdminGroup"):
+    audit = FakeAuditStore()
+    loaded, store = _load_with_saml(monkeypatch, tmp_path, audit_store=audit)
+    store.enable_with_metadata(required_group=required_group)
+    toolkit = toolkit or FakeSamlToolkit()
+    monkeypatch.setattr(
+        loaded.module, "build_saml_auth", lambda _profile, _request: toolkit
+    )
+    client = loaded.module.app.test_client()
+    return SimpleNamespace(
+        loaded=loaded,
+        store=store,
+        audit=audit,
+        toolkit=toolkit,
+        client=client,
+        login=_saml_login(client),
+    )
+
+
+def _replay_with_cookie(ctx):
+    """Post the captured response again from a copy of the pre-ACS cookie."""
+    attacker = ctx.loaded.module.app.test_client()
+    with attacker.session_transaction() as sess:
+        sess.update(ctx.login.pending_cookie)
+    response = attacker.post(
+        "/auth/saml/acs", data={"RelayState": ctx.login.relay_state}
+    )
+    return attacker, response
+
+
+def _resave_saml_profile(store, *, required_group):
+    store.profile = store.save_profile(
+        {
+            "enabled": "1",
+            "metadata_url": store.profile.metadata_url,
+            "require_https": "1",
+            "verify_tls": "1",
+            "username_attribute": "email",
+            "groups_attribute": "groups",
+            "required_group": required_group,
+            "public_base_url": "https://admin.example.test",
+        }
+    )
+
+
+def test_saml_assertion_replay_with_old_cookie_copy_is_rejected(monkeypatch, tmp_path):
+    ctx = _saml_session(monkeypatch, tmp_path)
+    assert ctx.login.acs.headers["Location"] == "/administration"
+    assert len(ctx.store.assertion_uses) == 1
+
+    attacker, replay = _replay_with_cookie(ctx)
+
+    assert replay.status_code in {302, 303}
+    assert replay.headers["Location"].startswith("/login")
+    with attacker.session_transaction() as sess:
+        assert "user" not in sess
+    assert ctx.audit.records[-1]["kind"] == "saml_login_failed"
+    assert "replay rejected" in ctx.audit.records[-1]["detail"]
+    assert ctx.toolkit.process_response_calls == 2
+
+
+def test_saml_replay_cache_records_authenticated_but_unauthorized_assertions(
+    monkeypatch, tmp_path
+):
+    ctx = _saml_session(
+        monkeypatch, tmp_path, toolkit=FakeSamlToolkit(groups=["OtherGroup"])
+    )
+    assert "required admin group" in ctx.audit.records[-1]["detail"]
+    assert len(ctx.store.assertion_uses) == 1
+
+    # Relaxing the policy must not make the captured assertion acceptable.
+    _resave_saml_profile(ctx.store, required_group="")
+    attacker, _replay = _replay_with_cookie(ctx)
+
+    with attacker.session_transaction() as sess:
+        assert "user" not in sess
+    assert "replay rejected" in ctx.audit.records[-1]["detail"]
+
+
+def test_saml_replay_cache_ignores_responses_the_toolkit_rejected(
+    monkeypatch, tmp_path
+):
+    ctx = _saml_session(monkeypatch, tmp_path, toolkit=FakeSamlToolkit(ok=False))
+
+    assert ctx.store.assertion_uses == {}
+    assert "signature validation failed" in ctx.audit.records[-1]["detail"]
+
+
+def test_saml_login_fails_closed_when_replay_cache_is_unavailable(
+    monkeypatch, tmp_path
+):
+    import pymysql
+
+    audit = FakeAuditStore()
+    loaded, store = _load_with_saml(monkeypatch, tmp_path, audit_store=audit)
+    store.enable_with_metadata()
+
+    def unavailable(_use, *, now):
+        raise pymysql.err.OperationalError(2003, "password=secret host down")
+
+    store.record_assertion_use = unavailable
+    toolkit = FakeSamlToolkit()
+    monkeypatch.setattr(
+        loaded.module, "build_saml_auth", lambda _profile, _request: toolkit
+    )
+    client = loaded.module.app.test_client()
+
+    login = _saml_login(client)
+
+    assert login.acs.headers["Location"].startswith("/login")
+    with client.session_transaction() as sess:
+        assert "user" not in sess
+    detail = audit.records[-1]["detail"]
+    assert audit.records[-1]["kind"] == "saml_login_failed"
+    assert "replay protection is unavailable" in detail
+    assert "secret" not in detail
+
+
+def test_saml_login_rejects_assertion_without_id(monkeypatch, tmp_path):
+    toolkit = FakeSamlToolkit()
+    toolkit.assertion_id = ""
+    ctx = _saml_session(monkeypatch, tmp_path, toolkit=toolkit)
+
+    with ctx.client.session_transaction() as sess:
+        assert "user" not in sess
+    assert ctx.store.assertion_uses == {}
+    assert "did not include an ID" in ctx.audit.records[-1]["detail"]
+
+
+def test_saml_login_rejects_response_without_in_response_to(monkeypatch, tmp_path):
+    toolkit = FakeSamlToolkit()
+    toolkit.in_response_to = ""
+    ctx = _saml_session(monkeypatch, tmp_path, toolkit=toolkit)
+
+    with ctx.client.session_transaction() as sess:
+        assert "user" not in sess
+    assert "pending login request" in ctx.audit.records[-1]["detail"]
+
+
+def test_saml_session_expiry_uses_earlier_of_idp_and_timeout(monkeypatch, tmp_path):
+    now = int(time.time())
+    ctx = _saml_session(
+        monkeypatch, tmp_path, toolkit=FakeSamlToolkit(session_expiration=now + 120)
+    )
+    with ctx.client.session_transaction() as sess:
+        assert sess["saml_session_expires_ts"] == now + 120
+
+    late = FakeSamlToolkit(session_expiration=now + 10 * 365 * 86400)
+    monkeypatch.setattr(ctx.loaded.module, "build_saml_auth", lambda _p, _r: late)
+    _saml_login(ctx.client)
+    timeout = ctx.loaded.module._configured_session_timeout_hours() * 3600
+    with ctx.client.session_transaction() as sess:
+        assert now + timeout <= sess["saml_session_expires_ts"] <= now + timeout + 5
+
+
+def test_saml_session_ends_at_absolute_expiry(monkeypatch, tmp_path):
+    ctx = _saml_session(monkeypatch, tmp_path)
+    assert ctx.client.get("/", follow_redirects=False).status_code == 200
+    with ctx.client.session_transaction() as sess:
+        sess["saml_session_expires_ts"] = int(time.time()) - 1
+
+    response = ctx.client.get("/", follow_redirects=False)
+
+    assert response.status_code in {302, 303}
+    with ctx.client.session_transaction() as sess:
+        assert "user" not in sess
+    assert ctx.audit.records[-1]["kind"] == "session_revoked"
+    assert "expired" in ctx.audit.records[-1]["detail"]
+
+
+def test_saml_session_ends_when_provider_disabled(monkeypatch, tmp_path):
+    ctx = _saml_session(monkeypatch, tmp_path)
+    ctx.store.disable_provider()
+
+    response = ctx.client.get("/", follow_redirects=False)
+
+    assert response.status_code in {302, 303}
+    with ctx.client.session_transaction() as sess:
+        assert "user" not in sess
+    assert "provider disabled" in ctx.audit.records[-1]["detail"]
+
+
+def test_saml_session_survives_metadata_refresh_but_not_policy_change(
+    monkeypatch, tmp_path
+):
+    ctx = _saml_session(monkeypatch, tmp_path)
+    ctx.store.refresh_metadata()
+    assert ctx.client.get("/", follow_redirects=False).status_code == 200
+
+    _resave_saml_profile(ctx.store, required_group="NewAdminGroup")
+    response = ctx.client.get("/", follow_redirects=False)
+
+    assert response.status_code in {302, 303}
+    with ctx.client.session_transaction() as sess:
+        assert "user" not in sess
+    assert "policy changed" in ctx.audit.records[-1]["detail"]
+
+
+def test_saml_session_policy_read_once_per_request_and_db_outage_keeps_session(
+    monkeypatch, tmp_path
+):
+    import pymysql
+
+    ctx = _saml_session(monkeypatch, tmp_path)
+    ctx.store.policy_reads = 0
+    assert ctx.client.get("/", follow_redirects=False).status_code == 200
+    assert ctx.store.policy_reads == 1
+
+    def unavailable(*, now=None):
+        raise pymysql.err.OperationalError(2003, "Can't connect to MySQL server")
+
+    ctx.store.get_session_policy = unavailable
+    response = ctx.client.get("/", follow_redirects=False)
+
+    assert response.status_code == 503
+    with ctx.client.session_transaction() as sess:
+        assert sess["user"] == "saml-user@example.test"

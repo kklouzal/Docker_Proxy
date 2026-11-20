@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 from urllib.parse import urlsplit
 
 from flask import (
@@ -80,6 +80,9 @@ from services.diagnostic_store import (
 from services.directory_auth import (
     DIRECTORY_CA_BUNDLE_MAX_BYTES,
     DIRECTORY_PROVIDERS,
+    DirectoryRevalidationBackoff,
+    DirectoryUnavailableError,
+    directory_policy_fingerprint,
     get_directory_auth_store,
 )
 from services.error_pages import (
@@ -173,6 +176,7 @@ from services.proxy_logs import (
 from services.proxy_registry import get_proxy_registry as _default_get_proxy_registry
 from services.proxy_sync import canonical_registered_proxy_id, request_proxy_reconcile
 from services.runtime_helpers import env_float as _env_float
+from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import extract_domain as _extract_domain
 from services.runtime_helpers import normalize_config_bool
 from services.safe_browsing_v5 import SafeBrowsingStore
@@ -185,6 +189,9 @@ from services.saml_auth import (
     profile_metadata_cache_ready,
     profile_metadata_ready,
     resolve_saml_login,
+    saml_assertion_use,
+    saml_policy_fingerprint,
+    saml_response_authenticated,
 )
 from services.schema_lifecycle import ensure_startup_schema_if_configured
 from services.short_lived_cache import KeyedSingleFlight
@@ -2350,13 +2357,71 @@ if _auth_provider_bootstrap_errors and _database_runtime_configured:
     raise RuntimeError(msg) from _auth_provider_bootstrap_errors[0][1]
 
 
+# External (directory/SAML) admin sessions are revalidated on every request,
+# not trusted for the whole sliding cookie lifetime:
+# - Per request (one cheap MySQL read): the session's provider must still be
+#   the active, enabled provider and its authorization policy fingerprint must
+#   match the one recorded at login.
+# - Directory sessions re-check the user through the service bind at most
+#   every DIRECTORY_SESSION_REVALIDATE_SECONDS, and at once after a policy
+#   change. Definitive negatives end the session; an unreachable directory
+#   answers 503 and keeps the session (like the MySQL-outage path), with a
+#   short per-process backoff so an outage does not stall every request.
+# - SAML sessions cannot be re-checked without an IdP round trip, so a policy
+#   change or disable ends them, and they end at the IdP SessionNotOnOrAfter or
+#   SESSION_TIMEOUT_HOURS after login, whichever is earlier.
+_SESSION_POLICY_KEY = "auth_policy"
+_DIRECTORY_LOOKUP_KEY = "directory_lookup"
+_DIRECTORY_CHECKED_KEY = "directory_checked_ts"
+_SAML_EXPIRES_KEY = "saml_session_expires_ts"
+_ADMIN_SESSION_MEMO_ATTR = "_admin_session_valid"
+_DIRECTORY_REVALIDATE_DEFAULT_SECONDS = 15 * 60
+_DIRECTORY_REVALIDATE_MIN_SECONDS = 60
+_DIRECTORY_REVALIDATE_MAX_SECONDS = 60 * 60
+_DIRECTORY_REVALIDATION_BACKOFF_SECONDS = 30.0
+_directory_revalidate_seconds = _env_int(
+    "DIRECTORY_SESSION_REVALIDATE_SECONDS",
+    _DIRECTORY_REVALIDATE_DEFAULT_SECONDS,
+    minimum=_DIRECTORY_REVALIDATE_MIN_SECONDS,
+    maximum=_DIRECTORY_REVALIDATE_MAX_SECONDS,
+)
+_directory_revalidation_backoff = DirectoryRevalidationBackoff(
+    _DIRECTORY_REVALIDATION_BACKOFF_SECONDS
+)
+
+
+def _forget_admin_session_memo() -> None:
+    if has_request_context():
+        g.pop(_ADMIN_SESSION_MEMO_ATTR, None)
+
+
 def _is_logged_in() -> bool:
+    # Guards, the context processor and link building all ask; the session
+    # (and any MySQL/LDAP check behind it) is validated once per request.
+    memo = g.get(_ADMIN_SESSION_MEMO_ATTR)
+    if memo is not None:
+        return bool(memo)
+    valid = _validate_admin_session()
+    setattr(g, _ADMIN_SESSION_MEMO_ATTR, valid)
+    return valid
+
+
+def _validate_admin_session() -> bool:
     u = session.get("user")
     if not u or not isinstance(u, str):
         return False
     provider = session.get("auth_provider")
-    if provider != "local":
-        return bool(provider and isinstance(provider, str))
+    if provider == "local":
+        return _local_session_valid(u)
+    if provider in DIRECTORY_PROVIDERS:
+        return _directory_session_valid(u, provider)
+    if provider == "saml":
+        return _saml_session_valid(u)
+    session.clear()
+    return False
+
+
+def _local_session_valid(u: str) -> bool:
     session_version = session.get("local_auth_version")
     if not isinstance(session_version, str):
         session.clear()
@@ -2384,6 +2449,96 @@ def _is_logged_in() -> bool:
     ):
         session.clear()
         return False
+    return True
+
+
+def _end_external_session(user: str, provider: str, reason: str) -> bool:
+    _record_audit_event(
+        "session_revoked",
+        ok=False,
+        detail=(
+            f"user={_audit_safe_detail(user, limit=200)} "
+            f"provider={_audit_safe_detail(provider, limit=80)} "
+            f"reason={_audit_safe_detail(reason, limit=300)}"
+        ),
+    )
+    session.clear()
+    return False
+
+
+def _external_policy_read_failed(
+    log_key: str, message: str, exc: Exception
+) -> NoReturn:
+    log_database_unavailable(app.logger, log_key, message, exc, interval_seconds=60.0)
+    abort(503, description="The Admin UI database is temporarily unavailable.")
+
+
+def _session_policy_matches(fingerprint: str) -> bool:
+    recorded = session.get(_SESSION_POLICY_KEY)
+    return isinstance(recorded, str) and secrets.compare_digest(recorded, fingerprint)
+
+
+def _directory_session_valid(u: str, provider: str) -> bool:
+    try:
+        profile = _directory_auth_store.get_active_profile_for_session()
+    except DATABASE_ERRORS as exc:
+        _external_policy_read_failed(
+            "web.app.directory_session_validation",
+            "Directory administrator session validation deferred while MySQL is unavailable",
+            exc,
+        )
+    except Exception:
+        app.logger.exception("Failed to load directory provider for session check")
+        return _end_external_session(u, provider, "provider profile unreadable")
+    if profile is None or profile.provider != provider:
+        return _end_external_session(u, provider, "provider is no longer active")
+    fingerprint = directory_policy_fingerprint(profile)
+    now = int(time.time())
+    checked = session.get(_DIRECTORY_CHECKED_KEY)
+    if (
+        _session_policy_matches(fingerprint)
+        and isinstance(checked, int)
+        and checked <= now < checked + _directory_revalidate_seconds
+    ):
+        return True
+    if _directory_revalidation_backoff.active(fingerprint):
+        abort(503, description="The directory service is temporarily unavailable.")
+    lookup_name = session.get(_DIRECTORY_LOOKUP_KEY)
+    try:
+        result = _directory_auth_store.revalidate_admin(
+            profile, u, lookup_name if isinstance(lookup_name, str) else u
+        )
+    except DirectoryUnavailableError:
+        _directory_revalidation_backoff.record_failure(fingerprint)
+        abort(503, description="The directory service is temporarily unavailable.")
+    _directory_revalidation_backoff.record_success(fingerprint)
+    if not result.ok:
+        return _end_external_session(u, provider, result.detail)
+    session[_SESSION_POLICY_KEY] = fingerprint
+    session[_DIRECTORY_CHECKED_KEY] = now
+    return True
+
+
+def _saml_session_valid(u: str) -> bool:
+    now = int(time.time())
+    expires = session.get(_SAML_EXPIRES_KEY)
+    if not isinstance(expires, int) or now >= expires:
+        return _end_external_session(u, "saml", "SAML session expired")
+    try:
+        policy = _saml_auth_store.get_session_policy(now=now)
+    except DATABASE_ERRORS as exc:
+        _external_policy_read_failed(
+            "web.app.saml_session_validation",
+            "SAML administrator session validation deferred while MySQL is unavailable",
+            exc,
+        )
+    except Exception:
+        app.logger.exception("Failed to load SAML provider for session check")
+        return _end_external_session(u, "saml", "provider profile unreadable")
+    if not policy.ready:
+        return _end_external_session(u, "saml", "provider disabled or metadata stale")
+    if not _session_policy_matches(policy.fingerprint):
+        return _end_external_session(u, "saml", "provider policy changed")
     return True
 
 
@@ -3308,8 +3463,12 @@ def _bound_pre_auth_request_body() -> None:
     # bodies get 413 from the Content-Length check before anything is read.
     # Only mutating requests reach a pre-auth body parser; skipping the rest
     # keeps the session-version lookup off GET/static/health requests (and
-    # their DB-outage behaviour unchanged).
-    if request.method not in _MUTATING_HTTP_METHODS or _is_logged_in():
+    # their DB-outage behaviour unchanged). Logout never needs a large body,
+    # so it is capped without validating the session, which also keeps logout
+    # working while MySQL or the directory cannot validate the session.
+    if request.method not in _MUTATING_HTTP_METHODS:
+        return
+    if request.endpoint != "logout" and _is_logged_in():
         return
     pre_auth_limit = int(app.config["MAX_FORM_MEMORY_SIZE"])
     current_limit = request.max_content_length
@@ -3617,6 +3776,19 @@ def login():
                 login_username,
                 login_provider,
                 local_auth_version=local_auth_version,
+                external_state=(
+                    {
+                        _SESSION_POLICY_KEY: str(
+                            getattr(directory_result, "policy_fingerprint", "") or ""
+                        ),
+                        _DIRECTORY_LOOKUP_KEY: str(
+                            getattr(directory_result, "lookup_name", "") or username
+                        ),
+                        _DIRECTORY_CHECKED_KEY: int(time.time()),
+                    }
+                    if directory_ok
+                    else None
+                ),
             )
             _record_audit_event(
                 "login_success",
@@ -3664,10 +3836,12 @@ def _establish_admin_session(
     provider: str,
     *,
     local_auth_version: str | None = None,
+    external_state: dict[str, Any] | None = None,
 ) -> None:
     # Prevent session fixation by clearing any existing session data.
     prev_csrf = session.get("_csrf_token")
     session.clear()
+    _forget_admin_session_memo()
     # Keep a CSRF token available immediately after login so that the
     # next POST (often triggered by UI actions) can succeed even if the
     # client does not perform an intermediate template-rendering GET.
@@ -3682,6 +3856,7 @@ def _establish_admin_session(
             msg = "Local administrator sessions require a credential version."
             raise RuntimeError(msg)
         session["local_auth_version"] = local_auth_version
+    session.update(external_state or {})
     session.permanent = True  # Apply PERMANENT_SESSION_LIFETIME
 
 
@@ -3703,6 +3878,9 @@ def auth_saml_metadata():
 _SAML_PENDING_SESSION_KEY = "saml_" + "transactions"
 _SAML_PENDING_MAX = 8
 _SAML_PENDING_TTL_SECONDS = 10 * 60
+# Pending requests created up to this far "in the future" (another worker's
+# clock) are still accepted.
+_SAML_PENDING_FUTURE_TOLERANCE_SECONDS = 60
 
 
 def _saml_pending_requests(*, now: int | None = None) -> dict[str, dict[str, Any]]:
@@ -3721,7 +3899,9 @@ def _saml_pending_requests(*, now: int | None = None) -> dict[str, dict[str, Any
                 isinstance(request_id, str)
                 and request_id
                 and isinstance(created, int)
-                and current - _SAML_PENDING_TTL_SECONDS <= created <= current + 60
+                and current - _SAML_PENDING_TTL_SECONDS
+                <= created
+                <= current + _SAML_PENDING_FUTURE_TOLERANCE_SECONDS
                 and isinstance(next_url, str)
             ):
                 pending[relay_state] = value
@@ -3755,6 +3935,70 @@ def _consume_saml_pending_request(relay_state: str) -> dict[str, Any] | None:
         session.pop(_SAML_PENDING_SESSION_KEY, None)
     session.pop("saml_request_id", None)
     return transaction
+
+
+def _saml_failure(detail: str) -> Any:
+    result = type("_Result", (), {})()
+    result.ok = False
+    result.username = ""
+    result.detail = detail
+    return result
+
+
+def _claim_saml_assertion(
+    auth: Any, profile: SamlProviderProfile, request_id: str
+) -> Any | None:
+    """Consume the assertion in the replay cache; return a failure or None.
+
+    Every toolkit-validated assertion is claimed, before the username/group
+    authorization decision: an assertion rejected only for authorization
+    must not become acceptable by replay after the policy changes. Responses
+    that python3-saml rejected are not recorded, because their IDs are
+    attacker-controlled and could pre-claim legitimate assertion IDs.
+    """
+    if not saml_response_authenticated(auth):
+        return None
+    now = int(time.time())
+    try:
+        use = saml_assertion_use(
+            auth,
+            profile,
+            request_id=request_id,
+            acceptance_window_seconds=(
+                _SAML_PENDING_TTL_SECONDS + _SAML_PENDING_FUTURE_TOLERANCE_SECONDS
+            ),
+            now=now,
+        )
+    except ValueError as exc:
+        return _saml_failure(str(exc))
+    try:
+        first_use = _saml_auth_store.record_assertion_use(use, now=now)
+    except Exception:
+        # Fail closed: without the replay cache an assertion could be reused.
+        log_exception_throttled(
+            app.logger,
+            "web.app.saml_replay_cache",
+            interval_seconds=60.0,
+            message="SAML assertion replay cache unavailable",
+        )
+        return _saml_failure("SAML replay protection is unavailable; login rejected.")
+    if not first_use:
+        return _saml_failure("SAML assertion was already used (replay rejected).")
+    return None
+
+
+def _saml_session_expires_ts(auth: Any) -> int:
+    """Absolute end of a SAML admin session.
+
+    The earlier of the IdP AuthnStatement SessionNotOnOrAfter (when sent) and
+    login time plus SESSION_TIMEOUT_HOURS; the sliding cookie lifetime alone
+    would otherwise let a SAML session live forever without an IdP check.
+    """
+    expires = int(time.time()) + _configured_session_timeout_hours() * 60 * 60
+    session_not_on_or_after = auth.get_session_expiration()
+    if session_not_on_or_after:
+        expires = min(expires, int(session_not_on_or_after))
+    return expires
 
 
 @app.route("/auth/saml/login", methods=["GET"])
@@ -3813,19 +4057,17 @@ def auth_saml_acs():
         auth = build_saml_auth(profile, request)
         request_id = transaction.get("request_id") if transaction else None
         if not request_id:
-            result = type("_Result", (), {})()
-            result.ok = False
-            result.username = ""
-            result.detail = "SAML ACS rejected because request correlation is missing."
+            result = _saml_failure(
+                "SAML ACS rejected because request correlation is missing."
+            )
         else:
             auth.process_response(request_id=str(request_id))
-            result = resolve_saml_login(auth, profile)
+            result = _claim_saml_assertion(auth, profile, str(request_id))
+            if result is None:
+                result = resolve_saml_login(auth, profile)
     except Exception as exc:
         app.logger.exception("SAML ACS processing failed")
-        result = type("_Result", (), {})()
-        result.ok = False
-        result.username = ""
-        result.detail = public_error_message(exc)
+        result = _saml_failure(public_error_message(exc))
     if not result.ok:
         _record_audit_event(
             "saml_login_failed",
@@ -3837,7 +4079,14 @@ def auth_saml_acs():
         )
         return _redirect_to("login", next=next_url)
     remaining_saml_transactions = _saml_pending_requests()
-    _establish_admin_session(result.username, "saml")
+    _establish_admin_session(
+        result.username,
+        "saml",
+        external_state={
+            _SESSION_POLICY_KEY: saml_policy_fingerprint(profile),
+            _SAML_EXPIRES_KEY: _saml_session_expires_ts(auth),
+        },
+    )
     if remaining_saml_transactions:
         session[_SAML_PENDING_SESSION_KEY] = remaining_saml_transactions
     _record_audit_event(
@@ -3851,6 +4100,7 @@ def auth_saml_acs():
 @app.route("/logout", methods=["POST"])
 def logout():
     session.clear()
+    _forget_admin_session_memo()
     return _redirect_to("login")
 
 

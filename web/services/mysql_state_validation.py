@@ -64,6 +64,7 @@ _REQUIRED_TABLES: tuple[str, ...] = (
     "observability_report_schedules",
     "directory_auth_profiles",
     "saml_auth_profiles",
+    "saml_assertion_replay",
     "policy_requests",
     "policy_exceptions",
     "pac_profiles",

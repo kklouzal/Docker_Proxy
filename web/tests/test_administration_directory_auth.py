@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -979,3 +980,235 @@ def test_administration_provider_tab_degrades_to_status(monkeypatch, tmp_path) -
     assert response.status_code == 200
     assert "Authentication status" in body
     assert "LDAP provider" not in body
+
+
+class RevalidatingDirectoryAuthStore:
+    """Directory store fake built on real profiles and policy fingerprints."""
+
+    def __init__(self) -> None:
+        from services.directory_auth import DirectoryAuthStore
+
+        base = DirectoryAuthStore(lambda: "test-secret")
+        self.profile = replace(base.default_profile("ldap"), enabled=True)
+        self.in_admin_group = True
+        self.unreachable = False
+        self.profile_reads = 0
+        self.revalidations: list[tuple[str, str]] = []
+
+    def ensure_default_profiles(self) -> None:
+        return None
+
+    def authenticate_admin(self, username: str, password: str):
+        from services.directory_auth import (
+            DirectoryAuthResult,
+            directory_policy_fingerprint,
+        )
+
+        if username == "EXAMPLE\\ldap-user" and password == "ldap-pass":
+            return DirectoryAuthResult(
+                True,
+                "ldap",
+                "ldap-user",
+                "Directory authentication succeeded.",
+                lookup_name=username,
+                policy_fingerprint=directory_policy_fingerprint(self.profile),
+            )
+        return DirectoryAuthResult(False, "ldap", username, "bad credentials")
+
+    def get_active_profile_for_session(self):
+        self.profile_reads += 1
+        return self.profile if self.profile.enabled else None
+
+    def revalidate_admin(self, profile, username, lookup_name):
+        from services.directory_auth import (
+            DirectoryAuthResult,
+            DirectoryUnavailableError,
+        )
+
+        self.revalidations.append((username, lookup_name))
+        if self.unreachable:
+            msg = "All configured LDAP server URLs failed"
+            raise DirectoryUnavailableError(msg)
+        if not self.in_admin_group:
+            return DirectoryAuthResult(
+                False,
+                profile.provider,
+                username,
+                "User is not in the required admin group.",
+            )
+        return DirectoryAuthResult(True, profile.provider, username, "ok")
+
+    def get_status(self):
+        return {
+            "active_provider": "ldap",
+            "active_label": "LDAP",
+            "profiles": {},
+            "providers": (),
+            "provider_labels": {},
+        }
+
+
+def _directory_session(monkeypatch, tmp_path, **env):
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    audit = FakeAuditStore()
+    store = RevalidatingDirectoryAuthStore()
+    loaded = load_admin_app(
+        monkeypatch, tmp_path, audit_store=audit, directory_auth_store=store
+    )
+    client = loaded.module.app.test_client()
+    login_client(client, "EXAMPLE\\ldap-user", "ldap-pass")
+    with client.session_transaction() as sess:
+        assert sess["user"] == "ldap-user"
+        assert sess["auth_provider"] == "ldap"
+        assert sess["directory_lookup"] == "EXAMPLE\\ldap-user"
+    return loaded, client, store, audit
+
+
+def _age_directory_check(client, seconds: int) -> None:
+    with client.session_transaction() as sess:
+        sess["directory_checked_ts"] = int(sess["directory_checked_ts"]) - seconds
+
+
+def test_directory_session_skips_ldap_within_revalidation_interval(
+    monkeypatch, tmp_path
+) -> None:
+    loaded, client, store, _audit = _directory_session(monkeypatch, tmp_path)
+
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert store.revalidations == []
+    # Guards, context processor and link building share one validation.
+    assert store.profile_reads == 1
+
+    _age_directory_check(client, loaded.module._directory_revalidate_seconds)
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert store.revalidations == [("ldap-user", "EXAMPLE\\ldap-user")]
+    response = client.get("/", follow_redirects=False)
+    assert store.revalidations == [("ldap-user", "EXAMPLE\\ldap-user")]
+
+
+def test_directory_revalidation_interval_is_env_configurable_and_clamped(
+    monkeypatch, tmp_path
+) -> None:
+    loaded, *_rest = _directory_session(
+        monkeypatch, tmp_path, DIRECTORY_SESSION_REVALIDATE_SECONDS="5"
+    )
+    assert loaded.module._directory_revalidate_seconds == 60
+    monkeypatch.setenv("DIRECTORY_SESSION_REVALIDATE_SECONDS", "999999")
+    loaded = load_admin_app(monkeypatch, tmp_path)
+    assert loaded.module._directory_revalidate_seconds == 3600
+
+
+def test_directory_session_ends_when_user_leaves_admin_group(
+    monkeypatch, tmp_path
+) -> None:
+    loaded, client, store, audit = _directory_session(monkeypatch, tmp_path)
+    store.in_admin_group = False
+    _age_directory_check(client, loaded.module._directory_revalidate_seconds)
+
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code in {302, 303}
+    assert response.headers["Location"].startswith("/login?")
+    with client.session_transaction() as sess:
+        assert "user" not in sess
+    assert audit.records[-1]["kind"] == "session_revoked"
+    assert "required admin group" in audit.records[-1]["detail"]
+
+
+def test_directory_policy_change_revalidates_at_once(monkeypatch, tmp_path) -> None:
+    _loaded, client, store, _audit = _directory_session(monkeypatch, tmp_path)
+    store.profile = replace(store.profile, required_admin_group="cn=new,dc=x")
+
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert len(store.revalidations) == 1
+
+    store.in_admin_group = False
+    store.profile = replace(store.profile, required_admin_group="cn=newer,dc=x")
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code in {302, 303}
+    with client.session_transaction() as sess:
+        assert "user" not in sess
+
+
+def test_directory_session_ends_when_provider_disabled(monkeypatch, tmp_path) -> None:
+    _loaded, client, store, audit = _directory_session(monkeypatch, tmp_path)
+    store.profile = replace(store.profile, enabled=False)
+
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code in {302, 303}
+    assert store.revalidations == []
+    with client.session_transaction() as sess:
+        assert "user" not in sess
+    assert "no longer active" in audit.records[-1]["detail"]
+
+
+def test_directory_outage_keeps_session_with_backoff(monkeypatch, tmp_path) -> None:
+    loaded, client, store, _audit = _directory_session(monkeypatch, tmp_path)
+    store.unreachable = True
+    _age_directory_check(client, loaded.module._directory_revalidate_seconds)
+
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 503
+    with client.session_transaction() as sess:
+        assert sess["user"] == "ldap-user"
+    assert len(store.revalidations) == 1
+
+    # Within the backoff the directory is not asked again.
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 503
+    assert len(store.revalidations) == 1
+
+    # Logout still works while the session cannot be validated.
+    with client.session_transaction() as sess:
+        token = sess["_csrf_token"]
+    response = client.post(
+        "/logout", data={"csrf_token": token}, follow_redirects=False
+    )
+    assert response.status_code in {302, 303}
+    with client.session_transaction() as sess:
+        assert "user" not in sess
+
+
+def test_directory_recovers_after_backoff(monkeypatch, tmp_path) -> None:
+    loaded, client, store, _audit = _directory_session(monkeypatch, tmp_path)
+    store.unreachable = True
+    _age_directory_check(client, loaded.module._directory_revalidate_seconds)
+    assert client.get("/", follow_redirects=False).status_code == 503
+
+    store.unreachable = False
+    loaded.module._directory_revalidation_backoff.seconds = 0.0
+    loaded.module._directory_revalidation_backoff.record_failure("expired")
+
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert len(store.revalidations) == 2
+
+
+def test_directory_session_profile_db_outage_keeps_session(
+    monkeypatch, tmp_path
+) -> None:
+    import pymysql
+
+    _loaded, client, store, _audit = _directory_session(monkeypatch, tmp_path)
+
+    def unavailable():
+        raise pymysql.err.OperationalError(2003, "Can't connect to MySQL server")
+
+    store.get_active_profile_for_session = unavailable
+
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 503
+    with client.session_transaction() as sess:
+        assert sess["user"] == "ldap-user"
