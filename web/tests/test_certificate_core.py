@@ -961,3 +961,23 @@ def test_generated_ca_fails_closed_when_openssl_output_is_not_compliant(
         generate_self_signed_ca_bundle(
             days_valid=30, run_checked=run_without_extensions
         )
+
+
+def test_materialize_removes_temp_file_when_staging_write_fails(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        certificate_core, "_extract_certificate_metadata", lambda _cert: ("", "", "")
+    )
+    bundle = certificate_core.build_certificate_bundle(CERT_A, KEY_A)
+
+    def fail_file_fsync(fd):
+        if stat.S_ISREG(certificate_core.os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "simulated staging fsync failure")
+
+    monkeypatch.setattr(certificate_core.os, "fsync", fail_file_fsync)
+
+    with pytest.raises(OSError, match="simulated staging fsync failure"):
+        certificate_core.materialize_certificate_bundle(tmp_path, bundle)
+
+    assert sorted(path.name for path in tmp_path.iterdir()) == []

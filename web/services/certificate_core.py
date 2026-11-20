@@ -45,6 +45,33 @@ def _unlink_with_parent_fsync(path: str | os.PathLike[str]) -> None:
     _fsync_parent_dir(path_obj)
 
 
+def _write_fsynced_temp_file(directory: str | os.PathLike[str], data: bytes) -> str:
+    """Write *data* to a new durable temp file in *directory*; return its path."""
+    with tempfile.NamedTemporaryFile("wb", delete=False, dir=directory) as tmp:
+        try:
+            tmp.write(data)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        except BaseException:
+            with contextlib.suppress(OSError):
+                pathlib.Path(tmp.name).unlink()
+            raise
+        return tmp.name
+
+
+def _atomic_replace_file(path: pathlib.Path, data: bytes) -> None:
+    """Durably replace *path* with *data* via a same-directory rename."""
+    tmp_path = _write_fsynced_temp_file(path.parent, data)
+    try:
+        _fsync_parent_dir(tmp_path)
+        pathlib.Path(tmp_path).replace(path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            _unlink_with_parent_fsync(tmp_path)
+        raise
+    _fsync_parent_dir(path)
+
+
 @dataclass(frozen=True)
 class CertificateBundle:
     cert_pem: str
@@ -268,27 +295,7 @@ def _write_certificate_material_marker(
         sort_keys=True,
         separators=(",", ":"),
     )
-    tmp_path = ""
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            delete=False,
-            dir=ca_dir,
-            encoding="utf-8",
-        ) as marker_file:
-            marker_file.write(payload)
-            marker_file.write("\n")
-            marker_file.flush()
-            os.fsync(marker_file.fileno())
-            tmp_path = marker_file.name
-        _fsync_parent_dir(tmp_path)
-        pathlib.Path(tmp_path).replace(marker_path)
-        _fsync_parent_dir(marker_path)
-        tmp_path = ""
-    finally:
-        if tmp_path:
-            with contextlib.suppress(OSError):
-                _unlink_with_parent_fsync(tmp_path)
+    _atomic_replace_file(marker_path, (payload + "\n").encode("utf-8"))
 
 
 def _ensure_existing_certificate_material_marker(
@@ -892,30 +899,18 @@ def materialize_admin_ui_server_certificate(
     tmp_cert_path = ""
     tmp_key_path = ""
     try:
-        with tempfile.NamedTemporaryFile(
-            "wb",
-            delete=False,
-            dir=ca_dir,
-        ) as cert_tmp:
-            cert_tmp.write(cert.public_bytes(serialization.Encoding.PEM))
-            cert_tmp.flush()
-            os.fsync(cert_tmp.fileno())
-            tmp_cert_path = cert_tmp.name
-        with tempfile.NamedTemporaryFile(
-            "wb",
-            delete=False,
-            dir=ca_dir,
-        ) as key_tmp:
-            key_tmp.write(
-                leaf_key.private_bytes(
-                    serialization.Encoding.PEM,
-                    serialization.PrivateFormat.PKCS8,
-                    serialization.NoEncryption(),
-                ),
-            )
-            key_tmp.flush()
-            os.fsync(key_tmp.fileno())
-            tmp_key_path = key_tmp.name
+        tmp_cert_path = _write_fsynced_temp_file(
+            ca_dir,
+            cert.public_bytes(serialization.Encoding.PEM),
+        )
+        tmp_key_path = _write_fsynced_temp_file(
+            ca_dir,
+            leaf_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            ),
+        )
         lock_context = (
             contextlib.nullcontext()
             if _transaction_lock_held
@@ -972,22 +967,7 @@ def _restore_material_paths(snapshot: dict[pathlib.Path, bytes | None]) -> None:
             if path.exists():
                 _unlink_with_parent_fsync(path)
             continue
-        tmp_path = ""
-        try:
-            with tempfile.NamedTemporaryFile(
-                "wb", delete=False, dir=path.parent
-            ) as tmp:
-                tmp.write(content)
-                tmp.flush()
-                os.fsync(tmp.fileno())
-                tmp_path = tmp.name
-            pathlib.Path(tmp_path).replace(path)
-            _fsync_parent_dir(path)
-            tmp_path = ""
-        finally:
-            if tmp_path:
-                with contextlib.suppress(OSError):
-                    _unlink_with_parent_fsync(tmp_path)
+        _atomic_replace_file(path, content)
     cert_paths = [path for path in snapshot if path.name == ADMIN_UI_CERT_FILENAME]
     key_paths = [path for path in snapshot if path.name == ADMIN_UI_KEY_FILENAME]
     if cert_paths and key_paths and cert_paths[0].exists() and key_paths[0].exists():
@@ -1189,31 +1169,13 @@ def restore_certificate_material_snapshot(
                 if path_obj.exists():
                     _unlink_with_parent_fsync(path_obj)
                 continue
-            tmp_path = ""
-            try:
-                with tempfile.NamedTemporaryFile(
-                    "wb",
-                    delete=False,
-                    dir=ca_dir,
-                ) as tmp_file:
-                    tmp_file.write(content)
-                    tmp_file.flush()
-                    os.fsync(tmp_file.fileno())
-                    tmp_path = tmp_file.name
-                _fsync_parent_dir(tmp_path)
-                pathlib.Path(tmp_path).replace(path_obj)
-                _fsync_parent_dir(path_obj)
-                tmp_path = ""
-                if path_obj.name == "ca.crt":
-                    path_obj.chmod(0o644)
-                elif path_obj.name == "ca.key":
-                    path_obj.chmod(0o640)
-                elif path_obj.name in {"uploaded_ca.pfx", ".ca-material.json"}:
-                    path_obj.chmod(0o600)
-            finally:
-                if tmp_path:
-                    with contextlib.suppress(OSError):
-                        _unlink_with_parent_fsync(tmp_path)
+            _atomic_replace_file(path_obj, content)
+            if path_obj.name == "ca.crt":
+                path_obj.chmod(0o644)
+            elif path_obj.name == "ca.key":
+                path_obj.chmod(0o640)
+            elif path_obj.name in {"uploaded_ca.pfx", ".ca-material.json"}:
+                path_obj.chmod(0o600)
 
 
 def materialize_certificate_bundle(
@@ -1231,26 +1193,14 @@ def materialize_certificate_bundle(
     tmp_key_path = ""
     tmp_pfx_path = ""
     try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            delete=False,
-            dir=ca_dir,
-            encoding="utf-8",
-        ) as cert_file:
-            cert_file.write(bundle.fullchain_pem or bundle.cert_pem)
-            cert_file.flush()
-            os.fsync(cert_file.fileno())
-            tmp_cert_path = cert_file.name
-        with tempfile.NamedTemporaryFile(
-            "w",
-            delete=False,
-            dir=ca_dir,
-            encoding="utf-8",
-        ) as key_file:
-            key_file.write(bundle.key_pem)
-            key_file.flush()
-            os.fsync(key_file.fileno())
-            tmp_key_path = key_file.name
+        tmp_cert_path = _write_fsynced_temp_file(
+            ca_dir,
+            (bundle.fullchain_pem or bundle.cert_pem).encode("utf-8"),
+        )
+        tmp_key_path = _write_fsynced_temp_file(
+            ca_dir,
+            bundle.key_pem.encode("utf-8"),
+        )
 
         pfx_bytes = (
             bundle.original_pfx_bytes
@@ -1258,15 +1208,7 @@ def materialize_certificate_bundle(
             else original_pfx_bytes
         )
         if pfx_bytes is not None:
-            with tempfile.NamedTemporaryFile(
-                "wb",
-                delete=False,
-                dir=ca_dir,
-            ) as pfx_file:
-                pfx_file.write(pfx_bytes)
-                pfx_file.flush()
-                os.fsync(pfx_file.fileno())
-                tmp_pfx_path = pfx_file.name
+            tmp_pfx_path = _write_fsynced_temp_file(ca_dir, pfx_bytes)
 
         with _certificate_material_install_lock(ca_dir):
             _ensure_existing_certificate_material_marker(
