@@ -11,7 +11,7 @@ import pathlib
 import re
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from services import download_safety
 from services.bounded_delete import (
@@ -39,6 +39,9 @@ from services.proxy_write_guard import (
 from services.runtime_helpers import env_int as _env_int
 from services.runtime_helpers import now_ts as _now
 from services.schema_lifecycle import ensure_column, ensure_index
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +99,18 @@ _DEFAULT_SETTINGS = {
     "cache_ttl": "3600",
     "cache_max": "200000",
 }
+
+
+def _block_count_rows(
+    event_rows: Iterable[Sequence[Any]],
+) -> list[tuple[object, ...]]:
+    """Aggregate adblock_events value rows into adblock_counts upsert rows."""
+    counts: dict[tuple[str, int, str], int] = {}
+    for row in event_rows:
+        # Event value columns: proxy_id, event_key, ts, ..., list_key (index 10).
+        key = (str(row[0]), int(row[2]) // 86400, str(row[10] or "unknown"))
+        counts[key] = counts.get(key, 0) + 1
+    return [(*key, blocked) for key, blocked in sorted(counts.items())]
 
 
 def _event_key(ts: int, src_ip: str, url: str, http_status: int) -> str:
@@ -436,7 +451,12 @@ class AdblockStore:
         parsed_rows: list[dict[str, Any]],
         checkpoint_changes: dict[str, str],
     ) -> None:
-        """Insert parsed block events and advance the checkpoint atomically."""
+        """Insert parsed block events, count them, and advance the checkpoint atomically.
+
+        Every logged block line adds one to its day's per-list block count. The
+        counts commit with the checkpoint, so each line is counted exactly once
+        and the ICAP helper never waits on MySQL while answering a request.
+        """
         created_ts = _now()
         try:
             event_rows = (
@@ -457,6 +477,14 @@ class AdblockStore:
                     ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     event_rows,
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO adblock_counts(proxy_id, day, list_key, blocked)
+                    VALUES(%s,%s,%s,%s) AS incoming
+                    ON DUPLICATE KEY UPDATE blocked = adblock_counts.blocked + incoming.blocked
+                    """,
+                    _block_count_rows(event_rows),
                 )
             self._set_proxy_meta_values(conn, checkpoint_changes)
             if event_rows and created_ts - int(self._last_events_prune_ts or 0) >= 60:
@@ -970,18 +998,6 @@ class AdblockStore:
     def list_path(self, key: str) -> str:
         safe = "".join([c for c in (key or "") if c.isalnum() or c in {"-", "_"}])
         return os.path.join(self.lists_dir, f"{safe}.txt")
-
-    def record_block(self, list_key: str) -> None:
-        day = int(_now() // 86400)
-        with self._connect() as conn:
-            with guarded_proxy_write(conn, get_proxy_id()) as guard:
-                conn.execute(
-                    """
-                    INSERT INTO adblock_counts(proxy_id, day, list_key, blocked) VALUES(%s,%s,%s,1)
-                    ON DUPLICATE KEY UPDATE blocked = blocked + 1
-                    """,
-                    (guard.proxy_id, day, list_key),
-                )
 
     def stats(self) -> dict[str, Any]:
         now = _now()

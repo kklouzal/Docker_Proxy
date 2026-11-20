@@ -373,7 +373,7 @@ def test_adblock_decision_enforces_method_contract_without_cache_leakage(
 
     negated_url = "https://negated-method.example/collect"
     [hydrated_rule] = engine.lookup.candidate_rules(negated_url)
-    assert hydrated_rule["value_options"]["method"] == ["~GET"]
+    assert hydrated_rule.rule["value_options"]["method"] == ["~GET"]
     assert engine.decide(negated_url, method="GET").blocked is False
     post_decision = engine.decide(negated_url, method=" post ")
     assert post_decision.blocked is True
@@ -485,7 +485,7 @@ def test_adblock_decision_preserves_absolute_and_host_authority_boundaries(
         ],
     )
 
-    from services.adblock_decision import AdblockDecisionEngine
+    from services.adblock_decision import AdblockDecisionEngine, _RuleMatcher
 
     engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0)
 
@@ -507,13 +507,12 @@ def test_adblock_decision_preserves_absolute_and_host_authority_boundaries(
     [compiled_host_rule] = [
         rule
         for rule in engine.lookup.candidate_rules("https://host.example/ads.js")
-        if rule["raw"] == "||host.example/ads.js|"
+        if rule.rule["raw"] == "||host.example/ads.js|"
     ]
-    fallback_host_rule = dict(compiled_host_rule)
+    fallback_host_rule = dict(compiled_host_rule.rule)
     fallback_host_rule.pop("compiled_regex")
     assert (
-        engine._rule_matches(
-            fallback_host_rule,
+        _RuleMatcher(fallback_host_rule).matches(
             engine._request_context(
                 "https://host.example:8443/ads.js",
                 method="GET",
@@ -1591,7 +1590,6 @@ def test_adblock_icap_server_blocks_post_requests_with_preview_zero(
 ) -> None:
     db_path = _build_lookup_db(tmp_path, ["||ads.example^$method=post"])
     log_path = tmp_path / "cicap-access.log"
-    recorded_blocks: list[str] = []
 
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
@@ -1601,7 +1599,6 @@ def test_adblock_icap_server_blocks_post_requests_with_preview_zero(
         engine=AdblockDecisionEngine(db_path, cache_ttl_seconds=0, cache_max=0),
         access_log_path=str(log_path),
         max_request_bytes=65536,
-        block_recorder=recorded_blocks.append,
     )
     port = int(server.server_address[1])
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1629,7 +1626,6 @@ def test_adblock_icap_server_blocks_post_requests_with_preview_zero(
         assert b"HTTP/1.1 403 Forbidden" in response
         log_text = log_path.read_text(encoding="utf-8")
         assert "POST http://ads.example/collect HTTP/1.1" in log_text
-        assert recorded_blocks == ["sample"]
     finally:
         server.shutdown()
         server.server_close()
@@ -1640,7 +1636,6 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
 ) -> None:
     db_path = _build_lookup_db(tmp_path, ["||ads.example^"])
     log_path = tmp_path / "cicap-access.log"
-    recorded_blocks: list[str] = []
 
     from services.adblock_decision import AdblockDecisionEngine
     from tools.adblock_icap_server import _AdblockIcapServer
@@ -1652,7 +1647,6 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
         engine=engine,
         access_log_path=str(log_path),
         max_request_bytes=65536,
-        block_recorder=recorded_blocks.append,
     )
     port = int(server.server_address[1])
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1691,7 +1685,6 @@ def test_adblock_icap_server_uses_sqlite_decisions_and_logs_blocks(
         assert "ads.example/banner.js" in log_text
         assert "\tsample\t" in log_text
         assert "\tblock\trule-match\n" in log_text
-        assert recorded_blocks == ["sample"]
     finally:
         server.shutdown()
         server.server_close()
@@ -2223,14 +2216,22 @@ if str(Path(__file__).resolve().parents[1]) not in sys.path:
 
 
 def test_domain_option_matches_bracketed_ipv6_source_literally() -> None:
-    from services.adblock_decision import _domain_matches, _host_suffix_set
+    from services.adblock_decision import (
+        _any_domain_matches,
+        _compiled_domain_test,
+        _host_suffix_set,
+    )
 
-    host = "[2001:db8::1]"
-    suffixes = _host_suffix_set(host)
+    def domain_matches(host: str, domain: str) -> bool:
+        test = _compiled_domain_test(domain)
+        return test is not None and _any_domain_matches(
+            host, _host_suffix_set(host), (test,)
+        )
+
     # fnmatch would read "[2001:db8::1]" as a one-character class.
-    assert _domain_matches(host, suffixes, "[2001:db8::1]") is True
-    assert _domain_matches("1", _host_suffix_set("1"), "[2001:db8::1]") is False
-    assert _domain_matches("ads.example", _host_suffix_set("ads.example"), "*.example")
+    assert domain_matches("[2001:db8::1]", "[2001:db8::1]") is True
+    assert domain_matches("1", "[2001:db8::1]") is False
+    assert domain_matches("ads.example", "*.example") is True
 
 
 def test_ubo_option_aliases_apply_and_unknown_options_discard_rules(
@@ -2389,3 +2390,56 @@ def test_icap_server_refuses_unsupported_lookup_schema_before_listening(
 
     with pytest.raises(AdblockLookupSchemaError, match="schema version 3"):
         adblock_icap_server.main(["--db", str(db_path), "--port", "0"])
+
+
+def test_rule_matcher_unmatchable_domain_include_still_restricts_scope() -> None:
+    from services.adblock_decision import AdblockDecisionEngine, _RuleMatcher
+
+    context = AdblockDecisionEngine._request_context(
+        "https://ads.example/x.js",
+        method="GET",
+        resource_type="script",
+        source_host="news.example",
+        third_party_hint=None,
+    )
+    assert context is not None
+    base = {"rule_id": "r1", "action": "block", "pattern_kind": "option_only"}
+
+    assert _RuleMatcher(base).matches(context) is True
+    # "." normalizes to nothing: the include can never match, so the rule is
+    # scoped to no source domain rather than to every source domain.
+    assert _RuleMatcher({**base, "domain_includes": ["."]}).matches(context) is False
+    assert (
+        _RuleMatcher({**base, "domain_includes": [".", "news.example"]}).matches(
+            context
+        )
+        is True
+    )
+    assert _RuleMatcher({**base, "domain_excludes": ["."]}).matches(context) is True
+    assert (
+        _RuleMatcher({**base, "domain_include_patterns": ["news.*"]}).matches(context)
+        is True
+    )
+    # Discarded and non-blocking options never match.
+    for extra in (
+        {"misc_options": ["unknown"]},
+        {"value_options": ["not", "a", "dict"]},
+        {"value_options": {"csp": "x"}},
+        {"behavior_options": ["badfilter"]},
+        {"value_options": {"method": []}},
+        {"value_options": {"method": ["trace"]}},
+    ):
+        assert _RuleMatcher({**base, **extra}).matches(context) is False
+
+
+@pytest.mark.parametrize(
+    "char",
+    ["\x00", "\x1f", " ", "\t", "\x7f", "\\", "\x85", "\xa0", "\u2028", "\u3000"],
+)
+def test_adblock_url_split_rejects_whitespace_controls_and_backslash(
+    char: str,
+) -> None:
+    from services.adblock_hosts import safe_adblock_urlsplit
+
+    assert safe_adblock_urlsplit(f"https://ads.example/a{char}b") is None
+    assert safe_adblock_urlsplit("https://ads.example/a\u00e9b") is not None

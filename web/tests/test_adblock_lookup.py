@@ -476,3 +476,76 @@ def test_rule_payload_carries_only_matcher_fields(tmp_path: Path) -> None:
         "domain_includes",
         "domain_excludes",
     }
+
+
+def test_lookup_candidates_do_not_depend_on_host_or_rule_cache_state(
+    tmp_path: Path,
+) -> None:
+    db_path = _build_lookup_db(
+        tmp_path,
+        [
+            "||ads.example^",
+            "||cdn.example/ads/",
+            "||ad*server.example^",
+            "/banner/*/img^$image",
+            "/tracker[.]js/",
+            "@@||ads.example/allowed/$script",
+            "$popup,third-party,domain=pop.example",
+            "/pixel.gif$~image",
+        ],
+    )
+
+    from services.adblock_lookup import AdblockLookupIndex
+
+    requests = [
+        ("https://ads.example/banner/1/img.png", "image"),
+        ("https://sub.ads.example/allowed/x.js", "script"),
+        ("https://cdn.example/ads/unit.js", "script"),
+        ("https://adXserver.example/", "other"),
+        ("https://static.example/tracker.js", "script"),
+        ("https://static.example/pixel.gif", "image"),
+        ("https://static.example/pixel.gif", "xmlhttprequest"),
+        ("https://static.example/page", "popup"),
+        ("https://static.example/page", ""),
+    ]
+    uncached = AdblockLookupIndex(db_path, rule_cache_max=0, host_cache_max=0)
+    expected = {
+        request: _raws(uncached.candidate_rules(request[0], resource_type=request[1]))
+        for request in requests
+    }
+
+    cached = AdblockLookupIndex(db_path, rule_cache_max=2, host_cache_max=2)
+    for _ in range(3):
+        for url, resource_type in requests:
+            assert (
+                _raws(cached.candidate_rules(url, resource_type=resource_type))
+                == expected[url, resource_type]
+            )
+    assert len(cached._host_cache) <= 2
+    assert len(cached._rule_cache) <= 2
+    assert "||ads.example^" in expected[requests[0]]
+    assert "/banner/*/img^$image" in expected[requests[0]]
+    assert "/pixel.gif$~image" not in expected[requests[5]]
+    assert "/pixel.gif$~image" in expected[requests[6]]
+    assert "$popup,third-party,domain=pop.example" in expected[requests[7]]
+    assert "$popup,third-party,domain=pop.example" not in expected[requests[1]]
+
+
+def test_lookup_prepares_each_cached_rule_once(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(tmp_path, ["||ads.example^", "/banner/"])
+
+    from services.adblock_lookup import AdblockLookupIndex
+
+    prepared: list[str] = []
+
+    def prepare(rule: dict[str, Any]) -> tuple[str, str]:
+        prepared.append(str(rule["raw"]))
+        return ("prepared", str(rule["raw"]))
+
+    lookup = AdblockLookupIndex(db_path, prepare_rule=prepare)
+    for _ in range(3):
+        assert lookup.candidate_rules("https://ads.example/banner/x") == [
+            ("prepared", "||ads.example^"),
+            ("prepared", "/banner/"),
+        ]
+    assert sorted(prepared) == ["/banner/", "||ads.example^"]

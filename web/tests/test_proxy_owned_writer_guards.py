@@ -315,6 +315,53 @@ def test_adblock_event_insert_and_batch_use_guard_canonical_proxy(monkeypatch) -
     assert batch_insert[1][0] == "edge-new"
 
 
+def test_adblock_batch_counts_each_logged_block_with_its_events(monkeypatch) -> None:
+    from services import adblock_store  # type: ignore
+
+    module = importlib.reload(adblock_store)
+    conn = _Conn()
+
+    def fake_guarded_rows(_conn, proxy_id, rows, row_factory, **_kwargs):
+        materialized = tuple(tuple(row_factory("edge-new", row)) for row in rows)
+        return SimpleNamespace(proxy_id="edge-new", rows=materialized)
+
+    monkeypatch.setattr(module, "guarded_proxy_rows", fake_guarded_rows)
+    monkeypatch.setattr(module, "get_proxy_id", lambda: "edge-old")
+    monkeypatch.setattr(module, "_now", lambda: 2 * 86400 + 50)
+    store = module.AdblockStore(cicap_access_log_path="fake.log")
+    monkeypatch.setattr(store, "_set_proxy_meta_values", lambda *_a, **_k: None)
+    monkeypatch.setattr(store, "_prune_events", lambda *_a, **_k: None)
+
+    def row(ts: int, url: str, list_key: str) -> dict[str, object]:
+        return {"ts": ts, "src_ip": "192.0.2.10", "url": url, "list_key": list_key}
+
+    # Identical lines (same second, client and URL) share one event row but
+    # are still separate blocks; a line without a list key counts as unknown.
+    store._write_cicap_batch(
+        conn,
+        [
+            row(86400 + 5, "https://ads.example/a", "easylist"),
+            row(86400 + 5, "https://ads.example/a", "easylist"),
+            row(2 * 86400 + 1, "https://ads.example/b", "easylist"),
+            row(2 * 86400 + 2, "https://t.example/p", "easyprivacy"),
+            row(2 * 86400 + 3, "https://t.example/q", ""),
+        ],
+        {},
+    )
+
+    counts = [
+        params for sql, params in conn.calls if "INSERT INTO adblock_counts" in sql
+    ]
+    assert counts == [
+        ("edge-new", 1, "easylist", 2),
+        ("edge-new", 2, "easylist", 1),
+        ("edge-new", 2, "easyprivacy", 1),
+        ("edge-new", 2, "unknown", 1),
+    ]
+    count_sql = next(sql for sql, _ in conn.calls if "adblock_counts" in sql)
+    assert "blocked = adblock_counts.blocked + incoming.blocked" in count_sql
+
+
 def test_guarded_service_writes_reject_tombstoned_proxy(monkeypatch) -> None:
     from services import (  # type: ignore
         adblock_store,

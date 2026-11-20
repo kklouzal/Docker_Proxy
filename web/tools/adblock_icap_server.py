@@ -7,6 +7,7 @@ import errno
 import html
 import io
 import os
+import re
 import socket
 import socketserver
 import sys
@@ -16,6 +17,8 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 _ALLOWED_URL_SCHEMES = {"http", "https"}
+# C0 controls, space, DEL, and backslash.
+_CONTROL_OR_BACKSLASH_RE = re.compile(r"[\x00-\x20\x7f\\]")
 _HEADER_FIELD_NAME_CHARS = frozenset(
     "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
 )
@@ -149,7 +152,7 @@ def _encapsulated_http_request(data: bytes) -> bytes:
 
 
 def _has_control_or_backslash(value: str) -> bool:
-    return any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in value) or "\\" in value
+    return _CONTROL_OR_BACKSLASH_RE.search(value) is not None
 
 
 def _has_authority_contamination(value: str) -> bool:
@@ -686,7 +689,6 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
                     decision_action=decision.action,
                     decision_reason=decision.reason,
                 )
-                self.server.record_block(list_key)
                 if not _send_icap_response(
                     self.request,
                     _block_response(url, decision.raw, close=close),
@@ -703,6 +705,11 @@ class _AdblockIcapHandler(socketserver.BaseRequestHandler):
 class _AdblockIcapServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = False
+    # Squid opens one ICAP connection per concurrent transaction, so a page
+    # load burst connects dozens at once. socketserver's default backlog of 5
+    # overflows and the dropped handshakes retry only after the 1 s TCP
+    # retransmission timeout.
+    request_queue_size = 128
 
     def __init__(
         self,
@@ -714,7 +721,6 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         max_body_drain_bytes: int = 8388608,
         request_timeout_seconds: float = 5.0,
         max_keepalive_requests: int = 1000,
-        block_recorder: Any | None = None,
         stats: HelperStats | None = None,
     ) -> None:
         self.engine = engine
@@ -724,7 +730,6 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
         self.max_body_drain_bytes = max(8192, int(max_body_drain_bytes or 8192))
         self.request_timeout_seconds = max(0.1, float(request_timeout_seconds or 0))
         self.max_keepalive_requests = max(1, int(max_keepalive_requests or 1))
-        self.block_recorder = block_recorder
         self.stats = stats
 
     def process_request_thread(
@@ -787,15 +792,6 @@ class _AdblockIcapServer(socketserver.ThreadingTCPServer):
                 handle.write(output.getvalue())
         except Exception:
             self.increment_stat("access_log_write_failed")
-
-    def record_block(self, list_key: str) -> None:
-        recorder = self.block_recorder
-        if recorder is None:
-            return
-        try:
-            recorder(list_key or "unknown")
-        except Exception:
-            self.increment_stat("block_record_failed")
 
 
 def _explicit_env_int(name: str) -> int | None:
@@ -885,19 +881,9 @@ def main(argv: list[str] | None = None) -> int:
     # helper and keeps its last applied artifact instead of matching against
     # tables this reader does not know.
     engine.lookup.check_schema()
-    block_recorder = None
-    try:
-        from services.adblock_store import get_adblock_store  # type: ignore
-
-        adblock_store = get_adblock_store()
-        try:
-            adblock_store.init_db()
-        except Exception:
-            pass
-        block_recorder = adblock_store.record_block
-    except Exception:
-        block_recorder = None
-
+    # Load the in-memory candidate indexes before listening, not on the first
+    # request Squid sends.
+    engine.lookup.load_indexes()
     stats = HelperStats("adblock_icap")
     stats.started(
         host=args.host,
@@ -917,7 +903,6 @@ def main(argv: list[str] | None = None) -> int:
             max_body_drain_bytes=max(8192, int(args.max_body_drain_bytes)),
             request_timeout_seconds=max(0.1, float(args.request_timeout)),
             max_keepalive_requests=max(1, int(args.max_keepalive_requests)),
-            block_recorder=block_recorder,
             stats=stats,
         ) as server:
             sys.stdout.write(
