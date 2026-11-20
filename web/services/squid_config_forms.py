@@ -5,6 +5,12 @@ from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
+from services.squid_host_overrides import (
+    default_https_intercept_port,
+    default_intercept_port,
+    first_available_port,
+)
+
 TunableMap = Mapping[str, Any]
 FormMap = Mapping[str, Any]
 OptionMap = MutableMapping[str, Any]
@@ -386,20 +392,6 @@ def _clamp_port(value: Any, default: int) -> int:
     return min(65535, max(1, parsed))
 
 
-def _default_intercept_port(explicit_port: int) -> int:
-    return explicit_port + 1 if explicit_port < 65535 else 3129
-
-
-def _first_available_port(preferred: int, used_ports: set[int]) -> int:
-    candidate = _clamp_port(preferred, 3130)
-    for _ in range(65535):
-        if candidate not in used_ports:
-            return candidate
-        candidate = 1 if candidate >= 65535 else candidate + 1
-    msg = "No available TCP listener ports remain."
-    raise ValueError(msg)
-
-
 def _resolve_explicit_proxy_port(tunables: TunableMap, _max_workers: int) -> int:
     return _clamp_port(tunables.get("explicit_proxy_port"), 3128)
 
@@ -410,7 +402,7 @@ def _resolve_intercept_enabled(tunables: TunableMap, _max_workers: int) -> bool:
 
 def _resolve_intercept_port(tunables: TunableMap, max_workers: int) -> int:
     explicit_port = _resolve_explicit_proxy_port(tunables, max_workers)
-    default_port = _default_intercept_port(explicit_port)
+    default_port = default_intercept_port(explicit_port)
     return _clamp_port(tunables.get("intercept_port"), default_port)
 
 
@@ -427,7 +419,7 @@ def _resolve_https_intercept_splice_only(
 
 def _resolve_https_intercept_port(tunables: TunableMap, max_workers: int) -> int:
     explicit_port = _resolve_explicit_proxy_port(tunables, max_workers)
-    default_port = 3130 if explicit_port != 3130 else 3131
+    default_port = default_https_intercept_port(explicit_port)
     return _clamp_port(tunables.get("https_intercept_port"), default_port)
 
 
@@ -3270,11 +3262,11 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
     explicit_port = _clamp_port(options.get("explicit_proxy_port"), 3128)
     intercept_port = _clamp_port(
         options.get("intercept_port"),
-        _default_intercept_port(explicit_port),
+        default_intercept_port(explicit_port),
     )
     intercept_enabled = coerce_config_bool(options.get("intercept_enabled_on"))
     if intercept_enabled and intercept_port == explicit_port:
-        intercept_port = _default_intercept_port(explicit_port)
+        intercept_port = default_intercept_port(explicit_port)
         if intercept_port == explicit_port:
             intercept_port = 3129 if explicit_port != 3129 else 3130
     options["explicit_proxy_port"] = explicit_port
@@ -3282,7 +3274,7 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
     options["intercept_enabled_on"] = intercept_enabled
     https_intercept_port = _clamp_port(
         options.get("https_intercept_port"),
-        3130 if explicit_port != 3130 else 3131,
+        default_https_intercept_port(explicit_port),
     )
     https_intercept_enabled = coerce_config_bool(
         options.get("https_intercept_enabled_on"),
@@ -3292,7 +3284,7 @@ def _normalize_template_options(options: OptionMap) -> OptionMap:
             explicit_port,
             intercept_port if options["intercept_enabled_on"] else None,
         }
-        https_intercept_port = _first_available_port(https_intercept_port, used_ports)
+        https_intercept_port = first_available_port(https_intercept_port, used_ports)
     options["https_intercept_port"] = https_intercept_port
     options["https_intercept_enabled_on"] = https_intercept_enabled
     options["https_intercept_splice_only_on"] = (

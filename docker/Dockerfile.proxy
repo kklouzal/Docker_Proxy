@@ -224,7 +224,7 @@ COPY web/services/adblock_artifacts.py \
     web/services/safe_browsing_v5.py \
     web/services/sql_identifiers.py \
     web/services/squid_core.py \
-    web/services/squid_host_sizing.py \
+    web/services/squid_host_overrides.py \
     web/services/squid_listeners.py \
     web/services/squid_transaction.py \
     web/services/ssl_compatibility_presets.py \

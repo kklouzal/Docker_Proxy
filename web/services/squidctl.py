@@ -13,12 +13,18 @@ from services.squid_config_forms import (
     DEFAULT_HTTP_UPGRADE_REQUEST_PROTOCOLS_RULES,
     DEFAULT_REFRESH_PATTERNS,
     _clamp_port,
-    _default_intercept_port,
-    _first_available_port,
     coerce_config_bool,
     max_squid_workers,
 )
 from services.squid_core import SquidController as _CoreSquidController
+from services.squid_host_overrides import (
+    default_https_intercept_port,
+    default_intercept_port,
+    first_available_port,
+    render_explicit_http_port,
+    render_https_intercept_block,
+    render_intercept_block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1252,52 +1258,14 @@ class SquidController(_CoreSquidController):
             "intercept_enabled": intercept_port is not None,
             "intercept_port": intercept_port
             if intercept_port is not None
-            else _default_intercept_port(explicit),
+            else default_intercept_port(explicit),
             "https_intercept_enabled": https_intercept_port is not None,
             "https_intercept_port": https_intercept_port
             if https_intercept_port is not None
-            else (3130 if explicit != 3130 else 3131),
+            else default_https_intercept_port(explicit),
             "https_intercept_splice_only": https_intercept_splice_only
             and https_intercept_port is not None,
         }
-
-    def _render_explicit_http_port(
-        self,
-        port: int,
-        dynamic_cert_mem_cache_size_mb: int,
-    ) -> list[str]:
-        return [
-            f"http_port 0.0.0.0:{_clamp_port(port, 3128)} ssl-bump \\",
-            "\tcert=/etc/squid/ssl/certs/ca.crt \\",
-            "\tkey=/etc/squid/ssl/certs/ca.key \\",
-            "\tgenerate-host-certificates=on \\",
-            f"\tdynamic_cert_mem_cache_size={max(0, int(dynamic_cert_mem_cache_size_mb))}MB",
-        ]
-
-    def _render_intercept_http_port_block(self, port: int) -> list[str]:
-        return [
-            "# BEGIN SQUID-UI INTERCEPT LISTENER",
-            "# HTTP NAT intercept listener. Requires external REDIRECT/DNAT rules; do not expose directly.",
-            f"http_port 0.0.0.0:{_clamp_port(port, 3129)} intercept",
-            "# END SQUID-UI INTERCEPT LISTENER",
-        ]
-
-    def _render_https_intercept_port_block(
-        self,
-        port: int,
-        dynamic_cert_mem_cache_size_mb: int,
-    ) -> list[str]:
-        return [
-            "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER",
-            "# HTTPS NAT intercept listener. Requires TCP/443 REDIRECT/DNAT and explicit operator consent.",
-            f"https_port 0.0.0.0:{_clamp_port(port, 3130)} intercept ssl-bump \\",
-            "\tname=https_intercept \\",
-            "\tcert=/etc/squid/ssl/certs/ca.crt \\",
-            "\tkey=/etc/squid/ssl/certs/ca.key \\",
-            "\tgenerate-host-certificates=on \\",
-            f"\tdynamic_cert_mem_cache_size={max(0, int(dynamic_cert_mem_cache_size_mb))}MB",
-            "# END SQUID-UI HTTPS INTERCEPT LISTENER",
-        ]
 
     def _render_http_port_listeners(
         self,
@@ -1309,14 +1277,14 @@ class SquidController(_CoreSquidController):
         intercept_enabled = coerce_config_bool(options.get("intercept_enabled_on"))
         intercept_port = _clamp_port(
             options.get("intercept_port"),
-            _default_intercept_port(explicit_port),
+            default_intercept_port(explicit_port),
         )
         https_intercept_enabled = coerce_config_bool(
             options.get("https_intercept_enabled_on"),
         )
         https_intercept_port = _clamp_port(
             options.get("https_intercept_port"),
-            3130 if explicit_port != 3130 else 3131,
+            default_https_intercept_port(explicit_port),
         )
         logical_lines = self._logical_config_lines(text)
         unmanaged_listener_ports: set[int] = set()
@@ -1364,12 +1332,12 @@ class SquidController(_CoreSquidController):
                 continue
             unmanaged_listener_ports.add(port)
 
-        explicit_port = _first_available_port(
+        explicit_port = first_available_port(
             explicit_port,
             unmanaged_listener_ports,
         )
         if intercept_enabled:
-            intercept_port = _first_available_port(
+            intercept_port = first_available_port(
                 intercept_port,
                 {explicit_port, *unmanaged_listener_ports},
             )
@@ -1378,7 +1346,7 @@ class SquidController(_CoreSquidController):
             intercept_port if intercept_enabled else None,
             *unmanaged_listener_ports,
         }
-        https_intercept_port = _first_available_port(
+        https_intercept_port = first_available_port(
             https_intercept_port,
             used_ports,
         )
@@ -1419,18 +1387,18 @@ class SquidController(_CoreSquidController):
                     and not replaced_explicit
                 ):
                     rendered_lines.extend(
-                        self._render_explicit_http_port(
+                        render_explicit_http_port(
                             explicit_port,
                             dynamic_cert_mem_cache_size_mb,
                         ),
                     )
                     if intercept_enabled:
                         rendered_lines.extend(
-                            self._render_intercept_http_port_block(intercept_port),
+                            render_intercept_block(intercept_port),
                         )
                     if https_intercept_enabled:
                         rendered_lines.extend(
-                            self._render_https_intercept_port_block(
+                            render_https_intercept_block(
                                 https_intercept_port,
                                 dynamic_cert_mem_cache_size_mb,
                             ),
@@ -1441,15 +1409,15 @@ class SquidController(_CoreSquidController):
             rendered_lines.extend(physical_lines)
 
         if not replaced_explicit:
-            prefix = self._render_explicit_http_port(
+            prefix = render_explicit_http_port(
                 explicit_port,
                 dynamic_cert_mem_cache_size_mb,
             )
             if intercept_enabled:
-                prefix.extend(self._render_intercept_http_port_block(intercept_port))
+                prefix.extend(render_intercept_block(intercept_port))
             if https_intercept_enabled:
                 prefix.extend(
-                    self._render_https_intercept_port_block(
+                    render_https_intercept_block(
                         https_intercept_port,
                         dynamic_cert_mem_cache_size_mb,
                     ),

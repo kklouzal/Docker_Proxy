@@ -30,8 +30,8 @@ from services.forwarding_canary_config import (
 )
 from services.logutil import log_exception_throttled
 from services.runtime_helpers import normalize_icap_worker_count, security_env_bool
-from services.squid_host_sizing import active_overrides as active_host_sizing_overrides
-from services.squid_host_sizing import apply_host_sizing
+from services.squid_host_overrides import active_overrides as active_host_overrides
+from services.squid_host_overrides import apply_host_overrides
 from services.squid_listeners import parse_squid_listeners
 from services.squid_transaction import (
     SquidTransactionJournal,
@@ -794,9 +794,9 @@ class SquidController:
             if re.search(acl_pattern, text, re.MULTILINE) and note_line not in text:
                 text = text.rstrip() + "\n" + note_line + "\n"
 
-        # Host resource sizing from this proxy's environment is authoritative
-        # over the saved config revision for the directives it owns.
-        text = apply_host_sizing(text, active_host_sizing_overrides())
+        # Host sizing and listener ports from this proxy's environment are
+        # authoritative over the saved config revision for what they own.
+        text = apply_host_overrides(text, active_host_overrides())
         return text if text.endswith("\n") else text + "\n"
 
     def _icap_include_path(self) -> Path:

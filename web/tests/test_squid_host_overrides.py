@@ -7,20 +7,21 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from services import squid_host_sizing
-from services.squid_host_sizing import (
+from services import squid_host_overrides
+from services.squid_host_overrides import (
     OVERRIDES_ENV,
-    apply_host_sizing,
+    HostOverrideError,
+    apply_host_overrides,
     decode_overrides,
     describe_overrides,
     encode_overrides,
-    parse_host_sizing,
+    parse_host_overrides,
 )
 
 from .mysql_test_utils import REPO_ROOT
 from .subprocess_test_utils import run_test_process
 
-HELPER = REPO_ROOT / "web/services/squid_host_sizing.py"
+HELPER = REPO_ROOT / "web/services/squid_host_overrides.py"
 
 # Mirrors the sizing-relevant shape of the production RB5009 revision.
 FLEET_REVISION = """http_port 0.0.0.0:3128 ssl-bump \\
@@ -50,7 +51,7 @@ RB5009 = {
 
 
 def test_parse_accepts_bounded_values_and_warns_on_invalid_ones() -> None:
-    overrides, warnings = parse_host_sizing(
+    overrides, warnings = parse_host_overrides(
         {
             "SQUID_WORKERS": "9",
             "SQUID_CACHE_MEM_MB": " 032 ",
@@ -80,7 +81,7 @@ def test_encoded_overrides_round_trip_and_reject_malformed_entries() -> None:
 
 
 def test_overlay_pins_every_owned_directive_and_keeps_the_rest() -> None:
-    rendered = apply_host_sizing(FLEET_REVISION, RB5009)
+    rendered = apply_host_overrides(FLEET_REVISION, RB5009)
 
     assert rendered == (
         "http_port 0.0.0.0:3128 ssl-bump \\\n"
@@ -99,20 +100,21 @@ def test_overlay_pins_every_owned_directive_and_keeps_the_rest() -> None:
         "cache_mem 32 MB\n"
         "max_filedescriptors 16384\n"
     )
-    assert apply_host_sizing(rendered, RB5009) == rendered
+    assert apply_host_overrides(rendered, RB5009) == rendered
 
 
 def test_overlay_without_overrides_keeps_the_revision_byte_identical() -> None:
-    assert apply_host_sizing(FLEET_REVISION, {}) is FLEET_REVISION
+    assert apply_host_overrides(FLEET_REVISION, {}) is FLEET_REVISION
     assert (
-        apply_host_sizing(FLEET_REVISION, {"SQUID_CACHE_MEM_MB": 256}) == FLEET_REVISION
+        apply_host_overrides(FLEET_REVISION, {"SQUID_CACHE_MEM_MB": 256})
+        == FLEET_REVISION
     )
 
 
 def test_overlay_appends_missing_directives_but_never_invents_a_cache_dir() -> None:
     revision = "http_port 3128\nhttp_access deny all\n"
 
-    rendered = apply_host_sizing(revision, RB5009)
+    rendered = apply_host_overrides(revision, RB5009)
 
     assert "cache_dir" not in rendered
     assert "dynamic_cert_mem_cache_size" not in rendered
@@ -125,7 +127,7 @@ def test_overlay_appends_missing_directives_but_never_invents_a_cache_dir() -> N
         "max_filedescriptors 16384\n"
         "sslcrtd_children 1 startup=1 idle=1 queue-size=32\n",
     )
-    assert apply_host_sizing(rendered, RB5009) == rendered
+    assert apply_host_overrides(rendered, RB5009) == rendered
 
 
 def test_overlay_leaves_ports_that_do_not_generate_certificates() -> None:
@@ -135,7 +137,8 @@ def test_overlay_leaves_ports_that_do_not_generate_certificates() -> None:
     )
 
     assert (
-        apply_host_sizing(revision, {"SQUID_DYNAMIC_CERT_MEM_CACHE_MB": 8}) == revision
+        apply_host_overrides(revision, {"SQUID_DYNAMIC_CERT_MEM_CACHE_MB": 8})
+        == revision
     )
 
 
@@ -162,7 +165,7 @@ def test_overlay_follows_squid_continuation_and_comment_rules() -> None:
         "SQUID_DYNAMIC_CERT_MEM_CACHE_MB": 16,
     }
 
-    rendered = apply_host_sizing(revision, overrides)
+    rendered = apply_host_overrides(revision, overrides)
 
     assert rendered == (
         "# see C:\\squid\\\n"
@@ -177,7 +180,7 @@ def test_overlay_follows_squid_continuation_and_comment_rules() -> None:
         "http_port 3129 ssl-bump generate-host-certificates=off \\\n"
         "\tgenerate-host-certificates=on dynamic_cert_mem_cache_size=16MB\n"
     )
-    assert apply_host_sizing(rendered, overrides) == rendered
+    assert apply_host_overrides(rendered, overrides) == rendered
 
 
 def test_normalize_is_idempotent_for_revisions_without_managed_logformats(
@@ -230,7 +233,7 @@ def test_apply_cli_rewrites_file_with_exported_overrides(tmp_path) -> None:
         env=env,
     )
 
-    assert config.read_text(encoding="utf-8") == apply_host_sizing(
+    assert config.read_text(encoding="utf-8") == apply_host_overrides(
         FLEET_REVISION,
         RB5009,
     )
@@ -324,14 +327,20 @@ def _sync_runtime(controller, revision_text: str, current: dict[str, str]):
 
 
 @pytest.mark.parametrize("raw_revision_running", [True, False])
+@pytest.mark.parametrize(
+    "overrides",
+    [RB5009, {**RB5009, "SQUID_HTTP_PORT": 3138, "SQUID_INTERCEPT_ENABLED": 1}],
+    ids=["sizing", "sizing+listeners"],
+)
 def test_sync_applies_overlay_once_and_then_reconciles_without_reapply(
     monkeypatch,
     raw_revision_running: bool,
+    overrides: dict[str, int],
 ) -> None:
     from services.squid_core import SquidController
 
     revision = _stable_fleet_revision(monkeypatch)
-    monkeypatch.setenv(OVERRIDES_ENV, encode_overrides(RB5009))
+    monkeypatch.setenv(OVERRIDES_ENV, encode_overrides(overrides))
     controller = SquidController()
     effective = controller.normalize_config_text(revision)
     # Either the fleet revision is still running (first boot after adding the
@@ -354,6 +363,9 @@ def test_sync_applies_overlay_once_and_then_reconciles_without_reapply(
 
     effective_sha = hashlib.sha256(effective.encode()).hexdigest()
     assert "cache_mem 32 MB" in effective
+    if "SQUID_HTTP_PORT" in overrides:
+        assert "http_port 0.0.0.0:3138 ssl-bump" in effective
+        assert "http_port 0.0.0.0:3139 intercept" in effective
     assert applied == ([effective] if raw_revision_running else [])
     assert first["ok"] is True
     assert first["current_config_sha"] == effective_sha
@@ -440,4 +452,243 @@ def test_module_has_no_project_imports_for_entrypoint_use() -> None:
     # The entrypoint runs the helper by path before PYTHONPATH-dependent code.
     source = HELPER.read_text(encoding="utf-8")
     assert "from services" not in source
-    assert squid_host_sizing.__file__.endswith("squid_host_sizing.py")
+    assert squid_host_overrides.__file__.endswith("squid_host_overrides.py")
+
+
+# The production RB5009 revision's listener (rev 272) and the Admin UI's
+# managed intercept blocks, as squidctl renders them.
+UI_EXPLICIT = (
+    "http_port 0.0.0.0:3128 ssl-bump \\\n"
+    "\tcert=/etc/squid/ssl/certs/ca.crt \\\n"
+    "\tkey=/etc/squid/ssl/certs/ca.key \\\n"
+    "\tgenerate-host-certificates=on \\\n"
+    "\tdynamic_cert_mem_cache_size=128MB\n"
+)
+UI_INTERCEPT = (
+    "# BEGIN SQUID-UI INTERCEPT LISTENER\n"
+    "# HTTP NAT intercept listener. Requires external REDIRECT/DNAT rules; do not expose directly.\n"
+    "http_port 0.0.0.0:3129 intercept\n"
+    "# END SQUID-UI INTERCEPT LISTENER\n"
+)
+UI_HTTPS_INTERCEPT = (
+    "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER\n"
+    "# HTTPS NAT intercept listener. Requires TCP/443 REDIRECT/DNAT and explicit operator consent.\n"
+    "https_port 0.0.0.0:3130 intercept ssl-bump \\\n"
+    "\tname=https_intercept \\\n"
+    "\tcert=/etc/squid/ssl/certs/ca.crt \\\n"
+    "\tkey=/etc/squid/ssl/certs/ca.key \\\n"
+    "\tgenerate-host-certificates=on \\\n"
+    "\tdynamic_cert_mem_cache_size=128MB\n"
+    "# END SQUID-UI HTTPS INTERCEPT LISTENER\n"
+)
+UI_SPLICE = (
+    "# Splice all traffic arriving on the dedicated HTTPS NAT intercept listener.\n"
+    "acl https_intercept_listener myportname https_intercept\n"
+    "ssl_bump splice https_intercept_listener\n"
+)
+SSL_RULES = "ssl_bump peek step1\ninclude /etc/squid/conf.d/10-sslfilter.conf\n"
+PROD_LISTENER_ENV = {"SQUID_INTERCEPT_ENABLED": "0", "SQUID_INTERCEPT_PORT": "3129"}
+
+
+def test_parse_listener_values_and_reject_ports_pinned_twice() -> None:
+    overrides, warnings = parse_host_overrides(
+        {
+            "SQUID_HTTP_PORT": "3128",
+            "SQUID_INTERCEPT_ENABLED": "Off",
+            "SQUID_INTERCEPT_PORT": "3128",
+            "SQUID_HTTPS_INTERCEPT_ENABLED": "maybe",
+            "SQUID_HTTPS_INTERCEPT_PORT": "70000",
+            "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY": "yes",
+        },
+    )
+
+    assert overrides == {
+        "SQUID_HTTP_PORT": 3128,
+        "SQUID_INTERCEPT_ENABLED": 0,
+        "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY": 1,
+    }
+    assert len(warnings) == 3
+    assert any(
+        "SQUID_INTERCEPT_PORT=3128 is already pinned by SQUID_HTTP_PORT" in w
+        for w in warnings
+    )
+    assert any(
+        "SQUID_HTTPS_INTERCEPT_ENABLED='maybe' is not a boolean" in w for w in warnings
+    )
+    assert any(
+        "SQUID_HTTPS_INTERCEPT_PORT=70000 is outside 1..65535" in w for w in warnings
+    )
+    assert decode_overrides(encode_overrides(overrides)) == overrides
+    assert describe_overrides(overrides) == [
+        {"env": "SQUID_HTTP_PORT", "directive": "http_port", "value": "3128"},
+        {
+            "env": "SQUID_INTERCEPT_ENABLED",
+            "directive": "http_port intercept",
+            "value": "off",
+        },
+        {
+            "env": "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY",
+            "directive": "ssl_bump splice https_intercept_listener",
+            "value": "on",
+        },
+    ]
+
+
+def test_production_listener_env_keeps_the_production_revision_byte_identical() -> None:
+    overrides, warnings = parse_host_overrides(PROD_LISTENER_ENV)
+    revision = UI_EXPLICIT + SSL_RULES
+
+    assert warnings == []
+    assert apply_host_overrides(revision, overrides) == revision
+
+
+def test_listener_env_matching_the_ui_rendering_is_a_no_op() -> None:
+    revision = (
+        UI_EXPLICIT
+        + UI_INTERCEPT
+        + UI_HTTPS_INTERCEPT
+        + "ssl_bump peek step1\n"
+        + UI_SPLICE
+    )
+    overrides, _warnings = parse_host_overrides(
+        {
+            "SQUID_HTTP_PORT": "3128",
+            "SQUID_INTERCEPT_ENABLED": "1",
+            "SQUID_INTERCEPT_PORT": "3129",
+            "SQUID_HTTPS_INTERCEPT_ENABLED": "1",
+            "SQUID_HTTPS_INTERCEPT_PORT": "3130",
+            "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY": "1",
+        },
+    )
+
+    assert apply_host_overrides(revision, overrides) == revision
+
+
+def test_listener_env_pins_ports_and_presence_over_the_revision() -> None:
+    revision = (
+        UI_EXPLICIT + UI_INTERCEPT + SSL_RULES + "http_port 127.0.0.1:3199 tproxy\n"
+    )
+    overrides = {
+        "SQUID_HTTP_PORT": 8080,
+        "SQUID_INTERCEPT_PORT": 8081,
+        "SQUID_HTTPS_INTERCEPT_PORT": 8443,
+        "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY": 1,
+        "SQUID_DYNAMIC_CERT_MEM_CACHE_MB": 16,
+    }
+
+    rendered = apply_host_overrides(revision, overrides)
+
+    assert rendered == (
+        UI_EXPLICIT.replace(":3128 ", ":8080 ").replace("=128MB", "=16MB")
+        + UI_INTERCEPT.replace(":3129 ", ":8081 ")
+        + UI_HTTPS_INTERCEPT.replace(":3130 ", ":8443 ").replace("=128MB", "=16MB")
+        + "ssl_bump peek step1\n"
+        + UI_SPLICE
+        + "include /etc/squid/conf.d/10-sslfilter.conf\n"
+        + "http_port 127.0.0.1:3199 tproxy\n"
+    )
+    assert apply_host_overrides(rendered, overrides) == rendered
+
+    disabled = apply_host_overrides(
+        rendered,
+        {"SQUID_INTERCEPT_ENABLED": 0, "SQUID_HTTPS_INTERCEPT_ENABLED": 0},
+    )
+    assert disabled == (
+        UI_EXPLICIT.replace(":3128 ", ":8080 ").replace("=128MB", "=16MB")
+        + SSL_RULES
+        + "http_port 127.0.0.1:3199 tproxy\n"
+    )
+
+
+def test_listener_env_adds_missing_listeners_with_ui_defaults() -> None:
+    revision = "http_port 3200 intercept\nhttp_access deny all\n"
+
+    rendered = apply_host_overrides(
+        revision,
+        {"SQUID_HTTP_PORT": 3199, "SQUID_INTERCEPT_ENABLED": 1},
+    )
+
+    # The explicit listener is the Admin UI's; the intercept default
+    # (explicit + 1 = 3200) moves off the revision's own listener.
+    assert rendered == (
+        UI_EXPLICIT.replace(":3128 ", ":3199 ")
+        + UI_INTERCEPT.replace(":3129 ", ":3201 ")
+        + "\n"
+        + revision
+    )
+    assert (
+        apply_host_overrides(
+            rendered, {"SQUID_HTTP_PORT": 3199, "SQUID_INTERCEPT_ENABLED": 1}
+        )
+        == rendered
+    )
+
+
+def test_listener_port_pin_keeps_host_and_options_across_continuations() -> None:
+    revision = "http_port \\\n\t[::1]:3128 ssl-bump\nhttps_port 3130 tls-cert=/c.pem\n"
+
+    assert apply_host_overrides(revision, {"SQUID_HTTP_PORT": 3138}) == (
+        "http_port [::1]:3138 ssl-bump\nhttps_port 3130 tls-cert=/c.pem\n"
+    )
+    assert apply_host_overrides("http_port 3128\n", {"SQUID_HTTP_PORT": 3138}) == (
+        "http_port 3138\n"
+    )
+
+
+def test_pinned_port_used_by_another_listener_is_a_conflict() -> None:
+    revision = UI_EXPLICIT + "https_port 3130 tls-cert=/c.pem\n"
+
+    with pytest.raises(HostOverrideError, match="SQUID_HTTP_PORT=3130"):
+        apply_host_overrides(revision, {"SQUID_HTTP_PORT": 3130})
+    # A pinned-off listener's port is not in use.
+    assert (
+        apply_host_overrides(
+            revision,
+            {"SQUID_INTERCEPT_ENABLED": 0, "SQUID_INTERCEPT_PORT": 3130},
+        )
+        == revision
+    )
+
+
+def test_conflicting_revision_fails_validation_and_apply_once(monkeypatch) -> None:
+    from services.squid_core import SquidController
+
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.setenv(OVERRIDES_ENV, encode_overrides({"SQUID_INTERCEPT_PORT": 3129}))
+    controller = SquidController()
+    good = controller.normalize_config_text(UI_EXPLICIT + SSL_RULES)
+    conflicting = UI_EXPLICIT.replace(":3128 ", ":3129 ") + SSL_RULES
+    current = {"text": good}
+    runtime, applied, marked = _sync_runtime(controller, conflicting, current)
+    results: list[SimpleNamespace] = []
+
+    def record_apply_result(_proxy_id, revision_id, *, ok, detail, applied_by):
+        results.append(SimpleNamespace(revision_id=revision_id, ok=ok, detail=detail))
+        return SimpleNamespace(application_id=len(results))
+
+    runtime.revisions.record_apply_result = record_apply_result
+    runtime.revisions.latest_apply = lambda _proxy_id: results[-1] if results else None
+    monkeypatch.setattr(
+        runtime_module,
+        "get_operation_ledger",
+        lambda: SimpleNamespace(
+            requeue_stale_applying=lambda *_args, **_kwargs: 0,
+            claim_pending=lambda *_args, **_kwargs: [],
+        ),
+    )
+
+    validation = runtime.validate_config_text(conflicting)
+    first = runtime.sync_from_db(force=False)
+    second = runtime.sync_from_db(force=False)
+
+    assert validation["ok"] is False
+    assert "SQUID_INTERCEPT_PORT=3129" in validation["detail"]
+    assert first["ok"] is False
+    assert "SQUID_INTERCEPT_PORT=3129" in first["detail"]
+    assert applied == []
+    assert current["text"] == good
+    assert set(marked) == {hashlib.sha256(good.encode()).hexdigest()}
+    assert [item.ok for item in results] == [False]
+    assert second["ok"] is False
+    assert "previously failed" in second["detail"]

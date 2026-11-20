@@ -259,284 +259,6 @@ replace_or_append_config_line() {
     fi
 }
 
-normalize_http_port_listeners() {
-    file_path="$1"
-    if [ ! -f "$file_path" ]; then
-        return 0
-    fi
-
-    SQUID_CFG_PATH="$file_path" python3 - <<'PY' || true
-from pathlib import Path
-import os
-import re
-
-
-def coerce_port(value, default):
-    try:
-        parsed = int(str(value or '').strip() or str(default))
-    except Exception:
-        parsed = int(default)
-    return min(65535, max(1, parsed))
-
-
-def default_intercept_port(explicit_port):
-    return explicit_port + 1 if explicit_port < 65535 else 3129
-
-
-def first_available_port(preferred, used_ports):
-    candidate = coerce_port(preferred, 3130)
-    for _ in range(65535):
-        if candidate not in used_ports:
-            return candidate
-        candidate = 1 if candidate >= 65535 else candidate + 1
-    raise ValueError('No available TCP listener ports remain.')
-
-
-def enabled(value):
-    return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
-
-
-def logical_lines(text):
-    out = []
-    pending = []
-    for raw in text.splitlines():
-        pending.append(raw)
-        if raw.rstrip().endswith('\\'):
-            continue
-        logical = ' '.join(line.rstrip().rstrip('\\').strip() for line in pending).strip()
-        out.append((pending, logical))
-        pending = []
-    if pending:
-        logical = ' '.join(line.rstrip().rstrip('\\').strip() for line in pending).strip()
-        out.append((pending, logical))
-    return out
-
-
-def extract_dynamic_cache_mb(text):
-    match = re.search(r'dynamic_cert_mem_cache_size\s*=\s*(\d+)\s*MB', text or '', re.I)
-    if match:
-        try:
-            return max(0, int(match.group(1)))
-        except Exception:
-            pass
-    try:
-        return max(0, int(str(os.environ.get('SQUID_DYNAMIC_CERT_MEM_CACHE_MB') or '').strip() or '128'))
-    except Exception:
-        return 128
-
-
-def extract_port(token):
-    token = str(token or '').strip()
-    if token.isdigit():
-        return coerce_port(token, 3128)
-    if token.startswith('[') and ']:' in token:
-        candidate = token.rsplit(':', 1)[1]
-    elif ':' in token:
-        candidate = token.rsplit(':', 1)[1]
-    else:
-        return None
-    if not candidate.isdigit():
-        return None
-    return coerce_port(candidate, 3128)
-
-
-def explicit_lines(port, dynamic_cache_mb):
-    return [
-        f'http_port 0.0.0.0:{port} ssl-bump \\',
-        '\tcert=/etc/squid/ssl/certs/ca.crt \\',
-        '\tkey=/etc/squid/ssl/certs/ca.key \\',
-        '\tgenerate-host-certificates=on \\',
-        f'\tdynamic_cert_mem_cache_size={max(0, int(dynamic_cache_mb))}MB',
-    ]
-
-
-def intercept_block(port):
-    return [
-        '# BEGIN SQUID-UI INTERCEPT LISTENER',
-        '# HTTP NAT intercept listener. Requires external REDIRECT/DNAT rules; do not expose directly.',
-        f'http_port 0.0.0.0:{port} intercept',
-        '# END SQUID-UI INTERCEPT LISTENER',
-    ]
-
-
-def https_intercept_block(port, dynamic_cache_mb):
-    return [
-        '# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER',
-        '# HTTPS NAT intercept listener. Requires TCP/443 REDIRECT/DNAT and explicit operator consent.',
-        f'https_port 0.0.0.0:{port} intercept ssl-bump \\',
-        '\tname=https_intercept \\',
-        '\tcert=/etc/squid/ssl/certs/ca.crt \\',
-        '\tkey=/etc/squid/ssl/certs/ca.key \\',
-        '\tgenerate-host-certificates=on \\',
-        f'	dynamic_cert_mem_cache_size={max(0, int(dynamic_cache_mb))}MB',
-        '# END SQUID-UI HTTPS INTERCEPT LISTENER',
-    ]
-
-
-def https_intercept_splice_block():
-    return [
-        '# BEGIN SQUID-UI HTTPS INTERCEPT SPLICE',
-        '# Splice all traffic arriving on the dedicated HTTPS NAT intercept listener.',
-        'acl https_intercept_listener myportname https_intercept',
-        'ssl_bump splice https_intercept_listener',
-        '# END SQUID-UI HTTPS INTERCEPT SPLICE',
-    ]
-
-
-def strip_managed_https_splice(lines):
-    stripped = []
-    skipping = False
-    managed_exact = {
-        'acl https_intercept_listener myportname https_intercept',
-        'ssl_bump splice https_intercept_listener',
-    }
-    for line in lines:
-        if '# BEGIN SQUID-UI HTTPS INTERCEPT SPLICE' in line:
-            skipping = True
-            continue
-        if skipping:
-            if '# END SQUID-UI HTTPS INTERCEPT SPLICE' in line:
-                skipping = False
-            continue
-        if line.strip() in managed_exact:
-            continue
-        stripped.append(line)
-    return stripped
-
-
-def insert_https_splice_block(lines):
-    block = https_intercept_splice_block()
-    for index, line in enumerate(lines):
-        if line.strip().lower() == 'ssl_bump peek step1':
-            return lines[: index + 1] + block + lines[index + 1 :]
-    for index, line in enumerate(lines):
-        if line.strip().lower().startswith('include /etc/squid/conf.d/10-sslfilter.conf'):
-            return lines[:index] + block + lines[index:]
-    return lines + [''] + block
-
-
-def config_has_https_intercept(text):
-    for _physical, logical in logical_lines(text):
-        stripped = logical.strip()
-        if not stripped or stripped.startswith('#') or not stripped.lower().startswith('https_port '):
-            continue
-        parts = stripped.split()
-        modes = {part.strip().lower() for part in parts[2:]}
-        if 'intercept' in modes:
-            return True
-    return False
-
-
-def first_explicit_port(text):
-    for _physical, logical in logical_lines(text):
-        stripped = logical.strip()
-        if not stripped or stripped.startswith('#') or not stripped.lower().startswith('http_port '):
-            continue
-        parts = stripped.split()
-        if len(parts) < 2:
-            continue
-        modes = {part.strip().lower() for part in parts[2:]}
-        if 'intercept' in modes or 'tproxy' in modes:
-            continue
-        port = extract_port(parts[1])
-        if port:
-            return port
-    return None
-
-
-path = Path(os.environ['SQUID_CFG_PATH'])
-text = path.read_text(encoding='utf-8')
-explicit_env = str(os.environ.get('SQUID_HTTP_PORT') or '').strip()
-intercept_env = str(os.environ.get('SQUID_INTERCEPT_ENABLED') or '').strip()
-intercept_port_env = str(os.environ.get('SQUID_INTERCEPT_PORT') or '').strip()
-https_intercept_env = str(os.environ.get('SQUID_HTTPS_INTERCEPT_ENABLED') or '').strip()
-https_intercept_port_env = str(os.environ.get('SQUID_HTTPS_INTERCEPT_PORT') or '').strip()
-https_intercept_splice_env = str(os.environ.get('SQUID_HTTPS_INTERCEPT_SPLICE_ONLY') or '').strip()
-if not any((explicit_env, intercept_env, intercept_port_env, https_intercept_env, https_intercept_port_env, https_intercept_splice_env)):
-    raise SystemExit(0)
-
-explicit_env_set = bool(explicit_env)
-intercept_env_set = bool(intercept_env)
-https_intercept_env_set = bool(https_intercept_env)
-https_intercept_splice_env_set = bool(https_intercept_splice_env)
-intercept_on = enabled(intercept_env) if intercept_env_set else None
-https_intercept_on = enabled(https_intercept_env) if https_intercept_env_set else None
-https_intercept_splice_on = enabled(https_intercept_splice_env) if https_intercept_splice_env_set else None
-explicit_port = coerce_port(explicit_env, first_explicit_port(text) or 3128)
-intercept_port = coerce_port(intercept_port_env, default_intercept_port(explicit_port))
-https_intercept_port = coerce_port(https_intercept_port_env, 3130 if explicit_port != 3130 else 3131)
-dynamic_cache_mb = extract_dynamic_cache_mb(text)
-existing_https_intercept = config_has_https_intercept(text)
-https_intercept_effective = https_intercept_on is True or (https_intercept_on is None and (https_intercept_port_env or existing_https_intercept))
-
-rendered = []
-replaced_explicit = False
-skipping_intercept = False
-for physical, logical in logical_lines(text):
-    if any('# BEGIN SQUID-UI INTERCEPT LISTENER' in line for line in physical):
-        if intercept_env_set or intercept_port_env:
-            skipping_intercept = True
-        else:
-            rendered.extend(physical)
-            continue
-    if any('# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER' in line for line in physical):
-        if https_intercept_env_set or https_intercept_port_env:
-            skipping_intercept = True
-        else:
-            rendered.extend(physical)
-            continue
-    if skipping_intercept:
-        if any('# END SQUID-UI INTERCEPT LISTENER' in line for line in physical) or any('# END SQUID-UI HTTPS INTERCEPT LISTENER' in line for line in physical):
-            skipping_intercept = False
-        continue
-
-    stripped = logical.strip()
-    if stripped and not stripped.startswith('#') and stripped.lower().startswith('http_port '):
-        parts = stripped.split()
-        modes = {part.strip().lower() for part in parts[2:]}
-        if 'intercept' not in modes and 'tproxy' not in modes and not replaced_explicit:
-            current_explicit_port = extract_port(parts[1]) or explicit_port
-            if explicit_env_set:
-                rendered.extend(explicit_lines(explicit_port, dynamic_cache_mb))
-                current_explicit_port = explicit_port
-            else:
-                rendered.extend(physical)
-            if intercept_port == current_explicit_port:
-                intercept_port = default_intercept_port(current_explicit_port)
-                if intercept_port == current_explicit_port:
-                    intercept_port = 3129 if current_explicit_port != 3129 else 3130
-            used_ports = {current_explicit_port}
-            if intercept_on is True or (intercept_on is None and intercept_port_env):
-                rendered.extend(intercept_block(intercept_port))
-                used_ports.add(intercept_port)
-            https_intercept_port = first_available_port(https_intercept_port, used_ports)
-            if https_intercept_on is True or (https_intercept_on is None and https_intercept_port_env):
-                rendered.extend(https_intercept_block(https_intercept_port, dynamic_cache_mb))
-            replaced_explicit = True
-            continue
-
-    rendered.extend(physical)
-
-if not replaced_explicit:
-    prefix = explicit_lines(explicit_port, dynamic_cache_mb)
-    used_ports = {explicit_port}
-    if intercept_on is True or (intercept_on is None and intercept_port_env):
-        prefix.extend(intercept_block(intercept_port))
-        used_ports.add(intercept_port)
-    https_intercept_port = first_available_port(https_intercept_port, used_ports)
-    if https_intercept_on is True or (https_intercept_on is None and https_intercept_port_env):
-        prefix.extend(https_intercept_block(https_intercept_port, dynamic_cache_mb))
-    rendered = prefix + [''] + rendered
-
-if https_intercept_splice_env_set or https_intercept_on is False:
-    rendered = strip_managed_https_splice(rendered)
-    if https_intercept_splice_on is True and https_intercept_effective:
-        rendered = insert_https_splice_block(rendered)
-
-path.write_text('\n'.join(rendered) + ('\n' if text.endswith('\n') else ''), encoding='utf-8')
-PY
-}
-
 apply_squid_perf_tuning() {
     file_path="$1"
     if [ ! -f "$file_path" ]; then
@@ -556,10 +278,11 @@ apply_squid_perf_tuning() {
         replace_or_append_config_line "$file_path" "max_filedescriptors" "$SQUID_MAX_FILEDESCRIPTORS"
     fi
 
-    # Pin the host resource sizing overrides last. The proxy runtime applies the
-    # same overlay whenever it normalizes squid.conf, so this file is already the
-    # effective config for the active revision.
-    python3 /app/services/squid_host_sizing.py apply "$file_path"
+    # Pin the host sizing and listener overrides last. The proxy runtime applies
+    # the same overlay whenever it normalizes squid.conf, so this file is already
+    # the effective config for the active revision. A host-pinned listener port
+    # that collides with another listener of this config stops the boot.
+    python3 /app/services/squid_host_overrides.py apply "$file_path"
 }
 
 # The adblock compile and policy include helpers below read MySQL. Probe it once
@@ -639,16 +362,17 @@ if [ -n "$TEMPLATE" ] && [ ! -f "$PERSISTED_SQUID_CONF_PATH" ]; then
     fi
 fi
 
-# Host resource sizing: validate the operator's sizing variables once, before
-# the defaults below are derived into the same names, and export the accepted
-# set for every proxy process. Set values pin their directives over the config
-# revision (services/squid_host_sizing.py); invalid values are ignored with a
-# warning.
-SQUID_HOST_SIZING_OVERRIDES="$(python3 /app/services/squid_host_sizing.py capture)"
-export SQUID_HOST_SIZING_OVERRIDES
+# Host configuration overrides: validate the operator's sizing and listener
+# variables once, before the defaults below are derived into the same names,
+# and export the accepted set for every proxy process. Set values pin what they
+# own over the config revision (services/squid_host_overrides.py); invalid
+# values are ignored with a warning. Router REDIRECT/DNAT rules and container
+# port publishing stay deployment-owned.
+SQUID_HOST_CONFIG_OVERRIDES="$(python3 /app/services/squid_host_overrides.py capture)"
+export SQUID_HOST_CONFIG_OVERRIDES
 
-host_sizing_value() {
-    for pair in $SQUID_HOST_SIZING_OVERRIDES; do
+host_override_value() {
+    for pair in $SQUID_HOST_CONFIG_OVERRIDES; do
         case "$pair" in
             "$1="*)
                 printf '%s' "${pair#*=}"
@@ -664,7 +388,7 @@ host_sizing_value() {
 #   2) persisted squid.conf workers line (web UI / config file authority)
 #   3) current config/template value
 #   4) safe fallback of 1
-EXPLICIT_SQUID_WORKERS="$(host_sizing_value SQUID_WORKERS)"
+EXPLICIT_SQUID_WORKERS="$(host_override_value SQUID_WORKERS)"
 PERSISTED_SQUID_WORKERS="$(extract_squid_workers_from_file "$PERSISTED_SQUID_CONF_PATH")"
 CONFIG_SQUID_WORKERS="$(extract_squid_workers_from_file /etc/squid/squid.conf)"
 
@@ -682,13 +406,13 @@ export SQUID_WORKERS="$WORKERS"
 
 # Derive the remaining sizing defaults from the resolved worker count unless a
 # host override pins them. The defaults only fill directives a config lacks.
-SQUID_CACHE_MEM_MB="$(host_sizing_value SQUID_CACHE_MEM_MB)"
+SQUID_CACHE_MEM_MB="$(host_override_value SQUID_CACHE_MEM_MB)"
 export SQUID_CACHE_MEM_MB="${SQUID_CACHE_MEM_MB:-256}"
-SQUID_SSLCRTD_CHILDREN="$(host_sizing_value SQUID_SSLCRTD_CHILDREN)"
+SQUID_SSLCRTD_CHILDREN="$(host_override_value SQUID_SSLCRTD_CHILDREN)"
 export SQUID_SSLCRTD_CHILDREN="${SQUID_SSLCRTD_CHILDREN:-$(recommend_sslcrtd_children "$WORKERS")}"
-SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$(host_sizing_value SQUID_DYNAMIC_CERT_MEM_CACHE_MB)"
+SQUID_DYNAMIC_CERT_MEM_CACHE_MB="$(host_override_value SQUID_DYNAMIC_CERT_MEM_CACHE_MB)"
 export SQUID_DYNAMIC_CERT_MEM_CACHE_MB="${SQUID_DYNAMIC_CERT_MEM_CACHE_MB:-$(recommend_dynamic_cert_cache_mb "$WORKERS")}"
-SQUID_MAX_FILEDESCRIPTORS="$(host_sizing_value SQUID_MAX_FILEDESCRIPTORS)"
+SQUID_MAX_FILEDESCRIPTORS="$(host_override_value SQUID_MAX_FILEDESCRIPTORS)"
 export SQUID_MAX_FILEDESCRIPTORS="${SQUID_MAX_FILEDESCRIPTORS:-$(recommend_nofile "$WORKERS")}"
 if [ -z "${ULIMIT_NOFILE:-}" ]; then
     export ULIMIT_NOFILE="$SQUID_MAX_FILEDESCRIPTORS"
@@ -770,11 +494,6 @@ fi
 if [ "$IPV6_DISABLED" = "1" ] && [ -f /etc/squid/squid.conf ]; then
     sed -i -E 's#^([[:space:]]*http_port[[:space:]]+)3128([[:space:]]+ssl-bump.*)$#\10.0.0.0:3128\2#' /etc/squid/squid.conf || true
 fi
-
-# Optional listener shaping: explicit proxy traffic stays on SQUID_HTTP_PORT,
-# while NAT-redirected plain HTTP can be accepted on a separate intercept port.
-# Firewall/router REDIRECT or DNAT rules are intentionally deployment-owned.
-normalize_http_port_listeners /etc/squid/squid.conf
 
 # Performance + privacy: keep the live UI logformat lean and credential-free.
 # Diagnostic logging includes only bounded response metadata that drives
@@ -1378,7 +1097,8 @@ HEALTHCHECK_ADBLOCK_ICAP_REQUIRED=0
 if [ "$ADBLOCK_BYPASS" = "off" ]; then
     HEALTHCHECK_ADBLOCK_ICAP_REQUIRED=1
 fi
-HEALTHCHECK_SQUID_HTTP_PORT="$(sanitize_port "${SQUID_HTTP_PORT:-3128}")"
+# Fallback only: the healthcheck probes the listeners of the effective squid.conf.
+HEALTHCHECK_SQUID_HTTP_PORT="$(host_override_value SQUID_HTTP_PORT)"
 mkdir -p "$(dirname "$HEALTHCHECK_ENV_FILE")"
 {
     printf 'SQUID_WORKERS=%s\n' "$WORKERS"

@@ -85,9 +85,12 @@ from services.squid_core import (
     SquidController,
     _exclusive_squid_lifecycle_lock,
 )
-from services.squid_host_sizing import active_overrides as active_host_sizing_overrides
-from services.squid_host_sizing import (
-    describe_overrides as describe_host_sizing_overrides,
+from services.squid_host_overrides import (
+    HostOverrideError,
+)
+from services.squid_host_overrides import active_overrides as active_host_overrides
+from services.squid_host_overrides import (
+    describe_overrides as describe_host_overrides,
 )
 from services.squid_transaction import SquidTransactionJournal, default_journal_path
 from services.ssl_errors_store import get_ssl_errors_store
@@ -2510,7 +2513,15 @@ class ProxyRuntime:
         )
 
     def validate_config_text(self, config_text: str) -> dict[str, Any]:
-        normalized = self.controller.normalize_config_text(config_text or "")
+        try:
+            normalized = self.controller.normalize_config_text(config_text or "")
+        except HostOverrideError as exc:
+            return {
+                "ok": False,
+                "proxy_id": self.proxy_id,
+                "detail": str(exc),
+                "config_sha256": "",
+            }
         ok, detail = self.controller.validate_config_text(normalized)
         return {
             "ok": bool(ok),
@@ -4507,8 +4518,8 @@ class ProxyRuntime:
                 "active_revision_sha": active_revision_sha,
                 "effective_config_sha": effective_config_sha,
                 "current_config_sha": current_sha,
-                "host_config_overrides": describe_host_sizing_overrides(
-                    active_host_sizing_overrides(),
+                "host_config_overrides": describe_host_overrides(
+                    active_host_overrides(),
                 ),
                 "active_certificate_revision_id": active_certificate.revision_id
                 if active_certificate
@@ -5221,6 +5232,9 @@ class ProxyRuntime:
                         normalized_revision_text.encode("utf-8", errors="replace"),
                     ).hexdigest()
                     normalized_config_current = normalized_revision_sha == current_sha
+            except HostOverrideError:
+                # Reported once as the revision's failed apply below.
+                normalized_revision_text = ""
             except Exception:
                 log_exception_throttled(
                     logger,
@@ -5446,16 +5460,28 @@ class ProxyRuntime:
                 **operation_evidence,
             }
 
+        host_override_conflict = ""
         if not normalized_revision_text:
-            normalized_revision_text = self.controller.normalize_config_text(
-                revision.config_text,
-            )
-            normalized_revision_sha = hashlib.sha256(
-                normalized_revision_text.encode("utf-8", errors="replace"),
-            ).hexdigest()
+            try:
+                normalized_revision_text = self.controller.normalize_config_text(
+                    revision.config_text,
+                )
+            except HostOverrideError as exc:
+                # Recorded as a failed apply below, so the revision is not
+                # retried until it or the container environment changes.
+                host_override_conflict = str(exc)
+            else:
+                normalized_revision_sha = hashlib.sha256(
+                    normalized_revision_text.encode("utf-8", errors="replace"),
+                ).hexdigest()
 
-        ok, config_detail = self.controller.apply_config_text(normalized_revision_text)
-        self._invalidate_health_cache()
+        if host_override_conflict:
+            ok, config_detail = False, host_override_conflict
+        else:
+            ok, config_detail = self.controller.apply_config_text(
+                normalized_revision_text,
+            )
+            self._invalidate_health_cache()
         if config_detail.strip():
             detail_parts.append(config_detail.strip())
         if ok and reload_required_after_runtime_materialization():

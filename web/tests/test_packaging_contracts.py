@@ -56,12 +56,30 @@ assert entrypoint.application is entrypoint.app
     assert result.returncode == 0, result.stderr
 
 
-def _entrypoint_listener_normalizer_script() -> str:
-    text = _read("docker/entrypoint.sh")
-    start_marker = "SQUID_CFG_PATH=\"$file_path\" python3 - <<'PY' || true\n"
-    start = text.index(start_marker) + len(start_marker)
-    end = text.index("\nPY\n}", start)
-    return text[start:end]
+def _run_host_override_helper(config_path, environ: dict[str, str]):
+    """Run the entrypoint's capture + apply helper steps on ``config_path``."""
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith("SQUID_")
+    }
+    env.update(environ)
+    helper = str(REPO_ROOT / "web/services/squid_host_overrides.py")
+    captured = run_test_process(
+        [sys.executable, helper, "capture"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    env["SQUID_HOST_CONFIG_OVERRIDES"] = captured.stdout.strip()
+    applied = run_test_process(
+        [sys.executable, helper, "apply", str(config_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+    return captured, applied
 
 
 def _entrypoint_shell_block(start_marker: str, end_marker: str) -> str:
@@ -71,8 +89,8 @@ def _entrypoint_shell_block(start_marker: str, end_marker: str) -> str:
     return text[start:end]
 
 
-def _host_sizing_helper_command() -> str:
-    return f"{sys.executable} {REPO_ROOT / 'web/services/squid_host_sizing.py'}"
+def _host_overrides_helper_command() -> str:
+    return f"{sys.executable} {REPO_ROOT / 'web/services/squid_host_overrides.py'}"
 
 
 def _entrypoint_perf_tuning_script() -> str:
@@ -84,7 +102,7 @@ def _entrypoint_perf_tuning_script() -> str:
             ),
             _entrypoint_shell_block(
                 "replace_or_append_config_line() {",
-                "\nnormalize_http_port_listeners() {",
+                "\napply_squid_perf_tuning() {",
             ),
             _entrypoint_shell_block(
                 "apply_squid_perf_tuning() {",
@@ -92,7 +110,8 @@ def _entrypoint_perf_tuning_script() -> str:
             ),
         ],
     ).replace(
-        "python3 /app/services/squid_host_sizing.py", _host_sizing_helper_command()
+        "python3 /app/services/squid_host_overrides.py",
+        _host_overrides_helper_command(),
     )
 
 
@@ -125,7 +144,7 @@ def _run_entrypoint_perf_tuning(config_path, *, overrides: str) -> None:
         "SQUID_MAX_FILEDESCRIPTORS=65536\n"
         'apply_squid_perf_tuning "$1"\n'
     )
-    env = {**os.environ, "SQUID_HOST_SIZING_OVERRIDES": overrides}
+    env = {**os.environ, "SQUID_HOST_CONFIG_OVERRIDES": overrides}
     run_test_process(
         ["/bin/sh", "-c", script, "entrypoint-perf-tuning-test", str(config_path)],
         check=True,
@@ -2107,7 +2126,7 @@ def test_proxy_entrypoint_perf_tuning_synthesizes_sslcrtd_child_options(
 
 
 _ENTRYPOINT_SIZING_NAMES = (
-    "SQUID_HOST_SIZING_OVERRIDES",
+    "SQUID_HOST_CONFIG_OVERRIDES",
     "SQUID_WORKERS",
     "SQUID_CACHE_MEM_MB",
     "SQUID_SSLCRTD_CHILDREN",
@@ -2124,12 +2143,12 @@ def _run_entrypoint_sizing_resolution(tmp_path, **env_values: str) -> dict[str, 
             "set -eu",
             _entrypoint_shell_block("clamp_int() {", "\nsanitize_bounded_int() {"),
             _entrypoint_shell_block(
-                "# Host resource sizing: validate the operator's sizing variables once",
+                "# Host configuration overrides: validate the operator's sizing and listener",
                 '\nif [ -z "${ULIMIT_NOFILE:-}" ]; then',
             )
             .replace(
-                "python3 /app/services/squid_host_sizing.py",
-                _host_sizing_helper_command(),
+                "python3 /app/services/squid_host_overrides.py",
+                _host_overrides_helper_command(),
             )
             .replace("/etc/squid/squid.conf", str(tmp_path / "missing.conf")),
             "printf '%s\\n' "
@@ -2161,7 +2180,7 @@ def test_proxy_entrypoint_exports_validated_host_sizing_overrides(tmp_path) -> N
         SQUID_SSLCRTD_CHILDREN="1",
     )
 
-    assert values["SQUID_HOST_SIZING_OVERRIDES"] == (
+    assert values["SQUID_HOST_CONFIG_OVERRIDES"] == (
         "SQUID_CACHE_MEM_MB=32 SQUID_SSLCRTD_CHILDREN=1"
     )
     assert "SQUID_WORKERS=9 is outside 1..4" in values["stderr"]
@@ -2176,7 +2195,7 @@ def test_proxy_entrypoint_exports_validated_host_sizing_overrides(tmp_path) -> N
 def test_proxy_entrypoint_without_sizing_env_exports_no_overrides(tmp_path) -> None:
     values = _run_entrypoint_sizing_resolution(tmp_path, SQUID_CACHE_MEM_MB="lots")
 
-    assert values["SQUID_HOST_SIZING_OVERRIDES"] == ""
+    assert values["SQUID_HOST_CONFIG_OVERRIDES"] == ""
     assert values["SQUID_CACHE_MEM_MB"] == "256"
     assert "SQUID_CACHE_MEM_MB='lots'" in values["stderr"]
 
@@ -2217,24 +2236,20 @@ def test_proxy_entrypoint_env_can_materialize_https_intercept_listener(
         encoding="utf-8",
     )
 
-    env = os.environ.copy()
-    env.update(
+    _captured, applied = _run_host_override_helper(
+        config,
         {
-            "SQUID_CFG_PATH": str(config),
             "SQUID_HTTPS_INTERCEPT_ENABLED": "1",
             "SQUID_HTTPS_INTERCEPT_PORT": "3130",
         },
     )
-    run_test_process(
-        [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
-        check=True,
-        env=env,
-    )
 
+    assert applied.returncode == 0, applied.stderr
     rendered = config.read_text(encoding="utf-8")
     assert "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER" in rendered
     assert "https_port 0.0.0.0:3130 intercept ssl-bump" in rendered
     assert "name=https_intercept" in rendered
+    assert "\tdynamic_cert_mem_cache_size=256MB\n# END SQUID-UI HTTPS" in rendered
 
 
 def test_proxy_entrypoint_env_can_toggle_https_intercept_splice_rule(tmp_path) -> None:
@@ -2247,22 +2262,15 @@ def test_proxy_entrypoint_env_can_toggle_https_intercept_splice_rule(tmp_path) -
         "ssl_bump bump step3\n",
         encoding="utf-8",
     )
+    env = {
+        "SQUID_HTTPS_INTERCEPT_ENABLED": "1",
+        "SQUID_HTTPS_INTERCEPT_PORT": "3130",
+        "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY": "1",
+    }
 
-    env = os.environ.copy()
-    env.update(
-        {
-            "SQUID_CFG_PATH": str(config),
-            "SQUID_HTTPS_INTERCEPT_ENABLED": "1",
-            "SQUID_HTTPS_INTERCEPT_PORT": "3130",
-            "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY": "1",
-        },
-    )
-    run_test_process(
-        [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
-        check=True,
-        env=env,
-    )
+    _captured, applied = _run_host_override_helper(config, env)
 
+    assert applied.returncode == 0, applied.stderr
     rendered = config.read_text(encoding="utf-8")
     assert "ssl_bump peek step1" in rendered
     assert "acl https_intercept_listener myportname https_intercept" in rendered
@@ -2274,13 +2282,12 @@ def test_proxy_entrypoint_env_can_toggle_https_intercept_splice_rule(tmp_path) -
         "include /etc/squid/conf.d/10-sslfilter.conf",
     )
 
-    env["SQUID_HTTPS_INTERCEPT_SPLICE_ONLY"] = "0"
-    run_test_process(
-        [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
-        check=True,
-        env=env,
+    _captured, applied = _run_host_override_helper(
+        config,
+        {**env, "SQUID_HTTPS_INTERCEPT_SPLICE_ONLY": "0"},
     )
 
+    assert applied.returncode == 0, applied.stderr
     rendered = config.read_text(encoding="utf-8")
     assert "ssl_bump splice https_intercept_listener" not in rendered
 
@@ -2309,50 +2316,61 @@ def test_proxy_entrypoint_env_disabling_https_intercept_removes_managed_splice(
         encoding="utf-8",
     )
 
-    env = os.environ.copy()
-    env.update(
-        {
-            "SQUID_CFG_PATH": str(config),
-            "SQUID_HTTPS_INTERCEPT_ENABLED": "0",
-        },
-    )
-    run_test_process(
-        [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
-        check=True,
-        env=env,
+    _captured, applied = _run_host_override_helper(
+        config,
+        {"SQUID_HTTPS_INTERCEPT_ENABLED": "0"},
     )
 
-    rendered = config.read_text(encoding="utf-8")
-    assert "# BEGIN SQUID-UI HTTPS INTERCEPT LISTENER" not in rendered
-    assert "# BEGIN SQUID-UI HTTPS INTERCEPT SPLICE" not in rendered
-    assert "https_intercept_listener" not in rendered
+    assert applied.returncode == 0, applied.stderr
+    assert config.read_text(encoding="utf-8") == (
+        "http_port 0.0.0.0:3128 ssl-bump\nssl_bump peek step1\n"
+    )
 
 
-def test_proxy_entrypoint_env_avoids_listener_port_collisions(tmp_path) -> None:
+def test_proxy_entrypoint_env_rejects_duplicate_pinned_ports_and_shifts_defaults(
+    tmp_path,
+) -> None:
     config = tmp_path / "squid.conf"
     config.write_text("http_port 0.0.0.0:3130 ssl-bump\n", encoding="utf-8")
 
-    env = os.environ.copy()
-    env.update(
+    captured, applied = _run_host_override_helper(
+        config,
         {
-            "SQUID_CFG_PATH": str(config),
             "SQUID_INTERCEPT_ENABLED": "1",
             "SQUID_INTERCEPT_PORT": "3131",
             "SQUID_HTTPS_INTERCEPT_ENABLED": "1",
             "SQUID_HTTPS_INTERCEPT_PORT": "3131",
         },
     )
-    run_test_process(
-        [sys.executable, "-c", _entrypoint_listener_normalizer_script()],
-        check=True,
-        env=env,
-        timeout=5,
-    )
 
+    # A port pinned twice cannot be honoured for both listeners: the later
+    # variable is ignored, and the unpinned listener's default port moves off
+    # the ports already in use.
+    assert "SQUID_HTTPS_INTERCEPT_PORT=3131 is already pinned" in captured.stderr
+    assert applied.returncode == 0, applied.stderr
     rendered = config.read_text(encoding="utf-8")
     assert "http_port 0.0.0.0:3130 ssl-bump" in rendered
     assert "http_port 0.0.0.0:3131 intercept" in rendered
     assert "https_port 0.0.0.0:3132 intercept ssl-bump" in rendered
+
+
+def test_proxy_entrypoint_stops_on_pinned_port_used_by_another_listener(
+    tmp_path,
+) -> None:
+    original = "http_port 0.0.0.0:3128 ssl-bump\nhttp_port 3129 tproxy\n"
+    config = tmp_path / "squid.conf"
+    config.write_text(original, encoding="utf-8")
+
+    _captured, applied = _run_host_override_helper(
+        config,
+        {"SQUID_INTERCEPT_PORT": "3129"},
+    )
+
+    assert applied.returncode == 1
+    assert "ERROR: Host-pinned listener port(s) SQUID_INTERCEPT_PORT=3129" in (
+        applied.stderr
+    )
+    assert config.read_text(encoding="utf-8") == original
 
 
 def test_public_pac_listener_runs_apart_from_management_and_loads_no_database() -> None:

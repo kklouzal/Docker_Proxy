@@ -59,9 +59,10 @@ _SQUID_CONF_PATH = pathlib.Path("/etc/squid/squid.conf")
 def _proxy_http_port() -> int:
     """Explicit forward-proxy port of the effective squid.conf.
 
-    The applied config revision owns the listener lines (the Admin UI edits
-    them), so ``SQUID_HTTP_PORT`` is only the fallback when the file has no
-    explicit listener, matching docker/healthcheck.sh.
+    The effective file already carries the host listener overrides
+    (services/squid_host_overrides.py) over the applied revision, so
+    ``SQUID_HTTP_PORT`` is only the fallback when it has no explicit
+    listener, matching docker/healthcheck.sh.
     """
     fallback = resolve_tcp_port(os.environ.get("SQUID_HTTP_PORT") or 3128, 3128)
     try:
