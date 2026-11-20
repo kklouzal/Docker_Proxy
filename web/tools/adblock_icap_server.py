@@ -8,6 +8,7 @@ import csv
 import errno
 import html
 import io
+import math
 import os
 import re
 import selectors
@@ -637,6 +638,7 @@ class _Connection:
         "outgoing",
         "pending",
         "reader",
+        "receiving",
         "request_count",
         "sock",
         "wanted",
@@ -647,6 +649,8 @@ class _Connection:
         self.sock = sock
         self.client_ip = client_ip
         self.reader: _ReadRequest | None = None
+        # Whether any byte of the current message has arrived.
+        self.receiving = False
         self.wanted = 0
         self.outgoing = b""
         self.pending = b""
@@ -807,14 +811,25 @@ class _AdblockIcapServer(socketserver.TCPServer):
                     max_body_drain_bytes=self.max_body_drain_bytes,
                     pending=conn.pending,
                 )
+                conn.receiving = bool(conn.pending)
                 conn.pending = b""
+            elif chunk:
+                conn.receiving = True
             try:
                 conn.wanted = next(reader) if start else reader.send(chunk)
             except StopIteration as done:
                 conn.reader = None
                 data, conn.pending, read_close = done.value
             else:
-                conn.deadline = time.monotonic() + self.request_timeout_seconds
+                # Squid owns the lifetime of idle persistent connections
+                # (server_idle_pconn_timeout): closing one here races with
+                # Squid reusing it, and with icap_retry_limit 0 that request
+                # fails. Only a started message is held to the read timeout.
+                conn.deadline = (
+                    time.monotonic() + self.request_timeout_seconds
+                    if conn.receiving
+                    else math.inf
+                )
                 return
             if not data:
                 self._close(conn)
@@ -1057,6 +1072,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--request-timeout",
         type=float,
         default=env_float("ADBLOCK_ICAP_REQUEST_TIMEOUT", 5.0),
+        help=(
+            "Seconds a started ICAP message (or a pending response) may stall; "
+            "idle persistent connections are left for Squid to close."
+        ),
     )
     parser.add_argument(
         "--max-keepalive-requests",

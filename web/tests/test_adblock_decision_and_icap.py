@@ -2533,7 +2533,7 @@ def test_adblock_icap_server_serves_connection_bursts_and_stalled_peers(
         engine=AdblockDecisionEngine(db_path),
         access_log_path=str(tmp_path / "cicap-access.log"),
         max_request_bytes=65536,
-        request_timeout_seconds=0.5,
+        request_timeout_seconds=1.0,
     )
     port = int(server.server_address[1])
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -2567,10 +2567,21 @@ def test_adblock_icap_server_serves_connection_bursts_and_stalled_peers(
         stalled.sendall(stalled_request[40:])
         assert _recv_icap_head(stalled).startswith(b"ICAP/1.0 200")
 
-        # An idle persistent connection is closed after the request timeout.
+        # Idle persistent connections are Squid's to close: one idle well past
+        # the request timeout is still served (no reuse race).
+        time.sleep(1.5)
         idle = burst[1]
-        idle.settimeout(3.0)
-        assert idle.recv(1) == b""
+        idle.sendall(_reqmod("http://ads.example/after-idle.js"))
+        assert _recv_icap_head(idle).startswith(b"ICAP/1.0 200")
+
+        # A started message that stalls is still bounded by the timeout.
+        slow = socket.create_connection(("127.0.0.1", port), timeout=5.0)
+        sockets.append(slow)
+        slow.sendall(_reqmod("http://ads.example/slow.js")[:30])
+        started = time.monotonic()
+        while slow.recv(65536):
+            pass
+        assert time.monotonic() - started < 3.0
     finally:
         for sock in sockets:
             sock.close()
