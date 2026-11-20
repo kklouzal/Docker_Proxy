@@ -3056,17 +3056,20 @@ class RecordingScanner(CleanScanner):
 
 
 class SizeLimitScanner(RecordingScanner):
-    def __init__(self, *, scanner_limit: int) -> None:
+    """Fake clamd that refuses the stream past ``scanner_limit`` bytes."""
+
+    def __init__(self, *, scanner_limit: int, server) -> None:
         super().__init__()
         self.scanner_limit = scanner_limit
+        self.size_limit_error = server.ClamdSizeLimitError
         self.bytes_received = 0
 
     def send_chunk(self, data: bytes) -> None:
         super().send_chunk(data)
         self.bytes_received += len(data)
         if self.bytes_received > self.scanner_limit:
-            message = "INSTREAM: Size limit reached"
-            raise BrokenPipeError(message)
+            message = "clamd rejected the stream at its size limit"
+            raise self.size_limit_error(message)
 
 
 class SlowScanner(CleanScanner):
@@ -3233,7 +3236,7 @@ def test_oversize_fail_open_delivers_unscanned(
     caplog, http_header: bytes, scanned_chunks: list[bytes]
 ) -> None:
     server = _load_server()
-    scanner = SizeLimitScanner(scanner_limit=3)
+    scanner = SizeLimitScanner(scanner_limit=3, server=server)
 
     class CapturingServer(server.ClamAvRespmodServer):
         def open_scan(self):
@@ -3295,7 +3298,7 @@ def test_oversize_fail_closed_drains_then_returns_safe_policy_block(
     caplog, http_header: bytes, scanned_chunks: list[bytes]
 ) -> None:
     server = _load_server()
-    scanner = SizeLimitScanner(scanner_limit=3)
+    scanner = SizeLimitScanner(scanner_limit=3, server=server)
 
     class CapturingServer(server.ClamAvRespmodServer):
         def open_scan(self):
@@ -3329,7 +3332,7 @@ def test_oversize_fail_closed_drains_then_returns_safe_policy_block(
     assert b"exceeded an antivirus scan limit and could not be verified" in response
     assert payload not in response
     assert b"ClamAV response scan failed" not in response
-    assert b"Size limit reached" not in response
+    assert b"size limit" not in response
     assert scanner.chunks == scanned_chunks
     assert scanner.finished is False
     assert scanner.closed is bool(scanned_chunks)
@@ -4969,6 +4972,10 @@ def test_fail_open_icap_client_failure_does_not_mark_clamd_unavailable(
                 message = "clamd reset"
                 raise ConnectionResetError(message)
 
+        def recv(self, _size: int) -> bytes:
+            message = "clamd reset"
+            raise ConnectionResetError(message)
+
         def close(self) -> None:
             pass
 
@@ -5330,3 +5337,114 @@ def test_streamed_body_tolerates_origin_gaps_longer_than_client_timeout() -> Non
     _header, body, terminated = _decode_icap_response_body(response)
     assert body == b"A" * 20 + b"B" * 20
     assert terminated is True
+
+
+# --- clamd StreamMaxLength refusal -----------------------------------------
+
+CLAMD_SIZE_LIMIT_WIRE_REPLY = b"INSTREAM size limit exceeded. ERROR\0"
+
+
+class SizeLimitClamdSocket(FakeSocket):
+    """clamd 1.5.5: refuses past StreamMaxLength, closes, reply stays readable."""
+
+    def __init__(self, *, accept_bytes: int, fail_on_terminator: bool = False):
+        super().__init__(CLAMD_SIZE_LIMIT_WIRE_REPLY)
+        self.accept_bytes = accept_bytes
+        self.fail_on_terminator = fail_on_terminator
+
+    def sendall(self, data: bytes) -> None:
+        if data == struct.pack("!I", 0) and self.fail_on_terminator:
+            raise BrokenPipeError(32, "Broken pipe")
+        if len(self.sent) + len(data) > self.accept_bytes:
+            raise BrokenPipeError(32, "Broken pipe")
+        super().sendall(data)
+
+
+@pytest.mark.parametrize("fail_on_terminator", [False, True])
+def test_clamd_size_limit_reply_is_recognised(
+    monkeypatch, fail_on_terminator: bool
+) -> None:
+    server = _load_server()
+    fake = SizeLimitClamdSocket(
+        accept_bytes=1 << 20 if fail_on_terminator else 32,
+        fail_on_terminator=fail_on_terminator,
+    )
+    monkeypatch.setattr(
+        server.socket, "create_connection", lambda address, timeout: fake
+    )
+
+    with pytest.raises(server.ClamdSizeLimitError):
+        _scan_stream_with_clamd(
+            server, b"x" * 100, host="127.0.0.1", port=3310, timeout=0.1
+        )
+
+
+def test_clamd_size_limit_verdict_reply_is_recognised() -> None:
+    server = _load_server()
+
+    with pytest.raises(server.ClamdSizeLimitError):
+        server._parse_clamd_response("INSTREAM size limit exceeded. ERROR")
+    with pytest.raises(RuntimeError) as generic:
+        server._parse_clamd_response("Some other failure. ERROR")
+    assert not isinstance(generic.value, server.ClamdSizeLimitError)
+
+
+def test_generic_clamd_send_failure_is_not_a_size_limit(monkeypatch) -> None:
+    server = _load_server()
+    fake = ResetMidStreamSocket()
+    fake.response = b""
+    monkeypatch.setattr(
+        server.socket, "create_connection", lambda address, timeout: fake
+    )
+
+    with server.ClamdInstreamSession(host="127.0.0.1", port=3310, timeout=0.1) as s:
+        s.send_chunk(b"a")
+        with pytest.raises(RuntimeError) as failure:
+            s.send_chunk(b"b")
+    assert not isinstance(failure.value, server.ClamdSizeLimitError)
+
+
+@pytest.mark.parametrize("fail_open", [True, False])
+@pytest.mark.parametrize("streamed", [True, False])
+def test_clamd_size_limit_is_handled_like_the_helper_scan_limit(
+    caplog, fail_open: bool, streamed: bool
+) -> None:
+    server = _load_server()
+    scanner = SizeLimitScanner(scanner_limit=25, server=server)
+    parts = [b"A" * 20, b"B" * 20, b"C" * 20]
+    http_header = b"HTTP/1.1 200 OK\r\nContent-Length: 60\r\n\r\n"
+    caplog.set_level(logging.WARNING, logger="clamav-respmod")
+    with _streaming_server(
+        server,
+        scanner,
+        fail_open=fail_open,
+        stream_hold_bytes=8 if streamed else 1024,
+    ) as icap_server:
+        _seen, response, ending = _run_stream(icap_server, http_header, parts)
+
+    counters = icap_server.stats.counters
+    assert counters["scan_limit_exceeded"] == 1
+    assert "reason=scan_limit_exceeded source=clamd" in caplog.text
+    assert scanner.closed is True
+    assert scanner.finished is False
+    if fail_open:
+        # Delivered unscanned, counted as an oversize bypass.
+        _header, body, terminated = _decode_icap_response_body(response)
+        assert body == b"".join(parts)
+        assert terminated is True
+        assert counters["oversize_bypasses"] == 1
+        assert counters["fail_open_bypasses"] == 1
+        assert "action=replay_unscanned" in caplog.text
+    elif streamed:
+        _header, body, terminated = _decode_icap_response_body(response)
+        assert terminated is False
+        assert len(body) < 60
+        assert ending in {"reset", "eof"}
+        assert counters["oversize_blocks"] == 1
+        assert counters["stream_aborts"] == 1
+    else:
+        assert b"HTTP/1.1 403 Forbidden" in response
+        assert b"exceeded an antivirus scan limit" in response
+        assert b"A" * 20 not in response
+        assert counters["oversize_blocks"] == 1
+        assert "action=block_unverified" in caplog.text

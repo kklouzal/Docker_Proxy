@@ -73,6 +73,10 @@ _HTTP_STATUS_LINE_RE = re.compile(rb"HTTP/(1\.[01]) ([0-9]{3}) ([\t -~]*)")
 ISTAG = '"clamav-respmod-instream-1"'
 CLAMD_INSTREAM_COMMAND = b"zINSTREAM\0"
 CLAMD_REPLY_TERMINATOR = b"\0"
+# clamd (verified 1.5.5) answers a stream over StreamMaxLength with this reply
+# and closes; the sender usually sees EPIPE first and the reply is still
+# readable.
+CLAMD_SIZE_LIMIT_REPLY = "INSTREAM size limit exceeded"
 ICAP_METHOD_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\Z")
 _ICAP_HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
 _ICAP_ALLOW_TOKEN_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
@@ -89,6 +93,10 @@ class ClamdResult:
     infected: bool = False
     signature: str | None = None
     detail: str = ""
+
+
+class ClamdSizeLimitError(RuntimeError):
+    """clamd refused the stream at its StreamMaxLength."""
 
 
 class IcapProtocolError(Exception):
@@ -108,7 +116,15 @@ class ScanUnverifiedError(RuntimeError):
 
 
 class ScanLimitExceededError(ScanUnverifiedError):
-    """The response exceeded an antivirus scan limit and could not be verified."""
+    """The response exceeded an antivirus scan limit and could not be verified.
+
+    ``source`` is ``"helper"`` for CLAMAV_STREAM_MAX_BYTES and ``"clamd"``
+    for clamd's own StreamMaxLength refusal; both are handled identically.
+    """
+
+    def __init__(self, message: str, *, source: str = "helper") -> None:
+        super().__init__(message)
+        self.source = source
 
 
 @dataclass
@@ -528,6 +544,9 @@ def read_icap_chunked_body(
 
 
 def _parse_clamd_response(response: str) -> ClamdResult:
+    if response.startswith(CLAMD_SIZE_LIMIT_REPLY):
+        message = f"clamd rejected the stream at its size limit: {response}"
+        raise ClamdSizeLimitError(message)
     if response.endswith("OK"):
         return ClamdResult(clean=True, detail=response)
     match = re.search(r":\s*(?P<signature>.+?)\s+FOUND\b", response)
@@ -611,8 +630,26 @@ class ClamdInstreamSession:
                 self._sock.sendall(chunk)
         except OSError as exc:
             self.failed = True
+            reply = self._pending_reply()
+            if reply.startswith(CLAMD_SIZE_LIMIT_REPLY):
+                message = f"clamd rejected the stream at its size limit: {reply}"
+                raise ClamdSizeLimitError(message) from exc
             message = f"clamd INSTREAM scan failed: {exc}"
             raise RuntimeError(message) from exc
+
+    def _pending_reply(self) -> str:
+        """Best-effort read of a reply clamd sent before closing mid-stream."""
+        try:
+            self._sock.settimeout(min(self.timeout, 1.0))
+            data = self._sock.recv(4096)
+        except OSError:
+            return ""
+        return (
+            data.split(CLAMD_REPLY_TERMINATOR, 1)[0]
+            .split(b"\n", 1)[0]
+            .decode("utf-8", errors="replace")
+            .strip()
+        )
 
     def finish(self, *, verdict_timeout: float | None = None) -> ClamdResult:
         if self._sock is None:
@@ -645,6 +682,12 @@ class ClamdInstreamSession:
                 .strip()
             )
         except OSError as exc:
+            # clamd may already have refused the stream and closed while the
+            # terminator was being sent.
+            reply = self._pending_reply()
+            if reply.startswith(CLAMD_SIZE_LIMIT_REPLY):
+                message = f"clamd rejected the stream at its size limit: {reply}"
+                raise ClamdSizeLimitError(message) from exc
             message = f"clamd INSTREAM scan failed: {exc}"
             raise RuntimeError(message) from exc
         return _parse_clamd_response(response)
@@ -1045,24 +1088,11 @@ def scan_limit_blocked_response() -> bytes:
     )
 
 
-def _is_clamd_size_limit_error(exc: Exception) -> bool:
-    detail = str(exc).casefold()
-    return any(
-        marker in detail
-        for marker in (
-            "size limit",
-            "streammaxlength",
-            "stream max length",
-            "maxfilesize",
-            "max file size",
-        )
-    )
-
-
 def _unverified_from_scan_error(exc: Exception) -> ScanUnverifiedError:
-    if _is_clamd_size_limit_error(exc):
+    if isinstance(exc, ClamdSizeLimitError):
         error: ScanUnverifiedError = ScanLimitExceededError(
-            "clamd rejected the response at its antivirus scan limit"
+            "clamd rejected the response at its antivirus scan limit",
+            source="clamd",
         )
     else:
         error = ScanUnverifiedError(str(exc))
@@ -1183,13 +1213,18 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
         if isinstance(exc, (TimeoutError, socket.timeout)):
             self.server.record("timeouts")
 
+    def _scan_limit_detail(self, exc: Exception) -> str:
+        if isinstance(exc, ScanLimitExceededError) and exc.source == "clamd":
+            return "source=clamd limit=StreamMaxLength"
+        return f"source=helper limit_bytes={self.server.max_scan_bytes}"
+
     def _record_fail_open_bypass(self, exc: Exception) -> None:
         self._record_failure(exc)
         if isinstance(exc, ScanLimitExceededError):
             scan_error_warning.warning(
                 "fail-open antivirus bypass: reason=scan_limit_exceeded "
-                "limit_bytes=%d action=replay_unscanned",
-                self.server.max_scan_bytes,
+                "%s action=replay_unscanned",
+                self._scan_limit_detail(exc),
             )
             self.server.record("oversize_bypasses")
         else:
@@ -1523,9 +1558,16 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
                 if scan_limit_exceeded:
                     self.server.record("oversize_blocks")
             self.server.record("stream_aborts")
-            scan_error_warning.warning(
-                "aborted streamed response after error: %s action=abort", exc
-            )
+            if scan_limit_exceeded:
+                scan_error_warning.warning(
+                    "fail-closed antivirus block: reason=scan_limit_exceeded "
+                    "%s action=abort",
+                    self._scan_limit_detail(exc),
+                )
+            else:
+                scan_error_warning.warning(
+                    "aborted streamed response after error: %s action=abort", exc
+                )
             self._abort_stream()
             return
         if self.server.fail_open:
@@ -1553,8 +1595,8 @@ class ClamAvRespmodHandler(socketserver.StreamRequestHandler):
             self.server.record("oversize_blocks")
             scan_error_warning.warning(
                 "fail-closed antivirus block: reason=scan_limit_exceeded "
-                "limit_bytes=%d action=block_unverified",
-                self.server.max_scan_bytes,
+                "%s action=block_unverified",
+                self._scan_limit_detail(exc),
             )
         else:
             scan_error_warning.warning("fail-closed after scan/protocol error: %s", exc)

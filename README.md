@@ -411,15 +411,31 @@ can lower, but never raise, that scheduled-housekeeping bound.
   `EventSource` always sends it) and the reply is `text/event-stream`, so an
   origin cannot relabel a download to skip scanning for ordinary clients.
   URL-extension file-security blocks still apply to SSE replies.
-- `CLAMAV_STREAM_MAX_BYTES` is the proxy helper's explicit per-response scan
-  ceiling (256 MiB by default). Remote clamd `StreamMaxLength`/`MaxFileSize`
-  settings (100 MiB by default in clamd) are not discoverable through the
-  INSTREAM protocol and should be at least this large for full scanning. If
-  either side's limit is reached, the helper never labels the response clean:
-  optional/fail-open AV delivers it unscanned (a declared length over the
-  limit is not sent to clamd at all), while required/fail-closed AV returns a
-  safe policy block when the length is declared, or aborts the transfer at
-  the limit when it is not.
+- `CLAMAV_STREAM_MAX_BYTES` (proxy container environment, bytes; default
+  268435456 = 256 MiB) is the helper's per-response scan ceiling. The remote
+  clamd must accept at least that much, or responses between clamd's limit
+  and the helper's are never fully scanned. Stock clamd defaults are 100 MiB,
+  and the limits cannot be discovered through INSTREAM, so set them in the
+  remote `clamd.conf` (keep `MaxScanSize`, 400M by default, at least as
+  large):
+
+  ```
+  StreamMaxLength 256M
+  MaxFileSize 256M
+  ```
+
+  Raise both lines together if you raise `CLAMAV_STREAM_MAX_BYTES`. Once a
+  limit is reached (the helper's own, or clamd's `INSTREAM size limit
+  exceeded` reply) the response is never labelled clean, and both cases are
+  handled the same way:
+  - Optional/fail-open AV delivers the response unscanned. A declared
+    length over the helper limit is not sent to clamd at all.
+  - Required/fail-closed AV returns a safe policy block (403) while nothing
+    has been delivered yet, or aborts the transfer once streaming has
+    started.
+  - Either way the helper logs `reason=scan_limit_exceeded source=helper|clamd`
+    and counts `scan_limit_exceeded` plus `oversize_bypasses` or
+    `oversize_blocks`.
 - Per-proxy health view that separates Squid policy, AV c-icap listener health, and remote `clamd` reachability.
 - EICAR and sample ICAP verification actions executed through the selected proxy runtime.
 
