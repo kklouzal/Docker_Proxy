@@ -9639,3 +9639,39 @@ def test_runtime_self_heal_leaves_live_or_reconciled_transactions_alone(
     )
 
     assert runtime.self_heal_config_if_needed(reason="heartbeat")["ok"] is True
+
+
+def test_heartbeat_reports_local_registration_fields_except_display_name(
+    monkeypatch,
+) -> None:
+    import proxy.runtime as runtime_module  # type: ignore
+
+    monkeypatch.setenv("PROXY_DISPLAY_NAME", "Renamed by env")
+    monkeypatch.setenv("PROXY_HOSTNAME", "edge-host")
+    monkeypatch.setenv("PROXY_PUBLIC_HOST", "proxy.example.test")
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(runtime_module, "get_proxy_id", lambda: "edge-a")
+    runtime = _runtime_shell()
+    runtime.run_local_self_heal = lambda **_kwargs: None
+    runtime.collect_health = lambda: {
+        "status": "healthy",
+        "current_config_sha": "c" * 64,
+        "proxy_status": "ok",
+    }
+    runtime.registry = SimpleNamespace(
+        heartbeat=lambda proxy_id, **kwargs: calls.append((proxy_id, kwargs))
+    )
+
+    runtime.heartbeat()
+
+    expected = runtime_module.local_proxy_registration_fields("edge-a")
+    expected.pop("display_name")
+    [(proxy_id, kwargs)] = calls
+    assert proxy_id == "edge-a"
+    assert kwargs == {
+        **expected,
+        "status": "healthy",
+        "current_config_sha": "c" * 64,
+        "detail": "ok",
+    }
+    assert kwargs["hostname"] == "edge-host"
