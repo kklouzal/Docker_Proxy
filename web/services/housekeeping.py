@@ -160,11 +160,10 @@ def _run_with_db_lock_retry(
 
 
 def current_retention_days(default: int = 30) -> int:
-    try:
-        settings = get_observability_retention_settings()
-        return normalize_retention_days(settings.get("retention_days", default))
-    except Exception:
-        return normalize_retention_days(default)
+    # Read failures propagate: pruning with a guessed retention could delete
+    # rows an operator chose to keep longer, so the run fails instead.
+    settings = get_observability_retention_settings()
+    return normalize_retention_days(settings.get("retention_days", default))
 
 
 def _run_prune_once(*, retention_days: int) -> dict[str, Any]:
