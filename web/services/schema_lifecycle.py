@@ -970,7 +970,8 @@ def _init_proxy_lifecycle_schema(conn: Any) -> None:
         lifecycle.ensure_proxy_lifecycle_index(conn, table)
 
 
-_CONTROL_PLANE_RETENTION_INDEXES: dict[str, tuple[tuple[str, str], ...]] = {
+# Indexes the housekeeping retention prunes rely on; migrations own them.
+CONTROL_PLANE_RETENTION_INDEXES: dict[str, tuple[tuple[str, str], ...]] = {
     "proxy_config_revisions": (
         (
             "idx_proxy_config_revisions_proxy_created_id",
@@ -1045,7 +1046,7 @@ _CONTROL_PLANE_RETENTION_INDEXES: dict[str, tuple[tuple[str, str], ...]] = {
 
 
 def _init_control_plane_retention_indexes(conn: Any) -> None:
-    for table, indexes in _CONTROL_PLANE_RETENTION_INDEXES.items():
+    for table, indexes in CONTROL_PLANE_RETENTION_INDEXES.items():
         if table_exists(conn, table):
             for index_name, ddl in indexes:
                 ensure_index(conn, table_name=table, index_name=index_name, ddl=ddl)

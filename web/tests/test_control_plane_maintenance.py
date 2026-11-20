@@ -779,11 +779,6 @@ def test_control_plane_prune_reports_policy_sync_failure_and_continues(
     monkeypatch.setattr(maintenance, "_table_exists", lambda _table: True)
     monkeypatch.setattr(
         maintenance,
-        "_ensure_control_plane_retention_indexes",
-        lambda _table: None,
-    )
-    monkeypatch.setattr(
-        maintenance,
         "_expire_policy_exceptions",
         lambda **_kwargs: maintenance.PolicyExceptionExpiryResult(
             table="policy_exceptions",
@@ -845,7 +840,6 @@ def test_control_plane_prune_reports_truncated_backlog(monkeypatch) -> None:
 
     monkeypatch.setattr(maintenance, "CONTROL_PLANE_MAINTENANCE_TABLES", tables)
     monkeypatch.setattr(maintenance, "_table_exists", lambda _table: True)
-    monkeypatch.setattr(maintenance, "_index_exists", lambda *_args: True)
     monkeypatch.setattr(maintenance, "connect", lambda: conn)
     monkeypatch.setattr(maintenance, "default_chunk_size", lambda: 1)
     monkeypatch.setattr(maintenance, "default_max_rows", lambda: 2)
@@ -885,33 +879,6 @@ def test_control_plane_keep_n_cap_with_unvisited_partition_is_truncated(
     assert result.deleted_rows == 2
     assert result.truncated is True
     assert not any(params and params[0] == "edge-b" for _sql, params in conn.queries)
-
-
-def test_control_plane_ensures_retention_indexes_idempotently(monkeypatch) -> None:
-    conn = _Connection()
-    seen: set[tuple[str, str]] = set()
-
-    def index_exists(_conn, table, index):
-        seen.add((table, index))
-        return index.endswith("active_created_id")
-
-    monkeypatch.setattr(maintenance, "connect", lambda: conn)
-    monkeypatch.setattr(maintenance, "_index_exists", index_exists)
-
-    maintenance._ensure_control_plane_retention_indexes("proxy_config_revisions")
-
-    sql = [query for query, _params in conn.queries]
-    assert (
-        "proxy_config_revisions",
-        "idx_proxy_config_revisions_proxy_created_id",
-    ) in seen
-    assert any(
-        query.startswith(
-            "ALTER TABLE proxy_config_revisions ADD INDEX idx_proxy_config_revisions_proxy_created_id"
-        )
-        for query in sql
-    )
-    assert not any("active_created_id" in query for query in sql)
 
 
 def test_keep_n_retention_matches_count_oracle_on_mysql(tmp_path, monkeypatch) -> None:

@@ -4,7 +4,7 @@ import contextlib
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import Any
 
 from services.bounded_delete import (
     BoundedDeleteIncompleteError,
@@ -27,9 +27,6 @@ from services.mysql_table_maintenance import (
     run_mysql_table_maintenance,
 )
 from services.sql_identifiers import quote_mysql_identifier
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 DEFAULT_OBSERVABILITY_RETENTION_DAYS = 30
 MIN_OBSERVABILITY_RETENTION_DAYS = 1
@@ -87,34 +84,9 @@ class ObservabilityClearOutcomeUncertainError(RuntimeError):
     """Raised when a non-transactional clear may have reached the server."""
 
 
-T = TypeVar("T")
-
-
-def _retry_stale_connection[T](operation: Callable[[], T]) -> T:
-    """Replay an idempotent operation once after MySQL reports a lost session.
-
-    Only for reads and convergent DDL/upserts: a lost session can hide a
-    committed outcome, so non-idempotent writes must not use this.
-    """
-    last_exc: BaseException | None = None
-    for attempt in range(2):
-        try:
-            return operation()
-        except Exception as exc:
-            last_exc = exc
-            if attempt == 0 and looks_like_stale_connection(exc):
-                continue
-            raise
-    assert last_exc is not None
-    raise last_exc
-
-
 def _table_exists(table: str) -> bool:
-    def check() -> bool:
-        with connect() as conn:
-            return table_exists(conn, table)
-
-    return _retry_stale_connection(check)
+    with connect() as conn:
+        return table_exists(conn, table)
 
 
 def _truncate_table(table: str) -> None:
@@ -221,132 +193,116 @@ def normalize_retention_days(value: object) -> int:
 
 
 def _ensure_observability_settings_table() -> None:
+    global _SETTINGS_SCHEMA_READY
     if _SETTINGS_SCHEMA_READY:
         return
     now = int(time.time())
+    with _SETTINGS_SCHEMA_LOCK:
+        if _SETTINGS_SCHEMA_READY:
+            return
+        with connect() as conn:
+            from services.schema_lifecycle import (
+                runtime_schema_ready_for_lazy_store,
+            )
 
-    def ensure() -> None:
-        global _SETTINGS_SCHEMA_READY
-        with _SETTINGS_SCHEMA_LOCK:
-            if _SETTINGS_SCHEMA_READY:
+            if runtime_schema_ready_for_lazy_store(conn):
+                _SETTINGS_SCHEMA_READY = True
                 return
-            with connect() as conn:
-                from services.schema_lifecycle import (
-                    runtime_schema_ready_for_lazy_store,
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS observability_settings (
+                    id TINYINT PRIMARY KEY,
+                    retention_days INT NOT NULL DEFAULT 30,
+                    updated_ts BIGINT NOT NULL
                 )
-
-                if runtime_schema_ready_for_lazy_store(conn):
-                    _SETTINGS_SCHEMA_READY = True
-                    return
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS observability_settings (
-                        id TINYINT PRIMARY KEY,
-                        retention_days INT NOT NULL DEFAULT 30,
-                        updated_ts BIGINT NOT NULL
-                    )
-                    """,
-                )
-                conn.execute(
-                    """
-                    INSERT INTO observability_settings(id, retention_days, updated_ts)
-                    VALUES(1, %s, %s) AS incoming
-                    ON DUPLICATE KEY UPDATE id = observability_settings.id
-                    """,
-                    (DEFAULT_OBSERVABILITY_RETENTION_DAYS, now),
-                )
-            _SETTINGS_SCHEMA_READY = True
-
-    _retry_stale_connection(ensure)
+                """,
+            )
+            conn.execute(
+                """
+                INSERT INTO observability_settings(id, retention_days, updated_ts)
+                VALUES(1, %s, %s) AS incoming
+                ON DUPLICATE KEY UPDATE id = observability_settings.id
+                """,
+                (DEFAULT_OBSERVABILITY_RETENTION_DAYS, now),
+            )
+        _SETTINGS_SCHEMA_READY = True
 
 
 def get_observability_retention_settings() -> dict[str, int]:
     _ensure_observability_settings_table()
-
-    def load() -> dict[str, int]:
-        with connect() as conn:
-            row = conn.execute(
-                """
-                SELECT retention_days, updated_ts
-                FROM observability_settings
-                WHERE id = 1
-                """,
-            ).fetchone()
-        if not row:
-            return {
-                "retention_days": DEFAULT_OBSERVABILITY_RETENTION_DAYS,
-                "updated_ts": 0,
-            }
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT retention_days, updated_ts
+            FROM observability_settings
+            WHERE id = 1
+            """,
+        ).fetchone()
+    if not row:
         return {
-            "retention_days": normalize_retention_days(row[0]),
-            "updated_ts": int(row[1] or 0),
+            "retention_days": DEFAULT_OBSERVABILITY_RETENTION_DAYS,
+            "updated_ts": 0,
         }
-
-    return _retry_stale_connection(load)
+    return {
+        "retention_days": normalize_retention_days(row[0]),
+        "updated_ts": int(row[1] or 0),
+    }
 
 
 def set_observability_retention_settings(*, retention_days: object) -> dict[str, int]:
     days = normalize_retention_days(retention_days)
     now = int(time.time())
     _ensure_observability_settings_table()
-
-    def save() -> None:
-        with connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO observability_settings(id, retention_days, updated_ts)
-                VALUES(1, %s, %s) AS incoming
-                ON DUPLICATE KEY UPDATE
-                    retention_days = incoming.retention_days,
-                    updated_ts = incoming.updated_ts
-                """,
-                (days, now),
-            )
-
-    _retry_stale_connection(save)
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO observability_settings(id, retention_days, updated_ts)
+            VALUES(1, %s, %s) AS incoming
+            ON DUPLICATE KEY UPDATE
+                retention_days = incoming.retention_days,
+                updated_ts = incoming.updated_ts
+            """,
+            (days, now),
+        )
     return {"retention_days": days, "updated_ts": now}
 
 
 def _ensure_observability_maintenance_runs_table() -> None:
+    global _MAINTENANCE_RUNS_SCHEMA_READY
     if _MAINTENANCE_RUNS_SCHEMA_READY:
         return
+    with _MAINTENANCE_RUNS_SCHEMA_LOCK:
+        if _MAINTENANCE_RUNS_SCHEMA_READY:
+            return
+        with connect() as conn:
+            from services.schema_lifecycle import (
+                runtime_schema_ready_for_lazy_store,
+            )
 
-    def ensure() -> None:
-        global _MAINTENANCE_RUNS_SCHEMA_READY
-        with _MAINTENANCE_RUNS_SCHEMA_LOCK:
-            if _MAINTENANCE_RUNS_SCHEMA_READY:
+            if runtime_schema_ready_for_lazy_store(conn):
+                _MAINTENANCE_RUNS_SCHEMA_READY = True
                 return
-            with connect() as conn:
-                from services.schema_lifecycle import (
-                    runtime_schema_ready_for_lazy_store,
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS observability_maintenance_runs (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    run_type VARCHAR(32) NOT NULL,
+                    started_ts BIGINT NOT NULL,
+                    finished_ts BIGINT NOT NULL,
+                    duration_ms BIGINT NOT NULL DEFAULT 0,
+                    status VARCHAR(16) NOT NULL,
+                    retention_days INT NOT NULL,
+                    `analyze` TINYINT NOT NULL DEFAULT 0,
+                    `optimize` TINYINT NOT NULL DEFAULT 0,
+                    pruned TINYINT NOT NULL DEFAULT 0,
+                    maintained_tables INT NOT NULL DEFAULT 0,
+                    detail VARCHAR(512) NOT NULL DEFAULT '',
+                    KEY idx_observability_maintenance_runs_started (started_ts),
+                    KEY idx_observability_maintenance_runs_status (status)
                 )
-
-                if runtime_schema_ready_for_lazy_store(conn):
-                    _MAINTENANCE_RUNS_SCHEMA_READY = True
-                    return
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS observability_maintenance_runs (
-                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                        run_type VARCHAR(32) NOT NULL,
-                        started_ts BIGINT NOT NULL,
-                        finished_ts BIGINT NOT NULL,
-                        duration_ms BIGINT NOT NULL DEFAULT 0,
-                        status VARCHAR(16) NOT NULL,
-                        retention_days INT NOT NULL,
-                        `analyze` TINYINT NOT NULL DEFAULT 0,
-                        `optimize` TINYINT NOT NULL DEFAULT 0,
-                        pruned TINYINT NOT NULL DEFAULT 0,
-                        maintained_tables INT NOT NULL DEFAULT 0,
-                        detail VARCHAR(512) NOT NULL DEFAULT '',
-                        KEY idx_observability_maintenance_runs_started (started_ts),
-                        KEY idx_observability_maintenance_runs_status (status)
-                    )
-                    """,
-                )
-            _MAINTENANCE_RUNS_SCHEMA_READY = True
-
-    _retry_stale_connection(ensure)
+                """,
+            )
+        _MAINTENANCE_RUNS_SCHEMA_READY = True
 
 
 def _maintenance_row_to_dict(row: Any) -> dict[str, Any]:
@@ -370,25 +326,22 @@ def get_observability_maintenance_status(*, limit: int = 5) -> dict[str, Any]:
     _ensure_observability_maintenance_runs_table()
     history_limit = max(1, min(_MAINTENANCE_HISTORY_LIMIT, int(limit or 5)))
 
-    def load() -> dict[str, Any]:
-        with connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, run_type, started_ts, finished_ts, duration_ms, status,
-                       retention_days, `analyze`, `optimize`, pruned, maintained_tables, detail
-                FROM observability_maintenance_runs
-                ORDER BY id DESC
-                LIMIT %s
-                """,
-                (history_limit,),
-            ).fetchall()
-        history = [_maintenance_row_to_dict(row) for row in rows]
-        latest = next((row for row in history if row.get("status") != "skipped"), None)
-        if latest is None and history:
-            latest = history[0]
-        return {"latest": latest or {}, "history": history}
-
-    return _retry_stale_connection(load)
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, run_type, started_ts, finished_ts, duration_ms, status,
+                   retention_days, `analyze`, `optimize`, pruned, maintained_tables, detail
+            FROM observability_maintenance_runs
+            ORDER BY id DESC
+            LIMIT %s
+            """,
+            (history_limit,),
+        ).fetchall()
+    history = [_maintenance_row_to_dict(row) for row in rows]
+    latest = next((row for row in history if row.get("status") != "skipped"), None)
+    if latest is None and history:
+        latest = history[0]
+    return {"latest": latest or {}, "history": history}
 
 
 def _maintenance_detail_from_result(result: dict[str, Any]) -> str:
@@ -419,34 +372,31 @@ def record_observability_maintenance_run(
         or ("ok" if result.get("ok", True) else "failed"),
     )[:16]
 
-    def save() -> None:
-        with connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO observability_maintenance_runs(
-                    run_type, started_ts, finished_ts, duration_ms, status,
-                    retention_days, `analyze`, `optimize`, pruned, maintained_tables, detail
-                )
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    str(run_type or "manual")[:32],
-                    started_ts,
-                    finished_ts,
-                    duration_ms,
-                    status_value,
-                    normalize_retention_days(result.get("retention_days", 30)),
-                    1 if result.get("analyze") else 0,
-                    1 if result.get("optimize") else 0,
-                    1 if result.get("pruned") else 0,
-                    int(maintenance.get("maintained_tables") or 0),
-                    _maintenance_detail_from_result(result),
-                ),
-            )
-
     # A lost session during INSERT/COMMIT may still have recorded the run, so
-    # this history append is not replayed.
-    save()
+    # this history append is never replayed.
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO observability_maintenance_runs(
+                run_type, started_ts, finished_ts, duration_ms, status,
+                retention_days, `analyze`, `optimize`, pruned, maintained_tables, detail
+            )
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                str(run_type or "manual")[:32],
+                started_ts,
+                finished_ts,
+                duration_ms,
+                status_value,
+                normalize_retention_days(result.get("retention_days", 30)),
+                1 if result.get("analyze") else 0,
+                1 if result.get("optimize") else 0,
+                1 if result.get("pruned") else 0,
+                int(maintenance.get("maintained_tables") or 0),
+                _maintenance_detail_from_result(result),
+            ),
+        )
 
 
 def acquire_observability_maintenance_lock():
