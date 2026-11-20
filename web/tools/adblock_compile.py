@@ -163,15 +163,6 @@ LOOKUP_STRATEGY = (
 )
 
 
-def _is_comment_or_header(s: str) -> bool:
-    t = (s or "").strip()
-    if not t:
-        return True
-    if t.startswith("!"):
-        return True
-    return bool(t.startswith("[") and t.endswith("]"))
-
-
 def _is_cosmetic(s: str) -> bool:
     # Very conservative detection.
     return any(m in s for m in _COSMETIC_MARKERS)
@@ -1206,16 +1197,18 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         store = AdblockStore(lists_dir=str(ns.lists_dir))
-        with suppress(Exception):
-            store.init_db()
-
         try:
-            for st in store.list_statuses():
-                if not st.enabled:
-                    continue
-                enabled_paths.append((st.key, store.list_path(st.key)))
-        except Exception:
-            pass
+            store.init_db()
+            enabled_paths.extend(
+                (st.key, store.list_path(st.key))
+                for st in store.list_statuses()
+                if st.enabled
+            )
+        except Exception as exc:
+            # Compiling without the enabled-list catalog would replace the
+            # compiled rules with an empty artifact.
+            sys.stderr.write(f"adblock_compile: cannot read enabled lists: {exc}\n")
+            return 1
 
     out_dir = str(ns.out_dir)
     pathlib.Path(out_dir).mkdir(exist_ok=True, parents=True)
@@ -1248,9 +1241,16 @@ def main(argv: list[str] | None = None) -> int:
                 with pathlib.Path(path).open(encoding="utf-8", errors="replace") as f:
                     lines = f.read().splitlines()
             except FileNotFoundError:
-                continue
-            except Exception:
-                continue
+                # A database-enabled list that was never downloaded has no rules
+                # yet; it is omitted from report.enabled_lists. Lists named
+                # explicitly were selected because they have local content.
+                if not explicit_enabled_lists:
+                    continue
+                sys.stderr.write(f"adblock_compile: list {key!r} not found: {path}\n")
+                return 1
+            except OSError as exc:
+                sys.stderr.write(f"adblock_compile: cannot read list {key!r}: {exc}\n")
+                return 1
 
             per_list_counts[key] = _compile_and_extract_all(
                 lines=lines,
