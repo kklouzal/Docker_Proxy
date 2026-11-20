@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 
@@ -13,6 +15,34 @@ def _proxy_health_module():
     from services import proxy_health  # type: ignore
 
     return proxy_health
+
+
+def _without_squid_conf(monkeypatch, proxy_health) -> None:
+    monkeypatch.setattr(
+        proxy_health, "_SQUID_CONF_PATH", pathlib.Path("/nonexistent/squid.conf")
+    )
+
+
+def test_forwarding_port_follows_effective_squid_conf_listener(
+    tmp_path, monkeypatch
+) -> None:
+    proxy_health = _proxy_health_module()
+    conf = tmp_path / "squid.conf"
+    monkeypatch.setattr(proxy_health, "_SQUID_CONF_PATH", conf)
+    monkeypatch.setenv("SQUID_HTTP_PORT", "3128")
+
+    # The applied revision (Admin UI listener settings) owns the explicit port;
+    # intercept listeners are never the forward-proxy endpoint.
+    conf.write_text(
+        "http_port 0.0.0.0:3129 intercept\n"
+        "http_port 0.0.0.0:3200 ssl-bump \\\n"
+        "\tcert=/etc/squid/ssl/certs/ca.crt\n",
+        encoding="utf-8",
+    )
+    assert proxy_health._proxy_http_port() == 3200
+
+    conf.write_text("https_port 0.0.0.0:3130 intercept ssl-bump\n", encoding="utf-8")
+    assert proxy_health._proxy_http_port() == 3128
 
 
 class _FakeSocket:
@@ -1113,6 +1143,7 @@ def test_unavailable_runtime_health_includes_explicit_forwarding(monkeypatch) ->
     proxy_health = _proxy_health_module()
 
     monkeypatch.setenv("SQUID_HTTP_PORT", "43128")
+    _without_squid_conf(monkeypatch, proxy_health)
 
     payload = proxy_health.build_unavailable_runtime_health(
         "proxy management request timed out",
@@ -1234,6 +1265,7 @@ def test_forwarding_path_health_normalizes_invalid_explicit_proxy_port(
         return {"ok": False, "detail": "not listening"}
 
     monkeypatch.setenv("SQUID_HTTP_PORT", "43128")
+    _without_squid_conf(monkeypatch, proxy_health)
     monkeypatch.setattr(proxy_health, "check_http_proxy_forwarding", fake_probe)
 
     result = proxy_health.check_forwarding_path_health(proxy_port=proxy_port)
@@ -1250,6 +1282,7 @@ def test_forwarding_path_health_is_local_bounded_and_attributed(monkeypatch) -> 
     captured: dict[str, object] = {}
 
     monkeypatch.setenv("SQUID_HTTP_PORT", "3128")
+    _without_squid_conf(monkeypatch, proxy_health)
     monkeypatch.setenv("FORWARDING_CANARY_HOST", "0.0.0.0")  # ruff: ignore[hardcoded-bind-all-interfaces] - wildcard bind env is normalized to loopback.
     monkeypatch.setenv("FORWARDING_CANARY_PORT", "18080")
     monkeypatch.delenv("CLAMAV_REQUIRED", raising=False)
@@ -1304,6 +1337,7 @@ def test_forwarding_path_health_no_longer_targets_public_listener_self_dependenc
     captured: dict[str, object] = {}
 
     monkeypatch.setenv("SQUID_HTTP_PORT", "3128")
+    _without_squid_conf(monkeypatch, proxy_health)
     monkeypatch.setenv("PAC_HTTP_HOST", "127.0.0.1")
     monkeypatch.setenv("PAC_HTTP_PORT", "80")
     monkeypatch.delenv("FORWARDING_CANARY_HOST", raising=False)
@@ -1332,6 +1366,7 @@ def test_forwarding_path_health_rejects_dns_names_that_look_like_loopback(
     captured: dict[str, object] = {}
 
     monkeypatch.setenv("SQUID_HTTP_PORT", "3128")
+    _without_squid_conf(monkeypatch, proxy_health)
     monkeypatch.setenv("FORWARDING_CANARY_HOST", "127.0.0.1.evil.test")
     monkeypatch.setenv("FORWARDING_CANARY_PORT", "18080")
 
@@ -1356,6 +1391,7 @@ def test_forwarding_path_health_rejects_canary_paths_with_double_slash(
     captured: dict[str, object] = {}
 
     monkeypatch.setenv("SQUID_HTTP_PORT", "3128")
+    _without_squid_conf(monkeypatch, proxy_health)
     monkeypatch.setenv("FORWARDING_CANARY_HOST", "127.0.0.1")
     monkeypatch.setenv("FORWARDING_CANARY_PORT", "18080")
     monkeypatch.setenv("FORWARDING_CANARY_PATH", "/bad//canary")

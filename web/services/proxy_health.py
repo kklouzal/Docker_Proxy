@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 from typing import Any
 
 from services.forwarding_canary_config import forwarding_canary_target_url
@@ -22,6 +23,7 @@ from services.squid_core import (
     _clamd_host_is_remote,
     _icap_port_bases,
 )
+from services.squid_listeners import parse_squid_listeners
 
 
 def _resolve_host_port_override(
@@ -55,8 +57,25 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return security_env_bool(name, default=default)
 
 
+_SQUID_CONF_PATH = pathlib.Path("/etc/squid/squid.conf")
+
+
 def _proxy_http_port() -> int:
-    return resolve_tcp_port(os.environ.get("SQUID_HTTP_PORT") or 3128, 3128)
+    """Explicit forward-proxy port of the effective squid.conf.
+
+    The applied config revision owns the listener lines (the Admin UI edits
+    them), so ``SQUID_HTTP_PORT`` is only the fallback when the file has no
+    explicit listener, matching docker/healthcheck.sh.
+    """
+    fallback = resolve_tcp_port(os.environ.get("SQUID_HTTP_PORT") or 3128, 3128)
+    try:
+        text = _SQUID_CONF_PATH.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return fallback
+    for listener in parse_squid_listeners(text, fallback_port=fallback):
+        if listener["mode"] == "explicit":
+            return int(listener["port"])
+    return fallback
 
 
 def _forwarding_canary_target_url() -> str:
