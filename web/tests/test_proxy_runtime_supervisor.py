@@ -7,7 +7,6 @@ import os
 import re
 import sqlite3
 import subprocess
-import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,62 +39,6 @@ PAC_SHA_B = "e" * 64
 PAC_SHA_OLD = "f" * 64
 
 
-def _healthcheck_forwarding_canary_url_script() -> str:
-    repo_root = Path(__file__).resolve().parents[2]
-    healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(
-        encoding="utf-8",
-    )
-    match = re.search(
-        r"^def forwarding_canary_url\(\) -> str:\n(?P<body>.*?)^target_url = forwarding_canary_url\(\)",
-        healthcheck,
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    assert match is not None
-    return (
-        "import ipaddress\n"
-        "import os\n"
-        "def forwarding_canary_url() -> str:\n"
-        + match.group("body")
-        + "print(forwarding_canary_url())\n"
-    )
-
-
-def _healthcheck_forwarding_canary_url(**env_overrides: str) -> str:
-    result = run_test_process(
-        [sys.executable, "-c", _healthcheck_forwarding_canary_url_script()],
-        check=True,
-        capture_output=True,
-        text=True,
-        env={**os.environ, **env_overrides},
-    )
-    return result.stdout.strip()
-
-
-def _healthcheck_forwarding_canary_port_script() -> str:
-    repo_root = Path(__file__).resolve().parents[2]
-    healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(
-        encoding="utf-8",
-    )
-    match = re.search(
-        r"^forwarding_canary_port\(\) \{\n(?P<body>.*?)^\}\n\ncheck_squid_forwarding_path\(\)",
-        healthcheck,
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    assert match is not None
-    return match.group("body")
-
-
-def _healthcheck_forwarding_canary_port(**env_overrides: str) -> str:
-    result = run_test_process(
-        ["sh", "-c", _healthcheck_forwarding_canary_port_script()],
-        check=True,
-        capture_output=True,
-        text=True,
-        env={**os.environ, **env_overrides},
-    )
-    return result.stdout.strip()
-
-
 def _entrypoint_forwarding_canary_path_script() -> str:
     repo_root = Path(__file__).resolve().parents[2]
     entrypoint = (repo_root / "docker" / "entrypoint.sh").read_text(
@@ -118,6 +61,7 @@ def _entrypoint_forwarding_canary_path_script() -> str:
 def _entrypoint_forwarding_canary_path(**env_overrides: str) -> str:
     result = run_test_process(
         ["sh", "-c", _entrypoint_forwarding_canary_path_script()],
+        cwd=Path(__file__).resolve().parents[1],
         check=True,
         capture_output=True,
         text=True,
@@ -6696,34 +6640,22 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
         encoding="utf-8",
     )
 
-    assert "clamav_required()" in healthcheck
-    assert "adblock_icap_required()" in healthcheck
-    assert "extract_squid_workers_from_file()" in healthcheck
-    assert (
-        'ICAP_WORKERS_RAW="$(extract_squid_workers_from_file /etc/squid/squid.conf)"'
-        in healthcheck
-    )
-    assert (
-        'ICAP_WORKERS="$(clamp_workers "${ICAP_WORKERS_RAW:-${SQUID_WORKERS:-${WORKERS:-1}}}")"'
-        in healthcheck
-    )
+    assert 'while [ "$i" -lt "$SQUID_WORKERS" ]; do' in healthcheck
     assert "cicap_adblock_${instance}" in healthcheck
     assert "cicap_av_${instance}" in healthcheck
     assert "clamav_respmod_${instance}" in healthcheck
-    assert "supervisor_program_running proxy_agent" in healthcheck
-    assert "supervisor reports proxy_agent is not RUNNING" in healthcheck
-    assert "supervisor_program_running forwarding_canary" in healthcheck
+    assert (
+        "for program in proxy_api proxy_public proxy_agent forwarding_canary; do"
+        in (healthcheck)
+    )
     assert "forwarding_canary is not accepting loopback connections" in healthcheck
     assert "docker-proxy-forwarding-canary" in healthcheck
-    assert "icap_av_base_port" in healthcheck
-    assert "icap_av_resp_base_port" in healthcheck
-    assert "clamd_host_is_remote" in healthcheck
+    assert 'if [ "$CLAMD_HOST_IS_REMOTE" = "1" ]; then' in healthcheck
     assert "Squid adblock ICAP is fail-open" in healthcheck
     assert "check_squid_forwarding_path" in healthcheck
-    assert "check_icap_readiness" in healthcheck
     assert "/usr/local/bin/icap_readiness.py check" in healthcheck
     assert "Configured ICAP services are not OPTIONS-ready" in healthcheck
-    assert "PROXY_HEALTHCHECK_FORWARDING_REQUIRED" in healthcheck
+    assert '[ "$PROXY_HEALTHCHECK_FORWARDING_REQUIRED" = "1" ]' in healthcheck
     assert "squid-flask-proxy-forwarding-health" in healthcheck
     assert "local canary target" in healthcheck
     assert (
@@ -6739,10 +6671,6 @@ def test_packaged_proxy_healthcheck_treats_icap_helpers_as_fail_open_by_default(
         in healthcheck
     )
     assert "CLAMAV_REQUIRED is set but remote clamd is not responding" in healthcheck
-    assert (
-        "supervisor_program_running cicap_adblock || ! supervisor_program_running cicap_av"
-        not in healthcheck
-    )
 
 
 def test_packaged_proxy_healthcheck_checks_https_intercept_listeners() -> None:
@@ -6755,20 +6683,12 @@ def test_packaged_proxy_healthcheck_checks_https_intercept_listeners() -> None:
     assert "Squid listener(s) not accepting connections" in healthcheck
 
 
-def test_packaged_proxy_healthcheck_normalizes_forwarding_canary_path_like_runtime() -> (
+def test_packaged_proxy_entrypoint_normalizes_forwarding_canary_path_like_runtime() -> (
     None
 ):
-    default_url = (
-        "http://127.0.0.1:18080/__docker_proxy_forwarding_canary?probe=squid-respmod"
-    )
-
     assert (
-        _healthcheck_forwarding_canary_url(FORWARDING_CANARY_PATH="/bad//canary")
-        == default_url
-    )
-    assert (
-        _healthcheck_forwarding_canary_url(FORWARDING_CANARY_PATH="/custom-canary")
-        == "http://127.0.0.1:18080/custom-canary?probe=squid-respmod"
+        _entrypoint_forwarding_canary_path(FORWARDING_CANARY_PATH="/bad//canary")
+        == "/__docker_proxy_forwarding_canary"
     )
     assert (
         _entrypoint_forwarding_canary_path(FORWARDING_CANARY_PATH="/custom-canary")
@@ -6781,41 +6701,12 @@ def test_packaged_proxy_healthcheck_normalizes_forwarding_canary_path_like_runti
     [" /custom-canary", "/custom canary", "/custom\tcanary", "/custom\x7fcanary"],
     ids=["leading-space", "embedded-space", "tab", "delete-control"],
 )
-def test_packaged_proxy_scripts_reject_unsafe_forwarding_canary_path(
+def test_packaged_proxy_entrypoint_rejects_unsafe_forwarding_canary_path(
     unsafe_path: str,
 ) -> None:
-    default_path = "/__docker_proxy_forwarding_canary"
-    default_url = f"http://127.0.0.1:18080{default_path}?probe=squid-respmod"
-
-    assert (
-        _healthcheck_forwarding_canary_url(FORWARDING_CANARY_PATH=unsafe_path)
-        == default_url
-    )
     assert (
         _entrypoint_forwarding_canary_path(FORWARDING_CANARY_PATH=unsafe_path)
-        == default_path
-    )
-
-
-def test_packaged_proxy_healthcheck_normalizes_forwarding_canary_listener_port() -> (
-    None
-):
-    repo_root = Path(__file__).resolve().parents[2]
-    healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(
-        encoding="utf-8",
-    )
-
-    assert 'has_listen_socket "$(forwarding_canary_port)"' in healthcheck
-    assert (
-        _healthcheck_forwarding_canary_port(FORWARDING_CANARY_PORT="18081") == "18081"
-    )
-    assert (
-        _healthcheck_forwarding_canary_port(FORWARDING_CANARY_PORT="not-a-port")
-        == "18080"
-    )
-    assert _healthcheck_forwarding_canary_port(FORWARDING_CANARY_PORT="0") == "18080"
-    assert (
-        _healthcheck_forwarding_canary_port(FORWARDING_CANARY_PORT="65536") == "18080"
+        == "/__docker_proxy_forwarding_canary"
     )
 
 
@@ -6919,14 +6810,12 @@ def test_runtime_security_flags_fail_safe_on_malformed_values(monkeypatch) -> No
 def test_packaged_security_flags_fail_safe_on_malformed_values() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     entrypoint = (repo_root / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
-    healthcheck = (repo_root / "docker" / "healthcheck.sh").read_text(encoding="utf-8")
 
     assert 'env_enabled "$CLAMAV_REQUIRED_RAW" 1' in entrypoint
     assert 'ADBLOCK_ENABLED_RAW="${ADBLOCK_ENABLED:-0}"' in entrypoint
     assert 'env_enabled "$ADBLOCK_ENABLED_RAW" 1' in entrypoint
     assert 'env_enabled "${ADBLOCK_ICAP_REQUIRED:-}" 1' in entrypoint
-    assert 'env_enabled "${CLAMAV_REQUIRED:-}" 1' in healthcheck
-    assert 'env_enabled "${ADBLOCK_ICAP_REQUIRED:-}" 1' in healthcheck
+    assert 'if [ "$ADBLOCK_BYPASS" = "off" ]; then' in entrypoint
 
 
 def test_packaged_startup_file_policy_keeps_upload_scanning_off() -> None:

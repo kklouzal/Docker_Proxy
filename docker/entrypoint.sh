@@ -143,21 +143,9 @@ sanitize_forwarding_canary_path() {
     FORWARDING_CANARY_PATH_CANDIDATE="$1" python3 - <<'PY'
 import os
 
-default = "/__docker_proxy_forwarding_canary"
-candidate = os.environ.get("FORWARDING_CANARY_PATH_CANDIDATE") or default
-if (
-    not candidate.startswith("/")
-    or "?" in candidate
-    or "#" in candidate
-    or "\\" in candidate
-    or "//" in candidate
-    or any(
-        char.isspace() or ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
-        for char in candidate
-    )
-):
-    candidate = default
-print(candidate)
+from services.forwarding_canary_config import normalize_forwarding_canary_path
+
+print(normalize_forwarding_canary_path(os.environ.get("FORWARDING_CANARY_PATH_CANDIDATE")))
 PY
 }
 
@@ -1453,6 +1441,48 @@ printf '[proxy-entrypoint] squid cache-dir prepare complete pidfile=%s squid_pid
     "$(pgrep -x squid 2>/dev/null | paste -sd, - || true)"
 rm -f /var/run/squid.pid || true
 printf '%s\n' "$WORKERS" > "$WORKERS_MARKER_PATH" 2>/dev/null || true
+
+# The container healthcheck runs with Docker's configured environment, which
+# lacks /config/app.env values and everything resolved above. Record the
+# effective (already sanitized) settings it needs; none of them are secrets.
+shell_quote() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+HEALTHCHECK_ENV_FILE="${HEALTHCHECK_ENV_FILE:-/run/squid-flask-proxy/healthcheck.env}"
+HEALTHCHECK_FORWARDING_REQUIRED=0
+if env_enabled "${PROXY_HEALTHCHECK_FORWARDING_REQUIRED:-}"; then
+    HEALTHCHECK_FORWARDING_REQUIRED=1
+fi
+HEALTHCHECK_ADBLOCK_ICAP_REQUIRED=0
+if [ "$ADBLOCK_BYPASS" = "off" ]; then
+    HEALTHCHECK_ADBLOCK_ICAP_REQUIRED=1
+fi
+HEALTHCHECK_SQUID_HTTP_PORT="$(sanitize_port "${SQUID_HTTP_PORT:-3128}")"
+mkdir -p "$(dirname "$HEALTHCHECK_ENV_FILE")"
+{
+    printf 'SQUID_WORKERS=%s\n' "$WORKERS"
+    printf 'SQUID_HTTP_PORT=%s\n' "${HEALTHCHECK_SQUID_HTTP_PORT:-3128}"
+    printf 'CICAP_PORT=%s\nCICAP_AV_PORT=%s\nCICAP_AV_RESP_PORT=%s\n' \
+        "$CICAP_PORT" "$CICAP_AV_PORT" "$CICAP_AV_RESP_PORT"
+    printf 'CLAMD_HOST=%s\nCLAMD_PORT=%s\nCLAMD_HOST_IS_REMOTE=%s\n' \
+        "$(shell_quote "$CLAMD_HOST")" "$CLAMD_PORT" "$CLAMD_HOST_IS_REMOTE"
+    printf 'CLAMAV_REQUIRED=%s\nADBLOCK_ICAP_REQUIRED=%s\n' \
+        "$CLAMAV_REQUIRED" "$HEALTHCHECK_ADBLOCK_ICAP_REQUIRED"
+    printf 'PROXY_HEALTHCHECK_FORWARDING_REQUIRED=%s\n' "$HEALTHCHECK_FORWARDING_REQUIRED"
+    printf 'PAC_HTTP_HOST=%s\nPAC_HTTP_PORT=%s\n' "$(shell_quote "$PAC_HTTP_HOST")" "$PAC_HTTP_PORT"
+    printf 'FORWARDING_CANARY_HOST=%s\nFORWARDING_CANARY_PORT=%s\nFORWARDING_CANARY_PATH=%s\n' \
+        "$(shell_quote "$FORWARDING_CANARY_HOST")" "$FORWARDING_CANARY_PORT" \
+        "$(shell_quote "$FORWARDING_CANARY_PATH")"
+    if [ -n "${SQUID_ICAP_INCLUDE_PATH:-}" ]; then
+        printf 'SQUID_ICAP_INCLUDE_PATH=%s\n' "$(shell_quote "$SQUID_ICAP_INCLUDE_PATH")"
+    fi
+    if [ -n "${SQUID_ICAP_READY_HEALTH_PROBE_TIMEOUT_SECONDS:-}" ]; then
+        printf 'SQUID_ICAP_READY_HEALTH_PROBE_TIMEOUT_SECONDS=%s\n' \
+            "$(shell_quote "$SQUID_ICAP_READY_HEALTH_PROBE_TIMEOUT_SECONDS")"
+    fi
+    printf 'export SQUID_HTTP_PORT CLAMD_HOST CLAMD_PORT PAC_HTTP_HOST PAC_HTTP_PORT FORWARDING_CANARY_HOST FORWARDING_CANARY_PORT FORWARDING_CANARY_PATH\n'
+} > "${HEALTHCHECK_ENV_FILE}.tmp"
+mv -f "${HEALTHCHECK_ENV_FILE}.tmp" "$HEALTHCHECK_ENV_FILE"
 
 # Control-plane readiness is per agent process: never inherit it from an
 # earlier container run (proxy.control_plane_state).

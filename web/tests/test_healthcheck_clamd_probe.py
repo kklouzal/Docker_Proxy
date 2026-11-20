@@ -64,7 +64,7 @@ def _run_probe_against_chunks(
         }
         result = subprocess.run(
             ["sh", "-c", _extract_remote_clamd_probe()],
-            cwd=REPO_ROOT,
+            cwd=REPO_ROOT / "web",
             env=env,
             capture_output=True,
             timeout=3,
@@ -135,7 +135,7 @@ def test_healthcheck_remote_clamd_probe_reports_timeout() -> None:
         }
         result = subprocess.run(
             ["sh", "-c", _extract_remote_clamd_probe()],
-            cwd=REPO_ROOT,
+            cwd=REPO_ROOT / "web",
             env=env,
             capture_output=True,
             timeout=4,
