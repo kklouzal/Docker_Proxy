@@ -42,8 +42,6 @@ from services.pac_request import (
     _safe_pac_state_relative_path,
     calculate_pac_state_sha,
     format_proxy_host,
-    select_manifest_file,
-    substitute_request_host,
 )
 from services.proxy_context import (
     get_proxy_id,
@@ -416,15 +414,6 @@ def resolve_proxy_pac_target(
         direct_enabled=direct_enabled,
         pac_path=pac_path,
     )
-
-
-def build_public_pac_url(raw_host: str = "", *, proxy_id: object | None = None) -> str:
-    if proxy_id is not None:
-        return resolve_proxy_pac_target(proxy_id).pac_url
-    candidate = (raw_host or "").strip()
-    if not candidate:
-        return ""
-    return _build_pac_url(scheme="http", host=candidate, port=80)
 
 
 def _cidr_to_mask(cidr: str) -> str:
@@ -844,28 +833,3 @@ def read_materialized_pac_state_sha(
         return marker.read_text(encoding="utf-8", errors="replace").strip()
     except Exception:
         return ""
-
-
-def render_proxy_pac_for_request(
-    *,
-    proxy_id: object | None = None,
-    requester_ip: str = "",
-    request_host: str = "",
-) -> str:
-    state = build_proxy_pac_state(proxy_id)
-    file_map = {item.relative_path: item.content for item in state.files}
-    try:
-        manifest = json.loads(file_map.get(PAC_MANIFEST_FILENAME, "{}") or "{}")
-    except Exception:
-        manifest = {}
-    selected = select_manifest_file(
-        manifest if isinstance(manifest, dict) else {},
-        requester_ip,
-    )
-    pac = file_map.get(selected) or file_map.get(
-        str(manifest.get("fallback_file") or "fallback.pac"),
-        "",
-    )
-    if not pac:
-        pac = build_emergency_pac(resolve_proxy_pac_target(proxy_id))
-    return substitute_request_host(pac, request_host)

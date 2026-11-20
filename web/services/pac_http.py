@@ -691,10 +691,6 @@ def get_pac_cache(pac_dir: str | None = None) -> LocalPacCache:
         return cache
 
 
-def public_pac_paths(pac_dir: str | None = None) -> frozenset[str]:
-    return get_pac_cache(pac_dir).public_paths()
-
-
 def public_pac_request_allowed(
     path: str,
     query_string: object | None = None,
@@ -706,21 +702,6 @@ def public_pac_request_allowed(
 def public_pac_request_path_safe(path: object) -> bool:
     raw_path = str(path or "/").split("?", 1)[0]
     return _safe_decoded_path_segments(raw_path) is not None
-
-
-def resolve_pac_bytes(
-    *,
-    client_ip: str,
-    request_host: str,
-    pac_dir: str | None = None,
-) -> bytes:
-    data = get_pac_cache(pac_dir).resolve(
-        client_ip=client_ip,
-        request_host=request_host,
-    )
-    if data is not None:
-        return data
-    return default_pac_bytes(request_host)
 
 
 def resolve_pac(

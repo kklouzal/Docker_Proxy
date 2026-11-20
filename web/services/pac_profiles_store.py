@@ -712,53 +712,6 @@ class PacProfilesStore:
                 )
                 return True
 
-    def match_profile_for_client_ip(self, client_ip: str) -> PacProfile | None:
-        """Return the effective profile for client_ip.
-
-        Matching order mirrors the materialized PAC manifest selector:
-        - the matching client_cidr profile with the longest prefix, then lowest id
-        - then the first empty-client_cidr catch-all profile, by id
-        """
-        profiles = self.list_profiles()
-        if not profiles:
-            return None
-
-        try:
-            ip = ip_address((client_ip or "").strip())
-        except Exception:
-            ip = None
-        if ip is not None and getattr(ip, "ipv4_mapped", None) is not None:
-            # Keep diagnostic/admin selection aligned with PAC serving when a
-            # WSGI/proxy stack reports an IPv4 client as IPv4-mapped IPv6.
-            ip = ip.ipv4_mapped
-
-        def id_key(p: PacProfile) -> int:
-            return int(p.id)
-
-        matches: list[tuple[int, int, PacProfile]] = []
-        for p in profiles:
-            if not p.client_cidr or ip is None:
-                continue
-            try:
-                net = ip_network(p.client_cidr, strict=False)
-            except Exception:
-                continue
-            if ip.version != net.version:
-                continue
-            if ip in net:
-                matches.append((int(net.prefixlen), id_key(p), p))
-
-        if matches:
-            return min(matches, key=lambda item: (-item[0], item[1]))[2]
-
-        # Fall back to the first catch-all (if any). Keep this behavior for
-        # malformed or unavailable client IPs so diagnostics match PAC serving.
-        for p in sorted(profiles, key=id_key):
-            if not p.client_cidr:
-                return p
-
-        return None
-
 
 _store: PacProfilesStore | None = None
 _store_lock = threading.Lock()
