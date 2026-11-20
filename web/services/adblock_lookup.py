@@ -8,7 +8,10 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from services.adblock_hosts import (
     adblock_host_suffix_candidates as _host_suffix_candidates,
@@ -163,6 +166,9 @@ class AdblockLookupIndex:
         self._regex_candidates_lock = threading.Lock()
         self._regex_token_index_available: bool | None = None
         self._regex_token_fallback_ids: set[str] | None = None
+        # The compiled index is immutable for the life of this lookup (a new
+        # artifact restarts the ICAP helper), so schema probes run once.
+        self._schema_probes: dict[str, bool] = {}
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
@@ -348,6 +354,12 @@ class AdblockLookupIndex:
             self._payloads = payloads
             return payloads
 
+    def _schema_probe(self, key: str, probe: Callable[[], bool]) -> bool:
+        cached = self._schema_probes.get(key)
+        if cached is None:
+            cached = self._schema_probes[key] = bool(probe())
+        return cached
+
     def _candidate_rule_ids(
         self,
         conn: sqlite3.Connection,
@@ -361,18 +373,21 @@ class AdblockLookupIndex:
         host = _normalize_host(parsed.hostname or "")
         rule_ids: set[str] = set()
 
+        host_suffixes = _host_suffix_candidates(host)
         rule_ids.update(
             str(row["rule_id"])
             for row in _query_by_values(
                 conn,
                 "SELECT rule_id FROM domain_index WHERE host IN ",
-                _host_suffix_candidates(host),
+                host_suffixes,
             )
         )
 
-        host_suffixes = _host_suffix_candidates(host)
         if host:
-            if _table_column_exists(conn, "host_index", "pattern_kind"):
+            if self._schema_probe(
+                "host_index.pattern_kind",
+                lambda: _table_column_exists(conn, "host_index", "pattern_kind"),
+            ):
                 rule_ids.update(
                     str(row["rule_id"])
                     for row in conn.execute(
@@ -402,7 +417,9 @@ class AdblockLookupIndex:
                     )
                 )
 
-            rule_ids.update(self._matching_host_pattern_ids(conn, host))
+            rule_ids.update(
+                self._matching_host_pattern_ids(conn, host, host_suffixes),
+            )
 
         rule_ids.update(self._matching_regex_ids(conn, url))
 
@@ -422,10 +439,13 @@ class AdblockLookupIndex:
             )
         )
 
-        if _table_has_columns(
-            conn,
+        if self._schema_probe(
             "resource_type_index",
-            {"rule_id", "resource_type", "negated"},
+            lambda: _table_has_columns(
+                conn,
+                "resource_type_index",
+                {"rule_id", "resource_type", "negated"},
+            ),
         ):
             return _filter_by_resource_type(conn, rule_ids, resource_type)
         return rule_ids
@@ -434,6 +454,7 @@ class AdblockLookupIndex:
         self,
         conn: sqlite3.Connection,
         host: str,
+        host_suffixes: list[str],
     ) -> set[str]:
         candidates_by_id = self._load_host_patterns(conn)
         if not candidates_by_id:
@@ -455,7 +476,7 @@ class AdblockLookupIndex:
         return {
             candidate.rule_id
             for candidate in candidates
-            if _host_pattern_matches_candidate(host, candidate)
+            if _host_pattern_matches_candidate(host, host_suffixes, candidate)
         }
 
     def _host_pattern_candidate_ids(
@@ -739,6 +760,7 @@ def _regex_token_key_is_safe(pattern: str, key: str) -> bool:
 
 def _host_pattern_matches_candidate(
     host: str,
+    host_suffixes: list[str],
     candidate: _HostPatternCandidate,
 ) -> bool:
     if candidate.pattern_kind == "absolute_url_pattern":
@@ -747,7 +769,7 @@ def _host_pattern_matches_candidate(
     # candidates for absolute-URL rules, but cannot omit a true match.
     return any(
         fnmatch.fnmatchcase(host_suffix, candidate.host_pattern)
-        for host_suffix in _host_suffix_candidates(host)
+        for host_suffix in host_suffixes
     )
 
 
