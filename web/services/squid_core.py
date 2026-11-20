@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 _SQUID_LIFECYCLE_LOCK = threading.RLock()
 _SQUID_LIFECYCLE_LOCK_STATE = threading.local()
 _SQUID_TRANSACTION_STATE = threading.local()
+# Journal operations whose interruption is recovered by clearing the cache again.
+_CACHE_CLEAR_OPERATIONS = frozenset({"clear_disk_cache", "recover_clear_disk_cache"})
 _SAFE_CLAMD_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
@@ -223,12 +225,31 @@ def _exclusive_squid_lifecycle_lock():
     running/started, stale PID files) that are only safe if one lifecycle actor
     owns the sequence until post-start readiness is proven.
     """
-    with _SQUID_LIFECYCLE_LOCK:
+    with _squid_lifecycle_lock(wait=True):
+        yield
+
+
+@contextlib.contextmanager
+def _squid_lifecycle_lock(*, wait: bool):
+    """Hold the Squid lifecycle lock (thread lock plus file lock).
+
+    Yields:
+        True once held. With ``wait`` False, False instead of waiting when
+        another thread or process, or this thread already, owns it.
+
+    """
+    if not _SQUID_LIFECYCLE_LOCK.acquire(blocking=wait):
+        yield False
+        return
+    try:
         depth = int(getattr(_SQUID_LIFECYCLE_LOCK_STATE, "depth", 0) or 0)
         if depth:
+            if not wait:
+                yield False
+                return
             _SQUID_LIFECYCLE_LOCK_STATE.depth = depth + 1
             try:
-                yield
+                yield True
             finally:
                 _SQUID_LIFECYCLE_LOCK_STATE.depth = depth
             return
@@ -241,16 +262,27 @@ def _exclusive_squid_lifecycle_lock():
                 handle = os.fdopen(open_lifecycle_lock(), "a+", encoding="utf-8")
                 import fcntl as fcntl_mod  # type: ignore
 
-                fcntl_mod.flock(handle.fileno(), fcntl_mod.LOCK_EX)
+                flags = (
+                    fcntl_mod.LOCK_EX if wait else fcntl_mod.LOCK_EX | fcntl_mod.LOCK_NB
+                )
+                fcntl_mod.flock(handle.fileno(), flags)
+            except BlockingIOError:
+                pass  # LOCK_NB: another process owns the lifecycle
             except Exception:
                 logger.error(  # ruff: ignore[error-instead-of-exception] - traceback could expose lock errors
                     "Unable to establish the Squid lifecycle file lock; "
                     "refusing to mutate Squid",
                 )
                 raise SquidLifecycleLockError from None
-            file_lock_acquired = True
+            else:
+                file_lock_acquired = True
+            if not file_lock_acquired:
+                if wait:
+                    raise SquidLifecycleLockError
+                yield False
+                return
             _SQUID_LIFECYCLE_LOCK_STATE.depth = 1
-            yield
+            yield True
         finally:
             _SQUID_LIFECYCLE_LOCK_STATE.depth = 0
             if handle is not None:
@@ -261,6 +293,8 @@ def _exclusive_squid_lifecycle_lock():
                     pass
                 with contextlib.suppress(Exception):
                     handle.close()
+    finally:
+        _SQUID_LIFECYCLE_LOCK.release()
 
 
 class SquidController:
@@ -452,6 +486,62 @@ class SquidController:
             return self._restore_last_known_good_config_locked(
                 reason=reason,
                 fallback_config=fallback_config,
+            )
+
+    def lifecycle_owner_active(self) -> bool:
+        """Whether a thread or process is in the middle of a Squid mutation now."""
+        with _squid_lifecycle_lock(wait=False) as acquired:
+            return not acquired
+
+    def recover_interrupted_transaction(self) -> tuple[bool, str] | None:
+        """Finish a Squid mutation whose owner exited half-way.
+
+        Every journal writer holds the lifecycle lock from ``begin`` to its
+        terminal record, so an ``in_progress``/``recovering`` record while the
+        lock is free was left by a process that died or was stopped mid-way
+        (a killed management API, an abandoned graceful drain, a crashed
+        agent) and Squid may be stopped. An interrupted cache clear is run
+        again (it stops Squid, empties and re-prepares the cache, starts
+        Squid); any other mutation gets the designated last-known-good
+        rollback. Returns None when nothing is interrupted or a live owner
+        holds the lock; a failed recovery leaves ``recovery_required`` for the
+        rollback self-heal and its backoff.
+        """
+        with _squid_lifecycle_lock(wait=False) as acquired:
+            if not acquired:
+                return None
+            journal = self._transaction_journal()
+            try:
+                record = journal.read()
+            except SquidTransactionRecoveryRequiredError:
+                return None  # unreadable: reported by journal health
+            status = str((record or {}).get("status") or "")
+            if status not in {"in_progress", "recovering"}:
+                return None
+            operation = str(record.get("operation") or "unknown")
+            logger.warning(
+                "Recovering Squid transaction %s (%s, phase %s) left unfinished "
+                "by an exited owner",
+                record.get("transaction_id") or "unknown",
+                operation,
+                record.get("phase") or "unknown",
+            )
+            if operation in _CACHE_CLEAR_OPERATIONS:
+                journal.begin_recovery(
+                    "recover_clear_disk_cache",
+                    intended_phase="mutation_terminal",
+                )
+                ok, detail = self._clear_disk_cache_locked()
+                if ok:
+                    journal.complete(detail=detail, recovered=True)
+                else:
+                    journal.recovery_required(detail or "Cache clear recovery failed.")
+                return ok, detail
+            return self._restore_last_known_good_config_locked(
+                reason=(
+                    f"Squid {operation} transaction was interrupted when its owner "
+                    "exited; restoring the persisted last-known-good config."
+                ),
             )
 
     def _restore_last_known_good_config_locked(

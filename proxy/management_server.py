@@ -543,6 +543,8 @@ def main() -> None:
 
     server = ManagementServer(
         app,
+        host=BIND_HOST,
+        port=BIND_PORT,
         threads=_env_number("WEB_THREADS", MIN_REQUEST_THREADS, 1),
         keepalive=_env_number("WEB_KEEPALIVE", 5, 0),
         io_timeout=_env_number("WEB_TIMEOUT", 120, 1),

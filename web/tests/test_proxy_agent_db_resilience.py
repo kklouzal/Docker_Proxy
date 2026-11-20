@@ -18,6 +18,9 @@ class _AgentRuntime:
     proxy_id = "edge-01"
     recovery_initial_capture_required = False
 
+    def recover_interrupted_squid_transaction(self):
+        return None
+
     def run_startup_recovery(self):
         return SimpleNamespace(
             status="missing_bundle", proxy_id=self.proxy_id, capture_required=True
@@ -85,7 +88,11 @@ def test_proxy_agent_startup_does_not_exit_when_initial_control_plane_db_calls_f
     agent.start_agent()
 
     assert calls == ["ensure_registered", "bootstrap", "background", "sync:False"]
-    assert [name for name, _target in threads] == ["proxy-heartbeat", "proxy-sync-loop"]
+    assert [name for name, _target in threads] == [
+        "proxy-heartbeat",
+        "proxy-sync-loop",
+        "squid-transaction-watch",
+    ]
 
 
 def test_proxy_agent_runtime_construction_failure_allows_one_successful_retry(
@@ -143,7 +150,11 @@ def test_proxy_agent_runtime_construction_failure_allows_one_successful_retry(
     agent.start_agent()
 
     assert runtime_attempts == 2
-    assert thread_starts == ["proxy-heartbeat", "proxy-sync-loop"]
+    assert thread_starts == [
+        "proxy-heartbeat",
+        "proxy-sync-loop",
+        "squid-transaction-watch",
+    ]
     assert agent._started is True
 
 
@@ -152,11 +163,21 @@ def test_proxy_agent_runtime_construction_failure_allows_one_successful_retry(
     [
         (
             "proxy-heartbeat",
-            ["proxy-heartbeat", "proxy-heartbeat", "proxy-sync-loop"],
+            [
+                "proxy-heartbeat",
+                "proxy-heartbeat",
+                "proxy-sync-loop",
+                "squid-transaction-watch",
+            ],
         ),
         (
             "proxy-sync-loop",
-            ["proxy-heartbeat", "proxy-sync-loop", "proxy-sync-loop"],
+            [
+                "proxy-heartbeat",
+                "proxy-sync-loop",
+                "proxy-sync-loop",
+                "squid-transaction-watch",
+            ],
         ),
     ],
 )
@@ -224,7 +245,11 @@ def test_proxy_agent_thread_start_failure_retries_only_missing_loops(
 
     assert runtime_attempts == 2
     assert start_attempts == expected_start_attempts
-    assert successful_starts == ["proxy-heartbeat", "proxy-sync-loop"]
+    assert successful_starts == [
+        "proxy-heartbeat",
+        "proxy-sync-loop",
+        "squid-transaction-watch",
+    ]
     assert agent._started is True
 
 
@@ -332,7 +357,7 @@ def test_proxy_agent_skips_initial_db_mutation_when_missing_bundle_schema_deferr
     agent.start_agent()
 
     assert calls == ["recovery", "schema"]
-    assert threads == ["proxy-heartbeat", "proxy-sync-loop"]
+    assert threads == ["proxy-heartbeat", "proxy-sync-loop", "squid-transaction-watch"]
 
 
 def test_proxy_agent_runs_recovery_before_initial_registration_and_required_capture(

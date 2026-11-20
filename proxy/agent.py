@@ -34,6 +34,8 @@ _loop_threads: list[threading.Thread] = []
 _start_lock = threading.Lock()
 _SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _WAKE_POLL_SECONDS = 1.0
+# How soon Squid work left unfinished by an exited process is resumed.
+SQUID_TRANSACTION_WATCH_SECONDS = 10.0
 
 
 def _transient_control_plane_cause(exc: BaseException) -> BaseException | None:
@@ -346,6 +348,23 @@ def _control_plane_cycle(
     return _sync_loop(runtime, force=False, stop_event=stop_event)
 
 
+def _recover_interrupted_squid_transaction(runtime) -> None:
+    """Restart Squid work a killed or stopped process left unfinished.
+
+    This agent is the always-running local owner of Squid recovery: the
+    management API that started a cache clear may be gone for good.
+    """
+    try:
+        runtime.recover_interrupted_squid_transaction()
+    except Exception:
+        log_exception_throttled(
+            logger,
+            "proxy.agent.squid_transaction_watch",
+            interval_seconds=60.0,
+            message="Interrupted Squid transaction recovery failed",
+        )
+
+
 def _heartbeat_cycle(runtime, startup: _ControlPlaneStartup):
     if startup.complete:
         return runtime.heartbeat()
@@ -371,6 +390,9 @@ def start_agent(*, stop_event: threading.Event | None = None) -> None:
         )
         if stop_event is not None and stop_event.is_set():
             return
+        # A mutation cut off by a process exit may have left Squid stopped;
+        # startup applies would also refuse the unfinished journal.
+        _recover_interrupted_squid_transaction(runtime)
         loop_stop = stop_event or threading.Event()
         startup = _ControlPlaneStartup(runtime)
         # MySQL/control-plane outages must not kill the local proxy agent.  The
@@ -434,6 +456,14 @@ def start_agent(*, stop_event: threading.Event | None = None) -> None:
                         default_base=2.0,
                         default_max=30.0,
                     ),
+                ),
+            ),
+            (
+                "squid-transaction-watch",
+                (
+                    SQUID_TRANSACTION_WATCH_SECONDS,
+                    lambda: _recover_interrupted_squid_transaction(runtime),
+                    loop_stop,
                 ),
             ),
         )

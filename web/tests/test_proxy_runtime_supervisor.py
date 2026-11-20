@@ -2179,6 +2179,12 @@ def test_runtime_self_heal_rolls_back_when_squid_status_fails() -> None:
     marked: list[tuple[bool, str, str]] = []
 
     class Controller:
+        def recover_interrupted_transaction(self):
+            return None
+
+        def lifecycle_owner_active(self) -> bool:
+            return False
+
         def get_status(self):
             return b"", b"squid broken"
 
@@ -2210,6 +2216,8 @@ def test_runtime_self_heal_rolls_back_when_listener_probe_raises() -> None:
     runtime = _runtime_shell()
     rollback_reasons = []
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _wait_for_http_listener=lambda *, timeout: (_ for _ in ()).throw(
             RuntimeError("private probe failure")
@@ -5625,6 +5633,8 @@ def test_collect_health_serializes_cold_refresh(monkeypatch) -> None:
     runtime._health_cache_ts = 0.0
     runtime._health_cache_value = None
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
         _wait_for_http_listener=lambda *, timeout: True,
@@ -5719,6 +5729,8 @@ def test_collect_health_cache_refreshes_when_config_sha_changes() -> None:
         return tuple(listeners)
 
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _http_listener_details=listener_details,
         _wait_for_http_listener=lambda *, timeout: True,
@@ -5881,6 +5893,8 @@ def test_navigation_health_degrades_when_listener_inspection_raises(
     runtime.health_cache_ttl_seconds = 0.0
     runtime._health_cache_lock = threading.Lock()
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _http_listener_details=listener_details,
         _wait_for_http_listener=listener_probe,
@@ -5903,6 +5917,8 @@ def test_collect_navigation_health_degrades_while_operations_are_active() -> Non
     runtime.health_cache_ttl_seconds = 0.0
     runtime._health_cache_lock = threading.Lock()
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
         _wait_for_http_listener=lambda *, timeout: True,
@@ -5932,6 +5948,8 @@ def test_collect_navigation_health_degrades_when_squid_transaction_is_dirty() ->
     runtime.health_cache_ttl_seconds = 0.0
     runtime._health_cache_lock = threading.Lock()
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
         _wait_for_http_listener=lambda *, timeout: True,
@@ -5974,6 +5992,8 @@ def test_navigation_health_cache_invalidates_when_transaction_becomes_dirty() ->
     runtime._navigation_health_cache_value = None
     runtime._navigation_health_cache_ts = 0.0
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
         _wait_for_http_listener=lambda *, timeout: True,
@@ -6000,6 +6020,8 @@ def test_collect_health_degrades_when_operation_ledger_unavailable() -> None:
     runtime._health_cache_lock = threading.Lock()
     runtime._health_refresh_lock = threading.Lock()
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
         _wait_for_http_listener=lambda *, timeout: True,
@@ -6071,6 +6093,8 @@ def test_collect_health_degrades_when_desired_runtime_state_drifts() -> None:
     runtime._health_cache_lock = threading.Lock()
     runtime._health_refresh_lock = threading.Lock()
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
         _wait_for_http_listener=lambda *, timeout: True,
@@ -6132,6 +6156,8 @@ def test_collect_health_degrades_when_materialized_runtime_payload_is_stale() ->
     runtime._health_cache_lock = threading.Lock()
     runtime._health_refresh_lock = threading.Lock()
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
         _wait_for_http_listener=lambda *, timeout: True,
@@ -6212,6 +6238,8 @@ http_access deny all
     runtime._health_cache_lock = threading.Lock()
     runtime._health_refresh_lock = threading.Lock()
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _http_listener_details=lambda: ({"port": 3128, "mode": "explicit"},),
         _wait_for_http_listener=lambda *, timeout: True,
@@ -9670,6 +9698,8 @@ def test_runtime_self_heal_recovers_stranded_squid_transaction_with_backoff(
     journal = {"status": "recovery_required", "transaction_id": "tx-1"}
     runtime._squid_transaction_health = lambda: dict(journal)
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _wait_for_http_listener=lambda *, timeout: True,
     )
@@ -9709,6 +9739,8 @@ def test_runtime_self_heal_leaves_live_or_reconciled_transactions_alone(
     runtime = _runtime_shell()
     runtime._squid_transaction_health = lambda: {"status": status}
     runtime.controller = SimpleNamespace(
+        recover_interrupted_transaction=lambda: None,
+        lifecycle_owner_active=lambda: False,
         get_status=lambda: (b"squid ok", b""),
         _wait_for_http_listener=lambda *, timeout: True,
     )

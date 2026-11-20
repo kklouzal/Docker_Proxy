@@ -2633,11 +2633,48 @@ class ProxyRuntime:
             "ports": list(listener_ports),
         }
 
+    def recover_interrupted_squid_transaction(self) -> dict[str, Any] | None:
+        """Finish a Squid mutation left half-way by an exited process.
+
+        None when nothing was interrupted or its owner is still running.
+        """
+        result = self.controller.recover_interrupted_transaction()
+        if result is None:
+            return None
+        self._invalidate_health_cache()
+        ok, detail = result
+        log = logger.info if ok else logger.warning
+        log(
+            "Interrupted Squid transaction recovery %s: %s",
+            "succeeded" if ok else "failed",
+            detail.splitlines()[-1] if detail else "no detail",
+        )
+        return {
+            "ok": ok,
+            "proxy_id": self.proxy_id,
+            "changed": ok,
+            "rolled_back": False,
+            "detail": detail,
+        }
+
     def self_heal_config_if_needed(
         self,
         *,
         reason: str = "health check",
     ) -> dict[str, Any]:
+        interrupted = self.recover_interrupted_squid_transaction()
+        if interrupted is not None:
+            return interrupted
+        if self.controller.lifecycle_owner_active():
+            # A stop/clear/apply is running: Squid being down is expected and
+            # its owner finishes (or the interrupted-transaction recovery does).
+            return {
+                "ok": True,
+                "proxy_id": self.proxy_id,
+                "changed": False,
+                "rolled_back": False,
+                "detail": "A Squid lifecycle operation is in progress; self-heal deferred.",
+            }
         try:
             stdout, stderr = self.controller.get_status()
             status_detail = (

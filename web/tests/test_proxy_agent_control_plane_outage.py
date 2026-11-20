@@ -38,6 +38,9 @@ class _Runtime:
         self.recovery_outcomes = recovery_outcomes
         self.calls: list[str] = []
 
+    def recover_interrupted_squid_transaction(self):
+        return None
+
     def run_startup_recovery(self):
         self.calls.append("recovery")
         outcome = self.recovery_outcomes.pop(0)
@@ -110,6 +113,7 @@ def test_cold_start_with_mysql_down_keeps_agent_alive_and_writes_nothing(
     assert [name for name, _args in _FakeThread.created] == [
         "proxy-heartbeat",
         "proxy-sync-loop",
+        "squid-transaction-watch",
     ]
     _interval, heartbeat, *_rest = _loop_args("proxy-heartbeat")
     heartbeat()
