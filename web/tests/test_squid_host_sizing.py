@@ -139,6 +139,61 @@ def test_overlay_leaves_ports_that_do_not_generate_certificates() -> None:
     )
 
 
+def test_overlay_follows_squid_continuation_and_comment_rules() -> None:
+    # Squid skips comment and blank lines even inside a continued directive,
+    # and a comment ending in a backslash does not continue onto the next line.
+    revision = (
+        "# see C:\\squid\\\n"
+        "cache_mem 256 MB\n"
+        "cache_dir rock /var/spool/squid \\\n"
+        "# size below\n"
+        "\n"
+        "\t10000 slot-size=32768\n"
+        "http_port 3128 ssl-bump \\\n"
+        "# cert options\n"
+        "\tcert=/c.pem dynamic_cert_mem_cache_size=128MB\\\n"
+        "\t generate-host-certificates\n"
+        "http_port 3129 ssl-bump generate-host-certificates=off \\\n"
+        "\tgenerate-host-certificates=on\n"
+    )
+    overrides = {
+        "SQUID_CACHE_MEM_MB": 32,
+        "SQUID_CACHE_DIR_MB": 2048,
+        "SQUID_DYNAMIC_CERT_MEM_CACHE_MB": 16,
+    }
+
+    rendered = apply_host_sizing(revision, overrides)
+
+    assert rendered == (
+        "# see C:\\squid\\\n"
+        "cache_mem 32 MB\n"
+        "# size below\n"
+        "\n"
+        "cache_dir rock /var/spool/squid 2048 slot-size=32768\n"
+        "http_port 3128 ssl-bump \\\n"
+        "# cert options\n"
+        "\tcert=/c.pem dynamic_cert_mem_cache_size=16MB\\\n"
+        "\t generate-host-certificates\n"
+        "http_port 3129 ssl-bump generate-host-certificates=off \\\n"
+        "\tgenerate-host-certificates=on dynamic_cert_mem_cache_size=16MB\n"
+    )
+    assert apply_host_sizing(rendered, overrides) == rendered
+
+
+def test_normalize_is_idempotent_for_revisions_without_managed_logformats(
+    monkeypatch,
+) -> None:
+    from services.squid_core import SquidController
+
+    monkeypatch.delenv(OVERRIDES_ENV, raising=False)
+    controller = SquidController()
+    once = controller.normalize_config_text("http_port 3128\nhttp_access allow all\n")
+
+    assert controller.normalize_config_text(once) == once
+    assert "logformat liveui %ts\t%tr\t" in once
+    assert "\\t" not in once
+
+
 def test_describe_overrides_lists_pinned_directives_in_canonical_order() -> None:
     assert describe_overrides({"SQUID_CACHE_DIR_MB": 1024, "SQUID_WORKERS": 1}) == [
         {"env": "SQUID_WORKERS", "directive": "workers", "value": "1"},
@@ -208,9 +263,7 @@ def _stable_fleet_revision(monkeypatch) -> str:
     from services.squid_core import SquidController
 
     monkeypatch.delenv(OVERRIDES_ENV, raising=False)
-    controller = SquidController()
-    text = controller.normalize_config_text(FLEET_REVISION)
-    return controller.normalize_config_text(text)
+    return SquidController().normalize_config_text(FLEET_REVISION)
 
 
 def _sync_runtime(controller, revision_text: str, current: dict[str, str]):

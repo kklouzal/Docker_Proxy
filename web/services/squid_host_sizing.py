@@ -2,10 +2,10 @@
 
 Contract (see README "Host resource sizing"):
 
-* Config revisions in the control-plane database are fleet-wide desired
-  state. A proxy container can pin its own resource sizing through these
-  environment variables; when one is set to a valid value it is authoritative
-  over the revision for the directive(s) it owns:
+* Config revisions in the control-plane database are the Admin UI's saved
+  desired state for a proxy. A proxy container can pin its own resource
+  sizing through these environment variables; when one is set to a valid
+  value it is authoritative over the revision for the directive(s) it owns:
 
   ``SQUID_WORKERS``                    ``workers N``
   ``SQUID_CACHE_MEM_MB``               ``cache_mem N MB``
@@ -88,7 +88,7 @@ SETTINGS: tuple[HostSizingSetting, ...] = (
 _SETTINGS_BY_ENV = {setting.env: setting for setting in SETTINGS}
 _DIGITS_RE = re.compile(r"[0-9]{1,12}")
 _SSLCRTD_DEFAULT_OPTIONS = (("startup", 2), ("idle", 1), ("queue-size", 32))
-_DYNAMIC_CERT_RE = re.compile(r"(dynamic_cert_mem_cache_size=)\S+", re.IGNORECASE)
+_DYNAMIC_CERT_RE = re.compile(r"dynamic_cert_mem_cache_size=[^\s\\]*")
 
 
 def _bounded_int(setting: HostSizingSetting, raw: str) -> tuple[int | None, str]:
@@ -165,26 +165,60 @@ def describe_overrides(overrides: Mapping[str, int]) -> list[dict[str, str]]:
     ]
 
 
+def _is_skipped_line(line: str) -> bool:
+    """Squid skips blank and comment lines, even inside a continued directive."""
+    stripped = line.strip()
+    return not stripped or stripped.startswith("#")
+
+
+def _continues(line: str) -> bool:
+    # Squid continues a directive only when the backslash is the last
+    # character of the physical line (after CR/LF removal).
+    return line.rstrip("\r").endswith("\\")
+
+
 def _logical_groups(lines: list[str]) -> list[tuple[int, int]]:
-    """Return [start, end) physical-line ranges of logical squid.conf lines."""
+    """Return [start, end) physical-line ranges of logical squid.conf lines.
+
+    Mirrors Squid's parseOneConfigFile(): a non-comment line ending in a
+    backslash continues onto the next non-blank, non-comment line; skipped
+    lines between the parts belong to the same range.
+    """
     groups: list[tuple[int, int]] = []
     start = 0
+    continuing = False
     for index, line in enumerate(lines):
-        if line.rstrip().endswith("\\"):
+        if _is_skipped_line(line):
+            if not continuing:
+                groups.append((index, index + 1))
+                start = index + 1
+            continue
+        if _continues(line):
+            continuing = True
             continue
         groups.append((start, index + 1))
         start = index + 1
+        continuing = False
     if start < len(lines):
         groups.append((start, len(lines)))
     return groups
 
 
 def _logical_tokens(lines: list[str], start: int, end: int) -> list[str]:
-    joined = " ".join(line.rstrip().rstrip("\\") for line in lines[start:end])
-    stripped = joined.strip()
-    if not stripped or stripped.startswith("#"):
-        return []
-    return stripped.split()
+    """Tokens of one logical line, joined the way Squid joins continuations."""
+    joined = ""
+    for line in lines[start:end]:
+        if _is_skipped_line(line):
+            continue
+        part = line.rstrip("\r").lstrip()
+        if _continues(part):
+            part = part[:-1]
+        joined += part
+    return joined.split()
+
+
+def _skipped_lines(lines: list[str], start: int, end: int) -> list[str]:
+    return [line for line in lines[start:end] if _is_skipped_line(line)]
 
 
 def _sslcrtd_children_value(children: int, current_tokens: list[str]) -> str:
@@ -212,13 +246,16 @@ def _sslcrtd_children_value(children: int, current_tokens: list[str]) -> str:
 
 
 def _generates_certificates(tokens: list[str]) -> bool:
-    options = [token.lower() for token in tokens[2:]]
-    if "generate-host-certificates=off" in options:
-        return False
+    """Whether Squid generates host certificates on this port (last option wins)."""
+    options = tokens[2:]
     # Squid generates host certificates on ssl-bump ports unless disabled.
-    return "ssl-bump" in options or any(
-        option.startswith("generate-host-certificates") for option in options
-    )
+    enabled = "ssl-bump" in options
+    for option in options:
+        if option in {"generate-host-certificates", "generate-host-certificates=on"}:
+            enabled = True
+        elif option == "generate-host-certificates=off":
+            enabled = False
+    return enabled
 
 
 def _replace_value(line: str, directive: str, value: str) -> str:
@@ -253,43 +290,52 @@ def apply_host_sizing(config_text: str, overrides: Mapping[str, int]) -> str:
         tokens = _logical_tokens(lines, start, end)
         directive = tokens[0].lower() if tokens else ""
         group = lines[start:end]
+        single_line = end - start == 1
         if directive in simple or (directive == "sslcrtd_children" and children):
             value = (
                 simple[directive]
                 if directive in simple
                 else _sslcrtd_children_value(children or 0, tokens[2:])
             )
-            out.append(
-                _replace_value(group[0], directive, value)
-                if end - start == 1
-                else f"{directive} {value}",
-            )
+            if single_line:
+                out.append(_replace_value(group[0], directive, value))
+            else:
+                out.extend(_skipped_lines(lines, start, end))
+                out.append(f"{directive} {value}")
             seen.add(directive)
         elif (
-            end - start == 1
-            and directive == "cache_dir"
+            directive == "cache_dir"
             and cache_dir_mb is not None
             and len(tokens) >= 4
             and tokens[3].isdigit()
         ):
-            out.append(
-                re.sub(
-                    r"^(\s*cache_dir\s+\S+\s+\S+\s+)[0-9]+",
-                    lambda match: f"{match.group(1)}{cache_dir_mb}",
-                    group[0],
-                    count=1,
-                    flags=re.IGNORECASE,
-                ),
-            )
+            if single_line:
+                out.append(
+                    re.sub(
+                        r"^(\s*cache_dir\s+\S+\s+\S+\s+)[0-9]+",
+                        lambda match: f"{match.group(1)}{cache_dir_mb}",
+                        group[0],
+                        count=1,
+                        flags=re.IGNORECASE,
+                    ),
+                )
+            else:
+                out.extend(_skipped_lines(lines, start, end))
+                out.append(" ".join([*tokens[:3], str(cache_dir_mb), *tokens[4:]]))
         elif (
             directive in {"http_port", "https_port"}
             and cert_cache_mb is not None
             and _generates_certificates(tokens)
         ):
             replacement = f"dynamic_cert_mem_cache_size={cert_cache_mb}MB"
-            if any(_DYNAMIC_CERT_RE.search(line) for line in group):
+            if any(
+                token.startswith("dynamic_cert_mem_cache_size=") for token in tokens
+            ):
                 out.extend(
-                    _DYNAMIC_CERT_RE.sub(replacement, line, count=1) for line in group
+                    line
+                    if _is_skipped_line(line)
+                    else _DYNAMIC_CERT_RE.sub(replacement, line)
+                    for line in group
                 )
             else:
                 out.extend(group[:-1])
