@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_SECRET_PATH = "/var/lib/squid-flask-proxy/flask_secret.key"
 LOCAL_PASSWORD_MIN_LENGTH = 12
 LOCAL_PASSWORD_MAX_LENGTH = 1024
+LOCAL_USERNAME_MAX_LENGTH = 64
 
 
 def _validate_local_password(password: str | None) -> str:
@@ -38,6 +39,34 @@ def _validate_local_password(password: str | None) -> str:
         msg = "Password must be between 12 and 1024 characters."
         raise ValueError(msg)
     return password
+
+
+def _validate_username(username: str | None) -> str:
+    u = (username or "").strip()
+    if not u:
+        msg = "Username is required."
+        raise ValueError(msg)
+    if len(u) > LOCAL_USERNAME_MAX_LENGTH:
+        msg = "Username too long."
+        raise ValueError(msg)
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", u):
+        msg = "Username may only include letters, numbers, underscore, dash, dot."
+        raise ValueError(msg)
+    return u
+
+
+_dummy_password_hash: str | None = None
+_dummy_password_hash_lock = threading.Lock()
+
+
+def _unknown_user_password_check(password: str) -> None:
+    """Spend one real hash check so unknown users match wrong-password timing."""
+    global _dummy_password_hash
+    if _dummy_password_hash is None:
+        with _dummy_password_hash_lock:
+            if _dummy_password_hash is None:
+                _dummy_password_hash = generate_password_hash(secrets.token_urlsafe(32))
+    check_password_hash(_dummy_password_hash, password)
 
 
 @dataclass(frozen=True)
@@ -92,6 +121,7 @@ class AuthStore:
         the empty-store check and insert atomic across concurrent web workers.
         """
         self.ensure_schema()
+        u = _validate_username(username)
         password = _validate_local_password(password)
         with (
             self._connect() as conn,
@@ -104,18 +134,6 @@ class AuthStore:
             row = conn.execute("SELECT 1 FROM users LIMIT 1").fetchone()
             if row is not None:
                 return False
-            u = (username or "").strip()
-            if not u:
-                msg = "Username is required."
-                raise ValueError(msg)
-            if len(u) > 64:
-                msg = "Username too long."
-                raise ValueError(msg)
-            if not re.fullmatch(r"[A-Za-z0-9_.-]+", u):
-                msg = (
-                    "Username may only include letters, numbers, underscore, dash, dot."
-                )
-                raise ValueError(msg)
             now = int(time.time())
             pw_hash = generate_password_hash(password)
             conn.execute(
@@ -294,14 +312,12 @@ class AuthStore:
                 (u,),
             ).fetchone()
         if not row:
+            _unknown_user_password_check(password or "")
             return None
         password_hash = str(row[0])
         if not check_password_hash(password_hash, password or ""):
             return None
         return self._session_version(password_hash, int(row[1]))
-
-    def verify_user(self, username: str, password: str) -> bool:
-        return self.authenticate_user(username, password) is not None
 
     def get_user_session_version(self, username: str) -> str | None:
         """Return the current local credential version, or None if revoked."""
@@ -320,16 +336,7 @@ class AuthStore:
 
     def add_user(self, username: str, password: str) -> None:
         self.ensure_schema()
-        u = (username or "").strip()
-        if not u:
-            msg = "Username is required."
-            raise ValueError(msg)
-        if len(u) > 64:
-            msg = "Username too long."
-            raise ValueError(msg)
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+", u):
-            msg = "Username may only include letters, numbers, underscore, dash, dot."
-            raise ValueError(msg)
+        u = _validate_username(username)
         password = _validate_local_password(password)
 
         now = int(time.time())
