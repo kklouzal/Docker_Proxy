@@ -390,3 +390,22 @@ def test_template_tokens_are_cached() -> None:
 
     assert tokens_1 == tokens_2 == ("%T", "%U")
     assert error_pages.template_tokens.cache_info().hits == 1
+
+
+# Codes ErrorState::compile() expands in Squid 7.8 (src/errorpage.cc). Any other
+# %letter is logged as "Unsupported error page %code" and rendered literally.
+SQUID_SUPPORTED_ERROR_PAGE_CODES = frozenset("aAbBcDeEfFghHiIlLmMOopPRsStTUuwWxzZ%")
+
+
+def test_error_pages_use_only_squid_supported_codes() -> None:
+    from services.error_pages import (
+        CUSTOM_ERROR_TEMPLATE_NAMES,
+        SQUID_ERROR_TEMPLATE_NAMES,
+    )
+
+    for name in SQUID_ERROR_TEMPLATE_NAMES + CUSTOM_ERROR_TEMPLATE_NAMES:
+        text = (REPO_ROOT / "squid" / "error_pages" / "en" / name).read_text(
+            encoding="utf-8"
+        )
+        codes = set(re.findall(r"%([A-Za-z%])", text))
+        assert codes <= SQUID_SUPPORTED_ERROR_PAGE_CODES, (name, codes)

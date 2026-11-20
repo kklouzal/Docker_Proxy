@@ -109,7 +109,6 @@ _SAMPLE_VALUES = {
     "%A": "192.0.2.10",
     "%B": "https://example.invalid/report.pdf",
     "%c": "ERR_ACCESS_DENIED",
-    "%d": "1.284",
     "%D": "TLS certificate validation failed: issuer is not trusted",
     "%e": "111",
     "%E": "Connection refused",

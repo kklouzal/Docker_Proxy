@@ -55,7 +55,6 @@
       <div class="item"><span class="label">Proxy node</span><span class="value">%h</span></div>
       <div class="item"><span class="label">Event time UTC</span><span class="value">%T</span></div>
       <div class="item"><span class="label">Squid error</span><span class="value">%c</span></div>
-      <div class="item"><span class="label">Elapsed</span><span class="value">%d seconds</span></div>
     </div>
     <div class="request">
       <strong>Request an exception</strong>
