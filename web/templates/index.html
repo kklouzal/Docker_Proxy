@@ -210,6 +210,8 @@
                 <div class="surface-note small">
                     Last config apply: {{ fmt_ts(last_config.ts) }} ({{ last_config.remote_addr or 'n/a' }}) · {{ 'ok' if last_config.ok else 'failed' }}
                 </div>
+            {% elif last_config_error %}
+                <div class="surface-note small">Last config apply unavailable: {{ last_config_error }}</div>
             {% else %}
                 <div class="surface-note small">No config apply events recorded yet.</div>
             {% endif %}

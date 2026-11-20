@@ -895,3 +895,32 @@ def test_cache_clear_queues_operation_without_direct_proxy_client(
     _assert_redirect_success(response)
     assert loaded.operation_ledger.operations[-1].operation_type == "cache_clear"
     assert loaded.operation_ledger.operations[-1].proxy_id == "edge-cache"
+
+
+def test_webfilter_whitelist_remove_failure_is_reported_not_swallowed(
+    monkeypatch, tmp_path
+) -> None:
+    webfilter_store = FakeWebfilterStore()
+    webfilter_store.whitelist = [("allow.example", 1)]
+
+    def fail_remove(_pattern):
+        msg = "whitelist write rejected"
+        raise RuntimeError(msg)
+
+    webfilter_store.remove_whitelist = fail_remove
+    loaded, client = _loaded(monkeypatch, tmp_path, webfilter_store=webfilter_store)
+
+    response = _post(
+        client,
+        "/webfilter?tab=whitelist",
+        {"tab": "whitelist", "action": "whitelist_remove", "pattern": "allow.example"},
+    )
+
+    # The route's error handling reports the failure instead of a refresh
+    # redirect that looks like a successful removal.
+    assert response.status_code in {302, 303}
+    location = response.headers.get("Location", "")
+    assert "err=Operation+failed" in location
+    assert "policy_queue=1" not in location
+    assert webfilter_store.whitelist == [("allow.example", 1)]
+    assert loaded.operation_ledger.operations == []

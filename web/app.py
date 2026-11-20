@@ -235,6 +235,9 @@ from services.version_status import (
     current_component_metadata,
 )
 from services.webfilter_core import (
+    WHITELIST_MAX_ENTRIES as WEBFILTER_WHITELIST_MAX_ENTRIES,
+)
+from services.webfilter_core import (
     _normalize_category_name as _normalize_webfilter_category_name,
 )
 from services.webfilter_core import (
@@ -5553,8 +5556,7 @@ def _handle_webfilter_post(store: Any, tab: str):
 
     if action == "whitelist_remove":
         pat = (request.form.get("pattern") or "").strip()
-        with contextlib.suppress(Exception):
-            store.remove_whitelist(pat)
+        store.remove_whitelist(pat)
         return _redirect_after_policy_refresh(
             "webfilter",
             store,
@@ -6249,6 +6251,7 @@ def index():
     forwarding_health = services.get("forwarding") or {"ok": False, "detail": "n/a"}
 
     last_config = None
+    last_config_error = ""
     revisions = get_config_revisions()
     latest_apply = revisions.latest_apply(proxy_id)
     if latest_apply is not None:
@@ -6272,8 +6275,14 @@ def index():
                     "user_agent": row[4],
                     "detail": row[5],
                 }
-        except Exception:
-            pass
+        except Exception as exc:
+            log_exception_throttled(
+                app.logger,
+                "web.app.index.latest_config_apply",
+                interval_seconds=300.0,
+                message="Dashboard could not read the latest config apply audit event",
+            )
+            last_config_error = public_error_message(exc)
     try:
         active_revision = revisions.get_active_revision_metadata(proxy_id)
     except Exception:
@@ -6294,6 +6303,7 @@ def index():
         clamav_health=clamav_health,
         forwarding_health=forwarding_health,
         last_config=last_config,
+        last_config_error=last_config_error,
         config_runtime_state=config_runtime_state,
         observability=observability,
         observability_window_label=observability_window_label,
@@ -9027,10 +9037,18 @@ def webfilter():
         )
         if normalized
     }
+    whitelist_error = ""
     try:
         whitelist_rows = store.list_whitelist()
-    except Exception:
+    except Exception as exc:
+        log_exception_throttled(
+            app.logger,
+            "web.app.webfilter.list_whitelist",
+            interval_seconds=300.0,
+            message="Web filter page could not read the whitelist",
+        )
         whitelist_rows = []
+        whitelist_error = public_error_message(exc)
     window_i = _query_int_arg(
         "window",
         default=3600,
@@ -9046,6 +9064,8 @@ def webfilter():
         available_categories=available,
         selected=selected,
         whitelist_rows=whitelist_rows,
+        whitelist_error=whitelist_error,
+        whitelist_max_entries=WEBFILTER_WHITELIST_MAX_ENTRIES,
         safe_browsing_status=safe_browsing_status,
         window=window_i,
         window_label=_window_label(window_i),
