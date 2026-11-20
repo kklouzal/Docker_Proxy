@@ -350,10 +350,18 @@ def test_latest_config_apply_binds_like_pattern_for_pymysql_formatting(
 ) -> None:
     executed: list[tuple[str, tuple[object, ...]]] = []
     expected_row = (1_700_000_000, "config_apply_manual", 1, "198.51.100.1", "", "")
+    mapping_row = dict(
+        zip(
+            ("ts", "kind", "ok", "remote_addr", "user_agent", "detail"),
+            expected_row,
+            strict=True,
+        )
+    )
 
     class _Result:
         def fetchone(self) -> object:
-            return expected_row
+            # Pooled MySQL connections return mapping rows.
+            return mapping_row
 
     class _Conn:
         def __enter__(self):

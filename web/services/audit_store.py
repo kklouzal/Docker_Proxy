@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # PyMySQL formats every parameterized statement with ``%``; keep LIKE wildcards
 # in a bound parameter so a literal ``%`` never reaches that formatter.
 _CONFIG_APPLY_KIND_PATTERN = "config_apply%"
+_CONFIG_APPLY_COLUMNS = ("ts", "kind", "ok", "remote_addr", "user_agent", "detail")
 
 
 class AuditStore:
@@ -203,12 +204,17 @@ class AuditStore:
             remaining_rows -= result.deleted_rows
         return deleted_rows
 
-    def latest_config_apply(self) -> object | None:
-        # Returns the most recent config_apply* event (if any).
+    def latest_config_apply(self) -> tuple[object, ...] | None:
+        """Return the newest config_apply* event as a positional tuple.
+
+        Columns: (ts, kind, ok, remote_addr, user_agent, detail). Pooled
+        connections return mapping rows, so normalize to the positional shape
+        callers index.
+        """
         self.init_db()
         proxy_id = get_proxy_id()
         with self._connect() as conn:
-            return conn.execute(
+            row = conn.execute(
                 """
                 SELECT ts, kind, ok, remote_addr, user_agent, detail
                 FROM audit_events
@@ -218,6 +224,12 @@ class AuditStore:
                 """,
                 (proxy_id, _CONFIG_APPLY_KIND_PATTERN),
             ).fetchone()
+        if row is None:
+            return None
+        return tuple(
+            row_value(row, column, index)
+            for index, column in enumerate(_CONFIG_APPLY_COLUMNS)
+        )
 
     def prune_old_entries(self, *, retention_days: int = 30) -> None:
         """Prune old audit/config apply history.
