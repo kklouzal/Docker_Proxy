@@ -650,6 +650,41 @@ def test_pinned_port_used_by_another_listener_is_a_conflict() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "other",
+    [
+        "http_port 3138",
+        "http_port 0.0.0.0:3138",
+        "http_port [::]:3138",
+        "http_port 192.0.2.7:3138",
+        "http_port [::ffff:192.0.2.7]:3138",
+        "http_port proxy.example:3138",
+    ],
+)
+def test_pinned_port_on_an_overlapping_address_is_a_conflict(other: str) -> None:
+    # The pinned explicit listener binds 0.0.0.0 (every IPv4 address).
+    with pytest.raises(HostOverrideError, match="SQUID_HTTP_PORT=3138"):
+        apply_host_overrides(f"{UI_EXPLICIT}{other}\n", {"SQUID_HTTP_PORT": 3138})
+
+
+@pytest.mark.parametrize(
+    ("explicit", "other"),
+    [
+        ("http_port 0.0.0.0:3128 ssl-bump", "http_port [::1]:3138"),
+        ("http_port 192.0.2.1:3128 ssl-bump", "http_port 192.0.2.2:3138"),
+        ("http_port [2001:db8::1]:3128", "https_port [2001:db8::2]:3138 tls-cert=/c"),
+    ],
+)
+def test_pinned_port_shared_by_distinct_addresses_is_not_a_conflict(
+    explicit: str, other: str
+) -> None:
+    revision = f"{explicit}\n{other}\n"
+
+    rendered = apply_host_overrides(revision, {"SQUID_HTTP_PORT": 3138})
+
+    assert rendered == revision.replace(":3128", ":3138", 1)
+
+
 def test_conflicting_revision_fails_validation_and_apply_once(monkeypatch) -> None:
     from services.squid_core import SquidController
 

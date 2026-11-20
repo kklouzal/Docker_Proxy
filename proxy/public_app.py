@@ -37,7 +37,11 @@ from services.http_optimizations import (
     compressible_mimetype,
     gzip_responses_enabled,
 )
-from services.logutil import configure_process_logging
+from services.logutil import (
+    configure_process_logging,
+    log_database_unavailable,
+    log_exception_throttled,
+)
 from services.pac_http import (
     PAC_CONTENT_TYPE,
     client_ip_from_headers,
@@ -494,6 +498,21 @@ def _record_policy_request(request: Any) -> _Response:
         )
     except Exception as exc:
         unavailable = _policy_request_store_unavailable(exc)
+        if unavailable:
+            log_database_unavailable(
+                _LOGGER,
+                "proxy_public.policy_request.store_unavailable",
+                "Policy request not recorded while MySQL is unavailable",
+                exc,
+                interval_seconds=60.0,
+            )
+        else:
+            log_exception_throttled(
+                _LOGGER,
+                "proxy_public.policy_request.record",
+                interval_seconds=60.0,
+                message="Policy request could not be recorded",
+            )
         detail = (
             "The request service is temporarily unavailable. Please try again later."
             if unavailable

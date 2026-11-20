@@ -4444,6 +4444,10 @@ class ProxyRuntime:
                             ),
                         ).hexdigest()
                         effective_config_sha = normalized_active_sha
+                except HostOverrideError:
+                    # The revision cannot run on this host; its apply is
+                    # recorded as failed, and health keeps reporting the drift.
+                    pass
                 except Exception:
                     log_exception_throttled(
                         logger,

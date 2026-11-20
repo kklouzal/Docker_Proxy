@@ -1059,6 +1059,7 @@ def test_proxy_public_policy_request_capacity_response_is_429(monkeypatch) -> No
 
 def test_proxy_public_policy_request_database_unavailable_is_sanitized_503(
     monkeypatch,
+    caplog,
 ) -> None:
     ensure_proxy_runtime_import_path()
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
@@ -1077,6 +1078,7 @@ def test_proxy_public_policy_request_database_unavailable_is_sanitized_503(
             )
 
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
+    monkeypatch.setattr("services.logutil.should_log", lambda *_a, **_k: True)
     res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -1089,6 +1091,12 @@ def test_proxy_public_policy_request_database_unavailable_is_sanitized_503(
     assert "database-secret" not in body
     assert "internal-db" not in body
     assert "OperationalError" not in body
+    records = [r for r in caplog.records if r.name == "proxy.public_app"]
+    assert [r.levelname for r in records] == ["WARNING"]
+    assert "Policy request not recorded while MySQL is unavailable" in (
+        records[0].getMessage()
+    )
+    assert records[0].exc_info is None
 
 
 def test_proxy_public_policy_request_control_plane_database_failure_is_503(
@@ -1128,6 +1136,7 @@ def test_proxy_public_policy_request_control_plane_database_failure_is_503(
 
 def test_proxy_public_policy_request_unexpected_store_failure_is_sanitized_500(
     monkeypatch,
+    caplog,
 ) -> None:
     ensure_proxy_runtime_import_path()
     monkeypatch.setenv("DISABLE_PROXY_AGENT", "1")
@@ -1143,6 +1152,7 @@ def test_proxy_public_policy_request_unexpected_store_failure_is_sanitized_500(
             raise RuntimeError(message)
 
     monkeypatch.setattr("services.policy_requests.get_policy_request_store", Store)
+    monkeypatch.setattr("services.logutil.should_log", lambda *_a, **_k: True)
     res = Client(proxy_app.app).post(
         "/policy-request",
         base_url="http://localhost:80",
@@ -1155,6 +1165,9 @@ def test_proxy_public_policy_request_unexpected_store_failure_is_sanitized_500(
     assert "unexpected-secret" not in body
     assert "RuntimeError" not in body
     assert "sql detail" not in body
+    records = [r for r in caplog.records if r.name == "proxy.public_app"]
+    assert [r.getMessage() for r in records] == ["Policy request could not be recorded"]
+    assert records[0].exc_info[0] is RuntimeError
 
 
 def test_proxy_public_policy_request_rejects_parser_enforced_oversize(

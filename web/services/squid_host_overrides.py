@@ -37,9 +37,11 @@ Contract (see README "Host configuration overrides"):
   (non-integer, out of range, not a boolean, a port already pinned by an
   earlier listener variable) are ignored with a warning. Listener lines the
   Admin UI does not manage (custom ``http_port``/``https_port`` lines) are kept;
-  a pinned port that another listener of the config also uses is a deployment
-  conflict and raises ``HostOverrideError`` instead of being moved, because the
-  container publishes and the router redirects exactly that port.
+  a pinned port that another listener of the config also binds on an
+  overlapping address (either is a wildcard, or both name the same address)
+  is a deployment conflict and raises ``HostOverrideError`` instead of being
+  moved, because the container publishes and the router redirects exactly that
+  port. Distinct specific addresses may share a port.
 * The proxy entrypoint validates the operator's variables once, before it
   derives its own defaults into the same names, and exports the accepted set
   as ``SQUID_HOST_CONFIG_OVERRIDES`` (``NAME=VALUE`` pairs, canonical order;
@@ -62,12 +64,12 @@ Contract (see README "Host configuration overrides"):
 from __future__ import annotations
 
 import functools
+import ipaddress
 import logging
 import os
 import pathlib
 import re
 import sys
-from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -592,6 +594,54 @@ def _listener_ports(lines: list[str]) -> list[int]:
     return ports
 
 
+def _bind_scope(token: str) -> tuple[str, str]:
+    """Address family and address a listener token binds (``any`` = all).
+
+    A bare port and ``[::]`` bind every address (Squid opens IPv6 wildcard
+    sockets dual-stack); ``0.0.0.0`` binds every IPv4 address. Host names
+    may resolve to anything, so they are treated as binding every address.
+    """
+    host = token.rsplit(":", 1)[0] if ":" in token else ""
+    host = host.removeprefix("[").removesuffix("]")
+    try:
+        address = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return "any", ""
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    if address.is_unspecified:
+        return ("v4", "") if address.version == 4 else ("any", "")
+    return f"v{address.version}", str(address)
+
+
+def _binds_overlap(first: tuple[str, str], second: tuple[str, str]) -> bool:
+    """Whether two listeners on one port would compete for the same socket."""
+    if "any" in {first[0], second[0]}:
+        return True
+    if first[0] != second[0]:
+        return False
+    return not first[1] or not second[1] or first[1] == second[1]
+
+
+def _conflicting_ports(lines: list[str]) -> set[int]:
+    """Ports bound by more than one listener on overlapping addresses."""
+    binds: dict[int, list[tuple[str, str]]] = {}
+    conflicts: set[int] = set()
+    for start, end in _logical_groups(lines):
+        tokens = _logical_tokens(lines, start, end)
+        if len(tokens) < 2 or tokens[0].lower() not in _LISTENER_DIRECTIVES:
+            continue
+        port = _address_port(tokens[1])
+        if port is None:
+            continue
+        scope = _bind_scope(tokens[1])
+        seen = binds.setdefault(port, [])
+        if any(_binds_overlap(scope, other) for other in seen):
+            conflicts.add(port)
+        seen.append(scope)
+    return conflicts
+
+
 def _flatten(pieces: list[_Piece]) -> list[str]:
     return [line for piece in pieces for line in piece.lines]
 
@@ -773,14 +823,16 @@ def _apply_host_listeners(config_text: str, overrides: Mapping[str, int]) -> str
         pieces = _with_splice_rule(pieces)
 
     out = _flatten(pieces)
-    counts = Counter(_listener_ports(out))
+    conflicting = _conflicting_ports(out)
     pinned = (
         ("SQUID_HTTP_PORT", http_port),
         ("SQUID_INTERCEPT_PORT", intercept_port if intercept_on else None),
         ("SQUID_HTTPS_INTERCEPT_PORT", https_port if https_on else None),
     )
     conflicts = [
-        f"{env}={port}" for env, port in pinned if port is not None and counts[port] > 1
+        f"{env}={port}"
+        for env, port in pinned
+        if port is not None and port in conflicting
     ]
     if conflicts:
         msg = (
