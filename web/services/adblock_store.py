@@ -48,10 +48,6 @@ ADBLOCK_DEFAULT_UPDATE_INTERVAL_SECONDS = 12 * 60 * 60
 ADBLOCK_DEFAULT_DOWNLOAD_RETRY_SECONDS = 15 * 60
 
 
-def _is_internal_host(hostname: str) -> bool:
-    return download_safety.is_internal_host(hostname)
-
-
 def _validate_download_url(url: str):
     return download_safety.validate_download_url(url)
 
@@ -791,43 +787,6 @@ class AdblockStore:
         )
         return [events, counts]
 
-    def list_recent_block_events(self, limit: int = 100) -> list[dict[str, Any]]:
-        self.init_db()
-        try:
-            limit_i = int(limit)
-        except Exception:
-            limit_i = 100
-        limit_i = max(1, min(500, limit_i))
-
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT ts, src_ip, method, url, http_status, list_key, rule_id, decision_action, decision_reason
-                FROM adblock_events
-                WHERE proxy_id=%s
-                ORDER BY ts DESC, id DESC
-                LIMIT %s
-                """,
-                (get_proxy_id(), limit_i),
-            ).fetchall()
-
-        out: list[dict[str, Any]] = [
-            {
-                "ts": int(r[0] or 0),
-                "src_ip": str(r[1] or "-"),
-                "method": str(r[2] or "-"),
-                "url": str(r[3] or ""),
-                "result": "BLOCKED",
-                "status": str(int(r[4] or 0)),
-                "list_key": str(r[5] or ""),
-                "rule_id": str(r[6] or ""),
-                "decision_action": str(r[7] or ""),
-                "decision_reason": str(r[8] or ""),
-            }
-            for r in rows
-        ]
-        return out
-
     def get_settings(self) -> dict[str, Any]:
         def as_int(s: str, default: int) -> int:
             try:
@@ -1077,35 +1036,6 @@ class AdblockStore:
                     (guard.proxy_id, day, list_key),
                 )
 
-    def record_blocks_bulk(self, counts: dict[str, int]) -> None:
-        """Bulk increment blocked counters.
-
-        This is meant for the ICAP hot path: accumulate counts in memory and
-        flush periodically to avoid per-request writes.
-        """
-        day = int(_now() // 86400)
-        rows = []
-        for k, v in (counts or {}).items():
-            try:
-                n = int(v)
-            except Exception:
-                continue
-            if not k or n <= 0:
-                continue
-            rows.append((day, str(k), n))
-        if not rows:
-            return
-
-        with self._connect() as conn:
-            with guarded_proxy_write(conn, get_proxy_id()) as guard:
-                conn.executemany(
-                    """
-                    INSERT INTO adblock_counts(proxy_id, day, list_key, blocked) VALUES(%s,%s,%s,%s) AS incoming
-                    ON DUPLICATE KEY UPDATE blocked = blocked + incoming.blocked
-                    """,
-                    [(guard.proxy_id, *row) for row in rows],
-                )
-
     def stats(self) -> dict[str, Any]:
         now = _now()
         day = int(now // 86400)
@@ -1276,61 +1206,6 @@ class AdblockStore:
                 (err[:400], key),
             )
             return False
-
-    def record_cache_stats(
-        self,
-        *,
-        hits: int = 0,
-        misses: int = 0,
-        evictions: int = 0,
-        size: int | None = None,
-    ) -> None:
-        with self._connect() as conn:
-            with guarded_proxy_write(conn, get_proxy_id()) as guard:
-                proxy_id = guard.proxy_id
-                if hits:
-                    conn.execute(
-                        "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'hits', %s) AS incoming ON DUPLICATE KEY UPDATE v = v + incoming.v",
-                        (proxy_id, int(hits)),
-                    )
-                if misses:
-                    conn.execute(
-                        "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'misses', %s) AS incoming ON DUPLICATE KEY UPDATE v = v + incoming.v",
-                        (proxy_id, int(misses)),
-                    )
-                if evictions:
-                    conn.execute(
-                        "INSERT INTO adblock_cache_stats(proxy_id,k,v) VALUES(%s, 'evictions', %s) AS incoming ON DUPLICATE KEY UPDATE v = v + incoming.v",
-                        (proxy_id, int(evictions)),
-                    )
-                if size is not None:
-                    conn.execute(
-                        "INSERT INTO adblock_proxy_meta(proxy_id,k,v) VALUES(%s,'cache_current_size',%s) AS incoming ON DUPLICATE KEY UPDATE v=incoming.v",
-                        (proxy_id, str(max(0, int(size)))),
-                    )
-
-    def cache_stats(self) -> dict[str, int]:
-        proxy_id = get_proxy_id()
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT k, v FROM adblock_cache_stats WHERE proxy_id=%s",
-                (proxy_id,),
-            ).fetchall()
-            meta_rows = conn.execute(
-                "SELECT k, v FROM adblock_proxy_meta WHERE proxy_id=%s AND k IN ('cache_current_size','cache_last_flush','cache_flush_requested')",
-                (proxy_id,),
-            ).fetchall()
-
-        stats = {str(r[0]): int(r[1]) for r in rows}
-        meta = {str(r[0]): int(r[1]) for r in meta_rows}
-        return {
-            "hits": int(stats.get("hits") or 0),
-            "misses": int(stats.get("misses") or 0),
-            "evictions": int(stats.get("evictions") or 0),
-            "current_size": int(meta.get("cache_current_size") or 0),
-            "last_flush": int(meta.get("cache_last_flush") or 0),
-            "last_flush_req": int(meta.get("cache_flush_requested") or 0),
-        }
 
     def get_update_interval_seconds(self) -> int:
         return int(self.update_interval_seconds)

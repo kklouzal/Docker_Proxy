@@ -87,13 +87,6 @@ def adblock_host_suffix_candidates(host: str) -> list[str]:
     return parent_domain_suffixes(normalized)
 
 
-def adblock_host_matches(host: str, rule_host: str) -> bool:
-    normalized_rule = normalize_adblock_host(rule_host)
-    return bool(
-        normalized_rule and normalized_rule in adblock_host_suffix_candidates(host)
-    )
-
-
 def looks_like_adblock_host(host: str) -> bool:
     normalized = normalize_adblock_host(host)
     if not normalized:

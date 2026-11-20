@@ -37,20 +37,10 @@ class SslFilterRules:
 
 
 @dataclass(frozen=True)
-class SslFilterSettings:
-    # Backward-compatible shape for older callers/tests; new code should use SslFilterRules.
-    nobump_cidrs: list[tuple[str, int]]
-
-
-@dataclass(frozen=True)
 class SslFilterMaterializedState:
     include_text: str
     nobump_src_list_text: str
     nocache_src_list_text: str
-
-    @property
-    def list_text(self) -> str:
-        return self.nobump_src_list_text
 
 
 @dataclass(frozen=True)
@@ -334,12 +324,6 @@ class SslFilterStore:
     def set_exclude_private_nets(self, enabled: bool) -> None:
         self._set_setting("exclude_private_nets", "1" if enabled else "0")
 
-    def get_exclude_private_nets(self) -> bool:
-        self.init_db()
-        with self._connect() as conn:
-            v = self._get_setting_conn(conn, "exclude_private_nets")
-        return True if v is None else (v == "1")
-
     def set_inspection_enabled(self, enabled: bool) -> None:
         self._set_setting("inspection_enabled", "1" if enabled else "0")
 
@@ -501,27 +485,6 @@ class SslFilterStore:
 
     def remove_nobump(self, cidr: str) -> None:
         self.remove_src_net("nobump", cidr)
-
-    def add_net(self, table: str, cidr: str) -> tuple[bool, str]:
-        policy = (
-            "nobump"
-            if table in {"src_nets", "nobump_src_nets"}
-            else "nocache"
-            if table == "nocache_src_nets"
-            else ""
-        )
-        ok, err, _canonical = self.add_src_net(policy, cidr)
-        return ok, err
-
-    def remove_net(self, table: str, cidr: str) -> None:
-        policy = (
-            "nobump"
-            if table in {"src_nets", "nobump_src_nets"}
-            else "nocache"
-            if table == "nocache_src_nets"
-            else ""
-        )
-        self.remove_src_net(policy, cidr)
 
     def _list_domains_conn(self, conn: Any, policy: str) -> list[str]:
         rows = conn.execute(

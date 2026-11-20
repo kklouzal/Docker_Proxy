@@ -432,11 +432,6 @@ class WebFilterStore(WebFilterStoreBase):
             "safe_browsing": safe_browsing,
         }
 
-    def _record_attempt(self, ok: bool, err: str) -> None:
-        self.init_db()
-        with self._connect() as conn:
-            self._record_attempt_conn(conn, ok=ok, err=err)
-
     def _record_attempt_conn(self, conn, *, ok: bool, err: str) -> None:
         self._set(conn, "last_attempt", str(_now()))
         if ok:
@@ -444,11 +439,6 @@ class WebFilterStore(WebFilterStoreBase):
             self._set(conn, "last_error", "")
         else:
             self._set(conn, "last_error", (err or "")[:500])
-
-    def _set_next_run(self, ts: int) -> None:
-        self.init_db()
-        with self._connect() as conn:
-            self._set_next_run_conn(conn, ts=int(ts))
 
     def _set_next_run_conn(self, conn, *, ts: int) -> None:
         self._set(conn, "next_run_ts", str(int(ts)))
@@ -460,11 +450,6 @@ class WebFilterStore(WebFilterStoreBase):
 
     def _clear_refresh_requested_conn(self, conn) -> None:
         self._set_meta(conn, "refresh_requested", "0")
-
-    def _refresh_requested(self) -> bool:
-        self.init_db()
-        with self._connect() as conn:
-            return self._refresh_requested_conn(conn)
 
     def _refresh_requested_conn(self, conn) -> bool:
         return self._get_meta(conn, "refresh_requested", "0") == "1"
