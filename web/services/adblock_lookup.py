@@ -315,15 +315,7 @@ class AdblockLookupIndex:
                 while len(self._rule_cache) > self.rule_cache_max:
                     self._rule_cache.popitem(last=False)
 
-        rules = list(cached.values()) + list(loaded.values())
-        return sorted(
-            rules,
-            key=lambda rule: (
-                0 if rule.get("action") == "allow" else 1,
-                str(rule.get("pattern_kind") or ""),
-                str(rule.get("raw") or ""),
-            ),
-        )
+        return sorted([*cached.values(), *loaded.values()], key=_rule_order)
 
     def _candidate_rule_ids(
         self,
@@ -652,22 +644,29 @@ def _host_pattern_matches_candidate(
     )
 
 
+def _rule_order(rule: dict[str, Any]) -> tuple[int, str, str, str, str]:
+    """Total candidate order: the first matching rule is attributed the decision.
+
+    The same rule text in two lists ties on (action, kind, raw); list key and
+    rule id break the tie so attribution never depends on the database's
+    physical row order or on which candidates were cached.
+    """
+    return (
+        0 if rule.get("action") == "allow" else 1,
+        str(rule.get("pattern_kind") or ""),
+        str(rule.get("raw") or ""),
+        str(rule.get("list_key") or ""),
+        str(rule.get("rule_id") or ""),
+    )
+
+
 def _rules_by_ids(conn: sqlite3.Connection, rule_ids: set[str]) -> list[sqlite3.Row]:
     if not rule_ids:
         return []
-    ordered_ids = sorted(rule_ids)
-    rows = _query_by_values(
+    return _query_by_values(
         conn,
         "SELECT * FROM rules WHERE rule_id IN ",
-        ordered_ids,
-    )
-    return sorted(
-        rows,
-        key=lambda row: (
-            0 if row["action"] == "allow" else 1,
-            str(row["pattern_kind"] or ""),
-            str(row["raw"] or ""),
-        ),
+        sorted(rule_ids),
     )
 
 

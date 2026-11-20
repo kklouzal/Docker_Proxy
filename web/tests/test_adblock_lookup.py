@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from typing import TYPE_CHECKING, Any
@@ -404,3 +405,44 @@ def test_adblock_lookup_chunks_large_sqlite_in_queries(
 
     assert "sharedtoken/path3" in _raws(rules)
     assert len(rules) == 8
+
+
+def test_same_rule_in_two_lists_is_attributed_by_list_key(tmp_path: Path) -> None:
+    from services.adblock_decision import AdblockDecisionEngine
+    from tools import adblock_compile as ac  # type: ignore
+
+    db_path = tmp_path / "request_lookup.sqlite"
+    ac._write_request_lookup_index(
+        str(db_path),
+        [("zeta", ["||dup.example^"]), ("alpha", ["||dup.example^"])],
+        ac._Aggregate(),
+    )
+    engine = AdblockDecisionEngine(db_path, cache_ttl_seconds=0)
+    # Attribution must not depend on row order or rule-cache state.
+    for _ in range(2):
+        decision = engine.decide("https://dup.example/x.js")
+        assert decision.blocked is True
+        assert decision.list_key == "alpha"
+
+
+def test_rule_payload_carries_only_matcher_fields(tmp_path: Path) -> None:
+    db_path = _build_lookup_db(
+        tmp_path, ["||example.com/ad/path|$script,domain=a.example|~b.example"]
+    )
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rule_id, payload_json = conn.execute(
+            "SELECT rule_id, payload_json FROM rules"
+        ).fetchone()
+    finally:
+        conn.close()
+    payload = json.loads(payload_json)
+    assert payload["id"] == rule_id
+    assert set(payload) == {
+        "id",
+        "host",
+        "compiled_regex",
+        "suffix",
+        "domain_includes",
+        "domain_excludes",
+    }

@@ -930,6 +930,28 @@ def _create_lookup_indexes(conn: sqlite3.Connection) -> None:
     )
 
 
+# Matcher fields of a rule that have no rules-table column (adblock_decision
+# reads them from the candidate rule). Empty values are omitted: every reader
+# treats a missing field as empty. "id" lets older readers, which ignore a
+# payload naming another rule, keep using these artifacts.
+_RULE_PAYLOAD_FIELDS = (
+    "id",
+    "host",
+    "compiled_regex",
+    "suffix",
+    "regex",
+    "misc_options",
+    "domain_includes",
+    "domain_excludes",
+    "domain_include_patterns",
+    "domain_exclude_patterns",
+)
+
+
+def _rule_match_payload(rec: dict[str, Any]) -> dict[str, Any]:
+    return {key: rec[key] for key in _RULE_PAYLOAD_FIELDS if rec.get(key)}
+
+
 def _insert_lookup_rule(
     conn: sqlite3.Connection,
     rec: dict[str, Any],
@@ -963,7 +985,7 @@ def _insert_lookup_rule(
             str(rec.get("third_party") or "any"),
             _json_compact(rec.get("behavior_options") or []),
             _json_compact(rec.get("value_options") or {}),
-            _json_compact(rec),
+            _json_compact(_rule_match_payload(rec)),
         ),
     )
     if not inserted.rowcount:
@@ -1184,6 +1206,11 @@ def _write_request_lookup_index(
         )
         conn.execute("PRAGMA optimize")
         conn.commit()
+        # Rules arrive in source order but are keyed by a hash, which leaves
+        # half-full B-tree pages; rebuilding packs them (deterministically,
+        # -9% file size). A file temp store keeps the rebuild out of memory.
+        conn.execute("PRAGMA temp_store=FILE")
+        conn.execute("VACUUM")
     finally:
         conn.close()
     return per_list_counts, counts
@@ -1305,7 +1332,7 @@ def main(argv: list[str] | None = None) -> int:
         "per_list": per_list_counts,
         "files": {"request_lookup_sqlite": "request_lookup.sqlite"},
         "notes": {
-            "request_lookup_sqlite": "request_lookup.sqlite is the fast lookup substrate: indexed domain suffix, exact host, host-pattern, regex, generic literal-key, option, resource-type, and domain-scope tables joined to full rule payloads by rule_id.",
+            "request_lookup_sqlite": "request_lookup.sqlite is the fast lookup substrate: indexed domain suffix, exact host, host-pattern, regex, generic literal-key, option, resource-type, and domain-scope tables joined to the rules table by rule_id.",
         },
     }
     with pathlib.Path(os.path.join(out_dir, "report.json")).open(

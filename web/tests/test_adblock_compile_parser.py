@@ -37,24 +37,23 @@ def _parsed_rules(lines: list[str]) -> list[dict[str, Any]]:
 
 _INDEXED_RULES_SQL = {
     "domain_index": (
-        "SELECT r.payload_json FROM rules r JOIN (SELECT DISTINCT rule_id FROM "
+        "SELECT r.raw FROM rules r JOIN (SELECT DISTINCT rule_id FROM "
         "domain_index) i ON i.rule_id = r.rule_id ORDER BY r.raw"
     ),
     "generic_index": (
-        "SELECT r.payload_json FROM rules r JOIN (SELECT DISTINCT rule_id FROM "
+        "SELECT r.raw FROM rules r JOIN (SELECT DISTINCT rule_id FROM "
         "generic_index) i ON i.rule_id = r.rule_id ORDER BY r.raw"
     ),
 }
 
 
-def _indexed_rules(db_path: Path, table: str) -> list[dict[str, Any]]:
-    """Return the stored payloads of the rules that ``table`` indexes."""
+def _indexed_raws(db_path: Path, table: str) -> list[str]:
+    """Return the raw text of the rules that ``table`` indexes."""
     conn = sqlite3.connect(str(db_path))
     try:
-        rows = conn.execute(_INDEXED_RULES_SQL[table]).fetchall()
+        return [row[0] for row in conn.execute(_INDEXED_RULES_SQL[table])]
     finally:
         conn.close()
-    return [json.loads(row[0]) for row in rows]
 
 
 _HOST_KINDS = {
@@ -375,9 +374,8 @@ def test_request_indexes_skip_rules_disabled_by_badfilter(tmp_path: Path) -> Non
     ]
     out = _compile_sample(tmp_path, lines)
 
-    assert [rule["raw"] for rule in _indexed_rules(out, "generic_index")] == []
-    domain_rules = _indexed_rules(out, "domain_index")
-    assert [rule["raw"] for rule in domain_rules] == ["||kept.example^"]
+    assert _indexed_raws(out, "generic_index") == []
+    assert _indexed_raws(out, "domain_index") == ["||kept.example^"]
 
     # Disabled rules are still parsed (and counted); only the lookup omits them.
     assert {rule["raw"] for rule in _parsed_rules(lines)} == {
