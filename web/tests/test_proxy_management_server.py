@@ -322,15 +322,20 @@ def test_graceful_stop_is_bounded() -> None:
     results: list[bool] = []
     serving = threading.Thread(target=lambda: results.append(server.serve_forever()))
     serving.start()
-    threading.Thread(
-        target=lambda: _exchange(server, _get("/slow?3")), daemon=True
-    ).start()
+    replies: list[bytes] = []
+    client = threading.Thread(
+        target=lambda: replies.append(_exchange(server, _get("/slow?1.5")))
+    )
+    client.start()
     time.sleep(0.3)
     started = time.monotonic()
     server.request_stop()
     serving.join(5)
     assert results == [False]  # requests outlived the grace period
     assert time.monotonic() - started < 1.5
+    # The abandoned request's thread still answers; main() exits the process.
+    client.join(5)
+    assert replies[0].startswith(_OK)
 
 
 def test_supervisor_stop_window_covers_the_graceful_drain() -> None:
