@@ -320,12 +320,25 @@ def test_concurrent_capture_serializes_snapshot_before_publish(
             proxy_id=proxy_id,
             source_control_plane_id=_SOURCE_CONTROL_PLANE_ID,
             created_ts="2026-08-14T05:07:00Z",
-            tables=((name,),),
+            tables=(proxy_recovery.RecoveryTablePayload(name=name, rows=()),),
         )
 
     def write_bundle(_proxy_id, tables, **_kwargs):
-        writes.append(tables[0][0])
+        writes.append(tables[0].name)
         return tmp_path / "edge-01.bundle.json"
+
+    failures: list[BaseException] = []
+
+    def capture() -> None:
+        # Thread exceptions do not fail the test on their own; record them so a
+        # worker dying after its write cannot pass as a serialized capture.
+        try:
+            recovery_db.capture_and_write_recovery_bundle(
+                Conn, "edge-01", recovery_dir=tmp_path
+            )
+        except BaseException as exc:
+            failures.append(exc)
+            raise
 
     monkeypatch.setattr(recovery_db, "capture_recovery_state", capture_state)
     monkeypatch.setattr(proxy_recovery, "write_recovery_bundle", write_bundle)
@@ -337,18 +350,8 @@ def test_concurrent_capture_serializes_snapshot_before_publish(
         def __exit__(self, *_args):
             return None
 
-    first = threading.Thread(
-        target=recovery_db.capture_and_write_recovery_bundle,
-        name="older-capture",
-        args=(Conn, "edge-01"),
-        kwargs={"recovery_dir": tmp_path},
-    )
-    second = threading.Thread(
-        target=recovery_db.capture_and_write_recovery_bundle,
-        name="newer-capture",
-        args=(Conn, "edge-01"),
-        kwargs={"recovery_dir": tmp_path},
-    )
+    first = threading.Thread(target=capture, name="older-capture")
+    second = threading.Thread(target=capture, name="newer-capture")
     first.start()
     assert first_snapshot_started.wait(timeout=2)
     second.start()
@@ -359,6 +362,7 @@ def test_concurrent_capture_serializes_snapshot_before_publish(
 
     assert not first.is_alive()
     assert not second.is_alive()
+    assert failures == []
     assert second_snapshot_started.is_set()
     assert writes == ["older-capture", "newer-capture"]
 
