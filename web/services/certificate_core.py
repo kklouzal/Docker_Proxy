@@ -99,24 +99,6 @@ class CertManager:
     def __init__(self, ca_dir: str = "/etc/squid/ssl/certs") -> None:
         self.ca_dir = ca_dir
 
-    @property
-    def uploaded_pfx_path(self) -> str:
-        return os.path.join(self.ca_dir, "uploaded_ca.pfx")
-
-    @property
-    def ca_cert_path(self) -> str:
-        return os.path.join(self.ca_dir, "ca.crt")
-
-    @property
-    def ca_key_path(self) -> str:
-        return os.path.join(self.ca_dir, "ca.key")
-
-    def ca_exists(self) -> bool:
-        return (
-            pathlib.Path(self.ca_cert_path).exists()
-            and pathlib.Path(self.ca_key_path).exists()
-        )
-
     def load_bundle(self) -> CertificateBundle | None:
         return load_local_certificate_bundle(self.ca_dir)
 
@@ -486,6 +468,76 @@ def _certificate_validity_detail(cert: x509.Certificate) -> str:
     return ""
 
 
+def ca_certificate_signing_problem(cert: x509.Certificate) -> str:
+    """Return why *cert* cannot issue certificates now, or ``""`` if it can.
+
+    The result is a sentence fragment ("is expired.") for callers to prefix
+    with their own subject. A missing keyUsage extension is tolerated here
+    (RFC 5280 path validation accepts it); ``ca_strict_verification_issues``
+    reports it as a strict-client compatibility problem instead.
+    """
+    validity_detail = _certificate_validity_detail(cert)
+    if validity_detail:
+        return validity_detail.removeprefix("certificate ")
+    try:
+        basic_constraints = cert.extensions.get_extension_for_class(
+            x509.BasicConstraints,
+        ).value
+    except x509.ExtensionNotFound:
+        return "must include a CA basic constraints extension."
+    if not basic_constraints.ca:
+        return "is not a CA certificate."
+    try:
+        key_usage = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        return ""
+    if not key_usage.key_cert_sign:
+        return "key usage must allow certificate signing."
+    return ""
+
+
+def ca_strict_verification_issues(cert_pem: str) -> tuple[str, ...]:
+    """List RFC 5280 CA-profile gaps that strict X.509 verifiers reject.
+
+    OpenSSL's X509_STRICT mode (enabled by default in Python 3.13+ SSL
+    contexts) refuses every certificate issued by a CA that lacks a keyUsage
+    extension, a critical basicConstraints extension, or a subject key
+    identifier. An empty result means the CA meets those checks; a CA with
+    issues must be regenerated (or replaced by a compliant upload) and
+    redistributed to client trust stores before strict clients can connect.
+    """
+    try:
+        cert = _load_pem_certificate((cert_pem or "").encode("utf-8"))
+    except Exception:
+        return ("CA certificate is not valid PEM material.",)
+    issues: list[str] = []
+    try:
+        basic_constraints = cert.extensions.get_extension_for_class(
+            x509.BasicConstraints,
+        )
+    except x509.ExtensionNotFound:
+        issues.append("CA certificate has no basicConstraints extension.")
+    else:
+        if not basic_constraints.value.ca:
+            issues.append(
+                "Certificate is not marked as a CA (basicConstraints CA:FALSE)."
+            )
+        elif not basic_constraints.critical:
+            issues.append("CA basicConstraints extension is not marked critical.")
+    try:
+        key_usage = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        issues.append("CA certificate has no keyUsage extension.")
+    else:
+        if not key_usage.key_cert_sign:
+            issues.append("CA keyUsage does not allow keyCertSign.")
+    try:
+        cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
+    except x509.ExtensionNotFound:
+        issues.append("CA certificate has no subjectKeyIdentifier extension.")
+    return tuple(issues)
+
+
 def _validate_tls_material_paths_unlocked(
     certfile: str, keyfile: str
 ) -> TlsMaterialValidation:
@@ -742,10 +794,6 @@ def _load_bundle_ca_material(
         raise ValueError(msg)
     ca_cert = _load_pem_certificate(cert_pem.encode("utf-8"))
     ca_key = _load_pem_private_key(key_pem.encode("utf-8"))
-    validity_detail = _certificate_validity_detail(ca_cert)
-    if validity_detail:
-        msg = f"Admin UI HTTPS leaf generation CA certificate {validity_detail}"
-        raise ValueError(msg)
     try:
         if _public_key_bytes(ca_cert) != _public_key_bytes(ca_key):
             msg = "Admin UI HTTPS leaf generation CA certificate and private key do not match."
@@ -755,26 +803,10 @@ def _load_bundle_ca_material(
     except Exception as exc:
         msg = "Admin UI HTTPS leaf generation CA certificate and private key could not be compared."
         raise ValueError(msg) from exc
-    try:
-        basic_constraints = ca_cert.extensions.get_extension_for_class(
-            x509.BasicConstraints,
-        ).value
-    except x509.ExtensionNotFound as exc:
-        msg = (
-            "Admin UI HTTPS leaf generation requires a CA basic constraints extension."
-        )
-        raise ValueError(msg) from exc
-    if not basic_constraints.ca:
-        msg = "Admin UI HTTPS leaf generation requires a CA certificate."
+    problem = ca_certificate_signing_problem(ca_cert)
+    if problem:
+        msg = f"Admin UI HTTPS leaf generation issuer certificate {problem}"
         raise ValueError(msg)
-    try:
-        key_usage = ca_cert.extensions.get_extension_for_class(x509.KeyUsage).value
-    except x509.ExtensionNotFound:
-        pass
-    else:
-        if not key_usage.key_cert_sign:
-            msg = "Admin UI HTTPS leaf generation CA key usage must allow certificate signing."
-            raise ValueError(msg)
     return ca_cert, ca_key
 
 
@@ -1011,37 +1043,53 @@ def admin_ui_certificate_material_transaction(ca_dir: str):
         yield
 
 
+_OPENSSL_NAME_SHORT_NAMES = {
+    "1.2.840.113549.1.9.1": "emailAddress",
+    "2.5.4.4": "SN",
+    "2.5.4.5": "serialNumber",
+    "2.5.4.9": "street",
+    "2.5.4.12": "title",
+    "2.5.4.42": "GN",
+}
+
+
+def _openssl_style_name(name: x509.Name) -> str:
+    """Render *name* like ``openssl x509 -subject`` (default nameopt).
+
+    Persisted bundle metadata predates this in-process renderer; matching the
+    OpenSSL CLI format keeps old and new revision rows comparable for display.
+    """
+    rdns: list[str] = []
+    for rdn in name.rdns:
+        parts = []
+        for attribute in rdn:
+            oid = attribute.oid.dotted_string
+            label = (
+                _OPENSSL_NAME_SHORT_NAMES.get(oid) or attribute.rfc4514_attribute_name
+            )
+            value = attribute.value
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="replace")
+            parts.append(f"{label}={value}")
+        rdns.append(" + ".join(parts))
+    return ", ".join(rdns)
+
+
+def _openssl_style_time(value: datetime) -> str:
+    value = value.astimezone(UTC)
+    return f"{value:%b} {value.day:2d} {value:%H:%M:%S %Y} GMT"
+
+
 def _extract_certificate_metadata(cert_pem: str) -> tuple[str, str, str]:
-    subject_dn = ""
-    not_before = ""
-    not_after = ""
-    tmp_cert_path = ""
     try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            delete=False,
-            encoding="utf-8",
-        ) as tmp_cert:
-            tmp_cert.write(_normalize_pem_text(cert_pem))
-            tmp_cert_path = tmp_cert.name
-        proc = _run_checked(
-            ["openssl", "x509", "-in", tmp_cert_path, "-noout", "-subject", "-dates"],
-            timeout=15,
-        )
-        for line in (proc.stdout or "").splitlines():
-            if line.startswith("subject="):
-                subject_dn = line.split("=", 1)[1].strip()
-            elif line.startswith("notBefore="):
-                not_before = line.split("=", 1)[1].strip()
-            elif line.startswith("notAfter="):
-                not_after = line.split("=", 1)[1].strip()
+        cert = _load_pem_certificate(_normalize_pem_text(cert_pem).encode("utf-8"))
     except Exception:
-        pass
-    finally:
-        if tmp_cert_path:
-            with contextlib.suppress(OSError):
-                pathlib.Path(tmp_cert_path).unlink()
-    return subject_dn, not_before, not_after
+        return "", "", ""
+    return (
+        _openssl_style_name(cert.subject),
+        _openssl_style_time(cert.not_valid_before_utc),
+        _openssl_style_time(cert.not_valid_after_utc),
+    )
 
 
 def build_certificate_bundle(
