@@ -833,3 +833,38 @@ def test_summary_averages_ignore_null_metric_samples_mysql(
     assert float(summary["cpu_avg"]) == pytest.approx(90.0)
     assert float(summary["mem_avg"]) == pytest.approx(40.0)
     assert float(summary["hit_rate_avg"]) == pytest.approx(60.0)
+
+
+def test_missing_table_retry_reinitializes_only_for_mysql_no_such_table(
+    monkeypatch,
+) -> None:
+    import pymysql  # type: ignore
+    import pytest
+    from services.timeseries_store import TimeSeriesStore  # type: ignore
+
+    store = TimeSeriesStore()
+    store._db_initialized = True
+    inits: list[int] = []
+    monkeypatch.setattr(store, "init_db", lambda: inits.append(1))
+
+    calls = iter(
+        [pymysql.err.ProgrammingError(1146, "Table 'ts_1s' doesn't exist"), "ok"]
+    )
+
+    def flaky():
+        value = next(calls)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    assert store._with_missing_table_retry(flaky) == "ok"
+    assert inits == [1]
+
+    # Unrelated failures that merely mention a missing object propagate.
+    def unrelated():
+        msg = "proxy edge-a does not exist"
+        raise RuntimeError(msg)
+
+    with pytest.raises(RuntimeError):
+        store._with_missing_table_retry(unrelated)
+    assert inits == [1]
