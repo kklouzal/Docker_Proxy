@@ -72,6 +72,66 @@ def _open_download_url(
     )
 
 
+def _declared_content_length(resp) -> int | None:
+    """The body length the response declared, or None when it declared none."""
+    if getattr(resp, "chunked", False):
+        # http.client raises IncompleteRead for a truncated chunked body.
+        return None
+    raw = resp.headers.get("Content-Length")
+    if raw is None:
+        return None
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def _is_list_rule_line(text: str) -> bool:
+    """Whether a stripped list line is a rule (not blank, comment or header)."""
+    return (
+        bool(text)
+        and not text.startswith("!")
+        and not (text.startswith("[") and text.endswith("]"))
+    )
+
+
+def list_file_has_rule_content(path: str | os.PathLike[str]) -> bool:
+    try:
+        with pathlib.Path(path).open(encoding="utf-8", errors="replace") as handle:
+            return any(_is_list_rule_line(line.strip()) for line in handle)
+    except OSError:
+        return False
+
+
+def _downloaded_list_problem(path: str) -> tuple[int, str]:
+    """Return (rough rule count, why the downloaded list is unusable or "")."""
+    rules = 0
+    has_rule = False
+    first = last = ""
+    with pathlib.Path(path).open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            text = line.strip()
+            if not text:
+                continue
+            if not first:
+                first = text
+            last = text
+            if text.startswith("!"):
+                continue
+            rules += 1
+            has_rule = has_rule or _is_list_rule_line(text)
+    if not first:
+        return 0, "Downloaded list is empty"
+    # The heuristic uBlock Origin applies to list downloads: lists are plain
+    # text, so a body that is one markup document is an error page.
+    if first.startswith("<") and last.endswith(">"):
+        return 0, "Downloaded list is an HTML page, not a filter list"
+    if not has_rule:
+        return 0, "Downloaded list contains no rules"
+    return rules, ""
+
+
 @dataclass(frozen=True)
 class ListStatus:
     key: str
@@ -1097,21 +1157,28 @@ class AdblockStore:
                             msg = f"Download exceeded limit ({max_bytes} bytes)."
                             raise ValueError(msg)
                         f.write(chunk)
+                    f.flush()
+                    os.fsync(f.fileno())
 
+                declared = _declared_content_length(resp)
+            # http.client ends a short Content-Length body like a complete one
+            # (read(amt) returns b"" without IncompleteRead), so a dropped
+            # connection would otherwise publish a truncated list.
+            if declared is not None and declared != total:
+                msg = (
+                    f"Download truncated: received {total} of {declared} bytes; "
+                    "keeping the previously downloaded list."
+                )
+                raise ValueError(msg)
+
+            # A list is replaced only by a usable list: an empty or HTML body
+            # (an error or captive-portal page served as 200) or one without
+            # rules would silently drop that list from the next artifact.
+            rules, problem = _downloaded_list_problem(tmp)
+            if problem:
+                msg = f"{problem}; keeping the previously downloaded list."
+                raise ValueError(msg)
             pathlib.Path(tmp).replace(path)
-
-            # Rough rule count: ignore comments/blank.
-            rules = 0
-            try:
-                with pathlib.Path(path).open(encoding="utf-8", errors="replace") as rf:
-                    for line in rf:
-                        s = (line or "").strip()
-                        if not s or s.startswith("!"):
-                            continue
-                        rules += 1
-            except Exception:
-                rules = 0
-
             return True, "", int(total), int(rules)
         except Exception as e:
             try:

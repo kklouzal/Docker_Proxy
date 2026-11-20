@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 from services.adblock_lookup import LOOKUP_SCHEMA_VERSION
+from services.adblock_store import list_file_has_rule_content
 from services.application_ledgers import (
     normalize_application_actor,
     normalize_application_detail,
@@ -199,21 +200,6 @@ def _record_build_result(store: Any, **result: Any) -> None:
             interval_seconds=300.0,
             message="Failed to record the adblock artifact build result",
         )
-
-
-def _list_file_has_rule_content(path: str | os.PathLike[str]) -> bool:
-    try:
-        with Path(path).open(encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                text = (line or "").strip()
-                if not text or text.startswith("!"):
-                    continue
-                if text.startswith("[") and text.endswith("]"):
-                    continue
-                return True
-    except OSError:
-        return False
-    return False
 
 
 @dataclass(frozen=True)
@@ -998,7 +984,7 @@ class AdblockArtifactStore:
             now_ts = _now()
             for status in enabled_statuses:
                 list_path = store.list_path(status.key)
-                has_local_rules = _list_file_has_rule_content(list_path)
+                has_local_rules = list_file_has_rule_content(list_path)
                 needs_download = (
                     refresh_lists
                     or (
@@ -1028,7 +1014,7 @@ class AdblockArtifactStore:
             status
             for status in enabled_statuses
             if settings_enabled
-            and _list_file_has_rule_content(store.list_path(status.key))
+            and list_file_has_rule_content(store.list_path(status.key))
         ]
         effective_enabled_lists = [status.key for status in available_enabled_statuses]
         if settings_enabled and len(available_enabled_statuses) < len(enabled_statuses):
@@ -1229,7 +1215,7 @@ class AdblockArtifactStore:
                 locally_available = {
                     status.key
                     for status in enabled_statuses
-                    if _list_file_has_rule_content(store.list_path(status.key))
+                    if list_file_has_rule_content(store.list_path(status.key))
                 }
                 # Compare against the lists a build could include right now; a
                 # list without local rules is handled by its download schedule,
